@@ -122,7 +122,9 @@ fn tool_failures_with_output_stay_inline_on_replay() {
                 tool.detail
                     .contains("Required file /work/Report.md missing")
             );
-            if case != 0 {
+            // Case 2's output only streamed as live-only progress, which a
+            // replay never sees.
+            if case != 0 && case != 2 {
                 assert!(tool.detail.contains("File missing"));
             }
         }
@@ -2627,6 +2629,7 @@ fn thinking_delta_after_committed_child_renumbering_appends_without_duplicate() 
         20,
         0,
         &turn,
+        None,
         jiff::Timestamp::UNIX_EPOCH,
     );
     state.open_assistant = Some(stale_open);
@@ -2680,11 +2683,8 @@ fn tool_termination_clears_streamed_output_and_sets_detail() {
         },
     );
 
-    reduce_event(
+    reduce_transient(
         &mut state,
-        SessionId::new_v7(),
-        None,
-        1,
         jiff::Timestamp::now(),
         EventPayload::ToolCallProgress {
             tool_call_id: call_id,
@@ -2817,12 +2817,9 @@ fn tool_display_is_bounded_and_final_replacement_matches_replay() {
         jiff::Timestamp::now(),
         start.clone(),
     );
-    for seq in 2..302 {
-        reduce_event(
+    for _ in 2..302 {
+        reduce_transient(
             &mut live,
-            session,
-            None,
-            seq,
             jiff::Timestamp::now(),
             EventPayload::ToolCallProgress {
                 tool_call_id: call,
@@ -2888,6 +2885,7 @@ fn committed_assistant_text_replaces_streamed_delta() {
         20,
         0,
         &turn,
+        None,
         jiff::Timestamp::UNIX_EPOCH,
     );
 
@@ -3156,6 +3154,7 @@ fn thinking_duration_transfers_to_the_committed_child_on_rebuild() {
         20,
         0,
         &turn,
+        None,
         jiff::Timestamp::UNIX_EPOCH,
     );
     // The streamed part id is gone; the committed child carries the time.

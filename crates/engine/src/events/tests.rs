@@ -1881,6 +1881,53 @@ fn torn_tail_recovery_can_write_while_retained_writer_is_open() {
 }
 
 #[test]
+fn live_only_stream_output_is_never_appended() {
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let records = attribution_records();
+    write_event_values(
+        &path,
+        &records
+            .iter()
+            .map(|record| serde_json::to_value(record).expect("serialize event"))
+            .collect::<Vec<_>>(),
+    );
+    let log = EventLog::open(path.clone(), records[0].session_id).expect("open event log");
+    let run_id = records[1].run_id.expect("run id");
+    let attempt_id = AttemptId(Uuid::from_u128(1));
+    let tool_call_id = ToolCallId(Uuid::from_u128(2));
+    let before = fs::read(&path).expect("read log");
+    for payload in [
+        EventPayload::TextDelta {
+            attempt_id,
+            text: "text".into(),
+        },
+        EventPayload::ReasoningDelta {
+            attempt_id,
+            text: "reasoning".into(),
+        },
+        EventPayload::ToolCallProgress {
+            tool_call_id,
+            message: SafeDisplayText::new("progress").expect("safe progress"),
+            display: Some("chunk".into()),
+        },
+    ] {
+        assert!(payload.is_transient());
+        let error = log
+            .append(
+                Some(run_id),
+                EventOrigin::new("engine:test").expect("origin"),
+                payload,
+            )
+            .expect_err("live-only output is rejected");
+        assert!(matches!(error, EventLogError::Corrupt { .. }), "{error}");
+    }
+    assert_eq!(fs::read(&path).expect("reread log"), before);
+    assert_eq!(log.all_events().len(), records.len());
+    assert_eq!(log.physical_tip_seq(), records.last().unwrap().seq);
+}
+
+#[test]
 fn barrier_sync_precedes_publication_without_holding_snapshot_lock() {
     let directory = tempdir().expect("temporary directory");
     let path = directory.path().join("events.jsonl");
@@ -2717,6 +2764,93 @@ fn gaps_are_diagnosed_and_projection_remains_coherent() {
     let projected = crate::session::projection(log).expect("project gapped log");
     assert_eq!(projected.meta.session_id, session);
     assert_eq!(projected.meta.skipped_events.len(), removed.len());
+}
+
+/// Older engines stored every streamed delta and progress chunk. Such a log
+/// still opens: those records are dropped without a diagnostic or a
+/// validation taint, their sequences keep ordering the log, and appends
+/// continue after the physical tip.
+#[test]
+fn legacy_stored_stream_output_is_dropped_on_load() {
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let records = attribution_records();
+    let session_id = records[0].session_id;
+    let run_id = records[1].run_id.expect("run id");
+    let attempt_id = AttemptId(Uuid::from_u128(77));
+    let tool_call_id = ToolCallId(Uuid::from_u128(78));
+    let last = records.last().expect("last record").seq;
+    let timestamp = records.last().expect("last record").timestamp;
+    let mut lines = records
+        .iter()
+        .map(|record| serde_json::to_string(record).expect("serialize event"))
+        .collect::<Vec<_>>();
+    // A record as the old writer laid it out, dropped before its payload is
+    // decoded...
+    let legacy = |seq: u64, payload: &str| {
+        format!(
+            r#"{{"engine_version":"0.2.0","origin":"engine:model-loop","session_id":"{session_id}","run_id":"{run_id}","seq":{seq},"timestamp":"{timestamp}","payload":{payload}}}"#
+        )
+    };
+    lines.push(legacy(
+        last + 1,
+        &format!(r#"{{"type":"text_delta","attempt_id":"{attempt_id}","text":"partial"}}"#),
+    ));
+    lines.push(legacy(
+        last + 2,
+        &format!(r#"{{"type":"reasoning_delta","attempt_id":"{attempt_id}","text":"hm"}}"#),
+    ));
+    lines.push(legacy(
+        last + 3,
+        &format!(
+            r#"{{"type":"tool_call_progress","tool_call_id":"{tool_call_id}","message":"bash stdout","output_chunk":"chunk"}}"#
+        ),
+    ));
+    // ...and ones only the tolerant reader recognizes: reordered keys, and a
+    // payload too damaged to decode.
+    lines.push(
+        serde_json::json!({
+            "session_id": session_id,
+            "run_id": run_id,
+            "seq": last + 4,
+            "timestamp": timestamp,
+            "payload": {"text": "late", "attempt_id": attempt_id, "type": "text_delta"},
+        })
+        .to_string(),
+    );
+    lines.push(legacy(last + 5, r#"{"type":"text_delta"}"#));
+    fs::write(&path, lines.join("\n") + "\n").expect("write legacy log");
+
+    let read_only = EventLog::open_read_only(path.clone(), session_id).expect("open read-only");
+    let owned = EventLog::open(path.clone(), session_id).expect("open owned");
+    for log in [&read_only, &owned] {
+        assert_eq!(
+            log.all_events()
+                .iter()
+                .map(|event| event.as_ref().clone())
+                .collect::<Vec<_>>(),
+            records
+        );
+        assert!(log.diagnostics().is_empty(), "{:?}", log.diagnostics());
+        assert_eq!(log.physical_tip_seq(), last + 5);
+    }
+    let appended = owned
+        .append(
+            None,
+            EventOrigin::new("engine:test").expect("origin"),
+            EventPayload::SessionPermissionOverlaySet {
+                overlay: Default::default(),
+            },
+        )
+        .expect("append after the legacy tail");
+    assert_eq!(appended.seq, last + 6);
+    let reloaded = EventLog::open_read_only(path, session_id).expect("reload");
+    assert_eq!(reloaded.all_events().len(), records.len() + 1);
+    assert_eq!(
+        reloaded.last_event().map(|event| event.seq),
+        Some(appended.seq)
+    );
+    assert!(reloaded.diagnostics().is_empty());
 }
 
 #[test]

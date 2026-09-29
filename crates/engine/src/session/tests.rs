@@ -3235,30 +3235,20 @@ fn fold_ignored_appends_do_not_rebuild_projection() {
         )
         .expect("start attempt");
     let before = super::projection_fold_count();
-    for text in ["delta one", "delta two"] {
+    for kind in [
+        cookie_agent_protocol::StreamedOutputKind::Reasoning,
+        cookie_agent_protocol::StreamedOutputKind::Text,
+        cookie_agent_protocol::StreamedOutputKind::Reasoning,
+    ] {
         store
             .append(
                 session_id,
                 Some(run_id),
                 fuzz_origin(),
-                EventPayload::TextDelta {
-                    attempt_id,
-                    text: text.into(),
-                },
+                EventPayload::ModelOutputStarted { attempt_id, kind },
             )
-            .expect("text delta");
+            .expect("output mark");
     }
-    store
-        .append(
-            session_id,
-            Some(run_id),
-            fuzz_origin(),
-            EventPayload::ReasoningDelta {
-                attempt_id,
-                text: "thinking".into(),
-            },
-        )
-        .expect("reasoning delta");
     assert_eq!(
         super::projection_fold_count(),
         before,
@@ -3336,36 +3326,35 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
     for step in 0..steps {
         let roll = rng.below(100);
         match roll {
-            // ~45%: streaming text deltas (fold-ignored).
+            // ~45%: text output marks (fold-ignored).
             0..=44 => append(
                 &store,
                 Some(run_id),
-                EventPayload::TextDelta {
+                EventPayload::ModelOutputStarted {
                     attempt_id,
-                    text: format!("delta-{seed}-{step}"),
+                    kind: cookie_agent_protocol::StreamedOutputKind::Text,
                 },
                 &mut consumed_appends,
             ),
-            // ~15%: reasoning deltas (fold-ignored).
+            // ~15%: reasoning output marks (fold-ignored).
             45..=59 => append(
                 &store,
                 Some(run_id),
-                EventPayload::ReasoningDelta {
+                EventPayload::ModelOutputStarted {
                     attempt_id,
-                    text: format!("reasoning-{seed}-{step}"),
+                    kind: cookie_agent_protocol::StreamedOutputKind::Reasoning,
                 },
                 &mut consumed_appends,
             ),
-            // ~15%: tool progress on an open call (fold-ignored).
+            // ~15%: stdin to an open call (fold-ignored).
             60..=74 => {
                 if let Some((tool_call_id, _)) = open_tools.first() {
                     append(
                         &store,
                         Some(run_id),
-                        EventPayload::ToolCallProgress {
+                        EventPayload::ToolStdinSubmitted {
                             tool_call_id: *tool_call_id,
-                            message: SafeDisplayText::new("progress").expect("progress"),
-                            display: None,
+                            byte_count: step as u64,
                         },
                         &mut consumed_appends,
                     );
@@ -3373,9 +3362,9 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                     append(
                         &store,
                         Some(run_id),
-                        EventPayload::TextDelta {
+                        EventPayload::ModelOutputStarted {
                             attempt_id,
-                            text: format!("fallback-{seed}-{step}"),
+                            kind: cookie_agent_protocol::StreamedOutputKind::Text,
                         },
                         &mut consumed_appends,
                     );
@@ -3481,9 +3470,9 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                     append(
                         &store,
                         Some(run_id),
-                        EventPayload::TextDelta {
+                        EventPayload::ModelOutputStarted {
                             attempt_id,
-                            text: format!("pre-tool-{seed}-{step}"),
+                            kind: cookie_agent_protocol::StreamedOutputKind::Text,
                         },
                         &mut consumed_appends,
                     );
@@ -3513,9 +3502,9 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                     append(
                         &store,
                         Some(run_id),
-                        EventPayload::ReasoningDelta {
+                        EventPayload::ModelOutputStarted {
                             attempt_id,
-                            text: format!("no-tool-{seed}-{step}"),
+                            kind: cookie_agent_protocol::StreamedOutputKind::Reasoning,
                         },
                         &mut consumed_appends,
                     );

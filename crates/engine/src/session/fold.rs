@@ -3,10 +3,9 @@
 use super::*;
 
 /// Whether the projection fold consumes this payload. Fold-ignored payloads
-/// (the streaming hot path: TextDelta/ReasoningDelta per token,
-/// ToolCallProgress per output chunk) only advance the metadata tip and are
-/// applied incrementally by `append_with_mode`; consumed payloads trigger a
-/// full rebuild.
+/// (attempt bookkeeping, approvals, producer and goal records, ...) only
+/// advance the metadata tip and are applied incrementally by
+/// `append_with_mode`; consumed payloads trigger a full rebuild.
 ///
 /// Direction is deliberate: consumed variants are an explicit whitelist so a
 /// future `EventPayload` variant defaults to rebuild (safe-slow), never to

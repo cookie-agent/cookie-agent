@@ -1,12 +1,12 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 24 is current-only. A client must call `handshake` with
-`{ "protocol_version": 24 }` before any other method.
+Protocol 25 is current-only. A client must call `handshake` with
+`{ "protocol_version": 25 }` before any other method.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 24.
+members of protocol 25.
 
 ## Error diagnostics
 
@@ -29,7 +29,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 24 alongside independent display and output references. The
+preserved in protocol 25 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -242,7 +242,7 @@ the title, and continues with new physical sequences.
 | Notification | Payload |
 |---|---|
 | `runtime.changed` | Previous revision, complete snapshot, sorted change reasons |
-| `events.subscription` | One stored event or a session sequence gap |
+| `events.subscription` | One stored event, live-only stream output, or a session sequence gap |
 | `events.plugin` | Session-scoped non-durable plugin event |
 
 The shared client maps these to `ClientDelivery` variants (`Live`, replay
@@ -250,9 +250,16 @@ deliveries, `PluginEvent`, `RuntimeChanged`, `RecoveryFailed`), so a UI
 consumes one ordered stream and never parses raw JSON-RPC frames.
 
 Protocol 23 removed the `events.tool_output_snapshot`, `events.tool_output_delta`,
-and `events.tool_output_gap` notifications. Tool display comes from durable
+and `events.tool_output_gap` notifications. Tool display comes from
 `tool_call_progress` and `tool_call_terminated` events; retained output is read
 through its artifact references.
+
+Protocol 25 makes `text_delta`, `reasoning_delta`, and `tool_call_progress`
+live-only: `events.subscription` delivers them as `transient` messages carrying
+the durable `after_seq` they follow instead of a sequence of their own, and they
+are never stored or replayed. `model_output_started` durably marks where each
+streamed part began. See
+[live-only stream output](events.md#live-only-stream-output).
 
 Session metadata includes additive `skipped_events` entries with the physical
 sequence (or source line number when no sequence was readable) and a safe reason.

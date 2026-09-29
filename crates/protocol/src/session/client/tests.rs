@@ -65,9 +65,8 @@ fn event(session_id: SessionId, seq: u64) -> StoredEvent {
         run_id: Some(crate::RunId::new_v7()),
         seq,
         timestamp: Timestamp::now(),
-        payload: EventPayload::TextDelta {
-            attempt_id: crate::AttemptId::new_v7(),
-            text: seq.to_string(),
+        payload: EventPayload::UserInputAdmitted {
+            input: seq.to_string(),
         },
     }
 }
@@ -383,6 +382,116 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
         Some(ClientDelivery::Live { message, .. })
             if matches!(message.as_ref(), EventSubscriptionMessage::Event { event } if event.seq == 3)
     ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), recovery_receiver.recv())
+            .await
+            .is_err()
+    );
+}
+
+fn transient(session_id: SessionId, after_seq: u64, text: &str) -> EventSubscriptionMessage {
+    EventSubscriptionMessage::Transient {
+        event: Box::new(crate::TransientEvent {
+            session_id,
+            run_id: Some(crate::RunId::new_v7()),
+            after_seq,
+            timestamp: Timestamp::now(),
+            payload: EventPayload::TextDelta {
+                attempt_id: crate::AttemptId::new_v7(),
+                text: text.into(),
+            },
+        }),
+    }
+}
+
+fn delivered_text(delivery: Option<ClientDelivery>) -> Option<String> {
+    match delivery? {
+        ClientDelivery::Live { message, .. } => match *message {
+            EventSubscriptionMessage::Transient { event } => match event.payload {
+                EventPayload::TextDelta { text, .. } => Some(text),
+                _ => None,
+            },
+            EventSubscriptionMessage::Event { event } => Some(format!("event {}", event.seq)),
+            EventSubscriptionMessage::Gap { .. } => None,
+        },
+        _ => None,
+    }
+}
+
+/// Live-only output reaches the view only right after the durable event it
+/// follows. It never moves the cursor, never asks for recovery, and output
+/// buffered behind a replay survives only if it follows the replayed tip.
+#[tokio::test]
+async fn transient_output_follows_its_durable_event_or_is_dropped() {
+    let session_id = SessionId::new_v7();
+    let subscriptions = Arc::new(Mutex::new(HashMap::new()));
+    let request = prepare_subscription(&subscriptions, session_id, 0, false, true)
+        .await
+        .expect("prepare replay");
+    let (deliveries, mut receiver) = delivery_channel();
+    let (recovery, mut recovery_receiver) = recovery();
+
+    // Buffered while the replay is in flight: stale output, output after the
+    // replayed tip, then a durable event and the output that follows it.
+    for message in [
+        transient(session_id, 1, "stale"),
+        transient(session_id, 2, "after replay"),
+        EventSubscriptionMessage::Event {
+            event: Box::new(event(session_id, 3)),
+        },
+        transient(session_id, 2, "overtaken"),
+        transient(session_id, 3, "after three"),
+    ] {
+        route_live(message, &deliveries, &subscriptions, &recovery).await;
+    }
+    begin_replay(
+        request,
+        vec![event(session_id, 1), event(session_id, 2)],
+        &subscriptions,
+        &deliveries,
+        &recovery,
+    )
+    .await;
+    assert!(matches!(
+        receiver.recv().await,
+        Some(ClientDelivery::ReplayStart { final_seq: 2, .. })
+    ));
+    for _ in 0..2 {
+        assert!(matches!(
+            receiver.recv().await,
+            Some(ClientDelivery::ReplayEvent { .. })
+        ));
+    }
+    assert!(matches!(
+        receiver.recv().await,
+        Some(ClientDelivery::ReplayEnd { .. })
+    ));
+    for expected in ["after replay", "event 3", "after three"] {
+        assert_eq!(
+            delivered_text(receiver.recv().await).as_deref(),
+            Some(expected)
+        );
+    }
+    assert_eq!(subscriptions.lock().await[&session_id].cursor, 3);
+
+    // Live: only output at the cursor is delivered; none of it moves the
+    // cursor or schedules a recovery.
+    for message in [
+        transient(session_id, 3, "live"),
+        transient(session_id, 2, "late"),
+        transient(session_id, 9, "ahead"),
+        transient(session_id, 3, "live again"),
+    ] {
+        route_live(message, &deliveries, &subscriptions, &recovery).await;
+    }
+    for expected in ["live", "live again"] {
+        assert_eq!(
+            delivered_text(receiver.recv().await).as_deref(),
+            Some(expected)
+        );
+    }
+    assert!(receiver.try_recv().is_err());
+    assert_eq!(subscriptions.lock().await[&session_id].cursor, 3);
     assert!(
         tokio::time::timeout(Duration::from_millis(10), recovery_receiver.recv())
             .await

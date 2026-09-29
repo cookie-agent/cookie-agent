@@ -1,7 +1,7 @@
 //! Shared fixtures and helpers for the transcript rendering tests.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -590,6 +590,67 @@ pub(crate) fn reasoning_delta(
             text: text.into(),
         },
     )
+}
+
+/// Marks where each streamed part began, as the engine does durably ahead
+/// of the live-only delta that starts it (an attempt's first output, or a
+/// switch between text and reasoning): a `ModelOutputStarted` takes that
+/// delta's sequence and time, and the delta follows it as live output.
+pub(crate) fn with_output_markers(events: Vec<StoredEvent>) -> Vec<StoredEvent> {
+    let mut streaming = std::collections::HashMap::new();
+    let mut marked = Vec::with_capacity(events.len());
+    for stored in events {
+        let part = match &stored.payload {
+            EventPayload::TextDelta { attempt_id, .. } => {
+                Some((*attempt_id, cookie_agent_protocol::StreamedOutputKind::Text))
+            }
+            EventPayload::ReasoningDelta { attempt_id, .. } => Some((
+                *attempt_id,
+                cookie_agent_protocol::StreamedOutputKind::Reasoning,
+            )),
+            _ => None,
+        };
+        if let Some((attempt_id, kind)) = part
+            && streaming.insert(attempt_id, kind) != Some(kind)
+        {
+            marked.push(StoredEvent {
+                payload: EventPayload::ModelOutputStarted { attempt_id, kind },
+                ..stored.clone()
+            });
+        }
+        marked.push(stored);
+    }
+    marked
+}
+
+/// Whether no attempt in `events` has streamed output it has not yet
+/// committed or abandoned. Only then can a replay, which never sees live-only
+/// output, match the live projection.
+pub(crate) fn settled(events: &[StoredEvent]) -> bool {
+    let mut streaming = HashSet::new();
+    for stored in events {
+        match &stored.payload {
+            EventPayload::TextDelta { attempt_id, .. }
+            | EventPayload::ReasoningDelta { attempt_id, .. } => {
+                streaming.insert(*attempt_id);
+            }
+            EventPayload::ModelTurnCommitted { attempt_id, .. }
+            | EventPayload::AttemptAbandoned { attempt_id, .. } => {
+                streaming.remove(attempt_id);
+            }
+            _ => {}
+        }
+    }
+    streaming.is_empty()
+}
+
+/// The durable history of `events`: what a replay delivers.
+pub(crate) fn durable(events: &[StoredEvent]) -> Vec<StoredEvent> {
+    events
+        .iter()
+        .filter(|stored| !stored.payload.is_transient())
+        .cloned()
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]

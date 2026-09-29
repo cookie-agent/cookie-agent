@@ -226,27 +226,6 @@ impl Engine {
         .await
     }
 
-    pub(super) async fn enqueue_append(
-        &self,
-        session: SessionId,
-        run: Option<RunId>,
-        origin: EventOrigin,
-        event: Event,
-    ) -> Result<oneshot::Receiver<Result<(), EngineError>>, EngineError> {
-        let (reply, receiver) = oneshot::channel();
-        self.send_command(
-            session,
-            SessionCommand::Append {
-                run,
-                origin,
-                event: Box::new(event),
-                reply,
-            },
-        )
-        .await?;
-        Ok(receiver)
-    }
-
     /// Commits a completed tool invocation through its session actor.
     pub async fn submit_tool_result(
         &self,
@@ -479,6 +458,45 @@ impl Engine {
             self.record_plugin_drops(session, drops);
         }
         Ok(envelope)
+    }
+
+    /// Delivers live-only stream output (text and reasoning deltas, tool
+    /// progress) to event tails and plugins. It is never stored: the
+    /// committed turn and the tool termination are its durable record.
+    pub(super) fn publish_transient(&self, session: SessionId, run: RunId, payload: Event) {
+        let Some(event) = self
+            .inner
+            .store
+            .publish_transient(session, Some(run), payload)
+        else {
+            return;
+        };
+        let drops = self.inner.plugins.stream_transient_event(&event);
+        self.record_plugin_drops(session, drops);
+    }
+
+    /// Durably marks the start of a streamed part when the attempt's output
+    /// switches to `kind` (or first begins), ahead of the part's first
+    /// live-only delta.
+    pub(super) async fn mark_output_part(
+        &self,
+        session: SessionId,
+        run: RunId,
+        attempt_id: cookie_agent_protocol::AttemptId,
+        streaming: &mut Option<cookie_agent_protocol::StreamedOutputKind>,
+        kind: cookie_agent_protocol::StreamedOutputKind,
+    ) -> Result<(), EngineError> {
+        if *streaming == Some(kind) {
+            return Ok(());
+        }
+        *streaming = Some(kind);
+        self.append(
+            session,
+            Some(run),
+            super::event_origin("engine:model-loop"),
+            Event::ModelOutputStarted { attempt_id, kind },
+        )
+        .await
     }
 
     fn record_plugin_drops(

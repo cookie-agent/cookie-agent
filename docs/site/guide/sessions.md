@@ -23,8 +23,14 @@ does not require an exact version match. The engine loads known records
 best-effort, reports skipped unsupported or corrupt records in session metadata,
 and tolerates the resulting sequence gaps. The derived `metadata` file is only a
 cache: missing, stale, mismatched, or unreadable cache content is rebuilt from
-the event history. While a run streams, its tip (`last_event_seq`,
-`last_activity`) is not rewritten for every delta; it catches up at the run's
+the event history. Streamed text, reasoning, and tool progress are live-only:
+they reach attached views but are never written to `events.jsonl`, whose
+history holds finished turns and tool results. Reattaching to a session while
+a reply streams shows its finished turns, then the reply from the next live
+output on; a daemon that dies mid-reply leaves no partial reply on disk, and
+the run reopens as interrupted. Every stored event is synced before it is
+published. While a run is in flight, fold-ignored records do not rewrite the
+metadata tip (`last_event_seq`, `last_activity`); it catches up at the run's
 next projection change or terminal event, on eviction, and on shutdown.
 
 Shutting the daemon down cleanly cancels whatever runs are in flight and waits,

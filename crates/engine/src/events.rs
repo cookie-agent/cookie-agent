@@ -1476,6 +1476,9 @@ fn validate_observed_duplicates<E: Borrow<StoredEvent>>(
 }
 
 fn validate_record_local(path: &Path, record: &StoredEvent) -> Result<(), EventLogError> {
+    if record.payload.is_transient() {
+        return corrupt(path, "live-only stream output is never stored");
+    }
     match &record.payload {
         EventPayload::SessionReverted { through_seq } => {
             if record.run_id.is_some() || *through_seq == 0 || *through_seq >= record.seq {
@@ -1638,9 +1641,8 @@ fn validate_record_incremental(
             | EventPayload::ApprovalRequested { .. } => record.run_id.is_some_and(|run_id| {
                 !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
             }),
-            EventPayload::TextDelta { attempt_id, .. }
-            | EventPayload::ReasoningDelta { attempt_id, .. }
-            | EventPayload::ModelRequestPrepared { attempt_id, .. }
+            EventPayload::ModelRequestPrepared { attempt_id, .. }
+            | EventPayload::ModelOutputStarted { attempt_id, .. }
             | EventPayload::AttemptAbandoned { attempt_id, .. }
             | EventPayload::ModelReplayEvaluated { attempt_id, .. }
             | EventPayload::ModelTurnCommitted { attempt_id, .. } => {
@@ -1681,7 +1683,6 @@ fn validate_record_incremental(
                     && taint.tool_before(termination.tool_call_id, record.seq)
             }
             EventPayload::ToolOutputElided { tool_call_id, .. }
-            | EventPayload::ToolCallProgress { tool_call_id, .. }
             | EventPayload::ToolStdinSubmitted { tool_call_id, .. }
             | EventPayload::ToolCallLinked { tool_call_id, .. } => {
                 !tool_starts.contains_key(tool_call_id)
@@ -1998,8 +1999,7 @@ fn validate_record_incremental(
             );
         }
         EventPayload::ModelRequestPrepared { attempt_id, .. }
-        | EventPayload::TextDelta { attempt_id, .. }
-        | EventPayload::ReasoningDelta { attempt_id, .. } => {
+        | EventPayload::ModelOutputStarted { attempt_id, .. } => {
             validate_attempt_owner(path, attempts, *attempt_id, record.run_id)?;
         }
         EventPayload::AttemptAbandoned { attempt_id, .. } => {
@@ -2363,8 +2363,7 @@ fn validate_record_incremental(
                 return corrupt(path, "tool elision ownership or ordering is invalid");
             }
         }
-        EventPayload::ToolCallProgress { tool_call_id, .. }
-        | EventPayload::ToolStdinSubmitted { tool_call_id, .. }
+        EventPayload::ToolStdinSubmitted { tool_call_id, .. }
         | EventPayload::ToolCallLinked { tool_call_id, .. } => {
             let Some((run_id, _)) = tool_starts.get(tool_call_id) else {
                 return corrupt(path, "tool lifecycle event appeared before its start");
@@ -2447,6 +2446,37 @@ struct LoadedEvents {
     next_seq: u64,
 }
 
+/// Wire tags of the live-only payloads ([`EventPayload::is_transient`]).
+const TRANSIENT_PAYLOAD_TAGS: [&str; 3] = ["text_delta", "reasoning_delta", "tool_call_progress"];
+
+/// The sequence of a record an older engine stored for live-only stream
+/// output, found without decoding its payload. The envelope's `payload` is
+/// its only object-valued field and the payload's `type` tag is serialized
+/// first, so the first `"payload":{"type":"` in the line is the envelope's.
+/// Anything else, including a record this cannot parse, is `None` and goes
+/// through the ordinary readers.
+fn legacy_transient_record_seq(line: &[u8]) -> Option<u64> {
+    const PAYLOAD_TAG: &[u8] = br#""payload":{"type":""#;
+    #[derive(Deserialize)]
+    struct Sequence {
+        seq: u64,
+    }
+    let tag_start = line
+        .windows(PAYLOAD_TAG.len())
+        .position(|window| window == PAYLOAD_TAG)?
+        + PAYLOAD_TAG.len();
+    let tag = &line[tag_start..];
+    TRANSIENT_PAYLOAD_TAGS
+        .iter()
+        .any(|transient| {
+            tag.strip_prefix(transient.as_bytes())
+                .is_some_and(|rest| rest.first() == Some(&b'"'))
+        })
+        .then(|| serde_json::from_slice::<Sequence>(line).ok())
+        .flatten()
+        .map(|record| record.seq)
+}
+
 /// Checks that a record's sequence advances the log and records any gap
 /// before it.
 fn observe_sequence(
@@ -2490,6 +2520,21 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
         .enumerate()
     {
         let line_number = index as u64 + 1;
+        // Older engines stored live-only stream output. It is not history:
+        // its sequence still orders the log, but the record is dropped
+        // without decoding its payload.
+        if index > 0
+            && let Some(seq) = legacy_transient_record_seq(line)
+        {
+            observe_sequence(
+                path,
+                seq,
+                &mut last_observed_seq,
+                &mut diagnostics,
+                &mut validation_taint,
+            )?;
+            continue;
+        }
         // Nearly every record is intact: type it straight from the bytes and
         // leave the untyped, repairing reader to the rest.
         if let Some(event) = StoredEvent::decode_strict(line) {
@@ -2554,6 +2599,15 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
                 &mut diagnostics,
                 &mut validation_taint,
             )?;
+        }
+        if index > 0
+            && object
+                .get("payload")
+                .and_then(|payload| payload.get("type"))
+                .and_then(Value::as_str)
+                .is_some_and(|tag| TRANSIENT_PAYLOAD_TAGS.contains(&tag))
+        {
+            continue;
         }
         let unknown = object
             .keys()

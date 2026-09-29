@@ -195,11 +195,12 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 24);
+    assert_eq!(PROTOCOL_VERSION, 25);
     assert_eq!(
         serde_json::to_value(ProtocolVersion::current()).unwrap(),
         json!(PROTOCOL_VERSION)
     );
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(24)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(23)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(22)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(21)).is_err());
@@ -806,6 +807,67 @@ fn event_payload_best_effort_defaults_only_optional_fields() {
         EventPayload::ToolCallProgress { display: Some(chunk), .. }
             if chunk.as_str() == "partial output"
     ));
+}
+
+/// Stream output is live-only: a stored envelope never carries it, and a
+/// transient one carries nothing else.
+#[test]
+fn transient_payloads_travel_only_as_transient_events() {
+    let session_id = SessionId::new_v7();
+    let run_id = RunId::new_v7();
+    let delta = EventPayload::TextDelta {
+        attempt_id: AttemptId::new_v7(),
+        text: "hi".into(),
+    };
+    assert!(delta.is_transient());
+    let stored = StoredEvent {
+        engine_version: None,
+        origin: None,
+        session_id,
+        run_id: Some(run_id),
+        seq: 2,
+        timestamp: jiff::Timestamp::now(),
+        payload: delta.clone(),
+    };
+    assert_eq!(
+        stored.validate(),
+        Err(EventSchemaError::StoredTransientPayload)
+    );
+    let transient = TransientEvent {
+        session_id,
+        run_id: Some(run_id),
+        after_seq: 1,
+        timestamp: jiff::Timestamp::now(),
+        payload: delta,
+    };
+    assert_eq!(transient.validate(), Ok(()));
+    let message = EventSubscriptionMessage::Transient {
+        event: Box::new(transient.clone()),
+    };
+    let wire = serde_json::to_value(&message).expect("serialize");
+    assert_eq!(wire["type"], "transient");
+    assert_eq!(wire["event"]["after_seq"], 1);
+    assert!(wire["event"].get("seq").is_none());
+    assert_eq!(
+        serde_json::from_value::<EventSubscriptionMessage>(wire).expect("deserialize"),
+        message
+    );
+    let durable = TransientEvent {
+        payload: EventPayload::RunCompleted { final_text: None },
+        ..transient.clone()
+    };
+    assert_eq!(
+        durable.validate(),
+        Err(EventSchemaError::NonTransientPayload)
+    );
+    let unanchored = TransientEvent {
+        after_seq: 0,
+        ..transient
+    };
+    assert_eq!(
+        unanchored.validate(),
+        Err(EventSchemaError::ZeroEventSequence)
+    );
 }
 
 #[test]

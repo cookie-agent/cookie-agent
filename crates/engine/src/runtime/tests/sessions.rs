@@ -50,6 +50,7 @@ async fn direct_store_appends_share_the_subscription_handoff() {
         while events.len() < 32 {
             match live.recv().await.expect("live subscription") {
                 EventSubscriptionMessage::Event { event } => events.push(*event),
+                EventSubscriptionMessage::Transient { .. } => {}
                 EventSubscriptionMessage::Gap { .. } => panic!("unexpected gap"),
             }
         }

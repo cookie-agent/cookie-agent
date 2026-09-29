@@ -1293,22 +1293,6 @@ impl Engine {
     }
 
     #[cfg(test)]
-    pub(crate) fn block_tool_progress_appends_for_test(&self) -> Arc<tokio::sync::Notify> {
-        let reached = Arc::new(tokio::sync::Notify::new());
-        *self
-            .inner
-            .test_hooks
-            .tool_progress_append_block
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            Some(Arc::new(ToolProgressAppendBlock {
-                reached: reached.clone(),
-                release: tokio::sync::Notify::new(),
-            }));
-        reached
-    }
-
-    #[cfg(test)]
     pub(crate) fn pending_plugin_diagnostic_keys_for_test(&self) -> usize {
         self.inner.plugin_diagnostics.accumulator.key_count()
     }

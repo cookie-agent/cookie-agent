@@ -1145,8 +1145,16 @@ async fn named_output_streams_publish_readable_manifests_without_display_leaking
 
 #[tokio::test]
 async fn bash_internal_timeout_commits_all_chunks_before_terminal_event() {
-    let (fixture, session_id, _run_id, call_id, _stdin_received, _cleanup_progress_sent, captured) =
-        start_streaming_bash_test_run("timeout", false).await;
+    let (
+        fixture,
+        session_id,
+        _run_id,
+        call_id,
+        _stdin_received,
+        _cleanup_progress_sent,
+        captured,
+        live,
+    ) = start_streaming_bash_test_run("timeout", false).await;
     await_event(
         &fixture.engine,
         session_id,
@@ -1178,25 +1186,16 @@ async fn bash_internal_timeout_commits_all_chunks_before_terminal_event() {
             )
         })
         .expect("timeout termination");
-    let chunks = events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            EventPayload::ToolCallProgress {
-                tool_call_id,
-                display: Some(chunk),
-                ..
-            } if *tool_call_id == call_id => Some((event.seq, chunk.as_str())),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    // Progress is live-only: every chunk was delivered ahead of the
+    // termination, and none was stored.
+    assert!(!events.iter().any(|event| event.payload.is_transient()));
     assert_eq!(
-        chunks.iter().map(|(_, chunk)| *chunk).collect::<Vec<_>>(),
+        live_progress_chunks(&live, call_id).await,
         [
             "stdout before internal timeout",
             "stderr before internal timeout"
         ]
     );
-    assert!(chunks.iter().all(|(seq, _)| *seq < terminal.seq));
     let EventPayload::ToolCallTerminated { termination } = &terminal.payload else {
         unreachable!()
     };

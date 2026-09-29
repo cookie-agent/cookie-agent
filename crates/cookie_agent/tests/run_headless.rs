@@ -453,9 +453,15 @@ async fn wait_for_session_terminal(engine: &Engine, session_id: SessionId) -> Re
                 return Ok(());
             }
         }
-        while let Some(EventSubscriptionMessage::Event { event }) = receiver.recv().await {
-            if observe_terminal(&event, &mut cursor) {
-                return Ok(());
+        while let Some(message) = receiver.recv().await {
+            match message {
+                EventSubscriptionMessage::Event { event } => {
+                    if observe_terminal(&event, &mut cursor) {
+                        return Ok(());
+                    }
+                }
+                EventSubscriptionMessage::Transient { .. } => {}
+                EventSubscriptionMessage::Gap { .. } => break,
             }
         }
     }
@@ -479,9 +485,15 @@ async fn wait_for_run_terminal(
     if replay.events.iter().any(|event| ours(event, &mut cursor)) {
         return Ok(());
     }
-    while let Some(EventSubscriptionMessage::Event { event }) = receiver.recv().await {
-        if ours(&event, &mut cursor) {
-            return Ok(());
+    while let Some(message) = receiver.recv().await {
+        match message {
+            EventSubscriptionMessage::Event { event } => {
+                if ours(&event, &mut cursor) {
+                    return Ok(());
+                }
+            }
+            EventSubscriptionMessage::Transient { .. } => {}
+            EventSubscriptionMessage::Gap { .. } => break,
         }
     }
     Err("subscription closed before the run finished".into())
@@ -1501,11 +1513,17 @@ async fn successful_fallback_suffix_survives_runs_restart_and_explicit_resets() 
             .unwrap()
             .run_id;
         tokio::time::timeout(Duration::from_secs(10), async {
-            while let Some(EventSubscriptionMessage::Event { event }) = receiver.recv().await {
-                if event.run_id == Some(run)
-                    && matches!(event.payload, EventPayload::RunCompleted { .. })
-                {
-                    return;
+            while let Some(message) = receiver.recv().await {
+                match message {
+                    EventSubscriptionMessage::Event { event } => {
+                        if event.run_id == Some(run)
+                            && matches!(event.payload, EventPayload::RunCompleted { .. })
+                        {
+                            return;
+                        }
+                    }
+                    EventSubscriptionMessage::Transient { .. } => {}
+                    EventSubscriptionMessage::Gap { .. } => break,
                 }
             }
             panic!("run did not complete");

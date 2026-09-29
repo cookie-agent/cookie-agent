@@ -26,7 +26,8 @@ use cookie_agent_protocol::{
     PersistedModelTurn, PreparedApprovalResource, PreparedCapabilityLifetime, ProducerDeliveryMode,
     ProducerIdempotencyKey, ProducerMessageId, ProducerOwner, ReplayDecision, ReplayDisposition,
     ResolvedModelRef, RunId, SafeCode, SessionId, SessionTitleChange, Sha256Digest, StoredEvent,
-    ToolAttachment, ToolCallId, ToolTerminationOutcome, Usage, VariantId,
+    StreamedOutputKind, ToolAttachment, ToolCallId, ToolTerminationOutcome, TransientEvent, Usage,
+    VariantId,
 };
 use serde::Serialize;
 
@@ -606,10 +607,17 @@ pub struct SessionState {
     /// user text is never silently lost. Drained by the UI on sight.
     pub voided_inputs: Vec<String>,
     pub(crate) next_transcript_id: u64,
+    /// Ids handed to parts opened by live-only output, which has no durable
+    /// sequence to derive one from. See [`LIVE_PART_ID_BASE`].
+    pub(crate) next_live_part_id: u64,
     pub(crate) open_assistant: Option<OpenAssistantProjection>,
     /// Elapsed thinking time per sealed thinking part, keyed by
     /// `(item_id, part_id)` and derived from durable event timestamps.
     pub thinking_durations: HashMap<(u64, u64), Duration>,
+    /// When each unfinished attempt's streamed parts began, from its durable
+    /// `ModelOutputStarted` marks. Its commit times its thinking from these,
+    /// identically live and on replay, where the deltas themselves are gone.
+    pub(crate) stream_marks: HashMap<AttemptId, Vec<(StreamedOutputKind, jiff::Timestamp)>>,
     /// Durable event timestamps by sequence, pruned at each committed
     /// turn's input boundary; backs replay-exact generation durations.
     pub(crate) event_timestamps: BTreeMap<u64, jiff::Timestamp>,
@@ -817,6 +825,10 @@ impl StateStore {
                 message,
                 generation,
             } => match *message {
+                EventSubscriptionMessage::Transient { event } => {
+                    self.apply_transient_for_generation(*event, generation);
+                    DeliveryOutcome::Applied
+                }
                 EventSubscriptionMessage::Event { event } => {
                     let session_id = event.session_id;
                     if self.apply_event_for_generation(*event, generation) {
@@ -887,7 +899,9 @@ impl StateStore {
                     if replay.generation != generation || replay.final_seq != final_seq {
                         return false;
                     }
-                    if event.seq <= replay.scratch.last_seq {
+                    // A replay is durable history; live-only output has no
+                    // place in it.
+                    if event.seq <= replay.scratch.last_seq || event.payload.is_transient() {
                         return true;
                     }
                     replay.physical_events.push(event.clone());
@@ -1019,6 +1033,25 @@ impl StateStore {
         if self.quarantined_sessions.contains(&event.session_id) {
             return false;
         }
+        if event.payload.is_transient() {
+            // Live-only output is never stored; treat a record of it as
+            // output following the durable tip this view has reached.
+            let after_seq = self
+                .sessions
+                .get(&event.session_id)
+                .map_or(0, |state| state.last_seq);
+            self.apply_transient_for_generation(
+                TransientEvent {
+                    session_id: event.session_id,
+                    run_id: event.run_id,
+                    after_seq,
+                    timestamp: event.timestamp,
+                    payload: event.payload,
+                },
+                generation,
+            );
+            return true;
+        }
         let state = self.sessions.entry(event.session_id).or_default();
         if state.generation != generation {
             return false;
@@ -1055,6 +1088,30 @@ impl StateStore {
         true
     }
 
+    /// Apply live-only stream output. It never advances the cursor and never
+    /// asks for a replay: output that does not directly follow the durable
+    /// event this view last applied (stale, or ahead of a durable event not
+    /// yet seen), or that arrives while a replay is staged, is dropped. The
+    /// committed turn or tool result that follows supersedes it either way.
+    /// Output for an attempt this view never saw start is ignored too, so a
+    /// view attached mid-reply shows the reply from its first live delta on.
+    pub fn apply_transient_for_generation(&mut self, event: TransientEvent, generation: u64) {
+        if self.quarantined_sessions.contains(&event.session_id)
+            || self.replays.contains_key(&event.session_id)
+        {
+            return;
+        }
+        let Some(state) = self.sessions.get_mut(&event.session_id) else {
+            return;
+        };
+        if state.generation != generation || state.last_seq != event.after_seq {
+            return;
+        }
+        if reduce_transient(state, event.timestamp, event.payload) {
+            state.version = state.version.wrapping_add(1);
+        }
+    }
+
     /// Apply a message from the event subscription stream. A gap is returned
     /// to allow callers to surface it; the client independently re-subscribes.
     pub fn apply_subscription(&mut self, message: EventSubscriptionMessage) -> Option<u64> {
@@ -1075,6 +1132,10 @@ impl StateStore {
                 self.apply_event_for_generation(*event, generation)
                     .then_some(())
                     .map_or(Some(cursor), |_| None)
+            }
+            EventSubscriptionMessage::Transient { event } => {
+                self.apply_transient_for_generation(*event, generation);
+                None
             }
             EventSubscriptionMessage::Gap {
                 last_delivered_seq, ..
@@ -1103,18 +1164,27 @@ impl StateStore {
         true
     }
 
-    /// Replace a session projection only after a complete contiguous replay is
-    /// available. A failed/incomplete fetch leaves the existing projection intact.
+    /// Replace a session projection with one rebuilt from its durable
+    /// history, which must start at the session's creation and advance
+    /// strictly. Gaps are allowed: older logs held live-only records that are
+    /// no longer history, and any such record passed here is ignored. An
+    /// invalid history leaves the existing projection intact.
     pub fn rebuild_session(
         &mut self,
         session_id: SessionId,
         generation: u64,
-        events: Vec<StoredEvent>,
+        mut events: Vec<StoredEvent>,
     ) -> bool {
-        for (expected, event) in (1..).zip(&events) {
-            if event.session_id != session_id || event.seq != expected {
+        events.retain(|event| !event.payload.is_transient());
+        let mut previous = 0;
+        for event in &events {
+            if event.session_id != session_id
+                || event.seq <= previous
+                || (previous == 0 && event.seq != 1)
+            {
                 return false;
             }
+            previous = event.seq;
         }
         if self.quarantined_sessions.contains(&session_id) || self.replays.contains_key(&session_id)
         {

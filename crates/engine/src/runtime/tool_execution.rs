@@ -47,60 +47,10 @@ fn tool_progress_event(progress: &ToolProgress) -> Event {
     }
 }
 
-async fn append_tool_progress(
-    engine: &Engine,
-    session: SessionId,
-    run: RunId,
-    progress: ToolProgress,
-) -> Result<(), EngineError> {
-    engine
-        .append(
-            session,
-            Some(run),
-            super::event_origin("engine:tool-execution"),
-            tool_progress_event(&progress),
-        )
-        .await
-}
-
-async fn enqueue_cleanup_tool_progress(
-    engine: &Engine,
-    session: SessionId,
-    run: RunId,
-    progress: ToolProgress,
-) -> Result<(), EngineError> {
-    #[cfg(test)]
-    let block = engine
-        .inner
-        .test_hooks
-        .tool_progress_append_block
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone();
-    #[cfg(test)]
-    if let Some(block) = block {
-        block.reached.notify_one();
-        block.release.notified().await;
-    }
-    let completion = engine
-        .enqueue_append(
-            session,
-            Some(run),
-            super::event_origin("engine:tool-execution"),
-            tool_progress_event(&progress),
-        )
-        .await?;
-    drop(completion);
-    Ok(())
-}
-
-fn close_and_discard_progress(progress_rx: &mut mpsc::Receiver<ToolProgress>) -> usize {
-    progress_rx.close();
-    let mut discarded = 0;
-    while progress_rx.try_recv().is_ok() {
-        discarded += 1;
-    }
-    discarded
+/// Publishes tool progress to live subscribers. It is never stored: the
+/// tool termination (and its retained output) is the durable record.
+fn publish_tool_progress(engine: &Engine, session: SessionId, run: RunId, progress: &ToolProgress) {
+    engine.publish_transient(session, run, tool_progress_event(progress));
 }
 
 impl Engine {
@@ -789,13 +739,7 @@ impl Engine {
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .remove(&call.id);
                         while let Ok(progress) = progress_rx.try_recv() {
-                            let _ = append_tool_progress(
-                                &engine,
-                                active.session,
-                                run,
-                                progress,
-                            )
-                            .await;
+                            publish_tool_progress(&engine, active.session, run, &progress);
                         }
                         // Tool implementations drain their producers before
                         // resolving.  Finalizing here makes all emitted deltas
@@ -827,13 +771,7 @@ impl Engine {
                         };
                     }
                     Some(progress) = progress_rx.recv() => {
-                        let _ = append_tool_progress(
-                            &engine,
-                            active.session,
-                            run,
-                            progress,
-                        )
-                        .await;
+                        publish_tool_progress(&engine, active.session, run, &progress);
                     }
                     _ = active.cancellation.cancelled() => {
                         tool_cancellation.cancel();
@@ -846,46 +784,25 @@ impl Engine {
                             tokio::time::Instant::now() + TOOL_CANCELLATION_CLEANUP_TIMEOUT;
                         let cleanup = tokio::time::sleep_until(cleanup_deadline);
                         tokio::pin!(cleanup);
-                        let mut discarded_progress = 0;
                         let mut cleanup_timed_out = false;
                         let mut delegate_result = None;
-                        'cleanup: loop {
+                        loop {
                             tokio::select! {
                                 result = &mut invoke => {
                                     delegate_result = result.ok().filter(|result| {
                                         engine.is_delegate_call_result(active.session, run, call.id, &result.result)
                                     });
                                     while let Ok(progress) = progress_rx.try_recv() {
-                                        if tokio::time::timeout_at(
-                                            cleanup_deadline,
-                                            enqueue_cleanup_tool_progress(&engine, active.session, run, progress),
-                                        )
-                                        .await
-                                        .is_err()
-                                        {
-                                            cleanup_timed_out = true;
-                                            discarded_progress = 1 + close_and_discard_progress(&mut progress_rx);
-                                            break 'cleanup;
-                                        }
+                                        publish_tool_progress(&engine, active.session, run, &progress);
                                     }
                                     break;
                                 }
                                 Some(progress) = progress_rx.recv() => {
-                                    if tokio::time::timeout_at(
-                                        cleanup_deadline,
-                                        enqueue_cleanup_tool_progress(&engine, active.session, run, progress),
-                                    )
-                                    .await
-                                    .is_err()
-                                    {
-                                        cleanup_timed_out = true;
-                                        discarded_progress = 1 + close_and_discard_progress(&mut progress_rx);
-                                        break;
-                                    }
+                                    publish_tool_progress(&engine, active.session, run, &progress);
                                 }
                                 () = &mut cleanup => {
                                     cleanup_timed_out = true;
-                                    discarded_progress = close_and_discard_progress(&mut progress_rx);
+                                    progress_rx.close();
                                     break;
                                 }
                             }
@@ -899,12 +816,11 @@ impl Engine {
                             return finalize_output(capture.as_ref(), result, true, result_truncation).await.map_err(ToolFailure::from);
                         }
                         let message = if cleanup_timed_out {
-                            format!(
-                                "tool call cancelled after it started; cleanup deadline elapsed and {discarded_progress} progress record(s) never entered the session mailbox and were discarded"
-                            )
+                            "tool call cancelled after it started; cleanup deadline elapsed"
                         } else {
-                            "tool call cancelled after it started".into()
-                        };
+                            "tool call cancelled after it started"
+                        }
+                        .to_owned();
                         let partial_output = finalize_output(capture.as_ref(), incomplete_completion(&message), true, result_truncation).await.ok().map(Box::new);
                         return Err(ToolFailure {
                             code: ToolCallFailureCode::ExecutionFailed,

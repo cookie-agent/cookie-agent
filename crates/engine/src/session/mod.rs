@@ -51,7 +51,7 @@ use cookie_agent_protocol::{
     AgentSnapshot, ChildSummary, ClientRenameId, ClientRunId, EventPayload,
     EventSubscriptionMessage, EventsSubscribeResult, RunId, RunSelection, SessionId, SessionMeta,
     SessionOrigin, SessionPermissionOverlay, SessionRenameRecord, SessionStatus, SessionTitle,
-    SessionTitleChange, SessionTree, StoredEvent, ToolCallId, Usage, UsageRollup,
+    SessionTitleChange, SessionTree, StoredEvent, ToolCallId, TransientEvent, Usage, UsageRollup,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -77,6 +77,16 @@ pub(crate) const SUBAGENT_INDEX_FILE: &str = "index.json";
 /// Current `subagents/index.json` schema version.
 const SUBAGENT_INDEX_VERSION: u32 = 1;
 const PERSISTED_SUBSCRIBER_QUEUE_CAPACITY: usize = 256;
+
+/// The live tails of one session.
+#[derive(Debug, Default)]
+struct SessionSubscribers {
+    /// The last durable sequence published to these tails, which is the one
+    /// live-only output follows. Updated under `mutation` by every durable
+    /// publication and every tail registration.
+    last_seq: u64,
+    senders: Vec<mpsc::Sender<EventSubscriptionMessage>>,
+}
 /// Event log file name.
 pub(crate) const EVENTS_FILE: &str = "events.jsonl";
 /// Layout version written by this build.
@@ -344,7 +354,7 @@ pub struct SessionStore {
     /// [`Self::publish_prepared_dir`] stays true until its entries have moved.
     publish_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     mutation: Mutex<()>,
-    subscribers: Mutex<HashMap<SessionId, Vec<mpsc::Sender<EventSubscriptionMessage>>>>,
+    subscribers: Mutex<HashMap<SessionId, SessionSubscribers>>,
     /// Logs parsed for readers that do not own them, see [`Self::snapshot_events`].
     read_only_logs: Mutex<ReadOnlyLogs>,
     closed: AtomicBool,
@@ -1497,10 +1507,8 @@ impl SessionStore {
                     | EventPayload::AgentMdLoaded { .. }
             );
         let envelope = log.append_owned(&capability, run, origin, event)?;
-        // Fold-ignored payloads (the per-token TextDelta/ReasoningDelta and
-        // per-chunk ToolCallProgress hot path) only advance the metadata tip;
-        // update the resident projection in place instead of re-folding the
-        // whole log. The resident is updated before the cache write — on a
+        // Fold-ignored payloads only advance the metadata tip; update the
+        // resident projection in place instead of re-folding the whole log. The resident is updated before the cache write — on a
         // cache write failure the resident stays consistent with the log while
         // the on-disk discovery cache lags.
         //
@@ -1600,17 +1608,16 @@ impl SessionStore {
         // Snapshot and registration share the append lock with actor writes and
         // direct journal writes, closing the snapshot-to-live handoff gap.
         let _mutation = self.lock_mutation();
-        let result = self.get(session)?.log.events_after(cursor, limit);
+        let log = self.get(session)?.log.clone();
+        let result = log.events_after(cursor, limit);
         if result.has_more {
             return Ok((result, None));
         }
         let (sender, receiver) = mpsc::channel(PERSISTED_SUBSCRIBER_QUEUE_CAPACITY);
-        self.subscribers
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .entry(session)
-            .or_default()
-            .push(sender);
+        let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
+        let tails = subscribers.entry(session).or_default();
+        tails.last_seq = log.last_event().map_or(0, |event| event.seq);
+        tails.senders.push(sender);
         Ok((result, Some(receiver)))
     }
 
@@ -1640,26 +1647,58 @@ impl SessionStore {
 
     fn publish_stored_event(&self, envelope: &StoredEvent) {
         // Called under mutation after projection update, preserving append order.
-        self.subscribers
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .entry(envelope.session_id)
-            .or_default()
-            .retain(|sender| {
-                // Reserve the final slot for a gap so a slow reader can replay.
-                let is_gap = sender.capacity() <= 1;
-                let message = if is_gap {
-                    EventSubscriptionMessage::Gap {
-                        session_id: envelope.session_id,
-                        last_delivered_seq: envelope.seq.saturating_sub(1),
-                    }
-                } else {
-                    EventSubscriptionMessage::Event {
-                        event: Box::new(envelope.clone()),
-                    }
-                };
-                sender.try_send(message).is_ok() && !is_gap
-            });
+        let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
+        let tails = subscribers.entry(envelope.session_id).or_default();
+        tails.last_seq = envelope.seq;
+        tails.senders.retain(|sender| {
+            // Reserve the final slot for a gap so a slow reader can replay.
+            let is_gap = sender.capacity() <= 1;
+            let message = if is_gap {
+                EventSubscriptionMessage::Gap {
+                    session_id: envelope.session_id,
+                    last_delivered_seq: envelope.seq.saturating_sub(1),
+                }
+            } else {
+                EventSubscriptionMessage::Event {
+                    event: Box::new(envelope.clone()),
+                }
+            };
+            sender.try_send(message).is_ok() && !is_gap
+        });
+    }
+
+    /// Sends live-only stream output to `session_id`'s tails, positioned after
+    /// the last durable event they were sent. Nothing is stored. `None` when
+    /// this store has published nothing for the session yet, so there is no
+    /// durable event for the output to follow.
+    pub(crate) fn publish_transient(
+        &self,
+        session_id: SessionId,
+        run_id: Option<RunId>,
+        payload: EventPayload,
+    ) -> Option<TransientEvent> {
+        debug_assert!(payload.is_transient());
+        let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
+        let tails = subscribers.get_mut(&session_id)?;
+        let event = TransientEvent {
+            session_id,
+            run_id,
+            after_seq: tails.last_seq,
+            timestamp: jiff::Timestamp::now(),
+            payload,
+        };
+        tails.senders.retain(|sender| {
+            // The final slot stays reserved for a durable gap. Output that
+            // does not fit is dropped: a replay could not recover it anyway,
+            // and the committed turn or tool result supersedes it.
+            if sender.capacity() > 1 {
+                let _ = sender.try_send(EventSubscriptionMessage::Transient {
+                    event: Box::new(event.clone()),
+                });
+            }
+            !sender.is_closed()
+        });
+        Some(event)
     }
 
     pub(crate) fn notify_evicted_subscribers(&self, session_id: SessionId, last_event_seq: u64) {
@@ -1669,7 +1708,7 @@ impl SessionStore {
             .unwrap_or_else(|p| p.into_inner())
             .remove(&session_id)
             .unwrap_or_default();
-        for sender in subscribers {
+        for sender in subscribers.senders {
             // publish_stored_event always leaves a slot for this final gap.
             let _ = sender.try_send(EventSubscriptionMessage::Gap {
                 session_id,

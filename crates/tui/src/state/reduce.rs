@@ -2,6 +2,70 @@
 
 use super::*;
 
+/// The first id handed to a part opened by live-only output. Parts opened by
+/// durable events take ids derived from their sequence, which stay far below
+/// this, so the two never collide.
+pub(super) const LIVE_PART_ID_BASE: u64 = 1 << 62;
+
+/// Reduces live-only stream output (text and reasoning deltas, tool
+/// progress). It is not durable: nothing here indexes a sequence, and the
+/// committed turn or tool termination that follows is canonical. Returns
+/// whether the projection changed.
+pub(super) fn reduce_transient(
+    state: &mut SessionState,
+    timestamp: jiff::Timestamp,
+    payload: EventPayload,
+) -> bool {
+    let (attempt_id, text, kind) = match payload {
+        EventPayload::TextDelta { attempt_id, text } => (attempt_id, text, AssistantPartKind::Text),
+        EventPayload::ReasoningDelta { attempt_id, text } => {
+            (attempt_id, text, AssistantPartKind::Thinking)
+        }
+        EventPayload::ToolCallProgress {
+            tool_call_id,
+            message: _,
+            display,
+        } => {
+            if let Some(tool) = state.tools.get_mut(&tool_call_id)
+                && let Some(display) = display
+            {
+                if !tool.has_output_chunks {
+                    tool.detail.clear();
+                    tool.has_output_chunks = true;
+                }
+                let room =
+                    cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES.saturating_sub(tool.detail.len());
+                let mut end = display.as_str().len().min(room);
+                while !display.as_str().is_char_boundary(end) {
+                    end -= 1;
+                }
+                tool.detail.push_str(&display.as_str()[..end]);
+            }
+            bump_tool_item(state, tool_call_id);
+            return true;
+        }
+        _ => return false,
+    };
+    // Empty deltas (some providers emit an initial empty content chunk)
+    // carry no content: they neither open a part nor count as the
+    // attempt's first output.
+    if text.is_empty() {
+        return false;
+    }
+    if state.pending_attempt == Some(attempt_id) {
+        state.pending_attempt = None;
+    }
+    // An attempt this view never saw start (it began before a mid-reply
+    // attach) has no block to extend; its committed turn will show it.
+    let Some(item_id) = assistant_segment_target(state, attempt_id, kind, timestamp) else {
+        return true;
+    };
+    state.next_live_part_id = state.next_live_part_id.wrapping_add(1);
+    let part_id = LIVE_PART_ID_BASE.wrapping_add(state.next_live_part_id);
+    append_assistant_delta(state, item_id, part_id, text, kind, timestamp);
+    true
+}
+
 pub(super) fn reduce_event(
     state: &mut SessionState,
     session_id: SessionId,
@@ -482,53 +546,22 @@ pub(super) fn reduce_event(
             );
             state.pending_attempt = Some(attempt_id);
         }
-        EventPayload::TextDelta { attempt_id, text } => {
-            // Empty deltas (some providers emit an initial empty content
-            // chunk) carry no content: they neither open a part nor count
-            // as the attempt's first output.
-            if text.is_empty() {
-                return;
-            }
+        // Live-only output never reaches the durable reducer; see
+        // `reduce_transient`.
+        EventPayload::TextDelta { .. }
+        | EventPayload::ReasoningDelta { .. }
+        | EventPayload::ToolCallProgress { .. } => {}
+        // The attempt has visible output from here on, so a later input
+        // boundary no longer moves it; its deltas themselves are live-only.
+        EventPayload::ModelOutputStarted { attempt_id, kind } => {
             if state.pending_attempt == Some(attempt_id) {
                 state.pending_attempt = None;
             }
-            let Some(item_id) =
-                assistant_segment_target(state, attempt_id, AssistantPartKind::Text, timestamp)
-            else {
-                return;
-            };
-            append_assistant_delta(
-                state,
-                item_id,
-                sequence,
-                text,
-                AssistantPartKind::Text,
-                timestamp,
-            );
-        }
-        EventPayload::ReasoningDelta { attempt_id, text } => {
-            // Empty deltas (some providers emit an initial empty content
-            // chunk) carry no content: they neither open a part nor count
-            // as the attempt's first output.
-            if text.is_empty() {
-                return;
-            }
-            if state.pending_attempt == Some(attempt_id) {
-                state.pending_attempt = None;
-            }
-            let Some(item_id) =
-                assistant_segment_target(state, attempt_id, AssistantPartKind::Thinking, timestamp)
-            else {
-                return;
-            };
-            append_assistant_delta(
-                state,
-                item_id,
-                sequence,
-                text,
-                AssistantPartKind::Thinking,
-                timestamp,
-            );
+            state
+                .stream_marks
+                .entry(attempt_id)
+                .or_default()
+                .push((kind, timestamp));
         }
         EventPayload::AttemptAbandoned {
             attempt_id,
@@ -538,6 +571,7 @@ pub(super) fn reduce_event(
             if state.pending_attempt == Some(attempt_id) {
                 state.pending_attempt = None;
             }
+            state.stream_marks.remove(&attempt_id);
             let attempt = state.attempts.remove(&attempt_id);
             if let Some(attempt) = &attempt
                 && attempt.run_id.is_some()
@@ -590,6 +624,10 @@ pub(super) fn reduce_event(
             if state.pending_attempt == Some(attempt_id) {
                 state.pending_attempt = None;
             }
+            let streamed_thinking = state
+                .stream_marks
+                .remove(&attempt_id)
+                .map(|marks| streamed_thinking_durations(&marks, timestamp));
             if let Some(run_id) = run_id {
                 consume_producer_messages_through(state, run_id, input_through_seq);
             }
@@ -664,6 +702,7 @@ pub(super) fn reduce_event(
                     sequence,
                     committed_prefix,
                     &turn,
+                    streamed_thinking,
                     timestamp,
                 );
                 // The committed turn rebuilt canonically in the newest block,
@@ -831,28 +870,6 @@ pub(super) fn reduce_event(
                 },
             );
             place_tool_rows(state);
-        }
-        EventPayload::ToolCallProgress {
-            tool_call_id,
-            message: _,
-            display,
-        } => {
-            if let Some(tool) = state.tools.get_mut(&tool_call_id)
-                && let Some(display) = display
-            {
-                if !tool.has_output_chunks {
-                    tool.detail.clear();
-                    tool.has_output_chunks = true;
-                }
-                let room =
-                    cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES.saturating_sub(tool.detail.len());
-                let mut end = display.as_str().len().min(room);
-                while !display.as_str().is_char_boundary(end) {
-                    end -= 1;
-                }
-                tool.detail.push_str(&display.as_str()[..end]);
-            }
-            bump_tool_item(state, tool_call_id);
         }
         EventPayload::ToolCallTerminated { termination } => {
             let tool_call_id = termination.tool_call_id;
@@ -1059,6 +1076,7 @@ pub(super) fn reduce_event(
             state.pending_attempt = None;
             state.active_run = None;
             state.attempts.clear();
+            state.stream_marks.clear();
             state.pending_tool_rows.clear();
             void_pending_inputs(state);
             state.approvals.clear();
@@ -1077,6 +1095,7 @@ pub(super) fn reduce_event(
             state.pending_attempt = None;
             state.active_run = None;
             state.attempts.clear();
+            state.stream_marks.clear();
             state.pending_tool_rows.clear();
             void_pending_inputs(state);
             state.approvals.clear();
@@ -1103,6 +1122,7 @@ pub(super) fn reduce_event(
             state.pending_attempt = None;
             state.active_run = None;
             state.attempts.clear();
+            state.stream_marks.clear();
             state.pending_tool_rows.clear();
             void_pending_inputs(state);
             state.approvals.clear();
@@ -1128,6 +1148,7 @@ pub(super) fn reduce_event(
             state.pending_attempt = None;
             state.active_run = None;
             state.attempts.clear();
+            state.stream_marks.clear();
             state.pending_tool_rows.clear();
             void_pending_inputs(state);
             state.approvals.clear();
@@ -1831,6 +1852,7 @@ pub(super) fn index_turn_tool_content(
 /// placeholders that started tools link by their exact `content_index`.
 /// Deltas that streamed ahead of the commit are superseded by the durable
 /// turn, which is the sole canonical content.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn rebuild_committed_children(
     state: &mut SessionState,
     item_id: u64,
@@ -1838,6 +1860,7 @@ pub(super) fn rebuild_committed_children(
     sequence: u64,
     committed_prefix: usize,
     turn: &PersistedModelTurn,
+    streamed_thinking: Option<Vec<Option<Duration>>>,
     timestamp: jiff::Timestamp,
 ) {
     state.open_assistant = None;
@@ -1923,15 +1946,17 @@ pub(super) fn rebuild_committed_children(
             children.drain(..leading);
         }
         // Streamed thinking parts are superseded by their committed
-        // counterparts; their sealed durations transfer to the committed
-        // thinking children in order so "thought for Ns" survives the swap.
+        // counterparts. The committed thinking children take, in order, the
+        // durations the attempt's durable stream marks measure, which a
+        // replay reproduces exactly; without marks, the streamed parts'
+        // sealed durations transfer so "thought for Ns" survives the swap.
         let mut sealed_durations = Vec::new();
         for child in existing.iter().skip(committed_prefix) {
             if let AssistantChild::Thinking { id, .. } = child {
                 sealed_durations.push(state.thinking_durations.remove(&(item_id, *id)));
             }
         }
-        let mut sealed_durations = sealed_durations.into_iter();
+        let mut sealed_durations = streamed_thinking.unwrap_or(sealed_durations).into_iter();
         for child in &mut children {
             if let AssistantChild::Thinking { id, .. } = child
                 && let Some(Some(duration)) = sealed_durations.next()
@@ -1971,10 +1996,12 @@ pub(super) fn rebuild_committed_children(
     }
 }
 
+/// Appends streamed text to the open part of `kind`, or opens a new part
+/// with id `part_id` (unused when an open part continues).
 pub(super) fn append_assistant_delta(
     state: &mut SessionState,
     item_id: u64,
-    sequence: u64,
+    part_id: u64,
     text: String,
     kind: AssistantPartKind,
     timestamp: jiff::Timestamp,
@@ -2050,13 +2077,13 @@ pub(super) fn append_assistant_delta(
         push_child(
             children,
             child_times,
-            new_assistant_part(sequence, text, kind),
+            new_assistant_part(part_id, text, kind),
             timestamp,
         );
         *version = version.wrapping_add(1);
         state.open_assistant = Some(OpenAssistantProjection {
             item_id,
-            part_id: sequence,
+            part_id,
             kind,
             opened_at: timestamp,
         });
@@ -2078,13 +2105,13 @@ pub(super) fn append_assistant_delta(
         push_child(
             children,
             child_times,
-            new_assistant_part(sequence, text, kind),
+            new_assistant_part(part_id, text, kind),
             timestamp,
         );
         *version = version.wrapping_add(1);
         state.open_assistant = Some(OpenAssistantProjection {
             item_id,
-            part_id: sequence,
+            part_id,
             kind,
             opened_at: timestamp,
         });
@@ -2225,6 +2252,23 @@ pub(super) fn close_open_assistant(state: &mut SessionState, sealed_at: jiff::Ti
 /// Record a sealed thinking part's elapsed time, derived from the durable
 /// timestamps of the events that opened and sealed it. Non-thinking parts
 /// and clock-skewed (negative) spans record nothing.
+/// The duration of each reasoning part an attempt streamed, in order: from
+/// its mark to the next part's mark, or to the commit at `end`.
+pub(super) fn streamed_thinking_durations(
+    marks: &[(StreamedOutputKind, jiff::Timestamp)],
+    end: jiff::Timestamp,
+) -> Vec<Option<Duration>> {
+    marks
+        .iter()
+        .enumerate()
+        .filter(|(_, (kind, _))| *kind == StreamedOutputKind::Reasoning)
+        .map(|(index, (_, started))| {
+            let ended = marks.get(index + 1).map_or(end, |(_, next)| *next);
+            Duration::try_from(ended.duration_since(*started)).ok()
+        })
+        .collect()
+}
+
 pub(super) fn seal_open_thinking(
     thinking_durations: &mut HashMap<(u64, u64), Duration>,
     open: OpenAssistantProjection,
