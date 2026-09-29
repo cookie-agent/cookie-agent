@@ -110,7 +110,7 @@ impl Engine {
             Some(event.seq)
         };
         Ok(ClaimedPrompt {
-            events: self.inner.store.get(session)?.log.event_snapshot(),
+            events: self.inner.store.log(session)?.event_snapshot(),
             engine: Arc::downgrade(&self.inner),
             session,
             run,

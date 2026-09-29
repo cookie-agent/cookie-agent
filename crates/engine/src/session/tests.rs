@@ -219,7 +219,7 @@ fn ownership_is_acquired_on_write_open_and_released_with_the_store() {
     let owner = SessionStore::open(&data, &cwd).expect("owner store");
     let session_id = persist_test_session(&owner);
     assert!(owner_lock_path(&owner.session_dir(session_id)).is_file());
-    let stale_log = owner.get(session_id).expect("owned projection").log;
+    let stale_log = owner.get(session_id).expect("owned projection").log.clone();
     let (authorized, release_append) = stale_log.install_append_authorization_hook_for_test();
     let appending = thread::spawn(move || {
         stale_log.append(
@@ -254,7 +254,7 @@ fn ownership_release_does_not_wait_for_store_drop() {
     let data = temporary.path().join("data");
     let owner = SessionStore::open(&data, &cwd).expect("owner store");
     let session_id = persist_test_session(&owner);
-    let stale_log = owner.get(session_id).expect("owned projection").log;
+    let stale_log = owner.get(session_id).expect("owned projection").log.clone();
 
     owner.release_ownership();
     owner.release_ownership();
@@ -291,7 +291,7 @@ fn ownership_release_waits_for_an_append_that_already_won_serialization() {
     let data = temporary.path().join("data");
     let owner = SessionStore::open(&data, &cwd).expect("owner store");
     let session_id = persist_test_session(&owner);
-    let log = owner.get(session_id).expect("owned projection").log;
+    let log = owner.get(session_id).expect("owned projection").log.clone();
     let (authorized, release_append) = log.install_append_authorization_hook_for_test();
     let append_store = Arc::clone(&owner);
     let appending = thread::spawn(move || {
@@ -758,7 +758,7 @@ fn metadata_cache_reads_never_observe_partial_replacements() {
     let session_dir = store.session_dir(session_id);
     let cache_path = meta_path(&session_dir);
     let event_path = session_dir.join("events.jsonl");
-    let meta = store.get(session_id).expect("projection").meta;
+    let meta = store.get(session_id).expect("projection").meta.clone();
     // The replacement window is short, so a low iteration count hides a
     // non-atomic replace. Windows CI reproduced the spurious `NotFound` within a
     // few hundred rewrites; 2,000 keeps the reader inside the window long enough
@@ -2295,7 +2295,11 @@ fn append_pending_test_delta(
     cookie_agent_protocol::StoredEvent,
 ) {
     let (run_id, attempt_id) = start_test_attempt(store, session_id);
-    let log = store.get(session_id).expect("session projection").log;
+    let log = store
+        .get(session_id)
+        .expect("session projection")
+        .log
+        .clone();
     log.pause_background_sync_for_test();
     let delta = append_test_delta(store, session_id, run_id, attempt_id, text);
     (log, delta)
@@ -2341,7 +2345,7 @@ fn in_run_stream_records_defer_the_metadata_cache_until_the_run_ends() {
             EventPayload::RunCompleted { final_text: None },
         )
         .unwrap();
-    let completed = store.get(session_id).unwrap().meta;
+    let completed = store.get(session_id).unwrap().meta.clone();
     assert_eq!(read_test_meta_cache(&store, session_id), completed);
     assert!(!store.meta_cache_is_deferred(session_id));
 
@@ -2366,7 +2370,7 @@ fn deferred_metadata_tip_is_flushed_on_eviction_and_release() {
     let evicted = persist_test_session(&store);
     let (run_id, attempt_id) = start_test_attempt(&store, evicted);
     append_test_delta(&store, evicted, run_id, attempt_id, "before eviction");
-    let resident = store.get(evicted).unwrap().meta;
+    let resident = store.get(evicted).unwrap().meta.clone();
     assert_ne!(read_test_meta_cache(&store, evicted), resident);
     assert!(store.evict(evicted).expect("evict"));
     assert_eq!(read_test_meta_cache(&store, evicted), resident);
@@ -2375,7 +2379,7 @@ fn deferred_metadata_tip_is_flushed_on_eviction_and_release() {
     let released = persist_test_session(&store);
     let (run_id, attempt_id) = start_test_attempt(&store, released);
     append_test_delta(&store, released, run_id, attempt_id, "before release");
-    let resident = store.get(released).unwrap().meta;
+    let resident = store.get(released).unwrap().meta.clone();
     let session_dir = store.session_dir(released);
     assert_ne!(read_test_meta_cache(&store, released), resident);
     drop(store);
@@ -2909,7 +2913,7 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
         .unwrap();
     assert_eq!(
         crate::usage::with_pricing(
-            store.get(stamped_fork).unwrap().usage_rollup,
+            store.get(stamped_fork).unwrap().usage_rollup.clone(),
             &changed_pricing,
             &BTreeMap::new(),
         )
@@ -2918,7 +2922,7 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
     );
     assert_eq!(
         crate::usage::with_pricing(
-            store.get(unpriced_fork).unwrap().usage_rollup,
+            store.get(unpriced_fork).unwrap().usage_rollup.clone(),
             &changed_pricing,
             &BTreeMap::new(),
         )

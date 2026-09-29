@@ -120,7 +120,7 @@ fn describe(meta: &SessionMeta) -> String {
 impl Engine {
     /// Every session in the caller's delegation tree, root first.
     fn tree_sessions(&self, session: SessionId) -> Result<Vec<SessionMeta>, EngineError> {
-        let root = match self.inner.store.get(session)?.meta.origin {
+        let root = match self.inner.store.origin(session)? {
             SessionOrigin::Root => session,
             SessionOrigin::Delegated {
                 root_session_id, ..
@@ -138,7 +138,7 @@ impl Engine {
             .store
             .get(session)
             .ok()
-            .and_then(|projection| projection.meta.short_id)
+            .and_then(|projection| projection.meta.short_id.clone())
     }
 
     /// Existing handles across a whole tree, used as the generation collision

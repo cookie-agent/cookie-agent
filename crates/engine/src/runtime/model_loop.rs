@@ -1738,8 +1738,7 @@ impl Engine {
                 // to `ModelAttemptStarted`, so emitting it before compaction
                 // would render post-compaction output above the compaction
                 // marker. Compaction itself does not depend on the attempt.
-                let attempt_ordinal =
-                    self.inner.store.get(session)?.log.visible_run_attempts(run) + 1;
+                let attempt_ordinal = self.inner.store.log(session)?.visible_run_attempts(run) + 1;
                 self.append(
                     session,
                     Some(run),
@@ -2193,7 +2192,7 @@ impl Engine {
                                 turn.usage.input_tokens,
                             );
                         if !matches!(
-                            self.inner.store.get(session)?.meta.origin,
+                            self.inner.store.origin(session)?,
                             cookie_agent_protocol::SessionOrigin::Delegated { .. }
                         ) {
                             let title_policy = self.internal_agent_policy(
@@ -2233,7 +2232,7 @@ impl Engine {
                         )
                         .await?;
                         context_recovery_attempted = true;
-                        let before = self.inner.store.get(session)?.log.latest_checkpoint_seq();
+                        let before = self.inner.store.log(session)?.latest_checkpoint_seq();
                         let mut recovery_claim = self.prompt_events(session, run).await?;
                         let recovery_policy = self.internal_agent_policy(
                             InternalAgentKind::ContextCompaction,
@@ -2263,7 +2262,7 @@ impl Engine {
                             Err(error) => return Err(error),
                         }
                         recovery_claim.release().await?;
-                        let after = self.inner.store.get(session)?.log.latest_checkpoint_seq();
+                        let after = self.inner.store.log(session)?.latest_checkpoint_seq();
                         if after > before {
                             continue;
                         }

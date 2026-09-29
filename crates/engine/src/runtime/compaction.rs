@@ -794,7 +794,7 @@ impl Engine {
             .entry(session)
             .or_default()
             .record_compaction(input_tokens_after);
-        Ok(self.inner.store.get(session)?.log.event_snapshot())
+        Ok(self.inner.store.log(session)?.event_snapshot())
     }
 
     async fn stage_tool_output_elision(
@@ -864,7 +864,7 @@ impl Engine {
             )
             .await?;
         }
-        Ok(self.inner.store.get(session)?.log.event_snapshot())
+        Ok(self.inner.store.log(session)?.event_snapshot())
     }
 
     fn estimated_request_tokens(

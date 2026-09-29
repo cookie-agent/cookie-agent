@@ -119,7 +119,8 @@ impl Engine {
                 code: ToolCallFailureCode::ExecutionFailed,
                 message: error.to_string(),
             })?
-            .permission_overlay;
+            .permission_overlay
+            .clone();
         let grants = self.skill_grants_for_session(active.session);
         Ok(self.inner.permissions.decide_operation_with_grants(
             &active.policy.agent,

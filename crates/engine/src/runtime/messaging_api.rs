@@ -192,7 +192,7 @@ impl Engine {
     fn messaging_projection(
         &self,
         session: SessionId,
-    ) -> Result<crate::session::SessionProjection, EngineError> {
+    ) -> Result<std::sync::Arc<crate::session::SessionProjection>, EngineError> {
         self.inner
             .store
             .get(session)
@@ -221,8 +221,8 @@ impl Engine {
         sender: SessionId,
         recipient: SessionId,
     ) -> Result<&'static str, EngineError> {
-        let sender_origin = self.messaging_projection(sender)?.meta.origin;
-        let recipient_origin = self.messaging_projection(recipient)?.meta.origin;
+        let sender_origin = self.messaging_projection(sender)?.meta.origin.clone();
+        let recipient_origin = self.messaging_projection(recipient)?.meta.origin.clone();
         Ok(relationship_label(
             &sender_origin,
             &recipient_origin,

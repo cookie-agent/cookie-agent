@@ -30,7 +30,7 @@ fn tree_recipient(engine: &crate::Engine, sender: SessionId) -> SessionId {
                 },
                 cwd_identity: source.meta.cwd_identity.clone(),
                 creation_selection: source.meta.creation_selection.clone(),
-                creation_agent: Box::new(source.creation_agent.clone()),
+                creation_agent: Box::new(source.creation_agent.as_ref().clone()),
                 runtime_revision: source.meta.runtime_revision.clone(),
                 catalog_revision: source.meta.catalog_revision.clone(),
                 provider_state_revision: source.meta.provider_state_revision.clone(),
@@ -346,7 +346,7 @@ async fn agent_message_hop_is_inherited_by_the_send_path() {
             EventPayload::RunStarted {
                 client_run_id: ClientRunId::new("observed-run").unwrap(),
                 selection,
-                agent: Box::new(projection.creation_agent.clone()),
+                agent: Box::new(projection.creation_agent.as_ref().clone()),
                 runtime_revision: projection.meta.runtime_revision.clone(),
                 catalog_revision: projection.meta.catalog_revision.clone(),
                 provider_state_revision: projection.meta.provider_state_revision.clone(),
