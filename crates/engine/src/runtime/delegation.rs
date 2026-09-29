@@ -754,11 +754,8 @@ impl Engine {
                 child_run_id,
                 previous_record,
             ) {
-                let delegation_events = self.inner.delegation_events.clone();
-                self.spawn_admission_blocking(move || {
-                    delegation_events.mark_finished(invocation_id, SessionStatus::Cancelled)
-                })
-                .await?;
+                self.mark_delegation_finished(invocation_id, SessionStatus::Cancelled)
+                    .await?;
                 return Err(error);
             }
             let handle = DelegateHandle {
@@ -770,11 +767,8 @@ impl Engine {
                 match self.spawn_background_monitor_gated(handle) {
                     Ok(release) => Some(release),
                     Err(error) => {
-                        let delegation_events = self.inner.delegation_events.clone();
-                        self.spawn_admission_blocking(move || {
-                            delegation_events.mark_finished(invocation_id, SessionStatus::Cancelled)
-                        })
-                        .await?;
+                        self.mark_delegation_finished(invocation_id, SessionStatus::Cancelled)
+                            .await?;
                         return Err(error);
                     }
                 }
@@ -833,30 +827,21 @@ impl Engine {
             {
                 Ok(admission) => admission,
                 Err(error) => {
-                    let delegation_events = self.inner.delegation_events.clone();
-                    self.spawn_admission_blocking(move || {
-                        delegation_events.mark_finished(invocation_id, SessionStatus::Cancelled)
-                    })
-                    .await?;
+                    self.mark_delegation_finished(invocation_id, SessionStatus::Cancelled)
+                        .await?;
                     return Err(error);
                 }
             };
             if !admission.accepted {
-                let delegation_events = self.inner.delegation_events.clone();
-                self.spawn_admission_blocking(move || {
-                    delegation_events.mark_finished(invocation_id, SessionStatus::Cancelled)
-                })
-                .await?;
+                self.mark_delegation_finished(invocation_id, SessionStatus::Cancelled)
+                    .await?;
                 return Err(EngineError::ToolFailed(
                     "resume session stopped before its prompt was admitted".into(),
                 ));
             }
             let Some(admission_seq) = admission.admission_seq else {
-                let delegation_events = self.inner.delegation_events.clone();
-                self.spawn_admission_blocking(move || {
-                    delegation_events.mark_finished(invocation_id, SessionStatus::Cancelled)
-                })
-                .await?;
+                self.mark_delegation_finished(invocation_id, SessionStatus::Cancelled)
+                    .await?;
                 let _ = self.cancel_run_durably(
                     child_run_id,
                     Some("resume admission sequence was not published".into()),
@@ -1025,36 +1010,17 @@ impl Engine {
                     .lock()
                     .map_err(|_| EngineError::ActorStopped)?
                     .retain(|session_id| *session_id != child.session_id);
-                let delegation_events = self.inner.delegation_events.clone();
-                let _ = self
-                    .spawn_admission_blocking(move || {
-                        delegation_events.mark_finished(invocation_id, SessionStatus::Failed)
-                    })
-                    .await;
-                let terminalized = self
-                    .terminalize_child_without_run(
-                        child.session_id,
-                        SessionStatus::Failed,
-                        "delegate queue event append failed",
-                    )
-                    .await;
-                if let Some(record) = self
-                    .inner
-                    .delegation
-                    .by_session
-                    .lock()
-                    .map_err(|_| EngineError::ActorStopped)?
-                    .get_mut(&child.session_id)
-                {
-                    record.state = DelegationState::Finished(SessionStatus::Failed);
-                }
-                drop(admission_guard);
-                if terminalized.is_ok() {
-                    self.finish_background_or_retry(child.session_id, invocation_id)
-                        .await;
-                } else {
-                    let _ = self.start_queued_delegation(root_session_id).await;
-                }
+                self.fail_child_before_run(
+                    admission_guard,
+                    FailedChild {
+                        child_session_id: child.session_id,
+                        invocation_id,
+                        root_session_id,
+                        background: true,
+                    },
+                    "delegate queue event append failed",
+                )
+                .await?;
                 return Err(error);
             }
             return Ok(DelegateHandle {
@@ -1084,38 +1050,17 @@ impl Engine {
                         )
                         .await;
                 }
-                let delegation_events = self.inner.delegation_events.clone();
-                let _ = self
-                    .spawn_admission_blocking(move || {
-                        delegation_events.mark_finished(invocation_id, SessionStatus::Failed)
-                    })
-                    .await;
-                let terminalized = self
-                    .terminalize_child_without_run(
-                        child.session_id,
-                        SessionStatus::Failed,
-                        "delegate child startup failed",
-                    )
-                    .await;
-                if let Some(record) = self
-                    .inner
-                    .delegation
-                    .by_session
-                    .lock()
-                    .map_err(|_| EngineError::ActorStopped)?
-                    .get_mut(&child.session_id)
-                {
-                    record.state = DelegationState::Finished(SessionStatus::Failed);
-                }
-                drop(admission_guard);
-                if invocation.background {
-                    if terminalized.is_ok() {
-                        self.finish_background_or_retry(child.session_id, invocation_id)
-                            .await;
-                    } else {
-                        let _ = self.start_queued_delegation(root_session_id).await;
-                    }
-                }
+                self.fail_child_before_run(
+                    admission_guard,
+                    FailedChild {
+                        child_session_id: child.session_id,
+                        invocation_id,
+                        root_session_id,
+                        background: invocation.background,
+                    },
+                    "delegate child startup failed",
+                )
+                .await?;
                 return Err(error);
             }
         };
@@ -1210,11 +1155,8 @@ impl Engine {
                 | SessionStatus::Cancelled
                 | SessionStatus::Failed
                 | SessionStatus::Interrupted => {
-                    let delegation_events = self.inner.delegation_events.clone();
-                    self.spawn_admission_blocking(move || {
-                        delegation_events.mark_finished(handle.invocation_id, status)
-                    })
-                    .await?;
+                    self.mark_delegation_finished(handle.invocation_id, status)
+                        .await?;
                     let result = terminal_delegate_result(&child, handle.child_run_id, status);
                     let mut records = self
                         .inner
@@ -1621,41 +1563,73 @@ impl Engine {
         handle: DelegateHandle,
         recovery: Option<RecoveryMonitorTicket>,
     ) -> Result<(), EngineError> {
+        self.spawn_background_monitor_after(handle, recovery, None)
+    }
+
+    /// Spawns the completion monitor for one background delegate once `gate`
+    /// (when given) is released; a gate dropped unreleased cancels the
+    /// monitor.
+    fn spawn_background_monitor_after(
+        &self,
+        handle: DelegateHandle,
+        recovery: Option<RecoveryMonitorTicket>,
+        gate: Option<tokio::sync::oneshot::Receiver<()>>,
+    ) -> Result<(), EngineError> {
+        let monitor = self.clone();
+        self.spawn_background_delegation_task(async move {
+            let _recovery = recovery;
+            if let Some(gate) = gate
+                && gate.await.is_err()
+            {
+                return;
+            }
+            let _ = monitor.await_delegate_inner(handle).await;
+            monitor
+                .finish_background_until_done(handle.child_session_id, handle.invocation_id)
+                .await;
+        })
+    }
+
+    /// Spawns `task` as an admission task on the engine runtime.
+    fn spawn_background_delegation_task(
+        &self,
+        task: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> Result<(), EngineError> {
         let runtime = self
             .inner
             .runtime
             .clone()
             .or_else(|| tokio::runtime::Handle::try_current().ok())
             .ok_or(EngineError::ActorStopped)?;
-        let engine = self.clone();
-        let monitor = engine.clone();
-        if !self.spawn_admission_task(&runtime, async move {
-            let _recovery = recovery;
-            let _ = monitor.await_delegate_inner(handle).await;
-            loop {
-                match monitor
-                    .finish_background_delegate(handle.child_session_id, handle.invocation_id)
-                    .await
-                {
-                    Ok(()) => break,
-                    Err(error) => {
-                        if monitor
-                            .inner
-                            .delegation
-                            .admission_tasks_closing
-                            .load(Ordering::Acquire)
-                        {
-                            break;
-                        }
-                        eprintln!("background delegate completion retrying: {error}");
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    }
-                }
-            }
-        }) {
-            return Err(EngineError::ActorStopped);
+        if self.spawn_admission_task(&runtime, task) {
+            Ok(())
+        } else {
+            Err(EngineError::ActorStopped)
         }
-        Ok(())
+    }
+
+    /// Retries finishing a background delegate until it succeeds or the
+    /// engine starts shutting down.
+    async fn finish_background_until_done(
+        &self,
+        child_session_id: SessionId,
+        invocation_id: InvocationId,
+    ) {
+        while let Err(error) = self
+            .finish_background_delegate(child_session_id, invocation_id)
+            .await
+        {
+            if self
+                .inner
+                .delegation
+                .admission_tasks_closing
+                .load(Ordering::Acquire)
+            {
+                break;
+            }
+            eprintln!("background delegate completion retrying: {error}");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 
     async fn register_background_delegation_producer(
@@ -1695,43 +1669,8 @@ impl Engine {
         {
             return Err(EngineError::ActorStopped);
         }
-        let runtime = self
-            .inner
-            .runtime
-            .clone()
-            .or_else(|| tokio::runtime::Handle::try_current().ok())
-            .ok_or(EngineError::ActorStopped)?;
         let (release, admitted) = tokio::sync::oneshot::channel();
-        let engine = self.clone();
-        let monitor = engine.clone();
-        if !self.spawn_admission_task(&runtime, async move {
-            if admitted.await.is_err() {
-                return;
-            }
-            let _ = monitor.await_delegate_inner(handle).await;
-            loop {
-                match monitor
-                    .finish_background_delegate(handle.child_session_id, handle.invocation_id)
-                    .await
-                {
-                    Ok(()) => break,
-                    Err(error) => {
-                        if monitor
-                            .inner
-                            .delegation
-                            .admission_tasks_closing
-                            .load(Ordering::Acquire)
-                        {
-                            break;
-                        }
-                        eprintln!("background delegate completion retrying: {error}");
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    }
-                }
-            }
-        }) {
-            return Err(EngineError::ActorStopped);
-        }
+        self.spawn_background_monitor_after(handle, None, Some(admitted))?;
         Ok(release)
     }
 
@@ -1769,11 +1708,7 @@ impl Engine {
             })
             .await
             .unwrap_or(false);
-        let delegation_events = self.inner.delegation_events.clone();
-        self.spawn_admission_blocking(move || {
-            delegation_events.mark_finished(invocation_id, status)
-        })
-        .await?;
+        self.mark_delegation_finished(invocation_id, status).await?;
         if let Ok(mut records) = self.inner.delegation.by_session.lock()
             && records
                 .get(&child_session_id)
@@ -1797,6 +1732,59 @@ impl Engine {
         Ok(())
     }
 
+    /// Fails a delegated child that never got a run: records the invocation
+    /// failed, terminalizes the child session, and marks its registry record
+    /// finished. The admission lock is released before a background child's
+    /// completion is delivered, or, when the child could not be terminalized,
+    /// before the root's queue is given a chance to start the next child.
+    async fn fail_child_before_run(
+        &self,
+        admission_guard: tokio::sync::MutexGuard<'_, ()>,
+        child: FailedChild,
+        reason: &str,
+    ) -> Result<(), EngineError> {
+        let _ = self
+            .mark_delegation_finished(child.invocation_id, SessionStatus::Failed)
+            .await;
+        let terminalized = self
+            .terminalize_child_without_run(child.child_session_id, SessionStatus::Failed, reason)
+            .await;
+        if let Some(record) = self
+            .inner
+            .delegation
+            .by_session
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?
+            .get_mut(&child.child_session_id)
+        {
+            record.state = DelegationState::Finished(SessionStatus::Failed);
+        }
+        drop(admission_guard);
+        if child.background {
+            if terminalized.is_ok() {
+                self.finish_background_or_retry(child.child_session_id, child.invocation_id)
+                    .await;
+            } else {
+                let _ = self.start_queued_delegation(child.root_session_id).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Records `invocation_id` finished with `status` in the delegation event
+    /// log, off the async runtime.
+    pub(super) async fn mark_delegation_finished(
+        &self,
+        invocation_id: InvocationId,
+        status: SessionStatus,
+    ) -> Result<(), EngineError> {
+        let delegation_events = self.inner.delegation_events.clone();
+        self.spawn_admission_blocking(move || {
+            delegation_events.mark_finished(invocation_id, status)
+        })
+        .await
+    }
+
     async fn finish_background_or_retry(
         &self,
         child_session_id: SessionId,
@@ -1816,39 +1804,12 @@ impl Engine {
         child_session_id: SessionId,
         invocation_id: InvocationId,
     ) -> Result<(), EngineError> {
-        let runtime = self
-            .inner
-            .runtime
-            .clone()
-            .or_else(|| tokio::runtime::Handle::try_current().ok())
-            .ok_or(EngineError::ActorStopped)?;
-        let engine = self.clone();
-        let retry = engine.clone();
-        if !self.spawn_admission_task(&runtime, async move {
-            loop {
-                match retry
-                    .finish_background_delegate(child_session_id, invocation_id)
-                    .await
-                {
-                    Ok(()) => break,
-                    Err(error) => {
-                        if retry
-                            .inner
-                            .delegation
-                            .admission_tasks_closing
-                            .load(Ordering::Acquire)
-                        {
-                            break;
-                        }
-                        eprintln!("background delegate completion retrying: {error}");
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    }
-                }
-            }
-        }) {
-            return Err(EngineError::ActorStopped);
-        }
-        Ok(())
+        let retry = self.clone();
+        self.spawn_background_delegation_task(async move {
+            retry
+                .finish_background_until_done(child_session_id, invocation_id)
+                .await;
+        })
     }
 
     async fn finish_background_delegate(
@@ -2454,11 +2415,8 @@ impl Engine {
             let cancellation_reason = reason
                 .as_deref()
                 .unwrap_or("queued subagent cancelled before startup");
-            let delegation_events = self.inner.delegation_events.clone();
-            self.spawn_admission_blocking(move || {
-                delegation_events.mark_finished(record.invocation_id, SessionStatus::Cancelled)
-            })
-            .await?;
+            self.mark_delegation_finished(record.invocation_id, SessionStatus::Cancelled)
+                .await?;
             self.void_runless_pending_inputs(child_session_id).await?;
             self.terminalize_child_without_run(
                 child_session_id,
@@ -3907,6 +3865,14 @@ pub(super) fn is_delegation_event_append_failure(error: &EngineError) -> bool {
             crate::session::SessionError::Event(_)
         )) | EngineError::ActorStopped
     )
+}
+
+/// A delegated child whose admission failed before it got a run.
+struct FailedChild {
+    child_session_id: SessionId,
+    invocation_id: InvocationId,
+    root_session_id: SessionId,
+    background: bool,
 }
 
 #[cfg(test)]
