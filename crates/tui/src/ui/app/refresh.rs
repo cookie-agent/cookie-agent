@@ -762,7 +762,8 @@ impl App {
                 cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
                     Some(event.as_ref())
                 }
-                cookie_agent_protocol::EventSubscriptionMessage::Gap { .. } => None,
+                cookie_agent_protocol::EventSubscriptionMessage::Transient { .. }
+                | cookie_agent_protocol::EventSubscriptionMessage::Gap { .. } => None,
             },
             ClientDelivery::ReplayEvent { event, .. } => Some(event.as_ref()),
             _ => None,

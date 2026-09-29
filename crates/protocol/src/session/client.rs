@@ -1365,6 +1365,7 @@ async fn route_live(
 ) {
     let session_id = match &message {
         EventSubscriptionMessage::Event { event } => event.session_id,
+        EventSubscriptionMessage::Transient { event } => event.session_id,
         EventSubscriptionMessage::Gap { session_id, .. } => *session_id,
     };
     let publish;
@@ -1397,6 +1398,14 @@ async fn route_live(
                 subscription.cursor = *last_delivered_seq;
                 recover = Some((false, Some(session_id)));
             }
+            // Live-only output belongs right after the durable event it
+            // follows. Anywhere else it is stale or outruns a durable event
+            // this view has not seen yet, and nothing can replay it.
+            EventSubscriptionMessage::Transient { event }
+                if event.after_seq != subscription.cursor =>
+            {
+                return;
+            }
             _ => {}
         }
         publish = ClientDelivery::Live {
@@ -1425,27 +1434,36 @@ async fn finish_ready_replay(
             return;
         }
         subscription.fetching = false;
-        let (tail_cursor, tail_has_gap) = subscription.buffered.iter().fold(
-            (subscription.final_seq, false),
-            |(cursor, has_gap), delivery| match delivery {
-                ClientDelivery::Live { message, .. } => match message.as_ref() {
-                    EventSubscriptionMessage::Event { event } if event.seq <= cursor => {
-                        (cursor, has_gap)
-                    }
-                    EventSubscriptionMessage::Event { event } if event.seq == cursor + 1 => {
-                        (event.seq, has_gap)
-                    }
-                    EventSubscriptionMessage::Event { .. }
-                    | EventSubscriptionMessage::Gap { .. } => (cursor, true),
-                },
-                _ => (cursor, has_gap),
-            },
-        );
-        subscription.cursor = tail_cursor;
+        // Durable events the replay already covered are dropped, and so is
+        // live-only output that does not directly follow the durable event
+        // it was published after.
+        let mut cursor = subscription.final_seq;
+        let mut tail_has_gap = false;
+        let mut buffered = std::mem::take(&mut subscription.buffered);
+        buffered.retain(|delivery| {
+            let ClientDelivery::Live { message, .. } = delivery else {
+                return true;
+            };
+            match message.as_ref() {
+                EventSubscriptionMessage::Event { event } if event.seq <= cursor => false,
+                EventSubscriptionMessage::Event { event } if event.seq == cursor + 1 => {
+                    cursor = event.seq;
+                    true
+                }
+                EventSubscriptionMessage::Transient { event } => {
+                    !tail_has_gap && event.after_seq == cursor
+                }
+                EventSubscriptionMessage::Event { .. } | EventSubscriptionMessage::Gap { .. } => {
+                    tail_has_gap = true;
+                    true
+                }
+            }
+        });
+        subscription.cursor = cursor;
         (
             subscription.generation,
             subscription.final_seq,
-            std::mem::take(&mut subscription.buffered),
+            buffered,
             subscription.recovery_requested.take(),
             tail_has_gap,
         )
@@ -1456,12 +1474,6 @@ async fn finish_ready_replay(
         final_seq,
     });
     for delivery in buffered {
-        if let ClientDelivery::Live { message, .. } = &delivery
-            && let EventSubscriptionMessage::Event { event } = message.as_ref()
-            && event.seq <= final_seq
-        {
-            continue;
-        }
         let _ = deliveries.send(delivery);
     }
     if let Some(full) = recovery_requested.or(tail_has_gap.then_some(false)) {

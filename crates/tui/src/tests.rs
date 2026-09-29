@@ -490,23 +490,16 @@ fn approval_request() -> ApprovalRequest {
     .expect("approval request")
 }
 
-fn text_event(
-    session_id: SessionId,
-    seq: u64,
-    run_id: cookie_agent_protocol::RunId,
-    attempt_id: cookie_agent_protocol::AttemptId,
-    text: &str,
-) -> StoredEvent {
+fn input_event(session_id: SessionId, seq: u64, input: &str) -> StoredEvent {
     StoredEvent {
         engine_version: None,
         origin: None,
         session_id,
-        run_id: Some(run_id),
+        run_id: None,
         seq,
         timestamp: Timestamp::now(),
-        payload: EventPayload::TextDelta {
-            attempt_id,
-            text: text.into(),
+        payload: EventPayload::UserInputAdmitted {
+            input: input.into(),
         },
     }
 }
@@ -943,12 +936,10 @@ async fn local_startup_creates_a_fresh_root_while_attach_keeps_existing_selectio
 #[test]
 fn state_store_reduces_events_and_surfaces_gap_cursor() {
     let session = SessionId::new_v7();
-    let run_id = cookie_agent_protocol::RunId::new_v7();
-    let attempt_id = cookie_agent_protocol::AttemptId::new_v7();
     let mut store = StateStore::default();
-    store.apply_event(text_event(session, 1, run_id, attempt_id, "hello"));
+    store.apply_event(input_event(session, 1, "hello"));
     // Replayed duplicate is ignored, preserving the projection.
-    store.apply_event(text_event(session, 1, run_id, attempt_id, "duplicate"));
+    store.apply_event(input_event(session, 1, "duplicate"));
     assert_eq!(store.sessions[&session].last_seq, 1);
     assert_eq!(
         store.apply_subscription(EventSubscriptionMessage::Gap {

@@ -58,12 +58,35 @@ origin class. This keeps the origin grammar restricted to `user`, `engine`,
 | Producer messaging | `producer_message_accepted`, `producer_message_admitted`, `producer_messages_claimed`, `producer_messages_released`, `producer_message_consumed`, `producer_message_discarded` |
 | User input | `message_injected`, `user_input_admitted`, `user_input_submitted`, `user_input_transformed`, `user_input_recalled`, `user_input_recalled_v2`, `user_input_applied` |
 | Run | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_interrupted` |
-| Model | `model_attempt_started`, `model_request_prepared`, `text_delta`, `reasoning_delta`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback` |
-| Tools | `tool_call_started`, `tool_call_progress`, `tool_call_terminated`, `tool_output_elided`, `tool_stdin_submitted`, `tool_call_linked`, `delegate_queued`, `delegate_finished`, `delegate_finished_v2`, `delegate_child_terminated` |
+| Model | `model_attempt_started`, `model_request_prepared`, `model_output_started`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback`; live-only: `text_delta`, `reasoning_delta` |
+| Tools | `tool_call_started`, `tool_call_terminated`, `tool_output_elided`, `tool_stdin_submitted`, `tool_call_linked`, `delegate_queued`, `delegate_finished`, `delegate_finished_v2`, `delegate_child_terminated`; live-only: `tool_call_progress` |
 | Delegation durability | `delegation_reserved`, `delegation_started`, `delegation_run_started`, `delegation_run_attached`, `delegation_finished` |
 | Approvals | `approval_requested`, `approval_evaluated`, `approval_escalated`, `approval_user_decision_recorded`, `approval_finalized`, `approval_cancelled`, `approval_doom_loop_detected`, `tree_approval_grant_committed` |
 | Internal agents | `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_completed`, `internal_agent_failed`, `internal_agent_cancelled`, `internal_agent_interrupted`, `internal_agent_fallback` |
 | Compaction | `context_checkpoint_committed`; legacy read/render only: `context_rehydrated` |
+
+### Live-only stream output
+
+`text_delta`, `reasoning_delta`, and `tool_call_progress` are live-only. The
+engine delivers them to event subscribers and plugins as they stream but never
+appends them to `events.jsonl` or to a session's in-memory log, and a stored
+record carrying one fails validation. Their durable record is the committed
+turn (`model_turn_committed`) and the tool termination (`tool_call_terminated`,
+with its retained output). A replay, a reload, or a view that attaches while a
+reply streams therefore sees finished turns only; the in-flight reply appears
+from the first live delta after attach, and its commit replaces it.
+
+`model_output_started` (`attempt_id`, `kind`: `text` or `reasoning`) is the
+durable trace of streaming. The engine appends it before the first delta of each
+streamed part: an attempt's first output and every switch between text and
+reasoning. Views use it to keep an attempt that is already streaming ahead of
+inputs admitted meanwhile, and to time thinking identically live and on replay
+(each reasoning part runs from its mark to the next mark or the commit).
+
+Logs written by older engines contain stored deltas and progress records. The
+reader drops them without a diagnostic or a validation taint: their sequences
+still order the log (no gap is reported), and new appends continue after the
+physical tip. The loaded history therefore has sequence gaps where they were.
 
 ### Goal and producer contracts
 
@@ -283,9 +306,10 @@ Its `prompt_fingerprint` hashes the authoritative normalized request sent to the
 
 `tool_call_started` records the single/named output declaration, including
 arbitrary named streams.
-`tool_call_progress` contains a control-free status `message` and optional UI-only
-`display`. Display deltas append; terminal `result.display` replaces them. The
-reader accepts historical `output_chunk` fields, but current writers use `display`.
+`tool_call_progress` is live-only. It contains a control-free status `message`
+and optional UI-only `display`. Display deltas append; terminal `result.display`
+replaces them. Historical `output_chunk` fields still decode, but current
+writers use `display`.
 Each live message/display field is bounded at 1 KiB, their cumulative per-call
 budget is 64 KiB, and final display has an independent 64 KiB bound. TUI state is
 bounded and never reconstructs display by merging authoritative streams.
@@ -386,10 +410,25 @@ missed. Without `limit` the first response is the final page. Paging a session
 this process does not own parses its log once and serves later pages from
 memory while the file is unchanged.
 
-A notification is tagged as either:
+A notification is tagged as a stored event:
 
 ```json
 { "type": "event", "event": { "engine_version": "0.1.0", "seq": 43 } }
+```
+
+live-only stream output, which has no sequence of its own:
+
+```json
+{
+  "type": "transient",
+  "event": {
+    "session_id": "...",
+    "run_id": "...",
+    "after_seq": 43,
+    "timestamp": "...",
+    "payload": { "type": "text_delta", "attempt_id": "...", "text": "..." }
+  }
+}
 ```
 
 or a gap indicating that the subscriber must rebuild its disposable projection:
@@ -402,11 +441,22 @@ or a gap indicating that the subscriber must rebuild its disposable projection:
 }
 ```
 
+Stored sequences stay gap-free across a streamed turn, so replay cursors only
+ever point at durable events. A transient event belongs right after the durable
+event `after_seq`: it never advances the cursor, is never replayed, and is
+never a reason to recover. The shared client delivers one only when its
+`after_seq` equals the subscription cursor, including output buffered while a
+replay is in flight; anything else is stale or outruns a durable event the view
+has not seen, and is dropped. The engine drops transient output for a
+subscriber whose queue is nearly full rather than spending the slot reserved
+for a gap.
+
 Revert markers are delivered like every other physical event. Clients should
 rebuild branch-derived state when one arrives; they must not assume sequence
 numbers were truncated or reused.
 
 Tool stdout and stderr use separate snapshot, delta, and gap notifications.
 Offsets are byte offsets, and clients use a snapshot after a gap before applying
-later deltas. The ordinary event subscription also includes durable
-`tool_call_progress` output chunks and terminal events without a separate filter.
+later deltas. The ordinary event subscription also includes live-only
+`tool_call_progress` output chunks and the durable terminal events without a
+separate filter.

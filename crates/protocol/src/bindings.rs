@@ -94,6 +94,7 @@ macro_rules! protocol_roots {
             StoredEvent,
             EventPayload,
             EventSubscriptionMessage,
+            TransientEvent,
             SessionCreateParams,
             SessionCreateResult,
             SessionListParams,

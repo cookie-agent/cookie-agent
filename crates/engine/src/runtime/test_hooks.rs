@@ -25,11 +25,6 @@ pub(crate) struct PagingRaceHook {
     pub(crate) release: Arc<tokio::sync::Notify>,
 }
 
-pub(crate) struct ToolProgressAppendBlock {
-    pub(crate) reached: Arc<tokio::sync::Notify>,
-    pub(crate) release: tokio::sync::Notify,
-}
-
 pub(crate) struct ReadOnlyReopenHook {
     pub(crate) reached: Mutex<Option<oneshot::Sender<()>>>,
     pub(crate) release: Mutex<std_mpsc::Receiver<()>>,
@@ -143,7 +138,6 @@ pub(crate) struct TestHooks {
     pub(crate) admission_blocking_hook: Mutex<Option<AdmissionBlockingHook>>,
     pub(crate) abandoned_sweep_hook: Mutex<Option<AbandonedSweepHook>>,
     pub(crate) plugin_diagnostic_append_block: Mutex<Option<Arc<tokio::sync::Notify>>>,
-    pub(crate) tool_progress_append_block: Mutex<Option<Arc<ToolProgressAppendBlock>>>,
     pub(crate) publication_failure: AtomicBool,
     pub(crate) delegate_start_failures: AtomicU64,
     pub(crate) delegate_start_failure_observed: tokio::sync::Notify,

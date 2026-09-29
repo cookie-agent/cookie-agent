@@ -423,6 +423,7 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
         .engine
         .set_permission_mode(session.session_id, PermissionMode::Yolo)
         .expect("yolo mode");
+    let live = record_live_messages(&fixture.engine, session.session_id).await;
     let run = fixture
         .engine
         .start_run(
@@ -507,7 +508,7 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
         .expect("final projection")
         .log
         .events();
-    let terminal_seq = events
+    events
         .iter()
         .find_map(|event| match &event.payload {
             EventPayload::ToolCallTerminated { termination }
@@ -537,22 +538,13 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
             _ => None,
         })
         .expect("terminal sequence");
-    let chunks = events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            EventPayload::ToolCallProgress {
-                tool_call_id,
-                display: Some(chunk),
-                ..
-            } if *tool_call_id == call_id => Some((event.seq, chunk.as_str())),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    // Progress is live-only: every chunk, including the cleanup's, was
+    // delivered ahead of the termination, and none was stored.
+    assert!(!events.iter().any(|event| event.payload.is_transient()));
     assert_eq!(
-        chunks.iter().map(|(_, chunk)| *chunk).collect::<Vec<_>>(),
+        live_progress_chunks(&live, call_id).await,
         ["before cancellation", "during cancellation cleanup"]
     );
-    assert!(chunks.iter().all(|(seq, _)| *seq < terminal_seq));
     assert!(events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ToolStdinSubmitted { tool_call_id, byte_count }
@@ -572,7 +564,7 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
 #[tokio::test]
 async fn cancelling_non_delegate_with_session_shaped_metadata_stays_generic() {
     for command in ["session-shaped", "null-session-shaped"] {
-        let (fixture, session_id, run_id, call_id, stdin_received, _, captured) =
+        let (fixture, session_id, run_id, call_id, stdin_received, _, captured, _) =
             start_streaming_bash_test_run(command, true).await;
         fixture
             .engine
@@ -626,10 +618,10 @@ async fn cancelling_non_delegate_with_session_shaped_metadata_stays_generic() {
 }
 
 #[tokio::test]
-async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
+async fn cancellation_deadline_bounds_a_wedged_tool_without_hanging() {
     use futures_util::FutureExt as _;
 
-    let (fixture, session_id, run_id, call_id, stdin_received, cleanup_progress_sent, captured) =
+    let (fixture, session_id, run_id, call_id, stdin_received, cleanup_progress_sent, captured, _) =
         start_streaming_bash_test_run("wedge", true).await;
     fixture
         .engine
@@ -644,7 +636,6 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
     tokio::time::timeout(test_timeout(2), stdin_received.notified())
         .await
         .expect("executor received stdin");
-    let cleanup_progress_blocked = fixture.engine.block_tool_progress_appends_for_test();
     // Hold the blocking job after it enqueues progress but before send().await can
     // resume. Progress receipt, not the producer's continuation, proves acceptance.
     let (delivery_enqueued, release_delivery) = crate::runtime::block_artifact_io_for_test(
@@ -658,9 +649,6 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
         .cancel_run(run_id)
         .await
         .expect("cancel wedged run");
-    tokio::time::timeout(test_timeout(1), cleanup_progress_blocked.notified())
-        .await
-        .expect("cleanup progress reached the wedged appender");
     tokio::time::timeout(test_timeout(1), delivery_enqueued)
         .await
         .expect("blocking delivery reached")
@@ -685,10 +673,6 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
     let EventPayload::ToolCallTerminated { termination } = terminal.payload else {
         unreachable!("awaited tool termination")
     };
-    assert!(
-        cleanup_progress_sent.notified().now_or_never().is_none(),
-        "the wedged consumer must not need the producer continuation"
-    );
     assert_eq!(termination.outcome, ToolTerminationOutcome::Cancelled);
     let result = termination
         .result
@@ -717,11 +701,6 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
     assert!(cancelled_at.elapsed() < std::time::Duration::from_secs(3));
     assert!(
         error_message.contains("cleanup deadline elapsed"),
-        "{error_message}"
-    );
-    assert!(
-        error_message
-            .contains("1 progress record(s) never entered the session mailbox and were discarded"),
         "{error_message}"
     );
     assert_eq!(

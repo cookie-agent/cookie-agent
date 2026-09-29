@@ -11,7 +11,7 @@ use cookie_agent_protocol::{
     ExtensionToolAfterResultParams, ExtensionUserBeforeInputAction, ExtensionUserBeforeInputParams,
     InternalAgentKind, InvocationId, OperationFingerprint, PersistedAssistantPart,
     PluginDiagnosticKind, RunId, RunStartParams, RunStartResult, SessionId, SessionOrigin,
-    SessionStatus, Sha256Digest, ToolCallId, ToolCallStart,
+    SessionStatus, Sha256Digest, StreamedOutputKind, ToolCallId, ToolCallStart,
 };
 use futures_util::StreamExt;
 use oven_sdk::{ModelError, Request as ModelRequest, ToolDefinition};
@@ -1986,6 +1986,7 @@ impl Engine {
                         let mut accumulator = TurnAccumulator::default();
                         let mut failure = None;
                         let mut meaningful_output = false;
+                        let mut streaming_kind = None;
                         loop {
                             let item = tokio::select! {
                                 item = stream.next() => item,
@@ -2000,30 +2001,48 @@ impl Engine {
                                 Ok(part) => match accumulator.push(part) {
                                     Ok(effect) => {
                                         meaningful_output |= effect.meaningful;
-                                        // Some providers emit empty content
-                                        // chunks; they carry no content and
-                                        // must not reach the durable log.
-                                        if let Some(text) =
-                                            effect.text_delta.filter(|text| !text.is_empty())
-                                        {
-                                            self.append(
+                                        // Deltas are live-only: the committed
+                                        // turn is their durable record. Some
+                                        // providers emit empty content chunks,
+                                        // which carry nothing to show.
+                                        let text_delta =
+                                            effect.text_delta.filter(|text| !text.is_empty());
+                                        let reasoning_delta =
+                                            effect.reasoning_delta.filter(|text| !text.is_empty());
+                                        // Where and when each streamed part
+                                        // began is durable even though its
+                                        // output is not: views order the
+                                        // attempt against inputs that arrive
+                                        // while it streams, and time thinking.
+                                        if let Some(text) = text_delta {
+                                            self.mark_output_part(
                                                 session,
-                                                Some(run),
-                                                event_origin("engine:model-loop"),
+                                                run,
+                                                attempt_id,
+                                                &mut streaming_kind,
+                                                StreamedOutputKind::Text,
+                                            )
+                                            .await?;
+                                            self.publish_transient(
+                                                session,
+                                                run,
                                                 Event::TextDelta { attempt_id, text },
-                                            )
-                                            .await?;
+                                            );
                                         }
-                                        if let Some(text) =
-                                            effect.reasoning_delta.filter(|text| !text.is_empty())
-                                        {
-                                            self.append(
+                                        if let Some(text) = reasoning_delta {
+                                            self.mark_output_part(
                                                 session,
-                                                Some(run),
-                                                event_origin("engine:model-loop"),
-                                                Event::ReasoningDelta { attempt_id, text },
+                                                run,
+                                                attempt_id,
+                                                &mut streaming_kind,
+                                                StreamedOutputKind::Reasoning,
                                             )
                                             .await?;
+                                            self.publish_transient(
+                                                session,
+                                                run,
+                                                Event::ReasoningDelta { attempt_id, text },
+                                            );
                                         }
                                     }
                                     Err(error) => {

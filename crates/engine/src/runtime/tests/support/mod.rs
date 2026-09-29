@@ -197,6 +197,7 @@ pub(crate) async fn await_session_change<T>(
                             return result;
                         }
                     }
+                    Some(EventSubscriptionMessage::Transient { .. }) => {}
                     Some(EventSubscriptionMessage::Gap {
                         last_delivered_seq, ..
                     }) => {
@@ -1807,6 +1808,84 @@ pub(crate) fn copy_test_tree(source: &std::path::Path, target: &std::path::Path)
     }
 }
 
+/// Every message a live subscription to a session delivers, recorded from
+/// the moment it is created.
+pub(crate) type LiveRecording = Arc<std::sync::Mutex<Vec<EventSubscriptionMessage>>>;
+
+pub(crate) async fn record_live_messages(engine: &Engine, session: SessionId) -> LiveRecording {
+    let (_, mut live) = engine
+        .subscribe(session, None)
+        .await
+        .expect("live subscription");
+    let recording = LiveRecording::default();
+    let sink = Arc::clone(&recording);
+    tokio::spawn(async move {
+        while let Some(message) = live.recv().await {
+            sink.lock().expect("live recording").push(message);
+        }
+    });
+    recording
+}
+
+/// The display chunks of `call`'s live progress, in delivery order, checking
+/// that each was delivered before the call's durable termination and right
+/// after the durable event it follows.
+pub(crate) async fn live_progress_chunks(
+    recording: &LiveRecording,
+    call: ToolCallId,
+) -> Vec<String> {
+    let terminated = |message: &EventSubscriptionMessage| {
+        matches!(message, EventSubscriptionMessage::Event { event }
+            if matches!(&event.payload, EventPayload::ToolCallTerminated { termination }
+                if termination.tool_call_id == call))
+    };
+    with_watchdog("live termination delivery", async {
+        while !recording
+            .lock()
+            .expect("live recording")
+            .iter()
+            .any(terminated)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    let messages = recording.lock().expect("live recording");
+    let mut last_seq = None;
+    let mut terminated = false;
+    let mut chunks = Vec::new();
+    for message in messages.iter() {
+        match message {
+            EventSubscriptionMessage::Event { event } => {
+                last_seq = Some(event.seq);
+                terminated |= matches!(
+                    &event.payload,
+                    EventPayload::ToolCallTerminated { termination }
+                        if termination.tool_call_id == call
+                );
+            }
+            EventSubscriptionMessage::Transient { event } => {
+                if let EventPayload::ToolCallProgress {
+                    tool_call_id,
+                    display: Some(chunk),
+                    ..
+                } = &event.payload
+                    && *tool_call_id == call
+                {
+                    assert!(!terminated, "progress {chunk:?} followed the termination");
+                    if let Some(last_seq) = last_seq {
+                        assert_eq!(event.after_seq, last_seq);
+                    }
+                    chunks.push(chunk.clone());
+                }
+            }
+            EventSubscriptionMessage::Gap { .. } => panic!("unexpected gap"),
+        }
+    }
+    assert!(terminated, "the call terminated");
+    chunks
+}
+
 pub(crate) async fn start_streaming_bash_test_run(
     command: &str,
     interactive: bool,
@@ -1818,6 +1897,7 @@ pub(crate) async fn start_streaming_bash_test_run(
     Arc<tokio::sync::Notify>,
     Arc<tokio::sync::Notify>,
     tokio::task::JoinHandle<Vec<String>>,
+    LiveRecording,
 ) {
     let (endpoint, responses, captured) = scripted_channel_server(1).await;
     responses
@@ -1849,6 +1929,7 @@ pub(crate) async fn start_streaming_bash_test_run(
         .create_session(selection.clone())
         .expect("streaming session")
         .session_id;
+    let live = record_live_messages(&fixture.engine, session_id).await;
     let run_id = fixture
         .engine
         .start_run(
@@ -1892,6 +1973,7 @@ pub(crate) async fn start_streaming_bash_test_run(
         stdin_received,
         cleanup_progress_sent,
         captured,
+        live,
     )
 }
 

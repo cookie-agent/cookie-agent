@@ -790,6 +790,8 @@ where
                     Some(EventSubscriptionMessage::Event { event }) => {
                         prepared.replay.push_back(*event);
                     }
+                    // Headless output is built from durable events only.
+                    Some(EventSubscriptionMessage::Transient { .. }) => {}
                     Some(EventSubscriptionMessage::Gap { .. }) | None => {
                         state.event_recoveries = state.event_recoveries.saturating_add(1);
                         recover_events(engine, &mut prepared, state.cursor).await?;

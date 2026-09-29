@@ -816,7 +816,6 @@ impl PluginRegistry {
         event: &cookie_agent_protocol::StoredEvent,
         origin: Option<&cookie_agent_protocol::EventOrigin>,
     ) -> Vec<PluginDeliveryDrop> {
-        let context_id = plugin_context_id();
         let source_plugin = origin.and_then(|origin| {
             self.inner
                 .plugins
@@ -824,18 +823,51 @@ impl PluginRegistry {
                 .find(|name| plugin_event_origin(name) == *origin)
                 .map(String::as_str)
         });
+        self.stream_event_payload(
+            event.session_id,
+            event.seq,
+            &event.payload,
+            event.timestamp,
+            source_plugin,
+        )
+    }
+
+    /// Streams live-only output to event subscribers. It carries the
+    /// sequence of the durable event it follows; it has none of its own.
+    pub(crate) fn stream_transient_event(
+        &self,
+        event: &cookie_agent_protocol::TransientEvent,
+    ) -> Vec<PluginDeliveryDrop> {
+        self.stream_event_payload(
+            event.session_id,
+            event.after_seq,
+            &event.payload,
+            event.timestamp,
+            None,
+        )
+    }
+
+    fn stream_event_payload(
+        &self,
+        session_id: cookie_agent_protocol::SessionId,
+        seq: u64,
+        payload: &cookie_agent_protocol::EventPayload,
+        timestamp: jiff::Timestamp,
+        source_plugin: Option<&str>,
+    ) -> Vec<PluginDeliveryDrop> {
+        let context_id = plugin_context_id();
         let params = ExtensionEventParams {
-            session_id: event.session_id,
+            session_id,
             context_id: context_id.clone(),
-            seq: event.seq,
-            event: event.payload.clone(),
-            timestamp: event.timestamp,
+            seq,
+            event: payload.clone(),
+            timestamp,
         };
         let notification = Notification::new(
             PLUGIN_EVENT_METHOD,
             Some(serde_json::to_value(params).expect("plugin event params serialize")),
         );
-        let class = match &event.payload {
+        let class = match payload {
             cookie_agent_protocol::EventPayload::ToolCallProgress {
                 display: Some(_), ..
             } => PluginDeliveryClass::Chunk,
@@ -846,7 +878,7 @@ impl PluginRegistry {
         };
         self.stream_notification(
             notification,
-            event.session_id,
+            session_id,
             &context_id,
             source_plugin,
             class,

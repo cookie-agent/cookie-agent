@@ -2028,10 +2028,20 @@ pub enum EventPayload {
         attempt_id: AttemptId,
         prompt_fingerprint: Sha256Digest,
     },
+    /// The attempt began streaming a text or reasoning part: its first
+    /// output, or a switch between the two. The deltas themselves are
+    /// live-only; this durably records where in the log, and when, each
+    /// streamed part began.
+    ModelOutputStarted {
+        attempt_id: AttemptId,
+        kind: StreamedOutputKind,
+    },
+    /// Live-only: delivered as a [`TransientEvent`], never persisted.
     TextDelta {
         attempt_id: AttemptId,
         text: String,
     },
+    /// Live-only: delivered as a [`TransientEvent`], never persisted.
     ReasoningDelta {
         attempt_id: AttemptId,
         text: String,
@@ -2089,6 +2099,7 @@ pub enum EventPayload {
         #[serde(flatten)]
         start: ToolCallStart,
     },
+    /// Live-only: delivered as a [`TransientEvent`], never persisted.
     ToolCallProgress {
         tool_call_id: ToolCallId,
         message: SafeDisplayText,
@@ -2296,6 +2307,18 @@ pub enum EventPayload {
     },
 }
 impl EventPayload {
+    /// Whether this payload is live-only stream output: delivered to
+    /// subscribers as a [`TransientEvent`] and never appended to a session
+    /// log. The committed model turn and the tool termination are the durable
+    /// record of what these streamed.
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            Self::TextDelta { .. } | Self::ReasoningDelta { .. } | Self::ToolCallProgress { .. }
+        )
+    }
+
     fn requires_run_id(&self) -> bool {
         !matches!(
             self,
@@ -2729,6 +2752,9 @@ impl StoredEvent {
         if self.seq == 0 {
             return Err(EventSchemaError::ZeroEventSequence);
         }
+        if self.payload.is_transient() {
+            return Err(EventSchemaError::StoredTransientPayload);
+        }
         if matches!(self.payload, EventPayload::SessionCreated { .. })
             && (self.seq != 1 || self.run_id.is_some())
         {
@@ -2744,6 +2770,46 @@ impl StoredEvent {
         }
         self.payload.validate()?;
         Ok(())
+    }
+}
+
+/// The kind of part a model attempt streams.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamedOutputKind {
+    Text,
+    Reasoning,
+}
+
+/// A live-only stream event ([`EventPayload::is_transient`]). It is never
+/// stored, so it has no sequence of its own: it follows the durable event
+/// `after_seq` and precedes the next one. Durable sequences stay gap-free and
+/// replay cursors never point at it.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransientEvent {
+    pub session_id: SessionId,
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<RunId>", required)]
+    pub run_id: Option<RunId>,
+    /// The session's last durable sequence when this event was published.
+    #[schemars(range(min = 1))]
+    pub after_seq: u64,
+    pub timestamp: Timestamp,
+    pub payload: EventPayload,
+}
+impl TransientEvent {
+    pub fn validate(&self) -> Result<(), EventSchemaError> {
+        if self.after_seq == 0 {
+            return Err(EventSchemaError::ZeroEventSequence);
+        }
+        if !self.payload.is_transient() {
+            return Err(EventSchemaError::NonTransientPayload);
+        }
+        if self.payload.requires_run_id() && self.run_id.is_none() {
+            return Err(EventSchemaError::MissingRunId);
+        }
+        self.payload.validate()
     }
 }
 
@@ -3147,6 +3213,11 @@ pub enum EventSubscriptionMessage {
     Event {
         event: Box<StoredEvent>,
     },
+    /// Live-only stream output. It does not advance the subscription cursor
+    /// and is never replayed.
+    Transient {
+        event: Box<TransientEvent>,
+    },
     Gap {
         session_id: SessionId,
         last_delivered_seq: u64,
@@ -3254,6 +3325,8 @@ pub enum EventSchemaError {
     ZeroEventSequence,
     InvalidSessionCreatedEnvelope,
     MissingRunId,
+    StoredTransientPayload,
+    NonTransientPayload,
 }
 impl fmt::Display for EventSchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -3320,6 +3393,8 @@ impl fmt::Display for EventSchemaError {
             Self::InvalidSessionPermissionOverlay => "session permission overlay is invalid",
             Self::InvalidSkillEvent => "skill event is invalid",
             Self::ZeroEventSequence => "event sequence must be positive",
+            Self::StoredTransientPayload => "live-only stream payloads are never stored",
+            Self::NonTransientPayload => "transient events carry only live-only payloads",
             Self::InvalidSessionCreatedEnvelope => {
                 "SessionCreated must be sequence 1 with no run_id"
             }

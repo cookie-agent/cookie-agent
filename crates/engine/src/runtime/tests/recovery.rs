@@ -637,3 +637,107 @@ async fn a_runtime_revision_index_from_an_older_protocol_still_opens() {
     let reopened = reopen_engine(&fixture);
     reopened.shutdown().await;
 }
+
+/// A daemon that dies mid-stream leaves only durable records behind: the
+/// attempt's start and the mark where its output began, never the streamed
+/// text. Adoption interrupts the run, and the history stays consistent.
+#[tokio::test]
+async fn a_crash_mid_stream_recovers_without_the_live_only_partial_output() {
+    let (endpoint, server) = scripted_stalled_stream_server("partial answer").await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("crash-mid-stream").expect("client run ID"),
+                selection,
+                input: "start a long answer".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("start run");
+    let started = await_event(
+        &fixture.engine,
+        session.session_id,
+        "streamed text started",
+        |event| matches!(event.payload, EventPayload::ModelOutputStarted { .. }),
+    )
+    .await;
+    let EventPayload::ModelOutputStarted { attempt_id, .. } = started.payload else {
+        unreachable!()
+    };
+
+    // The crash: whatever reached disk by now is all that survives.
+    let snapshot = private_tempdir();
+    copy_test_tree(
+        &fixture._directory.path().join("data"),
+        &snapshot.path().join("data"),
+    );
+    let cwd = fixture._directory.path().to_owned();
+    let config = fixture.config.clone();
+    let manager = Arc::clone(&fixture.manager);
+    fixture.engine.shutdown().await;
+    server.abort();
+    drop(fixture.engine);
+    let reopened = Engine::open(EngineOptions {
+        data_dir: snapshot.path().join("data"),
+        cwd,
+        config,
+        model_manager: manager,
+        tools: Vec::new(),
+    })
+    .expect("reopen crashed snapshot");
+    reopened
+        .resume(session.session_id)
+        .await
+        .expect("adopt crashed session");
+    let adopted = reopened
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("adopted projection");
+    assert_eq!(adopted.runs[&run.run_id].status, SessionStatus::Interrupted);
+    let events = adopted.log.events();
+    assert!(adopted.log.diagnostics().is_empty());
+    assert!(
+        events
+            .iter()
+            .enumerate()
+            .all(|(index, event)| event.seq == index as u64 + 1),
+        "durable sequences stay gap-free"
+    );
+    assert!(!events.iter().any(|event| event.payload.is_transient()));
+    assert!(!events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ModelTurnCommitted { attempt_id: committed, .. } if *committed == attempt_id
+    )));
+    let interrupted = events
+        .iter()
+        .position(|event| matches!(event.payload, EventPayload::RunInterrupted { .. }))
+        .expect("run interrupted");
+    let marked = events
+        .iter()
+        .position(|event| matches!(event.payload, EventPayload::ModelOutputStarted { .. }))
+        .expect("output mark survives");
+    assert!(marked < interrupted);
+    let log = fs::read_to_string(adopted.log.path()).expect("read events.jsonl");
+    assert!(!log.contains("partial answer"));
+    // The interrupted attempt contributes nothing to the model's history.
+    let history = reopened
+        .get_history(session.session_id, crate::EngineHistoryView::Full)
+        .await
+        .expect("history");
+    assert!(
+        !serde_json::to_string(&history)
+            .unwrap()
+            .contains("partial answer")
+    );
+    reopened.shutdown().await;
+}

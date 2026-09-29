@@ -3,8 +3,8 @@ use std::{fs, sync::Arc};
 use cookie_agent_config::ModelRetryConfig;
 
 use cookie_agent_protocol::{
-    ClientRunId, EventPayload, PermissionMode, RunStartParams, SessionStatus,
-    ToolTerminationOutcome,
+    ClientRunId, EventPayload, EventSubscriptionMessage, PermissionMode, RunStartParams,
+    SessionStatus, ToolTerminationOutcome,
 };
 
 use crate::{EngineError, EngineHistoryView, runtime::ModelRetrySleepMode};
@@ -199,13 +199,13 @@ async fn interrupted_stream_commits_its_partial_turn_before_the_abandonment() {
         )
         .await
         .unwrap();
-    // Interrupt only once the streamed text reached the durable log, so the
-    // attempt is genuinely mid-stream when the abort lands.
+    // Interrupt only once the attempt durably began streaming text, so it is
+    // genuinely mid-stream when the abort lands.
     await_event(
         &fixture.engine,
         session.session_id,
-        "partial text delta",
-        |event| matches!(event.payload, EventPayload::TextDelta { .. }),
+        "streamed text started",
+        |event| matches!(event.payload, EventPayload::ModelOutputStarted { .. }),
     )
     .await;
     fixture
@@ -282,22 +282,32 @@ async fn interrupted_stream_commits_its_partial_turn_before_the_abandonment() {
         .find(|event| matches!(event.payload, EventPayload::RunCancelled { .. }))
         .expect("the run is cancelled");
     assert!(abandoned.seq < cancelled.seq);
+    // The partial output reached disk only as the committed turn: none of the
+    // live-only deltas did, and the reloaded history is the same.
+    assert!(!events.iter().any(|event| event.payload.is_transient()));
+    let reloaded = crate::events::EventLog::open_read_only(
+        projection.log.path().to_owned(),
+        session.session_id,
+    )
+    .expect("reload event log");
+    assert_eq!(reloaded.events(), projection.log.events());
     server.abort();
     fixture.engine.shutdown().await;
 }
 
 #[tokio::test]
-async fn empty_stream_deltas_are_not_logged() {
+async fn stream_deltas_are_delivered_live_but_never_logged() {
     let (endpoint, responses, _captured) = scripted_channel_server(1).await;
     // Some providers emit empty content/reasoning chunks ahead of the real
-    // stream; they must not reach the durable event log. (The fixture
-    // provider's reasoning field is `none`, so the reasoning chunks are
-    // ignored by the adaptor and only document the real-world shape.)
+    // stream; they carry nothing to deliver. (The fixture provider's
+    // reasoning field is `none`, so the reasoning chunks are ignored by the
+    // adaptor and only document the real-world shape.)
     let body = concat!(
         "data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"\"},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\" there\"},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
     );
     responses
@@ -308,13 +318,18 @@ async fn empty_stream_deltas_are_not_logged() {
         .unwrap();
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     let session = fixture.engine.create_session(selection.clone()).unwrap();
+    let (snapshot, mut live) = fixture
+        .engine
+        .subscribe(session.session_id, None)
+        .await
+        .expect("subscribe");
     fixture
         .engine
         .start_run(
             RunStartParams {
                 reset_fallback: false,
                 session_id: session.session_id,
-                client_run_id: ClientRunId::new("empty-deltas").unwrap(),
+                client_run_id: ClientRunId::new("live-deltas").unwrap(),
                 selection: selection.clone(),
                 input: "say hi".into(),
             },
@@ -322,23 +337,84 @@ async fn empty_stream_deltas_are_not_logged() {
         )
         .await
         .unwrap();
-    wait_for_session_not_running(&fixture.engine, session.session_id).await;
-    let events = fixture
+    let mut delivered = snapshot.events;
+    let mut live_text = Vec::new();
+    with_watchdog("live run delivery", async {
+        loop {
+            match live.recv().await.expect("live subscription") {
+                EventSubscriptionMessage::Event { event } => {
+                    let done = matches!(event.payload, EventPayload::RunCompleted { .. });
+                    delivered.push(*event);
+                    if done {
+                        break;
+                    }
+                }
+                EventSubscriptionMessage::Transient { event } => {
+                    event.validate().expect("valid transient event");
+                    // Live output sits right after the durable event it
+                    // follows, and never takes a sequence of its own.
+                    assert_eq!(
+                        Some(event.after_seq),
+                        delivered.last().map(|durable| durable.seq)
+                    );
+                    let EventPayload::TextDelta { text, .. } = event.payload else {
+                        panic!("unexpected live output {:?}", event.payload);
+                    };
+                    live_text.push(text);
+                }
+                EventSubscriptionMessage::Gap { .. } => panic!("unexpected gap"),
+            }
+        }
+    })
+    .await;
+    assert_eq!(live_text, ["hi", " there"]);
+
+    // Durable sequences stay gap-free across the streamed turn.
+    let log = fixture
         .engine
         .inner
         .store
         .get(session.session_id)
         .unwrap()
         .log
-        .events();
-    let text = events
+        .clone();
+    let events = log.events();
+    assert!(!events.iter().any(|event| event.payload.is_transient()));
+    assert!(
+        events
+            .iter()
+            .enumerate()
+            .all(|(index, event)| event.seq == index as u64 + 1)
+    );
+    assert_eq!(delivered, events);
+    // One durable mark records where the streamed text began.
+    let marks = events
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::TextDelta { text, .. } => Some(text.as_str()),
+            EventPayload::ModelOutputStarted { kind, .. } => Some((*kind, event.seq)),
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(text, ["hi"]);
+    let commit_seq = events
+        .iter()
+        .find(|event| matches!(event.payload, EventPayload::ModelTurnCommitted { .. }))
+        .expect("committed turn")
+        .seq;
+    assert!(matches!(
+        marks.as_slice(),
+        [(cookie_agent_protocol::StreamedOutputKind::Text, seq)] if *seq < commit_seq
+    ));
+
+    // Neither the file nor a reload of it holds the deltas.
+    let bytes = fs::read(log.path()).expect("read events.jsonl");
+    let text = String::from_utf8(bytes).expect("utf-8 log");
+    assert!(!text.contains("\"text_delta\""));
+    assert!(!text.contains("\"reasoning_delta\""));
+    let reloaded =
+        crate::events::EventLog::open_read_only(log.path().to_owned(), session.session_id)
+            .expect("reload event log");
+    assert_eq!(reloaded.events(), events);
+    assert!(reloaded.diagnostics().is_empty());
     fixture.engine.shutdown().await;
 }
 

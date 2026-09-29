@@ -1,8 +1,8 @@
 use crate::ui::transcript::*;
 
 use cookie_agent_protocol::{
-    AttemptId, EventPayload, GoalId, ProducerMessageId, SafeDisplayText, SafeErrorMessage,
-    SessionId, Sha256Digest, ToolCallId,
+    AttemptId, EventPayload, GoalId, ProducerMessageId, RunId, SafeDisplayText, SafeErrorMessage,
+    SessionId, Sha256Digest, StoredEvent, ToolCallId, TransientEvent,
 };
 
 use jiff::Timestamp;
@@ -637,6 +637,7 @@ fn retry_started_before_input_promotion_rebinds_without_losing_committed_tools()
                 *resolved_model = retry_model.clone();
             }
         }
+        let events = with_output_markers(events);
         let mut live = StateStore::default();
         let mut cache = LayoutCache::default();
         let expanded = HashSet::from([BlockId::Tool(call)]);
@@ -646,6 +647,7 @@ fn retry_started_before_input_promotion_rebinds_without_losing_committed_tools()
             let state = &live.sessions[&session];
             let mut replay = StateStore::default();
             assert!(replay.rebuild_session(session, 0, events[..=index].to_vec()));
+            let settled = settled(&events[..=index]);
             ensure_cached_transcript_layout(
                 &mut cache,
                 session,
@@ -673,9 +675,11 @@ fn retry_started_before_input_promotion_rebinds_without_losing_committed_tools()
             assert_eq!(cache.layout.lines, fresh.lines);
             assert_eq!(cache.layout.regions, fresh.regions);
             assert_eq!(cache.layout.user_regions, fresh.user_regions);
-            assert_eq!(fresh.lines, rebuilt.lines);
-            assert_eq!(fresh.regions, rebuilt.regions);
-            assert_eq!(fresh.user_regions, rebuilt.user_regions);
+            if settled {
+                assert_eq!(fresh.lines, rebuilt.lines);
+                assert_eq!(fresh.regions, rebuilt.regions);
+                assert_eq!(fresh.user_regions, rebuilt.user_regions);
+            }
             if stored.seq >= 15 {
                 let assistants = state
                     .transcript
@@ -829,6 +833,7 @@ fn input_boundary_does_not_relocate_an_already_streaming_attempt() {
     {
         *input_through_seq = 3;
     }
+    let events = with_output_markers(events);
     let mut live = StateStore::default();
     for stored in &events {
         assert!(live.apply_event(stored.clone()));
@@ -988,12 +993,19 @@ fn goal_activation_precedes_triggered_streaming_and_preserves_existing_output() 
             stored.seq = index as u64 + 1;
             stored.timestamp = Timestamp::new(stored.seq as i64, 0).unwrap();
         }
+        let activation_seq = events[activation_index].seq;
+        let events = with_output_markers(events);
+        let activation_index = events
+            .iter()
+            .position(|stored| stored.seq == activation_seq)
+            .expect("activation event");
         let mut live = StateStore::default();
         let mut caches = [LayoutCache::default(), LayoutCache::default()];
         for (index, stored) in events.iter().enumerate() {
             assert!(live.apply_event(stored.clone()));
             let mut replay = StateStore::default();
             assert!(replay.rebuild_session(session, 0, events[..=index].to_vec()));
+            let settled = settled(&events[..=index]);
             let state = &live.sessions[&session];
             for (width, cache) in [18, 80].into_iter().zip(&mut caches) {
                 ensure_cached_transcript_layout(
@@ -1016,12 +1028,14 @@ fn goal_activation_precedes_triggered_streaming_and_preserves_existing_output() 
                     &PlainHighlighter,
                     crate::state::EventLevel::Warning,
                 );
-                assert_eq!(
-                    cache.layout.lines, rebuilt.lines,
-                    "seq {} existing {existing_run}",
-                    stored.seq
-                );
-                assert_eq!(cache.layout.regions, rebuilt.regions);
+                if settled {
+                    assert_eq!(
+                        cache.layout.lines, rebuilt.lines,
+                        "seq {} existing {existing_run}",
+                        stored.seq
+                    );
+                    assert_eq!(cache.layout.regions, rebuilt.regions);
+                }
                 assert!(
                     cache.layout.user_regions.is_empty(),
                     "goal action is not a model prompt"
@@ -1327,6 +1341,7 @@ fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
     for stored in &mut events {
         stored.timestamp = Timestamp::new(stored.seq as i64, 0).unwrap();
     }
+    let events = with_output_markers(events);
     let mut live = StateStore::default();
     let mut caches = [LayoutCache::default(), LayoutCache::default()];
     let expanded = HashSet::from([BlockId::Tool(call)]);
@@ -1335,10 +1350,13 @@ fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
         let state = &live.sessions[&session];
         let mut replay = StateStore::default();
         assert!(replay.rebuild_session(session, 0, events[..=index].to_vec()));
-        assert_eq!(
-            assistant_projection(state),
-            assistant_projection(&replay.sessions[&session])
-        );
+        let settled = settled(&events[..=index]);
+        if settled {
+            assert_eq!(
+                assistant_projection(state),
+                assistant_projection(&replay.sessions[&session])
+            );
+        }
         for (width, cache) in [18, 80].into_iter().zip(&mut caches) {
             ensure_cached_transcript_layout(
                 cache,
@@ -1371,13 +1389,15 @@ fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
             );
             assert_eq!(cache.layout.regions, fresh.regions);
             assert_eq!(cache.layout.user_regions, fresh.user_regions);
-            assert_eq!(
-                fresh.lines, rebuilt.lines,
-                "replay seq {} width {width}",
-                stored.seq
-            );
-            assert_eq!(fresh.regions, rebuilt.regions);
-            assert_eq!(fresh.user_regions, rebuilt.user_regions);
+            if settled {
+                assert_eq!(
+                    fresh.lines, rebuilt.lines,
+                    "replay seq {} width {width}",
+                    stored.seq
+                );
+                assert_eq!(fresh.regions, rebuilt.regions);
+                assert_eq!(fresh.user_regions, rebuilt.user_regions);
+            }
             for line in &fresh.lines {
                 assert!(
                     line.width() <= usize::from(width),
@@ -1611,12 +1631,33 @@ fn rebuild_session_matches_live_run_assistant_projection() {
         attempt_started(session, 3, run, second, Some("high")),
         text_delta(session, 4, run, second, "partial"),
     ];
+    let events = with_output_markers(events);
     let mut live = StateStore::default();
     for event in events.clone() {
         assert!(live.apply_event(event));
     }
+    // A view that attaches mid-reply rebuilds from durable history, which
+    // holds finished turns only: the in-flight attempt's streamed text is
+    // live-only.
     let mut rebuilt = StateStore::default();
-    assert!(rebuilt.rebuild_session(session, 0, events));
+    assert!(rebuilt.rebuild_session(session, 0, durable(&events)));
+    let finished = assistant_projection(&rebuilt.sessions[&session]);
+    assert_eq!(finished.len(), 1);
+    assert!(!finished[0].2.iter().any(|part| part.contains("partial")));
+    // Live output arriving after the attach extends the in-flight attempt.
+    rebuilt.apply_transient_for_generation(
+        TransientEvent {
+            session_id: session,
+            run_id: Some(run),
+            after_seq: 4,
+            timestamp: Timestamp::now(),
+            payload: EventPayload::TextDelta {
+                attempt_id: second,
+                text: "partial".into(),
+            },
+        },
+        0,
+    );
     assert_eq!(
         assistant_projection(&live.sessions[&session]),
         assistant_projection(&rebuilt.sessions[&session])
@@ -1788,4 +1829,220 @@ fn tool_call_only_attempt_adds_no_empty_segments() {
     }
     let projection = assistant_projection(&store.sessions[&session]);
     assert_eq!(projection[0].2, vec!["placeholder:9:0"]);
+}
+
+fn live_delta(
+    session: SessionId,
+    run: RunId,
+    after_seq: u64,
+    attempt: AttemptId,
+    text: &str,
+) -> crate::ClientDelivery {
+    crate::ClientDelivery::Live {
+        message: Box::new(cookie_agent_protocol::EventSubscriptionMessage::Transient {
+            event: Box::new(TransientEvent {
+                session_id: session,
+                run_id: Some(run),
+                after_seq,
+                timestamp: Timestamp::now(),
+                payload: EventPayload::TextDelta {
+                    attempt_id: attempt,
+                    text: text.into(),
+                },
+            }),
+        }),
+        generation: 0,
+    }
+}
+
+fn replay(store: &mut StateStore, session: SessionId, events: &[StoredEvent]) {
+    let final_seq = events.last().expect("replayed events").seq;
+    let deliveries = std::iter::once(crate::ClientDelivery::ReplayStart {
+        session_id: session,
+        generation: 0,
+        final_seq,
+        rebuild: true,
+    })
+    .chain(
+        events
+            .iter()
+            .map(|stored| crate::ClientDelivery::ReplayEvent {
+                session_id: session,
+                generation: 0,
+                final_seq,
+                event: Box::new(stored.clone()),
+            }),
+    )
+    .chain(std::iter::once(crate::ClientDelivery::ReplayEnd {
+        session_id: session,
+        generation: 0,
+        final_seq,
+    }));
+    for delivery in deliveries {
+        assert!(matches!(
+            store.apply_delivery(delivery),
+            crate::state::DeliveryOutcome::Applied
+        ));
+    }
+}
+
+fn rendered(state: &SessionState) -> String {
+    snapshot_lines(&transcript_layout(state, None, 80).lines)
+}
+
+fn has_error_row(state: &SessionState) -> bool {
+    state.transcript.iter().any(|item| {
+        matches!(
+            item,
+            crate::state::TranscriptItem::Event {
+                level: crate::state::EventLevel::Error,
+                ..
+            }
+        )
+    })
+}
+
+/// A view attaching while a reply streams replays durable history, which
+/// holds finished turns only, then extends the in-flight reply from the live
+/// output that follows. Output it cannot place is ignored, not rendered.
+#[test]
+fn reattach_mid_reply_shows_finished_turns_then_subsequent_live_output() {
+    let session = SessionId::new_v7();
+    let run = run_id();
+    let finished = AttemptId::new_v7();
+    let streaming = AttemptId::new_v7();
+    let history = vec![
+        session_created(session, 1),
+        run_started_with_suffix(session, 2, run, vec![resolved_model(None)]),
+        attempt_started(session, 3, run, finished, None),
+        turn_committed(
+            session,
+            4,
+            run,
+            finished,
+            1,
+            vec![text_part("finished turn")],
+            Vec::new(),
+            None,
+        ),
+        attempt_started(session, 5, run, streaming, None),
+        event(
+            session,
+            6,
+            run,
+            EventPayload::ModelOutputStarted {
+                attempt_id: streaming,
+                kind: cookie_agent_protocol::StreamedOutputKind::Text,
+            },
+        ),
+    ];
+    let mut store = StateStore::default();
+    replay(&mut store, session, &history);
+    let attached = rendered(&store.sessions[&session]);
+    assert!(attached.contains("finished turn"));
+    assert!(!has_error_row(&store.sessions[&session]));
+
+    // Output of an attempt this view never saw start, and output that does
+    // not follow the replayed tip, are dropped.
+    for delivery in [
+        live_delta(session, run, 6, AttemptId::new_v7(), "unknown attempt"),
+        live_delta(session, run, 5, streaming, "stale"),
+        live_delta(session, run, 7, streaming, "ahead"),
+    ] {
+        assert!(matches!(
+            store.apply_delivery(delivery),
+            crate::state::DeliveryOutcome::Applied
+        ));
+    }
+    assert_eq!(rendered(&store.sessions[&session]), attached);
+
+    // The rest of the reply streams in after attach.
+    for text in ["...rest of", " the reply"] {
+        store.apply_delivery(live_delta(session, run, 6, streaming, text));
+    }
+    let streamed = rendered(&store.sessions[&session]);
+    assert!(streamed.contains("finished turn"));
+    assert!(streamed.contains("...rest of the reply"));
+    assert_eq!(store.sessions[&session].last_seq, 6);
+
+    // The commit replaces the partial view with the whole reply.
+    let commit = turn_committed(
+        session,
+        7,
+        run,
+        streaming,
+        2,
+        vec![text_part("start of ...rest of the reply")],
+        Vec::new(),
+        None,
+    );
+    assert!(store.apply_event(commit.clone()));
+    let committed = rendered(&store.sessions[&session]);
+    assert!(committed.contains("start of ...rest of the reply"));
+    assert!(!has_error_row(&store.sessions[&session]));
+
+    // A reload renders the same finished history.
+    let mut reloaded = StateStore::default();
+    let mut all = history;
+    all.push(commit);
+    replay(&mut reloaded, session, &all);
+    assert_eq!(
+        assistant_projection(&reloaded.sessions[&session]),
+        assistant_projection(&store.sessions[&session])
+    );
+}
+
+/// A daemon that crashed mid-reply left no streamed output on disk; the
+/// recovered run's interruption closes the in-flight attempt's block without
+/// partial text.
+#[test]
+fn crash_mid_reply_replays_as_an_interrupted_run_without_partial_output() {
+    let session = SessionId::new_v7();
+    let run = run_id();
+    let finished = AttemptId::new_v7();
+    let crashed = AttemptId::new_v7();
+    let history = vec![
+        session_created(session, 1),
+        run_started_with_suffix(session, 2, run, vec![resolved_model(None)]),
+        attempt_started(session, 3, run, finished, None),
+        turn_committed(
+            session,
+            4,
+            run,
+            finished,
+            1,
+            vec![text_part("finished turn")],
+            Vec::new(),
+            None,
+        ),
+        attempt_started(session, 5, run, crashed, None),
+        event(
+            session,
+            6,
+            run,
+            EventPayload::ModelOutputStarted {
+                attempt_id: crashed,
+                kind: cookie_agent_protocol::StreamedOutputKind::Reasoning,
+            },
+        ),
+        event(
+            session,
+            7,
+            run,
+            EventPayload::RunInterrupted {
+                reason: Some(SafeErrorMessage::new("daemon restart").unwrap()),
+            },
+        ),
+    ];
+    let mut store = StateStore::default();
+    replay(&mut store, session, &history);
+    let state = &store.sessions[&session];
+    let text = rendered(state);
+    assert!(text.contains("finished turn"));
+    assert!(text.contains("run interrupted: daemon restart"));
+    assert!(state.attempts.is_empty());
+    assert!(state.open_assistant.is_none());
+    // Live output from the dead attempt cannot resurrect it.
+    store.apply_delivery(live_delta(session, run, 7, crashed, "ghost"));
+    assert!(!rendered(&store.sessions[&session]).contains("ghost"));
 }

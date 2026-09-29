@@ -319,9 +319,11 @@ starts after initialization and has no replay. Events are sent only after their 
 durable; a buffered session's newly persisted prefix is sent in sequence after atomic publication.
 Per-session sequence order is preserved, while cross-session ordering is unspecified.
 
-Durable `tool_call_progress` events include optional sanitized bash output chunks,
-so event-subscribed plugins observe live tool output through this same stream.
-Model text and reasoning deltas are still not exposed to plugins. Chunk bursts do
+Live-only stream output (`tool_call_progress`, `text_delta`, `reasoning_delta`)
+is delivered through this same stream as it happens, although it is never stored.
+It carries the `seq` of the durable event it follows, so its `seq` repeats that
+event's rather than advancing. `tool_call_progress` includes optional sanitized
+bash output chunks, so event-subscribed plugins observe live tool output. Chunk bursts do
 not consume plugin publication quotas, which apply in the plugin-to-engine
 direction. They use one 1024-entry FIFO delivery queue. When full, admission
 evicts the oldest lowest-priority record: chunk first, then ordinary non-chunk,
@@ -434,8 +436,8 @@ It never receives body data.
 
 `message_end` receives the complete assembled assistant content after streaming and before
 `model_turn_committed`. It may replace content but not the assistant role. The replacement is
-validated as a complete persisted turn and becomes the durable turn; already emitted text and
-reasoning deltas remain historical stream records. TUI and replay projections
+validated as a complete persisted turn and becomes the durable turn; text and reasoning deltas
+already streamed were live-only and are not kept. TUI and replay projections
 replace accumulated partials with that committed content. It does not run for a turn an interrupt
 cut off: the engine commits that partial text and reasoning as an `aborted` turn without
 interception, because a replacement assumes a finished message.
