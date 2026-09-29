@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use cookie_agent_protocol::{
     ApprovalDecisionSource, ApprovalFeedback, ApprovalFinalDecision, ApprovalFinalOutcome,
@@ -684,7 +684,7 @@ fn approval_lost_outcome(record: &ApprovalRecord) -> ApprovalOutcome {
     }
 }
 
-pub(super) fn permission_overlay_epoch(events: &[StoredEvent]) -> u64 {
+pub(super) fn permission_overlay_epoch(events: &[Arc<StoredEvent>]) -> u64 {
     events
         .iter()
         .rev()
@@ -720,7 +720,7 @@ pub(super) fn approval_request_revision(request: &ApprovalRequest) -> u64 {
 
 pub(crate) fn approval_records(
     session_id: SessionId,
-    events: &[StoredEvent],
+    events: &[Arc<StoredEvent>],
 ) -> HashMap<ApprovalId, ApprovalRecord> {
     let mut records = HashMap::<ApprovalId, ApprovalRecord>::new();
     for envelope in events {
@@ -786,7 +786,10 @@ pub(crate) fn approval_records(
     records
 }
 
-pub(super) fn approval_run_id(events: &[StoredEvent], approval_id: ApprovalId) -> Option<RunId> {
+pub(super) fn approval_run_id(
+    events: &[Arc<StoredEvent>],
+    approval_id: ApprovalId,
+) -> Option<RunId> {
     events.iter().find_map(|event| match &event.payload {
         Event::ApprovalRequested { request } if request.approval_id() == approval_id => {
             event.run_id
@@ -796,7 +799,7 @@ pub(super) fn approval_run_id(events: &[StoredEvent], approval_id: ApprovalId) -
 }
 
 pub(crate) fn doom_loop_repetitions(
-    events: &[StoredEvent],
+    events: &[Arc<StoredEvent>],
     run_id: RunId,
     fingerprint: &OperationFingerprint,
 ) -> u32 {

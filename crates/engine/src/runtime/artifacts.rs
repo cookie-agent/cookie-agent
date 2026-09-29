@@ -2406,7 +2406,7 @@ pub(crate) fn scan_artifact_references_in_log(path: &Path) -> std::io::Result<Ha
 /// log cannot disagree about what is live. A value that cannot be serialized is
 /// an error: an incomplete live set must never look like an empty one.
 pub(crate) fn collect_artifact_references_in_events(
-    events: &[cookie_agent_protocol::StoredEvent],
+    events: &[Arc<cookie_agent_protocol::StoredEvent>],
     live: &mut HashSet<String>,
 ) -> std::io::Result<()> {
     for event in events {

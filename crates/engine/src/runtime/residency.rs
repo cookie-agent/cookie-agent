@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use cookie_agent_protocol::{EventPayload as Event, SessionId, SessionOrigin, SessionStatus};
 use jiff::Timestamp;
@@ -405,7 +405,9 @@ impl Engine {
     }
 }
 
-pub(super) fn has_runless_pending_inputs(events: &[cookie_agent_protocol::StoredEvent]) -> bool {
+pub(super) fn has_runless_pending_inputs(
+    events: &[Arc<cookie_agent_protocol::StoredEvent>],
+) -> bool {
     let boundary = events
         .iter()
         .rev()

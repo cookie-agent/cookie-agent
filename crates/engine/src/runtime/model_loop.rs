@@ -1738,19 +1738,8 @@ impl Engine {
                 // to `ModelAttemptStarted`, so emitting it before compaction
                 // would render post-compaction output above the compaction
                 // marker. Compaction itself does not depend on the attempt.
-                let attempt_ordinal = self
-                    .inner
-                    .store
-                    .get(session)?
-                    .log
-                    .event_snapshot()
-                    .iter()
-                    .filter(|event| {
-                        event.run_id == Some(run)
-                            && matches!(event.payload, Event::ModelAttemptStarted { .. })
-                    })
-                    .count() as u32
-                    + 1;
+                let attempt_ordinal =
+                    self.inner.store.get(session)?.log.visible_run_attempts(run) + 1;
                 self.append(
                     session,
                     Some(run),

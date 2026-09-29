@@ -434,11 +434,11 @@ impl Engine {
             self.inner.store.append(session, run, origin, event)?
         };
         if !was_persisted && self.inner.store.is_persisted(session)? {
-            for durable in self.inner.store.get(session)?.log.all_events() {
+            for durable in self.inner.store.get(session)?.log.all_events().iter() {
                 let drops = self
                     .inner
                     .plugins
-                    .stream_session_event(&durable, durable.origin.as_ref());
+                    .stream_session_event(durable, durable.origin.as_ref());
                 self.record_plugin_drops(session, drops);
             }
         } else {
@@ -1503,11 +1503,7 @@ impl Engine {
                         if projection.status == SessionStatus::Running {
                             return Err(EngineError::SessionRunning(session));
                         }
-                        let tip = projection
-                            .log
-                            .all_events()
-                            .last()
-                            .map_or(0, |event| event.seq);
+                        let tip = projection.log.last_event().map_or(0, |event| event.seq);
                         if through_seq == 0 || through_seq > tip {
                             return Err(SessionError::InvalidSequence {
                                 session_id: session,
@@ -1677,11 +1673,8 @@ impl Engine {
                             client_rename_id: params.client_rename_id.clone(),
                         },
                     };
-                    let input_through_seq = projection
-                        .log
-                        .all_events()
-                        .last()
-                        .map_or(0, |event| event.seq);
+                    let input_through_seq =
+                        projection.log.last_event().map_or(0, |event| event.seq);
                     self.append_direct(
                         session,
                         None,
@@ -2035,7 +2028,11 @@ impl Engine {
     }
 }
 
-fn pending_inputs(events: &[StoredEvent], run: RunId) -> Vec<PendingInput> {
+fn pending_inputs<E: std::borrow::Borrow<StoredEvent>>(
+    events: &[E],
+    run: RunId,
+) -> Vec<PendingInput> {
+    let events = crate::events::event_refs(events);
     let mut pending = VecDeque::new();
     let mut initial_input_submitted = false;
     let run_start_seq = events.iter().find_map(|event| {

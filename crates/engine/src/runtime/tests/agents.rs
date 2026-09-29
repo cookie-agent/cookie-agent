@@ -656,7 +656,13 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     }
     let legacy_policy = fixture
         .engine
-        .historical_title_policy(&legacy_events, preset_run.id)
+        .historical_title_policy(
+            &legacy_events
+                .into_iter()
+                .map(std::sync::Arc::new)
+                .collect::<Vec<_>>(),
+            preset_run.id,
+        )
         .expect("legacy preset policy");
     let current_runtime = fixture.engine.current_runtime();
     assert!(legacy_policy.internal_agents.is_empty());

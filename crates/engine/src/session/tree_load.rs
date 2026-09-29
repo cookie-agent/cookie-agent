@@ -327,7 +327,7 @@ impl TreeFold {
     fn harvest_records(
         &mut self,
         projection: &SessionProjection,
-        events: &[cookie_agent_protocol::StoredEvent],
+        events: &[Arc<cookie_agent_protocol::StoredEvent>],
     ) {
         for envelope in events {
             match &envelope.payload {

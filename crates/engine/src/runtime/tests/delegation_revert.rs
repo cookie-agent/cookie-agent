@@ -196,8 +196,9 @@ async fn reverted_background_reservation_cannot_publish_child_completion() {
     let post_revert = parent
         .log
         .all_events()
-        .into_iter()
+        .iter()
         .filter(|event| event.seq > reverted.session.last_event_seq)
+        .cloned()
         .collect::<Vec<_>>();
     assert!(
         post_revert.is_empty(),

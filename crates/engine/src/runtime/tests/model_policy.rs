@@ -493,6 +493,10 @@ fn manual_compaction_resolves_parent_model_from_nonzero_active_fallback() {
             prompt_fingerprint: Sha256Digest::of_bytes(b"fallback prompt"),
         },
     }];
+    let events = events
+        .into_iter()
+        .map(std::sync::Arc::new)
+        .collect::<Vec<_>>();
     let binding = crate::runtime::compaction::active_compaction_binding(&owner, &events, run)
         .expect("active compaction binding");
     assert_eq!(binding.selection, fallback.selection);

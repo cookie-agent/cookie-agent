@@ -2050,7 +2050,7 @@ fn next_revision(revision: u64) -> Result<u64, EngineError> {
 /// Whether a log carries goal-producer state that needs reconciliation after a
 /// restart: an active goal, an unread message, or a message consumed without its
 /// consumption record.
-pub(crate) fn producer_state_pending(events: &[cookie_agent_protocol::StoredEvent]) -> bool {
+pub(crate) fn producer_state_pending(events: &[Arc<cookie_agent_protocol::StoredEvent>]) -> bool {
     let projection = GoalProducerProjection::from_events(events);
     projection.goal.is_some()
         || projection
@@ -2067,7 +2067,9 @@ pub(crate) fn producer_state_pending(events: &[cookie_agent_protocol::StoredEven
 /// `Running` (it clears only when a committed model turn has actually consumed
 /// it). Liveness checks therefore cannot miss a steered finished child in the
 /// gap between acceptance and run admission.
-pub(super) fn has_pending_producer_message(events: &[cookie_agent_protocol::StoredEvent]) -> bool {
+pub(super) fn has_pending_producer_message(
+    events: &[Arc<cookie_agent_protocol::StoredEvent>],
+) -> bool {
     GoalProducerProjection::from_events(events)
         .messages
         .iter()

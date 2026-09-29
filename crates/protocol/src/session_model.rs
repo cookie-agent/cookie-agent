@@ -1,4 +1,6 @@
 //! Session-local model continuation derived from existing durable events.
+use std::borrow::Borrow;
+
 use crate::{EventPayload, ModelFinishReason, ModelSelection, RunId, RunSelection, StoredEvent};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -10,9 +12,10 @@ pub struct SessionModelState {
 }
 
 impl SessionModelState {
-    pub fn from_events(events: &[StoredEvent]) -> Self {
+    pub fn from_events<E: Borrow<StoredEvent>>(events: &[E]) -> Self {
         let mut state = Self::default();
         for event in events {
+            let event: &StoredEvent = event.borrow();
             state.apply(event.run_id, &event.payload);
         }
         state

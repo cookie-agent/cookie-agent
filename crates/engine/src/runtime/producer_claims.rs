@@ -1,13 +1,13 @@
 use std::sync::{Arc, Weak};
 
-use cookie_agent_protocol::{EventPayload, RunId, SessionId, StoredEvent};
+use cookie_agent_protocol::{EventPayload, RunId, SessionId};
 
 use super::{Engine, EngineError, Inner, SessionCommand, event_origin, producers::ProducerCommand};
 
 /// A request-input reservation, not evidence that a provider received the input.
 /// The lease remains held through compaction, hooks, streaming, and model commit.
 pub(super) struct ClaimedPrompt {
-    pub events: Arc<[StoredEvent]>,
+    pub events: crate::events::EventSnapshot,
     engine: Weak<Inner>,
     session: SessionId,
     run: RunId,

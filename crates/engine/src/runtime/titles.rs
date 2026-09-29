@@ -25,7 +25,7 @@ impl Engine {
 
     pub(crate) fn historical_title_policy(
         &self,
-        events: &[StoredEvent],
+        events: &[Arc<StoredEvent>],
         run: RunId,
     ) -> Result<FrozenRunPolicy, EngineError> {
         let (agent, suffix, internal_agents, preset) = latest_run_policy(events, run)?;
@@ -60,18 +60,16 @@ impl Engine {
         internal_policy: &FrozenInternalAgentPolicy,
     ) -> Result<(), EngineError> {
         let policy = &self.inner.config.runtime.session_title;
-        if !policy.generate_on_first_turn
-            || matches!(
-                self.inner.store.get(session)?.meta.origin,
-                SessionOrigin::Delegated { .. }
-            )
+        if !policy.generate_on_first_turn {
+            return Ok(());
+        }
+        let projection = self.inner.store.get(session)?;
+        if matches!(projection.meta.origin, SessionOrigin::Delegated { .. })
+            || !projection.automatic_title_eligible
         {
             return Ok(());
         }
-        let events = self.inner.store.get(session)?.log.event_snapshot();
-        if !automatic_title_eligible(&events) {
-            return Ok(());
-        }
+        let events = projection.log.event_snapshot();
         let inputs = events
             .iter()
             .filter(|event| event.seq <= input_through_seq)
@@ -145,13 +143,12 @@ impl Engine {
         session: SessionId,
     ) -> Result<(), EngineError> {
         let projection = self.inner.store.get(session)?;
-        if matches!(projection.meta.origin, SessionOrigin::Delegated { .. }) {
+        if matches!(projection.meta.origin, SessionOrigin::Delegated { .. })
+            || !projection.automatic_title_eligible
+        {
             return Ok(());
         }
         let events = projection.log.event_snapshot();
-        if !automatic_title_eligible(&events) {
-            return Ok(());
-        }
         let Some((run, input_through_seq)) = title_regeneration_target(&events) else {
             return Ok(());
         };
@@ -203,7 +200,7 @@ type PersistedRunPolicy = (
 );
 
 pub(super) fn latest_run_policy(
-    events: &[StoredEvent],
+    events: &[Arc<StoredEvent>],
     run_id: RunId,
 ) -> Result<PersistedRunPolicy, EngineError> {
     events
@@ -226,7 +223,7 @@ pub(super) fn latest_run_policy(
         .ok_or(EngineError::MissingRun(run_id))
 }
 
-pub(crate) fn title_regeneration_target(events: &[StoredEvent]) -> Option<(RunId, u64)> {
+pub(crate) fn title_regeneration_target(events: &[Arc<StoredEvent>]) -> Option<(RunId, u64)> {
     events.iter().rev().find_map(|event| match &event.payload {
         Event::ModelTurnCommitted {
             input_through_seq, ..
@@ -235,7 +232,7 @@ pub(crate) fn title_regeneration_target(events: &[StoredEvent]) -> Option<(RunId
     })
 }
 
-pub(crate) fn active_fallback_index(events: &[StoredEvent], run_id: RunId) -> usize {
+pub(crate) fn active_fallback_index(events: &[Arc<StoredEvent>], run_id: RunId) -> usize {
     events
         .iter()
         .rev()
@@ -267,31 +264,6 @@ pub(super) fn validate_generated_title(value: &str, max_chars: usize) -> Option<
     }
     let bounded = value.chars().take(max_chars).collect::<String>();
     SessionTitle::new(bounded).ok()
-}
-
-pub(super) fn automatic_title_eligible(events: &[StoredEvent]) -> bool {
-    let mut latest_automatic = None;
-    let mut latest_user = None;
-    for event in events {
-        if let Event::SessionTitleCommitted { change, .. } = &event.payload {
-            match change {
-                SessionTitleChange::InternalAgentSet { .. }
-                | SessionTitleChange::FallbackSet { .. } => latest_automatic = Some(event.seq),
-                SessionTitleChange::DelegatedSet { .. } => {
-                    latest_user = Some((event.seq, false));
-                }
-                SessionTitleChange::UserSet { .. } | SessionTitleChange::UserClear { .. } => {
-                    latest_user = Some((event.seq, false));
-                }
-                SessionTitleChange::UserReset { .. } => latest_user = Some((event.seq, true)),
-            }
-        }
-    }
-    match latest_user {
-        Some((_, false)) => false,
-        Some((reset_seq, true)) => latest_automatic.is_none_or(|seq| seq < reset_seq),
-        None => latest_automatic.is_none(),
-    }
 }
 
 pub(super) fn fallback_title(input: &str, max_chars: usize) -> Option<SessionTitle> {
