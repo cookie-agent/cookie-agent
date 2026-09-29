@@ -1265,7 +1265,7 @@ impl SessionStore {
             .resident
             .remove(&id);
         if let Some(projection) = projection {
-            let _ = projection.log.suspend_writer();
+            projection.log.suspend_writer();
             self.residency
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1371,9 +1371,6 @@ impl SessionStore {
         if !session.log.is_persisted() {
             return Ok(false);
         }
-        // Stream records may be published before their grouped sync. Flush before
-        // removing the resident projection so eviction never outruns durability.
-        session.log.flush()?;
         let summary = SessionSummary {
             meta: session.meta.clone(),
             usage: session.usage.clone(),
@@ -1703,7 +1700,7 @@ impl SessionStore {
                 through_seq,
             });
         }
-        source.log.suspend_writer()?;
+        source.log.suspend_writer();
         let source_events = source.log.all_events();
         let prefix = source_events
             .iter()
@@ -1804,7 +1801,7 @@ impl SessionStore {
                     input_through_seq: through_seq,
                 },
             )?;
-            log.suspend_writer()?;
+            log.suspend_writer();
             let fork_projection = projection(log)?;
             write_cache(
                 &temporary.join(SESSION_META_FILE),
@@ -2827,7 +2824,7 @@ impl SessionStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         for session in residency.resident.values() {
-            let _ = session.log.suspend_writer();
+            session.log.suspend_writer();
         }
         // Dropping every tree entry drops every tree lock and every tree
         // authority, which invalidates all of their logs at once.

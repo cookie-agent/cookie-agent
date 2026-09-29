@@ -4,14 +4,12 @@ use std::{
     borrow::Borrow,
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
-    io::{self, BufWriter, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    thread::{self, JoinHandle},
-    time::{Duration, Instant},
 };
 
 #[cfg(unix)]
@@ -70,7 +68,7 @@ pub struct EventLog {
     _test_authority: Option<WriteAuthority>,
     #[cfg(test)]
     append_authorization_hook: Mutex<Option<AppendAuthorizationHook>>,
-    writer: Mutex<Option<Arc<EventLogWriter>>>,
+    writer: Mutex<Option<EventLogWriter>>,
 }
 
 #[derive(Clone, Copy)]
@@ -79,40 +77,16 @@ enum TornTail {
     Ignore,
 }
 
-const EVENT_SYNC_WINDOW: Duration = Duration::from_millis(8);
-const EVENT_SYNC_BYTES: usize = 32 * 1024;
-
+/// The open append handle of a persisted log. Every append is synced before
+/// it is published, so nothing is ever buffered here: no flush, no deferred
+/// sync, no background failure to report later.
 #[derive(Debug)]
 struct EventLogWriter {
-    shared: Arc<EventLogWriterShared>,
-    worker: Mutex<Option<JoinHandle<()>>>,
-}
-
-#[derive(Debug)]
-struct EventLogWriterShared {
     path: PathBuf,
-    state: Mutex<EventLogWriterState>,
-    wake: Condvar,
-    #[cfg(test)]
-    before_sync: Mutex<Option<SyncHook>>,
-}
-
-#[derive(Debug)]
-struct EventLogWriterState {
-    output: BufWriter<fs::File>,
-    unsynced_bytes: usize,
-    sync_deadline: Option<Instant>,
+    file: fs::File,
     directory_sync_pending: bool,
-    background_error: Option<WriterFailure>,
     #[cfg(test)]
-    background_sync_paused: bool,
-    shutdown: bool,
-}
-
-#[derive(Clone, Debug)]
-struct WriterFailure {
-    kind: io::ErrorKind,
-    message: String,
+    before_sync: Option<SyncHook>,
 }
 
 #[cfg(test)]
@@ -281,7 +255,7 @@ fn usage_total(seq: u64, usage: &cookie_agent_protocol::Usage) -> Option<(u64, u
 }
 
 impl EventLogWriter {
-    fn open(path: &Path) -> Result<Arc<Self>, EventLogError> {
+    fn open(path: &Path) -> Result<Self, EventLogError> {
         let created = !path.exists();
         let mut options = OpenOptions::new();
         options.create(true).append(true);
@@ -303,146 +277,35 @@ impl EventLogWriter {
             path: path.to_owned(),
             source,
         })?;
-        let shared = Arc::new(EventLogWriterShared {
+        Ok(Self {
             path: path.to_owned(),
-            state: Mutex::new(EventLogWriterState {
-                output: BufWriter::new(file),
-                unsynced_bytes: 0,
-                sync_deadline: None,
-                directory_sync_pending: created,
-                background_error: None,
-                #[cfg(test)]
-                background_sync_paused: false,
-                shutdown: false,
-            }),
-            wake: Condvar::new(),
+            file,
+            directory_sync_pending: created,
             #[cfg(test)]
-            before_sync: Mutex::new(None),
-        });
-        let worker_shared = shared.clone();
-        let worker = thread::Builder::new()
-            .name("event-log-sync".into())
-            .spawn(move || event_log_sync_worker(&worker_shared))
-            .map_err(|source| EventLogError::Io {
-                path: path.to_owned(),
-                source,
-            })?;
-        Ok(Arc::new(Self {
-            shared,
-            worker: Mutex::new(Some(worker)),
-        }))
+            before_sync: None,
+        })
     }
 
-    fn append(&self, bytes: &[u8], barrier: bool) -> Result<(), EventLogError> {
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(failure) = state.background_error.take() {
-            return Err(self.shared.failure(failure));
-        }
-        state
-            .output
-            .write_all(bytes)
-            .and_then(|()| state.output.write_all(b"\n"))
-            .map_err(|source| self.shared.io_error(source))?;
-        state.unsynced_bytes = state.unsynced_bytes.saturating_add(bytes.len() + 1);
-        if barrier || state.unsynced_bytes >= EVENT_SYNC_BYTES {
-            self.shared.sync(&mut state)?;
-        } else if state.sync_deadline.is_none() {
-            state.sync_deadline = Some(Instant::now() + EVENT_SYNC_WINDOW);
-            self.shared.wake.notify_one();
-        }
-        Ok(())
-    }
-
-    fn flush(&self) -> Result<(), EventLogError> {
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(failure) = state.background_error.take() {
-            return Err(self.shared.failure(failure));
-        }
-        if state.unsynced_bytes > 0 || state.directory_sync_pending {
-            self.shared.sync(&mut state)?;
-        }
-        Ok(())
-    }
-
-    fn shutdown(&self) {
-        {
-            let mut state = self
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.shutdown = true;
-            self.shared.wake.notify_one();
-        }
-        if let Some(worker) = self
-            .worker
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-        {
-            let _ = worker.join();
-        }
-    }
-
-    #[cfg(test)]
-    fn install_sync_hook(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
-        let (reached, reached_receiver) = std::sync::mpsc::channel();
-        let (release, release_receiver) = std::sync::mpsc::channel();
-        *self
-            .shared
-            .before_sync
-            .lock()
-            .expect("event log sync hook lock poisoned") = Some(SyncHook {
-            reached,
-            release: release_receiver,
-        });
-        (reached_receiver, release)
-    }
-
-    #[cfg(test)]
-    fn pause_background_sync(&self) {
-        self.shared
-            .state
-            .lock()
-            .expect("event log writer state lock poisoned")
-            .background_sync_paused = true;
-        self.shared.wake.notify_one();
-    }
-}
-
-impl EventLogWriterShared {
-    fn sync(&self, state: &mut EventLogWriterState) -> Result<(), EventLogError> {
+    /// Writes one newline-terminated record and syncs it (and, after the
+    /// file was created, its directory entry).
+    fn append(&mut self, record: &[u8]) -> Result<(), EventLogError> {
         #[cfg(test)]
-        if let Some(hook) = self
-            .before_sync
-            .lock()
-            .expect("event log sync hook lock poisoned")
-            .take()
-        {
+        if let Some(hook) = self.before_sync.take() {
             let _ = hook.reached.send(());
             let _ = hook.release.recv();
         }
-        state
-            .output
-            .flush()
-            .and_then(|()| state.output.get_ref().sync_data())
+        self.file
+            .write_all(record)
             .map_err(|source| self.io_error(source))?;
-        if state.directory_sync_pending
+        self.file
+            .sync_data()
+            .map_err(|source| self.io_error(source))?;
+        if self.directory_sync_pending
             && let Some(parent) = self.path.parent()
         {
             fsync_directory(parent)?;
-            state.directory_sync_pending = false;
+            self.directory_sync_pending = false;
         }
-        state.unsynced_bytes = 0;
-        state.sync_deadline = None;
         Ok(())
     }
 
@@ -450,56 +313,6 @@ impl EventLogWriterShared {
         EventLogError::Io {
             path: self.path.clone(),
             source,
-        }
-    }
-
-    fn failure(&self, failure: WriterFailure) -> EventLogError {
-        self.io_error(io::Error::new(failure.kind, failure.message))
-    }
-}
-
-fn event_log_sync_worker(shared: &EventLogWriterShared) {
-    let mut state = shared
-        .state
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    loop {
-        if state.shutdown {
-            if state.unsynced_bytes > 0 || state.directory_sync_pending {
-                let _ = shared.sync(&mut state);
-            }
-            return;
-        }
-        #[cfg(test)]
-        if state.background_sync_paused {
-            state = shared
-                .wake
-                .wait(state)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            continue;
-        }
-        let Some(deadline) = state.sync_deadline else {
-            state = shared
-                .wake
-                .wait(state)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            continue;
-        };
-        let now = Instant::now();
-        if now < deadline {
-            let (next_state, _) = shared
-                .wake
-                .wait_timeout(state, deadline - now)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state = next_state;
-            continue;
-        }
-        if let Err(EventLogError::Io { source, .. }) = shared.sync(&mut state) {
-            state.background_error = Some(WriterFailure {
-                kind: source.kind(),
-                message: source.to_string(),
-            });
-            state.sync_deadline = None;
         }
     }
 }
@@ -743,10 +556,11 @@ impl EventLog {
             path: self.path.clone(),
             message: error.to_string(),
         })?;
-        let bytes = serde_json::to_vec(&event).map_err(|source| EventLogError::Json {
+        let mut record = serde_json::to_vec(&event).map_err(|source| EventLogError::Json {
             path: self.path.clone(),
             source,
         })?;
+        record.push(b'\n');
         let mut validation = self
             .validation
             .lock()
@@ -766,9 +580,7 @@ impl EventLog {
         drop(validation);
         drop(events);
         let write_result = if self.persisted.load(Ordering::Acquire) {
-            self.persistent_writer().and_then(|writer| {
-                writer.append(&bytes, event_requires_durable_barrier(&event.payload))
-            })
+            self.write_record(&record)
         } else {
             Ok(())
         };
@@ -950,47 +762,31 @@ impl EventLog {
         self.persisted.store(true, Ordering::Release);
     }
 
-    pub(crate) fn flush(&self) -> Result<(), EventLogError> {
-        if self.read_only {
-            return Ok(());
-        }
+    /// Closes the append handle; the next append reopens it.
+    pub(crate) fn suspend_writer(&self) {
         let _append = self
             .append
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        if let Some(writer) = writer {
-            writer.flush()?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn suspend_writer(&self) -> Result<(), EventLogError> {
-        if self.read_only {
-            return Ok(());
-        }
-        let _append = self
-            .append
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let writer = self
-            .writer
+        self.writer
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
-        if let Some(writer) = writer {
-            let result = writer.flush();
-            writer.shutdown();
-            result?;
-        }
-        Ok(())
     }
 
-    fn persistent_writer(&self) -> Result<Arc<EventLogWriter>, EventLogError> {
+    /// Appends one record and syncs it before returning. The caller holds
+    /// `append`.
+    fn write_record(&self, record: &[u8]) -> Result<(), EventLogError> {
+        let mut writer = self.open_writer()?;
+        writer
+            .as_mut()
+            .expect("event log writer initialized")
+            .append(record)
+    }
+
+    fn open_writer(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Option<EventLogWriter>>, EventLogError> {
         if self.read_only {
             return Err(EventLogError::ReadOnly(self.path.clone()));
         }
@@ -1001,19 +797,25 @@ impl EventLog {
         if writer.is_none() {
             *writer = Some(EventLogWriter::open(&self.path)?);
         }
-        Ok(writer
-            .as_ref()
-            .expect("event log writer initialized")
-            .clone())
+        Ok(writer)
     }
 
+    /// Blocks the next record's sync until the returned sender releases it.
     #[cfg(test)]
     pub(crate) fn install_sync_hook_for_test(
         &self,
     ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
-        self.persistent_writer()
+        let (reached, reached_receiver) = std::sync::mpsc::channel();
+        let (release, release_receiver) = std::sync::mpsc::channel();
+        self.open_writer()
             .expect("open event log writer")
-            .install_sync_hook()
+            .as_mut()
+            .expect("event log writer initialized")
+            .before_sync = Some(SyncHook {
+            reached,
+            release: release_receiver,
+        });
+        (reached_receiver, release)
     }
 
     #[cfg(test)]
@@ -1033,13 +835,6 @@ impl EventLog {
     }
 
     #[cfg(test)]
-    pub(crate) fn pause_background_sync_for_test(&self) {
-        self.persistent_writer()
-            .expect("open event log writer")
-            .pause_background_sync();
-    }
-
-    #[cfg(test)]
     pub(crate) fn writer_is_open_for_test(&self) -> bool {
         self.writer
             .lock()
@@ -1050,97 +845,6 @@ impl EventLog {
     #[cfg(test)]
     fn snapshot_lock_available_for_test(&self) -> bool {
         self.events.try_lock().is_ok()
-    }
-}
-
-impl Drop for EventLog {
-    fn drop(&mut self) {
-        if let Some(writer) = self
-            .writer
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-        {
-            writer.shutdown();
-        }
-    }
-}
-
-fn event_requires_durable_barrier(payload: &EventPayload) -> bool {
-    match payload {
-        EventPayload::TextDelta { .. }
-        | EventPayload::ReasoningDelta { .. }
-        | EventPayload::ToolCallProgress { .. } => false,
-        EventPayload::SessionCreated { .. }
-        | EventPayload::SessionReverted { .. }
-        | EventPayload::SessionPermissionOverlaySet { .. }
-        | EventPayload::SkillLoaded { .. }
-        | EventPayload::SkillInvocationNoted { .. }
-        | EventPayload::AgentMdLoaded { .. }
-        | EventPayload::AgentMdSkipped { .. }
-        | EventPayload::PluginEventAdded { .. }
-        | EventPayload::PluginDiagnostic { .. }
-        | EventPayload::GoalActivated { .. }
-        | EventPayload::GoalChecklistRevised { .. }
-        | EventPayload::GoalLifecycleChanged { .. }
-        | EventPayload::ProducerMessageAccepted { .. }
-        | EventPayload::ProducerMessageAdmitted { .. }
-        | EventPayload::ProducerMessagesClaimed { .. }
-        | EventPayload::ProducerMessagesReleased { .. }
-        | EventPayload::ProducerMessageConsumed { .. }
-        | EventPayload::ProducerMessageDiscarded { .. }
-        | EventPayload::RunStarted { .. }
-        | EventPayload::MessageInjected { .. }
-        | EventPayload::UserInputAdmitted { .. }
-        | EventPayload::UserInputSubmitted { .. }
-        | EventPayload::UserInputTransformed { .. }
-        | EventPayload::UserInputRecalled { .. }
-        | EventPayload::UserInputRecalledV2 { .. }
-        | EventPayload::UserInputApplied { .. }
-        | EventPayload::DelegatedContextSeeded { .. }
-        | EventPayload::RunCompleted { .. }
-        | EventPayload::RunFailed { .. }
-        | EventPayload::RunCancelled { .. }
-        | EventPayload::RunInterrupted { .. }
-        | EventPayload::ModelAttemptStarted { .. }
-        | EventPayload::ModelRequestPrepared { .. }
-        | EventPayload::AttemptAbandoned { .. }
-        | EventPayload::ModelReplayEvaluated { .. }
-        | EventPayload::ModelTurnCommitted { .. }
-        | EventPayload::ModelUsageRecorded { .. }
-        | EventPayload::ModelFallback { .. }
-        | EventPayload::ToolCallStarted { .. }
-        | EventPayload::ToolCallTerminated { .. }
-        | EventPayload::ToolOutputElided { .. }
-        | EventPayload::ToolStdinSubmitted { .. }
-        | EventPayload::ToolCallLinked { .. }
-        | EventPayload::DelegationReserved { .. }
-        | EventPayload::DelegationStarted { .. }
-        | EventPayload::DelegationRunStarted { .. }
-        | EventPayload::DelegationRunAttached { .. }
-        | EventPayload::DelegationFinished { .. }
-        | EventPayload::DelegateQueued { .. }
-        | EventPayload::DelegateFinished { .. }
-        | EventPayload::DelegateFinishedV2 { .. }
-        | EventPayload::DelegateChildTerminated { .. }
-        | EventPayload::ApprovalRequested { .. }
-        | EventPayload::ApprovalEvaluated { .. }
-        | EventPayload::ApprovalEscalated { .. }
-        | EventPayload::ApprovalUserDecisionRecorded { .. }
-        | EventPayload::ApprovalFinalized { .. }
-        | EventPayload::ApprovalCancelled { .. }
-        | EventPayload::ApprovalDoomLoopDetected { .. }
-        | EventPayload::TreeApprovalGrantCommitted { .. }
-        | EventPayload::InternalAgentStarted { .. }
-        | EventPayload::InternalAgentCompleted { .. }
-        | EventPayload::InternalAgentUsageRecorded { .. }
-        | EventPayload::InternalAgentFailed { .. }
-        | EventPayload::InternalAgentCancelled { .. }
-        | EventPayload::InternalAgentInterrupted { .. }
-        | EventPayload::InternalAgentFallback { .. }
-        | EventPayload::ContextCheckpointCommitted { .. }
-        | EventPayload::ContextRehydrated { .. }
-        | EventPayload::SessionTitleCommitted { .. } => true,
     }
 }
 

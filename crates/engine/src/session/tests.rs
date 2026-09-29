@@ -422,11 +422,6 @@ fn foreign_get_parses_an_unchanged_log_once() {
             },
         )
         .expect("owner append");
-    owner
-        .log(session_id)
-        .unwrap()
-        .flush()
-        .expect("flush owner log");
     let refreshed = observer.get(session_id).expect("read after append");
     assert_eq!(
         observer.log_open_count(session_id),
@@ -1443,13 +1438,6 @@ fn stale_child_append_causes_refold() {
             // Move the log this fold already fingerprinted, for real.
             store.open_for_write(child).expect("adopt the child");
             append_title(&store, child, "appended during the read phase");
-            // Keep the appended record in the log's writer: the retry must be
-            // attributable to this append alone, not to a background sync.
-            store
-                .get_resident(child)
-                .expect("resident child")
-                .log
-                .pause_background_sync_for_test();
         } else {
             recorded.store(store.is_tree_loaded(root), Ordering::SeqCst);
         }
@@ -1523,11 +1511,6 @@ fn a_fold_that_always_loses_the_race_reports_the_tree_contended() {
         };
         if !store.is_owned(child) {
             store.open_for_write(child).expect("adopt the child");
-            store
-                .get_resident(child)
-                .expect("resident child")
-                .log
-                .pause_background_sync_for_test();
         }
         // Append after every read phase, so no fold's fingerprints survive
         // to its install — including the one taken with `mutation` held.
@@ -2267,9 +2250,8 @@ fn subagent_index_corruption_is_rebuilt_not_fatal() {
     );
 }
 
-/// Starts a model attempt in the session's first run, returning the run and
-/// attempt a `TextDelta` needs.
-fn start_test_attempt(store: &SessionStore, session_id: SessionId) -> (RunId, AttemptId) {
+/// Starts a model attempt in the session's first run.
+fn start_test_attempt(store: &SessionStore, session_id: SessionId) -> TestAttempt {
     let projection = store.get(session_id).expect("session projection");
     let (run_id, resolved_model, prompt_fingerprint) = projection
         .log
@@ -2300,50 +2282,41 @@ fn start_test_attempt(store: &SessionStore, session_id: SessionId) -> (RunId, At
                 fallback_index: 0,
                 retry_ordinal: 0,
                 resolved_model,
-                prompt_fingerprint,
+                prompt_fingerprint: prompt_fingerprint.clone(),
             },
         )
         .expect("start attempt");
-    (run_id, attempt_id)
+    TestAttempt {
+        run_id,
+        attempt_id,
+        prompt_fingerprint,
+    }
 }
 
-fn append_test_delta(
-    store: &SessionStore,
-    session_id: SessionId,
+struct TestAttempt {
     run_id: RunId,
     attempt_id: AttemptId,
-    text: &str,
+    prompt_fingerprint: cookie_agent_protocol::Sha256Digest,
+}
+
+/// Appends an in-run record the projection fold ignores, which only moves
+/// the metadata tip.
+fn append_test_in_run_record(
+    store: &SessionStore,
+    session_id: SessionId,
+    attempt: &TestAttempt,
 ) -> cookie_agent_protocol::StoredEvent {
     store
         .append(
             session_id,
-            Some(run_id),
+            Some(attempt.run_id),
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-            EventPayload::TextDelta {
-                attempt_id,
-                text: text.into(),
+            EventPayload::ModelRequestPrepared {
+                attempt_id: attempt.attempt_id,
+                prompt_fingerprint: attempt.prompt_fingerprint.clone(),
             },
         )
-        .expect("append delta")
-}
-
-fn append_pending_test_delta(
-    store: &SessionStore,
-    session_id: SessionId,
-    text: &str,
-) -> (
-    Arc<crate::events::EventLog>,
-    cookie_agent_protocol::StoredEvent,
-) {
-    let (run_id, attempt_id) = start_test_attempt(store, session_id);
-    let log = store
-        .get(session_id)
-        .expect("session projection")
-        .log
-        .clone();
-    log.pause_background_sync_for_test();
-    let delta = append_test_delta(store, session_id, run_id, attempt_id, text);
-    (log, delta)
+        .expect("append in-run record")
 }
 
 fn read_test_meta_cache(store: &SessionStore, id: SessionId) -> cookie_agent_protocol::SessionMeta {
@@ -2351,11 +2324,11 @@ fn read_test_meta_cache(store: &SessionStore, id: SessionId) -> cookie_agent_pro
     super::read_cache(&meta_path(&dir), &dir.join(EVENTS_FILE)).expect("read metadata cache")
 }
 
-/// In-run stream records leave the `metadata` cache alone (they only move its
-/// tip); the run's fold-consumed terminal event brings it fully up to date, and
-/// outside a run the tip is written through.
+/// In-run records the fold ignores leave the `metadata` cache alone (they
+/// only move its tip); the run's fold-consumed terminal event brings it fully
+/// up to date, and outside a run the tip is written through.
 #[test]
-fn in_run_stream_records_defer_the_metadata_cache_until_the_run_ends() {
+fn in_run_fold_ignored_records_defer_the_metadata_cache_until_the_run_ends() {
     let temporary = private_tempdir();
     let cwd = temporary.path().join("workspace");
     create_private_test_dir_all(&cwd);
@@ -2365,15 +2338,15 @@ fn in_run_stream_records_defer_the_metadata_cache_until_the_run_ends() {
     assert_eq!(before, store.get(session_id).unwrap().meta);
 
     // `ModelAttemptStarted` is not fold-consumed either.
-    let (run_id, attempt_id) = start_test_attempt(&store, session_id);
+    let attempt = start_test_attempt(&store, session_id);
     let mut last = before.last_event_seq;
-    for text in ["one", "two", "three"] {
-        last = append_test_delta(&store, session_id, run_id, attempt_id, text).seq;
+    for _ in 0..3 {
+        last = append_test_in_run_record(&store, session_id, &attempt).seq;
     }
     assert_eq!(
         read_test_meta_cache(&store, session_id),
         before,
-        "stream records inside a run do not rewrite metadata"
+        "fold-ignored records inside a run do not rewrite metadata"
     );
     assert!(store.meta_cache_is_deferred(session_id));
     assert_eq!(store.get(session_id).unwrap().meta.last_event_seq, last);
@@ -2381,7 +2354,7 @@ fn in_run_stream_records_defer_the_metadata_cache_until_the_run_ends() {
     store
         .append(
             session_id,
-            Some(run_id),
+            Some(attempt.run_id),
             test_origin(),
             EventPayload::RunCompleted { final_text: None },
         )
@@ -2391,7 +2364,7 @@ fn in_run_stream_records_defer_the_metadata_cache_until_the_run_ends() {
     assert!(!store.meta_cache_is_deferred(session_id));
 
     // No run is in flight any more, so nothing would close a deferral.
-    let idle = append_test_delta(&store, session_id, run_id, attempt_id, "late");
+    let idle = append_test_in_run_record(&store, session_id, &attempt);
     let cached = read_test_meta_cache(&store, session_id);
     assert_eq!(cached.last_event_seq, idle.seq);
     assert_eq!(cached, store.get(session_id).unwrap().meta);
@@ -2409,8 +2382,8 @@ fn deferred_metadata_tip_is_flushed_on_eviction_and_release() {
     let store = SessionStore::open(&data, &cwd).unwrap();
 
     let evicted = persist_test_session(&store);
-    let (run_id, attempt_id) = start_test_attempt(&store, evicted);
-    append_test_delta(&store, evicted, run_id, attempt_id, "before eviction");
+    let attempt = start_test_attempt(&store, evicted);
+    append_test_in_run_record(&store, evicted, &attempt);
     let resident = store.get(evicted).unwrap().meta.clone();
     assert_ne!(read_test_meta_cache(&store, evicted), resident);
     assert!(store.evict(evicted).expect("evict"));
@@ -2418,8 +2391,8 @@ fn deferred_metadata_tip_is_flushed_on_eviction_and_release() {
     assert!(!store.meta_cache_is_deferred(evicted));
 
     let released = persist_test_session(&store);
-    let (run_id, attempt_id) = start_test_attempt(&store, released);
-    append_test_delta(&store, released, run_id, attempt_id, "before release");
+    let attempt = start_test_attempt(&store, released);
+    append_test_in_run_record(&store, released, &attempt);
     let resident = store.get(released).unwrap().meta.clone();
     let session_dir = store.session_dir(released);
     assert_ne!(read_test_meta_cache(&store, released), resident);
@@ -2431,109 +2404,43 @@ fn deferred_metadata_tip_is_flushed_on_eviction_and_release() {
     );
 }
 
+/// A fork closes its source's append handle; the source's next append opens
+/// it again.
 #[test]
-fn eviction_waits_for_pending_stream_records_to_sync() {
+fn fork_suspends_the_source_writer_until_its_next_append() {
     let temporary = private_tempdir();
     let cwd = temporary.path().join("workspace");
     create_private_test_dir_all(&cwd);
     let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
     let session_id = persist_test_session(&store);
-    let (log, _) = append_pending_test_delta(&store, session_id, "durable before eviction");
-    let (sync_reached, release_sync) = log.install_sync_hook_for_test();
-    let (eviction_done, eviction_result) = mpsc::channel();
-    let evicting = {
-        let store = store.clone();
-        thread::spawn(move || {
-            eviction_done
-                .send(store.evict(session_id))
-                .expect("report eviction result");
-        })
-    };
-
-    sync_reached.recv().expect("eviction reached pending sync");
-    assert!(matches!(
-        eviction_result.try_recv(),
-        Err(mpsc::TryRecvError::Empty)
-    ));
-    release_sync.send(()).expect("release eviction sync");
-    assert!(
-        eviction_result
-            .recv()
-            .expect("receive eviction result")
-            .expect("evict session")
-    );
-    evicting.join().expect("eviction thread");
-
-    let durable = crate::events::load_jsonl::<cookie_agent_protocol::StoredEvent>(
-        &store.session_dir(session_id).join("events.jsonl"),
-    )
-    .expect("read evicted event log");
-    assert!(durable.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::TextDelta { text, .. } if text == "durable before eviction"
-    )));
-}
-
-#[test]
-fn fork_flushes_pending_source_records_before_copying() {
-    let temporary = private_tempdir();
-    let cwd = temporary.path().join("workspace");
-    create_private_test_dir_all(&cwd);
-    let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
-    let session_id = persist_test_session(&store);
-    let (log, delta) = append_pending_test_delta(&store, session_id, "copied after sync");
+    let attempt = start_test_attempt(&store, session_id);
+    let log = store
+        .get(session_id)
+        .expect("session projection")
+        .log
+        .clone();
+    let prepared = append_test_in_run_record(&store, session_id, &attempt);
     assert!(log.writer_is_open_for_test());
-    let delta_seq = delta.seq;
-    let run_id = delta.run_id.expect("delta run id");
-    let EventPayload::TextDelta { attempt_id, .. } = delta.payload else {
-        panic!("pending event is a text delta")
-    };
-    let (sync_reached, release_sync) = log.install_sync_hook_for_test();
-    let (fork_done, fork_result) = mpsc::channel();
-    let forking = {
-        let store = store.clone();
-        thread::spawn(move || {
-            fork_done
-                .send(store.fork(
-                    session_id,
-                    delta_seq,
-                    cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
-                ))
-                .expect("report fork result");
-        })
-    };
-
-    sync_reached.recv().expect("fork reached source sync");
-    assert!(matches!(
-        fork_result.try_recv(),
-        Err(mpsc::TryRecvError::Empty)
-    ));
-    release_sync.send(()).expect("release fork sync");
-    let fork_id = fork_result
-        .recv()
-        .expect("receive fork result")
+    let fork_id = store
+        .fork(
+            session_id,
+            prepared.seq,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("fork session");
-    forking.join().expect("fork thread");
     assert!(!log.writer_is_open_for_test());
-
     let copied = store.get(fork_id).expect("fork projection").log.events();
     assert!(copied.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::TextDelta { text, .. } if text == "copied after sync"
+        EventPayload::ModelRequestPrepared { attempt_id, .. } if *attempt_id == attempt.attempt_id
     )));
-    store
-        .append(
-            session_id,
-            Some(run_id),
-            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-            EventPayload::ReasoningDelta {
-                attempt_id,
-                text: "reopened after fork".into(),
-            },
-        )
-        .expect("append after suspended fork source");
+    let reopened = append_test_in_run_record(&store, session_id, &attempt);
     assert!(log.writer_is_open_for_test());
-    log.flush().expect("flush reopened source writer");
+    let durable = crate::events::load_jsonl::<cookie_agent_protocol::StoredEvent>(
+        &store.session_dir(session_id).join("events.jsonl"),
+    )
+    .expect("read source event log");
+    assert_eq!(durable.last().map(|event| event.seq), Some(reopened.seq));
 }
 
 #[cfg(unix)]

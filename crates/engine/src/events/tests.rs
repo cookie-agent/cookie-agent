@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
+use std::{collections::BTreeMap, fs, path::Path, sync::Arc, thread};
 
 use cookie_agent_protocol::{
     AgentId, AgentMode, AgentRevision, ApprovalReasonCode, ApprovalTrigger, ArtifactReference,
@@ -1602,20 +1602,22 @@ fn rejected_append_and_persistence_failure_rebuild_incremental_state() {
     assert_log_rebuilt_against_reference(&rejected);
 
     let persisted_directory = tempdir().unwrap();
-    let persisted_path = persisted_directory.path().join("events.jsonl");
+    let persisted_path = persisted_directory
+        .path()
+        .join("session")
+        .join("events.jsonl");
+    fs::create_dir(persisted_path.parent().unwrap()).unwrap();
     let persisted = EventLog::create(
-        persisted_path,
+        persisted_path.clone(),
         creation.session_id,
         cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
         creation.payload,
     )
     .unwrap();
     let before = persisted.event_snapshot();
-    let writer = persisted.persistent_writer().expect("event log writer");
-    writer.shared.state.lock().unwrap().background_error = Some(WriterFailure {
-        kind: io::ErrorKind::Other,
-        message: "injected persistence failure".into(),
-    });
+    // The next append has to reopen a file whose directory is gone.
+    persisted.suspend_writer();
+    fs::remove_dir_all(persisted_path.parent().unwrap()).unwrap();
     assert!(
         persisted
             .append(
@@ -1851,9 +1853,9 @@ fn read_only_event_log_rejects_appends() {
 fn torn_tail_recovery_can_write_while_retained_writer_is_open() {
     let directory = tempdir().expect("temporary directory");
     let path = directory.path().join("events.jsonl");
-    let writer = EventLogWriter::open(&path).expect("open retained writer");
+    let mut writer = EventLogWriter::open(&path).expect("open retained writer");
     writer
-        .append(br#"{"record":1}"#, true)
+        .append(b"{\"record\":1}\n")
         .expect("append durable record");
     OpenOptions::new()
         .append(true)
@@ -1867,7 +1869,7 @@ fn torn_tail_recovery_can_write_while_retained_writer_is_open() {
         vec![serde_json::json!({"record": 1})]
     );
     writer
-        .append(br#"{"record":2}"#, true)
+        .append(b"{\"record\":2}\n")
         .expect("resume retained writer");
     assert_eq!(
         load_jsonl::<Value>(&path).expect("load resumed log"),
@@ -1876,43 +1878,6 @@ fn torn_tail_recovery_can_write_while_retained_writer_is_open() {
             serde_json::json!({"record": 2}),
         ]
     );
-    writer.shutdown();
-}
-
-#[test]
-fn only_stream_records_skip_the_durable_barrier() {
-    let attempt_id = AttemptId(Uuid::from_u128(1));
-    let tool_call_id = ToolCallId(Uuid::from_u128(2));
-    assert!(!event_requires_durable_barrier(&EventPayload::TextDelta {
-        attempt_id,
-        text: "text".into(),
-    }));
-    assert!(!event_requires_durable_barrier(
-        &EventPayload::ReasoningDelta {
-            attempt_id,
-            text: "reasoning".into(),
-        }
-    ));
-    assert!(!event_requires_durable_barrier(
-        &EventPayload::ToolCallProgress {
-            tool_call_id,
-            message: SafeDisplayText::new("progress").expect("safe progress"),
-            display: None,
-        }
-    ));
-    assert!(event_requires_durable_barrier(
-        &EventPayload::UserInputAdmitted {
-            input: "steer".into(),
-        }
-    ));
-    assert!(event_requires_durable_barrier(
-        &EventPayload::ProducerMessagesClaimed {
-            message_ids: vec![cookie_agent_protocol::ProducerMessageId::new_v7()],
-        }
-    ));
-    assert!(event_requires_durable_barrier(
-        &EventPayload::ProducerMessagesReleased { claim_seq: 2 }
-    ));
 }
 
 #[test]
@@ -1964,168 +1929,6 @@ fn barrier_sync_precedes_publication_without_holding_snapshot_lock() {
             .len(),
         2
     );
-}
-
-#[test]
-fn barrier_sync_drains_all_preceding_stream_records() {
-    let directory = tempdir().expect("temporary directory");
-    let path = directory.path().join("events.jsonl");
-    let records = attribution_records();
-    let bytes = records
-        .iter()
-        .flat_map(|record| {
-            let mut line = serde_json::to_vec(record).expect("serialize event");
-            line.push(b'\n');
-            line
-        })
-        .collect::<Vec<_>>();
-    fs::write(&path, bytes).expect("write event history");
-    let log = EventLog::open(path.clone(), records[0].session_id).expect("open event log");
-    let run_id = records[1].run_id.expect("run id");
-    let (resolved_model, prompt_fingerprint) = records
-        .iter()
-        .rev()
-        .find_map(|event| match &event.payload {
-            EventPayload::ModelAttemptStarted {
-                resolved_model,
-                prompt_fingerprint,
-                ..
-            } => Some((resolved_model.clone(), prompt_fingerprint.clone())),
-            _ => None,
-        })
-        .expect("latest attempt");
-    let attempt_id = AttemptId(Uuid::from_u128(6));
-    log.append(
-        Some(run_id),
-        cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-        EventPayload::ModelAttemptStarted {
-            attempt_id,
-            attempt_ordinal: 6,
-            fallback_index: 2,
-            retry_ordinal: 1,
-            resolved_model,
-            prompt_fingerprint,
-        },
-    )
-    .expect("start attempt");
-    log.pause_background_sync_for_test();
-    log.append(
-        Some(run_id),
-        cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-        EventPayload::TextDelta {
-            attempt_id,
-            text: "buffered text".into(),
-        },
-    )
-    .expect("append text delta");
-    log.append(
-        Some(run_id),
-        cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-        EventPayload::ReasoningDelta {
-            attempt_id,
-            text: "buffered reasoning".into(),
-        },
-    )
-    .expect("append reasoning delta");
-    let (sync_reached, release_sync) = log.install_sync_hook_for_test();
-    let barrier = {
-        let log = log.clone();
-        thread::spawn(move || {
-            log.append(
-                Some(run_id),
-                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-                EventPayload::AttemptAbandoned {
-                    attempt_id,
-                    model_error: None,
-                },
-            )
-        })
-    };
-
-    sync_reached.recv().expect("barrier reached sync");
-    assert_eq!(
-        load_jsonl::<StoredEvent>(&path)
-            .expect("read pre-barrier prefix")
-            .len(),
-        records.len() + 1,
-        "stream records remain buffered until the barrier sync"
-    );
-    release_sync.send(()).expect("release barrier sync");
-    barrier
-        .join()
-        .expect("barrier thread")
-        .expect("append barrier");
-
-    let durable = load_jsonl::<StoredEvent>(&path).expect("read barrier-synced events");
-    assert!(matches!(
-        &durable[durable.len() - 3].payload,
-        EventPayload::TextDelta { text, .. } if text == "buffered text"
-    ));
-    assert!(matches!(
-        &durable[durable.len() - 2].payload,
-        EventPayload::ReasoningDelta { text, .. } if text == "buffered reasoning"
-    ));
-    assert!(matches!(
-        durable.last().map(|event| &event.payload),
-        Some(EventPayload::AttemptAbandoned { attempt_id: durable_attempt, .. })
-            if *durable_attempt == attempt_id
-    ));
-}
-
-#[test]
-fn buffered_records_become_durable_on_the_sync_deadline() {
-    let directory = tempdir().expect("temporary directory");
-    let path = directory.path().join("events.jsonl");
-    let writer = EventLogWriter::open(&path).expect("open writer");
-    let (sync_reached, release_sync) = writer.install_sync_hook();
-
-    writer
-        .append(br#"{"type":"text_delta"}"#, false)
-        .expect("buffer delta");
-    sync_reached.recv().expect("deadline reached sync");
-    assert!(fs::read(&path).expect("read pre-sync file").is_empty());
-    release_sync.send(()).expect("release deadline sync");
-    writer.flush().expect("wait for durable delta");
-
-    assert_eq!(
-        load_jsonl::<Value>(&path).expect("load durable delta"),
-        vec![serde_json::json!({"type": "text_delta"})]
-    );
-    writer.shutdown();
-}
-
-#[test]
-fn torn_buffered_tail_does_not_remove_a_durable_barrier() {
-    let directory = tempdir().expect("temporary directory");
-    let path = directory.path().join("events.jsonl");
-    let writer = EventLogWriter::open(&path).expect("open writer");
-    writer
-        .append(br#"{"type":"user_input_admitted"}"#, true)
-        .expect("sync barrier");
-    let (sync_reached, release_sync) = writer.install_sync_hook();
-    writer
-        .append(br#"{"type":"text_delta"}"#, false)
-        .expect("buffer delta");
-    sync_reached.recv().expect("delta reached sync");
-    OpenOptions::new()
-        .append(true)
-        .open(&path)
-        .expect("open crash writer")
-        .write_all(br#"{"type":"text_"#)
-        .expect("write torn delta");
-
-    assert_eq!(
-        load_jsonl::<Value>(&path).expect("recover torn log"),
-        vec![serde_json::json!({"type": "user_input_admitted"})]
-    );
-    assert_eq!(
-        fs::read(&path).expect("read recovered log"),
-        br#"{"type":"user_input_admitted"}
-"#
-    );
-    release_sync.send(()).expect("release delta sync");
-    writer.flush().expect("finish writer");
-    writer.shutdown();
 }
 
 #[test]
