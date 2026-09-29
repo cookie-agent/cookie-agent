@@ -2624,6 +2624,122 @@ fn managed_shipped_headers_reach_manifest_blueprints() {
     runtime.resolve(&binding.selection).unwrap();
 }
 
+#[tokio::test]
+async fn bedrock_claude_variants_send_anthropic_thinking_and_others_reasoning_config() {
+    let cases = [
+        (
+            "anthropic.claude-sonnet-4-6",
+            r#"{ type = "effort", value = "high" }"#,
+            serde_json::json!({
+                "thinking": { "type": "adaptive", "display": "summarized" },
+                "output_config": { "effort": "high" }
+            }),
+        ),
+        (
+            "us.anthropic.claude-opus-4-7",
+            r#"{ type = "toggle", enabled = true }"#,
+            serde_json::json!({ "thinking": { "type": "adaptive", "display": "summarized" } }),
+        ),
+        (
+            "us.anthropic.claude-opus-4-7",
+            r#"{ type = "toggle", enabled = false }"#,
+            serde_json::json!({ "thinking": { "type": "disabled" } }),
+        ),
+        (
+            "anthropic.claude-sonnet-4-6",
+            r#"{ type = "budget_tokens", value = 4096 }"#,
+            serde_json::json!({ "thinking": { "type": "enabled", "budget_tokens": 4096 } }),
+        ),
+        // Claude before 4.6 accepts only manual budgets.
+        (
+            "anthropic.claude-sonnet-4-5-20250929-v1:0",
+            r#"{ type = "effort", value = "high" }"#,
+            serde_json::json!({
+                "thinking": { "type": "enabled", "budget_tokens": 16000 },
+                "output_config": { "effort": "high" }
+            }),
+        ),
+        // Other Bedrock families keep Bedrock's own reasoningConfig.
+        (
+            "amazon.nova-2-lite-v1:0",
+            r#"{ type = "effort", value = "high" }"#,
+            serde_json::json!({ "reasoningConfig": { "maxReasoningEffort": "high" } }),
+        ),
+    ];
+    for (index, (model_id, reasoning, expected)) in cases.into_iter().enumerate() {
+        let temporary = TempDir::new().unwrap();
+        let (endpoint, captured) = capture_http_request().await;
+        let definition = format!(
+            r#"source = "custom"
+endpoint = "{endpoint}"
+adaptor = "aws-bedrock-converse"
+setup = {{ region = "us-east-1" }}
+auth = {{ method = "aws-sigv4-credentials-v1", values = {{ access_key_id = "access-key", secret_access_key = "secret-key" }} }}
+
+[models.claude]
+model_id = "{model_id}"
+display_name = "Claude"
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 200000, output_tokens = 64000, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = true, temperature = false, top_p = false, seed = false, media = {{}} }}
+generation_options = {{ max_output_tokens = 16384 }}
+variants = {{ picked = {{ reasoning = {reasoning} }} }}
+"#
+        );
+        let provider_id = ProviderId::new(format!("custom.bedrock-{index}")).unwrap();
+        let manager = ModelManager::new(
+            BTreeMap::from([(
+                provider_id.clone(),
+                toml::from_str::<ProviderDefinition>(&definition).unwrap(),
+            )]),
+            empty_catalog(),
+            store(&temporary),
+        )
+        .unwrap();
+        let runtime = manager.current();
+        let model = &runtime.models().values().next().unwrap().model;
+        // Signed Claude thinking must be replayed during tool use.
+        assert_eq!(
+            model.capabilities.native_replay,
+            if model_id.contains("claude") {
+                cookie_agent_models::ReplayCapability::Required
+            } else {
+                cookie_agent_models::ReplayCapability::Optional
+            }
+        );
+        let resolved = runtime
+            .resolve(&cookie_agent_identity::ModelSelection {
+                model: format!("{provider_id}/claude").parse().unwrap(),
+                variant: Some(cookie_agent_identity::VariantId::new("picked").unwrap()),
+            })
+            .unwrap();
+        let request = oven_sdk::Request::new(vec![oven_sdk::HistoryTurn::user(
+            oven_sdk::UserMessage::new(vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
+                "hello",
+            ))]),
+        )]);
+        let error = resolved
+            .model()
+            .complete(
+                resolved.prepare_request(request),
+                oven_sdk::AbortSignal::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.diagnostics.http_status,
+            Some(500),
+            "{model_id} {reasoning}: {error:?}"
+        );
+        let wire = captured.await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(wire.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(
+            body["additionalModelRequestFields"], expected,
+            "{model_id} {reasoning}"
+        );
+        assert!(body.get("reasoningConfig").is_none());
+    }
+}
+
 /// Catalog with one OpenAI-compatible provider whose single model is routed to
 /// another npm family at `model_api` (a mixed gateway such as zenmux or ofox).
 fn mixed_gateway_catalog(
