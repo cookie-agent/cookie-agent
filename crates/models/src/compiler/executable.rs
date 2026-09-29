@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use cookie_agent_identity::AuthFieldName;
 use oven_sdk::ModelCapabilities;
+use serde::Serialize;
 use serde_json::{Value, json};
 use zeroize::Zeroize as _;
 
@@ -51,7 +52,7 @@ pub(crate) fn compile_executable(
         }
     }
     let auth = executable_auth(model, credentials, behavior.options)?;
-    let adapter = adapter_config(model, behavior.options, behavior.reasoning)?;
+    let adapter = adapter_config(model, &behavior)?;
     let compiled = ConcreteModel {
         provider_id: executable_provider_id(provider_id, model.adapter, model.custom).to_owned(),
         model_id: executable_model_id(model),
@@ -179,9 +180,9 @@ fn executable_auth(
 
 fn adapter_config(
     model: &CompiledDynamicModel,
-    options: &ProviderOptions,
-    reasoning: Option<&ReasoningBehavior>,
+    behavior: &ExecutableBehaviorInput<'_>,
 ) -> Result<AdapterConfig, ModelBuildError> {
+    let reasoning = behavior.reasoning;
     let structured = if model.capabilities.structured_output {
         "json_schema"
     } else {
@@ -205,7 +206,7 @@ fn adapter_config(
                 "reject_non_default_sampling": false,
                 "native_context_discriminator": Value::Null
             },
-            "options": anthropic_options(options, reasoning)
+            "options": anthropic_options(model, behavior)
         }),
         OvenAdapterFamily::AnthropicCompatible => json!({
             "adaptor": "anthropic-compatible",
@@ -220,7 +221,7 @@ fn adapter_config(
                 "reject_non_default_sampling": !model.capabilities.temperature,
                 "native_context_discriminator": Value::Null
             },
-            "options": anthropic_options(options, reasoning)
+            "options": anthropic_options(model, behavior)
         }),
         OvenAdapterFamily::OpenaiChat => json!({
             "adaptor": "openai-chat",
@@ -277,7 +278,9 @@ fn adapter_config(
                 "routing_discriminator": (model.auth.method == "api-key-header-v1")
                     .then(|| format!("header:{}", model.auth.safe_parameters.get("header_name").map_or("api-key", String::as_str)))
             },
-            "options": {}
+            "options": {
+                "extra_body": compatible_thinking_body(model.thinking_toggle, reasoning)
+            }
         }),
         OvenAdapterFamily::GoogleGemini => json!({
             "adaptor": "google",
@@ -428,27 +431,131 @@ fn reasoning_effort(reasoning: &ReasoningBehavior) -> Option<String> {
     }
 }
 
-fn anthropic_options(options: &ProviderOptions, reasoning: Option<&ReasoningBehavior>) -> Value {
+/// Anthropic Messages reasoning controls.
+///
+/// Thinking is requested with `display: "summarized"`: Claude Opus 4.7 and
+/// later default to `"omitted"`, which streams empty reasoning, and earlier
+/// models already default to summaries. Effort and toggle-on variants think
+/// adaptively, because Claude Opus 4.6+ runs without thinking when `thinking`
+/// is omitted; models before Claude 4.6 accept only manual budgets, so they
+/// get an explicit budget instead. Toggle-off sends `{"type": "disabled"}`,
+/// because Claude Sonnet 5 and Opus 5 think by default.
+fn anthropic_options(
+    model: &CompiledDynamicModel,
+    behavior: &ExecutableBehaviorInput<'_>,
+) -> Value {
+    let reasoning = behavior.reasoning;
+    let enabled = |budget_tokens: i64| json!({ "type": "enabled", "budget_tokens": budget_tokens, "display": "summarized" });
+    let active = || {
+        if claude_extended_thinking_only(model.wire_model_id.as_str()) {
+            enabled(extended_thinking_budget(model, behavior.defaults))
+        } else {
+            json!({ "type": "adaptive", "display": "summarized" })
+        }
+    };
     let thinking = match reasoning {
-        Some(ReasoningBehavior::Toggle { enabled: false }) | None => Value::Null,
-        Some(ReasoningBehavior::Toggle { enabled: true }) => {
-            json!({ "type": "adaptive", "display": Value::Null })
-        }
-        Some(ReasoningBehavior::BudgetTokens { value }) if *value > 0 => {
-            json!({ "type": "enabled", "budget_tokens": value, "display": Value::Null })
-        }
-        Some(ReasoningBehavior::BudgetTokens { .. }) => {
-            json!({ "type": "adaptive", "display": Value::Null })
-        }
-        Some(ReasoningBehavior::Effort { .. }) => Value::Null,
+        None => Value::Null,
+        Some(ReasoningBehavior::Toggle { enabled: false }) => json!({ "type": "disabled" }),
+        Some(ReasoningBehavior::BudgetTokens { value }) if *value > 0 => enabled(*value),
+        Some(
+            ReasoningBehavior::Toggle { enabled: true }
+            | ReasoningBehavior::Effort { .. }
+            | ReasoningBehavior::BudgetTokens { .. },
+        ) => active(),
     };
     json!({
         "thinking": thinking,
         "effort": reasoning.and_then(reasoning_effort),
         "cache_ttl": Value::Null,
         "user_id": Value::Null,
-        "betas": options.beta
+        "betas": behavior.options.beta
     })
+}
+
+/// Claude models released before Claude 4.6 reject adaptive thinking and
+/// accept only `{"type": "enabled", "budget_tokens": N}`.
+fn claude_extended_thinking_only(wire_model_id: &str) -> bool {
+    let id = wire_model_id.to_ascii_lowercase();
+    id.contains("claude-3")
+        || [
+            "opus-4-5",
+            "opus-4.5",
+            "sonnet-4-5",
+            "sonnet-4.5",
+            "haiku-4-5",
+            "haiku-4.5",
+            "opus-4-1",
+            "opus-4.1",
+            "opus-4-2",
+            "sonnet-4-2",
+        ]
+        .iter()
+        .any(|marker| id.contains(marker))
+}
+
+/// Manual thinking budget for effort and toggle variants on models that
+/// accept only budgets: half the output room left by the default output
+/// reservation, capped at 16,000 tokens and floored at the 1,024 minimum.
+fn extended_thinking_budget(model: &CompiledDynamicModel, defaults: &RequestDefaults) -> i64 {
+    let room = model
+        .capabilities
+        .output_tokens
+        .saturating_sub(defaults.max_output_tokens.unwrap_or(1));
+    i64::try_from(room / 2)
+        .unwrap_or(i64::MAX)
+        .clamp(1024, 16_000)
+}
+
+/// Documented OpenAI-compatible Chat request fields that turn thinking on or
+/// off for one managed models.dev provider. Providers without a confirmed
+/// switch get no toggle variants.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibleThinkingToggle {
+    /// `thinking: {"type": "enabled" | "disabled"}` (DeepSeek, Z.ai/Zhipu GLM,
+    /// Volcengine Ark).
+    ThinkingType,
+    /// `enable_thinking: true | false` (Alibaba Cloud Model Studio).
+    EnableThinking,
+    /// `reasoning_effort: "none"` turns thinking off (Kimi Code); generated
+    /// `off` variants become that effort level and there is no `on`.
+    ReasoningEffortNone,
+}
+
+pub(crate) fn compatible_thinking_toggle(provider_id: &str) -> Option<CompatibleThinkingToggle> {
+    match provider_id {
+        // api-docs.deepseek.com/api/create-chat-completion; docs.z.ai and
+        // docs.bigmodel.cn guides/capabilities/thinking; volcengine.com/docs/82379/1494384.
+        "deepseek"
+        | "zai"
+        | "zai-coding-plan"
+        | "zhipuai"
+        | "zhipuai-coding-plan"
+        | "volcengine" => Some(CompatibleThinkingToggle::ThinkingType),
+        // alibabacloud.com/help/en/model-studio/qwen-api-via-openai-chat-completions.
+        "alibaba" | "alibaba-cn" => Some(CompatibleThinkingToggle::EnableThinking),
+        // kimi.com/code/docs/en/kimi-code/models: `none` maps to disabled thinking.
+        "kimi-for-coding" | "kimi-code-plan-cn" | "kimi-code-plan-global" => {
+            Some(CompatibleThinkingToggle::ReasoningEffortNone)
+        }
+        _ => None,
+    }
+}
+
+fn compatible_thinking_body(
+    toggle: Option<CompatibleThinkingToggle>,
+    reasoning: Option<&ReasoningBehavior>,
+) -> Value {
+    let Some(ReasoningBehavior::Toggle { enabled }) = reasoning else {
+        return json!({});
+    };
+    match toggle {
+        Some(CompatibleThinkingToggle::ThinkingType) => {
+            json!({ "thinking": { "type": if *enabled { "enabled" } else { "disabled" } } })
+        }
+        Some(CompatibleThinkingToggle::EnableThinking) => json!({ "enable_thinking": enabled }),
+        Some(CompatibleThinkingToggle::ReasoningEffortNone) | None => json!({}),
+    }
 }
 
 fn google_thinking(reasoning: Option<&ReasoningBehavior>) -> Value {
@@ -688,7 +795,12 @@ capabilities = {{ input = ["text"], output = ["text"], context_tokens = 32768, o
             .next()
             .expect("compiled model")
             .model;
-        match super::adapter_config(compiled, &compiled.options, None).expect("adapter config") {
+        let behavior = super::ExecutableBehaviorInput {
+            defaults: &compiled.defaults,
+            options: &compiled.options,
+            reasoning: None,
+        };
+        match super::adapter_config(compiled, &behavior).expect("adapter config") {
             crate::adapters::oven::AdapterConfig::OpenaiResponses { options, .. } => options,
             other => panic!("expected openai-responses adapter config, got {other:?}"),
         }

@@ -46,13 +46,26 @@ pub(crate) enum VariantCompileError {
     Default,
 }
 
+/// Largest generated thinking budget, matching the 32K output ceiling common
+/// to reasoning clients.
+const MAX_GENERATED_BUDGET: i64 = 31_999;
+
 pub(crate) fn managed_variants(
     source: &[CatalogReasoningOption],
+    output_limit: u64,
+    supported: impl Fn(&ReasoningBehavior) -> bool,
     override_: Option<&ManagedModelOverride>,
     defaults: &RequestDefaults,
     options: &ProviderOptions,
 ) -> Result<CompiledVariants, VariantCompileError> {
-    let (mut variants, mut order) = generated(source)?;
+    // Anthropic-style adapters send `max_tokens = max_output_tokens + budget`,
+    // so a budget may only use the output room left by the default reservation.
+    let budget_room = output_limit.saturating_sub(defaults.max_output_tokens.unwrap_or(1));
+    let (mut variants, mut order) = generated(
+        source,
+        i64::try_from(budget_room).unwrap_or(i64::MAX),
+        supported,
+    )?;
     for variant in variants.values_mut() {
         variant.defaults = defaults.clone();
         variant.options = options.clone();
@@ -88,6 +101,8 @@ pub(crate) fn custom_variants(
 
 fn generated(
     source: &[CatalogReasoningOption],
+    budget_room: i64,
+    supported: impl Fn(&ReasoningBehavior) -> bool,
 ) -> Result<(BTreeMap<VariantId, CompiledVariant>, Vec<VariantId>), VariantCompileError> {
     let mut variants = BTreeMap::new();
     let mut order = Vec::new();
@@ -124,50 +139,72 @@ fn generated(
                 }
             }
             CatalogReasoningOption::BudgetTokens { min, max } => {
-                if let Some(value) = min {
+                for (id, value) in budget_levels(*min, *max, budget_room) {
                     insert_generated(
                         &mut variants,
                         &mut order,
-                        if *value == -1 {
-                            "budget-auto"
-                        } else {
-                            "budget-min"
-                        },
-                        ReasoningBehavior::BudgetTokens { value: *value },
-                        CompiledVariantOrigin::ModelsDevBudgetTokens,
-                    )?;
-                }
-                if let Some(value) = max {
-                    insert_generated(
-                        &mut variants,
-                        &mut order,
-                        "budget-max",
-                        ReasoningBehavior::BudgetTokens { value: *value },
+                        id,
+                        ReasoningBehavior::BudgetTokens { value },
                         CompiledVariantOrigin::ModelsDevBudgetTokens,
                     )?;
                 }
             }
         }
     }
-    suppress_redundant_generated_toggle_on(&mut variants, &mut order);
+    suppress_redundant_generated_toggle_on(&mut variants, &mut order, supported);
     Ok((variants, order))
 }
 
+/// Generated budget variants: `budget-auto` for a dynamic (`-1`) minimum,
+/// `budget-min` for a fixed minimum, then `budget-high` (half the usable
+/// maximum, at least the minimum) and `budget-max`. The usable maximum is the
+/// catalog maximum capped at 31,999 tokens and at the model's free output room;
+/// levels that do not fit or repeat a lower level are skipped.
+fn budget_levels(min: Option<i64>, max: Option<i64>, room: i64) -> Vec<(&'static str, i64)> {
+    let mut levels = Vec::new();
+    if min == Some(-1) {
+        levels.push(("budget-auto", -1));
+    }
+    let floor = min.filter(|value| *value >= 0);
+    if let Some(value) = floor.filter(|value| *value <= room) {
+        levels.push(("budget-min", value));
+    }
+    let maximum = max
+        .unwrap_or(MAX_GENERATED_BUDGET)
+        .min(MAX_GENERATED_BUDGET)
+        .min(room);
+    let floor = floor.unwrap_or(0);
+    if maximum > 0 && maximum >= floor {
+        let high = ((maximum + 1) / 2).max(floor);
+        for (id, value) in [("budget-high", high), ("budget-max", maximum)] {
+            if levels.last().is_none_or(|(_, previous)| *previous < value) {
+                levels.push((id, value));
+            }
+        }
+    }
+    levels
+}
+
+/// Drops a generated toggle `on` when a supported effort or budget level
+/// already turns reasoning on. Levels the adapter cannot send do not count, so
+/// a wire that only accepts the toggle keeps its `on`.
 fn suppress_redundant_generated_toggle_on(
     variants: &mut BTreeMap<VariantId, CompiledVariant>,
     order: &mut Vec<VariantId>,
+    supported: impl Fn(&ReasoningBehavior) -> bool,
 ) {
     let has_explicit_reasoning_level = variants.values().any(|variant| {
-        matches!(
-            (variant.origin, variant.reasoning.as_ref()),
-            (
-                CompiledVariantOrigin::ModelsDevEffort,
-                Some(ReasoningBehavior::Effort { .. })
-            ) | (
-                CompiledVariantOrigin::ModelsDevBudgetTokens,
-                Some(ReasoningBehavior::BudgetTokens { .. })
+        variant.reasoning.as_ref().is_some_and(&supported)
+            && matches!(
+                (variant.origin, variant.reasoning.as_ref()),
+                (
+                    CompiledVariantOrigin::ModelsDevEffort,
+                    Some(ReasoningBehavior::Effort { .. })
+                ) | (
+                    CompiledVariantOrigin::ModelsDevBudgetTokens,
+                    Some(ReasoningBehavior::BudgetTokens { .. })
+                )
             )
-        )
     });
     if !has_explicit_reasoning_level {
         return;
@@ -308,6 +345,8 @@ mod tests {
     ) -> Result<CompiledVariants, VariantCompileError> {
         super::managed_variants(
             source,
+            128_000,
+            |_| true,
             override_,
             &RequestDefaults::default(),
             &ProviderOptions::default(),
@@ -414,9 +453,111 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(names(&order), ["off", "budget-min", "budget-max"]);
+        assert_eq!(
+            names(&order),
+            ["off", "budget-min", "budget-high", "budget-max"]
+        );
         assert!(!variants.contains_key(&id("on")));
         assert_eq!(default, Some(id("budget-max")));
+    }
+
+    fn budgets(
+        order: &[VariantId],
+        variants: &BTreeMap<VariantId, CompiledVariant>,
+    ) -> Vec<(String, i64)> {
+        order
+            .iter()
+            .map(|id| match variants[id].reasoning {
+                Some(ReasoningBehavior::BudgetTokens { value }) => (id.as_str().to_owned(), value),
+                ref other => panic!("{id} is not a budget variant: {other:?}"),
+            })
+            .collect()
+    }
+
+    fn budget_variants(
+        min: Option<i64>,
+        max: Option<i64>,
+        output_limit: u64,
+        max_output_tokens: Option<u64>,
+    ) -> Vec<(String, i64)> {
+        let defaults = RequestDefaults {
+            max_output_tokens,
+            ..RequestDefaults::default()
+        };
+        let (variants, order, _) = super::managed_variants(
+            &[CatalogReasoningOption::BudgetTokens { min, max }],
+            output_limit,
+            |_| true,
+            None,
+            &defaults,
+            &ProviderOptions::default(),
+        )
+        .unwrap();
+        budgets(&order, &variants)
+    }
+
+    fn levels(values: &[(&str, i64)]) -> Vec<(String, i64)> {
+        values
+            .iter()
+            .map(|(id, value)| ((*id).to_owned(), *value))
+            .collect()
+    }
+
+    #[test]
+    fn budget_without_catalog_maximum_derives_high_and_max_levels() {
+        // Claude Haiku 4.5: models.dev gives only `min: 1024`.
+        assert_eq!(
+            budget_variants(Some(1024), None, 64_000, Some(16_384)),
+            levels(&[
+                ("budget-min", 1024),
+                ("budget-high", 16_000),
+                ("budget-max", 31_999)
+            ])
+        );
+    }
+
+    #[test]
+    fn budget_levels_fit_the_output_room_left_by_the_default_reservation() {
+        // Claude Opus 4.1: 32K output with a 16K default reservation.
+        assert_eq!(
+            budget_variants(Some(1024), None, 32_000, Some(16_384)),
+            levels(&[
+                ("budget-min", 1024),
+                ("budget-high", 7808),
+                ("budget-max", 15_616)
+            ])
+        );
+        // No room at all: no fixed budget fits.
+        assert_eq!(budget_variants(Some(1024), None, 16_384, Some(16_384)), []);
+        // An unset reservation leaves `output - 1`.
+        assert_eq!(
+            budget_variants(None, Some(8000), 4096, None),
+            levels(&[("budget-high", 2048), ("budget-max", 4095)])
+        );
+    }
+
+    #[test]
+    fn budget_levels_respect_catalog_bounds_and_skip_duplicates() {
+        assert_eq!(
+            budget_variants(Some(128), Some(262_144), 400_000, Some(16_384)),
+            levels(&[
+                ("budget-min", 128),
+                ("budget-high", 16_000),
+                ("budget-max", 31_999)
+            ])
+        );
+        assert_eq!(
+            budget_variants(Some(1024), Some(1024), 64_000, Some(16_384)),
+            levels(&[("budget-min", 1024)])
+        );
+        assert_eq!(
+            budget_variants(Some(-1), Some(24_576), 65_536, Some(16_384)),
+            levels(&[
+                ("budget-auto", -1),
+                ("budget-high", 12_288),
+                ("budget-max", 24_576)
+            ])
+        );
     }
 
     #[test]

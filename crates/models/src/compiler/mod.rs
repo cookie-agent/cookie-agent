@@ -10,6 +10,7 @@ pub use dynamic::{
     AuthSourceCategory, CompiledAuthShape, CompiledDynamicModel, CompiledDynamicProvider,
     CompiledModelStatus, DynamicCompileError, DynamicCompiler, UnsupportedModel,
 };
+pub use executable::CompatibleThinkingToggle;
 pub use variants::{CompiledVariant, CompiledVariantOrigin};
 
 pub(crate) use dynamic::{managed_provider_adapter, validate_managed_cache};
