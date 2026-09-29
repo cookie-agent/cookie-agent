@@ -23,8 +23,7 @@ use cookie_agent_protocol::{
     RuntimeSnapshotResult, SafeCode, SafeSetupValue, parse_setup_value, paths, setup_value_text,
 };
 use cookie_agent_server::{
-    Client, ClientProtocol, Server, generate_token, in_process_pair, ready_line,
-    validate_websocket_url,
+    Client, Server, generate_token, in_process_pair, ready_line, validate_websocket_url,
 };
 use cookie_agent_tools::{
     BuiltinTools, delegate::DelegateToolProvider, message::MessageToolProvider,
@@ -579,9 +578,7 @@ async fn run_attached_tui(url: &str, _token: &str) -> anyhow::Result<()> {
     anyhow::bail!("cookie was built without TUI support")
 }
 
-async fn runtime_snapshot(
-    client: &(impl ClientProtocol + ?Sized),
-) -> anyhow::Result<RuntimeSnapshotResult> {
+async fn runtime_snapshot(client: &Client) -> anyhow::Result<RuntimeSnapshotResult> {
     client
         .runtime_snapshot()
         .await

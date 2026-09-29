@@ -10,8 +10,8 @@ mod websocket_url;
 
 pub use client::Client;
 pub use cookie_agent_protocol::{
-    ClientDelivery, ClientError, ClientEventSink, ClientProtocol, MessageFrame, MessageStream,
-    ServerContext, ServerFault, ServerProtocol, Transport, TransportError,
+    ClientDelivery, ClientError, ClientEventSink, MessageFrame, MessageStream, ServerContext,
+    ServerFault, ServerProtocol, Transport, TransportError,
 };
 pub use service::{RunningServer, Server, ServerError};
 pub use token::{READY_LINE_PREFIX, TokenError, generate_token, ready_line};
