@@ -14,28 +14,6 @@ pub type CatalogTransportFuture<'a> = Pin<
     Box<dyn Future<Output = Result<CatalogTransportResponse, CatalogTransportError>> + Send + 'a>,
 >;
 
-/// The only request shape accepted by the catalog transport boundary.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CatalogRequest {
-    pub url: &'static str,
-    pub user_agent: &'static str,
-    pub accept: &'static str,
-    pub accept_encoding: &'static str,
-    pub if_none_match: Option<String>,
-}
-
-impl CatalogRequest {
-    pub(crate) fn fixed(etag: Option<String>) -> Self {
-        Self {
-            url: MODELS_DEV_CATALOG_URL,
-            user_agent: MODELS_DEV_USER_AGENT,
-            accept: "application/json",
-            accept_encoding: "identity",
-            if_none_match: etag,
-        }
-    }
-}
-
 /// Streamed transport response. Tests inject this without live network access.
 pub struct CatalogTransportResponse {
     pub status: u16,
@@ -73,12 +51,15 @@ impl CatalogTransportResponse {
     }
 }
 
-/// Injectable fixed catalog transport.
+/// Injectable catalog transport: one GET of the fixed
+/// [`MODELS_DEV_CATALOG_URL`], conditional on `etag` when a cache names one.
 pub trait CatalogTransport: Send + Sync {
-    fn fetch(&self, request: CatalogRequest) -> CatalogTransportFuture<'_>;
+    fn fetch(&self, etag: Option<String>) -> CatalogTransportFuture<'_>;
 }
 
-/// Production rustls client with redirects and automatic content coding disabled.
+/// Production rustls client with redirects disabled. It asks for gzip but
+/// returns the body exactly as sent: the manager decodes it, so the byte limit
+/// applies to the decoded catalog.
 #[derive(Clone, Debug)]
 pub struct HttpCatalogTransport {
     client: Client,
@@ -98,21 +79,14 @@ impl HttpCatalogTransport {
 }
 
 impl CatalogTransport for HttpCatalogTransport {
-    fn fetch(&self, request: CatalogRequest) -> CatalogTransportFuture<'_> {
+    fn fetch(&self, etag: Option<String>) -> CatalogTransportFuture<'_> {
         Box::pin(async move {
-            if request.url != MODELS_DEV_CATALOG_URL
-                || request.user_agent != MODELS_DEV_USER_AGENT
-                || request.accept != "application/json"
-                || request.accept_encoding != "identity"
-            {
-                return Err(CatalogTransportError::InvalidRequest);
-            }
             let mut builder = self
                 .client
                 .get(MODELS_DEV_CATALOG_URL)
-                .header(header::ACCEPT, request.accept)
-                .header(header::ACCEPT_ENCODING, request.accept_encoding);
-            if let Some(etag) = request.if_none_match {
+                .header(header::ACCEPT, "application/json")
+                .header(header::ACCEPT_ENCODING, "gzip");
+            if let Some(etag) = etag {
                 let value = header::HeaderValue::from_str(&etag)
                     .map_err(|_| CatalogTransportError::InvalidEtag)?;
                 builder = builder.header(header::IF_NONE_MATCH, value);
@@ -176,8 +150,6 @@ fn header_string(
 pub enum CatalogTransportError {
     #[error("catalog transport client could not be constructed")]
     ClientBuild,
-    #[error("catalog transport request shape is invalid")]
-    InvalidRequest,
     #[error("catalog cache ETag is invalid")]
     InvalidEtag,
     #[error("catalog response headers are invalid")]

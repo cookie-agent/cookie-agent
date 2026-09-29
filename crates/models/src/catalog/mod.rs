@@ -25,11 +25,14 @@ pub use records::{
     CatalogSnapshot, CatalogSource, PicoUsdPerMillion,
 };
 pub use transport::{
-    CatalogBodyStream, CatalogRequest, CatalogTransport, CatalogTransportError,
-    CatalogTransportFuture, CatalogTransportResponse, HttpCatalogTransport, MODELS_DEV_USER_AGENT,
+    CatalogBodyStream, CatalogTransport, CatalogTransportError, CatalogTransportFuture,
+    CatalogTransportResponse, HttpCatalogTransport, MODELS_DEV_USER_AGENT,
 };
 
 pub const MODELS_DEV_CATALOG_URL: &str = "https://models.dev/catalog.json";
-pub const CATALOG_MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Cap on the catalog body, applied to the response as sent and again to the
+/// decoded body, so a small gzip response cannot expand past it. The catalog
+/// is about 5.6 MB (2026-09) and grows, so this leaves room for years.
+pub const CATALOG_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 pub(crate) use parser::{ParsedCatalog, parse_cache_meta, parse_catalog};

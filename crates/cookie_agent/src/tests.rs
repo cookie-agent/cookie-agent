@@ -68,7 +68,7 @@ struct OfflineTransport {
 impl CatalogTransport for OfflineTransport {
     fn fetch(
         &self,
-        _: cookie_agent_models::catalog::CatalogRequest,
+        _: Option<String>,
     ) -> Pin<
         Box<
             dyn Future<
@@ -136,7 +136,7 @@ impl ConnectIo for ScriptedConnectIo {
 impl CatalogTransport for ScriptedTransport {
     fn fetch(
         &self,
-        _: cookie_agent_models::catalog::CatalogRequest,
+        _: Option<String>,
     ) -> Pin<
         Box<
             dyn Future<

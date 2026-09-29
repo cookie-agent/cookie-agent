@@ -51,10 +51,10 @@ enum RunCatalogTransport {
 impl CatalogTransport for RunCatalogTransport {
     fn fetch(
         &self,
-        request: cookie_agent_models::catalog::CatalogRequest,
+        etag: Option<String>,
     ) -> cookie_agent_models::catalog::CatalogTransportFuture<'_> {
         match self {
-            Self::Http(transport) => transport.fetch(request),
+            Self::Http(transport) => transport.fetch(etag),
             #[cfg(debug_assertions)]
             Self::Bundled => Box::pin(async {
                 Ok(

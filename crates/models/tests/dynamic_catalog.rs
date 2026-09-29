@@ -3,6 +3,7 @@
 use std::{
     collections::VecDeque,
     fs,
+    io::Write as _,
     os::unix::fs::PermissionsExt as _,
     sync::{Arc, Mutex},
 };
@@ -10,17 +11,19 @@ use std::{
 use cookie_agent_identity::{ProviderId, ProviderModelId};
 use cookie_agent_models::catalog::{
     CATALOG_BODY_FILE, CATALOG_LOCK_FILE, CATALOG_MAX_BYTES, CATALOG_META_FILE, CatalogAgeState,
-    CatalogAvailability, CatalogRequest, CatalogSource, CatalogTransport, CatalogTransportError,
-    CatalogTransportFuture, CatalogTransportResponse, MODELS_DEV_CATALOG_URL,
+    CatalogAvailability, CatalogSource, CatalogTransport, CatalogTransportError,
+    CatalogTransportFuture, CatalogTransportResponse,
 };
 use cookie_agent_models::{catalog::CatalogManager, secure_store::SecureDirectory};
+use flate2::{Compression, write::GzEncoder};
 use futures_util::stream;
 use jiff::Timestamp;
 use sha2::{Digest as _, Sha256};
 
 #[derive(Clone, Default)]
 struct ScriptedTransport {
-    requests: Arc<Mutex<Vec<CatalogRequest>>>,
+    /// The ETag each request was conditional on.
+    requests: Arc<Mutex<Vec<Option<String>>>>,
     responses: Arc<Mutex<VecDeque<Result<CatalogTransportResponse, CatalogTransportError>>>>,
 }
 
@@ -43,8 +46,8 @@ impl ScriptedTransport {
 }
 
 impl CatalogTransport for ScriptedTransport {
-    fn fetch(&self, request: CatalogRequest) -> CatalogTransportFuture<'_> {
-        self.requests.lock().unwrap().push(request);
+    fn fetch(&self, etag: Option<String>) -> CatalogTransportFuture<'_> {
+        self.requests.lock().unwrap().push(etag);
         let response = self.responses.lock().unwrap().pop_front().unwrap();
         Box::pin(async move { response })
     }
@@ -189,7 +192,7 @@ fn manager(
 }
 
 #[tokio::test]
-async fn network_cache_etag_and_304_use_only_the_fixed_request() {
+async fn network_cache_and_304_send_the_cached_etag() {
     let temporary = tempfile::tempdir().unwrap();
     let mut response = CatalogTransportResponse::from_bytes(200, candidate());
     response.etag = Some("\"revision-one\"".to_owned());
@@ -235,13 +238,8 @@ async fn network_cache_etag_and_304_use_only_the_fixed_request() {
     assert_eq!(second.source, CatalogSource::Network);
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].url, MODELS_DEV_CATALOG_URL);
-    assert_eq!(requests[0].accept_encoding, "identity");
-    assert_eq!(requests[0].if_none_match, None);
-    assert_eq!(
-        requests[1].if_none_match.as_deref(),
-        Some("\"revision-one\"")
-    );
+    assert_eq!(requests[0], None);
+    assert_eq!(requests[1].as_deref(), Some("\"revision-one\""));
 }
 
 #[tokio::test]
@@ -400,9 +398,34 @@ async fn used_fields_are_typed_while_unused_metadata_is_ignored() {
     }
 }
 
-#[tokio::test]
-async fn streamed_limit_and_compression_fail_without_exposing_a_body() {
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+fn gzip_response(bytes: &[u8]) -> CatalogTransportResponse {
+    let mut response = CatalogTransportResponse::from_bytes(200, gzip(bytes));
+    response.content_encoding = Some("gzip".to_owned());
+    response
+}
+
+/// The error a response left behind when it fell back to the bootstrap.
+async fn bootstrap_fallback_error(response: CatalogTransportResponse) -> String {
     let temporary = tempfile::tempdir().unwrap();
+    let snapshot = manager(ScriptedTransport::with([response]), &temporary)
+        .refresh_at(now())
+        .await
+        .unwrap();
+    assert_eq!(snapshot.source, CatalogSource::Bootstrap);
+    let error = snapshot.state.last_error.unwrap();
+    assert!(error.safe_message.len() <= 512);
+    error.safe_message
+}
+
+#[tokio::test]
+async fn streamed_limit_fails_without_exposing_a_body() {
+    let half = CATALOG_MAX_BYTES / 2;
     let oversized = CatalogTransportResponse {
         status: 200,
         content_type: Some("application/json".to_owned()),
@@ -410,34 +433,80 @@ async fn streamed_limit_and_compression_fail_without_exposing_a_body() {
         content_length: None,
         etag: None,
         body: Box::pin(stream::iter([
-            Ok(vec![b' '; 8 * 1024 * 1024]),
-            Ok(vec![b' '; 8 * 1024 * 1024 + 1]),
+            Ok(vec![b' '; half]),
+            Ok(vec![b' '; half + 1]),
         ])),
     };
-    let snapshot = manager(ScriptedTransport::with([oversized]), &temporary)
-        .refresh_at(now())
-        .await
-        .unwrap();
-    assert_eq!(snapshot.source, CatalogSource::Bootstrap);
     assert!(
-        snapshot
-            .state
-            .last_error
-            .as_ref()
-            .unwrap()
-            .safe_message
-            .len()
-            <= 512
+        bootstrap_fallback_error(oversized)
+            .await
+            .contains("catalog_body_too_large")
+    );
+}
+
+#[tokio::test]
+async fn gzip_catalog_decodes_caches_and_revalidates() {
+    let temporary = tempfile::tempdir().unwrap();
+    let decoded = candidate();
+    let mut response = gzip_response(&decoded);
+    response.etag = Some("\"revision-one\"".to_owned());
+    let transport = ScriptedTransport::with([response, CatalogTransportResponse::not_modified()]);
+    let requests = Arc::clone(&transport.requests);
+    let manager = manager(transport, &temporary);
+
+    let first = manager.refresh_at(now()).await.unwrap();
+    assert_eq!(first.source, CatalogSource::Network);
+    assert_eq!(first.state.last_error, None);
+    // The revision names the decoded catalog, which is what the cache holds.
+    assert_eq!(
+        first.revision.as_str(),
+        format!("sha256:{:x}", Sha256::digest(&decoded))
+    );
+    let cache_root = temporary.path().join("catalog");
+    assert_eq!(
+        fs::read(cache_root.join(CATALOG_BODY_FILE)).unwrap(),
+        decoded
     );
 
-    let temporary = tempfile::tempdir().unwrap();
-    let mut compressed = CatalogTransportResponse::from_bytes(200, candidate());
-    compressed.content_encoding = Some("gzip".to_owned());
-    let snapshot = manager(ScriptedTransport::with([compressed]), &temporary)
-        .refresh_at(now())
-        .await
-        .unwrap();
-    assert_eq!(snapshot.source, CatalogSource::Bootstrap);
+    let revalidated = manager.refresh_at(now()).await.unwrap();
+    assert_eq!(revalidated.source, CatalogSource::Network);
+    assert_eq!(revalidated.revision, first.revision);
+    assert_eq!(
+        requests.lock().unwrap()[1].as_deref(),
+        Some("\"revision-one\"")
+    );
+    let reopened = self::manager(ScriptedTransport::default(), &temporary);
+    let cached = reopened.load_cached_at(now()).unwrap();
+    assert_eq!(cached.source, CatalogSource::Cache);
+    assert_eq!(cached.revision, first.revision);
+}
+
+#[tokio::test]
+async fn gzip_bombs_invalid_gzip_and_unknown_encodings_fall_back() {
+    // The cap applies to the decoded body, however small the compressed one.
+    let bomb = gzip_response(&vec![b' '; CATALOG_MAX_BYTES + 1]);
+    assert!(bomb.content_length.unwrap() < 1024 * 1024);
+    assert!(
+        bootstrap_fallback_error(bomb)
+            .await
+            .contains("catalog_body_too_large")
+    );
+
+    let mut invalid = CatalogTransportResponse::from_bytes(200, candidate());
+    invalid.content_encoding = Some("gzip".to_owned());
+    assert!(
+        bootstrap_fallback_error(invalid)
+            .await
+            .contains("catalog_gzip_invalid")
+    );
+
+    let mut brotli = CatalogTransportResponse::from_bytes(200, candidate());
+    brotli.content_encoding = Some("br".to_owned());
+    assert!(
+        bootstrap_fallback_error(brotli)
+            .await
+            .contains("catalog_encoding_rejected")
+    );
 }
 
 /// [`candidate`] with `count` usable provider models.
@@ -487,9 +556,7 @@ async fn torn_install_falls_back_and_the_next_refresh_repairs_it() {
         .await
         .unwrap();
     // The torn pair is not a cache, so the refresh asks unconditionally.
-    let requests = requests.lock().unwrap();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].if_none_match, None);
+    assert_eq!(*requests.lock().unwrap(), [None]);
     assert_eq!(repaired.source, CatalogSource::Network);
     assert_ne!(repaired.revision, first.revision);
 
@@ -742,7 +809,7 @@ async fn not_modified_reuses_the_parsed_catalog_until_another_process_installs_a
     assert_eq!(reused.validated_at, later);
     assert_eq!(reused.providers.len(), first.providers.len());
     assert_eq!(
-        requests.lock().unwrap()[1].if_none_match.as_deref(),
+        requests.lock().unwrap()[1].as_deref(),
         Some("\"revision-one\"")
     );
 
@@ -775,7 +842,7 @@ async fn not_modified_reuses_the_parsed_catalog_until_another_process_installs_a
         "Renamed Model"
     );
     assert_eq!(
-        requests.lock().unwrap()[2].if_none_match.as_deref(),
+        requests.lock().unwrap()[2].as_deref(),
         Some("\"revision-two\"")
     );
 }
