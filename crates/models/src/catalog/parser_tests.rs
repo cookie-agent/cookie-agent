@@ -184,6 +184,44 @@ fn empty_modality_arrays_are_accepted() {
 }
 
 #[test]
+fn unknown_status_and_reasoning_controls_keep_the_model() {
+    let mut retired = model("retired");
+    retired["status"] = json!("retired");
+    let mut future = model("future-reasoning");
+    future["reasoning"] = json!(true);
+    future["reasoning_options"] = json!([
+        {"type": "adaptive_budget", "levels": [1, 2]},
+        {"type": "effort", "values": [null, "low", "ultra", "high"]},
+        {"type": "toggle"}
+    ]);
+    let mut only_unknown = model("only-unknown-reasoning");
+    only_unknown["reasoning"] = json!(true);
+    only_unknown["reasoning_options"] = json!([{"type": "future"}]);
+
+    let parsed = parse(&catalog([retired, future, only_unknown]));
+
+    assert_eq!(parsed.quarantine, []);
+    assert_eq!(
+        record(&parsed, "test", "retired").status,
+        crate::catalog::CatalogModelStatus::Stable
+    );
+    assert_eq!(
+        record(&parsed, "test", "future-reasoning").reasoning_options,
+        [
+            crate::catalog::CatalogReasoningOption::Effort {
+                values: vec![None, Some("low".into()), Some("high".into())],
+            },
+            crate::catalog::CatalogReasoningOption::Toggle,
+        ]
+    );
+    assert!(
+        record(&parsed, "test", "only-unknown-reasoning")
+            .reasoning_options
+            .is_empty()
+    );
+}
+
+#[test]
 fn genuinely_invalid_records_still_quarantine() {
     let mut cases = Vec::new();
     let mut missing = model("missing-required");
@@ -204,9 +242,14 @@ fn genuinely_invalid_records_still_quarantine() {
     let mut missing_cost = model("missing-cost-output");
     missing_cost["cost"] = json!({"input": 1});
     cases.push(missing_cost);
-    let mut bad_status = model("bad-status");
-    bad_status["status"] = json!("retired");
-    cases.push(bad_status);
+    let mut bad_effort = model("bad-effort-value");
+    bad_effort["reasoning"] = json!(true);
+    bad_effort["reasoning_options"] = json!([{"type": "effort", "values": [3]}]);
+    cases.push(bad_effort);
+    let mut untyped = model("untyped-reasoning-option");
+    untyped["reasoning"] = json!(true);
+    untyped["reasoning_options"] = json!([{"values": ["low"]}]);
+    cases.push(untyped);
     let mut bad_interleaved = model("bad-interleaved");
     bad_interleaved["interleaved"] = json!(false);
     cases.push(bad_interleaved);
@@ -225,7 +268,8 @@ fn genuinely_invalid_records_still_quarantine() {
         "control-name",
         "bad-cost",
         "missing-cost-output",
-        "bad-status",
+        "bad-effort-value",
+        "untyped-reasoning-option",
         "bad-interleaved",
         "mismatch",
     ] {

@@ -367,12 +367,13 @@ fn parse_model(
     let structured_output = optional_bool(&fields, "structured_output")?;
     let temperature = optional_bool(&fields, "temperature")?;
     let open_weights = required_bool(&fields, "open_weights")?;
+    // A status label added upstream after this build is treated as active
+    // rather than disabling an otherwise valid model.
     let status = match fields.get("status").and_then(|value| value.as_str()) {
-        None => CatalogModelStatus::Stable,
         Some("alpha") => CatalogModelStatus::Alpha,
         Some("beta") => CatalogModelStatus::Beta,
         Some("deprecated") => CatalogModelStatus::Deprecated,
-        Some(_) => return Err(CatalogQuarantineReason::InvalidCatalogModelRecord),
+        _ => CatalogModelStatus::Stable,
     };
     let release_date = date_text(fields["release_date"])?;
     let last_updated = date_text(fields["last_updated"])?;
@@ -623,6 +624,9 @@ fn parse_model_provider_metadata(
     })
 }
 
+/// Parses models.dev reasoning controls. Option types and effort labels added
+/// upstream after this build are skipped so the model keeps its known
+/// controls; malformed shapes of known types still quarantine the model.
 fn parse_reasoning_options(
     value: &JsonValue,
 ) -> Result<Vec<CatalogReasoningOption>, CatalogQuarantineReason> {
@@ -632,74 +636,74 @@ fn parse_reasoning_options(
     if values.len() > MAX_REASONING_OPTIONS {
         return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
     }
-    values
-        .iter()
-        .map(|value| {
-            let object = value
-                .as_object()
-                .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-            let fields = unique_fields(object)
-                .map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-            match fields.get("type").and_then(|value| value.as_str()) {
-                Some("effort") => {
-                    let raw = fields
-                        .get("values")
-                        .and_then(|value| value.as_array())
-                        .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-                    if raw.len() > 32 {
-                        return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
-                    }
-                    let mut seen = BTreeSet::new();
-                    let mut values = Vec::with_capacity(raw.len());
-                    for value in raw {
-                        let value = match value {
-                            JsonValue::Null => None,
-                            JsonValue::String(value)
-                                if matches!(
-                                    value.as_str(),
-                                    "none"
-                                        | "minimal"
-                                        | "low"
-                                        | "medium"
-                                        | "high"
-                                        | "xhigh"
-                                        | "max"
-                                        | "default"
-                                ) =>
-                            {
-                                Some(value.clone())
-                            }
-                            _ => return Err(CatalogQuarantineReason::InvalidCatalogModelRecord),
-                        };
-                        if !seen.insert(value.clone()) {
-                            return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
-                        }
-                        values.push(value);
-                    }
-                    Ok(CatalogReasoningOption::Effort { values })
+    let mut options = Vec::with_capacity(values.len());
+    for value in values {
+        let object = value
+            .as_object()
+            .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
+        let fields = unique_fields(object)
+            .map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
+        match fields
+            .get("type")
+            .and_then(|value| value.as_str())
+            .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?
+        {
+            "effort" => options.push(parse_effort_option(&fields)?),
+            "toggle" => options.push(CatalogReasoningOption::Toggle),
+            "budget_tokens" => {
+                let min = fields
+                    .get("min")
+                    .map(|value| value.as_i64())
+                    .transpose_value()?;
+                let max = fields
+                    .get("max")
+                    .map(|value| value.as_i64())
+                    .transpose_value()?;
+                if min.is_some_and(|value| value < -1)
+                    || max.is_some_and(|value| value < 0)
+                    || matches!((min, max), (Some(min), Some(max)) if min >= 0 && min > max)
+                {
+                    return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
                 }
-                Some("toggle") => Ok(CatalogReasoningOption::Toggle),
-                Some("budget_tokens") => {
-                    let min = fields
-                        .get("min")
-                        .map(|value| value.as_i64())
-                        .transpose_value()?;
-                    let max = fields
-                        .get("max")
-                        .map(|value| value.as_i64())
-                        .transpose_value()?;
-                    if min.is_some_and(|value| value < -1)
-                        || max.is_some_and(|value| value < 0)
-                        || matches!((min, max), (Some(min), Some(max)) if min >= 0 && min > max)
-                    {
-                        return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
-                    }
-                    Ok(CatalogReasoningOption::BudgetTokens { min, max })
-                }
-                _ => Err(CatalogQuarantineReason::InvalidCatalogModelRecord),
+                options.push(CatalogReasoningOption::BudgetTokens { min, max });
             }
-        })
-        .collect()
+            _ => {}
+        }
+    }
+    Ok(options)
+}
+
+fn parse_effort_option(
+    fields: &BTreeMap<&str, &JsonValue>,
+) -> Result<CatalogReasoningOption, CatalogQuarantineReason> {
+    let raw = fields
+        .get("values")
+        .and_then(|value| value.as_array())
+        .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
+    if raw.len() > 32 {
+        return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
+    }
+    let mut seen = BTreeSet::new();
+    let mut values = Vec::with_capacity(raw.len());
+    for value in raw {
+        let value = match value {
+            JsonValue::Null => None,
+            JsonValue::String(value) => Some(value.clone()),
+            _ => return Err(CatalogQuarantineReason::InvalidCatalogModelRecord),
+        };
+        if !seen.insert(value.clone()) {
+            return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
+        }
+        if value.as_deref().is_none_or(|value| {
+            matches!(
+                value,
+                "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "default"
+            )
+        }) {
+            values.push(value);
+        }
+    }
+    Ok(CatalogReasoningOption::Effort { values })
 }
 
 fn parse_output_cost(
