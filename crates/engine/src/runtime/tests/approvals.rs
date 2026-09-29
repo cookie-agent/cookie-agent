@@ -4,8 +4,8 @@ use cookie_agent_protocol::{
     ApprovalDecisionSource, ApprovalFinalOutcome, ApprovalId, ApprovalInternalDecisionKind,
     ApprovalReasonCode, ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus,
     ApprovalUserDecision, ClientResponseId, ClientRunId, EventPayload, InternalAgentKind,
-    PermissionAction, PermissionEffect, PermissionMode, RunStartParams, SessionStatus,
-    ToolTerminationOutcome, WildcardPattern,
+    OutputStream, PermissionAction, PermissionEffect, PermissionMode, RunStartParams,
+    SessionStatus, ToolTerminationOutcome, WildcardPattern,
 };
 
 use jiff::Timestamp;
@@ -344,6 +344,67 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
 
     approve_once(&fixture.engine, &approval, "ask-transaction-approval").await;
     wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
+    captured.abort();
+    fixture.engine.shutdown().await;
+}
+
+/// Headless `--verbose` subscribes to a call's output when it sees the call's
+/// start event, which precedes approval. The output hub must already exist.
+#[tokio::test]
+async fn tool_output_is_subscribable_while_the_call_awaits_approval() {
+    let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
+    let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+    let executed = Arc::new(TestFlag::default());
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("approval session");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("output-before-approval").expect("run ID"),
+                selection,
+                input: "request the write tool".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("run");
+    wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+    let call_id = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("approval projection")
+        .log
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallStarted { start } => Some(start.tool_call_id),
+            _ => None,
+        })
+        .expect("tool call start");
+
+    assert!(!executed.is_set());
+    assert_eq!(
+        fixture.engine.tool_output_streams(call_id),
+        Some(vec![OutputStream::Single])
+    );
+    assert!(
+        fixture
+            .engine
+            .subscribe_tool_output(call_id, OutputStream::Single)
+            .is_some()
+    );
     captured.abort();
     fixture.engine.shutdown().await;
 }
