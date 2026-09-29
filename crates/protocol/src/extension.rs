@@ -310,6 +310,32 @@ pub struct ExtensionToolCallResult {
     pub is_error: bool,
 }
 
+impl ExtensionToolCallResult {
+    /// Successful single output whose display previews the text.
+    #[must_use]
+    pub fn success(text: impl Into<String>) -> Self {
+        Self::single(text.into(), false)
+    }
+
+    /// Single output marked as a tool-level error whose display previews the text.
+    #[must_use]
+    pub fn error(text: impl Into<String>) -> Self {
+        Self::single(text.into(), true)
+    }
+
+    fn single(text: String, is_error: bool) -> Self {
+        let mut end = text.len().min(crate::MAX_TOOL_DISPLAY_BYTES);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        Self {
+            display: text[..end].into(),
+            output: crate::ToolCompletionOutput::Single { text },
+            is_error,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionEventParams {

@@ -29,9 +29,9 @@ use cookie_agent_protocol::{
     ExtensionSessionBeforeRevertParams, ExtensionSessionBeforeRevertResult,
     ExtensionShutdownParams, ExtensionToolAfterResultParams, ExtensionToolAfterResultResult,
     ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult, ExtensionToolCallParams,
-    ExtensionToolCallResult, ExtensionUserBeforeInputParams, ExtensionUserBeforeInputResult,
-    JsonRpcError, JsonRpcId, JsonRpcVersion, Notification, PLUGIN_BUS_EVENT_METHOD,
-    PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD, PLUGIN_INITIALIZE_METHOD,
+    ExtensionUserBeforeInputParams, ExtensionUserBeforeInputResult, JsonRpcError, JsonRpcId,
+    JsonRpcVersion, Notification, PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD,
+    PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD, PLUGIN_INITIALIZE_METHOD,
     PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD, PLUGIN_INTERCEPT_MESSAGE_END_METHOD,
     PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD, PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD,
     PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD,
@@ -378,12 +378,7 @@ impl PluginServer {
                     plugin_context.revoke(&params.context_id);
                     match result {
                         Ok(Ok(output)) => {
-                            let _ = send_success(
-                                &plugin_context,
-                                request.id,
-                                ExtensionToolCallResult::from(output),
-                            )
-                            .await;
+                            let _ = send_success(&plugin_context, request.id, output).await;
                         }
                         Ok(Err(error)) => {
                             let _ =
