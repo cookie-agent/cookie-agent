@@ -4,7 +4,6 @@ mod cache;
 mod capabilities;
 mod compaction;
 mod endpoints;
-mod headers;
 pub(crate) mod oven;
 
 pub use cache::{
@@ -16,10 +15,9 @@ pub use cache::{
 pub use capabilities::{AdapterCapabilityError, validate_capability_ceiling};
 pub use compaction::with_native_compaction_instructions;
 pub use endpoints::{
-    BaseUrlOverridePolicy, EndpointBuildError, build_endpoint, custom_endpoint_policy,
-    is_loopback_url, managed_base_url_policy, validate_custom_endpoint, validate_managed_base_url,
+    BaseUrlOverridePolicy, EndpointBuildError, custom_endpoint_policy, is_loopback_url,
+    managed_base_url_policy, validate_custom_endpoint, validate_managed_base_url,
 };
-pub use headers::{StaticHeaderError, validate_static_headers};
 
 use serde::{Deserialize, Serialize};
 

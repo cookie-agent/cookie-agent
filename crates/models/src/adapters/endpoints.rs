@@ -1,8 +1,4 @@
-use crate::{
-    adapters::OvenAdapterFamily,
-    authoring::EndpointUrl,
-    recipes::{EndpointPolicy, ValidatedSetup},
-};
+use crate::{adapters::OvenAdapterFamily, authoring::EndpointUrl, recipes::EndpointPolicy};
 use url::Url;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -16,8 +12,6 @@ pub enum BaseUrlOverridePolicy {
 pub enum EndpointBuildError {
     #[error("authored_base_url_forbidden")]
     AuthoredOverrideForbidden,
-    #[error("invalid_endpoint_setup")]
-    Setup,
     #[error("endpoint_override_policy_violation")]
     Policy,
 }
@@ -114,56 +108,4 @@ pub fn validate_custom_endpoint(
     } else {
         Err(EndpointBuildError::Policy)
     }
-}
-
-pub fn build_endpoint(
-    policy: EndpointPolicy,
-    authored: Option<&EndpointUrl>,
-    setup: &ValidatedSetup,
-) -> Result<String, EndpointBuildError> {
-    validate_managed_base_url(policy, authored)?;
-    match policy {
-        EndpointPolicy::DefaultWithAuthoredHttpsOverride { default } => Ok(authored
-            .map(EndpointUrl::as_str)
-            .unwrap_or(default)
-            .trim_end_matches('/')
-            .to_owned()),
-        EndpointPolicy::VertexPublisher => {
-            if authored.is_some() {
-                return Err(EndpointBuildError::AuthoredOverrideForbidden);
-            }
-            let project = field(setup, "project")?;
-            let location = field(setup, "location")?;
-            let resource = field(setup, "resource")?;
-            Ok(format!(
-                "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/{resource}"
-            ))
-        }
-        EndpointPolicy::BedrockRegional => {
-            if authored.is_some() {
-                return Err(EndpointBuildError::AuthoredOverrideForbidden);
-            }
-            Ok(format!(
-                "https://bedrock-runtime.{}.amazonaws.com",
-                field(setup, "region")?
-            ))
-        }
-        EndpointPolicy::AzureOpenai => {
-            if authored.is_some() {
-                return Err(EndpointBuildError::AuthoredOverrideForbidden);
-            }
-            Ok(format!(
-                "https://{}.openai.azure.com",
-                field(setup, "resource_name")?
-            ))
-        }
-    }
-}
-
-fn field<'a>(setup: &'a ValidatedSetup, id: &str) -> Result<&'a str, EndpointBuildError> {
-    setup
-        .values
-        .get(id)
-        .map(String::as_str)
-        .ok_or(EndpointBuildError::Setup)
 }

@@ -272,11 +272,6 @@ impl AgentRegistry {
         &self.agents
     }
 
-    #[must_use]
-    pub fn into_documents(self) -> BTreeMap<AgentId, AgentDocument> {
-        self.agents
-    }
-
     pub fn materialization_inputs(
         &self,
     ) -> impl ExactSizeIterator<Item = AgentMaterializationInput<'_>> {
