@@ -147,6 +147,9 @@ pub(crate) fn capabilities_from_catalog(
         "input": input,
         "output": output,
         "context_tokens": model.limits.context,
+        // models.dev occasionally lists an input limit at or above the context window; only a
+        // narrower one constrains requests.
+        "input_tokens": model.limits.input.filter(|input| *input > 0 && *input < model.limits.context),
         "output_tokens": model.limits.output,
         "tool_calling": model.tool_call,
         "parallel_tool_calls": true,
@@ -162,9 +165,13 @@ pub(crate) fn capabilities_from_catalog(
     }))
 }
 
+/// Default output cap for catalog models; matches opencode so high-effort reasoning is not
+/// truncated while models with very large output limits do not reserve most of their window.
+const MANAGED_MAX_OUTPUT_TOKENS: u64 = 32_000;
+
 pub(crate) fn managed_defaults(model: &CatalogModelRecord) -> RequestDefaults {
     RequestDefaults {
-        max_output_tokens: Some(model.limits.output.min(16_384)),
+        max_output_tokens: Some(model.limits.output.min(MANAGED_MAX_OUTPUT_TOKENS)),
         ..RequestDefaults::default()
     }
 }
@@ -289,6 +296,31 @@ mod tests {
             capabilities_from_catalog(&catalog_model(false), OvenAdapterFamily::OpenaiResponses)
                 .unwrap();
         assert_eq!(capabilities.native_replay, ReplayCapability::Optional);
+    }
+
+    #[test]
+    fn catalog_limits_project_input_budget_and_output_default() {
+        let mut model = catalog_model(true);
+        model.limits = CatalogLimits {
+            context: 400_000,
+            input: Some(272_000),
+            output: 128_000,
+        };
+        let capabilities =
+            capabilities_from_catalog(&model, OvenAdapterFamily::OpenaiResponses).unwrap();
+        assert_eq!(capabilities.input_tokens, Some(272_000));
+        assert_eq!(managed_defaults(&model).max_output_tokens, Some(32_000));
+
+        // An input limit that does not narrow the context window carries no information.
+        for input in [0, 400_000, 500_000] {
+            model.limits.input = Some(input);
+            let capabilities =
+                capabilities_from_catalog(&model, OvenAdapterFamily::OpenaiResponses).unwrap();
+            assert_eq!(capabilities.input_tokens, None, "{input}");
+        }
+
+        model.limits.output = 8_192;
+        assert_eq!(managed_defaults(&model).max_output_tokens, Some(8_192));
     }
 
     #[test]

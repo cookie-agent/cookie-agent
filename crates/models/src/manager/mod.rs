@@ -2472,7 +2472,11 @@ fn oven_capabilities(
         .collect::<Result<BTreeMap<_, _>, ModelManagerError>>()?;
     Ok(OvenCapabilities {
         features,
-        limits: ModelLimits::new(Some(value.context_tokens), None, Some(value.output_tokens)),
+        limits: ModelLimits::new(
+            Some(value.context_tokens),
+            value.input_tokens,
+            Some(value.output_tokens),
+        ),
         modalities: Modalities::new(
             value.input.iter().map(modality),
             value.output.iter().map(modality),

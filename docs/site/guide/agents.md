@@ -61,15 +61,17 @@ Review the requested change and report concrete findings.
 `max_output_tokens` applies in every mode and defaults to `0` in all of them. A
 nonzero value caps each request at the smaller of the document value and the
 model's own output limit. For the non-internal `primary`, `subagent`, and `all`
-modes, `0` means no document cap.
+modes, `0` means no document cap: the request sends the model's
+`generation_options.max_output_tokens` (catalog models default it to
+`min(output limit, 32000)`), or the model's output limit when it has none.
 
 Internal agents run on `${parent_model}` by default, so `0` there means they
 inherit the owner run's output cap the same way they inherit its model. The
 effective cap for an internal request is the smaller of the model's own output
 limit and the first nonzero value of the internal document's
-`max_output_tokens` and the owner run's `max_output_tokens`; a request is left
-uncapped only when the model's output limit is unknown and neither document
-sets one. An explicit nonzero value in the internal document therefore still
+`max_output_tokens` and the owner run's `max_output_tokens`; when both are `0`
+the model's default applies as above, and a request is left uncapped only when
+the model has neither a default nor a known output limit. An explicit nonzero value in the internal document therefore still
 wins over inheritance, subject to that model minimum. All three built-in
 internal documents declare `0` and inherit.
 `timeout_ms` applies only to internal agents. For other modes, a nonzero value is
@@ -94,8 +96,8 @@ The former `model_fallback` field is also removed. Documents that still declare
 it fail with an error directing the author to `models`.
 
 The former `limits.max_input_tokens` field is removed. Internal-agent input
-budgets now come from each resolved model's context limit minus its effective
-output reserve; candidates that cannot fit an invocation are skipped. A model
+budgets now come from each resolved model's input limit, or its context limit
+minus its effective output reserve; candidates that cannot fit an invocation are skipped. A model
 whose context limit is unknown uses a 16,384-token input budget.
 
 The durable protocol event for advancing through a model chain remains named
@@ -334,8 +336,8 @@ All three default to `${parent_model}`, so they run on the model the parent run
 is currently using — including its position in the fallback chain: if the run
 has fallen back to its second model, internal agents resolve to that second
 model too. An internal agent's input budget is derived from each
-resolved model's context limit after reserving its effective maximum output,
-with a minimum of one token. A model with an unknown context limit uses a
+resolved model's input limit when it declares one, otherwise from its context
+limit after reserving its effective maximum output, with a minimum of one token. A model with an unknown context limit uses a
 16,384-token input budget. Agent documents cannot set an input-token cap.
 
 The title agent runs only for root sessions that still need an automatic title.

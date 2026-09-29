@@ -933,6 +933,39 @@ pub(crate) fn resolve_model(
     Ok(runtime.models.resolve(&binding.selection)?)
 }
 
+/// The output-token cap sent with a request. A nonzero agent `cap` is bounded by the model's
+/// output limit; otherwise the model's request default applies (catalog models default to
+/// `min(output limit, 32000)`), falling back to the model's output limit.
+pub(crate) fn effective_max_output_tokens(
+    binding: &protocol::FrozenModelBinding,
+    cap: u64,
+) -> Option<u64> {
+    let limit = binding.descriptor.capabilities.limits.output;
+    if cap == 0 {
+        return binding
+            .defaults
+            .request
+            .max_output_tokens
+            .map(|default| limit.map_or(default, |limit| default.min(limit)))
+            .or(limit);
+    }
+    Some(limit.map_or(cap, |limit| limit.min(cap)))
+}
+
+/// The input tokens a request may occupy: the model's separately documented input limit when it
+/// has one, otherwise the context window less the output cap sent with the request.
+pub(crate) fn input_token_budget(
+    binding: &protocol::FrozenModelBinding,
+    max_output_tokens: Option<u64>,
+) -> Option<u64> {
+    let limits = &binding.descriptor.capabilities.limits;
+    let context = limits.context?;
+    Some(match limits.input.filter(|input| *input > 0) {
+        Some(input) => input.min(context),
+        None => context.saturating_sub(max_output_tokens.unwrap_or(0)),
+    })
+}
+
 fn wire_digest(
     value: &cookie_agent_models::Sha256Digest,
 ) -> Result<protocol::Sha256Digest, EngineError> {

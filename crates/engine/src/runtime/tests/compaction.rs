@@ -658,7 +658,7 @@ async fn automatic_compaction_failure_limit_suppresses_after_three_and_resets() 
 #[tokio::test]
 async fn auto_compaction_commits_checkpoint_before_the_attempt_that_uses_it() {
     // Attempt 1 calls the write tool reporting 7000 prompt tokens against an
-    // 8192 context — over the default 70% trigger (5734). Attempt 2 must
+    // 8192 context less 1024 output — over the default 70% trigger (5017). Attempt 2 must
     // compact first. The checkpoint has to precede that attempt's start and
     // request: consumers anchor a turn's transcript item to
     // `ModelAttemptStarted`, so emitting the attempt before compaction renders
@@ -773,6 +773,83 @@ async fn auto_compaction_commits_checkpoint_before_the_attempt_that_uses_it() {
         "post-compaction turn consumes the checkpoint"
     );
     fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn auto_compaction_triggers_on_the_model_input_limit_not_the_context_window() {
+    // 7000 prompt tokens is far below 70% of the 100,000-token context window but over 70% of
+    // the 8192-token input limit (5734): only the model declaring the input limit compacts.
+    let tool_turn = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"write-call\",\"type\":\"function\",\"function\":{\"name\":\"write\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":7000,\"completion_tokens\":10,\"total_tokens\":7010}}\n\n".to_owned();
+    let summary = "data: {\"choices\":[{\"delta\":{\"content\":\"checkpoint summary\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned();
+    let after = "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":900,\"completion_tokens\":5,\"total_tokens\":905}}\n\n".to_owned();
+    for input_limit in [Some(8_192), None] {
+        let responses = if input_limit.is_some() {
+            vec![
+                (200, tool_turn.clone()),
+                (200, summary.clone()),
+                (200, after.clone()),
+            ]
+        } else {
+            vec![(200, tool_turn.clone()), (200, after.clone())]
+        };
+        let (endpoint, _captured, ..) =
+            scripted_server_with_status_and_delay(responses, usize::MAX).await;
+        let capabilities = format!(
+            "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 100000\n{}output_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = true\nnative_replay = \"unsupported\"\nmedia = {{}}",
+            input_limit.map_or_else(String::new, |limit| format!("input_tokens = {limit}\n"))
+        );
+        let (fixture, selection) = custom_fixture_with_capabilities(
+            &endpoint,
+            "---\ndescription: input limit compaction\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nTest input limit compaction.\n",
+            None,
+            None,
+            false,
+            None,
+            None,
+            100_000,
+            None,
+            "openai-compatible",
+            Some(&capabilities),
+        );
+        fixture
+            .engine
+            .register_tool_provider(Arc::new(TestWriteProvider {
+                executed: Arc::new(TestFlag::default()),
+            }));
+        let session = fixture.engine.create_session(selection.clone()).unwrap();
+        fixture
+            .engine
+            .start_run(
+                RunStartParams {
+                    reset_fallback: false,
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new("input-limit-compaction").unwrap(),
+                    selection,
+                    input: format!("trigger compaction {}", "context padding ".repeat(1500)),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .unwrap();
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+        let compacted = fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .unwrap()
+            .log
+            .events()
+            .iter()
+            .any(|event| {
+                matches!(
+                    event.payload,
+                    EventPayload::ContextCheckpointCommitted { .. }
+                )
+            });
+        assert_eq!(compacted, input_limit.is_some(), "{input_limit:?}");
+        fixture.engine.shutdown().await;
+    }
 }
 
 #[tokio::test]

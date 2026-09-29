@@ -227,8 +227,18 @@ impl Engine {
         let Some(context_limit) = input.binding.descriptor.capabilities.limits.context else {
             return Ok(input.events);
         };
+        // Triggers and retained-history budgets use the input budget, not the whole context
+        // window: a model's input limit or its reserved output can be well below the window.
+        let input_budget = policy::input_token_budget(
+            input.binding,
+            policy::effective_max_output_tokens(
+                input.binding,
+                input.owner_policy.agent.max_output_tokens,
+            ),
+        )
+        .unwrap_or(context_limit);
         let config = &self.inner.config.runtime.context_compaction;
-        let trigger_tokens = resolve_compaction_trigger(context_limit, &config.trigger);
+        let trigger_tokens = resolve_compaction_trigger(input_budget, &config.trigger);
         if !compaction_gate(input.force, config.auto_compaction, trigger_tokens) {
             return Ok(input.events);
         }
@@ -535,12 +545,12 @@ impl Engine {
         // projection and the same calibrated estimator as the input.
         let output_reserve = internal_agent_output_limit(input.binding, input.internal_policy)
             .unwrap_or(DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS);
-        let retained_limit = context_limit
+        let retained_limit = input_budget
             .saturating_sub(output_reserve)
             .min(if trigger_tokens > 0 {
                 trigger_tokens - 1
             } else {
-                context_limit
+                input_budget
             })
             .min(context_tokens_before.saturating_sub(1));
         let summary_output_limit = input
@@ -567,7 +577,7 @@ impl Engine {
             self.estimated_request_tokens(input.session, &base.history, input.tools)?;
         let keep_recent_tokens = effective_recent_budget(
             config.keep_recent_tokens,
-            context_limit,
+            input_budget,
             retained_limit.saturating_sub(base_tokens),
         );
         let recent_from_seq = select_recent_tail(
@@ -729,7 +739,7 @@ impl Engine {
             self.estimated_request_tokens(input.session, &actual_base.history, input.tools)?;
         let keep_recent_tokens = effective_recent_budget(
             config.keep_recent_tokens,
-            context_limit,
+            input_budget,
             retained_limit.saturating_sub(actual_base_tokens),
         );
         if input_tokens_after > retained_limit
@@ -906,16 +916,17 @@ pub(crate) fn active_compaction_binding<'a>(
         .ok_or(EngineError::NoRunnableModel)
 }
 
+/// Resolves the trigger against the model's input budget (see `policy::input_token_budget`).
 pub(super) fn resolve_compaction_trigger(
-    context_limit: u64,
+    input_budget: u64,
     trigger: &ContextCompactionTrigger,
 ) -> u64 {
     match trigger {
-        ContextCompactionTrigger::Percent { percent } => context_limit
+        ContextCompactionTrigger::Percent { percent } => input_budget
             .saturating_mul(u64::from(*percent))
             .saturating_div(100),
         ContextCompactionTrigger::BufferTokens { buffer_tokens } => {
-            context_limit.saturating_sub(*buffer_tokens)
+            input_budget.saturating_sub(*buffer_tokens)
         }
     }
 }
@@ -928,8 +939,8 @@ fn usage_reaches_compaction_trigger(observed_tokens: u64, trigger_tokens: u64) -
     observed_tokens >= trigger_tokens
 }
 
-fn effective_recent_budget(target: u64, context_limit: u64, available: u64) -> u64 {
-    target.min(context_limit / 4).min(available)
+fn effective_recent_budget(target: u64, input_budget: u64, available: u64) -> u64 {
+    target.min(input_budget / 4).min(available)
 }
 
 fn select_recent_tail(
@@ -1173,13 +1184,8 @@ fn native_compaction_input_budget(
 ) -> u64 {
     let output_reserve = internal_agent_output_limit(binding, internal_policy)
         .unwrap_or(DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS);
-    binding
-        .descriptor
-        .capabilities
-        .limits
-        .context
+    policy::input_token_budget(binding, Some(output_reserve))
         .unwrap_or(0)
-        .saturating_sub(output_reserve)
         .max(1)
 }
 

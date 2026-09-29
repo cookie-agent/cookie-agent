@@ -398,10 +398,13 @@ fn model_descriptor(
 ) -> Result<protocol::AvailableModelDescriptor, EngineError> {
     let mut capability_value = serde_json::to_value(&model.model.capabilities)
         .map_err(|_| EngineError::RuntimeCompileFailed)?;
-    capability_value
+    // Compaction support and the input limit are engine-internal; the engine reads the input
+    // limit from the frozen binding descriptor, so the client-facing capabilities omit both.
+    let capability_object = capability_value
         .as_object_mut()
-        .ok_or(EngineError::RuntimeCompileFailed)?
-        .remove("compaction");
+        .ok_or(EngineError::RuntimeCompileFailed)?;
+    capability_object.remove("compaction");
+    capability_object.remove("input_tokens");
     let capabilities =
         serde_json::from_value(capability_value).map_err(|_| EngineError::RuntimeCompileFailed)?;
     let variants = model

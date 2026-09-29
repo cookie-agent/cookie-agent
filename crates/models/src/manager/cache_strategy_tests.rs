@@ -16,6 +16,7 @@ fn video_media_capability_maps_to_open_oven_modality() {
         input: BTreeSet::from([crate::Modality::Text, crate::Modality::Video]),
         output: BTreeSet::from([crate::Modality::Text]),
         context_tokens: 128_000,
+        input_tokens: None,
         output_tokens: 8_192,
         tool_calling: false,
         parallel_tool_calls: false,

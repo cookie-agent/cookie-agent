@@ -84,6 +84,9 @@ pub struct ModelCapabilities {
     pub input: BTreeSet<Modality>,
     pub output: BTreeSet<Modality>,
     pub context_tokens: u64,
+    /// Separately documented input-token limit, when narrower than the context window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
     pub output_tokens: u64,
     pub tool_calling: bool,
     pub parallel_tool_calls: bool,

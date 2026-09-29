@@ -843,11 +843,14 @@ impl Engine {
         let Some(binding) = input.policy.selected_suffix.get(input.fallback_index) else {
             return Ok(false);
         };
-        let Some(context_limit) = binding.descriptor.capabilities.limits.context else {
+        let Some(input_budget) = policy::input_token_budget(
+            binding,
+            policy::effective_max_output_tokens(binding, input.policy.agent.max_output_tokens),
+        ) else {
             return Ok(false);
         };
         let config = &self.inner.config.runtime.context_compaction;
-        let trigger_tokens = resolve_compaction_trigger(context_limit, &config.trigger);
+        let trigger_tokens = resolve_compaction_trigger(input_budget, &config.trigger);
         let estimator = self
             .inner
             .compaction
@@ -1782,15 +1785,8 @@ impl Engine {
                 let mut request = ModelRequest::new(context.history)
                     .with_tools(tools.clone())
                     .with_header_context(self.model_header_context(session)?);
-                request.inference.max_output_tokens = match (
-                    binding.descriptor.capabilities.limits.output,
-                    policy.agent.max_output_tokens,
-                ) {
-                    (Some(model), 0) => Some(model),
-                    (Some(model), document) => Some(model.min(document)),
-                    (None, 0) => None,
-                    (None, document) => Some(document),
-                };
+                request.inference.max_output_tokens =
+                    policy::effective_max_output_tokens(binding, policy.agent.max_output_tokens);
                 if let Some(native_context) = context.native_context {
                     request = request.with_native_context(native_context);
                 }

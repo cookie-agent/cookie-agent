@@ -194,6 +194,41 @@ fn explicit_capabilities_and_replay_are_authoritative() {
 }
 
 #[test]
+fn authored_input_tokens_default_absent_and_bound_by_context() {
+    let input_tokens = |text: &str| {
+        compile(text).map(|compiled| {
+            compiled
+                .models
+                .values()
+                .next()
+                .unwrap()
+                .capabilities
+                .input_tokens
+        })
+    };
+    assert_eq!(input_tokens(&custom("")).unwrap(), None);
+    for (value, expected) in [(1, Some(1)), (20_000, Some(20_000)), (32_768, Some(32_768))] {
+        let text = custom("").replace(
+            "context_tokens = 32768,",
+            &format!("context_tokens = 32768, input_tokens = {value},"),
+        );
+        assert_eq!(input_tokens(&text).unwrap(), expected, "{value}");
+    }
+    for value in ["0", "32769", "-1", "\"large\""] {
+        let text = custom("").replace(
+            "context_tokens = 32768,",
+            &format!("context_tokens = 32768, input_tokens = {value},"),
+        );
+        assert!(input_tokens(&text).is_err(), "{value}");
+    }
+    let text = custom("").replace(
+        "context_tokens = 32768,",
+        "context_tokens = 32768, input_token = 1,",
+    );
+    assert!(toml::from_str::<ProviderDefinition>(&text).is_err());
+}
+
+#[test]
 fn endpoint_matrix_and_inherited_endpoint_conflicts_are_validated() {
     assert_eq!(
         compile(&custom(

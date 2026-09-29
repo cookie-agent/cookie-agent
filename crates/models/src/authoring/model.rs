@@ -136,6 +136,9 @@ pub struct AuthoredCapabilities {
     pub input: BTreeSet<Modality>,
     pub output: BTreeSet<Modality>,
     pub context_tokens: u64,
+    /// Input-token limit when the provider documents one below the context window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
     pub output_tokens: u64,
     #[serde(default = "super::yes")]
     pub tool_calling: bool,
@@ -159,6 +162,7 @@ impl AuthoredCapabilities {
             input: self.input.clone(),
             output: self.output.clone(),
             context_tokens: self.context_tokens,
+            input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
             tool_calling: self.tool_calling,
             parallel_tool_calls: self.parallel_tool_calls,
