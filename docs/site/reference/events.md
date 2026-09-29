@@ -265,7 +265,9 @@ sidecar file.
 contains the positive `model_turn_seq`, agent ID, resolved model identity, and
 Oven's normalized usage fields: inclusive input/output totals plus optional
 uncached input, cache-read input, cache-write input, text output, and reasoning
-output counts. The optional `estimated_cost_pico_usd` stamps the engine-selected
+output counts. A reported reasoning count of zero on a turn that streamed
+reasoning text is recorded as unknown, together with the text output count
+derived from it. The optional `estimated_cost_pico_usd` stamps the engine-selected
 price for that request: a number is priced, present `null` is unpriced, and an
 absent field identifies an older event.
 Usage rollups preserve stamped prices exactly and apply the current pricing

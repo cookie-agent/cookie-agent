@@ -241,8 +241,10 @@ impl Engine {
             }
             match result {
                 Ok(completed) => {
-                    let usage =
-                        crate::model_history::persist_usage(completed.turn.finish.usage.clone());
+                    let usage = crate::model_history::persist_usage(
+                        completed.turn.finish.usage.clone(),
+                        &completed.turn.message.content,
+                    );
                     let resolved_model = wire_model(binding);
                     let estimated_cost_pico_usd = crate::usage::estimated_cost_pico_usd(
                         &resolved_model,

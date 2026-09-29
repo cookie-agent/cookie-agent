@@ -28,10 +28,51 @@ use super::{
     COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, INTERRUPTED_TURN_MARKER,
     TOOL_EMITTED_SYSTEM_USER_MARKER, assemble_full_history, assemble_model_context,
     checkpoint_retained_history, compaction_prefix_history, compaction_tail_candidates,
-    framed_compaction_summary, project_summary_context, replay_decisions,
+    framed_compaction_summary, persist_usage, project_summary_context, replay_decisions,
     replay_decisions_with_preflight, restore_replay, tool_output_elision_marker, tool_result_part,
     wire_model,
 };
+
+#[test]
+fn zero_reasoning_tokens_with_streamed_reasoning_are_recorded_as_unknown() {
+    let usage = oven_sdk::Usage {
+        output_tokens: Some(40),
+        output_tokens_text: Some(40),
+        output_tokens_reasoning: Some(0),
+        ..oven_sdk::Usage::default()
+    };
+    let reasoning = oven_sdk::AssistantPart::Reasoning(oven_sdk::ReasoningPart::new("thinking"));
+    let text = oven_sdk::AssistantPart::Text(TextPart::new("answer"));
+
+    let streamed = persist_usage(usage.clone(), &[reasoning, text.clone()]);
+    assert_eq!(streamed.output_tokens, Some(40));
+    assert_eq!(streamed.output_tokens_reasoning, None);
+    assert_eq!(streamed.output_tokens_text, None);
+
+    let silent = persist_usage(
+        usage.clone(),
+        &[
+            oven_sdk::AssistantPart::Reasoning(oven_sdk::ReasoningPart::new("")),
+            text.clone(),
+        ],
+    );
+    assert_eq!(silent.output_tokens_reasoning, Some(0));
+    assert_eq!(silent.output_tokens_text, Some(40));
+
+    let reported = persist_usage(
+        oven_sdk::Usage {
+            output_tokens_text: Some(30),
+            output_tokens_reasoning: Some(10),
+            ..usage
+        },
+        &[
+            oven_sdk::AssistantPart::Reasoning(oven_sdk::ReasoningPart::new("thinking")),
+            text,
+        ],
+    );
+    assert_eq!(reported.output_tokens_reasoning, Some(10));
+    assert_eq!(reported.output_tokens_text, Some(30));
+}
 
 #[test]
 fn replay_source_wire_id_round_trips_without_becoming_a_local_selection_key() {

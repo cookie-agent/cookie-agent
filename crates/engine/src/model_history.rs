@@ -154,6 +154,7 @@ pub(crate) fn persist_turn(
                 .map_err(|error| HistoryError::Corrupt(error.to_string()))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let usage = persist_usage(turn.finish.usage, &turn.message.content);
     let content = turn
         .message
         .content
@@ -165,7 +166,7 @@ pub(crate) fn persist_turn(
             content,
             provider_options: turn.message.provider_options,
             finish_reason: persist_finish_reason(turn.finish.finish_reason),
-            usage: persist_usage(turn.finish.usage),
+            usage,
             response_metadata: turn.finish.response_metadata,
             provider_metadata: turn.finish.provider_metadata,
             native_replay: turn
@@ -1932,7 +1933,18 @@ fn restore_native_context(
     .map_err(|error| HistoryError::Corrupt(error.to_string()))
 }
 
-pub(crate) fn persist_usage(usage: oven_sdk::Usage) -> Usage {
+/// Converts adapter usage for persistence. Some gateways report a hard zero
+/// reasoning count even when the turn streamed reasoning text; that count is
+/// recorded as unknown, along with the text/reasoning split derived from it.
+pub(crate) fn persist_usage(mut usage: oven_sdk::Usage, content: &[AssistantPart]) -> Usage {
+    if usage.output_tokens_reasoning == Some(0)
+        && content.iter().any(
+            |part| matches!(part, AssistantPart::Reasoning(part) if !part.text.trim().is_empty()),
+        )
+    {
+        usage.output_tokens_reasoning = None;
+        usage.output_tokens_text = None;
+    }
     Usage {
         input_tokens: usage.input_tokens,
         input_tokens_no_cache: usage.input_tokens_no_cache,
