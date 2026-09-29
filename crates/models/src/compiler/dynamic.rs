@@ -15,12 +15,13 @@ use crate::{
     },
     catalog::{CatalogModelRecord, CatalogProviderRecord},
     compiler::{
+        executable::{CompatibleThinkingToggle, compatible_thinking_toggle},
         fingerprint::fingerprint,
         projection::{
             capabilities_from_catalog, managed_defaults, validate_capability_shape,
             validate_defaults,
         },
-        variants::{CompiledVariant, custom_variants, managed_variants},
+        variants::{CompiledVariant, CompiledVariantOrigin, custom_variants, managed_variants},
     },
     recipes::{
         COMPILER_VERSION, FamilyKind, FamilyRecipe, FamilyRecipeRegistry, ValidatedSetup,
@@ -69,6 +70,9 @@ pub struct CompiledDynamicModel {
     pub adapter_id: String,
     pub resolved_shape: String,
     pub reasoning_field: String,
+    /// Documented thinking on/off request field of a managed OpenAI-compatible
+    /// Chat provider; `None` when reasoning cannot be toggled on the wire.
+    pub thinking_toggle: Option<CompatibleThinkingToggle>,
     pub adapter: OvenAdapterFamily,
     pub endpoint: Option<String>,
     pub setup: Option<ValidatedSetup>,
@@ -167,7 +171,7 @@ impl CompiledDynamicModel {
                 && validate_defaults(defaults, &selected.capabilities)
                 && validate_custom_options(&selected.options, selected.adapter)
                 && (reasoning.is_none() || selected.capabilities.reasoning)
-                && reasoning_supported(reasoning, selected.adapter)
+                && reasoning_supported(reasoning, selected.adapter, selected.thinking_toggle)
         };
         if !validate(self, &self.defaults, None) {
             return Err(DynamicCompileError::CustomModel);
@@ -513,22 +517,46 @@ impl DynamicCompiler {
                 ModelLocalError::Unsupported("unsupported_model_capabilities".to_owned())
             });
         }
-        let (mut variants, mut variant_order, default_variant) =
-            managed_variants(&model.reasoning_options, override_, &defaults, &options).map_err(
-                |_| {
-                    if override_.is_some() {
-                        ModelLocalError::Provider(DynamicCompileError::Variant)
-                    } else {
-                        ModelLocalError::Unsupported("unsupported_protocol_feature".to_owned())
-                    }
-                },
-            )?;
+        let thinking_toggle = (adapter == OvenAdapterFamily::OpenaiCompatible)
+            .then(|| compatible_thinking_toggle(provider_id.as_str()))
+            .flatten();
+        let (mut variants, mut variant_order, default_variant) = managed_variants(
+            &model.reasoning_options,
+            model.limits.output,
+            |reasoning| reasoning_supported(Some(reasoning), adapter, thinking_toggle),
+            override_,
+            &defaults,
+            &options,
+        )
+        .map_err(|_| {
+            if override_.is_some() {
+                ModelLocalError::Provider(DynamicCompileError::Variant)
+            } else {
+                ModelLocalError::Unsupported("unsupported_protocol_feature".to_owned())
+            }
+        })?;
+        // Kimi Code documents `reasoning_effort: "none"` as its thinking switch,
+        // so its generated `off` is that effort level.
+        if thinking_toggle == Some(CompatibleThinkingToggle::ReasoningEffortNone) {
+            for variant in variants.values_mut() {
+                if variant.origin != CompiledVariantOrigin::Authored
+                    && variant.reasoning
+                        == Some(crate::ReasoningBehavior::Toggle { enabled: false })
+                {
+                    variant.reasoning = Some(crate::ReasoningBehavior::Effort {
+                        value: crate::ReasoningEffort::None,
+                    });
+                }
+            }
+        }
         // Catalog reasoning controls can exceed the selected wire protocol.
         // Keep supported generated choices without losing the whole model.
         // Explicit model overrides remain strict and must disable or replace
         // incompatible variants themselves.
         if override_.is_none() {
-            variants.retain(|_, variant| reasoning_supported(variant.reasoning.as_ref(), adapter));
+            variants.retain(|_, variant| {
+                reasoning_supported(variant.reasoning.as_ref(), adapter, thinking_toggle)
+            });
             variant_order.retain(|id| variants.contains_key(id));
         }
         if variants
@@ -626,6 +654,7 @@ impl DynamicCompiler {
                 | None => "reasoning_content",
             }
             .to_owned(),
+            thinking_toggle,
             adapter,
             endpoint,
             setup,
@@ -786,6 +815,7 @@ impl DynamicCompiler {
                     }
                     .into(),
                     reasoning_field: "reasoning_content".into(),
+                    thinking_toggle: None,
                     adapter: resolved_adapter,
                     endpoint: Some(endpoint),
                     setup: Some(setup.clone()),
@@ -1158,10 +1188,22 @@ fn validate_custom_options(options: &ProviderOptions, adapter: OvenAdapterFamily
 fn reasoning_supported(
     reasoning: Option<&crate::ReasoningBehavior>,
     adapter: OvenAdapterFamily,
+    thinking_toggle: Option<CompatibleThinkingToggle>,
 ) -> bool {
     match reasoning {
         None => true,
         Some(crate::ReasoningBehavior::Effort { .. }) => adapter != OvenAdapterFamily::CohereV2Chat,
+        Some(crate::ReasoningBehavior::Toggle { .. })
+            if adapter == OvenAdapterFamily::OpenaiCompatible =>
+        {
+            matches!(
+                thinking_toggle,
+                Some(
+                    CompatibleThinkingToggle::ThinkingType
+                        | CompatibleThinkingToggle::EnableThinking
+                )
+            )
+        }
         Some(
             crate::ReasoningBehavior::Toggle { .. } | crate::ReasoningBehavior::BudgetTokens { .. },
         ) => matches!(

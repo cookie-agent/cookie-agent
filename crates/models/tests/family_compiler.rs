@@ -731,6 +731,8 @@ fn anthropic_compatible_and_bedrock_accept_toggle_and_budget_variants() {
             .record
             .as_mut()
             .unwrap();
+        // Budgets need output room beyond the default output reservation.
+        model.limits.output = 32_000;
         model.reasoning_options = vec![
             CatalogReasoningOption::Toggle,
             CatalogReasoningOption::BudgetTokens {
@@ -743,8 +745,14 @@ fn anthropic_compatible_and_bedrock_accept_toggle_and_budget_variants() {
             .unwrap();
         assert!(compiled.unsupported_models.is_empty());
         let model = compiled.models.values().next().unwrap();
-        assert_eq!(model.variants.len(), 3);
-        assert!(!model.variants.keys().any(|id| id.as_str() == "on"));
+        assert_eq!(
+            model
+                .variant_order
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>(),
+            ["off", "budget-min", "budget-high", "budget-max"]
+        );
     }
 }
 

@@ -93,6 +93,37 @@ Model overrides accept `enabled`, `display_name`, `model_id`, `generation_option
 fields retain catalog/base values. Display names and generation settings have
 the same constraints as custom definitions. Variant and pricing rules are below.
 
+### Catalog reasoning variants
+
+Managed models get variants from the catalog's `reasoning_options`:
+
+- Each effort level becomes a variant of the same name (`low`, `high`, `max`, ...).
+- A toggle becomes `off` and `on`; `on` is dropped when a supported effort or
+  budget variant already turns reasoning on.
+- A token budget becomes `budget-min` (the catalog minimum), `budget-high` (half
+  the usable maximum), and `budget-max`. The usable maximum is the catalog
+  maximum capped at 31,999 tokens and at the output room left above the
+  default `max_output_tokens`. A dynamic minimum (`-1`) becomes `budget-auto`.
+
+Variants the selected wire cannot express are dropped. Wire mapping by family:
+
+| Family | Effort | `off` | `on` | Budget |
+|---|---|---|---|---|
+| Anthropic and Anthropic-compatible | `thinking = {type = "adaptive", display = "summarized"}` plus `output_config.effort` | `thinking = {type = "disabled"}` | adaptive, summarized | `thinking = {type = "enabled", budget_tokens = N, display = "summarized"}` |
+| OpenAI-compatible Chat | `reasoning_effort` | provider switch below | provider switch below | not sent |
+
+Claude models before 4.6 accept only manual budgets, so their effort and `on`
+variants send an enabled budget of half the free output room (1,024 to 16,000
+tokens) instead of adaptive thinking.
+
+OpenAI-compatible providers get `off`/`on` only where the provider documents a
+thinking switch: `thinking = {type = "disabled" | "enabled"}` for DeepSeek,
+Z.ai/Zhipu GLM, and Volcengine Ark; `enable_thinking = false | true` for
+Alibaba Cloud Model Studio (`alibaba`, `alibaba-cn`); and
+`reasoning_effort = "none"` for Kimi Code, which has no `on` variant. Kimi Code
+serves thinking-off K3 requests with its K2.8 Preview model. Other providers,
+including Moonshot, get no toggle variants.
+
 ## Custom providers
 
 Custom providers are config-only, never appear in `/connect`, and never use
