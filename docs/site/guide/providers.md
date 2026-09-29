@@ -102,8 +102,9 @@ Managed models get variants from the catalog's `reasoning_options`:
   budget variant already turns reasoning on.
 - A token budget becomes `budget-min` (the catalog minimum), `budget-high` (half
   the usable maximum), and `budget-max`. The usable maximum is the catalog
-  maximum capped at 31,999 tokens and at the output room left above the
-  default `max_output_tokens`. A dynamic minimum (`-1`) becomes `budget-auto`.
+  maximum capped at 31,999 tokens and at the output limit less 4,096 tokens
+  kept for visible output (a 32K-output model's `budget-max` is 27,904). A
+  dynamic minimum (`-1`) becomes `budget-auto`.
 
 Variants the selected wire cannot express are dropped. Wire mapping by family:
 
@@ -113,8 +114,14 @@ Variants the selected wire cannot express are dropped. Wire mapping by family:
 | OpenAI-compatible Chat | `reasoning_effort` | provider switch below | provider switch below | not sent |
 
 Claude models before 4.6 accept only manual budgets, so their effort and `on`
-variants send an enabled budget of half the free output room (1,024 to 16,000
-tokens) instead of adaptive thinking.
+variants send an enabled budget of half the output room above those 4,096
+visible tokens (1,024 to 16,000 tokens) instead of adaptive thinking.
+
+The Anthropic wire sends `max_tokens` as visible output plus the thinking
+budget, and the total may not exceed the model's output limit. Requests send
+the full output limit (or a smaller agent cap) as visible output, so with a
+manual budget the visible output is lowered to `output limit - budget` when it
+would not otherwise fit; a smaller agent cap that fits is kept.
 
 OpenAI-compatible providers get `off`/`on` only where the provider documents a
 thinking switch: `thinking = {type = "disabled" | "enabled"}` for DeepSeek,

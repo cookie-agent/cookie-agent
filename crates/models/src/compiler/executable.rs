@@ -448,7 +448,7 @@ fn anthropic_options(
     let enabled = |budget_tokens: i64| json!({ "type": "enabled", "budget_tokens": budget_tokens, "display": "summarized" });
     let active = || {
         if claude_extended_thinking_only(model.wire_model_id.as_str()) {
-            enabled(extended_thinking_budget(model, behavior.defaults))
+            enabled(extended_thinking_budget(model))
         } else {
             json!({ "type": "adaptive", "display": "summarized" })
         }
@@ -494,13 +494,13 @@ fn claude_extended_thinking_only(wire_model_id: &str) -> bool {
 }
 
 /// Manual thinking budget for effort and toggle variants on models that
-/// accept only budgets: half the output room left by the default output
-/// reservation, capped at 16,000 tokens and floored at the 1,024 minimum.
-fn extended_thinking_budget(model: &CompiledDynamicModel, defaults: &RequestDefaults) -> i64 {
+/// accept only budgets: half the output room left after the minimum visible
+/// output, capped at 16,000 tokens and floored at the 1,024 minimum.
+fn extended_thinking_budget(model: &CompiledDynamicModel) -> i64 {
     let room = model
         .capabilities
         .output_tokens
-        .saturating_sub(defaults.max_output_tokens.unwrap_or(1));
+        .saturating_sub(super::variants::MIN_VISIBLE_OUTPUT_TOKENS);
     i64::try_from(room / 2)
         .unwrap_or(i64::MAX)
         .clamp(1024, 16_000)
