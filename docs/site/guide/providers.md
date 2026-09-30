@@ -18,10 +18,9 @@ catalog on first run) and refreshes `https://models.dev/catalog.json` in the
 background right away, then hourly. Supported, non-deprecated text-output
 models are included automatically. Catalog declarations are not probes of your
 endpoint: account access, deployed model features, and billing may differ.
-Models the catalog lists without tool calling stay selectable: they work for
-agents that publish no tools and for internal agents such as session titles,
-while a request that carries tools or tool history fails with "tool calling is
-not supported by this model". Claude on Vertex AI (the
+Models the catalog lists without tool calling are unsupported: they are listed
+as unavailable with the reason `no tool calling` and are never selectable, by
+any agent. Claude on Vertex AI (the
 `google-vertex-anthropic` provider and any model routed to
 `@ai-sdk/google-vertex/anthropic`) is unsupported: it needs the Anthropic
 Messages `rawPredict` wire, which cookie-agent does not implement.
@@ -370,7 +369,7 @@ Custom fields are required unless a default or omission rule is stated below.
 | `context_tokens` | integer | Context window in tokens; must be greater than zero. |
 | `input_tokens` | integer | Optional input-token limit for providers that document one below the context window; must be greater than zero and at most `context_tokens`. Omitted, the input budget is the context window less `min(output cap, 32000, context_tokens / 2)`. Compaction triggers against this budget. |
 | `output_tokens` | integer | Maximum output tokens; must be greater than zero and at most `context_tokens`. |
-| `tool_calling` | boolean | Defaults to `true` when not declared or inherited. |
+| `tool_calling` | boolean | Defaults to `true` when not declared or inherited. A model with `tool_calling = false` is unsupported and never selectable. |
 | `parallel_tool_calls` | boolean | Defaults to `true`; requires `tool_calling = true`. |
 | `structured_output` | boolean | Defaults to `true`; declares JSON-structured output support. |
 | `reasoning` | boolean | Reasoning support. |
@@ -382,16 +381,19 @@ Custom fields are required unless a default or omission rule is stated below.
 | `media` | map | Per-kind (`image`, `audio`, `pdf`, `video`) input limits: nonempty `mime_types` string array, positive `max_bytes` and `max_count`. `max_count` is per request: when the history holds more parts of a kind, the oldest are replaced by a text placeholder in the outgoing request (see [media reads](../reference/tools.md#media-reads)). Exactly the non-text input modalities need entries; text-only models use `{}`. |
 
 The three optimistic `true` defaults are declarations, not endpoint detection.
-Set unsupported features to `false`. In particular, disabling tool calling also
-requires `parallel_tool_calls = false`. Invalid effective declarations are errors.
-For an endpoint without tools or structured output, add this fragment to its
-capabilities table:
+Set unsupported features to `false`. Invalid effective declarations are errors.
+For an endpoint without parallel tool calls or structured output, add this
+fragment to its capabilities table:
 
 ```toml
-tool_calling = false
 parallel_tool_calls = false
 structured_output = false
 ```
+
+cookie-agent requires tool calling. `tool_calling = false` (which also requires
+`parallel_tool_calls = false`) is accepted, but the model compiles as
+unsupported with the reason `no tool calling` and is never offered for
+selection; a fallback chain skips it like any other unavailable model.
 
 These flags neither request JSON for ordinary turns nor guarantee parallel
 execution or backend support. Managed models retain explicit catalog false

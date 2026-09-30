@@ -2,7 +2,10 @@ use cookie_agent_identity::{ProviderId, ProviderModelId, VariantId};
 use cookie_agent_models::{
     ProviderDefinition, ReplayCapability, RequestEndpoint,
     adapters::OvenAdapterFamily,
-    compiler::{CompiledDynamicProvider, DynamicCompiler},
+    compiler::{
+        CompiledDynamicProvider, DynamicCompiler, NO_TOOL_CALLING_REASON, UnsupportedModel,
+        UnsupportedModelKind,
+    },
 };
 
 fn custom(extra: &str) -> String {
@@ -171,11 +174,11 @@ fn removed_and_unknown_model_fields_are_strictly_rejected() {
 
 #[test]
 fn explicit_capabilities_and_replay_are_authoritative() {
-    let text = custom("").replace("reasoning = true", "reasoning = false, tool_calling = false, parallel_tool_calls = false, structured_output = false, native_replay = \"unsupported\"");
+    let text = custom("").replace("reasoning = true", "reasoning = false, parallel_tool_calls = false, structured_output = false, native_replay = \"unsupported\"");
     let compiled = compile(&text).unwrap();
     let capabilities = &compiled.models.values().next().unwrap().capabilities;
     assert!(
-        !capabilities.tool_calling
+        capabilities.tool_calling
             && !capabilities.parallel_tool_calls
             && !capabilities.structured_output
     );
@@ -194,6 +197,32 @@ fn explicit_capabilities_and_replay_are_authoritative() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn custom_model_without_tool_calling_compiles_unsupported() {
+    let compiled = compile(&custom("").replace(
+        "reasoning = true",
+        "reasoning = true, tool_calling = false, parallel_tool_calls = false",
+    ))
+    .unwrap();
+    assert!(compiled.models.is_empty());
+    assert_eq!(
+        compiled.unsupported_models,
+        [UnsupportedModel {
+            id: ProviderModelId::new("qwen3.8-flash").unwrap(),
+            kind: UnsupportedModelKind::Unsupported,
+            reason: NO_TOOL_CALLING_REASON.to_owned(),
+        }]
+    );
+    assert_eq!(NO_TOOL_CALLING_REASON, "no tool calling");
+    // A disabled tool-less model is simply absent.
+    let disabled = compile(&custom("enabled = false").replace(
+        "reasoning = true",
+        "reasoning = true, tool_calling = false, parallel_tool_calls = false",
+    ))
+    .unwrap();
+    assert!(disabled.models.is_empty() && disabled.unsupported_models.is_empty());
 }
 
 #[test]

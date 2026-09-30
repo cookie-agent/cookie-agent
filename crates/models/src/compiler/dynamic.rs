@@ -242,6 +242,10 @@ pub enum UnsupportedModelKind {
     Unsupported,
 }
 
+/// Reason recorded for a model that cannot call tools. Every cookie-agent run
+/// can publish tools, so such models are unsupported rather than selectable.
+pub const NO_TOOL_CALLING_REASON: &str = "no tool calling";
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct UnsupportedModel {
     pub id: ProviderModelId,
@@ -382,6 +386,14 @@ impl DynamicCompiler {
             }
             let override_ = authored.and_then(|value| value.model_overrides.get(table_id));
             if override_.and_then(|value| value.enabled) == Some(false) {
+                continue;
+            }
+            if !model.tool_call {
+                unsupported_models.push(UnsupportedModel {
+                    id: table_id.clone(),
+                    kind: UnsupportedModelKind::Unsupported,
+                    reason: NO_TOOL_CALLING_REASON.to_owned(),
+                });
                 continue;
             }
             let mut resolved = match resolve_model(record, model, None, None) {
@@ -750,6 +762,7 @@ impl DynamicCompiler {
             .map_err(|_| DynamicCompileError::Auth)?;
         let auth = custom_auth_shape(&provider.auth, auth_method);
         let mut models = BTreeMap::new();
+        let mut unsupported_models = Vec::new();
         for (id, model) in &provider.models {
             let options = model.options.resolve();
             let resolved_adapter = adapter.with_endpoint(options.request_endpoint)?;
@@ -799,6 +812,14 @@ impl DynamicCompiler {
                 ])?;
             }
             if !model.enabled {
+                continue;
+            }
+            if !capabilities.tool_calling {
+                unsupported_models.push(UnsupportedModel {
+                    id: id.clone(),
+                    kind: UnsupportedModelKind::Unsupported,
+                    reason: NO_TOOL_CALLING_REASON.to_owned(),
+                });
                 continue;
             }
             let endpoint = provider.endpoint.as_str().trim_end_matches('/').to_owned();
@@ -897,12 +918,13 @@ impl DynamicCompiler {
                     .iter()
                     .map(|(id, model)| (id, &model.behavior_fingerprint))
                     .collect::<Vec<_>>(),
+                &unsupported_models,
             ),
         );
         Ok(CompiledDynamicProvider {
             id: provider_id.clone(),
             models,
-            unsupported_models: Vec::new(),
+            unsupported_models,
             fingerprint: provider_fingerprint,
         })
     }

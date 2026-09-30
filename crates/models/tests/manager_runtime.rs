@@ -1693,7 +1693,7 @@ async fn dynamic_handles_execute_anthropic_and_openai_responses_and_build_vertex
     let model = |display: &str| {
         format!(
             r#"display_name = "{display}"
-capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = false, seed = false, native_replay = "unsupported", media = {{}} }}
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = false, seed = false, native_replay = "unsupported", media = {{}} }}
 "#
         )
     };
@@ -1845,7 +1845,7 @@ auth = {{ method = "aws-sigv4-credentials-v1", values = {{ access_key_id = "acce
 
 [models.test]
 display_name = "Bedrock"
-capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = true, temperature = false, top_p = false, seed = false, native_replay = "unsupported", media = {{}} }}
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = true, temperature = false, top_p = false, seed = false, native_replay = "unsupported", media = {{}} }}
 variants = {{ toggle = {{ reasoning = {{ type = "toggle", enabled = {enabled} }} }} }}
 "#
         );
@@ -2408,7 +2408,7 @@ auth = { method = "no-auth-v1", values = {} }
 
 [models.test]
 display_name = "Decimal Model"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
 generation_options = { temperature = 0.7, top_p = 0.125 }
 variants = { precise = { generation_options = { temperature = 1.25, top_p = 0.5 } } }
 "#,
@@ -2536,7 +2536,7 @@ headers = { x-shared = "base", x-delete = "inherited" }
 
 [models.test]
 display_name = "Header Model"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
 variants = { override = { headers = { x-shared = "variant" } }, deleted = { headers = { x-delete = "" } } }
 "#,
     )

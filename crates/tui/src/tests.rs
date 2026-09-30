@@ -58,7 +58,7 @@ fn test_providers() -> BTreeMap<ProviderId, ProviderDefinition> {
                     "output": ["text"],
                     "context_tokens": 8192,
                     "output_tokens": 2048,
-                    "tool_calling": false,
+                    "tool_calling": true,
                     "parallel_tool_calls": false,
                     "structured_output": false,
                     "reasoning": false,
