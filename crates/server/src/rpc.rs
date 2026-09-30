@@ -264,6 +264,7 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::IneligibleAgent(_) => "ineligible_agent",
         EngineError::UnknownAgentModel { .. } => "unknown_agent_model",
         EngineError::UnavailableAgentModel { .. } => "unavailable_agent_model",
+        EngineError::ModelWithoutToolCalling { .. } => "model_without_tool_calling",
         EngineError::DisabledAgent(_) => "disabled_agent",
         EngineError::MissingRun(_) => "missing_run",
         EngineError::SessionRunning(_) => "session_running",

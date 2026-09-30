@@ -1,12 +1,12 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 25 is current-only. A client must call `handshake` with
-`{ "protocol_version": 25 }` before any other method.
+Protocol 26 is current-only. A client must call `handshake` with
+`{ "protocol_version": 26 }` before any other method.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 25.
+members of protocol 26.
 
 ## Error diagnostics
 
@@ -29,7 +29,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 25 alongside independent display and output references. The
+preserved in protocol 26 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -149,6 +149,16 @@ models. Each `ProviderDescriptor` additionally carries:
   providers; unconfigured providers report counts alone.
 - `documentation_url` and `environment`: the models.dev `doc` URL and `env`
   variable names. They are display hints; cookie never reads those variables.
+
+Protocol 26 (runtime snapshot schema 7) adds a required `publishes_tools`
+boolean to every `AgentDescriptor`: whether the agent's permissions allow or
+ask for any tool action. Such an agent runs only models whose
+`capabilities.tool_calling` is true, so clients list the others as
+unavailable (`no tool calling`) for it. The engine enforces the same rule:
+`session.create` and `run.start` fail with ``model `<key>` is not available:
+no tool calling: agent `<id>` uses tools``, fallback chains skip those models,
+and a run whose session permissions add tools rejects a head model without
+tool calling.
 
 `catalog_state.age` is `current`, `older_than_seven_days`, or
 `older_than_thirty_days` for the selected catalog body, alongside the existing

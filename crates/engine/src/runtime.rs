@@ -175,6 +175,10 @@ pub enum EngineError {
         "agent `{agent}` references catalog model `{model}`, but it is unavailable in the compiled runtime"
     )]
     UnavailableAgentModel { agent: AgentId, model: ModelKey },
+    /// The agent publishes tools, which a model without tool calling
+    /// cannot accept.
+    #[error("model `{model}` is not available: no tool calling: agent `{agent}` uses tools")]
+    ModelWithoutToolCalling { agent: AgentId, model: ModelKey },
     #[error("agent `{0}` is disabled")]
     DisabledAgent(AgentId),
     #[error("run {0} not found")]

@@ -169,12 +169,21 @@ impl Engine {
             })
         };
         let model = if agent.resolved_fallback.is_empty() {
-            inherited.first().map(|binding| binding.selection.clone())
+            // The first inherited model the agent can call its tools on; with
+            // none, the first one, which freezing then rejects by name.
+            inherited
+                .iter()
+                .find(|binding| {
+                    !agent.lacks_tool_calling(&runtime.models, &binding.selection.model)
+                })
+                .or(inherited.first())
+                .map(|binding| binding.selection.clone())
         } else {
             (agent.document.id == creation_agent.agent)
                 .then(|| policy::live_model_selection(&runtime, &requested.model))
                 .flatten()
                 .filter(in_chain)
+                .filter(|selection| agent.can_run(&runtime.models, &selection.model))
                 .or_else(|| policy::agent_default_model(&runtime, agent))
         }
         .ok_or(EngineError::NoRunnableModel)?;
@@ -341,6 +350,22 @@ impl Engine {
             run_policy.cache_strategies.drain(..start);
             run_policy.agent.selected_suffix_start += start as u32;
             params.selection = effective;
+        }
+        // Freezing already rejects a head model without tool calling for an
+        // agent whose permissions publish tools; the session's permission
+        // overlay can add tools to any agent, so check what this run sends.
+        if run_policy
+            .model_capabilities(&run_policy.selected_suffix[0])
+            .is_some_and(|capabilities| !capabilities.tool_calling)
+            && !self
+                .published_tool_definitions(params.session_id, &run_policy)?
+                .definitions
+                .is_empty()
+        {
+            return Err(EngineError::ModelWithoutToolCalling {
+                agent: run_policy.agent.agent.clone(),
+                model: params.selection.model.model.clone(),
+            });
         }
         let from_model = session.log.last_run_started().and_then(|_| {
             remembered
@@ -1093,7 +1118,21 @@ impl Engine {
                 self.append_run_cancelled_once(&active, run_id, None)?;
                 return Ok(());
             }
-            let override_model = self.take_skill_model_override(active.session);
+            // A skill's model preference cannot drop the tools the agent
+            // publishes, so a model without tool calling is ignored then.
+            let override_model = self
+                .take_skill_model_override(active.session)
+                .filter(|model| {
+                    active
+                        .policy
+                        .runtime
+                        .models
+                        .model(model)
+                        .is_none_or(|compiled| compiled.model.capabilities.tool_calling)
+                        || self
+                            .published_tool_definitions(active.session, &active.policy)
+                            .is_ok_and(|tools| tools.definitions.is_empty())
+                });
             let mut turn_policy = None;
             if let Some(model) = override_model {
                 let descriptor = active

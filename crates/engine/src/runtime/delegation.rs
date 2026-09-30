@@ -507,29 +507,41 @@ impl Engine {
         }
         let fallback_index = active_parent.fallback_index.load(Ordering::Acquire) as usize;
         let inherited = parent_policy.active_suffix(fallback_index);
-        let child_selection = child_agent
-            .resolved_fallback
-            .iter()
-            .filter_map(|fallback| match fallback {
-                crate::runtime_snapshot::ResolvedAgentFallback::Selection { selection, .. } => {
-                    Some(selection)
-                }
-                crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { .. } => None,
-            })
-            .find(|selection| {
-                parent_policy
-                    .runtime
-                    .models
-                    .model(&selection.model)
-                    .is_some_and(|model| {
+        let models = &parent_policy.runtime.models;
+        let own_chain = || {
+            child_agent
+                .resolved_fallback
+                .iter()
+                .filter_map(|fallback| match fallback {
+                    crate::runtime_snapshot::ResolvedAgentFallback::Selection {
+                        selection, ..
+                    } => Some(selection),
+                    crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { .. } => None,
+                })
+        };
+        // The first model the child can run. When only models without the
+        // tool calling its tools need remain, the first of those is chosen
+        // so freezing rejects it by name instead of reporting no model.
+        let child_selection = own_chain()
+            .find(|selection| child_agent.can_run(models, &selection.model))
+            .or_else(|| {
+                own_chain().find(|selection| {
+                    models.model(&selection.model).is_some_and(|model| {
                         model.model.status
                             == cookie_agent_models::compiler::CompiledModelStatus::Available
                     })
+                })
             })
             .cloned()
             .or_else(|| {
                 if child_agent.resolved_fallback.is_empty() {
-                    inherited.first().map(|binding| binding.selection.clone())
+                    inherited
+                        .iter()
+                        .find(|binding| {
+                            !child_agent.lacks_tool_calling(models, &binding.selection.model)
+                        })
+                        .or(inherited.first())
+                        .map(|binding| binding.selection.clone())
                 } else {
                     None
                 }
