@@ -279,9 +279,7 @@ impl ResolvedExecutableModel {
         request: Request,
         strategy_override: Option<Option<&CacheStrategyConfig>>,
     ) -> (Request, Option<CacheStrategyConfig>) {
-        let mut request = self
-            .defaults
-            .apply(&crate::ProviderOptions::default(), request);
+        let mut request = self.defaults.apply(self.adapter, request);
         request
             .provider_options
             .extend(self.provider_options.clone());

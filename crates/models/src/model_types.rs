@@ -142,10 +142,17 @@ pub struct ResolvedRequestDefaults {
 }
 
 impl ResolvedRequestDefaults {
+    /// Fills unset request fields from these defaults for one adapter family.
+    ///
+    /// An effort variant becomes the normalized `reasoning_effort` except on
+    /// Gemini and Vertex, whose compiled provider options already carry it as
+    /// `thinkingConfig.thinkingLevel`: Google takes exactly one thinking
+    /// representation, and Oven rejects the normalized effort next to a
+    /// `thinkingConfig`.
     #[must_use]
     pub fn apply(
         &self,
-        _options: &ProviderOptions,
+        adapter: crate::adapters::OvenAdapterFamily,
         mut request: oven_sdk::Request,
     ) -> oven_sdk::Request {
         request.inference.max_output_tokens = request
@@ -160,12 +167,20 @@ impl ResolvedRequestDefaults {
             .inference
             .top_p
             .or(self.request.top_p.map(|value| f64::from(value.get())));
+        let thinking_config_carries_effort = matches!(
+            adapter,
+            crate::adapters::OvenAdapterFamily::GoogleGemini
+                | crate::adapters::OvenAdapterFamily::GoogleVertexGemini
+        );
         request.inference.reasoning_effort =
             request
                 .inference
                 .reasoning_effort
                 .clone()
                 .or_else(|| match &self.reasoning {
+                    Some(ReasoningBehavior::Effort { .. }) if thinking_config_carries_effort => {
+                        None
+                    }
                     Some(ReasoningBehavior::Effort { value }) => Some(
                         match value {
                             ReasoningEffort::None => "none",

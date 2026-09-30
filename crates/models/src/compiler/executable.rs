@@ -926,14 +926,16 @@ fn azure_chat_options(reasoning: Option<&ReasoningBehavior>) -> AzureOpenAiChatO
     }
 }
 
+/// Gemini API thinking controls, matching Vertex: effort variants send
+/// `thinkingConfig.thinkingLevel` (Gemini 3 and later) and budget or toggle
+/// variants send `thinkingBudget` (Gemini 2.5), both through
+/// [`google_thinking_config`]. The request carries no normalized
+/// `reasoning_effort` for Google, so no effort mapping is configured.
 fn google_thinking(reasoning: Option<&ReasoningBehavior>) -> GoogleThinkingSettings {
     match reasoning {
-        Some(effort @ ReasoningBehavior::Effort { .. }) => {
-            let level = reasoning_effort(effort).unwrap_or_default();
-            GoogleThinkingSettings::Level {
-                effort_levels: BTreeMap::from([(level.clone(), level)]),
-            }
-        }
+        Some(ReasoningBehavior::Effort { .. }) => GoogleThinkingSettings::Level {
+            effort_levels: BTreeMap::new(),
+        },
         Some(_) => GoogleThinkingSettings::Budget {
             effort_budgets: BTreeMap::new(),
         },

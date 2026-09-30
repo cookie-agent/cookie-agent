@@ -69,7 +69,10 @@ reasoning = { type = "effort", value = "xhigh" }
             request: variant.defaults.clone(),
             reasoning: variant.reasoning.clone(),
         }
-        .apply(&variant.options, oven_sdk::Request::new(vec![]));
+        .apply(
+            cookie_agent_models::adapters::OvenAdapterFamily::OpenaiCompatible,
+            oven_sdk::Request::new(vec![]),
+        );
         assert_eq!(request.inference.reasoning_effort.as_deref(), Some(effort));
         assert_eq!(request.inference.temperature, Some(1.0));
         assert_eq!(request.inference.max_output_tokens, Some(1234));
