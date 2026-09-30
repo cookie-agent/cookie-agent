@@ -436,7 +436,8 @@ impl App {
             .and_then(|session| self.store.sessions.get(&session))
             .and_then(|state| state.model_selection.selection.clone());
         if let Some(selection) = selection
-            && (self.selection_is_live(&selection.model)
+            && ((self.selection_is_live(&selection.model)
+                && self.selection_runnable_by_its_agent(&selection))
                 || self
                     .persisted_chain()
                     .is_some_and(|chain| chain.contains(&selection.model)))

@@ -987,21 +987,15 @@ impl App {
                     self.theme.warning(),
                 )));
             }
-            entries.extend(unavailable.iter().map(|(provider, model)| {
-                let key = format!("{provider}/{}", model.id);
-                let name = if model.display_name.as_str() == model.id.as_str() {
-                    key
+            entries.extend(unavailable.iter().map(|model| {
+                // A display name that only repeats the model ID adds nothing.
+                let name = if model.key.ends_with(&format!("/{}", model.display_name)) {
+                    model.key.clone()
                 } else {
-                    format!("{} {key}", model.display_name)
+                    format!("{} {}", model.display_name, model.key)
                 };
                 Line::from(Span::styled(
-                    truncate_with_ellipsis(
-                        &format!(
-                            "  {name} — {}",
-                            crate::ui::provider::unavailable_model_reason(model)
-                        ),
-                        row_width,
-                    ),
+                    truncate_with_ellipsis(&format!("  {name} — {}", model.reason), row_width),
                     self.theme.muted(),
                 ))
             }));

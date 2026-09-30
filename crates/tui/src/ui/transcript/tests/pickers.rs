@@ -1195,3 +1195,52 @@ async fn model_picker_lists_unavailable_models_with_reasons_but_never_selects_th
         filtered.join("\n")
     ));
 }
+
+#[tokio::test]
+async fn model_picker_lists_models_without_tool_calling_as_unavailable_for_tool_agents() {
+    let mut app = test_app().await;
+    let mut tooled = catalog_model("alpha/tooled", &[], None);
+    tooled.display_name = "Tooled".into();
+    let mut sonar = catalog_model("perplexity/sonar", &[], None);
+    sonar.display_name = "Sonar".into();
+    sonar.capabilities.tool_calling = false;
+    sonar.capabilities.parallel_tool_calls = false;
+    app.models = vec![tooled, sonar];
+    let draft_model = |app: &App| {
+        app.draft
+            .as_ref()
+            .map(|draft| draft.model.model.to_string())
+    };
+
+    // The test agent publishes tools, so its default skips the tool-less
+    // model and the picker lists that model as unavailable.
+    assert!(app.agents[0].publishes_tools);
+    app.draft = app.default_draft_selection();
+    assert_eq!(draft_model(&app).as_deref(), Some("alpha/tooled"));
+    app.open_selection_modal(Modal::Models);
+    app.model_search.focus_list();
+    let tool_agent = model_picker_rows(&mut app, 150, 30);
+    assert_eq!(app.hit_map.picker_rows.len(), 1);
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.picker_state.selected(), Some(0));
+    app.set_draft_model("perplexity/sonar".parse().expect("model key"));
+    assert_eq!(draft_model(&app).as_deref(), Some("alpha/tooled"));
+    assert_eq!(
+        app.status,
+        "model perplexity/sonar is not available for agent primary: no tool calling: this agent uses tools"
+    );
+
+    // An agent without tools selects it like any other model.
+    app.agents[0].publishes_tools = false;
+    let toolless_agent = model_picker_rows(&mut app, 150, 30);
+    assert_eq!(app.hit_map.picker_rows.len(), 2);
+    app.set_draft_model("perplexity/sonar".parse().expect("model key"));
+    assert_eq!(draft_model(&app).as_deref(), Some("perplexity/sonar"));
+
+    insta::assert_snapshot!(format!(
+        "== agent with tools ==\n{}\n== agent without tools ==\n{}",
+        tool_agent.join("\n"),
+        toolless_agent.join("\n")
+    ));
+}
