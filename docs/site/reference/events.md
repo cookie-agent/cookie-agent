@@ -410,6 +410,13 @@ missed. Without `limit` the first response is the final page. Paging a session
 this process does not own parses its log once and serves later pages from
 memory while the file is unchanged.
 
+A connection holds at most one live tail per session. Subscribing a session
+the connection already follows (reopening it, or a recovery replay) replaces
+its tail in the same step as the new snapshot: notifications the old tail had
+already queued are written first, then the new tail's, and nothing reaches
+both. Durable events carry a `seq` a client can drop a copy by, but transient
+output does not, so two tails would show every streamed delta twice.
+
 A notification is tagged as a stored event:
 
 ```json

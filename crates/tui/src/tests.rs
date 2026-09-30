@@ -44,10 +44,10 @@ pub(crate) fn test_run_selection() -> RunSelection {
     }
 }
 
-fn test_providers() -> BTreeMap<ProviderId, ProviderDefinition> {
+fn test_providers(endpoint: &str, reasoning: bool) -> BTreeMap<ProviderId, ProviderDefinition> {
     let definition: ProviderDefinition = serde_json::from_value(serde_json::json!({
         "source": "custom",
-        "endpoint": "https://example.test/v1",
+        "endpoint": endpoint,
         "adaptor": "openai-compatible",
         "auth": {"method": "no-auth-v1", "values": {}},
         "models": {
@@ -61,7 +61,7 @@ fn test_providers() -> BTreeMap<ProviderId, ProviderDefinition> {
                     "tool_calling": true,
                     "parallel_tool_calls": true,
                     "structured_output": false,
-                    "reasoning": false,
+                    "reasoning": reasoning,
                     "temperature": false,
                     "top_p": false,
                     "seed": false,
@@ -140,6 +140,20 @@ pub(crate) fn in_process_server() -> (tempfile::TempDir, Arc<Server>) {
 }
 
 fn in_process_server_with_skills(with_skills: bool) -> (tempfile::TempDir, Arc<Server>) {
+    build_in_process_server(with_skills, None)
+}
+
+/// An in-process server whose test model streams reasoning and text from
+/// `endpoint`, with first-turn title generation off so the only model call a
+/// run makes is its reply.
+pub(crate) fn in_process_streaming_server(endpoint: &str) -> (tempfile::TempDir, Arc<Server>) {
+    build_in_process_server(false, Some(endpoint))
+}
+
+fn build_in_process_server(
+    with_skills: bool,
+    streaming_endpoint: Option<&str>,
+) -> (tempfile::TempDir, Arc<Server>) {
     let directory = tempfile::tempdir().expect("temporary data directory");
     #[cfg(unix)]
     {
@@ -147,7 +161,10 @@ fn in_process_server_with_skills(with_skills: bool) -> (tempfile::TempDir, Arc<S
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
             .expect("private test root");
     }
-    let providers = test_providers();
+    let providers = test_providers(
+        streaming_endpoint.unwrap_or("https://example.test/v1"),
+        streaming_endpoint.is_some(),
+    );
     let provider_store = directory.path().join("provider-store");
     #[cfg(unix)]
     {
@@ -214,7 +231,10 @@ fn in_process_server_with_skills(with_skills: bool) -> (tempfile::TempDir, Arc<S
             approval: ApprovalConfig::default(),
             model_retry: cookie_agent_config::ModelRetryConfig::default(),
             context_compaction: ContextCompactionConfig::default(),
-            session_title: SessionTitleConfig::default(),
+            session_title: SessionTitleConfig {
+                generate_on_first_turn: streaming_endpoint.is_none(),
+                ..SessionTitleConfig::default()
+            },
             delegation: cookie_agent_config::DelegationConfig::default(),
             messaging: cookie_agent_config::MessagingConfig::default(),
             pricing: cookie_agent_config::PricingConfig::default(),

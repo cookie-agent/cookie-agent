@@ -13,6 +13,7 @@ mod goal;
 mod hit_regions;
 mod hover;
 mod layout;
+mod live_stream;
 mod markdown;
 mod model_names;
 mod pickers;

@@ -37,7 +37,7 @@ async fn direct_store_appends_share_the_subscription_handoff() {
     let subscriber = tokio::task::spawn_blocking(move || {
         gate.wait();
         store
-            .subscribe_events(session_id, Some(cursor), None)
+            .subscribe_events(session_id, Some(cursor), None, None)
             .expect("subscribe")
     });
     let (snapshot, live) = with_watchdog("subscription handoff", subscriber)
@@ -1052,7 +1052,7 @@ async fn a_paged_subscription_goes_live_only_on_its_final_page() {
     let mut live = loop {
         let (page, receiver) = fixture
             .engine
-            .subscribe_page(session_id, cursor, Some(limit))
+            .subscribe_page(session_id, cursor, Some(limit), None)
             .await
             .expect("page");
         assert!(page.events.len() <= 4);
@@ -1093,7 +1093,7 @@ async fn paging_a_foreign_log_parses_it_once_until_it_changes() {
 
     let foreign = reopen_engine(&fixture);
     assert!(matches!(
-        foreign.subscribe_page(session_id, None, None).await,
+        foreign.subscribe_page(session_id, None, None, None).await,
         Err(EngineError::SessionOwnedByAnotherProcess(id)) if id == session_id
     ));
     let limit = std::num::NonZeroU32::new(4).unwrap();
@@ -1153,7 +1153,7 @@ async fn paging_and_renames_skip_producer_reconciliation() {
 
     fixture
         .engine
-        .subscribe_page(session_id, None, std::num::NonZeroU32::new(1))
+        .subscribe_page(session_id, None, std::num::NonZeroU32::new(1), None)
         .await
         .expect("history page");
     fixture
@@ -1174,4 +1174,91 @@ async fn paging_and_renames_skip_producer_reconciliation() {
 
     fixture.engine.resume(session_id).await.expect("resume");
     assert_eq!(reconciles(), before + 1, "other commands still reconcile");
+}
+
+/// A reader re-subscribing a session it already follows (a reselected view,
+/// a recovery replay) must not end up with two tails: live-only output has no
+/// sequence to drop a copy by.
+#[tokio::test]
+async fn a_tail_owner_holds_one_live_tail_per_session() {
+    let (fixture, selection) = custom_fixture();
+    let session_id = fixture
+        .engine
+        .create_session(selection)
+        .expect("session")
+        .session_id;
+    let store = Arc::clone(&fixture.engine.inner.store);
+    let owner = crate::TailOwner(7);
+    let tail = |owner| {
+        let engine = fixture.engine.clone();
+        async move {
+            engine
+                .subscribe_page(session_id, None, None, owner)
+                .await
+                .expect("subscribe")
+                .1
+                .expect("an unlimited subscription is live")
+        }
+    };
+    let mut replaced = tail(Some(owner)).await;
+    let mut other_owner = tail(Some(crate::TailOwner(8))).await;
+    let mut unowned = tail(None).await;
+    let append = |input: &str| {
+        store
+            .append(
+                session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::UserInputAdmitted {
+                    input: input.into(),
+                },
+            )
+            .expect("append")
+            .seq
+    };
+    let before = append("before");
+    let mut replacement = tail(Some(owner)).await;
+    store
+        .publish_transient(
+            session_id,
+            Some(cookie_agent_protocol::RunId::new_v7()),
+            EventPayload::TextDelta {
+                attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
+                text: "live".into(),
+            },
+        )
+        .expect("a durable event to follow");
+    let after = append("after");
+
+    let drain = |receiver: &mut tokio::sync::mpsc::Receiver<EventSubscriptionMessage>| {
+        let mut seen = Vec::new();
+        while let Ok(message) = receiver.try_recv() {
+            seen.push(match message {
+                EventSubscriptionMessage::Event { event } => format!("event {}", event.seq),
+                EventSubscriptionMessage::Transient { event } => {
+                    format!("transient after {}", event.after_seq)
+                }
+                EventSubscriptionMessage::Gap { .. } => "gap".into(),
+            });
+        }
+        seen
+    };
+    // The replaced tail keeps what it was sent before the replacement and
+    // then ends; everything later reaches the owner exactly once.
+    assert_eq!(drain(&mut replaced), [format!("event {before}")]);
+    assert!(replaced.is_closed());
+    assert_eq!(
+        drain(&mut replacement),
+        [
+            format!("transient after {before}"),
+            format!("event {after}")
+        ]
+    );
+    let everything = [
+        format!("event {before}"),
+        format!("transient after {before}"),
+        format!("event {after}"),
+    ];
+    assert_eq!(drain(&mut other_owner), everything);
+    assert_eq!(drain(&mut unowned), everything);
 }

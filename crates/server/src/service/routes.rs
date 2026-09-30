@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use cookie_agent_engine::{EngineError, session::SessionError};
+use cookie_agent_engine::{EngineError, TailOwner, session::SessionError};
 use cookie_agent_protocol::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondErrorCode, ApprovalRespondParams,
     ApprovalRespondResult, EventsSubscribeParams, EventsSubscribeResult, McpAuthBeginParams,
@@ -281,7 +281,15 @@ impl ServerProtocol for Server {
     ) -> Result<EventsSubscribeResult> {
         let (result, receiver) = match self
             .engine
-            .subscribe_page(params.session_id, params.cursor, params.limit)
+            .subscribe_page(
+                params.session_id,
+                params.cursor,
+                params.limit,
+                // One tail per session per connection: a re-subscribe (a
+                // reselected session, a recovery replay) replaces the tail
+                // rather than adding a second copy of every live message.
+                Some(TailOwner(context.connection_id())),
+            )
             .await
         {
             Ok(subscription) => subscription,
@@ -300,7 +308,7 @@ impl ServerProtocol for Server {
             return Ok(result);
         };
         context.register_session_subscription(params.session_id);
-        self.start_event_tail(receiver, context.clone());
+        context.forward_session_tail(params.session_id, receiver);
         Ok(result)
     }
 

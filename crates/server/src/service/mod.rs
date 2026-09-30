@@ -1,6 +1,5 @@
 mod routes;
 mod runtime_notifications;
-mod subscriptions;
 mod websocket;
 
 use std::{io, net::SocketAddr, sync::Arc};

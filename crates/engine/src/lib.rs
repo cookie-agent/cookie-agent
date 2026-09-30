@@ -44,6 +44,7 @@ pub use runtime::{
     ArtifactReadPage, Engine, EngineError, EngineHistoryView, EngineOptions, SkillInvocation,
 };
 pub use runtime_snapshot::PublishedRuntime;
+pub use session::TailOwner;
 pub use tool_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, ProgressSink, PromptSection,
     SessionToolContext, StdinWrite, ToolCall, ToolCompletion, ToolConcurrency, ToolError,
