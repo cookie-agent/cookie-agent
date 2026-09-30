@@ -3,12 +3,14 @@
 
 use std::sync::Arc;
 
+use cookie_agent_models::{ModelManager, ProviderDefinition, provider_store::ProviderStore};
 use cookie_agent_protocol::{
     AgentId, ClientRunId, EventPayload, ModelKey, ModelSelection, PermissionAction,
-    PermissionEffect, RunSelection, RunStartParams, SessionStatus, WildcardPattern,
+    PermissionEffect, ProviderId, ProviderModelId, RunSelection, RunStartParams, SessionStatus,
+    WildcardPattern,
 };
 
-use crate::EngineError;
+use crate::{Engine, EngineError, EngineOptions};
 
 use super::support::*;
 
@@ -249,6 +251,128 @@ async fn title_agent_runs_on_a_model_without_tool_calling() {
         requests
             .iter()
             .all(|request| !request.contains("\"tools\""))
+    );
+    fixture.engine.shutdown().await;
+}
+
+/// Makes `custom.test/group/fallback` a model without tool calling.
+async fn make_fallback_toolless(fixture: &mut Fixture) {
+    fixture.engine.shutdown().await;
+    let provider_id = ProviderId::new("custom.test").expect("provider ID");
+    let ProviderDefinition::Custom(provider) = fixture
+        .config
+        .runtime
+        .providers
+        .get_mut(&provider_id)
+        .expect("custom provider")
+    else {
+        panic!("custom provider");
+    };
+    let fallback = provider
+        .models
+        .get_mut(&ProviderModelId::new("group/fallback").expect("model ID"))
+        .expect("fallback model");
+    fallback.capabilities.tool_calling = false;
+    fallback.capabilities.parallel_tool_calls = false;
+    let current = fixture.manager.current();
+    let manager = Arc::new(
+        ModelManager::new(
+            fixture.config.runtime.providers.clone(),
+            Arc::clone(current.catalog()),
+            ProviderStore::open(fixture._directory.path().join("provider-store"))
+                .expect("provider store"),
+        )
+        .expect("model manager"),
+    );
+    fixture.engine = Engine::open(EngineOptions {
+        data_dir: fixture._directory.path().join("data"),
+        cwd: fixture._directory.path().to_owned(),
+        config: fixture.config.clone(),
+        model_manager: Arc::clone(&manager),
+        tools: Vec::new(),
+    })
+    .expect("engine");
+    fixture.manager = manager;
+}
+
+#[tokio::test]
+async fn compaction_on_a_model_without_tool_calling_drops_the_session_tools() {
+    let root = scripted_text_usage_body("root", 1_024, Some(1), 0);
+    let summary = scripted_text_usage_body("toolless checkpoint", 1, Some(1), 0);
+    let (endpoint, captured, ..) =
+        scripted_server_with_status_and_delay(vec![(200, root), (200, summary)], usize::MAX).await;
+    let (mut fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+            &endpoint,
+            "---\ndescription: Tool agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nUse tools.\n",
+            Some((
+                "compaction.md",
+                "---\ndescription: compaction\nmode: internal\nenabled: true\nmodels: [{ model: \"custom.test/group/fallback\", variant: base }]\nlimits: { timeout_ms: 30000, max_output_tokens: 256 }\npermissions: {}\n---\nSummarize.\n",
+            )),
+            None,
+            false,
+            None,
+            None,
+            100_000,
+            None,
+        );
+    make_fallback_toolless(&mut fixture).await;
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestParallelToolProvider {
+            state: Arc::new(ParallelToolState::default()),
+            barrier: None,
+        }));
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("toolless-compaction").unwrap(),
+                selection,
+                input: "prime".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    fixture
+        .engine
+        .compact_session(
+            session.session_id,
+            None,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("compaction on a model without tool calling");
+    let requests = with_watchdog("captured requests", captured).await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[0].contains("\"tools\""),
+        "the root run sends its tools"
+    );
+    assert!(requests[1].contains("Summarize."));
+    assert!(
+        !requests[1].contains("\"tools\""),
+        "the tool-less summarizer gets no tool definitions"
+    );
+    assert!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .unwrap()
+            .log
+            .events()
+            .iter()
+            .any(|event| matches!(
+                event.payload,
+                EventPayload::ContextCheckpointCommitted { .. }
+            ))
     );
     fixture.engine.shutdown().await;
 }
