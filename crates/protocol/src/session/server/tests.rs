@@ -371,3 +371,38 @@ async fn a_request_s_notifications_follow_its_response() {
     assert_eq!(first["id"], 1, "the response precedes its tail: {first}");
     assert_eq!(connection.next().await["method"], "stub.tail");
 }
+
+#[tokio::test]
+async fn a_replacement_session_tail_forwards_after_the_tail_it_replaces() {
+    async fn next_gap(outbound: &mut mpsc::Receiver<Value>) -> u64 {
+        let value = tokio::time::timeout(Duration::from_secs(2), outbound.recv())
+            .await
+            .expect("notification in time")
+            .expect("connection open");
+        assert_eq!(value["method"], "events.subscription");
+        value["params"]["last_delivered_seq"]
+            .as_u64()
+            .expect("gap sequence")
+    }
+
+    let (notifications, mut outbound) = mpsc::channel(16);
+    let context = ServerContext::new(notifications, CancellationToken::new());
+    let session_id = crate::SessionId::new_v7();
+    let gap = |seq| EventSubscriptionMessage::Gap {
+        session_id,
+        last_delivered_seq: seq,
+    };
+    let (replaced_sender, replaced) = mpsc::channel(8);
+    let (replacement_sender, replacement) = mpsc::channel(8);
+    replaced_sender.send(gap(1)).await.expect("queue");
+    replacement_sender.send(gap(3)).await.expect("queue");
+    context.forward_session_tail(session_id, replaced);
+    context.forward_session_tail(session_id, replacement);
+    assert_eq!(next_gap(&mut outbound).await, 1);
+    // Until its producer closes the replaced tail, what that tail still
+    // carries comes first, even though the replacement is ready.
+    replaced_sender.send(gap(2)).await.expect("queue");
+    assert_eq!(next_gap(&mut outbound).await, 2);
+    drop(replaced_sender);
+    assert_eq!(next_gap(&mut outbound).await, 3);
+}

@@ -1,6 +1,9 @@
 use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex},
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use async_trait::async_trait;
@@ -11,12 +14,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
-    ClientHello, ClientRenameId, ErrorResponse, EventsSubscribeParams, EventsSubscribeResult,
-    JsonRpcError, JsonRpcId, JsonRpcVersion, McpAuthBeginParams, McpAuthBeginResult,
-    McpAuthCancelParams, McpAuthCancelResult, McpServerAddParams, McpServerEditParams,
-    McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
-    McpServerPersistParams, McpServerSetEnabledParams, MessageFrame, Notification,
-    ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
+    ClientHello, ClientRenameId, ErrorResponse, EventSubscriptionMessage, EventsSubscribeParams,
+    EventsSubscribeResult, JsonRpcError, JsonRpcId, JsonRpcVersion, McpAuthBeginParams,
+    McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult, McpServerAddParams,
+    McpServerEditParams, McpServerListParams, McpServerListResult, McpServerMutationResult,
+    McpServerNameParams, McpServerPersistParams, McpServerSetEnabledParams, MessageFrame,
+    Notification, ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
     ProviderDisconnectResult, Request, Response, RunCancelParams, RunCancelResult,
     RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerParams,
     RunSteerResult, RunToolStdinParams, RunToolStdinResult, RuntimeSnapshotGetParams,
@@ -43,18 +46,89 @@ const MAX_RAW_RENAME_PARAMS_BYTES: usize = 4 * 1024;
 /// server stops reading until one finishes, which backpressures the client.
 const MAX_IN_FLIGHT_REQUESTS: usize = 64;
 
+/// Source of [`ServerContext::connection_id`].
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
+
 /// Per-connection facilities available to a server implementation.
 #[derive(Clone)]
 pub struct ServerContext {
+    connection_id: u64,
     notifications: mpsc::Sender<Value>,
     shutdown: CancellationToken,
     subscribed_sessions: Arc<Mutex<HashSet<SessionId>>>,
+    /// The task forwarding each session's live tail on this connection.
+    session_tails: Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>,
     /// Opens once the response of the request this context was handed to has
     /// been queued. `None` for connection-scoped contexts.
     response_sent: Option<CancellationToken>,
 }
 
 impl ServerContext {
+    fn new(notifications: mpsc::Sender<Value>, shutdown: CancellationToken) -> Self {
+        Self {
+            connection_id: NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed),
+            notifications,
+            shutdown,
+            subscribed_sessions: Arc::new(Mutex::new(HashSet::new())),
+            session_tails: Arc::new(Mutex::new(HashMap::new())),
+            response_sent: None,
+        }
+    }
+
+    /// This connection's identity, unique within the process. A server
+    /// keys the live tail it registers for a session by it, so that a
+    /// connection holds at most one tail per session.
+    #[must_use]
+    pub fn connection_id(&self) -> u64 {
+        self.connection_id
+    }
+
+    /// Forward a session's live tail to this connection as
+    /// `events.subscription` notifications until the tail or the connection
+    /// ends.
+    ///
+    /// The connection holds one tail per session, so the producer must have
+    /// closed any tail this one replaces (see [`Self::connection_id`]): the
+    /// messages that tail still holds are forwarded first, then this one's,
+    /// keeping the connection in publication order. Two tails of one session
+    /// would each carry every message, and live-only output, which has no
+    /// sequence to de-duplicate by, would reach the client twice.
+    pub fn forward_session_tail(
+        &self,
+        session_id: SessionId,
+        mut receiver: mpsc::Receiver<EventSubscriptionMessage>,
+    ) {
+        let mut tails = self
+            .session_tails
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let replaced = tails.remove(&session_id);
+        let context = self.clone();
+        let forwarder = tokio::spawn(async move {
+            if let Some(replaced) = replaced {
+                let _ = replaced.await;
+            }
+            let shutdown = context.shutdown();
+            loop {
+                let message = tokio::select! {
+                    () = shutdown.cancelled() => return,
+                    message = receiver.recv() => match message {
+                        Some(message) => message,
+                        None => return,
+                    },
+                };
+                if context
+                    .notify("events.subscription", &message)
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        tails.insert(session_id, forwarder);
+    }
+
     /// Emit one JSON-RPC notification in connection order.
     ///
     /// A notification from work a request started (for example a live tail
@@ -121,12 +195,7 @@ impl ServerContext {
 pub fn test_server_context() -> (ServerContext, mpsc::Receiver<Value>) {
     let (notifications, receiver) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
     (
-        ServerContext {
-            notifications,
-            shutdown: CancellationToken::new(),
-            subscribed_sessions: Arc::new(Mutex::new(HashSet::new())),
-            response_sent: None,
-        },
+        ServerContext::new(notifications, CancellationToken::new()),
         receiver,
     )
 }
@@ -362,12 +431,7 @@ where
     S: ServerProtocol,
 {
     let (outbound, mut outbound_rx) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
-    let context = ServerContext {
-        notifications: outbound,
-        shutdown,
-        subscribed_sessions: Arc::new(Mutex::new(HashSet::new())),
-        response_sent: None,
-    };
+    let context = ServerContext::new(outbound, shutdown);
     let _guard = ConnectionShutdown(context.shutdown());
     let in_flight = Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS));
     let mut permit = None;

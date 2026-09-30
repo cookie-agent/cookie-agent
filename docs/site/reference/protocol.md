@@ -72,7 +72,9 @@ and the CLI share one implementation of the protocol mechanics.
   concurrently (at most 64 in flight) and each response is written when it is
   ready, so responses can arrive out of request order. Notifications from work
   a request started, such as the live tail of `events.subscribe`, are written
-  only after that request's response.
+  only after that request's response. A connection holds one live tail per
+  session: subscribing again replaces it, and the replaced tail's queued
+  notifications are written before the new tail's.
 - **Client.** The client side is the concrete `protocol::Client`. Its connection task correlates requests by id, demuxes
   notifications into an ordered `ClientDelivery` stream, injects cursor replays
   and gap recovery before buffered live notifications, fetches replays in pages

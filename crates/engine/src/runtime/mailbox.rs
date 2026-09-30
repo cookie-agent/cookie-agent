@@ -107,7 +107,7 @@ impl Engine {
         ),
         EngineError,
     > {
-        let (result, receiver) = self.subscribe_page(session, cursor, None).await?;
+        let (result, receiver) = self.subscribe_page(session, cursor, None, None).await?;
         Ok((
             result,
             receiver.expect("an unlimited subscription is always its final page"),
@@ -115,12 +115,16 @@ impl Engine {
     }
 
     /// One page of at most `limit` events after `cursor`. Only the final page
-    /// (no `has_more`) registers the live tail and returns its receiver.
+    /// (no `has_more`) registers the live tail and returns its receiver. A
+    /// tail registered for an `owner` replaces the one it already holds for
+    /// the session: the earlier receiver ends once drained, and nothing
+    /// published afterwards reaches it.
     pub async fn subscribe_page(
         &self,
         session: SessionId,
         cursor: Option<u64>,
         limit: Option<NonZeroU32>,
+        owner: Option<crate::session::TailOwner>,
     ) -> Result<
         (
             EventsSubscribeResult,
@@ -140,7 +144,7 @@ impl Engine {
             Ok(engine
                 .inner
                 .store
-                .subscribe_events(session, cursor, limit)?)
+                .subscribe_events(session, cursor, limit, owner)?)
         })
         .await
     }

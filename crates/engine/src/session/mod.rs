@@ -78,6 +78,17 @@ pub(crate) const SUBAGENT_INDEX_FILE: &str = "index.json";
 const SUBAGENT_INDEX_VERSION: u32 = 1;
 const PERSISTED_SUBSCRIBER_QUEUE_CAPACITY: usize = 256;
 
+/// Who holds a live event tail, such as one protocol connection
+/// ([`cookie_agent_protocol::ServerContext::connection_id`]). A session keeps
+/// at most one tail per owner: registering another replaces the first in the
+/// same step, so no message reaches both.
+///
+/// Durable events carry a sequence that lets a reader drop a copy, but
+/// live-only output does not, so two tails feeding one reader would show
+/// every delta twice.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TailOwner(pub u64);
+
 /// The live tails of one session.
 #[derive(Debug, Default)]
 struct SessionSubscribers {
@@ -85,7 +96,14 @@ struct SessionSubscribers {
     /// live-only output follows. Updated under `mutation` by every durable
     /// publication and every tail registration.
     last_seq: u64,
-    senders: Vec<mpsc::Sender<EventSubscriptionMessage>>,
+    senders: Vec<Tail>,
+}
+
+#[derive(Debug)]
+struct Tail {
+    /// `None` for a tail nothing else replaces.
+    owner: Option<TailOwner>,
+    sender: mpsc::Sender<EventSubscriptionMessage>,
 }
 /// Event log file name.
 pub(crate) const EVENTS_FILE: &str = "events.jsonl";
@@ -1591,12 +1609,14 @@ impl SessionStore {
 
     /// One page of `session`'s events after `cursor`. The final page (no
     /// `has_more`) also registers a live tail, which is the only case that
-    /// returns a receiver.
+    /// returns a receiver. The tail replaces `owner`'s earlier one for the
+    /// session, whose receiver then ends after the messages it already holds.
     pub(crate) fn subscribe_events(
         &self,
         session: SessionId,
         cursor: Option<u64>,
         limit: Option<NonZeroU32>,
+        owner: Option<TailOwner>,
     ) -> Result<
         (
             EventsSubscribeResult,
@@ -1617,7 +1637,10 @@ impl SessionStore {
         let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
         let tails = subscribers.entry(session).or_default();
         tails.last_seq = log.last_event().map_or(0, |event| event.seq);
-        tails.senders.push(sender);
+        if owner.is_some() {
+            tails.senders.retain(|tail| tail.owner != owner);
+        }
+        tails.senders.push(Tail { owner, sender });
         Ok((result, Some(receiver)))
     }
 
@@ -1650,7 +1673,7 @@ impl SessionStore {
         let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
         let tails = subscribers.entry(envelope.session_id).or_default();
         tails.last_seq = envelope.seq;
-        tails.senders.retain(|sender| {
+        tails.senders.retain(|Tail { sender, .. }| {
             // Reserve the final slot for a gap so a slow reader can replay.
             let is_gap = sender.capacity() <= 1;
             let message = if is_gap {
@@ -1687,7 +1710,7 @@ impl SessionStore {
             timestamp: jiff::Timestamp::now(),
             payload,
         };
-        tails.senders.retain(|sender| {
+        tails.senders.retain(|Tail { sender, .. }| {
             // The final slot stays reserved for a durable gap. Output that
             // does not fit is dropped: a replay could not recover it anyway,
             // and the committed turn or tool result supersedes it.
@@ -1708,7 +1731,7 @@ impl SessionStore {
             .unwrap_or_else(|p| p.into_inner())
             .remove(&session_id)
             .unwrap_or_default();
-        for sender in subscribers.senders {
+        for Tail { sender, .. } in subscribers.senders {
             // publish_stored_event always leaves a slot for this final gap.
             let _ = sender.try_send(EventSubscriptionMessage::Gap {
                 session_id,
