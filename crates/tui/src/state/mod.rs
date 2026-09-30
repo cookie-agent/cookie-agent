@@ -3,14 +3,17 @@
 //! Assistant attribution is derived only from the frozen `RunStarted` plus
 //! `ModelAttemptStarted`/`ModelTurnCommitted` ownership — never from the
 //! current picker, live agent files, or provider configuration. The visible
-//! assistant header projects the exact canonical `Agent • Model[variant]`.
+//! assistant header projects the canonical `Agent • Model[variant]`, with the
+//! model's display name (looked up at render time) ahead of its id.
 
+mod model_names;
 mod reduce;
 mod runtime;
 
 pub(crate) use reduce::approval_state_from_record;
 use reduce::*;
 
+pub use model_names::{ModelDisplayNames, variant_label};
 pub use runtime::{EMPTY_RUNTIME_GUIDANCE, RuntimePhase, RuntimeState};
 
 use std::{
@@ -143,24 +146,21 @@ pub struct FrozenAssistantAttribution {
 }
 
 impl FrozenAssistantAttribution {
-    /// The exact visible header `<agent-id> • <provider>/<model-id>[<variant>]`.
-    pub fn header(&self) -> String {
+    /// The visible header `<agent-id> • <Model Name> / <provider>/<model-id>[<variant>]`.
+    /// The display name is a render-time lookup; without a distinct name
+    /// the header is `<agent-id> • <provider>/<model-id>[<variant>]`.
+    pub fn header(&self, names: &ModelDisplayNames) -> String {
         format!(
-            "{} • {}[{}]",
+            "{} • {}",
             self.agent,
-            self.resolved_model.selection.model,
-            self.variant_label()
+            names.selection_label(&self.resolved_model.selection)
         )
     }
 
     /// The variant retained in structured attribution, rendered as `base`
     /// when the frozen selection is exact base behavior.
     pub fn variant_label(&self) -> String {
-        self.resolved_model
-            .selection
-            .variant
-            .as_ref()
-            .map_or_else(|| "base".to_owned(), |variant| variant.to_string())
+        variant_label(&self.resolved_model.selection)
     }
 }
 

@@ -1442,7 +1442,7 @@ pub(crate) fn assistant_projection(
                 children,
                 ..
             } => Some((
-                attribution.header(),
+                attribution.header(&crate::state::ModelDisplayNames::default()),
                 *committed_turn_seq,
                 children
                     .iter()

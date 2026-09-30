@@ -22,7 +22,7 @@ expression: overlay
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 transport closed
-╭ primary • gateway/arbitrary-model[base] ─────────────────────────────────────╮
+╭ primary • Arbitrary Model[base] ─────────────────────────────────────────────╮
 │Type a message · / for commands                                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 —                                              auto-approve    `ctrl+p` commands

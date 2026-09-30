@@ -7,6 +7,7 @@ pub(super) fn item_layout_key(
     item: &TranscriptItem,
     expanded: Option<&HashSet<BlockId>>,
     clock_bucket: u8,
+    model_names: &ModelDisplayNames,
 ) -> ItemLayoutKey {
     ItemLayoutKey {
         id: item.id(),
@@ -17,6 +18,7 @@ pub(super) fn item_layout_key(
         } else {
             0
         },
+        model_names: item_model_names_revision(item, model_names),
     }
 }
 
@@ -26,9 +28,11 @@ pub(super) fn item_layout_key_matches(
     item: &TranscriptItem,
     expanded: Option<&HashSet<BlockId>>,
     clock_bucket: u8,
+    model_names: &ModelDisplayNames,
 ) -> bool {
     key.id == item.id()
         && key.version == item.version()
+        && key.model_names == item_model_names_revision(item, model_names)
         && key.clock
             == if item_is_live(state, item) {
                 clock_bucket
@@ -36,6 +40,17 @@ pub(super) fn item_layout_key_matches(
                 0
             }
         && item_interaction_matches(&key.interaction, item, expanded)
+}
+
+/// Only assistant items render model labels (their headers and "now using"
+/// rows), so only they relayout when display names change; their cached
+/// prose and thinking parts are reused.
+fn item_model_names_revision(item: &TranscriptItem, model_names: &ModelDisplayNames) -> u64 {
+    if matches!(item, TranscriptItem::Assistant { .. }) {
+        model_names.revision()
+    } else {
+        0
+    }
 }
 
 #[derive(Clone, Copy)]

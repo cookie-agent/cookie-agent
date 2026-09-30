@@ -41,7 +41,10 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     markdown::{Highlighter, MarkdownLine, MarkdownLineKind},
-    state::{AssistantChild, ProducerMessageStatus, SessionState, ToolStatus, TranscriptItem},
+    state::{
+        AssistantChild, ModelDisplayNames, ProducerMessageStatus, SessionState, ToolStatus,
+        TranscriptItem,
+    },
     theme::{Theme, ThemeKey},
 };
 
@@ -455,6 +458,9 @@ struct ItemLayoutKey {
     /// Animation bucket for items with a streaming thinking part (0 otherwise),
     /// so the "thinking…" ellipsis advances without a transcript mutation.
     clock: u8,
+    /// Display-name revision for assistant items (0 otherwise), so headers
+    /// relabel when a name arrives after the item was first laid out.
+    model_names: u64,
 }
 
 #[derive(Clone, Default)]
@@ -511,6 +517,7 @@ struct TranscriptRenderContext<'a> {
     minimum_event_level: crate::state::EventLevel,
     /// Animation bucket (0–3) driving the streaming "thinking…" ellipsis.
     clock_bucket: u8,
+    model_names: &'a ModelDisplayNames,
     assistant_part_cache: &'a mut HashMap<u64, CachedAssistantPartLayout>,
     assistant_part_layout_passes: &'a mut u64,
     assistant_part_ranges: &'a mut Vec<AssistantPartRange>,
@@ -539,6 +546,7 @@ pub(super) fn ensure_cached_transcript_layout(
     highlighter: &dyn Highlighter,
     minimum_event_level: crate::state::EventLevel,
     clock_bucket: u8,
+    model_names: &ModelDisplayNames,
 ) -> bool {
     let key = LayoutCacheKey {
         session_id,
@@ -592,7 +600,14 @@ pub(super) fn ensure_cached_transcript_layout(
             .enumerate()
             .find_map(|(index, item)| {
                 (!cache.items.get(index).is_some_and(|cached| {
-                    item_layout_key_matches(&cached.key, state, item, expanded, clock_bucket)
+                    item_layout_key_matches(
+                        &cached.key,
+                        state,
+                        item,
+                        expanded,
+                        clock_bucket,
+                        model_names,
+                    )
                 }))
                 .then_some(index)
             })
@@ -621,11 +636,18 @@ pub(super) fn ensure_cached_transcript_layout(
             .item_offsets
             .push(ItemAssemblyOffset::at_end(&cache.layout));
         if cache.items.get(index).is_some_and(|cached| {
-            item_layout_key_matches(&cached.key, state, item, expanded, clock_bucket)
+            item_layout_key_matches(
+                &cached.key,
+                state,
+                item,
+                expanded,
+                clock_bucket,
+                model_names,
+            )
         }) {
             append_item_layout(&mut cache.layout, cache.items[index].layout.clone());
         } else {
-            let item_key = item_layout_key(state, item, expanded, clock_bucket);
+            let item_key = item_layout_key(state, item, expanded, clock_bucket, model_names);
             let mut assistant_part_ranges = Vec::new();
             let mut assistant_child_lines = Vec::new();
             let mut context = TranscriptRenderContext {
@@ -635,6 +657,7 @@ pub(super) fn ensure_cached_transcript_layout(
                 highlighter,
                 minimum_event_level,
                 clock_bucket,
+                model_names,
                 assistant_part_cache: &mut cache.assistant_parts,
                 assistant_part_layout_passes: &mut cache.assistant_part_layout_passes,
                 assistant_part_ranges: &mut assistant_part_ranges,
@@ -729,6 +752,7 @@ fn continuation_header(
     child: usize,
     width: u16,
     theme: &Theme,
+    model_names: &ModelDisplayNames,
 ) -> Vec<Line<'static>> {
     let TranscriptItem::Assistant {
         attribution,
@@ -750,7 +774,7 @@ fn continuation_header(
         agent: attribution.agent.clone(),
         resolved_model: resolved_model.clone(),
     };
-    assistant_header(attribution.header().as_str(), width, theme)
+    assistant_header(attribution.header(model_names).as_str(), width, theme)
 }
 
 impl App {
@@ -819,6 +843,7 @@ impl App {
             events,
             width,
             &self.theme,
+            self.runtime.model_names(),
         ))
     }
 
@@ -872,6 +897,9 @@ impl App {
     /// original-line position and the number of lines inserted there, so
     /// callers can shift scroll anchors and hit regions that address the
     /// unspliced layout.
+    // Each input is independent render state (layout, projection, rows,
+    // width, theme, display names); bundling them would only add a type.
+    #[allow(clippy::too_many_arguments)]
     fn splice_descendant_events(
         lines: &[Line<'static>],
         items: &[CachedItemLayout],
@@ -880,6 +908,7 @@ impl App {
         events: &[DescendantEvent],
         width: u16,
         theme: &Theme,
+        model_names: &ModelDisplayNames,
     ) -> SplicedLines {
         let mut placements: Vec<Placement<'_>> = Vec::with_capacity(events.len());
         let mut next = 0;
@@ -985,7 +1014,7 @@ impl App {
                 && let Some(item) = state.transcript.get(item)
             {
                 out.push(Line::default());
-                out.extend(continuation_header(item, child, width, theme));
+                out.extend(continuation_header(item, child, width, theme, model_names));
             }
             let inserted = out.len() - before;
             if inserted > 0 {
@@ -1111,6 +1140,7 @@ impl App {
                 self.highlighter.as_ref(),
                 self.tui_config.minimum_event_level,
                 clock_bucket,
+                self.runtime.model_names(),
             );
             // A fresh session greets with guidance instead of a blank pane;
             // a filtered-down transcript (lines hidden by the event level)
@@ -1391,6 +1421,7 @@ fn transcript_layout_at_clock(
     let mut layout = TranscriptLayout::default();
     let mut assistant_parts = HashMap::new();
     let mut assistant_part_layout_passes = 0;
+    let model_names = ModelDisplayNames::default();
     if let Some(snapshot) = state.run_snapshot.as_deref() {
         append_item_layout(
             &mut layout,
@@ -1410,6 +1441,7 @@ fn transcript_layout_at_clock(
                 highlighter,
                 minimum_event_level,
                 clock_bucket,
+                model_names: &model_names,
                 assistant_part_cache: &mut assistant_parts,
                 assistant_part_layout_passes: &mut assistant_part_layout_passes,
                 assistant_part_ranges: &mut assistant_part_ranges,

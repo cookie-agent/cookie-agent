@@ -62,6 +62,7 @@ fn producer_rows_collapse_to_summary_and_expand_to_model_body() {
             &PlainHighlighter,
             crate::state::EventLevel::Info,
             clock,
+            &crate::state::ModelDisplayNames::default(),
         )
     };
     render(&mut cache, &expanded, 0);
@@ -287,6 +288,7 @@ fn legacy_producer_summaries_stay_stable_across_successive_goals_and_replay() {
                     &PlainHighlighter,
                     crate::state::EventLevel::Debug,
                     0,
+                    &crate::state::ModelDisplayNames::default(),
                 );
                 let fresh =
                     transcript_layout_with(state, expanded, width, &theme, &PlainHighlighter);
@@ -640,6 +642,7 @@ fn cached_producer_layout_stays_hidden_until_consumed_then_stabilizes() {
             &PlainHighlighter,
             crate::state::EventLevel::Info,
             0,
+            &crate::state::ModelDisplayNames::default(),
         )
     };
 

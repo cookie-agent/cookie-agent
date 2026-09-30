@@ -14,6 +14,7 @@ mod hit_regions;
 mod hover;
 mod layout;
 mod markdown;
+mod model_names;
 mod pickers;
 mod producers;
 mod providers;

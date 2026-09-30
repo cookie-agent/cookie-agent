@@ -71,6 +71,7 @@ fn streaming_thinking_header_animates_its_ellipsis_with_the_clock() {
             &crate::markdown::SyntectHighlighter::default(),
             crate::state::EventLevel::Debug,
             u8::try_from(bucket).expect("bucket"),
+            &crate::state::ModelDisplayNames::default(),
         );
         let rendered = snapshot_lines(&cache.layout.lines);
         assert!(

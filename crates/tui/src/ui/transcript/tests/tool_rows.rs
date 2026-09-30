@@ -66,6 +66,7 @@ async fn running_tool_rows_pulse_with_the_clock() {
             &crate::markdown::SyntectHighlighter::default(),
             crate::state::EventLevel::Debug,
             bucket,
+            &crate::state::ModelDisplayNames::default(),
         );
         seen.push(snapshot_lines(&cache.layout.lines));
     }
@@ -445,7 +446,7 @@ fn tool_rows_project_from_committed_turn_ownership() {
     };
     assert_eq!(*committed_turn_seq, Some(3));
     assert_eq!(
-        attribution.header(),
+        attribution.header(&crate::state::ModelDisplayNames::default()),
         "primary • gateway/arbitrary-model[high]"
     );
     assert_eq!(attribution.variant_label(), "high");

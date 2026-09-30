@@ -4,7 +4,9 @@ use super::*;
 
 impl App {
     /// The exact Message panel title `Agent • Model[Variant]` with separate
-    /// structured agent, model, and bracketed variant hit regions. Only the
+    /// structured agent, model, and bracketed variant hit regions. The model
+    /// reads by its display name, falling back to its `provider/model-id`
+    /// when the runtime snapshot knows no distinct name. Only the
     /// agent name is bold — typographic emphasis, never a color marker. The
     /// separator, model, and variant subtract the bold the focused border
     /// would otherwise lend them, so they stay regular.
@@ -17,16 +19,12 @@ impl App {
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" • ", regular),
-                Span::styled(draft.model.model.to_string(), regular),
                 Span::styled(
-                    format!(
-                        "[{}]",
-                        draft
-                            .model
-                            .variant
-                            .as_ref()
-                            .map_or_else(|| "base".to_owned(), |variant| variant.to_string())
-                    ),
+                    self.runtime.model_names().short_label(&draft.model.model),
+                    regular,
+                ),
+                Span::styled(
+                    format!("[{}]", crate::state::variant_label(&draft.model)),
                     regular,
                 ),
             ],

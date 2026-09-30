@@ -659,6 +659,7 @@ fn retry_started_before_input_promotion_rebinds_without_losing_committed_tools()
                 &PlainHighlighter,
                 crate::state::EventLevel::Warning,
                 0,
+                &crate::state::ModelDisplayNames::default(),
             );
             let layout = |state: &SessionState| {
                 transcript_layout_with_level(
@@ -1019,6 +1020,7 @@ fn goal_activation_precedes_triggered_streaming_and_preserves_existing_output() 
                     &PlainHighlighter,
                     crate::state::EventLevel::Warning,
                     0,
+                    &crate::state::ModelDisplayNames::default(),
                 );
                 let rebuilt = transcript_layout_with_level(
                     &replay.sessions[&session],
@@ -1369,6 +1371,7 @@ fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
                 &PlainHighlighter,
                 crate::state::EventLevel::Warning,
                 0,
+                &crate::state::ModelDisplayNames::default(),
             );
             let layout = |state: &SessionState| {
                 transcript_layout_with_level(

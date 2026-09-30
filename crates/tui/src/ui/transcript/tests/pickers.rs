@@ -39,7 +39,7 @@ async fn message_title_is_exact_agent_model_variant_with_hit_regions() {
         preset: None,
     });
     let rendered = rendered_frame(&mut app, 100, 30);
-    assert!(rendered.contains("primary • gateway/arbitrary-model[high]"));
+    assert!(rendered.contains("primary • Arbitrary Model[high]"));
     let segments = &app.hit_map.title_segments;
     assert_eq!(segments.len(), 3);
     let agent_rect = segments
@@ -60,7 +60,7 @@ async fn message_title_is_exact_agent_model_variant_with_hit_regions() {
     // Border, then the title's blank pad column, then the agent name.
     assert_eq!(agent_rect.x, 1 + crate::ui::PANEL_TITLE_PAD);
     assert_eq!(agent_rect.width, 7);
-    assert_eq!(model_rect.width, 23);
+    assert_eq!(model_rect.width, 15);
     assert_eq!(variant_rect.width, 6);
     assert_eq!(model_rect.x, agent_rect.x + agent_rect.width + 3);
     assert_eq!(variant_rect.x, model_rect.x + model_rect.width);
@@ -73,7 +73,7 @@ async fn message_title_is_exact_agent_model_variant_with_hit_regions() {
     );
 
     let narrow = rendered_frame(&mut app, 28, 12);
-    assert!(narrow.contains("primary • gateway/arbit"));
+    assert!(narrow.contains("primary • Arbitrary Mod"));
     assert_eq!(app.hit_map.title_segments.len(), 2);
     let narrow_model = app
         .hit_map
@@ -223,7 +223,7 @@ async fn scrolled_message_title_hits_follow_visible_cells_or_disappear() {
             .copied()
             .expect("visible variant");
         assert_eq!(rect_text(&rows, agent.rect), "primary");
-        assert_eq!(rect_text(&rows, model.rect), "gateway/arbitrary-model");
+        assert_eq!(rect_text(&rows, model.rect), "Arbitrary Model");
         assert_eq!(rect_text(&rows, variant.rect), "[base]");
 
         app.handle_click(agent.rect.x, agent.rect.y).await;
@@ -1138,13 +1138,13 @@ async fn draft_clicks_do_not_mutate_active_or_committed_frozen_attribution() {
         panic!("assistant")
     };
     assert_eq!(
-        attribution.header(),
+        attribution.header(&crate::state::ModelDisplayNames::default()),
         "primary • gateway/arbitrary-model[default]"
     );
     assert_eq!(app.active_run_agent().map(AgentId::as_str), Some("primary"));
     let rendered = frame_rows(&mut app, 80, 24).join("\n");
-    assert!(rendered.contains("primary • gateway/arbitrary-model[default]"));
-    assert!(rendered.contains("primary • gateway/arbitrary-model[fast]"));
+    assert!(rendered.contains("primary • Arbitrary Model / gateway/arbitrary-model[default]"));
+    assert!(rendered.contains("primary • Arbitrary Model[fast]"));
 }
 
 fn model_picker_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {

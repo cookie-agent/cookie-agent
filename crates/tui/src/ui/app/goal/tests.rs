@@ -471,7 +471,7 @@ async fn activation_and_resume_send_current_draft_without_changing_running_attri
                 selection_fingerprint: Sha256Digest::of_bytes(b"running-model-a"),
             },
         };
-        let original_header = attribution.header();
+        let original_header = attribution.header(&crate::state::ModelDisplayNames::default());
         let state = app.store.sessions.get_mut(&session_id).unwrap();
         if command != "/goal resume" {
             state.goal = None;
@@ -504,7 +504,10 @@ async fn activation_and_resume_send_current_draft_without_changing_running_attri
         let TranscriptItem::Assistant { attribution, .. } = &state.transcript[0] else {
             panic!("assistant")
         };
-        assert_eq!(attribution.header(), original_header);
+        assert_eq!(
+            attribution.header(&crate::state::ModelDisplayNames::default()),
+            original_header
+        );
     }
 }
 

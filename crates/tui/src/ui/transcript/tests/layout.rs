@@ -510,6 +510,7 @@ fn descendant_warnings_splice_at_chronological_position() {
         &warnings,
         80,
         &Theme::default(),
+        &crate::state::ModelDisplayNames::default(),
     );
     let text_of = |line: &Line<'_>| {
         line.spans
@@ -550,8 +551,16 @@ fn descendant_warnings_splice_at_chronological_position() {
     );
     assert!(shifts.iter().all(|(_, inserted)| *inserted > 0));
     // Empty warnings leave the layout untouched.
-    let (untouched, empty_shifts) =
-        App::splice_descendant_events(&lines, &[], &offsets, state, &[], 80, &Theme::default());
+    let (untouched, empty_shifts) = App::splice_descendant_events(
+        &lines,
+        &[],
+        &offsets,
+        state,
+        &[],
+        80,
+        &Theme::default(),
+        &crate::state::ModelDisplayNames::default(),
+    );
     assert_eq!(untouched.len(), 7);
     assert!(empty_shifts.is_empty());
 }
@@ -648,6 +657,7 @@ fn tool_output_expansion_invalidates_the_layout_cache() {
         &highlighter,
         crate::state::EventLevel::Debug,
         0,
+        &crate::state::ModelDisplayNames::default(),
     ));
     let passes = cache.item_layout_passes;
     let collapsed = snapshot_lines(&cache.layout.lines);
@@ -664,6 +674,7 @@ fn tool_output_expansion_invalidates_the_layout_cache() {
         &highlighter,
         crate::state::EventLevel::Debug,
         0,
+        &crate::state::ModelDisplayNames::default(),
     ));
     assert_eq!(cache.item_layout_passes, passes + 1);
     assert_ne!(snapshot_lines(&cache.layout.lines), collapsed);
@@ -698,6 +709,7 @@ fn child_layout_cache_recomputes_only_the_changed_assistant_segment() {
         &highlighter,
         crate::state::EventLevel::Debug,
         0,
+        &crate::state::ModelDisplayNames::default(),
     );
     let passes = cache.assistant_part_layout_passes;
     assert_eq!(passes, 2);
@@ -717,6 +729,7 @@ fn child_layout_cache_recomputes_only_the_changed_assistant_segment() {
         &highlighter,
         crate::state::EventLevel::Debug,
         0,
+        &crate::state::ModelDisplayNames::default(),
     );
     assert_eq!(cache.assistant_part_layout_passes, passes);
     assert_eq!(cache.item_layout_passes, item_passes);
@@ -748,6 +761,7 @@ fn child_layout_cache_recomputes_only_the_changed_assistant_segment() {
         &highlighter,
         crate::state::EventLevel::Debug,
         0,
+        &crate::state::ModelDisplayNames::default(),
     );
     assert_eq!(cache.assistant_part_layout_passes, passes + 1);
 }
@@ -793,6 +807,7 @@ fn toggling_a_tool_while_text_streams_in_the_same_item_relayouts_the_tool() {
             &highlighter,
             crate::state::EventLevel::Debug,
             0,
+            &crate::state::ModelDisplayNames::default(),
         );
     };
     let mut cache = LayoutCache::default();
@@ -839,6 +854,7 @@ fn streaming_delta_reassembles_only_the_tail_item() {
         &highlighter,
         crate::state::EventLevel::Debug,
         0,
+        &crate::state::ModelDisplayNames::default(),
     );
     assert_eq!(cache.item_offsets.len(), 2);
     let tail_offset = cache.item_offsets[1];
@@ -862,6 +878,7 @@ fn streaming_delta_reassembles_only_the_tail_item() {
         &highlighter,
         crate::state::EventLevel::Debug,
         0,
+        &crate::state::ModelDisplayNames::default(),
     );
 
     assert_eq!(cache.item_layout_passes, item_passes);
