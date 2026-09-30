@@ -145,6 +145,14 @@ Connections are made with `Client::connect_stream` over any transport,
 `Server::connect_in_process` in the `server` crate. The TUI and the CLI use this
 same `protocol::Client` directly; there is no per-frontend wrapper.
 
+Each `events.subscribe` costs a paged replay and replaces the connection's live
+tail for that session, so the TUI subscribes a session at most once per
+connection while that subscription is healthy. Opening, reselecting, or watching
+a session it already follows live only switches the view. What replays a
+session again is a recovery, reopening a foreign read-only snapshot (which has
+no tail to keep it current), a session adopted after a snapshot subscription
+(which needs its first live tail), and a new connection.
+
 ## Configuration and layering
 
 The `config` crate reads two optional authored layers:

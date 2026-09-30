@@ -70,7 +70,7 @@ impl App {
                 Ok(None) => return,
                 Err(_) => {
                     for replay_session in self.store.abandon_replays() {
-                        self.client.recover_session(replay_session, true);
+                        self.recover_session(replay_session);
                     }
                     self.status = "replay timed out; retrying recovery".into();
                     return;
@@ -180,44 +180,6 @@ impl App {
         }
     }
 
-    pub(super) fn subscribe_session_background(
-        &self,
-        session_id: SessionId,
-        cursor: Option<u64>,
-        live_attempt: Option<u64>,
-    ) {
-        // Re-subscribing is safe: the lane lock serializes it with any prior
-        // subscription for the same session, and the client reconciles
-        // cursors.
-        let client = self.client.clone();
-        let updates = self.rpc_updates_tx.clone();
-        let lanes = self.subscription_lanes.clone();
-        self.spawn_rpc(async move {
-            let lane = {
-                let mut lanes = lanes.lock().await;
-                lanes
-                    .entry(session_id)
-                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                    .clone()
-            };
-            let _guard = lane.lock().await;
-            // No outer deadline: the client bounds every replay page itself,
-            // and a long history can take several pages.
-            let outcome = match client.subscribe_events(session_id, cursor).await {
-                Err(crate::ClientError::ReplayInProgress) => {
-                    SessionLiveSubscriptionOutcome::ReplayInProgress
-                }
-                Ok(()) => SessionLiveSubscriptionOutcome::Established,
-                Err(error) => SessionLiveSubscriptionOutcome::Failed(error.to_string()),
-            };
-            let _ = updates.send(RpcUpdate::SessionLiveSubscriptionFinished {
-                session_id,
-                live_attempt,
-                outcome,
-            });
-        });
-    }
-
     pub(in crate::ui) fn refresh_tree_background(&mut self) {
         let Some(root) = self.tree_root else {
             return;
@@ -319,11 +281,11 @@ impl App {
                 generation,
                 outcome,
             } => self.apply_ownership_classification(session_id, generation, outcome),
-            RpcUpdate::SessionLiveSubscriptionFinished {
+            RpcUpdate::SubscriptionFinished {
                 session_id,
-                live_attempt,
+                attempt,
                 outcome,
-            } => self.finish_live_subscription(session_id, live_attempt, outcome),
+            } => self.finish_subscription(session_id, attempt, outcome),
             RpcUpdate::SteerFailed {
                 session_id,
                 input,
@@ -370,10 +332,8 @@ impl App {
                 self.ownership_classifications.remove(&forked);
                 self.owned_sessions.insert(forked);
                 self.read_only_sessions.remove(&forked);
-                self.pending_live_subscriptions.remove(&forked);
-                self.live_subscription_attempts.remove(&forked);
-                self.replay_ended_for_live_subscription.remove(&forked);
                 self.reroot_tree(forked);
+                self.subscribe_session(forked, SubscribeIntent::Follow);
             }
             RpcUpdate::Tree {
                 session_id,
@@ -694,19 +654,16 @@ impl App {
     /// resumed tree can hold many long finished logs, and replaying them all
     /// on attach is what floods the daemon. A finished node that is woken
     /// again reports `Running` on the next tree refresh and is picked up then.
+    /// Nodes already subscribed on this connection are left alone, and a
+    /// node whose ownership is being classified is subscribed by that
+    /// classification.
     pub(super) fn subscribe_tree_sessions(&mut self, tree: &SessionTree) {
         let mut sessions = Vec::new();
         collect_live_tree_sessions(tree, &mut sessions);
         for session_id in sessions {
-            if !self.tree_subscription_sessions.insert(session_id) {
-                continue;
+            if !self.ownership_classifications.contains_key(&session_id) {
+                self.subscribe_session(session_id, SubscribeIntent::Follow);
             }
-            let cursor = self
-                .store
-                .sessions
-                .get(&session_id)
-                .map(|state| state.last_seq);
-            self.subscribe_session_background(session_id, cursor, None);
         }
     }
 
@@ -739,12 +696,14 @@ impl App {
     pub(in crate::ui) async fn handle_delivery(&mut self, delivery: ClientDelivery) {
         if let ClientDelivery::Disconnected { error } = &delivery {
             self.status = format!("connection failed: {error}");
+            self.reset_subscriptions();
         }
         if let ClientDelivery::RuntimeChanged(changed) = &delivery {
             self.install_runtime_notification((**changed).clone());
             return;
         }
         if let ClientDelivery::RecoveryFailed { session_id, error } = &delivery {
+            self.note_recovery_failed(*session_id);
             self.status = match session_id {
                 Some(session_id) => format!("recovery for {session_id} failed: {error}"),
                 None => format!("recovery failed: {error}"),
@@ -872,11 +831,8 @@ impl App {
         // projection (a replay could not reproduce that): the transcript
         // splices it in at render time by its durable time instead.
         let outcome = self.store.apply_delivery(delivery);
-        if let Some(session_id) = replay_ended_session
-            && self.pending_live_subscriptions.contains(&session_id)
-        {
-            self.replay_ended_for_live_subscription.insert(session_id);
-            self.start_pending_live_subscription(session_id);
+        if let Some(session_id) = replay_ended_session {
+            self.note_replay_end(session_id);
         }
         if (revert_rebuild || replay_finished)
             && matches!(self.selection, Some(TextSelection::Conversation { .. }))
@@ -927,7 +883,7 @@ impl App {
             }
             DeliveryOutcome::ReplayFailed { session_id } => {
                 self.status = "incomplete replay; retrying recovery".into();
-                self.client.recover_session(session_id, true);
+                self.recover_session(session_id);
             }
         }
         self.reconcile_pending_approval();
@@ -1004,7 +960,7 @@ impl App {
         let timed_out = self.store.abandon_timed_out_replays();
         for &session_id in &timed_out {
             self.status = "replay timed out; retrying recovery".into();
-            self.client.recover_session(session_id, true);
+            self.recover_session(session_id);
         }
         let reconciled = self.reconcile_pending_approval();
         !timed_out.is_empty() || reconciled

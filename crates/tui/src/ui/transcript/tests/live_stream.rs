@@ -134,7 +134,7 @@ async fn read_request(socket: &mut tokio::net::TcpStream) {
 }
 
 /// The thinking and text the conversation shows for `session`, in order.
-fn shown(app: &App, session: SessionId) -> (String, String) {
+pub(super) fn shown(app: &App, session: SessionId) -> (String, String) {
     let mut thinking = String::new();
     let mut text = String::new();
     let Some(state) = app.store.sessions.get(&session) else {
@@ -156,7 +156,7 @@ fn shown(app: &App, session: SessionId) -> (String, String) {
 }
 
 /// Drives the app the way its event loop does until `done` holds.
-async fn pump_until(
+pub(super) async fn pump_until(
     app: &mut App,
     deliveries: &mut mpsc::UnboundedReceiver<ClientDelivery>,
     session: SessionId,
@@ -174,7 +174,7 @@ async fn pump_until(
     }
 }
 
-async fn pump_once(
+pub(super) async fn pump_once(
     app: &mut App,
     deliveries: &mut mpsc::UnboundedReceiver<ClientDelivery>,
     idle: Duration,
@@ -194,7 +194,10 @@ async fn pump_once(
 
 /// Drives the app until nothing has arrived for a while, so any duplicate
 /// delivery of what was just streamed has had every chance to land.
-async fn settle(app: &mut App, deliveries: &mut mpsc::UnboundedReceiver<ClientDelivery>) {
+pub(super) async fn settle(
+    app: &mut App,
+    deliveries: &mut mpsc::UnboundedReceiver<ClientDelivery>,
+) {
     while pump_once(app, deliveries, Duration::from_millis(150)).await {}
 }
 
@@ -286,14 +289,20 @@ async fn start_reply_elsewhere(
     (runner, session, run)
 }
 
-async fn attached_app(
+/// A view attached to `server` the way `cookie` attaches: it opens the most
+/// recent session. The log counts the `events.subscribe` requests it sends.
+pub(super) async fn attached_app(
     server: &Arc<cookie_agent_server::Server>,
-) -> (App, mpsc::UnboundedReceiver<ClientDelivery>) {
-    let client = Arc::clone(server).connect_in_process();
+) -> (
+    App,
+    mpsc::UnboundedReceiver<ClientDelivery>,
+    crate::tests::SubscribeLog,
+) {
+    let (client, log, _sever) = crate::tests::connect_counting(server);
     client.handshake().await.expect("handshake");
     let mut app = App::new(client).await.expect("app");
     let deliveries = app.take_deliveries();
-    (app, deliveries)
+    (app, deliveries, log)
 }
 
 #[tokio::test]
@@ -357,7 +366,7 @@ async fn one_connection_subscribing_twice_receives_each_live_delta_once() {
 async fn first_prompt_streams_each_delta_once() {
     let model = GatedModel::start().await;
     let (_directory, server) = streaming_app(&model).await;
-    let client = Arc::clone(&server).connect_in_process();
+    let (client, subscribes, _sever) = crate::tests::connect_counting(&server);
     client.handshake().await.expect("handshake");
     let mut app = App::new_with_new_session(client).await.expect("app");
     let mut deliveries = app.take_deliveries();
@@ -370,6 +379,9 @@ async fn first_prompt_streams_each_delta_once() {
     let session = app.selected.expect("new session selected");
     model.wait_for_call(1).await;
     settle(&mut app, &mut deliveries).await;
+    // Creating and opening the root subscribes it once, not once for its
+    // adoption and again for its selection.
+    assert_eq!(subscribes.count(session), 1);
 
     let steps = [
         (Chunk::Reasoning("plan "), ("plan ", "")),
@@ -425,10 +437,11 @@ async fn attaching_mid_reply_streams_each_later_delta_once() {
     .await
     .expect("early output published");
 
-    let (mut app, mut deliveries) = attached_app(&server).await;
+    let (mut app, mut deliveries, subscribes) = attached_app(&server).await;
     assert_eq!(app.selected, Some(session));
     settle(&mut app, &mut deliveries).await;
     assert_eq!(shown(&app, session), (String::new(), String::new()));
+    assert_eq!(subscribes.count(session), 1, "attaching subscribes once");
 
     stream_step(
         &mut app,
@@ -464,7 +477,7 @@ async fn switching_away_and_back_mid_reply_streams_each_delta_once() {
     let (_directory, server) = streaming_app(&model).await;
     let (runner, session, _run) = start_reply_elsewhere(&server, "hello").await;
     model.wait_for_call(1).await;
-    let (mut app, mut deliveries) = attached_app(&server).await;
+    let (mut app, mut deliveries, subscribes) = attached_app(&server).await;
     settle(&mut app, &mut deliveries).await;
     stream_step(
         &mut app,
@@ -490,7 +503,7 @@ async fn switching_away_and_back_mid_reply_streams_each_delta_once() {
         (Chunk::Text(" two"), "one two"),
         (Chunk::Text(" three"), "one two three"),
     ] {
-        app.select_session(other).await;
+        app.open_session(other).await;
         settle(&mut app, &mut deliveries).await;
         stream_step(
             &mut app,
@@ -502,7 +515,7 @@ async fn switching_away_and_back_mid_reply_streams_each_delta_once() {
         )
         .await;
         assert_eq!(shown(&app, other), (String::new(), String::new()));
-        app.select_session(session).await;
+        app.open_session(session).await;
         settle(&mut app, &mut deliveries).await;
         assert_eq!(
             shown(&app, session),
@@ -510,6 +523,9 @@ async fn switching_away_and_back_mid_reply_streams_each_delta_once() {
             "after switching back"
         );
     }
+    // Both stayed live across the switches: neither was replayed again.
+    assert_eq!(subscribes.count(session), 1);
+    assert_eq!(subscribes.count(other), 1);
     stream_step(
         &mut app,
         &mut deliveries,
@@ -544,7 +560,7 @@ async fn recovery_replay_mid_reply_streams_each_delta_once() {
     let (_directory, server) = streaming_app(&model).await;
     let (_runner, session, _run) = start_reply_elsewhere(&server, "hello").await;
     model.wait_for_call(1).await;
-    let (mut app, mut deliveries) = attached_app(&server).await;
+    let (mut app, mut deliveries, subscribes) = attached_app(&server).await;
     settle(&mut app, &mut deliveries).await;
     stream_step(
         &mut app,
@@ -559,6 +575,8 @@ async fn recovery_replay_mid_reply_streams_each_delta_once() {
         app.client.recover_session(session, false);
         settle(&mut app, &mut deliveries).await;
     }
+    // Recoveries are the replays that always go out.
+    assert_eq!(subscribes.count(session), 3);
     stream_step(
         &mut app,
         &mut deliveries,
@@ -577,7 +595,7 @@ async fn durable_input_mid_reply_keeps_each_delta_once() {
     let (_directory, server) = streaming_app(&model).await;
     let (runner, session, run) = start_reply_elsewhere(&server, "hello").await;
     model.wait_for_call(1).await;
-    let (mut app, mut deliveries) = attached_app(&server).await;
+    let (mut app, mut deliveries, _subscribes) = attached_app(&server).await;
     settle(&mut app, &mut deliveries).await;
     stream_step(
         &mut app,

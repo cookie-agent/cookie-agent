@@ -26,6 +26,7 @@ mod scrolling;
 mod selection;
 mod sessions_tree;
 mod streaming;
+mod subscriptions;
 mod support;
 mod system_prompt;
 mod thinking;

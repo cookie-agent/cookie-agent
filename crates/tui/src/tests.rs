@@ -143,6 +143,99 @@ fn in_process_server_with_skills(with_skills: bool) -> (tempfile::TempDir, Arc<S
     build_in_process_server(with_skills, None)
 }
 
+/// The `events.subscribe` requests one connection sent, in order, as
+/// (session, cursor). Each replay page is its own request.
+#[derive(Clone, Default)]
+pub(crate) struct SubscribeLog(Arc<std::sync::Mutex<Vec<SubscribeRequest>>>);
+
+/// One `events.subscribe` request: its session and cursor.
+type SubscribeRequest = (SessionId, Option<u64>);
+
+impl SubscribeLog {
+    /// Requests sent for `session`.
+    pub(crate) fn count(&self, session: SessionId) -> usize {
+        self.0
+            .lock()
+            .expect("subscribe log")
+            .iter()
+            .filter(|(subscribed, _)| *subscribed == session)
+            .count()
+    }
+
+    pub(crate) fn total(&self) -> usize {
+        self.0.lock().expect("subscribe log").len()
+    }
+}
+
+/// Ends a [`connect_counting`] connection as if the transport failed.
+pub(crate) struct Sever(tokio::sync::watch::Sender<bool>);
+
+impl Sever {
+    pub(crate) fn sever(&self) {
+        let _ = self.0.send(true);
+    }
+}
+
+struct CountingStream {
+    inner: cookie_agent_protocol::InProcessStream,
+    log: SubscribeLog,
+    severed: tokio::sync::watch::Receiver<bool>,
+}
+
+#[async_trait::async_trait]
+impl cookie_agent_protocol::Transport for CountingStream {
+    async fn send(
+        &mut self,
+        frame: cookie_agent_protocol::MessageFrame,
+    ) -> Result<(), cookie_agent_protocol::TransportError> {
+        let value = match &frame {
+            cookie_agent_protocol::MessageFrame::Value(value) => value.clone(),
+            cookie_agent_protocol::MessageFrame::Text(text) => {
+                serde_json::from_str(text).unwrap_or_default()
+            }
+        };
+        if value["method"] == "events.subscribe" {
+            let params = &value["params"];
+            let session = serde_json::from_value(params["session_id"].clone())
+                .expect("subscribed session ID");
+            self.log
+                .0
+                .lock()
+                .expect("subscribe log")
+                .push((session, params["cursor"].as_u64()));
+        }
+        self.inner.send(frame).await
+    }
+
+    async fn recv(
+        &mut self,
+    ) -> Result<Option<cookie_agent_protocol::MessageFrame>, cookie_agent_protocol::TransportError>
+    {
+        tokio::select! {
+            frame = self.inner.recv() => frame,
+            // A dropped [`Sever`] never severs.
+            Ok(_) = self.severed.wait_for(|severed| *severed) => Err(
+                cookie_agent_protocol::TransportError::Other("connection severed".into()),
+            ),
+        }
+    }
+}
+
+/// An in-process connection to `server` that logs every `events.subscribe`
+/// it sends and can be severed.
+pub(crate) fn connect_counting(server: &Arc<Server>) -> (crate::Client, SubscribeLog, Sever) {
+    let (client, service) = cookie_agent_protocol::in_process_pair(128);
+    tokio::spawn(Arc::clone(server).serve_stream(service));
+    let log = SubscribeLog::default();
+    let (sever, severed) = tokio::sync::watch::channel(false);
+    let client = crate::Client::connect_stream(CountingStream {
+        inner: client,
+        log: log.clone(),
+        severed,
+    });
+    (client, log, Sever(sever))
+}
+
 /// An in-process server whose test model streams reasoning and text from
 /// `endpoint`, with first-turn title generation off so the only model call a
 /// run makes is its reply.

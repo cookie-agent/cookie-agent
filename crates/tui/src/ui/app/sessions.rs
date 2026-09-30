@@ -196,27 +196,14 @@ pub(super) fn find_node_mut(
 }
 
 impl App {
+    /// Show a session as the root of its own tree. A session this
+    /// connection already follows live is only switched to: its tail has
+    /// kept it current. Otherwise it is subscribed (or its snapshot re-read)
+    /// and its replay awaited briefly.
     pub(in crate::ui) async fn select_session(&mut self, session_id: SessionId) {
         self.reroot_tree(session_id);
-        let cursor = self
-            .store
-            .sessions
-            .get(&session_id)
-            .map(|state| state.last_seq);
-        match tokio::time::timeout(
-            SELECT_SUBSCRIPTION_WAIT,
-            self.client.subscribe_events(session_id, cursor),
-        )
-        .await
-        {
-            // A replay already running for this session brings it up to
-            // date on its own, so a refused second one is not an error.
-            Ok(Ok(()) | Err(crate::ClientError::ReplayInProgress)) => {}
-            Ok(Err(error)) => self.status = error.to_string(),
-            // The replay keeps going without us and lands through the
-            // delivery stream; only the wait is bounded.
-            Err(_) => self.status = "still loading session history".into(),
-        }
+        self.subscribe_session(session_id, SubscribeIntent::Open);
+        self.wait_for_subscription(session_id).await;
     }
 
     /// Watch a session inside the current delegation tree: the conversation
@@ -228,26 +215,19 @@ impl App {
             .tree
             .as_ref()
             .is_some_and(|tree| find_session(tree, session_id).is_some());
-        if !in_tree {
+        if in_tree {
+            self.set_selected_session(session_id);
+            self.tree_cursor = Some(session_id);
+        } else {
             self.reroot_tree(session_id);
-            self.classify_session_background(session_id);
-            return;
         }
-        self.set_selected_session(session_id);
-        self.classify_session_background(session_id);
-        self.tree_cursor = Some(session_id);
-        let needs_subscription = self.tree_subscription_sessions.insert(session_id);
-        let cursor = self
-            .store
-            .sessions
-            .get(&session_id)
-            .map(|state| state.last_seq);
-        if needs_subscription {
-            self.subscribe_session_background(session_id, cursor, None);
+        if !self.classify_session_background(session_id) {
+            self.subscribe_session(session_id, SubscribeIntent::Follow);
         }
     }
 
-    /// Intentionally reroot the delegation tree at a separate session.
+    /// Intentionally reroot the delegation tree at a separate session. The
+    /// caller subscribes it.
     pub(in crate::ui) fn reroot_tree(&mut self, session_id: SessionId) {
         let root_changed = self.tree_root != Some(session_id);
         self.set_selected_session(session_id);
@@ -258,18 +238,10 @@ impl App {
             self.agent_panel_mode = AgentPanelMode::Auto;
         }
         self.tree_cursor = Some(session_id);
-        self.tree_subscription_sessions.clear();
-        self.tree_subscription_sessions.insert(session_id);
         self.tree_refresh_in_flight = None;
         self.tree_refresh_pending = false;
         self.tree_offset = 0;
         self.tree_viewport_height = 0;
-        let cursor = self
-            .store
-            .sessions
-            .get(&session_id)
-            .map(|state| state.last_seq);
-        self.subscribe_session_background(session_id, cursor, None);
         self.refresh_tree_background();
     }
 

@@ -9,6 +9,7 @@ mod pickers;
 mod providers;
 mod refresh;
 mod sessions;
+mod subscriptions;
 pub(super) use agents::DescendantEvent;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(super) use approvals::approval_content;
@@ -20,6 +21,8 @@ use sessions::{
     collect_subtree_sessions, collect_tree_session_ids, find_node, find_node_mut, find_session,
     patch_tree_node_statuses, patch_tree_node_titles, title_change_from_event,
 };
+use subscriptions::SubscriptionState;
+pub(super) use subscriptions::{SubscribeIntent, SubscriptionOutcome};
 
 mod goal;
 
@@ -508,8 +511,6 @@ pub struct App {
     pub(super) deliveries: Option<tokio::sync::mpsc::UnboundedReceiver<ClientDelivery>>,
     pub(super) rpc_updates_tx: tokio::sync::mpsc::UnboundedSender<RpcUpdate>,
     pub(super) rpc_updates_rx: tokio::sync::mpsc::UnboundedReceiver<RpcUpdate>,
-    pub(super) subscription_lanes:
-        Arc<tokio::sync::Mutex<HashMap<SessionId, Arc<tokio::sync::Mutex<()>>>>>,
     pub(super) stdin_lanes: Arc<
         tokio::sync::Mutex<HashMap<cookie_agent_protocol::ToolCallId, Arc<tokio::sync::Mutex<()>>>>,
     >,
@@ -550,15 +551,13 @@ pub struct App {
     /// Stable delegation-tree root; every tree refresh queries this session.
     pub(super) tree_root: Option<SessionId>,
     pub(super) selection_generation: u64,
-    pub(super) tree_subscription_sessions: HashSet<SessionId>,
     pub(super) read_only_sessions: HashSet<SessionId>,
     pub(super) owned_sessions: HashSet<SessionId>,
     pub(super) ownership_classifications: HashMap<SessionId, u64>,
     pub(super) next_ownership_classification: u64,
-    pub(super) pending_live_subscriptions: HashSet<SessionId>,
-    pub(super) live_subscription_attempts: HashMap<SessionId, u64>,
-    pub(super) next_live_subscription_attempt: u64,
-    pub(super) replay_ended_for_live_subscription: HashSet<SessionId>,
+    /// Each session's `events.subscribe` state on this connection.
+    pub(super) subscriptions: HashMap<SessionId, SubscriptionState>,
+    pub(super) next_subscription_attempt: u64,
     pub(super) tree_refresh_in_flight: Option<(u64, u64)>,
     pub(super) tree_refresh_pending: bool,
     pub(super) next_tree_refresh_id: u64,
@@ -715,10 +714,10 @@ pub(super) enum RpcUpdate {
         generation: u64,
         outcome: SessionOwnershipOutcome,
     },
-    SessionLiveSubscriptionFinished {
+    SubscriptionFinished {
         session_id: SessionId,
-        live_attempt: Option<u64>,
-        outcome: SessionLiveSubscriptionOutcome,
+        attempt: u64,
+        outcome: SubscriptionOutcome,
     },
     /// A steer RPC failed at the transport level (admission itself never
     /// rejects anymore): the submitted text is owed back to the composer.
@@ -825,12 +824,6 @@ struct PendingFallbackReset {
 pub(super) enum SessionOwnershipOutcome {
     Owned(Box<SessionMeta>),
     Foreign,
-    Failed(String),
-}
-
-pub(super) enum SessionLiveSubscriptionOutcome {
-    Established,
-    ReplayInProgress,
     Failed(String),
 }
 
@@ -1028,7 +1021,6 @@ impl App {
             deliveries: Some(deliveries),
             rpc_updates_tx,
             rpc_updates_rx,
-            subscription_lanes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             stdin_lanes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             store: StateStore::default(),
             sessions: Vec::new(),
@@ -1059,15 +1051,12 @@ impl App {
             selected: None,
             tree_root: None,
             selection_generation: 0,
-            tree_subscription_sessions: HashSet::new(),
             read_only_sessions: HashSet::new(),
             owned_sessions: HashSet::new(),
             ownership_classifications: HashMap::new(),
             next_ownership_classification: 0,
-            pending_live_subscriptions: HashSet::new(),
-            live_subscription_attempts: HashMap::new(),
-            next_live_subscription_attempt: 0,
-            replay_ended_for_live_subscription: HashSet::new(),
+            subscriptions: HashMap::new(),
+            next_subscription_attempt: 0,
             tree_refresh_in_flight: None,
             tree_refresh_pending: false,
             next_tree_refresh_id: 0,
@@ -1164,7 +1153,11 @@ impl App {
             .map(|session| session.session_id)
     }
 
-    async fn open_session(&mut self, session_id: SessionId) {
+    /// Open a session: classify its ownership, then show it. The one
+    /// subscription it needs is issued by whichever step first finds it
+    /// idle (the owned classification, else the selection) and shared by the
+    /// other.
+    pub(in crate::ui) async fn open_session(&mut self, session_id: SessionId) {
         let generation = self.begin_ownership_classification(session_id);
         let outcome = match self
             .client
@@ -1196,13 +1189,15 @@ impl App {
         generation
     }
 
-    fn classify_session_background(&mut self, session_id: SessionId) {
+    /// Classify a watched session's ownership in the background. Returns
+    /// whether a classification is pending; its outcome then subscribes the
+    /// session, so the subscription knows whether it gets a live tail.
+    fn classify_session_background(&mut self, session_id: SessionId) -> bool {
         if self.owned_sessions.contains(&session_id) {
-            self.start_pending_live_subscription(session_id);
-            return;
+            return false;
         }
         if self.ownership_classifications.contains_key(&session_id) {
-            return;
+            return true;
         }
         let generation = self.begin_ownership_classification(session_id);
         let client = self.client.clone();
@@ -1224,6 +1219,7 @@ impl App {
                 outcome,
             });
         });
+        true
     }
 
     fn apply_ownership_classification(
@@ -1251,90 +1247,26 @@ impl App {
                     self.sessions.push(session);
                 }
                 self.note_sessions_changed();
-                self.pending_live_subscriptions.insert(session_id);
-                self.replay_ended_for_live_subscription.remove(&session_id);
-                self.start_pending_live_subscription(session_id);
+                // Owned now: subscribe, or upgrade a snapshot subscription
+                // made before ownership to a live one.
+                self.subscribe_session(session_id, SubscribeIntent::Follow);
             }
             SessionOwnershipOutcome::Foreign => {
                 self.owned_sessions.remove(&session_id);
                 self.read_only_sessions.insert(session_id);
-                self.pending_live_subscriptions.remove(&session_id);
-                self.live_subscription_attempts.remove(&session_id);
-                self.replay_ended_for_live_subscription.remove(&session_id);
                 if self.selected == Some(session_id) {
                     self.status =
                         "Session is owned by another cookie process; read-only snapshot.".into();
+                    self.subscribe_session(session_id, SubscribeIntent::Follow);
                 }
             }
             SessionOwnershipOutcome::Failed(error) => {
                 self.owned_sessions.remove(&session_id);
                 self.read_only_sessions.insert(session_id);
-                self.pending_live_subscriptions.remove(&session_id);
-                self.live_subscription_attempts.remove(&session_id);
-                self.replay_ended_for_live_subscription.remove(&session_id);
                 self.session_errors.record(&error);
                 if self.selected == Some(session_id) {
                     self.status = error;
-                }
-            }
-        }
-    }
-
-    fn start_pending_live_subscription(&mut self, session_id: SessionId) {
-        if !self.pending_live_subscriptions.contains(&session_id)
-            || self.live_subscription_attempts.contains_key(&session_id)
-        {
-            return;
-        }
-        self.replay_ended_for_live_subscription.remove(&session_id);
-        self.next_live_subscription_attempt = self.next_live_subscription_attempt.wrapping_add(1);
-        let live_attempt = self.next_live_subscription_attempt;
-        self.live_subscription_attempts
-            .insert(session_id, live_attempt);
-        let cursor = self
-            .store
-            .sessions
-            .get(&session_id)
-            .map(|state| state.last_seq);
-        self.subscribe_session_background(session_id, cursor, Some(live_attempt));
-    }
-
-    fn finish_live_subscription(
-        &mut self,
-        session_id: SessionId,
-        live_attempt: Option<u64>,
-        outcome: SessionLiveSubscriptionOutcome,
-    ) {
-        let Some(live_attempt) = live_attempt else {
-            if let SessionLiveSubscriptionOutcome::Failed(error) = outcome {
-                self.session_errors.record(&error);
-                if self.selected == Some(session_id) {
-                    self.status = error;
-                }
-            }
-            return;
-        };
-        if self.live_subscription_attempts.get(&session_id) != Some(&live_attempt) {
-            return;
-        }
-        self.live_subscription_attempts.remove(&session_id);
-        if !self.pending_live_subscriptions.contains(&session_id) {
-            return;
-        }
-        match outcome {
-            SessionLiveSubscriptionOutcome::Established => {
-                self.pending_live_subscriptions.remove(&session_id);
-                self.replay_ended_for_live_subscription.remove(&session_id);
-            }
-            SessionLiveSubscriptionOutcome::ReplayInProgress => {
-                if self.replay_ended_for_live_subscription.remove(&session_id) {
-                    self.start_pending_live_subscription(session_id);
-                }
-            }
-            SessionLiveSubscriptionOutcome::Failed(error) => {
-                self.session_errors.record(&error);
-                if self.selected == Some(session_id) {
-                    self.status = error;
+                    self.subscribe_session(session_id, SubscribeIntent::Follow);
                 }
             }
         }
@@ -1610,7 +1542,7 @@ async fn event_loop(
                 }
                 None => {
                     for session_id in app.store.abandon_replays() {
-                        app.client.recover_session(session_id, true);
+                        app.recover_session(session_id);
                     }
                     app.clear_connect_secrets();
                     app.abort_connect_work();
