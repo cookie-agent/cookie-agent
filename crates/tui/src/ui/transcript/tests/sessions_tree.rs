@@ -1047,13 +1047,17 @@ async fn successful_sessions_picker_selection_after_delivery_handoff_uses_event_
 }
 
 #[tokio::test]
-async fn adopted_session_retries_live_subscription_after_snapshot_replay_ends() {
+async fn adopted_session_upgrades_its_snapshot_subscription_once() {
     let mut app = test_app().await;
     let session = SessionId::new_v7();
     app.selected = Some(session);
     app.sessions = vec![session_meta(session)];
     app.read_only_sessions.insert(session);
     app.ownership_classifications.insert(session, 7);
+    // Subscribed before ownership is known: the reply may be a snapshot.
+    app.subscribe_session(session, SubscribeIntent::Follow);
+    let snapshot = app.next_subscription_attempt;
+    assert_eq!(app.subscription_state_for_test(session), "subscribing");
     app.handle_delivery(ClientDelivery::ReplayStart {
         session_id: session,
         generation: 0,
@@ -1074,30 +1078,20 @@ async fn adopted_session_retries_live_subscription_after_snapshot_replay_ends() 
         outcome: SessionOwnershipOutcome::Owned(Box::new(session_meta(session))),
     });
     assert!(app.owned_sessions.contains(&session));
-    assert!(app.pending_live_subscriptions.contains(&session));
-    let first_attempt = app.live_subscription_attempts[&session];
-    app.handle_rpc_update(RpcUpdate::SessionLiveSubscriptionFinished {
-        session_id: session,
-        live_attempt: None,
-        outcome: SessionLiveSubscriptionOutcome::Established,
-    });
-    assert!(app.pending_live_subscriptions.contains(&session));
-    assert_eq!(app.live_subscription_attempts[&session], first_attempt);
-    app.handle_rpc_update(RpcUpdate::SessionLiveSubscriptionFinished {
-        session_id: session,
-        live_attempt: Some(first_attempt),
-        outcome: SessionLiveSubscriptionOutcome::ReplayInProgress,
-    });
-    assert!(app.pending_live_subscriptions.contains(&session));
-    assert!(!app.live_subscription_attempts.contains_key(&session));
+    // Adoption waits for the in-flight request instead of racing it.
+    assert_eq!(app.next_subscription_attempt, snapshot);
+    app.subscribe_session(session, SubscribeIntent::Open);
+    assert_eq!(app.next_subscription_attempt, snapshot);
 
-    app.handle_delivery(ClientDelivery::ReplayStart {
+    // The snapshot finishes, and exactly one live subscription follows it.
+    app.handle_rpc_update(RpcUpdate::SubscriptionFinished {
         session_id: session,
-        generation: 1,
-        final_seq: 1,
-        rebuild: false,
-    })
-    .await;
+        attempt: snapshot,
+        outcome: SubscriptionOutcome::Established,
+    });
+    let live = app.next_subscription_attempt;
+    assert_eq!(live, snapshot + 1);
+    assert_eq!(app.subscription_state_for_test(session), "subscribing");
     app.handle_delivery(ClientDelivery::ReplayEnd {
         session_id: session,
         generation: 0,
@@ -1105,40 +1099,64 @@ async fn adopted_session_retries_live_subscription_after_snapshot_replay_ends() 
     })
     .await;
     assert_eq!(app.store.sessions[&session].last_seq, 1);
-    let second_attempt = app.live_subscription_attempts[&session];
-    assert!(!app.replay_ended_for_live_subscription.contains(&session));
+    assert_eq!(app.next_subscription_attempt, live);
 
-    app.handle_rpc_update(RpcUpdate::SessionLiveSubscriptionFinished {
+    // A recovery replay held the session: the owned request retries once it
+    // ends, since that replay may have been served before ownership.
+    app.handle_rpc_update(RpcUpdate::SubscriptionFinished {
         session_id: session,
-        live_attempt: Some(second_attempt),
-        outcome: SessionLiveSubscriptionOutcome::ReplayInProgress,
+        attempt: live,
+        outcome: SubscriptionOutcome::ReplayInProgress,
     });
-    assert!(app.pending_live_subscriptions.contains(&session));
-    assert!(!app.live_subscription_attempts.contains_key(&session));
-
+    let retry = app.next_subscription_attempt;
+    assert_eq!(retry, live + 1, "the replay had already ended");
+    app.handle_rpc_update(RpcUpdate::SubscriptionFinished {
+        session_id: session,
+        attempt: retry,
+        outcome: SubscriptionOutcome::ReplayInProgress,
+    });
+    assert_eq!(app.subscription_state_for_test(session), "recovering");
+    assert_eq!(app.next_subscription_attempt, retry);
+    app.handle_delivery(ClientDelivery::ReplayStart {
+        session_id: session,
+        generation: 1,
+        final_seq: 1,
+        rebuild: true,
+    })
+    .await;
+    app.handle_delivery(ClientDelivery::ReplayEvent {
+        session_id: session,
+        generation: 1,
+        final_seq: 1,
+        event: Box::new(session_created(session, 1)),
+    })
+    .await;
     app.handle_delivery(ClientDelivery::ReplayEnd {
         session_id: session,
         generation: 1,
         final_seq: 1,
     })
     .await;
-    let third_attempt = app.live_subscription_attempts[&session];
-    assert_ne!(third_attempt, second_attempt);
-    assert!(!app.replay_ended_for_live_subscription.contains(&session));
-    app.handle_rpc_update(RpcUpdate::SessionLiveSubscriptionFinished {
+    let last = app.next_subscription_attempt;
+    assert_eq!(last, retry + 1);
+    // A stale completion is ignored.
+    app.handle_rpc_update(RpcUpdate::SubscriptionFinished {
         session_id: session,
-        live_attempt: None,
-        outcome: SessionLiveSubscriptionOutcome::Established,
+        attempt: retry,
+        outcome: SubscriptionOutcome::Established,
     });
-    assert_eq!(app.live_subscription_attempts[&session], third_attempt);
-    assert!(app.pending_live_subscriptions.contains(&session));
-    app.handle_rpc_update(RpcUpdate::SessionLiveSubscriptionFinished {
+    assert_eq!(app.subscription_state_for_test(session), "subscribing");
+    app.handle_rpc_update(RpcUpdate::SubscriptionFinished {
         session_id: session,
-        live_attempt: Some(third_attempt),
-        outcome: SessionLiveSubscriptionOutcome::Established,
+        attempt: last,
+        outcome: SubscriptionOutcome::Established,
     });
-    assert!(!app.pending_live_subscriptions.contains(&session));
-    assert!(!app.live_subscription_attempts.contains_key(&session));
+    assert_eq!(app.subscription_state_for_test(session), "live");
+    // Live now: reopening it, refreshing its tree, or adopting it again
+    // subscribes nothing.
+    app.subscribe_session(session, SubscribeIntent::Open);
+    app.subscribe_session(session, SubscribeIntent::Follow);
+    assert_eq!(app.next_subscription_attempt, last);
 
     let live = runless_event(
         session,
@@ -1150,6 +1168,13 @@ async fn adopted_session_retries_live_subscription_after_snapshot_replay_ends() 
             count: 1,
         },
     );
+    // The recovery rebuilt the projection as generation 1.
+    let live_event = |event: cookie_agent_protocol::StoredEvent| ClientDelivery::Live {
+        message: Box::new(cookie_agent_protocol::EventSubscriptionMessage::Event {
+            event: Box::new(event),
+        }),
+        generation: 1,
+    };
     app.handle_delivery(live_event(live.clone())).await;
     assert_eq!(app.store.sessions[&session].last_seq, 2);
     let transcript_len = app.store.sessions[&session].transcript.len();
@@ -1338,15 +1363,33 @@ async fn attaching_a_tree_replays_only_its_live_nodes() {
         .into_iter()
         .collect();
     assert_eq!(subscribed_sessions(&recorded, 3).await, expected);
-    assert!(!app.tree_subscription_sessions.contains(&finished));
+    assert_eq!(app.subscription_state_for_test(finished), "idle");
 
-    // Opening the finished child is what replays it.
+    // Opening the finished child is what replays it, once its ownership
+    // says whether the replay gets a live tail.
     app.watch_session(finished);
+    assert_eq!(app.subscription_state_for_test(finished), "idle");
+    let generation = app.ownership_classifications[&finished];
+    app.handle_rpc_update(RpcUpdate::SessionOwnershipClassified {
+        session_id: finished,
+        generation,
+        outcome: SessionOwnershipOutcome::Owned(Box::new(meta_with_status(
+            finished,
+            SessionStatus::Completed,
+        ))),
+    });
     assert!(
         subscribed_sessions(&recorded, 4)
             .await
             .contains(&finished.to_string())
     );
+    // Watching it, the root and it again, or refreshing the tree, replays
+    // nothing more.
+    app.watch_session(root);
+    app.watch_session(finished);
+    app.watch_session(running);
+    tokio::task::yield_now().await;
+    assert_eq!(recorded_method_count(&recorded, "events.subscribe"), 4);
 }
 
 #[tokio::test]
