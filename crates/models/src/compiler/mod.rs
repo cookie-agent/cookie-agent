@@ -17,5 +17,5 @@ pub use variants::{CompiledVariant, CompiledVariantOrigin};
 pub(crate) use dynamic::{managed_provider_adapter, validate_managed_cache};
 pub(crate) use executable::{
     ExecutableBehaviorInput, ExecutableCredentialMaterial, compile_executable,
-    executable_provider_id,
+    executable_provider_id, google_cached_content_parent,
 };
