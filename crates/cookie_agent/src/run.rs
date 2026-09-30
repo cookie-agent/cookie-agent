@@ -635,6 +635,12 @@ fn resolve_selection(
                 None => anyhow!("model `{model}` is not available"),
             }
         })?;
+        if !agent.can_run(&descriptor.capabilities) {
+            return Err(anyhow!(
+                "model `{model}` is not available: {}",
+                crate::availability::no_tool_calling_text(&agent.id)
+            ));
+        }
         ModelSelection {
             model: model.clone(),
             variant: descriptor.default_variant.clone(),
@@ -643,16 +649,21 @@ fn resolve_selection(
         && args.preset.is_none()
         && let Some(previous) = previous
         && previous.agent == agent.id
-        && selection_is_live(models, &previous.model)
+        && selection_runs(models, agent, &previous.model)
     {
         previous.model.clone()
     } else {
         agent
             .resolved_fallback
             .iter()
-            .find(|selection| selection_is_live(models, selection))
+            .find(|selection| selection_runs(models, agent, selection))
             .cloned()
-            .or_else(|| models.first().map(default_model_selection))
+            .or_else(|| {
+                models
+                    .iter()
+                    .find(|descriptor| agent.can_run(&descriptor.capabilities))
+                    .map(default_model_selection)
+            })
             .ok_or_else(
                 || match crate::availability::unusable_configured_providers(providers) {
                     Some(detail) => anyhow!("no live model is available; {detail}"),
@@ -704,6 +715,19 @@ fn variant_is_valid(descriptor: &AvailableModelDescriptor, variant: Option<&Vari
 fn selection_is_live(models: &[AvailableModelDescriptor], selection: &ModelSelection) -> bool {
     model_descriptor(models, &selection.model)
         .is_some_and(|descriptor| variant_is_valid(descriptor, selection.variant.as_ref()))
+}
+
+/// A live selection `agent` can run: an agent that publishes tools skips
+/// models without tool calling.
+fn selection_runs(
+    models: &[AvailableModelDescriptor],
+    agent: &cookie_agent_protocol::AgentDescriptor,
+    selection: &ModelSelection,
+) -> bool {
+    model_descriptor(models, &selection.model).is_some_and(|descriptor| {
+        agent.can_run(&descriptor.capabilities)
+            && variant_is_valid(descriptor, selection.variant.as_ref())
+    })
 }
 
 async fn apply_allowed_tools(
@@ -1294,5 +1318,79 @@ mod tests {
             EXIT_CANCELLED
         );
         assert_eq!(terminal_exit(&cancelled, None), EXIT_CANCELLED);
+    }
+
+    #[test]
+    fn models_without_tool_calling_fail_fast_for_agents_with_tools() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: RunArgs,
+        }
+        let args = |argv: &[&str]| {
+            <Cli as clap::Parser>::try_parse_from(argv)
+                .expect("run arguments")
+                .args
+        };
+        let model = |key: &str, tool_calling: bool| -> AvailableModelDescriptor {
+            serde_json::from_value(serde_json::json!({
+                "key": key,
+                "display_name": key,
+                "capabilities": {
+                    "input": ["text"], "output": ["text"], "context_tokens": 8192,
+                    "output_tokens": 2048, "tool_calling": tool_calling,
+                    "parallel_tool_calls": tool_calling, "structured_output": false,
+                    "reasoning": false, "temperature": true, "top_p": true, "seed": false,
+                    "native_replay": "unsupported", "cancellation": "local_only", "media": {}
+                },
+                "variants": [], "variant_order": [], "default_variant": null,
+                "behavior_fingerprint": cookie_agent_protocol::Sha256Digest::of_bytes(key.as_bytes()),
+            }))
+            .expect("model descriptor")
+        };
+        let models = [
+            model("alpha/tooled", true),
+            model("perplexity/sonar", false),
+        ];
+        let agent = |publishes_tools: bool| cookie_agent_protocol::AgentDescriptor {
+            id: AgentId::new("primary").expect("agent ID"),
+            preset: None,
+            description: "Primary agent".into(),
+            mode: cookie_agent_protocol::AgentMode::Primary,
+            enabled: true,
+            runnable_as_root: true,
+            resolved_fallback: ["perplexity/sonar", "alpha/tooled"]
+                .into_iter()
+                .map(|key| ModelSelection {
+                    model: key.parse().expect("model key"),
+                    variant: None,
+                })
+                .collect(),
+            delegation_targets: Vec::new(),
+            publishes_tools,
+        };
+        let explicit = args(&["cookie", "--model", "perplexity/sonar", "hello"]);
+        let error = resolve_selection(&[agent(true)], &models, &[], None, None, &explicit)
+            .expect_err("a tool agent cannot run a model without tool calling");
+        assert_eq!(
+            error.to_string(),
+            "model `perplexity/sonar` is not available: no tool calling: agent `primary` uses tools"
+        );
+        let default = resolve_selection(
+            &[agent(true)],
+            &models,
+            &[],
+            None,
+            None,
+            &args(&["cookie", "hello"]),
+        )
+        .expect("default model");
+        assert_eq!(default.model.model.as_str(), "alpha/tooled");
+
+        for args in [explicit, args(&["cookie", "hello"])] {
+            let selection = resolve_selection(&[agent(false)], &models, &[], None, None, &args)
+                .expect("an agent without tools runs any model");
+            assert_eq!(selection.model.model.as_str(), "perplexity/sonar");
+        }
     }
 }
