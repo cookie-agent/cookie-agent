@@ -28,5 +28,5 @@ allow = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# Cargo.toml and release-integrity tests pin every oven crate to 7d4e68607e7643c4aa8fb46bf26f58a02832efa8.
+# Cargo.toml and release-integrity tests pin every oven crate to 4b8363375dc8da39a1cd16f788c036515e29a20e.
 allow-git = ["https://github.com/cookie-agent/oven-sdk.git"]

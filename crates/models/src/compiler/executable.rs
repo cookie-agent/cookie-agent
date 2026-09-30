@@ -35,9 +35,9 @@ use oven_sdk_google_vertex::{
 };
 use oven_sdk_openai::{
     CompatibleChatOptions, MaxTokensField, OpenAiChatModel, OpenAiChatOptions, OpenAiChatSettings,
-    OpenAiCompatibleChatModel, OpenAiCompatibleChatSettings, OpenAiResponsesCompaction,
-    OpenAiResponsesModel, OpenAiResponsesOptions, OpenAiResponsesSettings, ReasoningField,
-    StructuredOutputSupport, SystemMessageRole,
+    OpenAiCompatibleChatModel, OpenAiCompatibleChatSettings, OpenAiNoAuth,
+    OpenAiResponsesCompaction, OpenAiResponsesModel, OpenAiResponsesOptions,
+    OpenAiResponsesSettings, ReasoningField, StructuredOutputSupport, SystemMessageRole,
 };
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -77,19 +77,11 @@ pub(crate) fn compile_executable(
     provider_id: &str,
     model: &CompiledDynamicModel,
     mut capabilities: ModelCapabilities,
-    mut headers: BTreeMap<String, String>,
+    headers: BTreeMap<String, String>,
     credentials: &ExecutableCredentialMaterial,
     behavior: ExecutableBehaviorInput<'_>,
 ) -> Result<crate::ConstructedAdapter, ModelBuildError> {
     let endpoint = executable_endpoint(model)?;
-    if model.auth.method == "no-auth-v1" {
-        if let Some(organization) = &behavior.options.organization {
-            headers.insert("openai-organization".into(), organization.clone());
-        }
-        if let Some(project) = &behavior.options.project {
-            headers.insert("openai-project".into(), project.clone());
-        }
-    }
     let auth = executable_auth(model, credentials, behavior.options)?;
     let provider = CommonProvider::new(
         executable_provider_id(provider_id, model.adapter, model.custom),
@@ -321,9 +313,15 @@ fn construct(
                 client: timeouts.shared_client(),
                 timeouts: timeouts.openai(),
             };
+            // Without credentials, Oven still sends the account headers
+            // (`OpenAI-Organization`, `OpenAI-Project`) from its typed auth; as
+            // configured headers they would be rejected as protected.
             let language_model: Arc<dyn LanguageModel> = if matches!(auth, AuthConfig::None) {
                 Arc::new(OpenAiChatModel::new_no_auth(ModelConfig::new(
-                    provider.with_auth(()),
+                    provider.with_auth(OpenAiNoAuth {
+                        organization: behavior.options.organization.clone(),
+                        project: behavior.options.project.clone(),
+                    }),
                     declaration,
                     settings,
                 ))?)

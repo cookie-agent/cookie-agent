@@ -17709,7 +17709,52 @@
       }
     },
     "wire": {
-      "not_sent": "invalid_request error: OpenAI header override `openai-organization` is protected"
+      "body": {
+        "max_completion_tokens": 32000,
+        "messages": [
+          {
+            "content": "stable system",
+            "role": "developer"
+          },
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "local-reasoner",
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "function": {
+              "description": "Inspect one path.",
+              "name": "inspect",
+              "parameters": {
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              },
+              "strict": false
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "openai-organization: org-2",
+        "openai-project: proj-2",
+        "content-type: application/json",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 385"
+      ],
+      "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
   },
   "custom.openai-chat-open/reasoner#default+openai-cache": {
@@ -17731,7 +17776,74 @@
       }
     },
     "wire": {
-      "not_sent": "invalid_request error: OpenAI header override `openai-organization` is protected"
+      "body": {
+        "max_completion_tokens": 32000,
+        "messages": [
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "stable system",
+                "type": "text"
+              }
+            ],
+            "role": "developer"
+          },
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model": "local-reasoner",
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_options": {
+          "mode": "explicit",
+          "ttl": "30m"
+        },
+        "prompt_cache_retention": "in_memory",
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "function": {
+              "description": "Inspect one path.",
+              "name": "inspect",
+              "parameters": {
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              },
+              "strict": false
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "openai-organization: org-2",
+        "openai-project: proj-2",
+        "content-type: application/json",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 657"
+      ],
+      "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
   },
   "custom.openai-chat-open/reasoner#default+openai-cache-key-only": {
@@ -17749,7 +17861,54 @@
       }
     },
     "wire": {
-      "not_sent": "invalid_request error: OpenAI header override `openai-organization` is protected"
+      "body": {
+        "max_completion_tokens": 32000,
+        "messages": [
+          {
+            "content": "stable system",
+            "role": "developer"
+          },
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "local-reasoner",
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_retention": "24h",
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "function": {
+              "description": "Inspect one path.",
+              "name": "inspect",
+              "parameters": {
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              },
+              "strict": false
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "openai-organization: org-2",
+        "openai-project: proj-2",
+        "content-type: application/json",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 454"
+      ],
+      "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
   },
   "custom.openai-chat-open/reasoner#effort-high": {
@@ -17813,7 +17972,53 @@
       }
     },
     "wire": {
-      "not_sent": "invalid_request error: OpenAI header override `openai-organization` is protected"
+      "body": {
+        "max_completion_tokens": 32000,
+        "messages": [
+          {
+            "content": "stable system",
+            "role": "developer"
+          },
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "local-reasoner",
+        "reasoning_effort": "high",
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "function": {
+              "description": "Inspect one path.",
+              "name": "inspect",
+              "parameters": {
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              },
+              "strict": false
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "openai-organization: org-2",
+        "openai-project: proj-2",
+        "content-type: application/json",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 411"
+      ],
+      "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
   },
   "custom.openai-chat-open/reasoner#effort-high+openai-cache": {
@@ -17835,7 +18040,75 @@
       }
     },
     "wire": {
-      "not_sent": "invalid_request error: OpenAI header override `openai-organization` is protected"
+      "body": {
+        "max_completion_tokens": 32000,
+        "messages": [
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "stable system",
+                "type": "text"
+              }
+            ],
+            "role": "developer"
+          },
+          {
+            "content": [
+              {
+                "prompt_cache_breakpoint": {
+                  "mode": "explicit"
+                },
+                "text": "hello",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model": "local-reasoner",
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_options": {
+          "mode": "explicit",
+          "ttl": "30m"
+        },
+        "prompt_cache_retention": "in_memory",
+        "reasoning_effort": "high",
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "function": {
+              "description": "Inspect one path.",
+              "name": "inspect",
+              "parameters": {
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              },
+              "strict": false
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "openai-organization: org-2",
+        "openai-project: proj-2",
+        "content-type: application/json",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 683"
+      ],
+      "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
   },
   "custom.openai-chat-open/reasoner#effort-high+openai-cache-key-only": {
@@ -17853,7 +18126,55 @@
       }
     },
     "wire": {
-      "not_sent": "invalid_request error: OpenAI header override `openai-organization` is protected"
+      "body": {
+        "max_completion_tokens": 32000,
+        "messages": [
+          {
+            "content": "stable system",
+            "role": "developer"
+          },
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "local-reasoner",
+        "prompt_cache_key": "cookie-cache-key",
+        "prompt_cache_retention": "24h",
+        "reasoning_effort": "high",
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "function": {
+              "description": "Inspect one path.",
+              "name": "inspect",
+              "parameters": {
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              },
+              "strict": false
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "headers": [
+        "openai-organization: org-2",
+        "openai-project: proj-2",
+        "content-type: application/json",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 480"
+      ],
+      "request_line": "POST /v1/chat/completions? HTTP/1.1"
     }
   },
   "custom.openai-chat/plain#default": {
