@@ -56,10 +56,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "minLength": 1,
           "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
         },
-        "publishes_tools": {
-          "description": "Whether the agent's permissions make any tool visible. Such an agent\nruns only models with tool calling.",
-          "type": "boolean"
-        },
         "resolved_fallback": {
           "type": "array",
           "items": {
@@ -102,8 +98,7 @@ expression: schema_for!(RuntimeSnapshotResult)
         "enabled",
         "runnable_as_root",
         "resolved_fallback",
-        "delegation_targets",
-        "publishes_tools"
+        "delegation_targets"
       ]
     },
     "AgentMode": {
@@ -933,7 +928,7 @@ expression: schema_for!(RuntimeSnapshotResult)
         },
         "snapshot_schema_version": {
           "type": "integer",
-          "const": 7
+          "const": 6
         }
       },
       "additionalProperties": false,

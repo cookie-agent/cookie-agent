@@ -196,20 +196,12 @@ impl Engine {
                 .ok_or(EngineError::NoRunnableModel)?;
             let model = policy::resolve_model(binding, runtime)?;
             let max_output_tokens = internal_agent_output_limit(binding, &policy);
-            // Compaction forwards the session's tool definitions only for
-            // cache affinity; a model without tool calling would reject them,
-            // so it summarizes without them.
-            let tools = if runtime
-                .models
-                .model(&binding.selection.model)
-                .is_none_or(|model| model.model.capabilities.tool_calling)
-            {
-                input.tools.clone()
-            } else {
-                Vec::new()
-            };
-            let request = internal_model_request(input.history.clone(), tools, max_output_tokens)
-                .with_header_context(self.model_header_context(session)?);
+            let request = internal_model_request(
+                input.history.clone(),
+                input.tools.clone(),
+                max_output_tokens,
+            )
+            .with_header_context(self.model_header_context(session)?);
             let cache_strategy = policy.cache_strategy(binding, session);
             let request =
                 model.prepare_request_with_cache_strategy(request, cache_strategy.as_ref());

@@ -3,10 +3,7 @@ use std::{borrow::Cow, collections::BTreeSet, fmt};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    AgentId, FrozenModelBinding, ModelCapabilities, ModelKey, ModelSelection, Sha256Digest,
-    WildcardPattern,
-};
+use crate::{AgentId, FrozenModelBinding, ModelKey, ModelSelection, Sha256Digest, WildcardPattern};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct AgentSchemaVersion(());
@@ -498,9 +495,6 @@ pub struct AgentDescriptor {
     pub resolved_fallback: Vec<ModelSelection>,
     #[schemars(length(max = 256))]
     pub delegation_targets: Vec<AgentId>,
-    /// Whether the agent's permissions make any tool visible. Such an agent
-    /// runs only models with tool calling.
-    pub publishes_tools: bool,
 }
 
 struct AgentDescriptionSchema;
@@ -540,14 +534,6 @@ impl JsonSchema for AgentPromptSchema {
     }
 }
 impl AgentDescriptor {
-    /// Whether this agent can run a model with `capabilities`: an agent that
-    /// publishes tools needs tool calling, and one that publishes none can
-    /// run any model.
-    #[must_use]
-    pub const fn can_run(&self, capabilities: &ModelCapabilities) -> bool {
-        !self.publishes_tools || capabilities.tool_calling
-    }
-
     pub fn validate(&self) -> Result<(), AgentSchemaError> {
         if self
             .preset
@@ -633,7 +619,6 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
             #[serde(deserialize_with = "crate::deserialize_required_model_selections")]
             resolved_fallback: Vec<ModelSelection>,
             delegation_targets: Vec<AgentId>,
-            publishes_tools: bool,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -645,7 +630,6 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
             runnable_as_root: w.runnable_as_root,
             resolved_fallback: w.resolved_fallback,
             delegation_targets: w.delegation_targets,
-            publishes_tools: w.publishes_tools,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
