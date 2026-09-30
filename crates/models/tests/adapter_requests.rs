@@ -689,6 +689,72 @@ async fn custom_openai_chat_no_auth_emits_no_credential_material() {
 }
 
 #[tokio::test]
+async fn openai_chat_sends_organization_and_project_once_with_or_without_auth() {
+    let response = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+    for auth in [
+        r#"{ method = "no-auth-v1", values = {} }"#,
+        r#"{ method = "bearer-api-key-v1", values = { api_key = "typed-secret" } }"#,
+    ] {
+        let (endpoint, captured) = server(response).await;
+        let definition: ProviderDefinition = toml::from_str(&format!(
+            r#"source = "custom"
+endpoint = "{endpoint}"
+adaptor = "openai-chat"
+auth = {auth}
+
+[models.test]
+display_name = "Account"
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {{}} }}
+adaptor_options = {{ organization = "org-1", project = "proj-1" }}
+"#
+        ))
+        .unwrap();
+        let temporary = TempDir::new().unwrap();
+        let provider_id = ProviderId::new("custom.account").unwrap();
+        let manager = ModelManager::new(
+            BTreeMap::from([(provider_id.clone(), definition)]),
+            empty_catalog(),
+            store(&temporary),
+        )
+        .unwrap();
+        let resolved = manager
+            .current()
+            .resolve(&ModelSelection {
+                model: ModelKey::new(provider_id, ProviderModelId::new("test").unwrap()).unwrap(),
+                variant: None,
+            })
+            .unwrap();
+        let request = Request::new(vec![HistoryTurn::user(UserMessage::new(vec![
+            InputPart::Text(TextPart::new("hello")),
+        ]))]);
+        let mut stream = resolved
+            .model()
+            .stream(resolved.prepare_request(request), AbortSignal::default())
+            .await
+            .unwrap_or_else(|error| panic!("{auth}: {error:?}"));
+        while let Some(part) = stream.stream.next().await {
+            part.unwrap();
+        }
+        let request = captured.await.unwrap().to_ascii_lowercase();
+        for (name, value) in [
+            ("openai-organization", "org-1"),
+            ("openai-project", "proj-1"),
+        ] {
+            let values = request
+                .lines()
+                .filter_map(|line| line.strip_prefix(&format!("{name}: ")))
+                .collect::<Vec<_>>();
+            assert_eq!(values, [value], "{auth}: {name}\n{request}");
+        }
+        assert_eq!(
+            request.contains("\r\nauthorization: bearer typed-secret\r\n"),
+            auth.contains("bearer"),
+            "{auth}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn configured_auth_and_session_headers_win_on_the_wire() {
     let response = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
     let (endpoint, captured) = server(response).await;

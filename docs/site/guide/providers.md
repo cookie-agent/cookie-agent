@@ -486,8 +486,8 @@ and empty lists remain overrides. Nonempty wrong-adaptor settings fail.
 |---|---|---|
 | `request_endpoint` | string | `"completions"` (Chat Completions) or `"responses"`; selects the complete codec and route. |
 | `beta` | array of strings | Anthropic beta header values; rejected for non-Anthropic adaptors. |
-| `organization` | string | Official-auth OpenAI organization header; not compatible or unauthenticated Responses. |
-| `project` | string | Official-auth OpenAI project header; not compatible or unauthenticated Responses. |
+| `organization` | string | `OpenAI-Organization` header for OpenAI Chat (with or without auth) and authenticated OpenAI Responses; rejected for compatible and unauthenticated Responses. |
+| `project` | string | `OpenAI-Project` header for OpenAI Chat (with or without auth) and authenticated OpenAI Responses; rejected for compatible and unauthenticated Responses. |
 | `store` | boolean | OpenAI/compatible Responses only, not Azure. The stateless encoder supports `false`; `true` is rejected. |
 
 ### Request endpoint
