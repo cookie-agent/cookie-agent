@@ -249,7 +249,7 @@ fn api_key_provider() -> ModelsDevProvider {
 }
 
 #[test]
-fn tool_less_catalog_models_stay_available_without_parallel_tools() {
+fn tool_less_catalog_models_compile_unsupported() {
     for (npm, api) in [
         ("@ai-sdk/perplexity", None),
         ("@ai-sdk/openai-compatible", Some("https://example.com/v1")),
@@ -262,11 +262,15 @@ fn tool_less_catalog_models_stay_available_without_parallel_tools() {
         let compiled = DynamicCompiler::default()
             .compile_managed("test", &catalog, Some(&api_key_provider()))
             .unwrap();
-        assert!(compiled.unsupported_models.is_empty(), "{npm}");
-        let model = compiled.models.values().next().unwrap();
-        assert_eq!(model.status, CompiledModelStatus::Available, "{npm}");
-        assert!(!model.capabilities.tool_calling, "{npm}");
-        assert!(!model.capabilities.parallel_tool_calls, "{npm}");
+        assert!(compiled.models.is_empty(), "{npm}");
+        assert_eq!(compiled.unsupported_models.len(), 1, "{npm}");
+        let unsupported = &compiled.unsupported_models[0];
+        assert_eq!(
+            unsupported.kind,
+            cookie_agent_models::compiler::UnsupportedModelKind::Unsupported,
+            "{npm}"
+        );
+        assert_eq!(unsupported.reason, "no tool calling", "{npm}");
     }
 }
 
@@ -1153,7 +1157,7 @@ auth = { method = "bearer-api-key-v1", values = { api_key = "secret" } }
 
 [models.test]
 display_name = "Test"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
 variants = { zeta = { }, alpha = { } }
 "#,
     )
@@ -1202,7 +1206,7 @@ headers = { X-Level = "provider", X-Delete = "" }
 
 [models.test]
 display_name = "Test"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
 headers = { x-LEVEL = "model", x-provider-only = "model" }
 variants = { fast = { headers = { X-Level = "variant", X-Keep = "" } } }
 "#,
@@ -1252,7 +1256,7 @@ auth = { method = "bearer-api-key-v1", values = { api_key = "typed" } }
 headers = { Authorization = "Bearer configured", Cookie = "route=one", user-agent = "custom" }
 [models.test]
 display_name = "Test"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
 "#,
     )
     .unwrap();
@@ -1320,7 +1324,7 @@ adaptor = "openai-compatible"
 auth = { method = "no-auth-v1", values = {} }
 [models.test]
 display_name = "Test"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
 "#,
     )
     .unwrap();
@@ -1363,7 +1367,7 @@ auth = { method = "no-auth-v1", values = {} }
 headers = { x-env = "${env:COOKIE_AGENT_FINGERPRINT_TEST:-fallback}" }
 [models.test]
 display_name = "Test"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
 "#,
     )
     .unwrap();

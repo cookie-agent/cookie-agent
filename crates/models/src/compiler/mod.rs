@@ -8,8 +8,8 @@ mod variants;
 
 pub use dynamic::{
     AuthSourceCategory, CompiledAuthShape, CompiledDynamicModel, CompiledDynamicProvider,
-    CompiledModelStatus, DynamicCompileError, DynamicCompiler, UnsupportedModel,
-    UnsupportedModelKind,
+    CompiledModelStatus, DynamicCompileError, DynamicCompiler, NO_TOOL_CALLING_REASON,
+    UnsupportedModel, UnsupportedModelKind,
 };
 pub use executable::CompatibleThinkingToggle;
 pub use variants::{CompiledVariant, CompiledVariantOrigin};

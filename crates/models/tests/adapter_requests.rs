@@ -222,7 +222,6 @@ headers = { X-Route = "" }
 }
 
 fn definition(endpoint: &str, adaptor: &str, image_capable: bool) -> ProviderDefinition {
-    let tool_calling = adaptor != "openai-responses";
     let (input, media) = if image_capable {
         (
             r#"["text", "image"]"#,
@@ -239,7 +238,7 @@ auth = {{ method = "no-auth-v1", values = {{}} }}
 
 [models.test]
 display_name = "No Auth"
-capabilities = {{ input = {input}, output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = {tool_calling}, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {media} }}
+capabilities = {{ input = {input}, output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {media} }}
 "#
     ))
     .unwrap()
