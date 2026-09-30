@@ -33,4 +33,5 @@ mod subagent_residency;
 mod subagent_resume;
 mod subagents;
 mod tool_execution;
+mod toolless_models;
 mod usage;

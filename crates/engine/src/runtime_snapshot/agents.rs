@@ -7,8 +7,10 @@ use cookie_agent_config::{
     BUILT_IN_TITLE_AGENT_ID, PermissionAction, PermissionEffect, PermissionValue,
 };
 use cookie_agent_identity::{AgentId as IdentityAgentId, WildcardPattern};
-use cookie_agent_models::{CompiledModelRuntime, compiler::CompiledModelStatus};
-use cookie_agent_protocol::{AgentDescriptor, AgentId, ModelSelection};
+use cookie_agent_models::{
+    CompiledModelRuntime, CompiledRuntimeModel, compiler::CompiledModelStatus,
+};
+use cookie_agent_protocol::{AgentDescriptor, AgentId, ModelKey, ModelSelection};
 use indexmap::IndexMap;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -20,6 +22,57 @@ pub(crate) struct ResolvedAgent {
     pub document: AgentDocument,
     pub resolved_fallback: Vec<ResolvedAgentFallback>,
     pub runnable_as_root: bool,
+    /// Whether the agent's permissions make any tool visible; see
+    /// [`publishes_tools`].
+    pub publishes_tools: bool,
+}
+
+impl ResolvedAgent {
+    /// Whether this agent can run `key`: the model is available and, when
+    /// the agent publishes tools, supports tool calling.
+    pub(crate) fn can_run(&self, models: &CompiledModelRuntime, key: &ModelKey) -> bool {
+        models
+            .model(key)
+            .is_some_and(|model| model_runnable(model, self.publishes_tools))
+    }
+
+    /// Whether a model this agent would otherwise run lacks the tool calling
+    /// its published tools need.
+    pub(crate) fn lacks_tool_calling(&self, models: &CompiledModelRuntime, key: &ModelKey) -> bool {
+        self.publishes_tools
+            && models
+                .model(key)
+                .is_some_and(|model| !model.model.capabilities.tool_calling)
+    }
+}
+
+/// Whether an agent can run `model`: it is available and, for an agent that
+/// publishes tools, supports tool calling. Tools sent to a model without tool
+/// calling fail before the request, so such a model is unavailable to that
+/// agent; agents that publish no tools (internal agents included) run it.
+fn model_runnable(model: &CompiledRuntimeModel, publishes_tools: bool) -> bool {
+    model.model.status == CompiledModelStatus::Available
+        && (!publishes_tools || model.model.capabilities.tool_calling)
+}
+
+/// Whether permissions make any tool visible: tool visibility follows any
+/// `allow` or `ask` rule for the tool's action, and delegation tools
+/// additionally need an eligible target. This does not consult which tool
+/// providers exist, so an agent that only allows, say, `mcp` with no server
+/// configured still counts as publishing tools.
+pub(crate) fn publishes_tools(
+    permissions: &IndexMap<PermissionAction, PermissionValue>,
+    has_delegation_targets: bool,
+) -> bool {
+    permissions.iter().any(|(action, value)| {
+        (*action != PermissionAction::Delegate || has_delegation_targets)
+            && match value {
+                PermissionValue::Effect(effect) => *effect != PermissionEffect::Deny,
+                PermissionValue::Resources(resources) => resources
+                    .values()
+                    .any(|effect| *effect != PermissionEffect::Deny),
+            }
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -90,32 +143,52 @@ impl AgentRegistry {
                     }
                 }
             }
-            let available = resolved_fallback
-                .iter()
-                .filter_map(|fallback| match fallback {
-                    ResolvedAgentFallback::Selection { selection, .. } => Some(selection),
-                    ResolvedAgentFallback::ParentModel { .. } => None,
-                })
-                .any(|selection| selection_available(models, selection));
-            let runnable_as_root = document.frontmatter.enabled
-                && matches!(
-                    document.frontmatter.mode,
-                    AgentMode::Primary | AgentMode::All
-                )
-                && available;
             agents.insert(
                 id,
                 ResolvedAgent {
                     document,
                     resolved_fallback,
-                    runnable_as_root,
+                    runnable_as_root: false,
+                    publishes_tools: false,
                 },
             );
+        }
+        // Delegation targets depend on the whole registry, and tool
+        // publication on the targets, so both follow the first pass.
+        let tool_use = agents
+            .iter()
+            .map(|(id, agent)| {
+                let targets = delegation_targets(&agent.document.frontmatter.permissions, &agents);
+                (
+                    id.clone(),
+                    publishes_tools(&agent.document.frontmatter.permissions, !targets.is_empty()),
+                )
+            })
+            .collect::<Vec<_>>();
+        for (id, tools) in tool_use {
+            let agent = agents.get_mut(&id).expect("agent resolved above");
+            agent.publishes_tools = tools;
+            let available = agent
+                .resolved_fallback
+                .iter()
+                .filter_map(|fallback| match fallback {
+                    ResolvedAgentFallback::Selection { selection, .. } => Some(selection),
+                    ResolvedAgentFallback::ParentModel { .. } => None,
+                })
+                .any(|selection| selection_available(models, selection, tools));
+            agent.runnable_as_root = agent.document.frontmatter.enabled
+                && matches!(
+                    agent.document.frontmatter.mode,
+                    AgentMode::Primary | AgentMode::All
+                )
+                && available;
         }
         if !agents.values().any(|agent| agent.runnable_as_root)
             && let Some(selection) = first_available_selection(models)
         {
             let document = built_in_default_document(&selection)?;
+            let targets = delegation_targets(&document.frontmatter.permissions, &agents);
+            let tools = publishes_tools(&document.frontmatter.permissions, !targets.is_empty());
             agents.insert(
                 document.id.clone(),
                 ResolvedAgent {
@@ -125,6 +198,7 @@ impl AgentRegistry {
                         cache: None,
                     }],
                     runnable_as_root: true,
+                    publishes_tools: tools,
                 },
             );
         }
@@ -151,6 +225,7 @@ impl AgentRegistry {
                     &agent.document.frontmatter.permissions,
                     &agents,
                 ),
+                publishes_tools: agent.publishes_tools,
             })
             .collect();
         Ok(Self {
@@ -173,9 +248,11 @@ impl AgentRegistry {
     }
 }
 
+/// The built-in default agent's model: the first available one with tool
+/// calling, since that agent publishes tools.
 fn first_available_selection(models: &CompiledModelRuntime) -> Option<ModelSelection> {
     models.models().values().find_map(|model| {
-        (model.model.status == CompiledModelStatus::Available).then(|| ModelSelection {
+        model_runnable(model, true).then(|| ModelSelection {
             model: model.key.clone(),
             variant: model.model.default_variant.clone(),
         })
@@ -425,9 +502,13 @@ pub(crate) fn delegation_targets(
     targets
 }
 
-fn selection_available(models: &CompiledModelRuntime, selection: &ModelSelection) -> bool {
+fn selection_available(
+    models: &CompiledModelRuntime,
+    selection: &ModelSelection,
+    publishes_tools: bool,
+) -> bool {
     models.model(&selection.model).is_some_and(|model| {
-        model.model.status == CompiledModelStatus::Available
+        model_runnable(model, publishes_tools)
             && selection
                 .variant
                 .as_ref()
@@ -588,6 +669,7 @@ mod tests {
             },
             resolved_fallback: Vec::new(),
             runnable_as_root: false,
+            publishes_tools: false,
         }
     }
 

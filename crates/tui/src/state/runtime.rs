@@ -246,6 +246,7 @@ mod tests {
                     runnable_as_root: true,
                     resolved_fallback: vec![selection],
                     delegation_targets: Vec::new(),
+                    publishes_tools: true,
                 }]
             } else {
                 Vec::new()

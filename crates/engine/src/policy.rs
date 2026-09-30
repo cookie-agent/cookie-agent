@@ -138,11 +138,19 @@ impl FrozenRunPolicy {
     }
 }
 
-fn missing_model_error(
+/// Why `agent` cannot run the selected model: it is unknown, unavailable,
+/// or lacks the tool calling the agent's published tools need.
+fn unrunnable_model_error(
     agent: &ResolvedAgent,
     runtime: &crate::runtime_snapshot::PublishedRuntime,
     selection: &protocol::ModelSelection,
 ) -> Option<EngineError> {
+    if agent.lacks_tool_calling(&runtime.models, &selection.model) {
+        return Some(EngineError::ModelWithoutToolCalling {
+            agent: agent.document.id.clone(),
+            model: selection.model.clone(),
+        });
+    }
     if runtime.models.model(&selection.model).is_some() {
         return None;
     }
@@ -190,7 +198,8 @@ pub(crate) fn live_model_selection(
     })
 }
 
-/// The first live model in an agent's own fallback chain.
+/// The first live model in an agent's own fallback chain that the agent can
+/// run.
 pub(crate) fn agent_default_model(
     runtime: &PublishedRuntime,
     agent: &ResolvedAgent,
@@ -201,6 +210,7 @@ pub(crate) fn agent_default_model(
         .find_map(|candidate| match candidate {
             ResolvedAgentFallback::Selection { selection, .. } => {
                 live_model_selection(runtime, selection)
+                    .filter(|selection| agent.can_run(&runtime.models, &selection.model))
             }
             ResolvedAgentFallback::ParentModel { .. } => None,
         })
@@ -225,7 +235,9 @@ pub(crate) fn default_root_agent(registry: &AgentRegistry) -> Option<&ResolvedAg
 /// variant that no longer exists: an unknown preset falls back to the shared
 /// agents, an agent that cannot run as root to the default agent, and a model
 /// that is gone (or any model, once the agent changed) to the agent's default
-/// model. The transcript keeps showing what earlier turns actually used.
+/// model. A model the agent cannot run (one without tool calling for an agent
+/// that publishes tools) counts as gone. The transcript keeps showing what
+/// earlier turns actually used.
 pub(crate) fn best_effort_root_selection(
     runtime: &PublishedRuntime,
     selection: &protocol::RunSelection,
@@ -242,13 +254,15 @@ pub(crate) fn best_effort_root_selection(
         .ok_or(EngineError::NoRunnableModel)?;
     let model = requested
         .and_then(|_| live_model_selection(runtime, &selection.model))
+        .filter(|selection| agent.can_run(&runtime.models, &selection.model))
         .or_else(|| agent_default_model(runtime, agent))
         .or_else(|| {
             runtime
                 .result
                 .snapshot
                 .models
-                .first()
+                .iter()
+                .find(|descriptor| agent.can_run(&runtime.models, &descriptor.key))
                 .map(|descriptor| protocol::ModelSelection {
                     model: descriptor.key.clone(),
                     variant: descriptor.default_variant.clone(),
@@ -272,7 +286,7 @@ pub(crate) fn freeze_root_agent_policy(
     result_limits: ResultLimits,
     model_retry: cookie_agent_config::ModelRetryConfig,
 ) -> Result<FrozenRunPolicy, EngineError> {
-    if let Some(error) = missing_model_error(agent, runtime.as_ref(), selection) {
+    if let Some(error) = unrunnable_model_error(agent, runtime.as_ref(), selection) {
         return Err(error);
     }
     if !agent.runnable_as_root {
@@ -293,12 +307,7 @@ pub(crate) fn freeze_root_agent_policy(
             ResolvedAgentFallback::Selection {
                 selection: candidate,
                 ..
-            } if runtime.models.model(&candidate.model).is_some_and(|model| {
-                model.model.status == cookie_agent_models::compiler::CompiledModelStatus::Available
-            }) =>
-            {
-                Some(candidate.clone())
-            }
+            } if agent.can_run(&runtime.models, &candidate.model) => Some(candidate.clone()),
             ResolvedAgentFallback::Selection { .. } | ResolvedAgentFallback::ParentModel { .. } => {
                 None
             }
@@ -336,14 +345,21 @@ pub(crate) fn freeze_delegated_agent_policy(
     inherited_depth_ceiling: u32,
     options: FreezeOptions,
 ) -> Result<FrozenRunPolicy, EngineError> {
-    if let Some(error) = missing_model_error(agent, runtime.as_ref(), selection) {
+    if let Some(error) = unrunnable_model_error(agent, runtime.as_ref(), selection) {
         return Err(error);
     }
     let bindings = if agent.resolved_fallback.is_empty() {
-        if inherited_suffix.first().map(|binding| &binding.selection) != Some(selection) {
+        // An inherited suffix keeps only the models this agent can call its
+        // tools on; the selection must be the first of them.
+        let inherited = inherited_suffix
+            .iter()
+            .filter(|binding| !agent.lacks_tool_calling(&runtime.models, &binding.selection.model))
+            .cloned()
+            .collect::<Vec<_>>();
+        if inherited.first().map(|binding| &binding.selection) != Some(selection) {
             return Err(EngineError::NoRunnableModel);
         }
-        inherited_suffix.to_vec()
+        inherited
     } else {
         let index = agent
             .resolved_fallback
@@ -358,13 +374,7 @@ pub(crate) fn freeze_delegated_agent_policy(
                 ResolvedAgentFallback::Selection {
                     selection: candidate,
                     ..
-                } if runtime.models.model(&candidate.model).is_some_and(|model| {
-                    model.model.status
-                        == cookie_agent_models::compiler::CompiledModelStatus::Available
-                }) =>
-                {
-                    Some(candidate.clone())
-                }
+                } if agent.can_run(&runtime.models, &candidate.model) => Some(candidate.clone()),
                 ResolvedAgentFallback::Selection { .. }
                 | ResolvedAgentFallback::ParentModel { .. } => None,
             })
