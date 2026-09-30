@@ -18,12 +18,10 @@ catalog on first run) and refreshes `https://models.dev/catalog.json` in the
 background right away, then hourly. Supported, non-deprecated text-output
 models are included automatically. Catalog declarations are not probes of your
 endpoint: account access, deployed model features, and billing may differ.
-Models the catalog lists without tool calling (for example `perplexity/sonar`
-or `openai/gpt-3.5-turbo`) are unavailable to any agent that publishes tools,
-with the reason `no tool calling` (see [Unavailable models](#unavailable-models)).
-Agents that publish no tools and the internal agents (session titles,
-compaction, approvals) still run them; compaction on such a model summarizes
-without the session's tool definitions. Claude on Vertex AI (the
+Models the catalog lists without tool calling stay selectable: they work for
+agents that publish no tools and for internal agents such as session titles,
+while a request that carries tools or tool history fails with "tool calling is
+not supported by this model". Claude on Vertex AI (the
 `google-vertex-anthropic` provider and any model routed to
 `@ai-sdk/google-vertex/anthropic`) is unsupported: it needs the Anthropic
 Messages `rawPredict` wire, which cookie-agent does not implement.
@@ -81,14 +79,6 @@ disappearing. A model is unavailable when it is:
   missing;
 - **needs credentials**: no authored or stored credentials are available.
 
-A usable model can still be unavailable to one agent: **no tool calling**
-applies to a model the catalog lists without tool calling when the selected
-agent publishes tools, that is, when its permissions (or the session's) allow
-or ask for any tool action. Tools cannot be sent to such a model, so an agent
-with tools never starts on it and its fallback chain skips it. An agent
-without any `allow` or `ask` permission rule runs it like any other model, and
-so do the internal agents.
-
 Where it shows:
 
 - **Provider rows** in `/connect` explain a connected or configured provider
@@ -101,9 +91,6 @@ Where it shows:
   models.dev documentation URL and environment variable names.
 - **The model picker** lists configured providers' unavailable models as a
   dimmed `Unavailable (N) — not selectable` group below the selectable models.
-  When the drafted agent publishes tools, models without tool calling join
-  that group as `Sonar perplexity/sonar — no tool calling: this agent uses
-  tools`; switch to an agent without tools to select them.
 - **The connect form** shows `Docs: <url>` and, for single-API-key providers, a
   config line such as
   `[providers.kimi] source = "models_dev", api_key = "${env:KIMI_API_KEY}"`.
@@ -115,9 +102,7 @@ Where it shows:
 - **The CLI**: `cookie connect` lists model counts per provider and prints the
   unavailable models, docs URL, and config alternative in the provider details.
   `cookie run --model <provider/model>` names the reason when that model is
-  unavailable, for example ``model `perplexity/sonar` is not available: no
-  tool calling: agent `primary` uses tools``. The engine rejects the same
-  selection at session creation and run start with that message.
+  unavailable.
 
 Per-model reasons are listed only for providers you configured (authored or
 stored); unconfigured providers report counts alone.
