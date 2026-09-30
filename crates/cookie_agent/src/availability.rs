@@ -1,7 +1,7 @@
 //! Plain-text model availability explanations for the headless CLI.
 
 use cookie_agent_protocol::{
-    CredentialFieldType, ModelKey, ModelUnavailableKind, ProviderConfigurationState,
+    AgentId, CredentialFieldType, ModelKey, ModelUnavailableKind, ProviderConfigurationState,
     ProviderDescriptor, ProviderModelCounts, ProviderSupportState, UnavailableModelDescriptor,
 };
 
@@ -38,6 +38,13 @@ pub fn unavailable_model_text(model: &UnavailableModelDescriptor) -> String {
         .reason
         .as_ref()
         .map_or_else(|| label.to_owned(), |reason| format!("{label}: {reason}"))
+}
+
+/// Why a live model without tool calling cannot run `agent`, which publishes
+/// tools: `no tool calling: agent `primary` uses tools`.
+#[must_use]
+pub fn no_tool_calling_text(agent: &AgentId) -> String {
+    format!("no tool calling: agent `{agent}` uses tools")
 }
 
 /// Why `key` is absent from the live model list, when its provider says so.
