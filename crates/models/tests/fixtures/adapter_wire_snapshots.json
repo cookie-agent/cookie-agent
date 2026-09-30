@@ -16534,7 +16534,68 @@
       }
     },
     "wire": {
-      "not_sent": "invalid_request error: normalized reasoning_effort cannot be combined with Google thinking_config"
+      "body": {
+        "cachedContent": "cachedContents/cookie",
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": "hello"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "generationConfig": {
+          "maxOutputTokens": 32000,
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingBudget": null,
+            "thinkingLevel": "high"
+          }
+        },
+        "systemInstruction": {
+          "parts": [
+            {
+              "text": "stable system"
+            }
+          ]
+        },
+        "toolConfig": {
+          "functionCallingConfig": {
+            "mode": "AUTO"
+          }
+        },
+        "tools": [
+          {
+            "functionDeclarations": [
+              {
+                "description": "Inspect one path.",
+                "name": "inspect",
+                "parameters": {
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ],
+                  "type": "object"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "x-goog-api-key: google-key",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 522"
+      ],
+      "request_line": "POST /v1beta/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
   },
   "custom.google/thinker#effort-high+google-cache-off": {
@@ -16556,7 +16617,67 @@
       }
     },
     "wire": {
-      "not_sent": "invalid_request error: normalized reasoning_effort cannot be combined with Google thinking_config"
+      "body": {
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": "hello"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "generationConfig": {
+          "maxOutputTokens": 32000,
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingBudget": null,
+            "thinkingLevel": "high"
+          }
+        },
+        "systemInstruction": {
+          "parts": [
+            {
+              "text": "stable system"
+            }
+          ]
+        },
+        "toolConfig": {
+          "functionCallingConfig": {
+            "mode": "AUTO"
+          }
+        },
+        "tools": [
+          {
+            "functionDeclarations": [
+              {
+                "description": "Inspect one path.",
+                "name": "inspect",
+                "parameters": {
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ],
+                  "type": "object"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "x-goog-api-key: google-key",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 482"
+      ],
+      "request_line": "POST /v1beta/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
   },
   "custom.google/thinker#effort-high+no-cache": {
@@ -16579,7 +16700,67 @@
       }
     },
     "wire": {
-      "not_sent": "invalid_request error: normalized reasoning_effort cannot be combined with Google thinking_config"
+      "body": {
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": "hello"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "generationConfig": {
+          "maxOutputTokens": 32000,
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingBudget": null,
+            "thinkingLevel": "high"
+          }
+        },
+        "systemInstruction": {
+          "parts": [
+            {
+              "text": "stable system"
+            }
+          ]
+        },
+        "toolConfig": {
+          "functionCallingConfig": {
+            "mode": "AUTO"
+          }
+        },
+        "tools": [
+          {
+            "functionDeclarations": [
+              {
+                "description": "Inspect one path.",
+                "name": "inspect",
+                "parameters": {
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ],
+                  "type": "object"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "x-goog-api-key: google-key",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 482"
+      ],
+      "request_line": "POST /v1beta/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
   },
   "custom.google/thinker#effort-max": {
@@ -16648,7 +16829,68 @@
       }
     },
     "wire": {
-      "not_sent": "invalid_request error: normalized reasoning_effort cannot be combined with Google thinking_config"
+      "body": {
+        "cachedContent": "cachedContents/cookie",
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": "hello"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "generationConfig": {
+          "maxOutputTokens": 32000,
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingBudget": null,
+            "thinkingLevel": "max"
+          }
+        },
+        "systemInstruction": {
+          "parts": [
+            {
+              "text": "stable system"
+            }
+          ]
+        },
+        "toolConfig": {
+          "functionCallingConfig": {
+            "mode": "AUTO"
+          }
+        },
+        "tools": [
+          {
+            "functionDeclarations": [
+              {
+                "description": "Inspect one path.",
+                "name": "inspect",
+                "parameters": {
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ],
+                  "type": "object"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "x-goog-api-key: google-key",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 521"
+      ],
+      "request_line": "POST /v1beta/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
   },
   "custom.google/thinker#effort-max+google-cache-off": {
@@ -16670,7 +16912,67 @@
       }
     },
     "wire": {
-      "not_sent": "invalid_request error: normalized reasoning_effort cannot be combined with Google thinking_config"
+      "body": {
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": "hello"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "generationConfig": {
+          "maxOutputTokens": 32000,
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingBudget": null,
+            "thinkingLevel": "max"
+          }
+        },
+        "systemInstruction": {
+          "parts": [
+            {
+              "text": "stable system"
+            }
+          ]
+        },
+        "toolConfig": {
+          "functionCallingConfig": {
+            "mode": "AUTO"
+          }
+        },
+        "tools": [
+          {
+            "functionDeclarations": [
+              {
+                "description": "Inspect one path.",
+                "name": "inspect",
+                "parameters": {
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ],
+                  "type": "object"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "x-goog-api-key: google-key",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 481"
+      ],
+      "request_line": "POST /v1beta/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
   },
   "custom.google/thinker#effort-max+no-cache": {
@@ -16693,7 +16995,67 @@
       }
     },
     "wire": {
-      "not_sent": "invalid_request error: normalized reasoning_effort cannot be combined with Google thinking_config"
+      "body": {
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": "hello"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "generationConfig": {
+          "maxOutputTokens": 32000,
+          "thinkingConfig": {
+            "includeThoughts": true,
+            "thinkingBudget": null,
+            "thinkingLevel": "max"
+          }
+        },
+        "systemInstruction": {
+          "parts": [
+            {
+              "text": "stable system"
+            }
+          ]
+        },
+        "toolConfig": {
+          "functionCallingConfig": {
+            "mode": "AUTO"
+          }
+        },
+        "tools": [
+          {
+            "functionDeclarations": [
+              {
+                "description": "Inspect one path.",
+                "name": "inspect",
+                "parameters": {
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ],
+                  "type": "object"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "headers": [
+        "content-type: application/json",
+        "x-goog-api-key: google-key",
+        "accept: */*",
+        "host: <volatile>",
+        "content-length: 481"
+      ],
+      "request_line": "POST /v1beta/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
   },
   "custom.google/thinker#toggle-off": {

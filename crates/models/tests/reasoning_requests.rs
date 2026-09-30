@@ -516,3 +516,38 @@ async fn anthropic_compatible_variants_use_the_anthropic_thinking_shape() {
     assert_eq!(high["thinking"], ADAPTIVE());
     assert_eq!(high["output_config"]["effort"], "high");
 }
+
+fn gemini(model: &'static str, options: Vec<CatalogReasoningOption>) -> Catalog {
+    Catalog {
+        provider: "google",
+        npm: "@ai-sdk/google",
+        model,
+        output: 65_536,
+        options,
+    }
+}
+
+#[tokio::test]
+async fn gemini_effort_variants_send_only_a_thinking_level() {
+    // Gemini 3 takes `thinkingConfig.thinkingLevel`; the request carries no
+    // second, normalized effort that Oven would reject next to it.
+    let catalog = gemini("gemini-3-pro-preview", vec![effort(&["low", "high"])]);
+    assert_eq!(variant_names(&catalog), ["low", "high"]);
+
+    let body = request_body(&catalog, "high").await;
+    assert_eq!(
+        body["generationConfig"]["thinkingConfig"],
+        json!({ "includeThoughts": true, "thinkingBudget": null, "thinkingLevel": "high" })
+    );
+}
+
+#[tokio::test]
+async fn gemini_budget_variants_send_only_a_thinking_budget() {
+    // Gemini 2.5 takes `thinkingConfig.thinkingBudget` and rejects levels.
+    let catalog = gemini("gemini-2.5-pro", vec![budget(Some(128), Some(32_768))]);
+    let name = variant_names(&catalog)[0].clone();
+    let body = request_body(&catalog, &name).await;
+    let thinking = &body["generationConfig"]["thinkingConfig"];
+    assert!(thinking["thinkingBudget"].is_i64());
+    assert_eq!(thinking["thinkingLevel"], Value::Null);
+}
