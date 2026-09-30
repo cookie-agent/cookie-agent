@@ -15391,8 +15391,7 @@
   "custom.google/plain#default+google-cache-explicit": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -15406,6 +15405,7 @@
     },
     "wire": {
       "body": {
+        "cachedContent": "cachedContents/cookie",
         "contents": [
           {
             "parts": [
@@ -15458,7 +15458,7 @@
         "x-goog-api-key: google-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 395"
+        "content-length: 435"
       ],
       "request_line": "POST /v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse HTTP/1.1"
     }
@@ -15466,7 +15466,6 @@
   "custom.google/plain#default+google-cache-off": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -15660,8 +15659,7 @@
   "custom.google/thinker#budget+google-cache-explicit": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -15679,6 +15677,7 @@
     },
     "wire": {
       "body": {
+        "cachedContent": "cachedContents/cookie",
         "contents": [
           {
             "parts": [
@@ -15736,7 +15735,7 @@
         "x-goog-api-key: google-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 480"
+        "content-length: 520"
       ],
       "request_line": "POST /v1beta/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
@@ -15744,7 +15743,6 @@
   "custom.google/thinker#budget+google-cache-off": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -15956,8 +15954,7 @@
   "custom.google/thinker#budget-zero+google-cache-explicit": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -15975,6 +15972,7 @@
     },
     "wire": {
       "body": {
+        "cachedContent": "cachedContents/cookie",
         "contents": [
           {
             "parts": [
@@ -16032,7 +16030,7 @@
         "x-goog-api-key: google-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 477"
+        "content-length: 517"
       ],
       "request_line": "POST /v1beta/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
@@ -16040,7 +16038,6 @@
   "custom.google/thinker#budget-zero+google-cache-off": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -16252,8 +16249,7 @@
   "custom.google/thinker#default+google-cache-explicit": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -16267,6 +16263,7 @@
     },
     "wire": {
       "body": {
+        "cachedContent": "cachedContents/cookie",
         "contents": [
           {
             "parts": [
@@ -16319,7 +16316,7 @@
         "x-goog-api-key: google-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 395"
+        "content-length: 435"
       ],
       "request_line": "POST /v1beta/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
@@ -16327,7 +16324,6 @@
   "custom.google/thinker#default+google-cache-off": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -16521,8 +16517,7 @@
   "custom.google/thinker#effort-high+google-cache-explicit": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -16545,7 +16540,6 @@
   "custom.google/thinker#effort-high+google-cache-off": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -16637,8 +16631,7 @@
   "custom.google/thinker#effort-max+google-cache-explicit": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -16661,7 +16654,6 @@
   "custom.google/thinker#effort-max+google-cache-off": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -16753,8 +16745,7 @@
   "custom.google/thinker#toggle-off+google-cache-explicit": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -16772,6 +16763,7 @@
     },
     "wire": {
       "body": {
+        "cachedContent": "cachedContents/cookie",
         "contents": [
           {
             "parts": [
@@ -16829,7 +16821,7 @@
         "x-goog-api-key: google-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 478"
+        "content-length: 518"
       ],
       "request_line": "POST /v1beta/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
@@ -16837,7 +16829,6 @@
   "custom.google/thinker#toggle-off+google-cache-off": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -17049,8 +17040,7 @@
   "custom.google/thinker#toggle-on+google-cache-explicit": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -17068,6 +17058,7 @@
     },
     "wire": {
       "body": {
+        "cachedContent": "cachedContents/cookie",
         "contents": [
           {
             "parts": [
@@ -17125,7 +17116,7 @@
         "x-goog-api-key: google-key",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 478"
+        "content-length: 518"
       ],
       "request_line": "POST /v1beta/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
@@ -17133,7 +17124,6 @@
   "custom.google/thinker#toggle-on+google-cache-off": {
     "provider_options": {
       "google": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -22459,8 +22449,7 @@
   "custom.vertex/plain#default+google-cache-explicit": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -22475,6 +22464,7 @@
     },
     "wire": {
       "body": {
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "contents": [
           {
             "parts": [
@@ -22527,7 +22517,7 @@
         "authorization: Bearer vertex-token",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 405"
+        "content-length: 486"
       ],
       "request_line": "POST /v1/projects/project-1/locations/us-central1/publishers/google/models/gemini-2.0-flash:streamGenerateContent?alt=sse HTTP/1.1"
     }
@@ -22535,7 +22525,6 @@
   "custom.vertex/plain#default+google-cache-off": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -22731,8 +22720,7 @@
   "custom.vertex/thinker#budget+google-cache-explicit": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -22751,6 +22739,7 @@
     },
     "wire": {
       "body": {
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "contents": [
           {
             "parts": [
@@ -22808,7 +22797,7 @@
         "authorization: Bearer vertex-token",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 490"
+        "content-length: 571"
       ],
       "request_line": "POST /v1/projects/project-1/locations/us-central1/publishers/google/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
@@ -22816,7 +22805,6 @@
   "custom.vertex/thinker#budget+google-cache-off": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -23030,8 +23018,7 @@
   "custom.vertex/thinker#budget-zero+google-cache-explicit": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -23050,6 +23037,7 @@
     },
     "wire": {
       "body": {
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "contents": [
           {
             "parts": [
@@ -23107,7 +23095,7 @@
         "authorization: Bearer vertex-token",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 487"
+        "content-length: 568"
       ],
       "request_line": "POST /v1/projects/project-1/locations/us-central1/publishers/google/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
@@ -23115,7 +23103,6 @@
   "custom.vertex/thinker#budget-zero+google-cache-off": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -23329,8 +23316,7 @@
   "custom.vertex/thinker#default+google-cache-explicit": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -23345,6 +23331,7 @@
     },
     "wire": {
       "body": {
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "contents": [
           {
             "parts": [
@@ -23397,7 +23384,7 @@
         "authorization: Bearer vertex-token",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 405"
+        "content-length: 486"
       ],
       "request_line": "POST /v1/projects/project-1/locations/us-central1/publishers/google/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
@@ -23405,7 +23392,6 @@
   "custom.vertex/thinker#default+google-cache-off": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -23601,8 +23587,7 @@
   "custom.vertex/thinker#effort-high+google-cache-explicit": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -23621,6 +23606,7 @@
     },
     "wire": {
       "body": {
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "contents": [
           {
             "parts": [
@@ -23678,7 +23664,7 @@
         "authorization: Bearer vertex-token",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 492"
+        "content-length: 573"
       ],
       "request_line": "POST /v1/projects/project-1/locations/us-central1/publishers/google/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
@@ -23686,7 +23672,6 @@
   "custom.vertex/thinker#effort-high+google-cache-off": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -23900,8 +23885,7 @@
   "custom.vertex/thinker#effort-max+google-cache-explicit": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -23920,6 +23904,7 @@
     },
     "wire": {
       "body": {
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "contents": [
           {
             "parts": [
@@ -23977,7 +23962,7 @@
         "authorization: Bearer vertex-token",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 491"
+        "content-length: 572"
       ],
       "request_line": "POST /v1/projects/project-1/locations/us-central1/publishers/google/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
@@ -23985,7 +23970,6 @@
   "custom.vertex/thinker#effort-max+google-cache-off": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -24199,8 +24183,7 @@
   "custom.vertex/thinker#toggle-off+google-cache-explicit": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -24219,6 +24202,7 @@
     },
     "wire": {
       "body": {
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "contents": [
           {
             "parts": [
@@ -24276,7 +24260,7 @@
         "authorization: Bearer vertex-token",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 488"
+        "content-length: 569"
       ],
       "request_line": "POST /v1/projects/project-1/locations/us-central1/publishers/google/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
@@ -24284,7 +24268,6 @@
   "custom.vertex/thinker#toggle-off+google-cache-off": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -24498,8 +24481,7 @@
   "custom.vertex/thinker#toggle-on+google-cache-explicit": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
-        "cached_content": "cachedContents/cookie",
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],
@@ -24518,6 +24500,7 @@
     },
     "wire": {
       "body": {
+        "cachedContent": "projects/project-1/locations/us-central1/cachedContents/cookie",
         "contents": [
           {
             "parts": [
@@ -24575,7 +24558,7 @@
         "authorization: Bearer vertex-token",
         "accept: */*",
         "host: <volatile>",
-        "content-length: 488"
+        "content-length: 569"
       ],
       "request_line": "POST /v1/projects/project-1/locations/us-central1/publishers/google/models/gemini-3-pro:streamGenerateContent?alt=sse HTTP/1.1"
     }
@@ -24583,7 +24566,6 @@
   "custom.vertex/thinker#toggle-on+google-cache-off": {
     "provider_options": {
       "google_vertex": {
-        "cachedContent": null,
         "frequencyPenalty": null,
         "presencePenalty": null,
         "providerTools": [],

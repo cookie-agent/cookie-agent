@@ -649,6 +649,20 @@ fn setup<'a>(model: &'a CompiledDynamicModel, name: &str) -> Result<&'a str, Mod
         .ok_or_else(|| wrong_auth("dynamic", "complete setup material"))
 }
 
+/// Parent of the model's explicit Google cache resources. Vertex AI names
+/// cached content `projects/{project}/locations/{location}/cachedContents/{id}`
+/// (docs.cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1/projects.locations.endpoints/generateContent),
+/// while the Gemini API takes the bare `cachedContents/{id}`
+/// (ai.google.dev/api/generate-content), so only Vertex has a parent.
+pub(crate) fn google_cached_content_parent(model: &CompiledDynamicModel) -> Option<String> {
+    if model.adapter != OvenAdapterFamily::GoogleVertexGemini {
+        return None;
+    }
+    let project = setup(model, "project").ok()?;
+    let location = setup(model, "location").ok()?;
+    Some(format!("projects/{project}/locations/{location}"))
+}
+
 fn azure_revision(model: &CompiledDynamicModel) -> Option<AzureOpenAiRevision> {
     Some(AzureOpenAiRevision {
         model: setup(model, "model").ok()?.to_owned(),

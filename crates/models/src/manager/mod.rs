@@ -38,8 +38,8 @@ use crate::{
     compiler::{
         AuthSourceCategory, CompiledAuthShape, CompiledDynamicModel, CompiledModelStatus,
         DynamicCompileError, DynamicCompiler, ExecutableBehaviorInput,
-        ExecutableCredentialMaterial, compile_executable, managed_provider_adapter,
-        validate_managed_cache,
+        ExecutableCredentialMaterial, compile_executable, google_cached_content_parent,
+        managed_provider_adapter, validate_managed_cache,
     },
     manifests::{
         CompiledSafeModelBlueprint, FrozenAuthParameterValue, FrozenCredentialBinding,
@@ -139,6 +139,8 @@ struct ExecutableBehavior {
     defaults: crate::ResolvedRequestDefaults,
     provider_options: oven_sdk::ProviderOptions,
     behavior_fingerprint: Sha256Digest,
+    /// Resource parent that qualifies an explicit Google cache name for this wire.
+    cached_content_parent: Option<String>,
 }
 
 /// Exact executable model behavior retained by one runtime publication.
@@ -150,6 +152,7 @@ pub struct ResolvedExecutableModel {
     provider_options: oven_sdk::ProviderOptions,
     behavior_fingerprint: Sha256Digest,
     adapter: OvenAdapterFamily,
+    cached_content_parent: Option<String>,
 }
 
 impl ResolvedExecutableModel {
@@ -205,7 +208,12 @@ impl ResolvedExecutableModel {
         strategy: Option<&CacheStrategyConfig>,
     ) -> Request {
         if let Some(strategy) = strategy {
-            apply_cache_strategy(&mut request, self.adapter, strategy);
+            apply_cache_strategy(
+                &mut request,
+                self.adapter,
+                self.cached_content_parent.as_deref(),
+                strategy,
+            );
         }
         request
     }
@@ -256,7 +264,12 @@ impl ResolvedExecutableModel {
             ))
             && let Some(strategy) = strategy.as_ref()
         {
-            apply_cache_strategy(&mut request, self.adapter, strategy);
+            apply_cache_strategy(
+                &mut request,
+                self.adapter,
+                self.cached_content_parent.as_deref(),
+                strategy,
+            );
         }
         request
     }
@@ -314,9 +327,15 @@ fn fit_visible_output_to_thinking_budget(request: &mut Request, output_limit: Op
     }
 }
 
+/// Places one prompt-cache strategy into the request's provider options.
+///
+/// `cached_content_parent` qualifies an explicit Google cache name: the Gemini
+/// API takes `cachedContents/{id}` as is, while Vertex AI requires the full
+/// `projects/{project}/locations/{location}/cachedContents/{id}` resource.
 fn apply_cache_strategy(
     request: &mut Request,
     adapter: OvenAdapterFamily,
+    cached_content_parent: Option<&str>,
     strategy: &CacheStrategyConfig,
 ) {
     match (adapter, strategy) {
@@ -369,21 +388,28 @@ fn apply_cache_strategy(
             } else {
                 "google_vertex"
             };
+            // Oven's Google option structs are camelCase: `cachedContent`
+            // becomes the top-level generateContent `cachedContent` field.
             match strategy.mode {
                 GoogleCacheMode::Implicit => {}
                 GoogleCacheMode::Off => set_option(
                     &mut request.provider_options,
                     namespace,
                     None,
-                    "cached_content",
+                    "cachedContent",
                     None,
                 ),
                 GoogleCacheMode::Explicit => set_option(
                     &mut request.provider_options,
                     namespace,
                     None,
-                    "cached_content",
-                    strategy.cached_content.clone().map(Value::String),
+                    "cachedContent",
+                    strategy.cached_content.as_ref().map(|name| {
+                        Value::String(match cached_content_parent {
+                            Some(parent) => format!("{parent}/{name}"),
+                            None => name.clone(),
+                        })
+                    }),
                 ),
             }
         }
@@ -814,6 +840,7 @@ impl CompiledRuntimeModel {
             defaults: behavior.defaults.clone(),
             provider_options: behavior.provider_options.clone(),
             behavior_fingerprint: behavior.behavior_fingerprint.clone(),
+            cached_content_parent: behavior.cached_content_parent.clone(),
         })
     }
 
@@ -1769,6 +1796,7 @@ fn compile_behaviors(
         },
         provider_options: base.provider_options,
         behavior_fingerprint: model.behavior_fingerprint.clone(),
+        cached_content_parent: google_cached_content_parent(model),
     };
     let variants = model
         .variants
@@ -1811,6 +1839,7 @@ fn compile_behaviors(
                     },
                     provider_options: compiled.provider_options,
                     behavior_fingerprint,
+                    cached_content_parent: google_cached_content_parent(&selected),
                 },
             ))
         })

@@ -77,6 +77,7 @@ fn resolved(prompt_caching: bool, steps: usize) -> (ResolvedExecutableModel, Scr
         defaults: crate::ResolvedRequestDefaults::default(),
         provider_options: BTreeMap::new(),
         behavior_fingerprint: Sha256Digest::new("0".repeat(64)).unwrap(),
+        cached_content_parent: None,
     };
     (resolved, scripted)
 }
@@ -249,6 +250,7 @@ fn bedrock_strategy_expands_last_message_placement() {
     apply_cache_strategy(
         &mut request,
         OvenAdapterFamily::AwsBedrockConverse,
+        None,
         &strategy,
     );
 
@@ -272,22 +274,28 @@ fn google_cache_modes_set_clear_or_preserve_cached_content() {
         cached_content: Some("cachedContents/example".into()),
     });
     let mut request = Request::new(Vec::new());
-    apply_cache_strategy(&mut request, OvenAdapterFamily::GoogleGemini, &explicit);
+    apply_cache_strategy(
+        &mut request,
+        OvenAdapterFamily::GoogleGemini,
+        None,
+        &explicit,
+    );
+    // The name must land in Oven's typed camelCase field, or Gemini never sees it.
+    let options = serde_json::from_value::<oven_sdk_google::GoogleRequestOptions>(
+        request.provider_options["google"].clone(),
+    )
+    .unwrap();
     assert_eq!(
-        request.provider_options["google"]["cached_content"],
-        "cachedContents/example"
+        options.cached_content.as_deref(),
+        Some("cachedContents/example")
     );
 
     let off = CacheStrategyConfig::Google(GoogleCacheStrategyConfig {
         mode: GoogleCacheMode::Off,
         cached_content: None,
     });
-    apply_cache_strategy(&mut request, OvenAdapterFamily::GoogleGemini, &off);
-    assert!(
-        request.provider_options["google"]
-            .get("cached_content")
-            .is_none()
-    );
+    apply_cache_strategy(&mut request, OvenAdapterFamily::GoogleGemini, None, &off);
+    assert_eq!(request.provider_options["google"], json!({}));
 
     request
         .provider_options
@@ -299,9 +307,33 @@ fn google_cache_modes_set_clear_or_preserve_cached_content() {
     apply_cache_strategy(
         &mut request,
         OvenAdapterFamily::GoogleVertexGemini,
+        None,
         &implicit,
     );
     assert_eq!(request.provider_options["google_vertex"]["topK"], 3);
+}
+
+#[test]
+fn vertex_explicit_cache_uses_the_full_cached_content_resource() {
+    let explicit = CacheStrategyConfig::Google(GoogleCacheStrategyConfig {
+        mode: GoogleCacheMode::Explicit,
+        cached_content: Some("cachedContents/example".into()),
+    });
+    let mut request = Request::new(Vec::new());
+    apply_cache_strategy(
+        &mut request,
+        OvenAdapterFamily::GoogleVertexGemini,
+        Some("projects/project-1/locations/us-central1"),
+        &explicit,
+    );
+    let options = serde_json::from_value::<oven_sdk_google_vertex::GoogleVertexRequestOptions>(
+        request.provider_options["google_vertex"].clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        options.cached_content.as_deref(),
+        Some("projects/project-1/locations/us-central1/cachedContents/example")
+    );
 }
 
 #[test]
@@ -332,7 +364,7 @@ fn openai_cache_strategy_uses_endpoint_specific_namespace() {
                 "eligible latest user",
             ))])),
         ]);
-        apply_cache_strategy(&mut request, adapter, &strategy);
+        apply_cache_strategy(&mut request, adapter, None, &strategy);
         assert_eq!(
             request.provider_options[namespace][section]["prompt_cache_key"],
             "session-key"
@@ -392,7 +424,12 @@ fn compatible_openai_strategy_writes_the_official_chat_cache_key() {
         rolling: false,
     });
     let mut request = Request::new(Vec::new());
-    apply_cache_strategy(&mut request, OvenAdapterFamily::OpenaiCompatible, &strategy);
+    apply_cache_strategy(
+        &mut request,
+        OvenAdapterFamily::OpenaiCompatible,
+        None,
+        &strategy,
+    );
     assert_eq!(
         request.provider_options["openai"]["chat"]["prompt_cache_key"],
         "session-key"
@@ -457,6 +494,7 @@ fn openai_rolling_uses_latest_user_turn_with_nonempty_text() {
     apply_cache_strategy(
         &mut request,
         OvenAdapterFamily::OpenaiChat,
+        None,
         &openai_strategy(false, true),
     );
 
@@ -494,6 +532,7 @@ fn openai_system_does_not_fall_forward_from_ineligible_first_turn() {
     apply_cache_strategy(
         &mut request,
         OvenAdapterFamily::OpenaiChat,
+        None,
         &openai_strategy(true, false),
     );
 
@@ -539,6 +578,7 @@ fn openai_system_breakpoint_index_is_stable_after_translated_system_emission() {
         apply_cache_strategy(
             request,
             OvenAdapterFamily::OpenaiChat,
+            None,
             &openai_strategy(true, false),
         );
     }
@@ -642,6 +682,7 @@ fn real_openai_resolved(adapter: OvenAdapterFamily, endpoint: String) -> Resolve
         defaults: crate::ResolvedRequestDefaults::default(),
         provider_options: BTreeMap::new(),
         behavior_fingerprint: Sha256Digest::new("0".repeat(64)).unwrap(),
+        cached_content_parent: None,
     }
 }
 
