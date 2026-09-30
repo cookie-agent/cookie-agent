@@ -590,7 +590,7 @@ async fn app_draws_conversation_approval_tree_and_input() {
         }
         if (width, height) == (80, 24) {
             assert!(rendered.contains("git status"));
-            assert!(rendered.contains("primary • custom.gateway/arbitrary-model[base]"));
+            assert!(rendered.contains("primary • Arbitrary Model[base]"));
         }
     }
 }

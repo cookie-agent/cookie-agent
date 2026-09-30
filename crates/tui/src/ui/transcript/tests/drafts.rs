@@ -62,7 +62,10 @@ async fn goal_activation_keeps_run_a_frozen_until_modeled_run_b_events_arrive() 
     }
     let run_a_projection = assistant_projection(&app.store.sessions[&session]);
     assert_eq!(run_a_projection.len(), 1);
-    assert_eq!(run_a_projection[0].0, attribution(None).header());
+    assert_eq!(
+        run_a_projection[0].0,
+        attribution(None).header(&crate::state::ModelDisplayNames::default())
+    );
     assert_eq!(
         app.store.sessions[&session]
             .run_snapshot
@@ -92,7 +95,7 @@ async fn goal_activation_keeps_run_a_frozen_until_modeled_run_b_events_arrive() 
     assert_eq!(draft_b.preset.as_deref(), Some("review"));
     let switched = rendered_frame(&mut app, 100, 30);
     assert!(
-        switched.contains("primary • gateway/arbitrary-model[base]"),
+        switched.contains("primary • Arbitrary Model / gateway/arbitrary-model[base]"),
         "{switched}"
     );
     assert!(
@@ -135,11 +138,11 @@ async fn goal_activation_keeps_run_a_frozen_until_modeled_run_b_events_arrive() 
     );
     let after_goal_result = rendered_frame(&mut app, 100, 30);
     assert!(
-        after_goal_result.contains("primary • gateway/arbitrary-model[base]"),
+        after_goal_result.contains("primary • Arbitrary Model / gateway/arbitrary-model[base]"),
         "{after_goal_result}"
     );
     assert!(
-        after_goal_result.contains("primary • other/model-b[high]"),
+        after_goal_result.contains("primary • Catalog other/model-b[high]"),
         "{after_goal_result}"
     );
     assert_eq!(
@@ -219,7 +222,7 @@ async fn goal_activation_keeps_run_a_frozen_until_modeled_run_b_events_arrive() 
         agent: agent_id(),
         resolved_model: resolved_b,
     }
-    .header();
+    .header(&crate::state::ModelDisplayNames::default());
     let after_attempt = assistant_projection(&app.store.sessions[&session]);
     assert_eq!(after_attempt.len(), 2);
     assert_eq!(after_attempt[0], run_a_projection[0]);
@@ -237,7 +240,7 @@ async fn goal_activation_keeps_run_a_frozen_until_modeled_run_b_events_arrive() 
     assert!(rendered.contains("run A answer"), "{rendered}");
     assert!(rendered.contains("run B answer"), "{rendered}");
     assert!(
-        rendered.contains("primary • other/model-b[high]"),
+        rendered.contains("primary • Catalog other/model-b / other/model-b[high]"),
         "{rendered}"
     );
 }

@@ -22,6 +22,7 @@ pub struct RuntimeState {
     snapshot: Option<RuntimeSnapshotV1>,
     phase: RuntimePhase,
     durable_explanation: Option<String>,
+    model_names: super::ModelDisplayNames,
 }
 
 impl Default for RuntimeState {
@@ -30,6 +31,7 @@ impl Default for RuntimeState {
             snapshot: None,
             phase: RuntimePhase::Loading,
             durable_explanation: None,
+            model_names: super::ModelDisplayNames::default(),
         }
     }
 }
@@ -41,6 +43,11 @@ impl RuntimeState {
 
     pub const fn phase(&self) -> RuntimePhase {
         self.phase
+    }
+
+    /// Display names of the installed snapshot's models, for labels only.
+    pub const fn model_names(&self) -> &super::ModelDisplayNames {
+        &self.model_names
     }
 
     pub fn durable_explanation(&self) -> Option<&str> {
@@ -121,6 +128,7 @@ impl RuntimeState {
         } else {
             (RuntimePhase::Ready, None)
         };
+        self.model_names.update(&snapshot);
         self.snapshot = Some(snapshot);
         self.phase = phase;
         self.durable_explanation = explanation;

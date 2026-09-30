@@ -10,7 +10,11 @@ pub(super) fn assistant_item_layout(
     context: &mut TranscriptRenderContext<'_>,
 ) -> ItemLayout {
     let mut layout = ItemLayout {
-        lines: assistant_header(attribution.header().as_str(), context.width, context.theme),
+        lines: assistant_header(
+            attribution.header(context.model_names).as_str(),
+            context.width,
+            context.theme,
+        ),
         regions: Vec::new(),
         user_seq: None,
     };
@@ -94,6 +98,7 @@ pub(super) fn assistant_item_layout(
             AssistantChild::Attribution { resolved_model } => {
                 layout.lines.extend(attribution_line(
                     resolved_model,
+                    context.model_names,
                     context.width,
                     context.theme,
                 ));
@@ -468,21 +473,22 @@ pub(super) fn assistant_header(attribution: &str, width: u16, theme: &Theme) -> 
         .collect()
 }
 
+/// The mid-block `├─ now using <Model Name> / <provider>/<model-id>[<variant>]`
+/// row, labelled exactly like the assistant header's model part.
 pub(super) fn attribution_line(
     resolved_model: &cookie_agent_protocol::ResolvedModelRef,
+    model_names: &ModelDisplayNames,
     width: u16,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let variant = resolved_model
-        .selection
-        .variant
-        .as_ref()
-        .map_or_else(|| "base".to_owned(), ToString::to_string);
     let prefix = (width >= 4).then(|| vec![Span::styled("├─ ", theme.muted())]);
     repeated_prefixed_wrapped_line(
         prefix.unwrap_or_default(),
         Line::from(Span::styled(
-            format!("now using {}[{variant}]", resolved_model.selection.model),
+            format!(
+                "now using {}",
+                model_names.selection_label(&resolved_model.selection)
+            ),
             theme.muted(),
         )),
         width,

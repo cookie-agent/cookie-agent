@@ -211,7 +211,7 @@ async fn producer_started_tool_loop_promotes_steers_without_composer_restore_and
     assert_eq!(assistant_projection(live_state).len(), 1);
     assert_eq!(
         assistant_projection(live_state)[0].0,
-        attribution(None).header()
+        attribution(None).header(&crate::state::ModelDisplayNames::default())
     );
     let live_transcript = snapshot_lines(&transcript_layout(live_state, None, 100).lines);
 
@@ -400,6 +400,7 @@ async fn goal_reminder_kind_drives_queue_and_transcript_without_body_heuristics(
                 &PlainHighlighter,
                 crate::state::EventLevel::Warning,
                 0,
+                &crate::state::ModelDisplayNames::default(),
             );
             let rendered = snapshot_lines(&cache.layout.lines);
             let visible = matches!(

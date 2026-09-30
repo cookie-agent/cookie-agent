@@ -1253,7 +1253,7 @@ async fn coherent_connect_runtime_restores_draft_or_preserves_empty_exactly() {
     });
     assert!(app.draft.is_some());
     let ready = rendered_frame(&mut app, 100, 30);
-    assert!(ready.contains("primary • gateway/arbitrary-model[base]"));
+    assert!(ready.contains("primary • Arbitrary Model[base]"));
     assert_eq!(app.hit_map.title_segments.len(), 3);
 
     let baseline = app.runtime.revision().cloned();

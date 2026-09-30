@@ -25,15 +25,15 @@ use super::support::*;
 #[test]
 fn assistant_header_projects_exact_agent_model_and_variant() {
     assert_eq!(
-        attribution(None).header(),
+        attribution(None).header(&crate::state::ModelDisplayNames::default()),
         "primary • gateway/arbitrary-model[base]"
     );
     assert_eq!(
-        attribution(Some("high")).header(),
+        attribution(Some("high")).header(&crate::state::ModelDisplayNames::default()),
         "primary • gateway/arbitrary-model[high]"
     );
     assert_eq!(
-        attribution(Some("default")).header(),
+        attribution(Some("default")).header(&crate::state::ModelDisplayNames::default()),
         "primary • gateway/arbitrary-model[default]"
     );
     assert_eq!(attribution(Some("high")).variant_label(), "high");
