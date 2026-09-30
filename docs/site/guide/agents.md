@@ -88,6 +88,12 @@ uses the `write` action. Delegation tools additionally require a `delegate` map
 naming at least one eligible target. See
 [Permissions](agents.md#tool-availability-and-delegation).
 
+An agent that publishes tools this way runs only models with tool calling: a
+model the catalog lists without it is unavailable to that agent, its fallback
+chain skips such models, and selecting one fails with `no tool calling`. An
+agent with no `allow` or `ask` rule runs any model. See
+[Unavailable models](providers.md#unavailable-models).
+
 The former `tools` field is removed. Documents that still declare it fail
 with an error naming `tools` and directing the author to `permissions`; remove
 the field and express tool visibility and call policy in the permission map.
