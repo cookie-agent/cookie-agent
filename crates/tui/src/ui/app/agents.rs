@@ -2,6 +2,17 @@
 
 use super::*;
 
+/// Why a live model is unavailable to an agent that publishes tools.
+pub(in crate::ui) const NO_TOOL_CALLING_REASON: &str = "no tool calling: this agent uses tools";
+
+/// A model the model picker lists but cannot select, with its reason.
+pub(in crate::ui) struct UnavailableModelRow {
+    /// `provider/model`.
+    pub key: String,
+    pub display_name: String,
+    pub reason: String,
+}
+
 impl App {
     /// Root-selectable agents: exactly the descriptors with
     /// `runnable_as_root = true`.
@@ -86,12 +97,7 @@ impl App {
                     .copied()
             })
             .or_else(|| candidates.first().copied())?;
-        let model = agent
-            .resolved_fallback
-            .iter()
-            .find(|selection| self.selection_is_live(selection))
-            .cloned()
-            .or_else(|| self.models.first().map(Self::default_model_selection))?;
+        let model = self.default_model_for_agent(agent)?;
         Some(RunSelection {
             agent: agent.id.clone(),
             model,
@@ -105,12 +111,7 @@ impl App {
             .iter()
             .find(|agent| agent.id.as_str() == "primary")
             .or_else(|| agents.first())?;
-        let model = agent
-            .resolved_fallback
-            .iter()
-            .find(|selection| self.selection_is_live(selection))
-            .cloned()
-            .or_else(|| self.models.first().map(Self::default_model_selection))?;
+        let model = self.default_model_for_agent(agent)?;
         Some(RunSelection {
             agent: agent.id.clone(),
             model,
@@ -231,17 +232,17 @@ impl App {
             self.draft = self.default_draft_selection();
             return;
         };
-        if !self.agents.iter().any(|agent| {
+        let Some(agent) = self.agents.iter().find(|agent| {
             agent.runnable_as_root && agent.id == draft.agent && agent.preset == draft.preset
-        }) {
+        }) else {
             self.draft = self.default_draft_selection();
             return;
-        }
-        let Some(descriptor) = self.model_descriptor(&draft.model.model) else {
-            draft.model = self
-                .preferred_model_for_agent(&draft.agent, draft.preset.as_deref())
-                .or_else(|| self.models.first().map(Self::default_model_selection))
-                .unwrap_or(draft.model);
+        };
+        let Some(descriptor) = self
+            .model_descriptor(&draft.model.model)
+            .filter(|descriptor| agent.can_run(&descriptor.capabilities))
+        else {
+            draft.model = self.default_model_for_agent(agent).unwrap_or(draft.model);
             self.draft = Some(draft);
             return;
         };
@@ -272,18 +273,15 @@ impl App {
                 .and_then(|draft| draft.preset.clone());
             return;
         };
-        if let Some(descriptor) = self.model_descriptor(&draft.model.model) {
+        if let Some(descriptor) = self
+            .model_descriptor(&draft.model.model)
+            .filter(|descriptor| agent.can_run(&descriptor.capabilities))
+        {
             if !Self::variant_is_valid(descriptor, draft.model.variant.as_ref()) {
                 draft.model.variant = descriptor.default_variant.clone();
             }
         } else {
-            let Some(model) = agent
-                .resolved_fallback
-                .iter()
-                .find(|selection| self.selection_is_live(selection))
-                .cloned()
-                .or_else(|| self.models.first().map(Self::default_model_selection))
-            else {
+            let Some(model) = self.default_model_for_agent(agent) else {
                 self.new_session_draft = None;
                 self.selected_preset = None;
                 return;
@@ -353,21 +351,51 @@ impl App {
             })
     }
 
-    pub(super) fn preferred_model_for_agent(
+    /// The first live model `agent` can run: its own chain first, else the
+    /// first such catalog model. An agent that publishes tools skips models
+    /// without tool calling.
+    pub(super) fn default_model_for_agent(
         &self,
-        agent: &AgentId,
-        preset: Option<&str>,
+        agent: &AgentDescriptor,
     ) -> Option<ModelSelection> {
+        agent
+            .resolved_fallback
+            .iter()
+            .find(|selection| {
+                self.model_descriptor(&selection.model)
+                    .is_some_and(|descriptor| {
+                        agent.can_run(&descriptor.capabilities)
+                            && Self::variant_is_valid(descriptor, selection.variant.as_ref())
+                    })
+            })
+            .cloned()
+            .or_else(|| {
+                self.models
+                    .iter()
+                    .find(|descriptor| agent.can_run(&descriptor.capabilities))
+                    .map(Self::default_model_selection)
+            })
+    }
+
+    /// Whether the selection's agent can run its model: false only for a
+    /// model without tool calling under an agent that publishes tools.
+    pub(super) fn selection_runnable_by_its_agent(&self, selection: &RunSelection) -> bool {
+        let agent = self
+            .agents
+            .iter()
+            .find(|agent| agent.id == selection.agent && agent.preset == selection.preset);
+        match (agent, self.model_descriptor(&selection.model.model)) {
+            (Some(agent), Some(descriptor)) => agent.can_run(&descriptor.capabilities),
+            _ => true,
+        }
+    }
+
+    /// The drafted agent: the new-session draft's, else the session draft's.
+    pub(in crate::ui) fn draft_agent_descriptor(&self) -> Option<&AgentDescriptor> {
+        let draft = self.new_session_draft.as_ref().or(self.draft.as_ref())?;
         self.agents
             .iter()
-            .find(|candidate| candidate.id == *agent && candidate.preset.as_deref() == preset)
-            .and_then(|descriptor| {
-                descriptor
-                    .resolved_fallback
-                    .iter()
-                    .find(|selection| self.selection_is_live(selection))
-                    .cloned()
-            })
+            .find(|agent| agent.id == draft.agent && agent.preset == draft.preset)
     }
 
     /// The authoritative exact selections for the watched delegated
@@ -420,8 +448,10 @@ impl App {
             return self.persisted_chain().unwrap_or_default();
         }
         let draft = self.new_session_draft.as_ref().or(self.draft.as_ref());
+        let agent = self.draft_agent_descriptor();
         self.models
             .iter()
+            .filter(|descriptor| agent.is_none_or(|agent| agent.can_run(&descriptor.capabilities)))
             .map(|descriptor| {
                 draft
                     .filter(|draft| draft.model.model == descriptor.key)
@@ -433,33 +463,44 @@ impl App {
             .collect()
     }
 
-    /// Configured providers' unavailable models matching the model search,
-    /// listed after the selectable models but never selectable. Delegated
-    /// sessions only ever offer their frozen suffix, so they list none.
-    pub(in crate::ui) fn filtered_unavailable_models(
-        &self,
-    ) -> Vec<(
-        &cookie_agent_protocol::ProviderId,
-        &cookie_agent_protocol::UnavailableModelDescriptor,
-    )> {
+    /// Models matching the model search that the drafted agent cannot run,
+    /// listed after the selectable models but never selectable: live models
+    /// without tool calling when the agent publishes tools, then configured
+    /// providers' unavailable models. Delegated sessions only ever offer
+    /// their frozen suffix, so they list none.
+    pub(in crate::ui) fn filtered_unavailable_models(&self) -> Vec<UnavailableModelRow> {
         if self.new_session_draft.is_none() && !self.watching_root_session() {
             return Vec::new();
         }
         let query = self.model_search.query().trim().to_lowercase();
-        self.providers
+        let agent = self.draft_agent_descriptor();
+        let toolless = self
+            .models
             .iter()
-            .flat_map(|provider| {
-                provider
-                    .unavailable_models
-                    .iter()
-                    .map(move |model| (&provider.id, model))
+            .filter(|descriptor| {
+                agent.is_some_and(|agent| !agent.can_run(&descriptor.capabilities))
             })
-            .filter(|(provider, model)| {
+            .map(|descriptor| UnavailableModelRow {
+                key: descriptor.key.to_string(),
+                display_name: descriptor.display_name.clone(),
+                reason: NO_TOOL_CALLING_REASON.to_owned(),
+            });
+        let catalog = self.providers.iter().flat_map(|provider| {
+            provider
+                .unavailable_models
+                .iter()
+                .map(move |model| UnavailableModelRow {
+                    key: format!("{}/{}", provider.id, model.id),
+                    display_name: model.display_name.as_str().to_owned(),
+                    reason: crate::ui::provider::unavailable_model_reason(model),
+                })
+        });
+        toolless
+            .chain(catalog)
+            .filter(|row| {
                 query.is_empty()
-                    || model.display_name.as_str().to_lowercase().contains(&query)
-                    || format!("{provider}/{}", model.id)
-                        .to_lowercase()
-                        .contains(&query)
+                    || row.display_name.to_lowercase().contains(&query)
+                    || row.key.to_lowercase().contains(&query)
             })
             .collect()
     }
@@ -542,13 +583,7 @@ impl App {
         }) else {
             return;
         };
-        let model = descriptor
-            .resolved_fallback
-            .iter()
-            .find(|selection| self.selection_is_live(selection))
-            .cloned()
-            .or_else(|| self.models.first().map(Self::default_model_selection));
-        let Some(model) = model else {
+        let Some(model) = self.default_model_for_agent(descriptor) else {
             return;
         };
         let selection = RunSelection {
@@ -576,6 +611,17 @@ impl App {
         else {
             return;
         };
+        if let Some(agent) = self.draft_agent_descriptor()
+            && self
+                .model_descriptor(&model)
+                .is_some_and(|descriptor| !agent.can_run(&descriptor.capabilities))
+        {
+            self.status = format!(
+                "model {model} is not available for agent {}: {NO_TOOL_CALLING_REASON}",
+                draft.agent
+            );
+            return;
+        }
         if draft.model.model == model {
             if (targets_new_session || self.watching_root_session())
                 && draft.model.variant.is_none()

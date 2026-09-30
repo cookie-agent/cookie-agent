@@ -1,0 +1,28 @@
+---
+source: crates/tui/src/ui/transcript/tests/pickers.rs
+expression: "format!(\"== agent with tools ==\\n{}\\n== agent without tools ==\\n{}\",\ntool_agent.join(\"\\n\"), toolless_agent.join(\"\\n\"))"
+---
+== agent with tools ==
+╭ Model (1/1) ─────────────────────────────────────────────────────────────────────╮
+│> Tooled alpha/tooled[base]                                                       │
+│  Unavailable (1) — not selectable                                                │
+│    Sonar perplexity/sonar — no tool calling: this agent uses tools               │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+╰─────────────────────────────────────────── ↑↓ move · enter: select · esc: search ╯
+== agent without tools ==
+╭ Model (2/2) ─────────────────────────────────────────────────────────────────────╮
+│> Tooled alpha/tooled[base]                                                       │
+│  Sonar perplexity/sonar[base]                                                    │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+╰─────────────────────────────────────────── ↑↓ move · enter: select · esc: search ╯
