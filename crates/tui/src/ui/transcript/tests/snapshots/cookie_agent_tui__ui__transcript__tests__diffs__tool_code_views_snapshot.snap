@@ -1,5 +1,6 @@
 ---
 source: crates/tui/src/ui/transcript/tests/diffs.rs
+assertion_line: 259
 expression: "snapshot_lines(&transcript_layout(&state, Some(&expanded), 60).lines)"
 ---
 ╭─ primary • gateway/arbitrary-model[base]
@@ -15,7 +16,7 @@ expression: "snapshot_lines(&transcript_layout(&state, Some(&expanded), 60).line
 │  metadata: {"kind":"text"}
 │
 │
-│  ✏️ ▾ edit src/main.rs
+│  📝 ▾ edit src/main.rs
 │
 │  arguments
 │  filePath: src/main.rs (content shown below)

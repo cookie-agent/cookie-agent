@@ -7,7 +7,7 @@ pub(super) fn tool_icon(title: &str) -> &'static str {
     match title {
         "bash" => "💻",
         "read" => "📖",
-        "write" | "edit" => "✏️",
+        "write" | "edit" => "📝",
         "webfetch" => "🌐",
         "send_message" => "📨",
         "delegate_subagent" | "get_subagent_result" | "cancel_subagent" => "🤖",

@@ -56,7 +56,7 @@ fn internal_blocks_are_headerless_without_changing_other_role_headers() {
         (Role::ToolSuccess, "┏✓ TOOL SUCCESS"),
         (Role::ToolFailure, "┏! TOOL FAILURE"),
         (Role::Debug, "·· DEBUG [D]"),
-        (Role::Warning, "⚠️─ WARNING [W]"),
+        (Role::Warning, "🚨─ WARNING [W]"),
         (Role::Error, "!! ERROR [E]"),
     ] {
         let rendered = snapshot_lines(&role_block(role, vec![Line::from("row")], 80, &theme));
@@ -65,14 +65,13 @@ fn internal_blocks_are_headerless_without_changing_other_role_headers() {
 }
 
 #[test]
-fn warning_marker_carries_emoji_presentation_so_width_matches_terminals() {
-    // U+26A0 alone is East_Asian_Width=Ambiguous: the width table counts 1
-    // while emoji-capable terminals paint 2, so the header overran its
-    // wrap budget by one cell and the marker's second cell landed on the
-    // block boundary. VS16 (U+FE0F) selects emoji presentation, making the
-    // width table agree with the terminal.
-    let marker = "\u{26A0}\u{FE0F}";
-    assert_eq!(marker.graphemes(true).count(), 1, "VS16 joins the marker");
+fn warning_marker_is_wide_by_default_so_width_matches_terminals() {
+    // A text-default marker (U+26A0) needed VS16 to be two cells, and the
+    // frame pass strips VS16 from such glyphs, so emoji terminals painted a
+    // bare text sign. U+1F6A8 is emoji-presentation by default: two cells
+    // in the width table and on every terminal, with no selector to strip.
+    let marker = "\u{1F6A8}";
+    assert!(!marker.contains('\u{FE0F}'), "marker needs no VS16");
     assert_eq!(
         UnicodeWidthStr::width(marker),
         2,
@@ -89,8 +88,8 @@ fn warning_marker_carries_emoji_presentation_so_width_matches_terminals() {
             .map(|span| span.content.as_ref())
             .collect();
         assert!(
-            text.contains('\u{FE0F}'),
-            "width {width}: warning header keeps VS16: {text:?}"
+            text.starts_with(marker),
+            "width {width}: warning header keeps its marker: {text:?}"
         );
         assert!(
             header.width() <= usize::from(width),

@@ -110,8 +110,8 @@ pub(super) fn role_block_lines(
         Role::ToolSuccess => ("TOOL SUCCESS", "┏✓", "┃ ", theme.tool_success()),
         Role::ToolFailure => ("TOOL FAILURE", "┏!", "┃ ", theme.tool_failure()),
         Role::Debug => ("DEBUG [D]", "··", "· ", theme.muted()),
-        // VS16 makes emoji terminals and the width table agree on U+26A0: two cells.
-        Role::Warning => ("WARNING [W]", "⚠️─", "│ ", theme.warning()),
+        // Wide by default, so terminals and the width table agree without VS16.
+        Role::Warning => ("WARNING [W]", "🚨─", "│ ", theme.warning()),
         Role::Error => ("ERROR [E]", "!!", "! ", theme.error()),
         Role::Internal => ("EVENT [I]", "--", "· ", theme.internal()),
     };
@@ -521,7 +521,7 @@ pub(in crate::ui) fn leading_gutter_columns(line: &Line<'_>) -> u16 {
 /// are chrome-only: they vanish from an extraction rather than leaking
 /// border glyphs into copied text.
 pub(super) const CHROME_ROW_PREFIXES: &[&str] = &[
-    "┌", "└", "┏", "╭", "╰", "├", "··", "!!", "⚠", "--", "◆", "◇",
+    "┌", "└", "┏", "╭", "╰", "├", "··", "!!", "🚨", "--", "◆", "◇",
 ];
 
 /// Extract the copyable text of one rendered line inside the display-column
