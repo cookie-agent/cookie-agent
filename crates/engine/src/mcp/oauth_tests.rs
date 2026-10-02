@@ -557,14 +557,35 @@ async fn wait_for_named_state(registry: &McpRegistry, server: &str, expected: Mc
     .expect("MCP state transition");
 }
 
-async fn authorize(registry: &McpRegistry, server: &str) {
-    let authorization_url = registry.begin_auth(server).await.expect("begin OAuth");
-    let response = reqwest::Client::new()
+/// The client's loopback callback. Nothing listens on it: tests read the
+/// browser's redirect from the authorization endpoint and hand it to
+/// `complete_auth` the way a client's listener would.
+const CLIENT_REDIRECT: &str = "http://127.0.0.1:9/callback";
+
+async fn browser_redirect(authorization_url: &str) -> String {
+    let response = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("browser")
         .get(authorization_url)
         .send()
         .await
-        .expect("follow OAuth authorization redirect");
-    assert!(response.status().is_success());
+        .expect("authorization endpoint");
+    response.headers()["location"]
+        .to_str()
+        .expect("redirect location")
+        .to_owned()
+}
+
+async fn authorize(registry: &McpRegistry, server: &str) {
+    let authorization_url = registry
+        .begin_auth(server, CLIENT_REDIRECT)
+        .await
+        .expect("begin OAuth");
+    registry
+        .complete_auth(server, &browser_redirect(&authorization_url).await)
+        .await
+        .expect("complete OAuth");
     wait_for_named_state(registry, server, McpServerState::Connected).await;
 }
 
@@ -587,23 +608,6 @@ async fn wait_for_auth_flow(registry: &McpRegistry, active: bool) {
     })
     .await
     .expect("OAuth flow state");
-}
-
-async fn assert_callback_port_released(redirect_uri: &str) {
-    let address = url::Url::parse(redirect_uri)
-        .expect("redirect URI")
-        .socket_addrs(|| None)
-        .expect("callback address")[0];
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            match TcpListener::bind(address).await {
-                Ok(listener) => break drop(listener),
-                Err(_) => tokio::task::yield_now().await,
-            }
-        }
-    })
-    .await
-    .expect("callback port release");
 }
 
 #[tokio::test]
@@ -916,7 +920,10 @@ async fn oauth_callback_timeout_returns_to_needs_auth() {
         .connect()
         .await
         .expect_err("unauthorized connection");
-    registry.begin_auth("remote").await.expect("begin OAuth");
+    registry
+        .begin_auth("remote", CLIENT_REDIRECT)
+        .await
+        .expect("begin OAuth");
     tokio::time::sleep(OAUTH_CALLBACK_TIMEOUT + Duration::from_millis(50)).await;
     wait_for_state(&registry, McpServerState::NeedsAuth).await;
     assert!(
@@ -927,7 +934,7 @@ async fn oauth_callback_timeout_returns_to_needs_auth() {
     );
     assert!(!registry.statuses()[0].auth_in_progress);
     registry
-        .begin_auth("remote")
+        .begin_auth("remote", CLIENT_REDIRECT)
         .await
         .expect("fresh flow after timeout");
     registry.cancel_auth("remote").expect("cancel retry");
@@ -936,7 +943,7 @@ async fn oauth_callback_timeout_returns_to_needs_auth() {
 }
 
 #[tokio::test]
-async fn state_mismatch_is_rejected_and_cancel_releases_callback_port() {
+async fn state_mismatch_ends_the_flow_and_cancel_clears_it() {
     let fixture = OAuthFixture::start().await;
     let directory = tempfile::tempdir().expect("project data");
     let registry = oauth_registry(&directory, fixture.mcp_url(), "remote");
@@ -947,19 +954,20 @@ async fn state_mismatch_is_rejected_and_cancel_releases_callback_port() {
         .await
         .expect_err("authorization challenge");
 
-    let authorization_url = registry.begin_auth("remote").await.expect("begin OAuth");
-    let parameters = authorization_parameters(&authorization_url);
-    let redirect_uri = parameters["redirect_uri"].clone();
-    let mut callback = url::Url::parse(&redirect_uri).expect("callback URL");
+    registry
+        .begin_auth("remote", CLIENT_REDIRECT)
+        .await
+        .expect("begin OAuth");
+    let mut callback = url::Url::parse(CLIENT_REDIRECT).expect("callback URL");
     callback
         .query_pairs_mut()
         .append_pair("code", "authorization-code")
         .append_pair("state", "wrong-state")
         .append_pair("iss", &fixture.base_url);
-    let response = reqwest::get(callback)
+    registry
+        .complete_auth("remote", callback.as_str())
         .await
-        .expect("state mismatch callback");
-    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        .expect_err("state mismatch");
     wait_for_auth_flow(&registry, false).await;
     assert!(
         fixture
@@ -970,20 +978,123 @@ async fn state_mismatch_is_rejected_and_cancel_releases_callback_port() {
             .is_empty()
     );
 
-    let authorization_url = registry.begin_auth("remote").await.expect("retry OAuth");
-    let redirect_uri = authorization_parameters(&authorization_url)["redirect_uri"].clone();
+    let authorization_url = registry
+        .begin_auth("remote", CLIENT_REDIRECT)
+        .await
+        .expect("retry OAuth");
     registry.cancel_auth("remote").expect("cancel OAuth");
     wait_for_auth_flow(&registry, false).await;
-    assert_callback_port_released(&redirect_uri).await;
     assert!(
         registry.statuses()[0]
             .message
             .as_deref()
             .is_some_and(|message| message.contains("cancelled"))
     );
-    let retry_url = registry.begin_auth("remote").await.expect("fresh flow");
+    registry
+        .complete_auth("remote", &browser_redirect(&authorization_url).await)
+        .await
+        .expect_err("cancelled flow cannot complete");
+    let retry_url = registry
+        .begin_auth("remote", CLIENT_REDIRECT)
+        .await
+        .expect("fresh flow");
     assert_ne!(authorization_url, retry_url);
     registry.cancel_auth("remote").expect("cancel retry");
+    registry.shutdown().await;
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn a_url_that_is_not_the_callback_leaves_the_flow_waiting() {
+    let fixture = OAuthFixture::start().await;
+    let directory = tempfile::tempdir().expect("project data");
+    let registry = oauth_registry(&directory, fixture.mcp_url(), "remote");
+    registry
+        .server("remote")
+        .expect("remote")
+        .connect()
+        .await
+        .expect_err("authorization challenge");
+    let authorization_url = registry
+        .begin_auth("remote", CLIENT_REDIRECT)
+        .await
+        .expect("begin OAuth");
+    let redirect = browser_redirect(&authorization_url).await;
+    let elsewhere = redirect.replace("127.0.0.1:9", "127.0.0.1:10");
+    for mistake in [
+        "not a url",
+        authorization_url.as_str(),
+        CLIENT_REDIRECT,
+        elsewhere.as_str(),
+    ] {
+        let error = registry
+            .complete_auth("remote", mistake)
+            .await
+            .expect_err("not the callback")
+            .to_string();
+        assert!(error.contains("not the OAuth callback"), "{error}");
+    }
+    assert!(registry.statuses()[0].auth_in_progress);
+    registry
+        .complete_auth("remote", &format!("  {redirect}\n"))
+        .await
+        .expect("pasted callback completes");
+    wait_for_state(&registry, McpServerState::Connected).await;
+    registry.shutdown().await;
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn redirect_uris_must_be_client_loopback_and_a_new_one_replaces_the_flow() {
+    let fixture = OAuthFixture::start().await;
+    let directory = tempfile::tempdir().expect("project data");
+    let registry = oauth_registry(&directory, fixture.mcp_url(), "remote");
+    registry
+        .server("remote")
+        .expect("remote")
+        .connect()
+        .await
+        .expect_err("authorization challenge");
+    for rejected in [
+        "https://127.0.0.1:9/callback",
+        "http://localhost:9/callback",
+        "http://192.168.1.2:9/callback",
+        "http://127.0.0.1/callback",
+        "http://127.0.0.1:9/callback?next=1",
+        "http://user@127.0.0.1:9/callback",
+    ] {
+        registry
+            .begin_auth("remote", rejected)
+            .await
+            .expect_err(rejected);
+    }
+    let first = registry
+        .begin_auth("remote", CLIENT_REDIRECT)
+        .await
+        .expect("begin OAuth");
+    let resumed = registry
+        .begin_auth("remote", CLIENT_REDIRECT)
+        .await
+        .expect("resume OAuth");
+    assert_eq!(first, resumed);
+    let replaced = registry
+        .begin_auth("remote", "http://[::1]:9/callback")
+        .await
+        .expect("replace OAuth");
+    assert_ne!(first, replaced);
+    assert_eq!(
+        authorization_parameters(&replaced)["redirect_uri"],
+        "http://[::1]:9/callback"
+    );
+    registry
+        .complete_auth("remote", &browser_redirect(&first).await)
+        .await
+        .expect_err("replaced flow's callback");
+    registry
+        .complete_auth("remote", &browser_redirect(&replaced).await)
+        .await
+        .expect("current flow completes");
+    wait_for_state(&registry, McpServerState::Connected).await;
     registry.shutdown().await;
     fixture.stop().await;
 }
@@ -1159,7 +1270,7 @@ async fn endpoint_replacement_invalidates_before_any_bearer_request() {
 }
 
 #[tokio::test]
-async fn shutdown_and_supersede_release_inflight_callback_listeners() {
+async fn shutdown_and_supersede_end_inflight_flows() {
     let fixture = OAuthFixture::start().await;
     let shutdown_directory = tempfile::tempdir().expect("shutdown project");
     let shutdown_registry = oauth_registry(&shutdown_directory, fixture.mcp_url(), "remote");
@@ -1170,12 +1281,14 @@ async fn shutdown_and_supersede_release_inflight_callback_listeners() {
         .await
         .expect_err("authorization challenge");
     let url = shutdown_registry
-        .begin_auth("remote")
+        .begin_auth("remote", CLIENT_REDIRECT)
         .await
         .expect("shutdown flow");
-    let redirect = authorization_parameters(&url)["redirect_uri"].clone();
     shutdown_registry.shutdown().await;
-    assert_callback_port_released(&redirect).await;
+    shutdown_registry
+        .complete_auth("remote", &browser_redirect(&url).await)
+        .await
+        .expect_err("shut-down registry cannot complete");
 
     let supersede_directory = tempfile::tempdir().expect("supersede project");
     let supersede_registry = oauth_registry(&supersede_directory, fixture.mcp_url(), "remote");
@@ -1186,10 +1299,9 @@ async fn shutdown_and_supersede_release_inflight_callback_listeners() {
         .await
         .expect_err("authorization challenge");
     let url = supersede_registry
-        .begin_auth("remote")
+        .begin_auth("remote", CLIENT_REDIRECT)
         .await
         .expect("superseded flow");
-    let redirect = authorization_parameters(&url)["redirect_uri"].clone();
     supersede_registry
         .upsert_server(
             "remote".into(),
@@ -1200,7 +1312,18 @@ async fn shutdown_and_supersede_release_inflight_callback_listeners() {
         )
         .await
         .expect("supersede server");
-    assert_callback_port_released(&redirect).await;
+    supersede_registry
+        .complete_auth("remote", &browser_redirect(&url).await)
+        .await
+        .expect_err("superseded flow cannot complete");
+    assert!(
+        fixture
+            .state
+            .exchanged_codes
+            .lock()
+            .expect("codes")
+            .is_empty()
+    );
     supersede_registry.shutdown().await;
     fixture.stop().await;
 }
@@ -1249,13 +1372,13 @@ async fn token_exchange_errors_preserve_bounded_response_bodies() {
         .connect()
         .await
         .expect_err("unauthorized connection");
-    let authorization_url = registry.begin_auth("remote").await.expect("begin OAuth");
-    let response = reqwest::Client::new()
-        .get(authorization_url)
-        .send()
+    let authorization_url = registry.begin_auth("remote", CLIENT_REDIRECT).await.expect("begin OAuth");
+    let error = registry
+        .complete_auth("remote", &browser_redirect(&authorization_url).await)
         .await
-        .expect("OAuth callback response");
-    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        .expect_err("token exchange fails")
+        .to_string();
+    assert!(error.contains("oauth-token-sentinel"), "{error}");
     wait_for_state(&registry, McpServerState::NeedsAuth).await;
     wait_for_auth_flow(&registry, false).await;
     let message = registry.statuses()[0].message.clone().unwrap_or_default();
@@ -1282,9 +1405,11 @@ async fn oauth_callback_denial_preserves_error_description() {
         .connect()
         .await
         .expect_err("authorization required");
-    let authorization_url = registry.begin_auth("remote").await.unwrap();
-    let params = authorization_parameters(&authorization_url);
-    let mut callback = url::Url::parse(&params["redirect_uri"]).unwrap();
+    registry
+        .begin_auth("remote", CLIENT_REDIRECT)
+        .await
+        .unwrap();
+    let mut callback = url::Url::parse(CLIENT_REDIRECT).unwrap();
     callback
         .query_pairs_mut()
         .append_pair("error", "access_denied")
@@ -1292,8 +1417,10 @@ async fn oauth_callback_denial_preserves_error_description() {
             "error_description",
             "password=visible; user declined\u{1b}\u{202e}",
         );
-    let response = reqwest::get(callback).await.unwrap();
-    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    registry
+        .complete_auth("remote", callback.as_str())
+        .await
+        .expect_err("denied authorization");
     wait_for_auth_flow(&registry, false).await;
     let message = registry.statuses()[0].message.clone().unwrap();
     assert!(message.contains("access_denied"), "{message}");

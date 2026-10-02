@@ -279,11 +279,22 @@ pub(super) struct McpPanel {
     pub(super) form: Option<McpForm>,
     pub(super) refresh_in_flight: bool,
     pub(super) auth: Option<McpAuthView>,
+    /// The loopback listener waiting for the browser's OAuth redirect; it
+    /// stops when the wait ends.
+    pub(super) auth_listener: Option<AuthListener>,
 }
 
 pub(super) struct McpAuthView {
     pub(super) server: String,
     pub(super) authorization_url: String,
+}
+
+pub(super) struct AuthListener(pub(super) tokio::task::AbortHandle);
+
+impl Drop for AuthListener {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl McpPanel {
@@ -298,9 +309,14 @@ impl McpPanel {
                     && server.auth_in_progress == Some(true)
             })
         }) {
-            self.auth = None;
+            self.clear_auth();
         }
         self.clamp();
+    }
+
+    pub(super) fn clear_auth(&mut self) {
+        self.auth = None;
+        self.auth_listener = None;
     }
 
     pub(super) fn selected(&self) -> Option<&McpServerInfo> {
@@ -518,6 +534,10 @@ pub(super) fn render_mcp(frame: &mut Frame, area: Rect, panel: &mut McpPanel, th
             {
                 text.push_str("\n\nAuthorization URL:\n");
                 text.push_str(&auth.authorization_url);
+                text.push_str(
+                    "\n\nWaiting for the browser to return to this machine. If it runs on \
+                     another machine, paste the URL it was redirected to.",
+                );
             }
             text
         },
@@ -528,7 +548,7 @@ pub(super) fn render_mcp(frame: &mut Frame, area: Rect, panel: &mut McpPanel, th
             .as_ref()
             .is_some_and(|auth| auth.server == server.name)
         {
-            Some("c copy URL | esc cancel")
+            Some("c copy URL | paste redirect | esc cancel")
         } else if server.state == McpServerState::NeedsAuth {
             Some("a authenticate")
         } else {

@@ -242,15 +242,72 @@ impl App {
         });
     }
 
-    pub(super) fn dispatch_mcp_auth_begin(&self, server: String) {
+    /// Binds the loopback callback first, since its address goes into the
+    /// authorization request, then forwards every redirect the browser sends
+    /// to the daemon until one completes the flow.
+    pub(super) fn dispatch_mcp_auth_begin(&mut self, server: String) {
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        let task = tokio::spawn(async move {
+            let listener = match OAuthCallbackListener::bind().await {
+                Ok(listener) => listener,
+                Err(error) => {
+                    let _ = updates.send(RpcUpdate::McpAuthBegan {
+                        result: Err(format!("could not listen for the OAuth callback: {error}")),
+                    });
+                    return;
+                }
+            };
+            let result = client
+                .begin_mcp_auth(McpAuthBeginParams {
+                    server: server.clone(),
+                    redirect_uri: listener.redirect_uri(),
+                })
+                .await
+                .map_err(|error| error.to_string());
+            let began = result.is_ok();
+            let _ = updates.send(RpcUpdate::McpAuthBegan { result });
+            if !began {
+                return;
+            }
+            while let Ok(callback) = listener.accept().await {
+                let result = client
+                    .complete_mcp_auth(McpAuthCompleteParams {
+                        server: server.clone(),
+                        callback_url: callback.url().to_owned(),
+                    })
+                    .await
+                    .map(drop)
+                    .map_err(|error| error.to_string());
+                let _ = callback.respond(result.is_ok()).await;
+                let completed = result.is_ok();
+                let _ = updates.send(RpcUpdate::McpAuthCompleted {
+                    server: server.clone(),
+                    result,
+                });
+                if completed {
+                    return;
+                }
+            }
+        });
+        self.mcp_panel.auth_listener = Some(AuthListener(task.abort_handle()));
+    }
+
+    /// The paste fallback for a browser on another machine, whose redirect
+    /// to this machine's loopback never arrives.
+    pub(super) fn dispatch_mcp_auth_complete(&self, server: String, callback_url: String) {
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
             let result = client
-                .begin_mcp_auth(McpAuthBeginParams { server })
+                .complete_mcp_auth(McpAuthCompleteParams {
+                    server: server.clone(),
+                    callback_url,
+                })
                 .await
+                .map(drop)
                 .map_err(|error| error.to_string());
-            let _ = updates.send(RpcUpdate::McpAuthBegan { result });
+            let _ = updates.send(RpcUpdate::McpAuthCompleted { server, result });
         });
     }
 

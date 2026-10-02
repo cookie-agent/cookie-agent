@@ -234,6 +234,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::McpAuthBeginResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
+    async fn complete_mcp_auth(
+        &self,
+        _: crate::McpAuthCompleteParams,
+    ) -> Result<crate::McpAuthCompleteResult, ServerFault> {
+        Err(ServerFault::method_not_found())
+    }
     async fn cancel_mcp_auth(
         &self,
         _: crate::McpAuthCancelParams,

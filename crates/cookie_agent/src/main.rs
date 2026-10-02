@@ -16,12 +16,14 @@ use cookie_agent_models::{
     catalog::{CatalogManager, CatalogTransport, HttpCatalogTransport},
     provider_store::ProviderStore,
 };
+use cookie_agent_protocol::oauth_callback::OAuthCallbackListener;
 use cookie_agent_protocol::{
     AuthMethodDescriptor, Client, ClientConnectId, ClientRequestId, EffectiveAuthState,
-    McpAuthBeginParams, McpServerState, ProviderConfigurationState, ProviderConnectResult,
-    ProviderDescriptor, ProviderDisconnectParams, ProviderDisconnectResult, ProviderId,
-    ProviderSupportState, RuntimeSnapshotResult, SafeCode, SafeSetupValue, parse_setup_value,
-    paths, setup_value_text, validate_websocket_url,
+    McpAuthBeginParams, McpAuthCancelParams, McpAuthCompleteParams, McpServerState,
+    ProviderConfigurationState, ProviderConnectResult, ProviderDescriptor,
+    ProviderDisconnectParams, ProviderDisconnectResult, ProviderId, ProviderSupportState,
+    RuntimeSnapshotResult, SafeCode, SafeSetupValue, parse_setup_value, paths, setup_value_text,
+    validate_websocket_url,
 };
 use cookie_agent_server::{Server, generate_token, ready_line};
 use cookie_agent_tools::{
@@ -722,18 +724,111 @@ async fn run_mcp(url: &str, token: &str, command: McpCommand) -> anyhow::Result<
                     "MCP server `{server}` does not currently require OAuth authorization"
                 );
             }
-            let result = client
-                .begin_mcp_auth(McpAuthBeginParams { server })
-                .await
-                .context("mcp.auth.begin failed")?;
-            println!(
-                "Open this URL to authenticate MCP server `{}`:",
-                result.server
-            );
-            println!("{}", result.authorization_url);
-            Ok(())
+            authorize_mcp_server(&client, server).await
         }
     }
+}
+
+/// Waits for the browser's redirect on this machine's loopback, or for the
+/// redirect URL pasted on stdin when the browser runs elsewhere, and hands it
+/// to the daemon, which exchanges the code.
+async fn authorize_mcp_server(client: &Client, server: String) -> anyhow::Result<()> {
+    use tokio::io::AsyncBufReadExt as _;
+
+    let listener = OAuthCallbackListener::bind()
+        .await
+        .context("listen for the OAuth callback")?;
+    let redirect_uri = listener.redirect_uri();
+    let result = client
+        .begin_mcp_auth(McpAuthBeginParams {
+            server: server.clone(),
+            redirect_uri: redirect_uri.clone(),
+        })
+        .await
+        .context("mcp.auth.begin failed")?;
+    println!("Open this URL to authenticate MCP server `{server}`:");
+    println!("{}", result.authorization_url);
+    println!();
+    println!("Waiting for the browser to return to {redirect_uri}.");
+    println!("If the browser runs on another machine, paste the URL it was redirected to.");
+
+    let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    let mut stdin_open = true;
+    let mut status_poll = tokio::time::interval(Duration::from_secs(2));
+    loop {
+        let completed = tokio::select! {
+            callback = listener.accept() => {
+                let callback = callback.context("receive the OAuth callback")?;
+                let completed = complete_mcp_auth(client, &server, callback.url()).await;
+                let _ = callback.respond(completed.is_ok()).await;
+                completed
+            }
+            line = stdin.next_line(), if stdin_open => match line.context("read stdin")? {
+                Some(line) if line.trim().is_empty() => continue,
+                Some(line) => complete_mcp_auth(client, &server, &line).await,
+                None => {
+                    stdin_open = false;
+                    continue;
+                }
+            },
+            _ = status_poll.tick() => {
+                if let Some(message) = ended_mcp_auth(client, &server).await? {
+                    anyhow::bail!("MCP authorization for `{server}` ended: {message}");
+                }
+                continue;
+            }
+            signal = tokio::signal::ctrl_c() => {
+                signal.context("wait for Ctrl-C")?;
+                let _ = client
+                    .cancel_mcp_auth(McpAuthCancelParams { server: server.clone() })
+                    .await;
+                anyhow::bail!("MCP authorization for `{server}` cancelled");
+            }
+        };
+        match completed {
+            Ok(()) => {
+                println!("MCP server `{server}` authorized.");
+                return Ok(());
+            }
+            // A URL that is not this flow's callback leaves it waiting.
+            Err(error) => match ended_mcp_auth(client, &server).await? {
+                Some(_) => return Err(error),
+                None => eprintln!("{error:#}"),
+            },
+        }
+    }
+}
+
+async fn complete_mcp_auth(
+    client: &Client,
+    server: &str,
+    callback_url: &str,
+) -> anyhow::Result<()> {
+    client
+        .complete_mcp_auth(McpAuthCompleteParams {
+            server: server.to_owned(),
+            callback_url: callback_url.trim().to_owned(),
+        })
+        .await
+        .context("mcp.auth.complete failed")?;
+    Ok(())
+}
+
+/// The server's status message once its authorization is no longer waiting.
+async fn ended_mcp_auth(client: &Client, server: &str) -> anyhow::Result<Option<String>> {
+    let status = client
+        .list_mcp_servers()
+        .await
+        .context("mcp.server.list failed")?
+        .servers
+        .into_iter()
+        .find(|candidate| candidate.name == server)
+        .with_context(|| format!("unknown MCP server `{server}`"))?;
+    Ok((status.auth_in_progress != Some(true)).then(|| {
+        status
+            .message
+            .unwrap_or_else(|| "no longer in progress".into())
+    }))
 }
 
 fn ensure_supported(provider: &ProviderDescriptor) -> anyhow::Result<()> {

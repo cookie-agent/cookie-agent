@@ -230,11 +230,29 @@ impl Engine {
             .find(|server| server.name == name))
     }
 
-    pub async fn begin_mcp_auth(&self, name: String) -> Result<String, EngineError> {
+    pub async fn begin_mcp_auth(
+        &self,
+        name: String,
+        redirect_uri: String,
+    ) -> Result<String, EngineError> {
         let _mutation = self.inner.mcp_mutation.lock().await;
         self.inner
             .mcp
-            .begin_auth(&name)
+            .begin_auth(&name, &redirect_uri)
+            .await
+            .map_err(|error| EngineError::Mcp(error.to_string()))
+    }
+
+    /// Not serialized with other MCP mutations: the exchange is a network
+    /// round trip, and a cancel must be able to interrupt it.
+    pub async fn complete_mcp_auth(
+        &self,
+        name: String,
+        callback_url: String,
+    ) -> Result<(), EngineError> {
+        self.inner
+            .mcp
+            .complete_auth(&name, &callback_url)
             .await
             .map_err(|error| EngineError::Mcp(error.to_string()))
     }

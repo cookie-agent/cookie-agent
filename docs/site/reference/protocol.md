@@ -1,12 +1,12 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 25 is current-only. A client must call `handshake` with
-`{ "protocol_version": 25 }` before any other method.
+Protocol 27 is current-only. A client must call `handshake` with
+`{ "protocol_version": 27 }` before any other method.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 25.
+members of protocol 27.
 
 ## Error diagnostics
 
@@ -29,7 +29,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 25 alongside independent display and output references. The
+preserved in protocol 27 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -262,6 +262,20 @@ the durable `after_seq` they follow instead of a sequence of their own, and they
 are never stored or replayed. `model_output_started` durably marks where each
 streamed part began. See
 [live-only stream output](events.md#live-only-stream-output).
+
+Protocol 27 moves the MCP OAuth callback to the client, so a daemon reached
+through a tunnel or on another machine can still be authorized from the
+client's browser. `mcp.auth.begin` requires `redirect_uri`, the client's own
+loopback callback (`http://127.0.0.1:<port>/<path>` or `http://[::1]:<port>/<path>`
+with no query, fragment, or credentials). The client then sends the browser's
+redirect to the new `mcp.auth.complete { server, callback_url }`; the daemon
+keeps the PKCE verifier, exchanges the code, and stores the tokens, which never
+cross the connection. A `callback_url` that is not a redirect to the pending
+`redirect_uri` with a `code` or `error` parameter is rejected and leaves the
+flow waiting. Any other completion ends it. A `begin` with the pending
+`redirect_uri` returns the same authorization URL; one with a different
+`redirect_uri` replaces the pending flow. Protocol 26 shipped only in a nightly
+build and is not reused.
 
 Session metadata includes additive `skipped_events` entries with the physical
 sequence (or source line number when no sequence was readable) and a safe reason.

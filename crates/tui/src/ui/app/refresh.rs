@@ -453,8 +453,28 @@ impl App {
                     });
                     self.status = "waiting for MCP OAuth authorization".into();
                 }
-                Err(error) => self.status = format!("MCP authentication failed: {error}"),
+                Err(error) => {
+                    self.mcp_panel.auth_listener = None;
+                    self.status = format!("MCP authentication failed: {error}");
+                }
             },
+            RpcUpdate::McpAuthCompleted { server, result } => {
+                match result {
+                    Ok(()) => {
+                        if self
+                            .mcp_panel
+                            .auth
+                            .as_ref()
+                            .is_some_and(|auth| auth.server == server)
+                        {
+                            self.mcp_panel.clear_auth();
+                        }
+                        self.status = format!("MCP server `{server}` authorized; connecting.");
+                    }
+                    Err(error) => self.status = format!("MCP authentication failed: {error}"),
+                }
+                self.poll_mcp();
+            }
             RpcUpdate::McpAuthCancelled { result } => match result {
                 Ok(server) => {
                     if self
@@ -463,13 +483,13 @@ impl App {
                         .as_ref()
                         .is_some_and(|auth| auth.server == server)
                     {
-                        self.mcp_panel.auth = None;
+                        self.mcp_panel.clear_auth();
                     }
                     self.status = "MCP authentication cancelled.".into();
                     self.poll_mcp();
                 }
                 Err(error) => {
-                    self.mcp_panel.auth = None;
+                    self.mcp_panel.clear_auth();
                     self.status = format!("MCP authentication cancel failed: {error}");
                     self.poll_mcp();
                 }

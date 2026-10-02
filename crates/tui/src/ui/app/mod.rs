@@ -41,23 +41,24 @@ use std::{
 
 use anyhow::Context;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use cookie_agent_protocol::oauth_callback::OAuthCallbackListener;
 use cookie_agent_protocol::{
     AgentDescriptor, AgentId, ApprovalListParams, ApprovalListResult, ApprovalRespondError,
     ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision,
     AvailableModelDescriptor, ClientConnectId, ClientRequestId, ClientResponseId, ClientRunId,
-    EventPayload, McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams, McpServerAddParams,
-    McpServerEditParams, McpServerInfo, McpServerNameParams, McpServerPersistParams,
-    McpServerSetEnabledParams, McpServerState, ModelKey, ModelSelection, PermissionAction,
-    PermissionEffect, PermissionMode, PermissionRuleSource, ProviderConnectParams,
-    ProviderDescriptor, ProviderDisconnectParams, RunCancelParams, RunRecallSteerParams,
-    RunSelection, RunStartParams, RunSteerParams, RunToolStdinParams,
-    SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE, SafeDisplayText, SessionCompactParams,
-    SessionCreateParams, SessionForkParams, SessionId, SessionListParams, SessionMeta,
-    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
-    SessionPermissionSetParams, SessionResumeParams, SessionRevertParams,
-    SessionSetPermissionModeParams, SessionStatus, SessionTitle, SessionTitleChange, SessionTree,
-    SessionTreeParams, SessionTreeUsageResult, SessionUsageParams, SessionUsageResult, StoredEvent,
-    VariantId,
+    EventPayload, McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams,
+    McpAuthCompleteParams, McpServerAddParams, McpServerEditParams, McpServerInfo,
+    McpServerNameParams, McpServerPersistParams, McpServerSetEnabledParams, McpServerState,
+    ModelKey, ModelSelection, PermissionAction, PermissionEffect, PermissionMode,
+    PermissionRuleSource, ProviderConnectParams, ProviderDescriptor, ProviderDisconnectParams,
+    RunCancelParams, RunRecallSteerParams, RunSelection, RunStartParams, RunSteerParams,
+    RunToolStdinParams, SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE, SafeDisplayText,
+    SessionCompactParams, SessionCreateParams, SessionForkParams, SessionId, SessionListParams,
+    SessionMeta, SessionPermissionClearParams, SessionPermissionGetParams,
+    SessionPermissionGetResult, SessionPermissionSetParams, SessionResumeParams,
+    SessionRevertParams, SessionSetPermissionModeParams, SessionStatus, SessionTitle,
+    SessionTitleChange, SessionTree, SessionTreeParams, SessionTreeUsageResult, SessionUsageParams,
+    SessionUsageResult, StoredEvent, VariantId,
 };
 use crossterm::{
     event::{
@@ -97,8 +98,8 @@ use crate::{
 use super::events::{RenderScheduler, TerminalRestore, install_terminal_panic_hook};
 use super::input::{self, InputState};
 use super::management::{
-    McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm, PermissionPanel, UsagePanel,
-    cycle_effect,
+    AuthListener, McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm, PermissionPanel,
+    UsagePanel, cycle_effect,
 };
 use super::pickers::{
     SearchPickerFocus, SearchPickerState, SessionSearchRow, agent_matches, cycle_selection,
@@ -787,6 +788,10 @@ pub(super) enum RpcUpdate {
     },
     McpAuthBegan {
         result: Result<McpAuthBeginResult, String>,
+    },
+    McpAuthCompleted {
+        server: String,
+        result: Result<(), String>,
     },
     McpAuthCancelled {
         result: Result<String, String>,

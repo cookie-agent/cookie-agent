@@ -1013,6 +1013,10 @@ pub struct McpServerMutationResult {
 #[serde(deny_unknown_fields)]
 pub struct McpAuthBeginParams {
     pub server: String,
+    /// The client's own loopback callback, `http://127.0.0.1:{port}/{path}`
+    /// or `http://[::1]:{port}/{path}`: the browser redirects to the machine
+    /// running the client, which hands the redirect to `mcp.auth.complete`.
+    pub redirect_uri: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1020,6 +1024,32 @@ pub struct McpAuthBeginParams {
 pub struct McpAuthBeginResult {
     pub server: String,
     pub authorization_url: String,
+}
+
+/// The browser's redirect to the client's callback, carried back to the daemon
+/// that holds the PKCE verifier. Only the single-use authorization code
+/// crosses the connection; tokens stay in the daemon.
+#[derive(Clone, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpAuthCompleteParams {
+    pub server: String,
+    pub callback_url: String,
+}
+
+impl std::fmt::Debug for McpAuthCompleteParams {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpAuthCompleteParams")
+            .field("server", &self.server)
+            .field("callback_url", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpAuthCompleteResult {
+    pub server: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

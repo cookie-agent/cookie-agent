@@ -12,6 +12,8 @@ homepage = "https://cookie-agent.github.io/cookie-agent/"
 test-support = []
 # Client-side WebSocket transport for reaching a cookie daemon.
 websocket = ["dep:futures-util", "dep:tokio-tungstenite", "dep:url"]
+# Client-side loopback listener for MCP OAuth redirects.
+oauth-callback = []
 
 [lints]
 workspace = true

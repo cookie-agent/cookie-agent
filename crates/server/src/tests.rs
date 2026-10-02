@@ -22,8 +22,8 @@ use cookie_agent_models::{
 };
 use cookie_agent_protocol::{
     AuthFieldName, AuthMethodId, CatalogRevision, McpAuthBeginParams, McpAuthCancelParams,
-    McpConfigSource, McpServerAddParams, McpServerDefinition, McpServerEditParams,
-    McpServerNameParams, PROTOCOL_VERSION, ProviderId, ProviderSetupRecipeId,
+    McpAuthCompleteParams, McpConfigSource, McpServerAddParams, McpServerDefinition,
+    McpServerEditParams, McpServerNameParams, PROTOCOL_VERSION, ProviderId, ProviderSetupRecipeId,
     RUNTIME_CHANGED_METHOD, RecipeCompilerVersion, SessionListParams,
 };
 use jiff::Timestamp;
@@ -227,11 +227,21 @@ async fn mcp_management_is_reachable_through_protocol() {
     let auth_error = client
         .begin_mcp_auth(McpAuthBeginParams {
             server: "runtime".into(),
+            redirect_uri: "http://127.0.0.1:9/callback".into(),
         })
         .await
         .expect_err("stdio server cannot begin OAuth")
         .to_string();
     assert!(auth_error.contains("-32000"), "{auth_error}");
+    let complete_error = client
+        .complete_mcp_auth(McpAuthCompleteParams {
+            server: "runtime".into(),
+            callback_url: "http://127.0.0.1:9/callback?code=c&state=s".into(),
+        })
+        .await
+        .expect_err("no OAuth flow to complete")
+        .to_string();
+    assert!(complete_error.contains("-32000"), "{complete_error}");
     let cancel_error = client
         .cancel_mcp_auth(McpAuthCancelParams {
             server: "runtime".into(),

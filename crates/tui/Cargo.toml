@@ -12,7 +12,7 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 base64 = "0.22"
-cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
+cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = ["oauth-callback"] }
 crossterm.workspace = true
 futures-util.workspace = true
 foldhash.workspace = true

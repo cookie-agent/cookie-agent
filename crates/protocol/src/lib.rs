@@ -100,6 +100,8 @@ mod goal;
 mod identity;
 mod manifest;
 mod model;
+#[cfg(feature = "oauth-callback")]
+pub mod oauth_callback;
 pub mod paths;
 mod producer;
 mod provider;
@@ -135,7 +137,7 @@ pub use session_model::*;
 pub use setup_value::*;
 
 /// The only protocol version supported by this build.
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 27;
 /// The only coherent runtime snapshot schema supported by this build.
 pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 6;
 
@@ -199,7 +201,7 @@ macro_rules! exact_numeric_wire_type {
     };
 }
 
-exact_numeric_wire_type!(ProtocolVersion, 25, "The exact protocol wire version.");
+exact_numeric_wire_type!(ProtocolVersion, 27, "The exact protocol wire version.");
 exact_numeric_wire_type!(
     RuntimeSnapshotSchemaVersion,
     6,

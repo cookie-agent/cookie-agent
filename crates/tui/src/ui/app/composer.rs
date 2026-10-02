@@ -238,6 +238,12 @@ impl App {
             return;
         }
         if self.modal == Modal::Mcp {
+            if self.mcp_panel.form.is_none()
+                && let Some(auth) = &self.mcp_panel.auth
+            {
+                self.dispatch_mcp_auth_complete(auth.server.clone(), text.trim().to_owned());
+                return;
+            }
             if let Some(input) = self
                 .mcp_panel
                 .form

@@ -3,25 +3,25 @@ use cookie_agent_engine::{EngineError, TailOwner, session::SessionError};
 use cookie_agent_protocol::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondErrorCode, ApprovalRespondParams,
     ApprovalRespondResult, EventsSubscribeParams, EventsSubscribeResult, McpAuthBeginParams,
-    McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult, McpServerAddParams,
-    McpServerEditParams, McpServerListParams, McpServerListResult, McpServerMutationResult,
-    McpServerNameParams, McpServerPersistParams, McpServerSetEnabledParams, ProviderConnectParams,
-    ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, RunCancelParams,
-    RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult,
-    RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
-    RuntimeSnapshotGetParams, RuntimeSnapshotResult, ServerContext, ServerFault, ServerProtocol,
-    SessionChildrenParams, SessionChildrenResult, SessionCompactParams, SessionCompactResult,
-    SessionCreateParams, SessionCreateResult, SessionForkParams, SessionForkResult,
-    SessionGetParams, SessionGetResult, SessionGoalGetParams, SessionGoalGetResult,
-    SessionGoalLifecycleParams, SessionGoalLifecycleResult, SessionGoalSetParams,
-    SessionGoalSetResult, SessionListParams, SessionListResult, SessionPermissionClearParams,
-    SessionPermissionGetParams, SessionPermissionGetResult, SessionPermissionMutationResult,
-    SessionPermissionSetParams, SessionProducersParams, SessionProducersResult,
-    SessionRenameErrorCode, SessionRenameParams, SessionRenameResult, SessionResumeParams,
-    SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
-    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, SessionTreeUsageResult,
-    SessionUsageParams, SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams,
-    SkillsListResult,
+    McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult, McpAuthCompleteParams,
+    McpAuthCompleteResult, McpServerAddParams, McpServerEditParams, McpServerListParams,
+    McpServerListResult, McpServerMutationResult, McpServerNameParams, McpServerPersistParams,
+    McpServerSetEnabledParams, ProviderConnectParams, ProviderConnectResult,
+    ProviderDisconnectParams, ProviderDisconnectResult, RunCancelParams, RunCancelResult,
+    RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerParams,
+    RunSteerResult, RunToolStdinParams, RunToolStdinResult, RuntimeSnapshotGetParams,
+    RuntimeSnapshotResult, ServerContext, ServerFault, ServerProtocol, SessionChildrenParams,
+    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
+    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
+    SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
+    SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionListParams,
+    SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
+    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionSetParams,
+    SessionProducersParams, SessionProducersResult, SessionRenameErrorCode, SessionRenameParams,
+    SessionRenameResult, SessionResumeParams, SessionResumeResult, SessionRevertParams,
+    SessionRevertResult, SessionSetPermissionModeParams, SessionSetPermissionModeResult,
+    SessionTreeParams, SessionTreeResult, SessionTreeUsageResult, SessionUsageParams,
+    SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult,
 };
 
 use super::Server;
@@ -331,12 +331,25 @@ impl ServerProtocol for Server {
     async fn begin_mcp_auth(&self, params: McpAuthBeginParams) -> Result<McpAuthBeginResult> {
         let authorization_url = self
             .engine
-            .begin_mcp_auth(params.server.clone())
+            .begin_mcp_auth(params.server.clone(), params.redirect_uri)
             .await
             .map_err(protocol_fault)?;
         Ok(McpAuthBeginResult {
             server: params.server,
             authorization_url,
+        })
+    }
+
+    async fn complete_mcp_auth(
+        &self,
+        params: McpAuthCompleteParams,
+    ) -> Result<McpAuthCompleteResult> {
+        self.engine
+            .complete_mcp_auth(params.server.clone(), params.callback_url)
+            .await
+            .map_err(protocol_fault)?;
+        Ok(McpAuthCompleteResult {
+            server: params.server,
         })
     }
 

@@ -57,12 +57,7 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest as _, Sha256};
-use tokio::sync::Notify;
-use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    net::{TcpListener, TcpStream},
-    sync::Mutex as AsyncMutex,
-};
+use tokio::sync::{Mutex as AsyncMutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -79,7 +74,6 @@ const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_millis(200);
 #[cfg(any(unix, test))]
 const OAUTH_STORE_FILE: &str = "mcp-oauth.json";
 const OAUTH_STORE_LOCK_FILE: &str = "mcp-oauth.lock";
-const OAUTH_CALLBACK_MAX_BYTES: usize = 16 * 1024;
 const OAUTH_STORE_MAX_BYTES: u64 = 1024 * 1024;
 const REDACTED_AUTHORIZATION_CODE: &str = "cookie-agent-redacted-authorization-code";
 
@@ -192,7 +186,11 @@ type PluginCollisionHandler = Arc<dyn Fn(&str, &str, Option<&str>) + Send + Sync
 struct OAuthFlowState {
     generation: u64,
     authorization_url: String,
+    /// The client's loopback callback the authorization URL redirects to.
+    redirect_uri: url::Url,
     cancellation: CancellationToken,
+    /// Taken by the one completion allowed to exchange its code.
+    exchange: Option<(AuthorizationSession, OAuthExchangeState)>,
 }
 
 #[derive(Clone)]
@@ -1033,6 +1031,44 @@ impl OAuthHttpClient for McpOAuthHttpClient {
     }
 }
 
+/// Accepts only a client loopback callback (RFC 8252 §7.3): plain HTTP to a
+/// loopback IP literal with an explicit port, no credentials, query, or
+/// fragment.
+fn loopback_redirect_uri(value: &str) -> Result<url::Url, ToolError> {
+    url::Url::parse(value)
+        .ok()
+        .filter(|url| {
+            url.scheme() == "http"
+                && match url.host() {
+                    Some(url::Host::Ipv4(address)) => address.is_loopback(),
+                    Some(url::Host::Ipv6(address)) => address.is_loopback(),
+                    _ => false,
+                }
+                && url.port().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none()
+        })
+        .ok_or_else(|| {
+            ToolError::execution(
+                "OAuth redirect URI must be the client's loopback callback, such as http://127.0.0.1:<port>/callback",
+            )
+        })
+}
+
+/// Whether `callback` is a redirect to `redirect_uri` carrying an
+/// authorization response (a code or an error).
+fn is_callback_for(callback: &url::Url, redirect_uri: &url::Url) -> bool {
+    callback.scheme() == redirect_uri.scheme()
+        && callback.host() == redirect_uri.host()
+        && callback.port() == redirect_uri.port()
+        && callback.path() == redirect_uri.path()
+        && callback
+            .query_pairs()
+            .any(|(key, _)| matches!(key.as_ref(), "code" | "error"))
+}
+
 fn parse_oauth_callback(url: &str) -> Result<AuthorizationCallback, String> {
     AuthorizationCallback::from_redirect_url(url).map_err(|error| {
         let mut message = error.to_string();
@@ -1228,77 +1264,6 @@ fn apply_oauth_settings(
         request = request.with_client_metadata_url(client_metadata_url);
     }
     request
-}
-
-async fn receive_oauth_callback(listener: TcpListener) -> Result<(TcpStream, String), ()> {
-    loop {
-        let (mut stream, _) = listener.accept().await.map_err(|_| ())?;
-        let mut request = Vec::new();
-        loop {
-            let mut buffer = [0_u8; 1024];
-            let read = stream.read(&mut buffer).await.map_err(|_| ())?;
-            if read == 0 {
-                break;
-            }
-            request.extend_from_slice(&buffer[..read]);
-            if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-            if request.len() > OAUTH_CALLBACK_MAX_BYTES {
-                break;
-            }
-        }
-        if request.len() > OAUTH_CALLBACK_MAX_BYTES {
-            let _ = write_oauth_browser_response(&mut stream, false).await;
-            continue;
-        }
-        let Ok(request) = std::str::from_utf8(&request) else {
-            let _ = write_oauth_browser_response(&mut stream, false).await;
-            continue;
-        };
-        let Some(target) = request
-            .lines()
-            .next()
-            .and_then(|line| line.strip_prefix("GET "))
-            .and_then(|line| line.split_once(' '))
-            .map(|(target, _)| target)
-        else {
-            let _ = write_oauth_browser_response(&mut stream, false).await;
-            continue;
-        };
-        let Ok(url) = url::Url::parse(&format!("http://127.0.0.1{target}")) else {
-            let _ = write_oauth_browser_response(&mut stream, false).await;
-            continue;
-        };
-        if url.path() != "/callback" {
-            let _ = write_oauth_browser_response(&mut stream, false).await;
-            continue;
-        }
-        return Ok((stream, url.to_string()));
-    }
-}
-
-async fn write_oauth_browser_response(
-    stream: &mut TcpStream,
-    success: bool,
-) -> std::io::Result<()> {
-    let (status, body) = if success {
-        (
-            "200 OK",
-            "Authorization complete. You can close this window.",
-        )
-    } else {
-        (
-            "400 Bad Request",
-            "Authorization failed. Return to Cookie Agent and try again.",
-        )
-    };
-    let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    stream.write_all(response.as_bytes()).await?;
-    stream.shutdown().await
 }
 
 impl McpRegistry {
@@ -1739,9 +1704,22 @@ impl McpRegistry {
         }
     }
 
-    pub(crate) async fn begin_auth(&self, name: &str) -> Result<String, ToolError> {
+    pub(crate) async fn begin_auth(
+        &self,
+        name: &str,
+        redirect_uri: &str,
+    ) -> Result<String, ToolError> {
         let server = self.server(name)?;
-        server.begin_auth().await
+        server.begin_auth(redirect_uri).await
+    }
+
+    pub(crate) async fn complete_auth(
+        &self,
+        name: &str,
+        callback_url: &str,
+    ) -> Result<(), ToolError> {
+        let server = self.server(name)?;
+        server.complete_auth(callback_url).await
     }
 
     pub(crate) fn cancel_auth(&self, name: &str) -> Result<(), ToolError> {
@@ -1995,7 +1973,8 @@ impl ServerRuntime {
         Ok((manager, authorization_code))
     }
 
-    async fn begin_auth(self: &Arc<Self>) -> Result<String, ToolError> {
+    async fn begin_auth(self: &Arc<Self>, redirect_uri: &str) -> Result<String, ToolError> {
+        let redirect_uri = loopback_redirect_uri(redirect_uri)?;
         if !self.oauth_enabled() {
             return Err(ToolError::execution(format!(
                 "MCP server `{}` does not use OAuth (stdio, oauth=false, or a static Authorization header takes precedence)",
@@ -2008,23 +1987,10 @@ impl ServerRuntime {
                 self.name
             )));
         }
-        if let Some(flow) = self
-            .auth_flow
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
-        {
-            return Ok(flow.authorization_url.clone());
+        if let Some(url) = self.pending_authorization_url(&redirect_uri)? {
+            return Ok(url);
         }
 
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .map_err(|_| ToolError::execution("MCP OAuth callback listener failed"))?;
-        let port = listener
-            .local_addr()
-            .map_err(|_| ToolError::execution("MCP OAuth callback listener failed"))?
-            .port();
-        let redirect_uri = format!("http://127.0.0.1:{port}/callback");
         let store = self.oauth_store()?;
         store
             .clear()
@@ -2032,7 +1998,7 @@ impl ServerRuntime {
             .map_err(|_| ToolError::execution("MCP OAuth credential reset failed"))?;
         let (mut manager, authorization_code) = self.authorization_manager().await?;
         let settings = self.loaded.config.oauth.settings();
-        let mut request = AuthorizationRequest::new(&redirect_uri)
+        let mut request = AuthorizationRequest::new(redirect_uri.as_str())
             .with_client_name("Cookie Agent")
             .with_application_type("native");
         let challenge = self
@@ -2061,12 +2027,20 @@ impl ServerRuntime {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(existing) = flow.as_ref() {
-                return Ok(existing.authorization_url.clone());
+                if existing.redirect_uri == redirect_uri {
+                    return Ok(existing.authorization_url.clone());
+                }
+                if existing.exchange.is_none() {
+                    return Err(self.completing_error());
+                }
+                existing.cancellation.cancel();
             }
             *flow = Some(OAuthFlowState {
                 generation,
                 authorization_url: authorization_url.clone(),
+                redirect_uri,
                 cancellation: cancellation.clone(),
+                exchange: Some((session, authorization_code)),
             });
         }
         self.set_auth_in_progress(true);
@@ -2082,82 +2056,143 @@ impl ServerRuntime {
         let server = Arc::clone(self);
         let task_registry = Arc::clone(&registry);
         let task = tokio::spawn(async move {
-            let callback = tokio::select! {
-                result = tokio::time::timeout(OAUTH_CALLBACK_TIMEOUT, receive_oauth_callback(listener)) => {
-                    match result {
-                        Ok(result) => result,
-                        Err(_) => {
-                            if server.finish_auth_flow(generation) {
-                                server.set_status(
-                                    McpServerState::NeedsAuth,
-                                    Some("OAuth authorization timed out; authenticate to try again".into()),
-                                );
-                            }
-                            return;
-                        }
-                    }
-                }
+            tokio::select! {
+                () = tokio::time::sleep(OAUTH_CALLBACK_TIMEOUT) => {}
                 () = cancellation.cancelled() => return,
                 () = task_registry.shutdown.cancelled() => return,
                 () = server.superseded.cancelled() => return,
-            };
-            let Ok((mut browser, callback_url)) = callback else {
-                if server.finish_auth_flow(generation) {
-                    server.set_status(
-                        McpServerState::NeedsAuth,
-                        Some("invalid OAuth callback; authenticate to try again".into()),
-                    );
-                }
-                return;
-            };
-            let auth_guard = tokio::select! {
-                lock = server.auth_lock.lock() => lock,
-                () = cancellation.cancelled() => return,
-                () = task_registry.shutdown.cancelled() => return,
-                () = server.superseded.cancelled() => return,
-            };
-            let exchanged = match parse_oauth_callback(&callback_url) {
-                Ok(callback) => {
-                    authorization_code.install(callback.code);
-                    tokio::select! {
-                        result = session.handle_callback_with_issuer(
-                            REDACTED_AUTHORIZATION_CODE,
-                            &callback.csrf_token,
-                            callback.issuer.as_deref(),
-                        ) => result.map_err(|error| authorization_code.diagnostic(&error)),
-                        () = cancellation.cancelled() => return,
-                        () = task_registry.shutdown.cancelled() => return,
-                        () = server.superseded.cancelled() => return,
-                    }
-                }
-                Err(error) => Err(error),
-            };
-            drop(auth_guard);
-            let _ = write_oauth_browser_response(&mut browser, exchanged.is_ok()).await;
-            if !server.finish_auth_flow(generation) {
-                return;
             }
-            if let Err(message) = exchanged {
+            if server.expire_auth_flow(generation) {
                 server.set_status(
                     McpServerState::NeedsAuth,
-                    Some(
-                        cookie_agent_protocol::diagnostics::detail(&format!(
-                            "OAuth authorization failed; authenticate to try again\n{message}"
-                        ))
-                        .to_string(),
-                    ),
+                    Some("OAuth authorization timed out; authenticate to try again".into()),
                 );
-                return;
             }
-            *server
-                .auth_challenge
+        });
+        registry
+            .connection_tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(task);
+        Ok(authorization_url)
+    }
+
+    /// The URL of a flow already waiting on `redirect_uri`, so a client that
+    /// asks again resumes it. A flow waiting on another client's callback is
+    /// replaced once the new one is built, unless its code is already being
+    /// exchanged.
+    fn pending_authorization_url(
+        &self,
+        redirect_uri: &url::Url,
+    ) -> Result<Option<String>, ToolError> {
+        let flow = self
+            .auth_flow
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match flow.as_ref() {
+            Some(existing) if existing.redirect_uri == *redirect_uri => {
+                Ok(Some(existing.authorization_url.clone()))
+            }
+            Some(existing) if existing.exchange.is_none() => Err(self.completing_error()),
+            _ => Ok(None),
+        }
+    }
+
+    fn completing_error(&self) -> ToolError {
+        ToolError::execution(format!(
+            "MCP server `{}` is already completing OAuth authorization",
+            self.name
+        ))
+    }
+
+    /// Exchanges the code in the browser's redirect, which the client caught
+    /// on its own loopback. A URL that is not this flow's callback is
+    /// rejected without ending the flow, so a mistaken paste can be retried;
+    /// anything that reaches the exchange, including a denial or a state
+    /// mismatch, ends it.
+    async fn complete_auth(self: &Arc<Self>, callback_url: &str) -> Result<(), ToolError> {
+        let callback = url::Url::parse(callback_url.trim()).ok();
+        let registry = self
+            .registry
+            .upgrade()
+            .filter(|registry| !registry.shutdown.is_cancelled())
+            .ok_or_else(|| ToolError::execution("MCP registry is unavailable"))?;
+        let (generation, session, authorization_code, cancellation) = {
+            let mut flow = self
+                .auth_flow
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-            server.cancel_tool_refresh();
-            if let Some(mut service) = server.service.lock().await.take() {
-                let _ = service.close_with_timeout(Duration::from_secs(4)).await;
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let state = flow.as_mut().ok_or_else(|| {
+                ToolError::execution(format!(
+                    "MCP server `{}` has no OAuth authorization in progress",
+                    self.name
+                ))
+            })?;
+            if !callback
+                .as_ref()
+                .is_some_and(|callback| is_callback_for(callback, &state.redirect_uri))
+            {
+                return Err(ToolError::execution(format!(
+                    "not the OAuth callback for MCP server `{}`: expected the browser's redirect to {}",
+                    self.name, state.redirect_uri
+                )));
             }
-            server.set_status(McpServerState::Disconnected, None);
+            let (session, authorization_code) = state
+                .exchange
+                .take()
+                .ok_or_else(|| self.completing_error())?;
+            (
+                state.generation,
+                session,
+                authorization_code,
+                state.cancellation.clone(),
+            )
+        };
+        let callback = callback.expect("validated callback URL");
+        let cancelled = || ToolError::execution("OAuth authorization was cancelled");
+        let auth_guard = tokio::select! {
+            lock = self.auth_lock.lock() => lock,
+            () = cancellation.cancelled() => return Err(cancelled()),
+            () = registry.shutdown.cancelled() => return Err(cancelled()),
+        };
+        let exchanged = match parse_oauth_callback(callback.as_str()) {
+            Ok(callback) => {
+                authorization_code.install(callback.code);
+                tokio::select! {
+                    result = session.handle_callback_with_issuer(
+                        REDACTED_AUTHORIZATION_CODE,
+                        &callback.csrf_token,
+                        callback.issuer.as_deref(),
+                    ) => result.map(drop).map_err(|error| authorization_code.diagnostic(&error)),
+                    () = cancellation.cancelled() => return Err(cancelled()),
+                    () = registry.shutdown.cancelled() => return Err(cancelled()),
+                }
+            }
+            Err(error) => Err(error),
+        };
+        drop(auth_guard);
+        if !self.finish_auth_flow(generation) {
+            return Err(cancelled());
+        }
+        if let Err(message) = exchanged {
+            let message = cookie_agent_protocol::diagnostics::detail(&format!(
+                "OAuth authorization failed; authenticate to try again\n{message}"
+            ))
+            .to_string();
+            self.set_status(McpServerState::NeedsAuth, Some(message.clone()));
+            return Err(ToolError::execution(message));
+        }
+        *self
+            .auth_challenge
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        self.cancel_tool_refresh();
+        if let Some(mut service) = self.service.lock().await.take() {
+            let _ = service.close_with_timeout(Duration::from_secs(4)).await;
+        }
+        self.set_status(McpServerState::Disconnected, None);
+        let server = Arc::clone(self);
+        let task = tokio::spawn(async move {
             if let Err(error) = server.connect().await {
                 server.fail(error.to_string());
             }
@@ -2167,7 +2202,26 @@ impl ServerRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(task);
-        Ok(authorization_url)
+        Ok(())
+    }
+
+    /// Ends a flow nobody completed in time. A flow whose code is being
+    /// exchanged is left to finish.
+    fn expire_auth_flow(&self, generation: u64) -> bool {
+        let mut flow = self
+            .auth_flow
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !flow
+            .as_ref()
+            .is_some_and(|flow| flow.generation == generation && flow.exchange.is_some())
+        {
+            return false;
+        }
+        *flow = None;
+        drop(flow);
+        self.set_auth_in_progress(false);
+        true
     }
 
     fn finish_auth_flow(&self, generation: u64) -> bool {
@@ -2179,7 +2233,9 @@ impl ServerRuntime {
             .as_ref()
             .is_some_and(|flow| flow.generation == generation)
         {
-            *flow = None;
+            if let Some(flow) = flow.take() {
+                flow.cancellation.cancel();
+            }
             true
         } else {
             false

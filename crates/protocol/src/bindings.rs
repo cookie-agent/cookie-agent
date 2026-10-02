@@ -163,6 +163,8 @@ macro_rules! protocol_roots {
             ApprovalListResult,
             McpAuthBeginParams,
             McpAuthBeginResult,
+            McpAuthCompleteParams,
+            McpAuthCompleteResult,
             McpAuthCancelParams,
             McpAuthCancelResult,
             McpServerListParams,

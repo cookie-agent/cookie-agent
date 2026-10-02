@@ -76,8 +76,13 @@ including on disabled entries.
 An authorization challenge changes the server state to `needs_auth`. Run
 `cookie mcp --token <TOKEN> auth <server>` (or set `COOKIE_DAEMON_TOKEN`),
 or select the server in `/mcp` and press `a`, then
-open the displayed URL. The daemon listens on an ephemeral `127.0.0.1` callback
-port for five minutes. The TUI can copy the URL with `c` and cancel the wait with
+open the displayed URL. The client, not the daemon, listens on an ephemeral
+`127.0.0.1` callback port and hands the browser's redirect to the daemon, so a
+daemon reached through an SSH tunnel or on another machine authorizes the same
+way. When the browser runs on a different machine from the client, its
+redirect cannot connect; copy the URL from the browser's address bar and paste
+it into `/mcp` or the `cookie mcp auth` prompt instead. The daemon keeps the
+flow for five minutes. The TUI can copy the URL with `c` and cancel the wait with
 Escape. Successful authorization stores the token and reconnects the server.
 Expired tokens refresh automatically. A rejected refresh or revoked token
 returns the server to `needs_auth` instead of repeatedly opening a browser flow.
@@ -88,6 +93,10 @@ OAuth failures show the available response body or authorization error descripti
 in the MCP diagnostic, capped at 4,096 UTF-8 bytes. Content is preserved, including
 credential-like text returned by the server; terminal and Unicode format controls
 are stripped or replaced. This does not change credential storage or Debug formatting.
+
+Only the authorization code crosses the client connection: the daemon keeps
+the PKCE verifier, performs the token exchange, and stores and refreshes the
+tokens. The code is single-use and useless without that verifier.
 
 Authorization codes are held only by a one-shot in-memory relay. Cookie Agent
 passes a fixed redacted surrogate through rmcp's traced exchange path and restores

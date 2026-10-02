@@ -16,23 +16,24 @@ use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
     ClientHello, EventSubscriptionMessage, EventsSubscribeParams, EventsSubscribeResult,
     JsonRpcError, JsonRpcId, McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams,
-    McpAuthCancelResult, McpServerAddParams, McpServerEditParams, McpServerListParams,
-    McpServerListResult, McpServerMutationResult, McpServerNameParams, McpServerPersistParams,
-    McpServerSetEnabledParams, MessageFrame, Notification, ProtocolVersion, Response,
-    RunCancelParams, RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams,
-    RunStartResult, RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
-    ServerHello, SessionChildrenParams, SessionChildrenResult, SessionCompactParams,
-    SessionCompactResult, SessionCreateParams, SessionCreateResult, SessionForkParams,
-    SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
-    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
-    SessionGoalSetParams, SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
-    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
-    SessionPermissionMutationResult, SessionPermissionSetParams, SessionProducersParams,
-    SessionProducersResult, SessionRenameParams, SessionRenameResult, SessionResumeParams,
-    SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
-    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, SessionTreeUsageResult,
-    SessionUsageParams, SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams,
-    SkillsListResult, StoredEvent, Transport, TransportError,
+    McpAuthCancelResult, McpAuthCompleteParams, McpAuthCompleteResult, McpServerAddParams,
+    McpServerEditParams, McpServerListParams, McpServerListResult, McpServerMutationResult,
+    McpServerNameParams, McpServerPersistParams, McpServerSetEnabledParams, MessageFrame,
+    Notification, ProtocolVersion, Response, RunCancelParams, RunCancelResult,
+    RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerParams,
+    RunSteerResult, RunToolStdinParams, RunToolStdinResult, ServerHello, SessionChildrenParams,
+    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
+    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
+    SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
+    SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionId,
+    SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
+    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionSetParams,
+    SessionProducersParams, SessionProducersResult, SessionRenameParams, SessionRenameResult,
+    SessionResumeParams, SessionResumeResult, SessionRevertParams, SessionRevertResult,
+    SessionSetPermissionModeParams, SessionSetPermissionModeResult, SessionTreeParams,
+    SessionTreeResult, SessionTreeUsageResult, SessionUsageParams, SessionUsageResult,
+    SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult, StoredEvent, Transport,
+    TransportError,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -566,6 +567,13 @@ impl Client {
         params: McpAuthBeginParams,
     ) -> Result<McpAuthBeginResult, ClientError> {
         self.call("mcp.auth.begin", &params).await
+    }
+
+    pub async fn complete_mcp_auth(
+        &self,
+        params: McpAuthCompleteParams,
+    ) -> Result<McpAuthCompleteResult, ClientError> {
+        self.call("mcp.auth.complete", &params).await
     }
 
     pub async fn cancel_mcp_auth(

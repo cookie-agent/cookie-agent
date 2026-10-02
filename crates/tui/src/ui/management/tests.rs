@@ -142,7 +142,10 @@ fn mcp_panel_renders_copyable_oauth_wait() {
         text.contains("https://auth.example.test/authorize?state=test"),
         "{text}"
     );
-    assert!(text.contains("c copy URL | esc cancel"), "{text}");
+    assert!(
+        text.contains("c copy URL | paste redirect | esc cancel"),
+        "{text}"
+    );
 
     let mut terminal_state = panel.servers.clone();
     terminal_state[0].auth_in_progress = Some(false);

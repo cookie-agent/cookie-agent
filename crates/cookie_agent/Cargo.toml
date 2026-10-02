@@ -27,7 +27,7 @@ clap.workspace = true
 cookie_agent_config = { version = "=0.3.0", path = "../config" }
 cookie_agent_engine = { version = "=0.3.0", path = "../engine" }
 cookie_agent_models = { version = "=0.3.0", path = "../models" }
-cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = ["websocket"] }
+cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = ["websocket", "oauth-callback"] }
 cookie_agent_server = { version = "=0.3.0", path = "../server" }
 cookie_agent_tools = { version = "=0.3.0", path = "../tools" }
 cookie_agent_tui = { version = "=0.3.0", path = "../tui", optional = true }
