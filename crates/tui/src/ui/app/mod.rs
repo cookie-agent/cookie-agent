@@ -4,6 +4,7 @@ mod agents;
 mod approvals;
 mod composer;
 mod draw;
+mod emoji_backend;
 mod keys;
 mod pickers;
 mod providers;
@@ -13,6 +14,7 @@ mod subscriptions;
 pub(super) use agents::DescendantEvent;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(super) use approvals::approval_content;
+use emoji_backend::EmojiBackend;
 use keys::{edit_credential_input, is_newline_key, is_printable_key};
 use pickers::{agent_picker_row, draft_title, model_picker_row};
 pub(super) use sessions::status_change_from_event;
@@ -1455,7 +1457,7 @@ async fn run_terminal(client: Client, create_new_session: bool) -> anyhow::Resul
     )
     .context("enable keyboard enhancement")?;
     restore.keyboard_enhancement_enabled();
-    let backend = CrosstermBackend::new(stdout);
+    let backend = EmojiBackend::new(CrosstermBackend::new(stdout));
     let mut terminal = Terminal::new(backend).context("create terminal")?;
     let deliveries = app.take_deliveries();
     let (result, session_errors) = event_loop(&mut terminal, app, deliveries).await;
@@ -1482,7 +1484,7 @@ fn post_teardown_messages(
 }
 
 async fn event_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Terminal<EmojiBackend<CrosstermBackend<io::Stdout>>>,
     mut app: App,
     mut deliveries: tokio::sync::mpsc::UnboundedReceiver<ClientDelivery>,
 ) -> (anyhow::Result<()>, SessionErrorSummary) {

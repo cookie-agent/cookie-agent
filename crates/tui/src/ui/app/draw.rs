@@ -415,7 +415,7 @@ impl App {
         // Hover is the very last pass: a pure cell-style patch over whatever
         // was rendered, so it can never change layout or hit geometry.
         self.apply_hover(frame);
-        narrow_emoji_presentation(frame.buffer_mut());
+        emoji_backend::bind_emoji_shadows(frame.buffer_mut());
         fence_emoji_spill(frame.buffer_mut());
     }
 
@@ -1610,25 +1610,6 @@ impl App {
     }
 }
 
-/// Drops VS16 (U+FE0F) from glyphs that are one cell wide without it (`✏️`,
-/// `⚠️`, `❤️`). The buffer counts such a sequence as two cells, but VTE,
-/// xterm, and Alacritty draw it in one, so the shadow cell behind it is never
-/// painted and whatever the terminal showed there last lingers until
-/// something restyles it. Rewritten as the bare one-cell glyph, the shadow
-/// cell becomes an ordinary blank the diff repaints, and the layout keeps its
-/// two columns on every terminal.
-fn narrow_emoji_presentation(buffer: &mut ratatui::buffer::Buffer) {
-    for cell in &mut buffer.content {
-        if !cell.symbol().contains('\u{FE0F}') {
-            continue;
-        }
-        let bare = cell.symbol().replace('\u{FE0F}', "");
-        if UnicodeWidthStr::width(bare.as_str()) == 1 {
-            cell.set_symbol(&bare);
-        }
-    }
-}
-
 /// Marks the cells a joined emoji (`👩‍💻`, `👍🏽`, `🏳️‍🌈`) may spill over as
 /// always-redrawn. The buffer gives such a grapheme two cells, but a terminal
 /// without grapheme clustering draws each of its parts, so it runs over the
@@ -1682,21 +1663,6 @@ fn fence_emoji_spill(buffer: &mut ratatui::buffer::Buffer) {
 #[cfg(test)]
 mod emoji_width_tests {
     use ratatui::{buffer::Buffer, layout::Rect, style::Style};
-
-    #[test]
-    fn text_default_glyphs_lose_vs16_and_their_shadow_cell_is_a_plain_blank() {
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 8, 1));
-        buffer.set_string(0, 0, "✏️x💻y", Style::default());
-        super::narrow_emoji_presentation(&mut buffer);
-        let symbols = buffer
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<Vec<_>>();
-        // `✏` keeps its two columns as glyph + blank; `💻` is wide everywhere
-        // and is left alone.
-        assert_eq!(symbols, ["✏", " ", "x", "💻", " ", "y", " ", " "]);
-    }
 
     #[test]
     fn cells_after_a_joined_emoji_are_resent_even_when_unchanged() {
