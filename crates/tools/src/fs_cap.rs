@@ -54,16 +54,20 @@ mod unix {
         limit: usize,
         weight: usize,
     ) -> Result<(), ToolError> {
-        counter
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(weight).filter(|next| *next <= limit)
-            })
-            .map(|_| ())
-            .map_err(|_| {
-                ToolError::resource_limit(format!(
+        // A compare-exchange loop rather than `fetch_update`, which Rust 1.99
+        // deprecates in favour of a `try_update` the 1.88 MSRV lacks.
+        let mut used = counter.load(Ordering::Acquire);
+        loop {
+            let Some(next) = used.checked_add(weight).filter(|next| *next <= limit) else {
+                return Err(ToolError::resource_limit(format!(
                     "aggregate prepared-object weight would exceed {limit}"
-                ))
-            })
+                )));
+            };
+            match counter.compare_exchange_weak(used, next, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Ok(()),
+                Err(actual) => used = actual,
+            }
+        }
     }
 
     impl Drop for BudgetReservation {

@@ -1329,15 +1329,7 @@ impl Engine {
             ));
         }
         #[cfg(test)]
-        if self
-            .inner
-            .test_hooks
-            .delegate_start_failures
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
-                (remaining > 0).then(|| remaining - 1)
-            })
-            .is_ok()
-        {
+        if crate::runtime::take_injected_failure(&self.inner.test_hooks.delegate_start_failures) {
             self.inner
                 .test_hooks
                 .delegate_start_failure_observed
@@ -1658,15 +1650,7 @@ impl Engine {
         handle: DelegateHandle,
     ) -> Result<tokio::sync::oneshot::Sender<()>, EngineError> {
         #[cfg(test)]
-        if self
-            .inner
-            .test_hooks
-            .resume_monitor_failures
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
-                (remaining > 0).then(|| remaining - 1)
-            })
-            .is_ok()
-        {
+        if crate::runtime::take_injected_failure(&self.inner.test_hooks.resume_monitor_failures) {
             return Err(EngineError::ActorStopped);
         }
         let (release, admitted) = tokio::sync::oneshot::channel();
@@ -2071,15 +2055,9 @@ impl Engine {
         reason: &str,
     ) -> Result<(), EngineError> {
         #[cfg(test)]
-        if self
-            .inner
-            .test_hooks
-            .delegate_terminal_append_failures
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
-                (remaining > 0).then(|| remaining - 1)
-            })
-            .is_ok()
-        {
+        if crate::runtime::take_injected_failure(
+            &self.inner.test_hooks.delegate_terminal_append_failures,
+        ) {
             return Err(EngineError::ToolFailed(
                 "injected delegate terminal append failure".into(),
             ));

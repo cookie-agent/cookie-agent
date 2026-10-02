@@ -95,17 +95,9 @@ impl Engine {
                 )?;
             }
             #[cfg(test)]
-            if self
-                .inner
-                .test_hooks
-                .adoption_reconcile_failures
-                .fetch_update(
-                    std::sync::atomic::Ordering::AcqRel,
-                    std::sync::atomic::Ordering::Acquire,
-                    |remaining| remaining.checked_sub(1),
-                )
-                .is_ok()
-            {
+            if crate::runtime::take_injected_failure(
+                &self.inner.test_hooks.adoption_reconcile_failures,
+            ) {
                 return Err(EngineError::ActorStopped);
             }
             for run in session.runs.values() {

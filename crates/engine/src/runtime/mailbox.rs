@@ -1184,15 +1184,9 @@ impl Engine {
                         | Event::UserInputTransformed { .. }
                         | Event::UserInputSubmitted { .. }
                         | Event::RunFailed { .. }
-                ) && self
-                    .inner
-                    .test_hooks
-                    .run_setup_append_failures
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
-                        remaining.checked_sub(1)
-                    })
-                    .is_ok()
-                {
+                ) && crate::runtime::take_injected_failure(
+                    &self.inner.test_hooks.run_setup_append_failures,
+                ) {
                     let event_name = match &*event {
                         Event::MessageInjected { .. } => "message injected",
                         Event::UserInputTransformed { .. } => "user input transformed",

@@ -7,13 +7,32 @@
 
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use std::sync::mpsc as std_mpsc;
 
 use cookie_agent_protocol::RunId;
 use tokio::sync::{mpsc, oneshot};
+
+/// Consumes one injected failure from `remaining`, reporting whether one was
+/// left. A compare-exchange loop rather than `fetch_update`, which Rust 1.99
+/// deprecates in favour of a `try_update` the 1.88 MSRV lacks.
+pub(crate) fn take_injected_failure(remaining: &AtomicU64) -> bool {
+    let mut current = remaining.load(Ordering::Acquire);
+    while current > 0 {
+        match remaining.compare_exchange_weak(
+            current,
+            current - 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
+    false
+}
 
 pub(crate) struct PromptSnapshotHook {
     pub(crate) reached: Mutex<Option<oneshot::Sender<()>>>,

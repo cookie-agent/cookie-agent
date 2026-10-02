@@ -69,8 +69,10 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const TOOL_LIST_DEBOUNCE: Duration = Duration::from_millis(750);
 #[cfg(not(test))]
 const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+// Long enough that a loaded CI runner finishes the discovery, registration,
+// and authorization round trips of a test flow before it expires.
 #[cfg(test)]
-const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_millis(200);
+const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(any(unix, test))]
 const OAUTH_STORE_FILE: &str = "mcp-oauth.json";
 const OAUTH_STORE_LOCK_FILE: &str = "mcp-oauth.lock";

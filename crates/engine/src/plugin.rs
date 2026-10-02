@@ -1269,11 +1269,23 @@ impl PluginRuntime {
         notifications: Arc<PluginNotificationQueue>,
     ) {
         static NEXT_CONNECTION_EPOCH: AtomicU64 = AtomicU64::new(1);
-        let epoch = NEXT_CONNECTION_EPOCH
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
-                epoch.checked_add(1)
-            })
-            .expect("plugin connection epoch space exhausted");
+        // A compare-exchange loop rather than `fetch_update`, which Rust 1.99
+        // deprecates in favour of a `try_update` the 1.88 MSRV lacks.
+        let mut epoch = NEXT_CONNECTION_EPOCH.load(Ordering::Acquire);
+        loop {
+            let next = epoch
+                .checked_add(1)
+                .expect("plugin connection epoch space exhausted");
+            match NEXT_CONNECTION_EPOCH.compare_exchange_weak(
+                epoch,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(actual) => epoch = actual,
+            }
+        }
         {
             let mut connection = self
                 .producer_connection
