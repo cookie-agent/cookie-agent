@@ -263,8 +263,11 @@ session and drive the run loop:
 - **Approvals.** A stateless approval evaluator (the `approval` internal agent)
   classifies asks in the three `auto_approve` modes; classifier escalations go
   to the user, reject automatically, or approve once automatically according to
-  the mode. `ask` skips the classifier, and `yolo` approves immediately. A
-  doom-loop guard rejects repeated identical approvals.
+  the mode. Each evaluation is one fresh model call that sees the latest user
+  request, up to five recent user, tree-grant, or classifier decisions for the
+  same permission action from the tree's resident sessions, and the tool call's
+  normalized parameters. `ask` skips the classifier, and `yolo` approves
+  immediately. A doom-loop guard rejects repeated identical approvals.
 - **Tool dispatch.** Calls from one committed model turn are prepared and
   started in model order, then all permission decisions and serialized approval
   prompts resolve before execution begins. Tools explicitly marked parallel are

@@ -726,6 +726,10 @@ impl ApprovalRequest {
     pub const fn operation(&self) -> &PreparedOperationIdentity {
         &self.operation
     }
+    #[must_use]
+    pub fn evaluations(&self) -> &[ApprovalEvaluation] {
+        &self.evaluations
+    }
 }
 impl<'de> Deserialize<'de> for ApprovalRequest {
     fn deserialize<D>(d: D) -> Result<Self, D::Error>

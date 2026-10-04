@@ -14,7 +14,9 @@ use tokio::sync::oneshot;
 
 use super::{
     ActiveRun, Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
-    InternalAgentHistoryInput, approval_projection::doom_loop_repetitions, helpers::root_id,
+    InternalAgentHistoryInput,
+    approval_projection::doom_loop_repetitions,
+    helpers::{root_id, truncate_utf8},
     internal_agents::parse_internal_approval,
 };
 use crate::permissions::ApprovalStore;
@@ -23,9 +25,16 @@ use cookie_agent_protocol::InternalAgentKind;
 
 pub(super) const APPROVAL_USER_REQUEST_PREFIX: &str = "Evaluate only the current approval request. Return strict JSON only: {\"decision\":\"allow\"|\"deny\"|\"ask\"}.\n\n<latest_user_request>\n";
 pub(super) const APPROVAL_USER_REQUEST_SUFFIX: &str = "\n</latest_user_request>";
+pub(super) const APPROVAL_PRIOR_DECISIONS_PREFIX: &str = "\n\n<prior_decisions>\nMost recent finalized approvals for the same permission action in this session tree, oldest first. User decisions show the user's intent; approval reviewer decisions are earlier automated verdicts and may be wrong.\n";
+pub(super) const APPROVAL_PRIOR_DECISIONS_SUFFIX: &str = "</prior_decisions>";
+pub(super) const APPROVAL_NO_PRIOR_DECISIONS: &str = "[none]\n";
 pub(super) const APPROVAL_TOOL_CALL_PREFIX: &str = "\n\n<tool_call>\n";
 pub(super) const APPROVAL_TOOL_CALL_SUFFIX: &str = "\n</tool_call>";
 pub(super) const APPROVAL_NO_USER_MESSAGE: &str = "[no user message]";
+/// Prior decisions shown to the approval reviewer, newest kept.
+const APPROVAL_PRIOR_DECISION_LIMIT: usize = 5;
+/// Byte cap for each resource or feedback string in a prior-decision line.
+const APPROVAL_PRIOR_DECISION_TEXT_MAX: usize = 256;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ApprovalOutcome {
@@ -59,6 +68,17 @@ pub(crate) enum ApprovalEvaluationTransition {
 pub(crate) struct ApprovalToolInput<'a> {
     pub(crate) name: &'a str,
     pub(crate) normalized_parameters: &'a Value,
+}
+
+/// One finalized approval the reviewer sees as context for a new request.
+#[derive(Debug, Eq, PartialEq)]
+struct PriorApprovalDecision {
+    timestamp: jiff::Timestamp,
+    operations: Vec<String>,
+    resources: Vec<String>,
+    approved: bool,
+    source: ApprovalDecisionSource,
+    feedback: Option<String>,
 }
 
 pub(crate) struct ModelApprovalInput<'a> {
@@ -340,8 +360,15 @@ impl Engine {
                 }
                 let approval_policy =
                     self.active_internal_policy(active, InternalAgentKind::Approval)?;
-                self.evaluate_stateless_approval(active, run, &session, &approval_policy, tool)
-                    .await
+                self.evaluate_stateless_approval(
+                    active,
+                    run,
+                    &session,
+                    &approval_policy,
+                    &request,
+                    tool,
+                )
+                .await
             }
             PermissionMode::Yolo => unreachable!("yolo approvals resolve before prompting"),
         };
@@ -403,10 +430,26 @@ impl Engine {
         run: RunId,
         session: &crate::session::SessionProjection,
         policy: &FrozenInternalAgentPolicy,
+        request: &ApprovalRequest,
         tool: ApprovalToolInput<'_>,
     ) -> ApprovalInternalDecisionKind {
         let events = session.log.event_snapshot();
-        let prompt = approval_stateless_input(tool, latest_user_message(&events, run));
+        let actions = request
+            .operation()
+            .capabilities()
+            .iter()
+            .map(|capability| capability.action)
+            .collect::<Vec<_>>();
+        let tree_events = self
+            .inner
+            .store
+            .resident_tree_logs(root_id(&session.meta.origin, active.session))
+            .iter()
+            .map(|log| log.event_snapshot())
+            .collect::<Vec<_>>();
+        let prior =
+            prior_approval_decisions(tree_events.iter().map(|events| events.as_slice()), &actions);
+        let prompt = approval_stateless_input(tool, latest_user_message(&events, run), &prior);
         let history =
             approval_stateless_history(policy.agent.composed_prompt.clone(), prompt.clone());
         let result = self
@@ -436,16 +479,132 @@ impl Engine {
     }
 }
 
-fn approval_stateless_input(tool: ApprovalToolInput<'_>, latest_user: Option<&str>) -> String {
+fn approval_stateless_input(
+    tool: ApprovalToolInput<'_>,
+    latest_user: Option<&str>,
+    prior: &[PriorApprovalDecision],
+) -> String {
     let tool_call = serde_json::json!({
         "name": tool.name,
         "normalized_parameters": canonical_approval_parameters(tool.normalized_parameters),
     });
     format!(
-        "{APPROVAL_USER_REQUEST_PREFIX}{}{APPROVAL_USER_REQUEST_SUFFIX}{APPROVAL_TOOL_CALL_PREFIX}{}{APPROVAL_TOOL_CALL_SUFFIX}",
+        "{APPROVAL_USER_REQUEST_PREFIX}{}{APPROVAL_USER_REQUEST_SUFFIX}{APPROVAL_PRIOR_DECISIONS_PREFIX}{}{APPROVAL_PRIOR_DECISIONS_SUFFIX}{APPROVAL_TOOL_CALL_PREFIX}{}{APPROVAL_TOOL_CALL_SUFFIX}",
         latest_user.unwrap_or(APPROVAL_NO_USER_MESSAGE),
+        render_prior_decisions(prior),
         serde_json::to_string(&tool_call).expect("safe approval tool call serializes")
     )
+}
+
+fn render_prior_decisions(prior: &[PriorApprovalDecision]) -> String {
+    if prior.is_empty() {
+        return APPROVAL_NO_PRIOR_DECISIONS.to_owned();
+    }
+    prior
+        .iter()
+        .map(|decision| {
+            let outcome = if decision.approved {
+                "approved"
+            } else {
+                "rejected"
+            };
+            let decider = match decision.source {
+                ApprovalDecisionSource::User => "user",
+                ApprovalDecisionSource::TreeGrant => "user (approve all)",
+                _ => "approval reviewer",
+            };
+            let feedback = decision
+                .feedback
+                .as_deref()
+                .map(|feedback| format!(" with feedback {feedback:?}"))
+                .unwrap_or_default();
+            format!(
+                "- {} {}: {outcome} by {decider}{feedback}\n",
+                decision.operations.join(","),
+                decision.resources.join(", "),
+            )
+        })
+        .collect()
+}
+
+/// The newest [`APPROVAL_PRIOR_DECISION_LIMIT`] approvals across `logs` that
+/// share a permission action with the current request and were decided by the
+/// user, a user tree grant, or the approval reviewer. Oldest first.
+fn prior_approval_decisions<'a>(
+    logs: impl IntoIterator<Item = &'a [Arc<StoredEvent>]>,
+    actions: &[cookie_agent_protocol::PermissionAction],
+) -> Vec<PriorApprovalDecision> {
+    let mut prior = Vec::new();
+    for events in logs {
+        // Finalization follows its request, so a reverse scan meets it first.
+        let mut finalized = HashMap::new();
+        let mut found = 0;
+        for event in events.iter().rev() {
+            match &event.payload {
+                Event::ApprovalFinalized {
+                    approval_id,
+                    decision,
+                } if matches!(
+                    decision.source,
+                    ApprovalDecisionSource::User
+                        | ApprovalDecisionSource::TreeGrant
+                        | ApprovalDecisionSource::InternalAgent
+                ) && matches!(
+                    decision.outcome,
+                    ApprovalFinalOutcome::Approved | ApprovalFinalOutcome::Rejected
+                ) =>
+                {
+                    finalized.insert(*approval_id, decision);
+                }
+                Event::ApprovalRequested { request } => {
+                    let Some(decision) = finalized.remove(&request.approval_id()) else {
+                        continue;
+                    };
+                    let capabilities = request.operation().capabilities();
+                    if !capabilities
+                        .iter()
+                        .any(|capability| actions.contains(&capability.action))
+                    {
+                        continue;
+                    }
+                    prior.push(PriorApprovalDecision {
+                        timestamp: event.timestamp,
+                        operations: capabilities
+                            .iter()
+                            .map(|capability| capability.operation.as_str().to_owned())
+                            .collect(),
+                        resources: request
+                            .evaluations()
+                            .iter()
+                            .map(|evaluation| {
+                                truncate_utf8(
+                                    &evaluation.trace.normalized_resource,
+                                    APPROVAL_PRIOR_DECISION_TEXT_MAX,
+                                )
+                            })
+                            .collect(),
+                        approved: decision.outcome == ApprovalFinalOutcome::Approved,
+                        source: decision.source,
+                        feedback: decision.feedback.as_ref().map(|feedback| {
+                            truncate_utf8(
+                                feedback.message.as_str(),
+                                APPROVAL_PRIOR_DECISION_TEXT_MAX,
+                            )
+                        }),
+                    });
+                    found += 1;
+                    if found == APPROVAL_PRIOR_DECISION_LIMIT {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    prior.sort_by_key(|decision| decision.timestamp);
+    let excess = prior.len().saturating_sub(APPROVAL_PRIOR_DECISION_LIMIT);
+    prior.drain(..excess);
+    prior
 }
 
 fn canonical_approval_parameters(value: &Value) -> Value {
@@ -496,11 +655,7 @@ fn approval_stateless_history(system_prompt: String, input: String) -> Vec<oven_
 }
 
 pub(super) fn approval_evaluations(request: &ApprovalRequest) -> Vec<ApprovalEvaluation> {
-    serde_json::to_value(request)
-        .ok()
-        .and_then(|value| value.get("evaluations").cloned())
-        .and_then(|value| serde_json::from_value(value).ok())
-        .expect("protocol approval request serializes evaluations")
+    request.evaluations().to_vec()
 }
 
 pub(super) fn approval_constraints(request: &ApprovalRequest) -> ApprovalConstraints {
@@ -570,11 +725,261 @@ pub(super) fn approval_expiry_wait(expires_at: Option<jiff::Timestamp>) -> std::
 mod tests {
     use oven_sdk::Request as ModelRequest;
 
-    use super::{
-        APPROVAL_NO_USER_MESSAGE, APPROVAL_TOOL_CALL_PREFIX, APPROVAL_TOOL_CALL_SUFFIX,
-        APPROVAL_USER_REQUEST_PREFIX, APPROVAL_USER_REQUEST_SUFFIX, ApprovalToolInput,
-        approval_stateless_history, approval_stateless_input,
+    use std::sync::Arc;
+
+    use cookie_agent_protocol::{
+        ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalDecisionSource,
+        ApprovalEvaluation, ApprovalFeedback, ApprovalFinalDecision, ApprovalFinalOutcome,
+        ApprovalId, ApprovalReasonCode, ApprovalRequest, ApprovalResourceSource, ApprovalTrigger,
+        DecisionTrace, PermissionAction, PermissionEffect, PreparedApprovalResource,
+        PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
+        PreparedResourceDigest, PreparedResourceIdentity, SafeErrorMessage, SessionId,
+        Sha256Digest, StoredEvent,
     };
+
+    use super::{
+        APPROVAL_NO_PRIOR_DECISIONS, APPROVAL_NO_USER_MESSAGE, APPROVAL_PRIOR_DECISIONS_PREFIX,
+        APPROVAL_PRIOR_DECISIONS_SUFFIX, APPROVAL_TOOL_CALL_PREFIX, APPROVAL_TOOL_CALL_SUFFIX,
+        APPROVAL_USER_REQUEST_PREFIX, APPROVAL_USER_REQUEST_SUFFIX, ApprovalToolInput, Event,
+        PriorApprovalDecision, approval_stateless_history, approval_stateless_input,
+        prior_approval_decisions, render_prior_decisions,
+    };
+
+    fn stored(seq: u64, payload: Event) -> Arc<StoredEvent> {
+        Arc::new(StoredEvent {
+            engine_version: None,
+            origin: None,
+            session_id: SessionId::new_v7(),
+            run_id: None,
+            seq,
+            timestamp: jiff::Timestamp::from_second(i64::try_from(seq).unwrap()).unwrap(),
+            payload,
+        })
+    }
+
+    fn requested(
+        seq: u64,
+        approval_id: ApprovalId,
+        action: PermissionAction,
+        resource: &str,
+    ) -> Arc<StoredEvent> {
+        let binding_digest =
+            PreparedResourceDigest::from_canonical_binding_bytes(resource.as_bytes());
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(resource.as_bytes()),
+            vec![ApprovalCapability {
+                action,
+                operation: PreparedCapabilityOperation::new("op:test").unwrap(),
+            }],
+            vec![PreparedApprovalResource {
+                capability: action,
+                canonical: PreparedResourceIdentity::new("file:test").unwrap(),
+                binding_digest: binding_digest.clone(),
+                binding_lifetime: PreparedBindingLifetime::ProcessLocal,
+                boundary: ApprovalBoundary::Exact,
+                source: ApprovalResourceSource::PrimaryOperation,
+            }],
+            Sha256Digest::of_bytes(b"context"),
+        )
+        .unwrap();
+        let request = ApprovalRequest::new(
+            approval_id,
+            1,
+            ApprovalTrigger::PermissionPolicy,
+            operation,
+            vec![ApprovalEvaluation {
+                resource_digest: binding_digest,
+                effect: PermissionEffect::Ask,
+                trace: DecisionTrace {
+                    action,
+                    normalized_resource: resource.to_owned(),
+                    candidates: Vec::new(),
+                    effect: PermissionEffect::Ask,
+                    precedence_reason: "test".to_owned(),
+                },
+            }],
+            ApprovalConstraints {
+                allow_once: true,
+                allow_tree_grant: false,
+                cancellable: true,
+                expires_at: None,
+            },
+        )
+        .unwrap();
+        stored(seq, Event::ApprovalRequested { request })
+    }
+
+    fn finalized(
+        seq: u64,
+        approval_id: ApprovalId,
+        outcome: ApprovalFinalOutcome,
+        source: ApprovalDecisionSource,
+        feedback: Option<&str>,
+    ) -> Arc<StoredEvent> {
+        stored(
+            seq,
+            Event::ApprovalFinalized {
+                approval_id,
+                decision: ApprovalFinalDecision {
+                    outcome,
+                    source,
+                    reason_code: ApprovalReasonCode::InternalAgentAllowed,
+                    feedback: feedback.map(|message| ApprovalFeedback {
+                        message: SafeErrorMessage::new(message).unwrap(),
+                    }),
+                    tree_grant_id: None,
+                },
+            },
+        )
+    }
+
+    fn decided(
+        seq: u64,
+        action: PermissionAction,
+        resource: &str,
+        outcome: ApprovalFinalOutcome,
+        source: ApprovalDecisionSource,
+    ) -> [Arc<StoredEvent>; 2] {
+        let id = ApprovalId::new_v7();
+        [
+            requested(seq, id, action, resource),
+            finalized(seq + 1, id, outcome, source, None),
+        ]
+    }
+
+    #[test]
+    fn prior_decisions_keep_the_newest_five_of_the_same_action_across_logs() {
+        let mut root = Vec::new();
+        for index in 0..4 {
+            root.extend(decided(
+                10 + index * 10,
+                PermissionAction::Write,
+                &format!("/root/{index}"),
+                ApprovalFinalOutcome::Approved,
+                ApprovalDecisionSource::InternalAgent,
+            ));
+        }
+        root.extend(decided(
+            100,
+            PermissionAction::Bash,
+            "git push",
+            ApprovalFinalOutcome::Approved,
+            ApprovalDecisionSource::User,
+        ));
+        let mut child = Vec::new();
+        child.extend(decided(
+            15,
+            PermissionAction::Write,
+            "/child/early",
+            ApprovalFinalOutcome::Rejected,
+            ApprovalDecisionSource::User,
+        ));
+        child.extend(decided(
+            55,
+            PermissionAction::Write,
+            "/child/late",
+            ApprovalFinalOutcome::Rejected,
+            ApprovalDecisionSource::InternalAgent,
+        ));
+
+        let prior = prior_approval_decisions(
+            [root.as_slice(), child.as_slice()],
+            &[PermissionAction::Write],
+        );
+
+        let resources = prior
+            .iter()
+            .map(|decision| decision.resources[0].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            resources,
+            [
+                "/child/early",
+                "/root/1",
+                "/root/2",
+                "/root/3",
+                "/child/late"
+            ]
+        );
+    }
+
+    #[test]
+    fn prior_decisions_skip_policy_cancelled_and_pending_approvals() {
+        let pending = ApprovalId::new_v7();
+        let mut events = Vec::new();
+        events.extend(decided(
+            10,
+            PermissionAction::Write,
+            "/policy",
+            ApprovalFinalOutcome::Rejected,
+            ApprovalDecisionSource::Policy,
+        ));
+        events.extend(decided(
+            20,
+            PermissionAction::Write,
+            "/cancelled",
+            ApprovalFinalOutcome::Cancelled,
+            ApprovalDecisionSource::User,
+        ));
+        events.extend(decided(
+            30,
+            PermissionAction::Write,
+            "/kept",
+            ApprovalFinalOutcome::Approved,
+            ApprovalDecisionSource::TreeGrant,
+        ));
+        events.push(requested(40, pending, PermissionAction::Write, "/pending"));
+
+        let prior = prior_approval_decisions([events.as_slice()], &[PermissionAction::Write]);
+
+        assert_eq!(prior.len(), 1);
+        assert_eq!(prior[0].resources, ["/kept"]);
+    }
+
+    #[test]
+    fn prior_decisions_carry_user_rejection_feedback() {
+        let id = ApprovalId::new_v7();
+        let events = [
+            requested(10, id, PermissionAction::Write, "/etc/hosts"),
+            finalized(
+                11,
+                id,
+                ApprovalFinalOutcome::Rejected,
+                ApprovalDecisionSource::User,
+                Some("never touch system files"),
+            ),
+        ];
+
+        let prior = prior_approval_decisions([events.as_slice()], &[PermissionAction::Write]);
+
+        assert_eq!(
+            render_prior_decisions(&prior),
+            "- op:test /etc/hosts: rejected by user with feedback \"never touch system files\"\n"
+        );
+    }
+
+    #[test]
+    fn prior_decisions_render_each_decider_and_none_when_empty() {
+        let decision = |approved, source| PriorApprovalDecision {
+            timestamp: jiff::Timestamp::UNIX_EPOCH,
+            operations: vec!["write:replace".to_owned()],
+            resources: vec!["/tmp/a.py".to_owned()],
+            approved,
+            source,
+            feedback: None,
+        };
+        assert_eq!(render_prior_decisions(&[]), APPROVAL_NO_PRIOR_DECISIONS);
+        assert_eq!(
+            render_prior_decisions(&[
+                decision(true, ApprovalDecisionSource::InternalAgent),
+                decision(false, ApprovalDecisionSource::User),
+                decision(true, ApprovalDecisionSource::TreeGrant),
+            ]),
+            "- write:replace /tmp/a.py: approved by approval reviewer\n\
+             - write:replace /tmp/a.py: rejected by user\n\
+             - write:replace /tmp/a.py: approved by user (approve all)\n"
+        );
+    }
 
     #[test]
     fn approval_framing_string_is_frozen() {
@@ -583,6 +988,12 @@ mod tests {
             "Evaluate only the current approval request. Return strict JSON only: {\"decision\":\"allow\"|\"deny\"|\"ask\"}.\n\n<latest_user_request>\n"
         );
         assert_eq!(APPROVAL_USER_REQUEST_SUFFIX, "\n</latest_user_request>");
+        assert_eq!(
+            APPROVAL_PRIOR_DECISIONS_PREFIX,
+            "\n\n<prior_decisions>\nMost recent finalized approvals for the same permission action in this session tree, oldest first. User decisions show the user's intent; approval reviewer decisions are earlier automated verdicts and may be wrong.\n"
+        );
+        assert_eq!(APPROVAL_PRIOR_DECISIONS_SUFFIX, "</prior_decisions>");
+        assert_eq!(APPROVAL_NO_PRIOR_DECISIONS, "[none]\n");
         assert_eq!(APPROVAL_TOOL_CALL_PREFIX, "\n\n<tool_call>\n");
         assert_eq!(APPROVAL_TOOL_CALL_SUFFIX, "\n</tool_call>");
         assert_eq!(APPROVAL_NO_USER_MESSAGE, "[no user message]");
@@ -598,6 +1009,7 @@ mod tests {
                 normalized_parameters: &serde_json::json!({"filePath":"a"}),
             },
             Some("make the change"),
+            &[],
         );
         let second = approval_stateless_input(
             ApprovalToolInput {
@@ -605,6 +1017,7 @@ mod tests {
                 normalized_parameters: &serde_json::json!({"filePath":"b"}),
             },
             Some("make the change"),
+            &[],
         );
         let prefix =
             format!("{APPROVAL_USER_REQUEST_PREFIX}make the change{APPROVAL_USER_REQUEST_SUFFIX}");
@@ -640,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn stateless_approval_does_not_accumulate_prior_decisions() {
+    fn approval_input_is_deterministic_for_identical_context() {
         let make = || {
             approval_stateless_history(
                 "system".into(),
@@ -650,6 +1063,7 @@ mod tests {
                         normalized_parameters: &serde_json::json!({"filePath":"same"}),
                     },
                     Some("same user request"),
+                    &[],
                 ),
             )
         };
@@ -670,6 +1084,7 @@ mod tests {
                 normalized_parameters: &serde_json::json!({"agent_type":"worker"}),
             },
             None,
+            &[],
         );
         assert!(input.contains(&format!(
             "{APPROVAL_USER_REQUEST_PREFIX}{APPROVAL_NO_USER_MESSAGE}{APPROVAL_USER_REQUEST_SUFFIX}"
@@ -684,6 +1099,7 @@ mod tests {
                 normalized_parameters: &serde_json::json!({"z":1,"nested":{"b":2,"a":1}}),
             },
             Some("request"),
+            &[],
         );
         let second = approval_stateless_input(
             ApprovalToolInput {
@@ -691,6 +1107,7 @@ mod tests {
                 normalized_parameters: &serde_json::json!({"nested":{"a":1,"b":2},"z":1}),
             },
             Some("request"),
+            &[],
         );
         assert_eq!(first, second);
     }

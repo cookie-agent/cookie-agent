@@ -903,6 +903,25 @@ impl SessionStore {
             .cloned()
     }
 
+    /// Event logs of the resident members of `root`'s delegation tree. Never
+    /// pages a session in, so evicted or unopened members are skipped.
+    pub(crate) fn resident_tree_logs(&self, root: SessionId) -> Vec<Arc<EventLog>> {
+        self.residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resident
+            .iter()
+            .filter(|(id, session)| {
+                **id == root
+                    || matches!(
+                        &session.meta.origin,
+                        SessionOrigin::Delegated { root_session_id, .. } if *root_session_id == root
+                    )
+            })
+            .map(|(_, session)| session.log.clone())
+            .collect()
+    }
+
     /// Inspects recovery controls without paging an owned dormant session back in.
     pub(crate) fn recovery_event_snapshot(
         &self,

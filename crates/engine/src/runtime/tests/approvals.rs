@@ -501,7 +501,7 @@ async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
 }
 
 #[tokio::test]
-async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix() {
+async fn repeated_approvals_feed_prior_decisions_to_the_reviewer() {
     let (endpoint, captured) =
         scripted_two_evaluated_writes_server(r#"{"decision":"allow"}"#).await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
@@ -566,6 +566,13 @@ async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix()
         .await
         .expect("persistent approval server task");
     assert_eq!(requests.len(), 5);
+    assert!(requests[1].contains("<prior_decisions>"));
+    assert!(requests[1].contains("[none]"));
+    assert!(
+        requests[3].contains("- write:file approval-test.txt: approved by approval reviewer"),
+        "second approval request lacks the first decision: {}",
+        requests[3]
+    );
     fixture.engine.shutdown().await;
 }
 
