@@ -1413,6 +1413,9 @@ pub(super) fn reduce_event(
                 });
             }
         }
+        EventPayload::ModelToolsPublished { tool_names, .. } => {
+            state.model_tools = Some(tool_names.into());
+        }
         EventPayload::AgentMdSkipped { path, byte_length } => push_event(
             state,
             EventLevel::Warning,

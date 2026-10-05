@@ -757,6 +757,43 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
 }
 
 #[test]
+fn model_tools_event_round_trips_and_bounds_names() {
+    let event = StoredEvent {
+        engine_version: None,
+        origin: Some(EventOrigin::new("engine:model-loop").unwrap()),
+        session_id: SessionId::new_v7(),
+        run_id: Some(RunId::new_v7()),
+        seq: 1,
+        timestamp: jiff::Timestamp::now(),
+        payload: EventPayload::ModelToolsPublished {
+            attempt_id: AttemptId::new_v7(),
+            tool_names: vec!["bash".into(), "read".into()],
+        },
+    };
+    let value = serde_json::to_value(&event).unwrap();
+    assert_eq!(value["payload"]["type"], "model_tools_published");
+    assert_eq!(serde_json::from_value::<StoredEvent>(value).unwrap(), event);
+    assert_eq!(event.validate(), Ok(()));
+
+    for tool_names in [
+        vec![String::new()],
+        vec!["bad\nname".into()],
+        vec!["x".repeat(MAX_MODEL_TOOL_NAME_BYTES + 1)],
+        vec!["tool".into(); MAX_MODEL_TOOL_NAMES + 1],
+    ] {
+        let invalid = StoredEvent {
+            payload: EventPayload::ModelToolsPublished {
+                attempt_id: AttemptId::new_v7(),
+                tool_names,
+            },
+            ..event.clone()
+        };
+        assert_eq!(invalid.validate(), Err(EventSchemaError::InvalidModelTools));
+    }
+    assert!(valid_model_tool_names(&[]));
+}
+
+#[test]
 fn event_payload_best_effort_defaults_only_optional_fields() {
     let missing = deserialize_event_payload_best_effort(&json!({"type":"run_cancelled"}))
         .expect("missing optional field defaults");

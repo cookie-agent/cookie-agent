@@ -581,6 +581,9 @@ pub struct SessionState {
     pub creation_agent: Option<Box<cookie_agent_protocol::AgentSnapshot>>,
     /// The complete frozen snapshot of the latest accepted `RunStarted`.
     pub run_snapshot: Option<Box<cookie_agent_protocol::AgentSnapshot>>,
+    /// Tool names of the latest `ModelToolsPublished`: what the model was
+    /// last offered.
+    pub model_tools: Option<std::sync::Arc<[String]>>,
     /// The authoritative exact suffix from the latest accepted `RunStarted`:
     /// after any run-selection variant override, this vector — never a
     /// reconstruction from the agent fallback chain — is what attempts and

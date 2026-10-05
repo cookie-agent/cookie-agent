@@ -112,6 +112,8 @@ struct EventIndex {
     last_turn_usage: Option<(u64, u64)>,
     /// Visible `ModelAttemptStarted` records per run.
     run_attempts: HashMap<RunId, u32>,
+    /// Tool names of the latest visible `ModelToolsPublished` record.
+    last_model_tools: Option<Vec<String>>,
 }
 
 impl EventIndex {
@@ -140,6 +142,9 @@ impl EventIndex {
                 if let Some(run) = event.run_id {
                     *self.run_attempts.entry(run).or_default() += 1;
                 }
+            }
+            EventPayload::ModelToolsPublished { tool_names, .. } => {
+                self.last_model_tools = Some(tool_names.clone());
             }
             _ => {}
         }
@@ -700,6 +705,17 @@ impl EventLog {
             .index
             .last_run_started
             .clone()
+    }
+
+    /// Whether the latest recorded tool names sent to the model are `names`.
+    pub(crate) fn last_model_tools_match(&self, names: &[String]) -> bool {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .index
+            .last_model_tools
+            .as_deref()
+            == Some(names)
     }
 
     pub(crate) fn latest_checkpoint_seq(&self) -> u64 {
@@ -1642,6 +1658,7 @@ fn validate_record_incremental(
                 !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
             }),
             EventPayload::ModelRequestPrepared { attempt_id, .. }
+            | EventPayload::ModelToolsPublished { attempt_id, .. }
             | EventPayload::ModelOutputStarted { attempt_id, .. }
             | EventPayload::AttemptAbandoned { attempt_id, .. }
             | EventPayload::ModelReplayEvaluated { attempt_id, .. }
@@ -1999,6 +2016,7 @@ fn validate_record_incremental(
             );
         }
         EventPayload::ModelRequestPrepared { attempt_id, .. }
+        | EventPayload::ModelToolsPublished { attempt_id, .. }
         | EventPayload::ModelOutputStarted { attempt_id, .. } => {
             validate_attempt_owner(path, attempts, *attempt_id, record.run_id)?;
         }

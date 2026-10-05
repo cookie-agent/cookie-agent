@@ -1667,6 +1667,43 @@ impl Engine {
         Ok(())
     }
 
+    /// Records the names of the tools about to be sent so clients can show
+    /// them, skipping the record when the session's latest one already matches.
+    async fn record_model_tools(
+        &self,
+        session: SessionId,
+        run: RunId,
+        attempt_id: cookie_agent_protocol::AttemptId,
+        tools: &[ToolDefinition],
+    ) -> Result<(), EngineError> {
+        let tool_names = tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>();
+        // Names a record cannot carry are still sent; clients keep showing
+        // the previous record.
+        if !cookie_agent_protocol::valid_model_tool_names(&tool_names)
+            || self
+                .inner
+                .store
+                .get(session)?
+                .log
+                .last_model_tools_match(&tool_names)
+        {
+            return Ok(());
+        }
+        self.append(
+            session,
+            Some(run),
+            event_origin("engine:model-loop"),
+            Event::ModelToolsPublished {
+                attempt_id,
+                tool_names,
+            },
+        )
+        .await
+    }
+
     /// Streams one Oven attempt directly into the session actor and commits a
     /// complete turn only after strict lifecycle validation succeeds.
     #[allow(clippy::too_many_arguments)]
@@ -1912,6 +1949,8 @@ impl Engine {
                     .map_err(ModelError::invalid_request)?;
                 let authoritative_prompt = serde_json::to_vec(&request)
                     .map_err(|error| ModelError::invalid_request(error.to_string()))?;
+                self.record_model_tools(session, run, attempt_id, &request.tools)
+                    .await?;
                 self.append(
                     session,
                     Some(run),

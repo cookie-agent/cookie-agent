@@ -210,6 +210,34 @@ pub(super) fn system_prompt_layout(
     collapsible_event_block(block_id, body, width, theme)
 }
 
+/// The tools sent with the latest model request, pinned under the system prompt.
+pub(super) fn model_tools_layout(
+    tools: &[String],
+    expanded: Option<&HashSet<BlockId>>,
+    width: u16,
+    theme: &Theme,
+) -> ItemLayout {
+    let block_id = BlockId::ModelTools;
+    let is_expanded = expanded.is_some_and(|blocks| blocks.contains(&block_id));
+    let chevron = if is_expanded { '▾' } else { '▸' };
+    let mut body = vec![Line::styled(
+        format!(
+            "🧰 {chevron} tools · {} available (last request)",
+            tools.len()
+        ),
+        theme.internal(),
+    )];
+    if is_expanded {
+        body.extend(bounded_safe_display_text(
+            &tools.join(", "),
+            theme.internal(),
+            MAX_EXPANDED_BODY_LINES,
+            MAX_EXPANDED_BODY_BYTES,
+        ));
+    }
+    collapsible_event_block(block_id, body, width, theme)
+}
+
 pub(super) fn compaction_layout(
     seq: u64,
     commit: &cookie_agent_protocol::ContextCheckpointCommit,

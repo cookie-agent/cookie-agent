@@ -1606,6 +1606,23 @@ pub struct ContextRehydratedFile {
     pub sha256: Sha256Digest,
 }
 
+/// Most tool names one `model_tools_published` record carries.
+pub const MAX_MODEL_TOOL_NAMES: usize = 1024;
+/// Longest tool name a `model_tools_published` record accepts.
+pub const MAX_MODEL_TOOL_NAME_BYTES: usize = 256;
+
+/// Whether `names` fits a `model_tools_published` record: bounded, and every
+/// name nonempty and free of control characters.
+#[must_use]
+pub fn valid_model_tool_names(names: &[String]) -> bool {
+    names.len() <= MAX_MODEL_TOOL_NAMES
+        && names.iter().all(|name| {
+            !name.is_empty()
+                && name.len() <= MAX_MODEL_TOOL_NAME_BYTES
+                && !name.chars().any(char::is_control)
+        })
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentMdEntry {
@@ -2028,6 +2045,14 @@ pub enum EventPayload {
         attempt_id: AttemptId,
         prompt_fingerprint: Sha256Digest,
     },
+    /// Names of the tools sent with this attempt's request, after plugin
+    /// rewrites. Recorded only when they differ from the session's previous
+    /// record.
+    ModelToolsPublished {
+        attempt_id: AttemptId,
+        #[schemars(length(max = 1024))]
+        tool_names: Vec<String>,
+    },
     /// The attempt began streaming a text or reasoning part: its first
     /// output, or a switch between the two. The deltas themselves are
     /// live-only; this durably records where in the log, and when, each
@@ -2425,6 +2450,9 @@ impl EventPayload {
                 for entry in entries {
                     entry.validate()?;
                 }
+            }
+            Self::ModelToolsPublished { tool_names, .. } if !valid_model_tool_names(tool_names) => {
+                return Err(EventSchemaError::InvalidModelTools);
             }
             Self::AgentMdSkipped {
                 path,
@@ -3281,6 +3309,7 @@ pub enum EventSchemaError {
     InvalidProducerMessage,
     InvalidOrigin,
     InvalidAgentMd,
+    InvalidModelTools,
     EmptyTitle,
     TitleTooLong,
     TitleControlCharacter,
@@ -3337,6 +3366,7 @@ impl fmt::Display for EventSchemaError {
             }
             Self::InvalidOrigin => "event origin is invalid",
             Self::InvalidAgentMd => "AGENTS.md context event is invalid",
+            Self::InvalidModelTools => "published model tool names are invalid or too many",
             Self::EmptyTitle => "session title must not be blank",
             Self::TitleTooLong => "session title exceeds 512 bytes",
             Self::TitleControlCharacter => "session title must not contain control characters",

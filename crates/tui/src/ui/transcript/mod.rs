@@ -275,6 +275,7 @@ impl ConversationScroll {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum BlockId {
     SystemPrompt,
+    ModelTools,
     Compaction(u64),
     PluginMessage(u64),
     AgentMd(u64),
@@ -444,6 +445,9 @@ struct SystemPromptLayoutKey {
     snapshot_agent: AgentId,
     draft_agent: Option<AgentId>,
     expanded: bool,
+    /// The pinned tools block renders with the system prompt.
+    model_tools: Option<std::sync::Arc<[String]>>,
+    model_tools_expanded: bool,
 }
 
 struct CachedSystemPromptLayout {
@@ -574,6 +578,9 @@ pub(super) fn ensure_cached_transcript_layout(
             snapshot_agent: snapshot.agent.clone(),
             draft_agent: draft_agent.cloned(),
             expanded: expanded.is_some_and(|blocks| blocks.contains(&BlockId::SystemPrompt)),
+            model_tools: state.model_tools.clone(),
+            model_tools_expanded: expanded
+                .is_some_and(|blocks| blocks.contains(&BlockId::ModelTools)),
         });
     let system_prompt_changed =
         cache.system_prompt.as_ref().map(|cached| &cached.key) != prompt_key.as_ref();
@@ -585,6 +592,12 @@ pub(super) fn ensure_cached_transcript_layout(
         {
             let layout = system_prompt_layout(snapshot, draft_agent, expanded, width, theme);
             append_item_layout(&mut cache.layout, layout);
+            if let Some(tools) = state.model_tools.as_deref() {
+                append_item_layout(
+                    &mut cache.layout,
+                    model_tools_layout(tools, expanded, width, theme),
+                );
+            }
             Some(CachedSystemPromptLayout { key: prompt_key })
         } else {
             None
@@ -1427,6 +1440,12 @@ fn transcript_layout_at_clock(
             &mut layout,
             system_prompt_layout(snapshot, Some(&snapshot.agent), expanded, width, theme),
         );
+        if let Some(tools) = state.model_tools.as_deref() {
+            append_item_layout(
+                &mut layout,
+                model_tools_layout(tools, expanded, width, theme),
+            );
+        }
     }
     for item in &state.transcript {
         let mut assistant_part_ranges = Vec::new();

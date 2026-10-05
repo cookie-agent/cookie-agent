@@ -962,3 +962,85 @@ async fn shutdown_joins_in_flight_run_tasks_and_records_run_cancelled() {
     release.notify_waiters();
     server.abort();
 }
+
+#[tokio::test]
+async fn model_tools_are_recorded_once_while_unchanged() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    for text in ["first reply", "second reply"] {
+        responses
+            .send(MatchedScriptedResponse::last_message_role(
+                "user",
+                scripted_text_body(text),
+            ))
+            .expect("scripted reply");
+    }
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Model tools test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  bash: ask\n---\nRecord the tools.\n",
+    );
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestParallelToolProvider {
+            state: Arc::new(ParallelToolState::default()),
+            barrier: None,
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("model tools session");
+    for client_run in ["model-tools-1", "model-tools-2"] {
+        fixture
+            .engine
+            .start_run(
+                RunStartParams {
+                    reset_fallback: false,
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(client_run).unwrap(),
+                    selection: selection.clone(),
+                    input: format!("run {client_run}"),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .expect("model tools run");
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    }
+    with_watchdog("captured model tools requests", captured)
+        .await
+        .expect("captured requests");
+
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let published = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ModelToolsPublished {
+                attempt_id,
+                tool_names,
+            } => Some((event.seq, attempt_id, tool_names)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(published.len(), 1, "an unchanged tool set is recorded once");
+    let (seq, attempt_id, tool_names) = published[0];
+    assert!(tool_names.contains(&"parallel_read".to_owned()));
+    assert!(tool_names.contains(&"parallel_bash".to_owned()));
+    assert!(!tool_names.contains(&"parallel_write".to_owned()));
+    let prepared = events
+        .iter()
+        .find(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::ModelRequestPrepared { attempt_id: prepared, .. }
+                    if prepared == attempt_id
+            )
+        })
+        .expect("request prepared for the recorded attempt");
+    assert!(seq < prepared.seq, "tools are recorded before the request");
+}

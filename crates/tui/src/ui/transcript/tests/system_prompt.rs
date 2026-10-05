@@ -1153,3 +1153,43 @@ fn agent_md_row_reappears_when_a_run_without_it_breaks_the_chain() {
         ]
     );
 }
+
+#[tokio::test]
+async fn model_tools_block_lists_the_latest_tool_names_under_the_system_prompt() {
+    let mut app = test_app().await;
+    let session = SessionId::new_v7();
+    assert!(app.store.apply_event(session_created(session, 1)));
+    let started = run_started_with_suffix(session, 2, RunId::new_v7(), vec![resolved_model(None)]);
+    assert!(app.store.apply_event(started.clone()));
+    app.selected = Some(session);
+    let without_tools = rendered_frame(&mut app, 100, 24);
+    assert!(!without_tools.contains("tools ·"), "{without_tools}");
+
+    for (seq, names) in [(3, vec!["bash"]), (4, vec!["bash", "read", "webfetch"])] {
+        let mut published = started.clone();
+        published.seq = seq;
+        published.payload = EventPayload::ModelToolsPublished {
+            attempt_id: AttemptId::new_v7(),
+            tool_names: names.into_iter().map(str::to_owned).collect(),
+        };
+        assert!(app.store.apply_event(published));
+    }
+    let collapsed = rendered_frame(&mut app, 100, 24);
+    let prompt_row = collapsed.find("system prompt").expect("system prompt row");
+    let tools_row = collapsed
+        .find("🧰  ▸ tools · 3 available (last request)")
+        .unwrap_or_else(|| panic!("{collapsed}"));
+    assert!(prompt_row < tools_row, "{collapsed}");
+    assert!(!collapsed.contains("bash, read"), "{collapsed}");
+
+    app.expanded_blocks
+        .entry(session)
+        .or_default()
+        .insert(BlockId::ModelTools);
+    let expanded = rendered_frame(&mut app, 100, 24);
+    assert!(
+        expanded.contains("🧰  ▾ tools · 3 available (last request)"),
+        "{expanded}"
+    );
+    assert!(expanded.contains("bash, read, webfetch"), "{expanded}");
+}

@@ -58,7 +58,7 @@ origin class. This keeps the origin grammar restricted to `user`, `engine`,
 | Producer messaging | `producer_message_accepted`, `producer_message_admitted`, `producer_messages_claimed`, `producer_messages_released`, `producer_message_consumed`, `producer_message_discarded` |
 | User input | `message_injected`, `user_input_admitted`, `user_input_submitted`, `user_input_transformed`, `user_input_recalled`, `user_input_recalled_v2`, `user_input_applied` |
 | Run | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_interrupted` |
-| Model | `model_attempt_started`, `model_request_prepared`, `model_output_started`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback`; live-only: `text_delta`, `reasoning_delta` |
+| Model | `model_attempt_started`, `model_tools_published`, `model_request_prepared`, `model_output_started`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback`; live-only: `text_delta`, `reasoning_delta` |
 | Tools | `tool_call_started`, `tool_call_terminated`, `tool_output_elided`, `tool_stdin_submitted`, `tool_call_linked`, `delegate_queued`, `delegate_finished`, `delegate_finished_v2`, `delegate_child_terminated`; live-only: `tool_call_progress` |
 | Delegation durability | `delegation_reserved`, `delegation_started`, `delegation_run_started`, `delegation_run_attached`, `delegation_finished` |
 | Approvals | `approval_requested`, `approval_evaluated`, `approval_escalated`, `approval_user_decision_recorded`, `approval_finalized`, `approval_cancelled`, `approval_doom_loop_detected`, `tree_approval_grant_committed` |
@@ -303,6 +303,15 @@ usage projections rebuild from these events after restart, revert, and fork.
 `model_request_prepared` follows request assembly and all accepted model/provider request hooks.
 Its `prompt_fingerprint` hashes the authoritative normalized request sent to the provider, while
 `model_attempt_started` remains the earlier cancellation and lifecycle boundary.
+
+`model_tools_published` comes just before `model_request_prepared` for the same
+attempt and lists the `tool_names` sent with the request, after request hooks.
+It is recorded only when the names differ from the session's latest visible
+record, so an unchanged tool set adds nothing to later attempts. Validation
+allows at most 1,024 names, each nonempty, at most 256 bytes, and free of
+control characters; a request whose names do not fit is still sent, without
+a record. The TUI shows the latest record as a collapsible tools block under
+the system prompt.
 
 `tool_call_started` records the single/named output declaration, including
 arbitrary named streams.
