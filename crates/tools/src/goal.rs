@@ -33,7 +33,7 @@ impl GoalTools {
         Self { engine }
     }
 
-    fn get_spec() -> ToolSpec {
+    pub(crate) fn get_spec() -> ToolSpec {
         ToolSpec {
 output: Default::default(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
@@ -45,7 +45,7 @@ output: Default::default(),
         }
     }
 
-    fn update_spec() -> ToolSpec {
+    pub(crate) fn update_spec() -> ToolSpec {
         ToolSpec {
 output: Default::default(),
             concurrency: Default::default(),

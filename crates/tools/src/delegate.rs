@@ -81,6 +81,71 @@ impl DelegateToolProvider {
         Self { engine }
     }
 
+    /// Delegation tool specs; `agent_type` enumerates `targets`.
+    pub(crate) fn specs(targets: &[&str]) -> Vec<ToolSpec> {
+        vec![
+        ToolSpec {
+            output: Default::default(),
+            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
+            result_truncation: result_truncation_policy("delegate_subagent"),
+            name: "delegate_subagent".into(),
+            permission_name: "delegate".into(),
+            description: "Delegate a self-contained task to a specialist agent. Foreground (default) blocks until done. background=true returns immediately with a session handle; the result is pushed back automatically as a <subagent_notification>. If you need to wait for completion, tell the user and end your turn; the notification will wake this session. Use get_subagent_result only to read the available result after notification. To continue an existing subagent, pass its resume_session_id (see the handle in its start/completion notice).".into(),
+            parameters: serde_json::json!({
+                "type":"object","additionalProperties":false,
+                "properties":{
+                    "description":{"type":"string","description":"Short (3-5 words) summary of the task"},
+                    "prompt":{"type":"string","description":"Full task brief with objective, context, and deliverable"},
+                    "agent_type":{"type":"string","enum":targets},
+                    "background":{"type":"boolean","default":false},
+                    "resume_session_id":{
+                        "type":"string",
+                        "description":"Optional. Handle or UUID of an existing subagent of yours to resume, e.g. \"explore_1a2b3c4d\". Only subagents you delegated are valid."
+                    },
+                    "inherit_context":{"type":"boolean","default":false}
+                },
+                "required":["description","prompt","agent_type"]
+            }),
+        },
+        ToolSpec {
+            output: Default::default(),
+            concurrency: Default::default(),
+            result_truncation: result_truncation_policy("get_subagent_result"),
+            name: "get_subagent_result".into(),
+            permission_name: "delegate".into(),
+            description: "Read the current status and latest result of a subagent you delegated. This call returns immediately; it never waits. A background delegation sends a completion notification to this parent session when it ends. Use the handle from the subagent's start or completion notice, e.g. \"explore_1a2b3c4d\". Only your own subagents are visible.".into(),
+            parameters: serde_json::json!({
+                "type":"object","additionalProperties":false,
+                "properties":{
+                    "session_id":{
+                        "type":"string",
+                        "description":"Handle (agent_type + 8 hex, e.g. \"coder_9f8e7d6b\") or full UUID of one of your subagents."
+                    },
+                    "offset":{"type":"integer","minimum":0,"default":0},
+                    "limit":{"type":"integer","minimum":1,"maximum":4_294_967_295_u64,"default":2000}
+                },
+                "required":["session_id"]
+            }),
+        },
+        ToolSpec {
+            output: Default::default(),
+            concurrency: Default::default(),
+            result_truncation: result_truncation_policy("cancel_subagent"),
+            name: "cancel_subagent".into(),
+            permission_name: "delegate".into(),
+            description: "Cancel a subagent you delegated. Accepts the same handle or UUID forms as get_subagent_result.".into(),
+            parameters: serde_json::json!({
+                "type":"object","additionalProperties":false,
+                "properties":{
+                    "session_id":{"type":"string","description":"Handle or full UUID of one of your subagents."},
+                    "reason":{"type":"string"}
+                },
+                "required":["session_id"]
+            }),
+        },
+    ]
+    }
+
     fn targets(
         &self,
         session: cookie_agent_protocol::SessionId,
@@ -163,67 +228,7 @@ impl ToolProvider for DelegateToolProvider {
         Ok(if targets.is_empty() {
             Vec::new()
         } else {
-            vec![
-                ToolSpec {
-                    output: Default::default(),
-                    concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
-                    result_truncation: result_truncation_policy("delegate_subagent"),
-                    name: "delegate_subagent".into(),
-                    permission_name: Self::get_permission_name("delegate_subagent")?.into(),
-                    description: "Delegate a self-contained task to a specialist agent. Foreground (default) blocks until done. background=true returns immediately with a session handle; the result is pushed back automatically as a <subagent_notification>. If you need to wait for completion, tell the user and end your turn; the notification will wake this session. Use get_subagent_result only to read the available result after notification. To continue an existing subagent, pass its resume_session_id (see the handle in its start/completion notice).".into(),
-                    parameters: serde_json::json!({
-                        "type":"object","additionalProperties":false,
-                        "properties":{
-                            "description":{"type":"string","description":"Short (3-5 words) summary of the task"},
-                            "prompt":{"type":"string","description":"Full task brief with objective, context, and deliverable"},
-                            "agent_type":{"type":"string","enum":targets},
-                            "background":{"type":"boolean","default":false},
-                            "resume_session_id":{
-                                "type":"string",
-                                "description":"Optional. Handle or UUID of an existing subagent of yours to resume, e.g. \"explore_1a2b3c4d\". Only subagents you delegated are valid."
-                            },
-                            "inherit_context":{"type":"boolean","default":false}
-                        },
-                        "required":["description","prompt","agent_type"]
-                    }),
-                },
-                ToolSpec {
-                    output: Default::default(),
-                    concurrency: Default::default(),
-                    result_truncation: result_truncation_policy("get_subagent_result"),
-                    name: "get_subagent_result".into(),
-                    permission_name: Self::get_permission_name("get_subagent_result")?.into(),
-                    description: "Read the current status and latest result of a subagent you delegated. This call returns immediately; it never waits. A background delegation sends a completion notification to this parent session when it ends. Use the handle from the subagent's start or completion notice, e.g. \"explore_1a2b3c4d\". Only your own subagents are visible.".into(),
-                    parameters: serde_json::json!({
-                        "type":"object","additionalProperties":false,
-                        "properties":{
-                            "session_id":{
-                                "type":"string",
-                                "description":"Handle (agent_type + 8 hex, e.g. \"coder_9f8e7d6b\") or full UUID of one of your subagents."
-                            },
-                            "offset":{"type":"integer","minimum":0,"default":0},
-                            "limit":{"type":"integer","minimum":1,"maximum":4_294_967_295_u64,"default":2000}
-                        },
-                        "required":["session_id"]
-                    }),
-                },
-                ToolSpec {
-                    output: Default::default(),
-                    concurrency: Default::default(),
-                    result_truncation: result_truncation_policy("cancel_subagent"),
-                    name: "cancel_subagent".into(),
-                    permission_name: Self::get_permission_name("cancel_subagent")?.into(),
-                    description: "Cancel a subagent you delegated. Accepts the same handle or UUID forms as get_subagent_result.".into(),
-                    parameters: serde_json::json!({
-                        "type":"object","additionalProperties":false,
-                        "properties":{
-                            "session_id":{"type":"string","description":"Handle or full UUID of one of your subagents."},
-                            "reason":{"type":"string"}
-                        },
-                        "required":["session_id"]
-                    }),
-                },
-            ]
+            Self::specs(&targets.iter().map(AgentId::as_str).collect::<Vec<_>>())
         })
     }
 

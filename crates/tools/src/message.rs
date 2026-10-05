@@ -39,7 +39,7 @@ impl MessageToolProvider {
     /// is deliberately no compatibility alias for the earlier
     /// `recipient_session_id` name, which would otherwise be frozen into every
     /// normalized-arguments record this call produces.
-    fn spec() -> ToolSpec {
+    pub(crate) fn spec() -> ToolSpec {
         ToolSpec {
             output: Default::default(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,

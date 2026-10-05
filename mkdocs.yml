@@ -75,6 +75,7 @@ nav:
       - Compaction: guide/compaction.md
       - Goal Mode: guide/goals.md
       - Usage and Cost: guide/usage.md
+      - Tools: guide/tools.md
   - Engine Configuration:
       - Agent: guide/agents.md
       - Skill: guide/skills.md

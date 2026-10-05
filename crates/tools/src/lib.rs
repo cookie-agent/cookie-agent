@@ -28,6 +28,9 @@ pub mod webfetch;
 pub mod write;
 
 #[cfg(test)]
+mod tool_reference;
+
+#[cfg(test)]
 pub(crate) fn test_turn_context() -> std::sync::Arc<cookie_agent_engine::TurnAgentContext> {
     std::sync::Arc::new(cookie_agent_engine::TurnAgentContext {
         agent: cookie_agent_protocol::AgentId::new("test").expect("test agent ID"),

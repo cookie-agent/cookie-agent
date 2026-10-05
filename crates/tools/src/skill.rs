@@ -92,6 +92,20 @@ impl PreparedExecutor for SkillExecutor {
     }
 }
 
+impl SkillTool {
+    pub(crate) fn spec() -> ToolSpec {
+        ToolSpec {
+            output: Default::default(),
+            concurrency: Default::default(),
+            result_truncation: Default::default(),
+            name: "skill".into(),
+            permission_name: "skill".into(),
+            description: "Load an available skill by name with optional arguments.".into(),
+            parameters: schema::<SkillArgs>(),
+        }
+    }
+}
+
 #[async_trait]
 impl ToolProvider for SkillTool {
     fn provider_id(&self) -> &'static str {
@@ -106,15 +120,7 @@ impl ToolProvider for SkillTool {
         {
             return Ok(Vec::new());
         }
-        Ok(vec![ToolSpec {
-            output: Default::default(),
-            concurrency: Default::default(),
-            result_truncation: Default::default(),
-            name: "skill".into(),
-            permission_name: "skill".into(),
-            description: "Load an available skill by name with optional arguments.".into(),
-            parameters: schema::<SkillArgs>(),
-        }])
+        Ok(vec![Self::spec()])
     }
 
     fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
