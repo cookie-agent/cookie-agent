@@ -72,7 +72,7 @@ output: Default::default(),
             name: "read".into(),
             permission_name: Self::get_permission_name("read")?.into(),
             description:
-                "Read a file or directory snapshot, or artifact://<64 lowercase hex digest>[/<stream>], using a zero-based offset. Artifact reads return stored content without file wrappers, use possession-based access, and allow at most 2000 lines per page."
+                "Read a text/image/video file, a directory snapshot, or an artifact using a zero-based offset."
                     .into(),
             parameters: schema::<ReadArgs>(),
         }])
