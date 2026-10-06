@@ -467,14 +467,17 @@ impl ToolProvider for BashTool {
     }
 }
 
-#[cfg(unix)]
 fn bash_tool_description() -> &'static str {
-    "Execute one prepared shell command."
+    bash_tool_description_for(cfg!(windows))
 }
 
-#[cfg(windows)]
-fn bash_tool_description() -> &'static str {
-    "Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\\Users\\name\\file') or use C:/ paths."
+/// The description sent on Windows, where commands run in Git Bash, or on Unix.
+pub(crate) fn bash_tool_description_for(windows: bool) -> &'static str {
+    if windows {
+        "Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\\Users\\name\\file') or use C:/ paths."
+    } else {
+        "Execute one prepared shell command."
+    }
 }
 
 fn compact_command_line(command: &str) -> String {

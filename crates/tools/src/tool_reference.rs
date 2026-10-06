@@ -11,8 +11,8 @@ use cookie_agent_protocol::SessionId;
 use serde_json::Value;
 
 use crate::{
-    BuiltinTools, delegate::DelegateToolProvider, goal::GoalTools, message::MessageToolProvider,
-    skill::SkillTool,
+    BuiltinTools, bash::bash_tool_description_for, delegate::DelegateToolProvider, goal::GoalTools,
+    message::MessageToolProvider, skill::SkillTool,
 };
 
 const DOC_PATH: &str = concat!(
@@ -110,10 +110,34 @@ fn render_tool(page: &mut String, spec: &ToolSpec) {
         .join(", ");
     write!(
         page,
-        "\n## `{0}`\n\n```text\n{0}({signature})\n```\n\nDescription sent to the model:\n\n```text\n{1}\n```\n",
-        spec.name, spec.description
+        "\n## `{0}`\n\n```text\n{0}({signature})\n```\n",
+        spec.name
     )
     .unwrap();
+    // The page must render identically on every platform, so tools whose
+    // description depends on the host list each variant.
+    if spec.name == "bash" {
+        for (platform, description) in [
+            ("Linux and macOS", bash_tool_description_for(false)),
+            (
+                "Windows, where commands run in Git Bash",
+                bash_tool_description_for(true),
+            ),
+        ] {
+            write!(
+                page,
+                "\nDescription sent to the model on {platform}:\n\n```text\n{description}\n```\n"
+            )
+            .unwrap();
+        }
+    } else {
+        write!(
+            page,
+            "\nDescription sent to the model:\n\n```text\n{}\n```\n",
+            spec.description
+        )
+        .unwrap();
+    }
     if let Some(note) = availability(&spec.name) {
         write!(page, "\n{note}\n").unwrap();
     }

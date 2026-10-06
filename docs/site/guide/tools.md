@@ -181,10 +181,16 @@ Apply a precomputed semantic replacement atomically.
 bash(command: string, interactive?: boolean, timeout?: integer)
 ```
 
-Description sent to the model:
+Description sent to the model on Linux and macOS:
 
 ```text
 Execute one prepared shell command.
+```
+
+Description sent to the model on Windows, where commands run in Git Bash:
+
+```text
+Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\Users\name\file') or use C:/ paths.
 ```
 
 | Parameter | Type | Required | Description |
