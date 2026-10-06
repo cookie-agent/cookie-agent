@@ -142,11 +142,9 @@ async fn agent_tree_rows_are_agent_colon_title() {
     app.selected = Some(root);
     let entries = app.tree_entries();
     // Primary text is exactly `agent-id:session-title` with no session
-    // ID; cursor/watch markers live in prefix cells only.
-    let label = app.tree_row_label(&entries[0], false);
-    assert_eq!(label, "  ●    primary:fix the flaky test");
-    let label = app.tree_row_label(&entries[0], true);
-    assert_eq!(label, "> ●    primary:fix the flaky test");
+    // ID, after only the status column: cursor and watch carry no glyphs.
+    let label = app.tree_row_label(&entries[0]);
+    assert_eq!(label, "   primary:fix the flaky test");
     let root_id = root.to_string();
     assert!(!label.contains(&root_id));
     assert!(!label.contains(&root_id[..8]));
@@ -157,14 +155,11 @@ async fn agent_tree_rows_are_agent_colon_title() {
         children: Vec::new(),
     });
     let entries = app.tree_entries();
-    assert_eq!(
-        app.tree_row_label(&entries[0], false),
-        "       primary:untitled"
-    );
+    assert_eq!(app.tree_row_label(&entries[0]), "   primary:untitled");
 }
 
 #[tokio::test]
-async fn watched_tree_row_keeps_its_glyph_but_never_a_color_marker() {
+async fn watched_and_cursor_tree_rows_are_marked_by_style_alone() {
     let mut app = test_app().await;
     // Pin the default true-color theme so the assertions do not depend
     // on the developer's ambient tui.toml or terminal detection.
@@ -211,32 +206,25 @@ async fn watched_tree_row_keeps_its_glyph_but_never_a_color_marker() {
     let cursor_row = app.hit_map.tree_rows[1].rect;
     let reference_row = app.hit_map.tree_rows[2].rect;
 
-    // The `●` glyph remains the only "current session" marker…
+    // No row carries a cursor or watch glyph…
     let entries = app.tree_entries();
-    assert!(app.tree_row_label(&entries[0], false).contains("● "));
-    // …while the row renders exactly like every other plain row:
-    // cell-for-cell identical styles (no toasted selection band, no
-    // user-role color), and none of the bold/reverse modifiers the
-    // removed accents carried.
-    for x in watched_row.x..watched_row.x.saturating_add(watched_row.width) {
-        let cell = buffer[(x, watched_row.y)].style();
-        let reference = buffer[(x, reference_row.y)].style();
-        assert_eq!(cell, reference, "same as every other row: {cell:?}");
-        assert!(
-            !cell.add_modifier.contains(Modifier::BOLD),
-            "no bold accent: {cell:?}"
-        );
-        assert!(
-            !cell.add_modifier.contains(Modifier::REVERSED),
-            "no reverse accent: {cell:?}"
-        );
+    for entry in &entries {
+        let label = app.tree_row_label(entry);
+        assert!(!label.contains(['●', '>']), "{label:?}");
     }
-    // The keyboard cursor row keeps its assistant accent — keyboard
-    // selection is a separate, intentional highlight.
+    // …the watched row is bold body text (no color marker, no reverse)…
+    let watched_cell = buffer[(watched_row.x, watched_row.y)].style();
+    let reference = buffer[(reference_row.x, reference_row.y)].style();
+    assert!(watched_cell.add_modifier.contains(Modifier::BOLD));
+    assert!(!watched_cell.add_modifier.contains(Modifier::REVERSED));
+    assert_eq!(watched_cell.fg, reference.fg, "no color marker");
+    assert_eq!(watched_cell.bg, reference.bg, "no selection band");
+    assert!(!reference.add_modifier.contains(Modifier::BOLD));
+    // …and the keyboard cursor row keeps its own accent.
     let cursor_cell = buffer[(cursor_row.x, cursor_row.y)].style();
     assert_eq!(
         cursor_cell.fg,
-        app.theme.assistant().fg,
+        app.theme.tree_cursor().fg,
         "cursor accent: {cursor_cell:?}"
     );
 }
@@ -397,14 +385,14 @@ async fn agent_tree_status_icons_keep_row_hit_geometry_intact() {
     });
     let entries = app.tree_entries();
     for (entry, (_, icon)) in entries.iter().zip(statuses) {
-        let label = app.tree_row_label(entry, false);
+        let label = app.tree_row_label(entry);
         assert!(label.contains(&format!("{icon}primary:")));
         if icon == "   " {
             assert!(!label.contains(['✅', '⏳', '✓', '✗']));
         }
         let mut running = entry.clone();
         running.1.status = SessionStatus::Running;
-        let running_label = app.tree_row_label(&running, false);
+        let running_label = app.tree_row_label(&running);
         assert_eq!(
             UnicodeWidthStr::width(label.split_once("primary:").unwrap().0),
             UnicodeWidthStr::width(running_label.split_once("primary:").unwrap().0),
@@ -506,7 +494,7 @@ async fn run_lifecycle_events_patch_watched_and_background_panel_statuses_withou
             .find(|entry| entry.0 == session_id)
             .expect("tree meta");
         assert_eq!(running_entry.1.status, SessionStatus::Running);
-        assert!(app.tree_row_label(&running_entry, false).contains("⏳ "));
+        assert!(app.tree_row_label(&running_entry).contains("⏳ "));
 
         app.handle_delivery(ClientDelivery::Live {
             message: Box::new(cookie_agent_protocol::EventSubscriptionMessage::Event {
@@ -534,7 +522,7 @@ async fn run_lifecycle_events_patch_watched_and_background_panel_statuses_withou
             .find(|entry| entry.0 == session_id)
             .expect("tree meta");
         assert_eq!(completed_entry.1.status, SessionStatus::Completed);
-        let completed_label = app.tree_row_label(&completed_entry, false);
+        let completed_label = app.tree_row_label(&completed_entry);
         assert!(!completed_label.contains(['✅', '⏳']));
         assert!(completed_label.contains("   primary:"));
     }
@@ -1262,29 +1250,17 @@ async fn clicking_child_then_root_preserves_multilevel_tree_depth_and_hit_region
         assert_eq!(app.selected, Some(root));
         assert_eq!(app.tree_root, Some(root));
         assert_eq!(depths(&app), expected, "width {width}");
-        assert!(
-            root_selected[0].starts_with("> ●    "),
-            "width {width}: {root_selected:?}"
-        );
-        assert!(root_selected[1].starts_with("  -      "));
-        assert!(root_selected[2].starts_with("           "));
-        assert!(child_selected[0].starts_with("       "));
-        assert!(child_selected[1].starts_with("> - ●    "));
-        assert!(child_selected[2].starts_with("           "));
-        assert!(root_selected_again[1].starts_with("  -      "));
-        assert!(root_selected_again[2].starts_with("           "));
-
-        // These columns come from the actual rendered buffer. Selection
-        // changes cursor/watch cells only; agent text retains depth 0/1/2.
-        assert_eq!(text_column(&root_selected[0], "p"), 7);
-        assert_eq!(text_column(&root_selected[1], "p"), 9);
-        assert_eq!(text_column(&root_selected[2], "p"), 11);
-        assert_eq!(text_column(&child_selected[0], "p"), 7);
-        assert_eq!(text_column(&child_selected[1], "p"), 9);
-        assert_eq!(text_column(&child_selected[2], "p"), 11);
-        assert_eq!(text_column(&root_selected_again[0], "p"), 7);
-        assert_eq!(text_column(&root_selected_again[1], "p"), 9);
-        assert_eq!(text_column(&root_selected_again[2], "p"), 11);
+        // No cursor or watch glyphs: only the expand marker and the depth
+        // indent precede the status column, whatever is selected.
+        for rows in [&root_selected, &child_selected, &root_selected_again] {
+            assert!(rows[0].starts_with("   p"), "width {width}: {rows:?}");
+            assert!(rows[1].starts_with("-    p"), "width {width}: {rows:?}");
+            assert!(rows[2].starts_with("       p"), "width {width}: {rows:?}");
+            // Agent text keeps depth 0/1/2 in the actual rendered buffer.
+            assert_eq!(text_column(&rows[0], "p"), 3);
+            assert_eq!(text_column(&rows[1], "p"), 5);
+            assert_eq!(text_column(&rows[2], "p"), 7);
+        }
     }
 }
 

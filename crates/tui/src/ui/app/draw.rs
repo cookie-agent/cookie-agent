@@ -630,7 +630,6 @@ impl App {
                     Rect::new(
                         inner
                             .x
-                            .saturating_add(2)
                             .saturating_add(u16::try_from(indent_column).unwrap_or(u16::MAX)),
                         inner.y + u16::try_from(row).unwrap_or(u16::MAX),
                         1,
@@ -655,16 +654,18 @@ impl App {
             .skip(self.tree_offset)
             .take(usize::from(inner.height))
             .map(|(index, entry)| {
-                let label = self.tree_row_label(entry, cursor_index == Some(index));
-                // Rows render in plain body styling: the watched session is
-                // marked only by its `●` glyph, never a persistent color.
-                // The keyboard cursor keeps its `>` marker plus assistant
-                // accent, and click-action hover keeps the glaze patch.
-                let mut line = Line::from(Span::styled(label, self.theme.body()));
-                if cursor_index == Some(index) {
-                    line = line.style(self.theme.assistant());
+                let label = self.tree_row_label(entry);
+                // No marker glyphs: the watched session is bold and the
+                // keyboard cursor takes its own accent (one row can be both).
+                // Click-action hover keeps the glaze patch.
+                let mut style = self.theme.body();
+                if self.selected == Some(entry.0) {
+                    style = style.add_modifier(Modifier::BOLD);
                 }
-                line
+                if cursor_index == Some(index) {
+                    style = style.patch(self.theme.tree_cursor());
+                }
+                Line::from(Span::styled(label, style))
             })
             .collect::<Vec<_>>();
         if entries.is_empty() {
@@ -690,14 +691,13 @@ impl App {
         );
     }
 
-    /// One tree row: exactly `agent-id:session-title` with the shortened ID
-    /// as subdued secondary metadata. The watched session gets a `●` marker
-    /// and the cursor a `>` marker; the expand marker sits at the row's
-    /// indent depth so its hit region is stable.
+    /// One tree row: exactly `agent-id:session-title` after its indent and
+    /// status cells. The watched session and the cursor are marked by row
+    /// style alone (see [`Self::render_tree`]); the expand marker sits at
+    /// the row's indent depth so its hit region is stable.
     pub(in crate::ui) fn tree_row_label(
         &self,
         (session_id, session, depth): &(SessionId, SessionMeta, usize),
-        cursor: bool,
     ) -> String {
         let has_children = self
             .tree
@@ -716,15 +716,6 @@ impl App {
         } else {
             format!("{}{} ", "  ".repeat(depth - 1), marker)
         };
-        let watched = if self.selected == Some(*session_id) {
-            "● "
-        } else {
-            // Keep the watch-marker column reserved on every row. Without
-            // this padding, selecting the root removes two leading cells from
-            // every unselected descendant and visually cancels one depth.
-            "  "
-        };
-        let cursor = if cursor { "> " } else { "  " };
         let status = match session.status {
             SessionStatus::Running => "⏳ ",
             SessionStatus::Idle
@@ -743,9 +734,8 @@ impl App {
         } else {
             " !"
         };
-        // Primary text is exactly `agent-id:session-title`; hierarchy,
-        // cursor, and watch markers live in prefix cells only, and the row
-        // shows no session ID.
+        // Primary text is exactly `agent-id:session-title`; hierarchy and
+        // status live in prefix cells only, and the row shows no session ID.
         let agent = if *depth == 0 && self.selected == Some(*session_id) {
             self.draft
                 .as_ref()
@@ -754,7 +744,7 @@ impl App {
         } else {
             session.creation_selection.agent.clone()
         };
-        format!("{cursor}{indent}{watched}{status}{agent}:{title}{degraded}",)
+        format!("{indent}{status}{agent}:{title}{degraded}")
     }
 
     pub(in crate::ui) fn tree_entries(&self) -> Vec<(SessionId, SessionMeta, usize)> {

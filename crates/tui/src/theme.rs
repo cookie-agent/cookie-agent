@@ -569,6 +569,17 @@ impl Theme {
         self.semantic(self.palette().caramel, Color::LightCyan, Modifier::BOLD)
     }
 
+    /// The Agents panel's keyboard cursor: the assistant accent, or reverse
+    /// video without colors, where the accent's bold alone would read as the
+    /// watched session's bold.
+    pub fn tree_cursor(&self) -> Style {
+        if self.key.colors == ColorLevel::None {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            self.assistant()
+        }
+    }
+
     pub fn assistant(&self) -> Style {
         self.semantic(self.palette().sage, Color::White, Modifier::BOLD)
     }
