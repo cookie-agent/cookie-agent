@@ -117,9 +117,8 @@ pub(super) fn for_each_item_block_id(
         TranscriptItem::ProducerMessage { message_id, .. } => {
             visit(BlockId::ProducerMessage(*message_id))
         }
-        TranscriptItem::User { .. }
-        | TranscriptItem::Event { .. }
-        | TranscriptItem::Goal { .. } => true,
+        TranscriptItem::Event { id, .. } => visit(BlockId::Event(*id)),
+        TranscriptItem::User { .. } | TranscriptItem::Goal { .. } => true,
     }
 }
 

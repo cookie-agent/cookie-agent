@@ -488,3 +488,46 @@ async fn descendant_retry_errors_fold_into_one_expandable_row() {
         "{expanded}"
     );
 }
+
+#[tokio::test]
+async fn multiline_event_toggles_in_its_own_session_view() {
+    let mut app = test_app().await;
+    let session = SessionId::new_v7();
+    app.selected = Some(session);
+    app.tree_root = Some(session);
+    app.store.sessions.insert(
+        session,
+        SessionState {
+            transcript: vec![TranscriptItem::Event {
+                id: 1,
+                version: 0,
+                level: crate::state::EventLevel::Warning,
+                text: "model attempt abandoned · HTTP 503\nResponse body:\nService temporarily unavailable"
+                    .into(),
+                repeat: 2,
+            }],
+            ..SessionState::default()
+        },
+    );
+    let collapsed = rendered_frame(&mut app, 100, 24);
+    assert!(collapsed.contains("repeated 2×"), "{collapsed}");
+    assert!(!collapsed.contains("Response body:"), "{collapsed}");
+    let row = app
+        .hit_map
+        .blocks
+        .iter()
+        .find(|hit| hit.id == BlockId::Event(1))
+        .copied()
+        .expect("the row toggles");
+    let toggle = row.toggle_rect.expect("toggle rect");
+    // Click it as a user would: through the cached layout of this session.
+    app.handle_click(toggle.x, toggle.y).await;
+    let expanded = rendered_frame(&mut app, 100, 24);
+    assert!(expanded.contains("Response body:"), "{expanded}");
+    app.handle_click(toggle.x, toggle.y).await;
+    let collapsed_again = rendered_frame(&mut app, 100, 24);
+    assert!(
+        !collapsed_again.contains("Response body:"),
+        "{collapsed_again}"
+    );
+}
