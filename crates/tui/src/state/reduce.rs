@@ -2329,11 +2329,36 @@ pub(super) fn push_event(
     if level >= EventLevel::Warning {
         state.mark_event_split_pending();
     }
+    // A warning or error identical to the latest row (a retry loop hitting
+    // the same provider error) counts on that row instead of stacking a
+    // copy. An abandoned attempt can leave an empty assistant block between
+    // the two; it carries nothing, so it does not break the run. Debug and
+    // info rows stay one per event: they mark lifecycle points whose times
+    // anchor descendant rows.
+    let latest = state.transcript.iter_mut().rev().find(
+        |item| !matches!(item, TranscriptItem::Assistant { children, .. } if children.is_empty()),
+    );
+    if level >= EventLevel::Warning
+        && let Some(TranscriptItem::Event {
+            version,
+            level: latest_level,
+            text: latest_text,
+            repeat,
+            ..
+        }) = latest
+        && *latest_level == level
+        && *latest_text == text
+    {
+        *repeat = repeat.saturating_add(1);
+        *version = version.wrapping_add(1);
+        return;
+    }
     push_item(state, timestamp, |id| TranscriptItem::Event {
         id,
         version: 0,
         level,
         text,
+        repeat: 1,
     });
 }
 

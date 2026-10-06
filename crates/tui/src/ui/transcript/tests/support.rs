@@ -2013,6 +2013,7 @@ pub(crate) fn tall_transcript_state(lines: usize) -> SessionState {
                 version: 0,
                 level: crate::state::EventLevel::Warning,
                 text: format!("line {index}"),
+                repeat: 1,
             })
             .collect(),
         ..SessionState::default()

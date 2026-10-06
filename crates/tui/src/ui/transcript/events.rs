@@ -238,6 +238,73 @@ pub(super) fn model_tools_layout(
     collapsible_event_block(block_id, body, width, theme)
 }
 
+/// A leveled diagnostic row. Its first line is the title, followed by the
+/// repeat count when the same row happened several times in a row; any
+/// further lines (a provider's response body, say) fold behind the title.
+/// Warnings and errors lead the title with their marker instead of a badge
+/// row, like the system prompt row.
+pub(super) fn event_row_layout(
+    block_id: BlockId,
+    level: crate::state::EventLevel,
+    text: &str,
+    repeat: u32,
+    expanded: Option<&HashSet<BlockId>>,
+    width: u16,
+    theme: &Theme,
+) -> ItemLayout {
+    let (role, marker) = match level {
+        crate::state::EventLevel::Debug => (Role::Debug, None),
+        crate::state::EventLevel::Info => (Role::Internal, None),
+        // Both are emoji-presentation by default: two cells everywhere,
+        // with no VS16 for the frame pass to strip.
+        crate::state::EventLevel::Warning => (Role::Warning, Some("\u{1F6A8}")),
+        crate::state::EventLevel::Error => (Role::Error, Some("\u{274C}")),
+    };
+    let block = |body: Vec<Line<'static>>| {
+        if marker.is_some() {
+            headerless_role_block(role, body, width, theme)
+        } else {
+            role_block(role, body, width, theme)
+        }
+    };
+    let mut lines = text.lines();
+    let mut title = lines.next().unwrap_or_default().to_owned();
+    if repeat > 1 {
+        title.push_str(&format!(" · retried {repeat}×"));
+    }
+    let details = lines.map(|line| Line::from(line.to_owned()));
+    let marker = marker
+        .map(|marker| format!("{marker} "))
+        .unwrap_or_default();
+    if text.lines().nth(1).is_none() {
+        return ItemLayout {
+            lines: block(vec![Line::from(format!("{marker}{title}"))]),
+            regions: Vec::new(),
+            user_seq: None,
+        };
+    }
+    let is_expanded = expanded.is_some_and(|blocks| blocks.contains(&block_id));
+    let chevron = if is_expanded { '▾' } else { '▸' };
+    let header = Line::from(format!("{marker}{chevron} {title}"));
+    let header_lines = block(vec![header.clone()]).len();
+    let mut body = vec![header];
+    if is_expanded {
+        body.extend(details);
+    }
+    let lines = block(body);
+    ItemLayout {
+        regions: vec![BlockRegion {
+            id: block_id,
+            start_line: 0,
+            end_line: lines.len(),
+            header_lines: Some(header_lines),
+            header_gutter: None,
+        }],
+        lines,
+        user_seq: None,
+    }
+}
+
 pub(super) fn compaction_layout(
     seq: u64,
     commit: &cookie_agent_protocol::ContextCheckpointCommit,

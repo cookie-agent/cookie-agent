@@ -493,8 +493,11 @@ fn descendant_warnings_splice_at_chronological_position() {
     }
     let row = |second: i64, text: &str| DescendantEvent {
         time: Timestamp::new(second, 0).unwrap(),
+        session: SessionId::new_v7(),
+        item: second as u64,
         level: EventLevel::Warning,
         text: text.to_owned(),
+        repeat: 1,
     };
     let warnings = vec![
         row(0, "early warning"),
@@ -502,12 +505,13 @@ fn descendant_warnings_splice_at_chronological_position() {
         row(9, "late warning"),
     ];
     // No cached item layouts: every item is one segment at its own time.
-    let (spliced, shifts) = App::splice_descendant_events(
+    let (spliced, shifts, _) = App::splice_descendant_events(
         &lines,
         &[],
         &offsets,
         state,
         &warnings,
+        None,
         80,
         &Theme::default(),
         &crate::state::ModelDisplayNames::default(),
@@ -551,12 +555,13 @@ fn descendant_warnings_splice_at_chronological_position() {
     );
     assert!(shifts.iter().all(|(_, inserted)| *inserted > 0));
     // Empty warnings leave the layout untouched.
-    let (untouched, empty_shifts) = App::splice_descendant_events(
+    let (untouched, empty_shifts, _) = App::splice_descendant_events(
         &lines,
         &[],
         &offsets,
         state,
         &[],
+        None,
         80,
         &Theme::default(),
         &crate::state::ModelDisplayNames::default(),

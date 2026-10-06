@@ -276,6 +276,13 @@ impl ConversationScroll {
 pub(super) enum BlockId {
     SystemPrompt,
     ModelTools,
+    /// A multi-line diagnostic row of the viewed session.
+    Event(u64),
+    /// A descendant's multi-line diagnostic row spliced into this view.
+    DescendantEvent {
+        session: SessionId,
+        item: u64,
+    },
     Compaction(u64),
     PluginMessage(u64),
     AgentMd(u64),
@@ -719,8 +726,9 @@ pub(super) fn ensure_cached_transcript_layout(
 }
 
 /// Transcript lines with descendant rows spliced in, plus each splice
-/// point's original-line position and inserted line count.
-type SplicedLines = (Vec<Line<'static>>, Vec<(usize, usize)>);
+/// point's original-line position and inserted line count, and the spliced
+/// rows' own collapsible regions in spliced-line coordinates.
+type SplicedLines = (Vec<Line<'static>>, Vec<(usize, usize)>, Vec<BlockRegion>);
 
 /// One descendant row's splice point in the unspliced layout, and the
 /// assistant block it breaks, as (item index, child index), when the row
@@ -854,6 +862,8 @@ impl App {
             &self.layout_cache.item_offsets,
             state,
             events,
+            self.selected
+                .and_then(|session_id| self.expanded_blocks.get(&session_id)),
             width,
             &self.theme,
             self.runtime.model_names(),
@@ -919,6 +929,7 @@ impl App {
         item_offsets: &[ItemAssemblyOffset],
         state: &SessionState,
         events: &[DescendantEvent],
+        expanded: Option<&HashSet<BlockId>>,
         width: u16,
         theme: &Theme,
         model_names: &ModelDisplayNames,
@@ -992,6 +1003,7 @@ impl App {
         let mut out = Vec::with_capacity(lines.len() + placements.len() * 4);
         // Splice points and inserted counts, in original-line coordinates.
         let mut splice_shifts: Vec<(usize, usize)> = Vec::new();
+        let mut regions = Vec::new();
         let mut cursor = 0usize;
         let mut placements = placements.into_iter().peekable();
         while let Some((position, event, resume)) = placements.next() {
@@ -1010,12 +1022,25 @@ impl App {
                 if needs_separator {
                     out.push(Line::default());
                 }
-                let role = match row.level {
-                    crate::state::EventLevel::Error => Role::Error,
-                    _ => Role::Warning,
-                };
-                let text = row.text.lines().map(|line| Line::from(line.to_owned()));
-                out.extend(role_block(role, text.collect(), width, theme));
+                let row_layout = event_row_layout(
+                    BlockId::DescendantEvent {
+                        session: row.session,
+                        item: row.item,
+                    },
+                    row.level,
+                    &row.text,
+                    row.repeat,
+                    expanded,
+                    width,
+                    theme,
+                );
+                let row_start = out.len();
+                regions.extend(row_layout.regions.into_iter().map(|region| BlockRegion {
+                    start_line: row_start + region.start_line,
+                    end_line: row_start + region.end_line,
+                    ..region
+                }));
+                out.extend(row_layout.lines);
                 if let Some((_, row, row_resume)) =
                     placements.next_if(|(next, _, _)| (*next).min(lines.len()) == position)
                 {
@@ -1035,7 +1060,7 @@ impl App {
             }
         }
         out.extend_from_slice(&lines[cursor..]);
-        (out, splice_shifts)
+        (out, splice_shifts, regions)
     }
 
     /// The full rendered conversation chain — transcript lines plus the
@@ -1069,7 +1094,7 @@ impl App {
             ))
         };
         let mut lines = match self.spliced_conversation_lines(width, &base, &descendant_events) {
-            Some((spliced, _)) => spliced,
+            Some((spliced, _, _)) => spliced,
             None => base.into_owned(),
         };
         if !lines.is_empty() && !notices.is_empty() {
@@ -1174,7 +1199,7 @@ impl App {
         }
         // Nothing to splice (the common case) borrows the cached layout; only
         // frames with descendant warnings pay for a spliced copy.
-        let (spliced_lines, splice_shifts) = self
+        let (spliced_lines, splice_shifts, spliced_regions) = self
             .spliced_conversation_lines(width, &layout.lines, &descendant_events)
             .unwrap_or_default();
         let layout_lines: &[Line<'static>] = if splice_shifts.is_empty() {
@@ -1223,14 +1248,19 @@ impl App {
         };
         self.hit_map
             .blocks
-            .extend(block_regions.iter().filter_map(|region| {
-                block_hit(
-                    *region,
-                    layout_lines,
-                    viewport,
-                    self.conversation_scroll.offset,
-                )
-            }));
+            .extend(
+                block_regions
+                    .iter()
+                    .chain(&spliced_regions)
+                    .filter_map(|region| {
+                        block_hit(
+                            *region,
+                            layout_lines,
+                            viewport,
+                            self.conversation_scroll.offset,
+                        )
+                    }),
+            );
         self.hit_map.user_messages.clear();
         let shifted_user_regions: Vec<UserRegion>;
         let user_regions: &[UserRegion] = if splice_shifts.is_empty() {

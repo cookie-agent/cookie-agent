@@ -871,7 +871,13 @@ impl App {
                 .map(SessionTitle::to_string)
                 .unwrap_or_else(|| meta.creation_selection.agent.to_string());
             for item in &state.transcript {
-                if let TranscriptItem::Event { level, text, .. } = item
+                if let TranscriptItem::Event {
+                    id,
+                    level,
+                    text,
+                    repeat,
+                    ..
+                } = item
                     && *level >= minimum_level
                 {
                     // Pre-date rows (from before insertion times were tracked)
@@ -879,8 +885,11 @@ impl App {
                     // sorting after every anchored item.
                     events.push(DescendantEvent {
                         time: state.item_time(item.id()).unwrap_or(jiff::Timestamp::MAX),
+                        session: meta.session_id,
+                        item: *id,
                         level: *level,
                         text: format!("from {source} ({}): {text}", short_id(&meta)),
+                        repeat: *repeat,
                     });
                 }
             }
@@ -897,7 +906,12 @@ impl App {
 pub(in crate::ui) struct DescendantEvent {
     /// Durable time of the row in its own session.
     pub(in crate::ui) time: jiff::Timestamp,
+    /// The session that owns the row, and the row's item id there.
+    pub(in crate::ui) session: SessionId,
+    pub(in crate::ui) item: u64,
     pub(in crate::ui) level: EventLevel,
     /// Row text, prefixed with its source session.
     pub(in crate::ui) text: String,
+    /// Consecutive repeats folded into the row.
+    pub(in crate::ui) repeat: u32,
 }

@@ -219,6 +219,9 @@ pub enum TranscriptItem {
         version: u64,
         level: EventLevel,
         text: String,
+        /// How many times this exact row was pushed in a row; repeats fold
+        /// into one row instead of stacking (see `push_event`).
+        repeat: u32,
     },
     /// A committed context checkpoint rendered inline at its durable event.
     Compaction {
@@ -422,6 +425,7 @@ impl TranscriptItem {
             version: 0,
             level: EventLevel::Info,
             text: text.into(),
+            repeat: 1,
         }
     }
 }

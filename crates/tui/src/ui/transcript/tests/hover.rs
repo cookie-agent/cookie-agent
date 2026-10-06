@@ -171,12 +171,14 @@ fn transcript_items_get_exactly_one_breathing_row_between_them() {
         version: 0,
         level: crate::state::EventLevel::Debug,
         text: "hidden diagnostic".into(),
+        repeat: 1,
     });
     state.transcript.push(TranscriptItem::Event {
         id: 4,
         version: 0,
         level: crate::state::EventLevel::Error,
         text: "visible failure".into(),
+        repeat: 1,
     });
     let layout = transcript_layout_with_level(
         &state,

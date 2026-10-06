@@ -13,43 +13,61 @@ use crate::theme::{ColorLevel, ThemeKind};
 use super::support::*;
 
 #[test]
-fn multiline_error_details_are_visible_at_default_event_level() {
+fn multiline_error_details_fold_behind_their_title_until_expanded() {
     let state = SessionState {
         transcript: vec![TranscriptItem::Event {
             id: 1,
             version: 0,
             level: crate::state::EventLevel::Error,
             text: "Request rejected · HTTP 400\nResponse body:\nTemperature must be omitted".into(),
+            repeat: 1,
         }],
         ..SessionState::default()
     };
-    let rendered = transcript_layout_with_level(
-        &state,
-        None,
-        80,
-        &Theme::default(),
-        &PlainHighlighter,
-        crate::state::EventLevel::Info,
-    )
-    .lines
-    .iter()
-    .map(|line| line.to_string())
-    .collect::<Vec<_>>();
+    let render = |expanded: Option<&HashSet<BlockId>>| {
+        transcript_layout_with_level(
+            &state,
+            expanded,
+            80,
+            &Theme::default(),
+            &PlainHighlighter,
+            crate::state::EventLevel::Info,
+        )
+    };
+    let collapsed = render(None);
+    let collapsed_text = snapshot_lines(&collapsed.lines);
     assert!(
-        rendered
-            .iter()
-            .any(|line| line.contains("Request rejected"))
+        collapsed_text.contains("▸ Request rejected · HTTP 400"),
+        "{collapsed_text}"
     );
-    assert!(rendered.iter().any(|line| line.contains("Response body:")));
     assert!(
-        rendered
-            .iter()
-            .any(|line| line.contains("Temperature must be omitted"))
+        !collapsed_text.contains("Response body:"),
+        "{collapsed_text}"
+    );
+    // No badge row: the marked title is the row's first line and its toggle.
+    assert!(
+        collapsed_text.starts_with("! ❌ ▸ Request rejected"),
+        "{collapsed_text}"
+    );
+    assert_eq!(collapsed.regions.len(), 1);
+    assert_eq!(collapsed.regions[0].id, BlockId::Event(1));
+    assert_eq!(collapsed.regions[0].header_lines, Some(1));
+
+    let expanded = HashSet::from([BlockId::Event(1)]);
+    let expanded_text = snapshot_lines(&render(Some(&expanded)).lines);
+    assert!(
+        expanded_text.contains("▾ Request rejected · HTTP 400"),
+        "{expanded_text}"
+    );
+    assert!(expanded_text.contains("Response body:"), "{expanded_text}");
+    assert!(
+        expanded_text.contains("Temperature must be omitted"),
+        "{expanded_text}"
     );
 }
 
 #[test]
-fn diagnostic_rows_keep_badges_except_headerless_info() {
+fn diagnostic_rows_mark_warnings_and_errors_in_their_title() {
     for level in [
         crate::state::EventLevel::Debug,
         crate::state::EventLevel::Info,
@@ -62,6 +80,7 @@ fn diagnostic_rows_keep_badges_except_headerless_info() {
                 version: 0,
                 level,
                 text: "diagnostic".into(),
+                repeat: 1,
             }],
             ..SessionState::default()
         };
@@ -78,10 +97,15 @@ fn diagnostic_rows_keep_badges_except_headerless_info() {
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-        if level == crate::state::EventLevel::Info {
-            assert_eq!(rendered, "· diagnostic");
-        } else {
-            assert!(rendered.contains(level.badge()), "{}", level.name());
+        // Warnings and errors carry their marker in the row itself, with no
+        // badge row above it; debug keeps its badge and info has none.
+        match level {
+            crate::state::EventLevel::Info => assert_eq!(rendered, "· diagnostic"),
+            crate::state::EventLevel::Warning => assert_eq!(rendered, "│ 🚨 diagnostic"),
+            crate::state::EventLevel::Error => assert_eq!(rendered, "! ❌ diagnostic"),
+            crate::state::EventLevel::Debug => {
+                assert!(rendered.contains(level.badge()), "{rendered}");
+            }
         }
     }
 }
@@ -103,6 +127,8 @@ async fn diagnostic_gutters_cover_hard_breaks_soft_wraps_and_scrolled_rows() {
         app.selected = Some(session);
         app.tree_root = Some(session);
         app.tui_config.minimum_event_level = crate::state::EventLevel::Debug;
+        app.expanded_blocks
+            .insert(session, HashSet::from([BlockId::Event(1)]));
         app.store.sessions.insert(
             session,
             SessionState {
@@ -111,6 +137,7 @@ async fn diagnostic_gutters_cover_hard_breaks_soft_wraps_and_scrolled_rows() {
                     version: 0,
                     level,
                     text: text.clone(),
+                    repeat: 1,
                 }],
                 ..SessionState::default()
             },
@@ -145,7 +172,15 @@ async fn diagnostic_gutters_cover_hard_breaks_soft_wraps_and_scrolled_rows() {
             assert!(copied.contains("intro\n\n  "));
             // Soft wraps add line breaks, but retain indentation and every
             // combining/ZWJ grapheme without inserting gutter characters.
-            assert_eq!(copied.replace('\n', ""), text.replace('\n', ""));
+            // The expanded title leads with the level's marker, if any, and
+            // its chevron; a soft wrap may swallow the spaces between them.
+            let copied = copied.replace('\n', "");
+            let body_text = copied
+                .trim_start_matches(['🚨', '❌', ' '])
+                .strip_prefix('▾')
+                .expect("chevron")
+                .trim_start();
+            assert_eq!(body_text, text.replace('\n', ""));
             for row_offset in [0, 2, 5] {
                 app.conversation_scroll.scroll_to(body_start + row_offset);
                 let visible = conversation_rows(&mut app, width, 16);
@@ -258,12 +293,14 @@ fn event_threshold_hides_lower_levels_without_removing_them_from_state() {
                 version: 0,
                 level: crate::state::EventLevel::Debug,
                 text: "debug row".into(),
+                repeat: 1,
             },
             TranscriptItem::Event {
                 id: 2,
                 version: 0,
                 level: crate::state::EventLevel::Error,
                 text: "error row".into(),
+                repeat: 1,
             },
         ],
         ..SessionState::default()
@@ -307,6 +344,7 @@ async fn conversation_event_filter_hit_cycles_all_levels_wraps_and_applies_immed
                 version: 0,
                 level,
                 text: text.into(),
+                repeat: 1,
             })
             .collect(),
             ..SessionState::default()
@@ -362,4 +400,91 @@ async fn conversation_event_filter_hit_cycles_all_levels_wraps_and_applies_immed
             assert!(!rendered.contains(text), "{next:?} should hide {text}");
         }
     }
+}
+
+#[tokio::test]
+async fn descendant_retry_errors_fold_into_one_expandable_row() {
+    let mut app = test_app().await;
+    let root = SessionId::new_v7();
+    let child = SessionId::new_v7();
+    app.tree = Some(cookie_agent_protocol::SessionTree {
+        session: titled_meta(root, "root session", 1),
+        children: vec![cookie_agent_protocol::SessionTree {
+            session: titled_meta(child, "Implement adapter", 1),
+            children: Vec::new(),
+        }],
+    });
+    app.tree_root = Some(root);
+    app.selected = Some(root);
+    assert!(app.store.apply_event(session_created(root, 1)));
+    assert!(app.store.apply_event(run_started_with_suffix(
+        root,
+        2,
+        cookie_agent_protocol::RunId::new_v7(),
+        vec![resolved_model(None)],
+    )));
+    let model_error: cookie_agent_protocol::ModelErrorSummary = serde_json::from_value(serde_json::json!({
+        "kind":"timeout","message":"OpenAI request failed","retryable":true,"stage":"stream_read",
+        "http_status":503,"bytes_received":97,"vendor_code":null,"request_id":null,"retry_after_ms":null,
+        "response_body":"{\n  \"error\": \"Service temporarily unavailable\"\n}"
+    }))
+    .unwrap();
+    let run = cookie_agent_protocol::RunId::new_v7();
+    let mut seq = 0;
+    for _ in 0..6 {
+        let attempt = cookie_agent_protocol::AttemptId::new_v7();
+        seq += 1;
+        assert!(
+            app.store
+                .apply_event(attempt_started(child, seq, run, attempt, None))
+        );
+        seq += 1;
+        assert!(app.store.apply_event(event(
+            child,
+            seq,
+            run,
+            cookie_agent_protocol::EventPayload::AttemptAbandoned {
+                attempt_id: attempt,
+                model_error: Some(model_error.clone()),
+            },
+        )));
+    }
+
+    let collapsed = rendered_frame(&mut app, 160, 40);
+    assert_eq!(
+        collapsed.matches("model attempt abandoned").count(),
+        1,
+        "{collapsed}"
+    );
+    assert_eq!(collapsed.matches("retried 6×").count(), 1, "{collapsed}");
+    // No badge row; the marker leads the title (a wide glyph and its pad cell).
+    assert!(!collapsed.contains("WARNING"), "{collapsed}");
+    assert!(
+        collapsed.contains("🚨  ▸ from Implement adapter"),
+        "{collapsed}"
+    );
+    assert!(
+        !collapsed.contains("Service temporarily unavailable"),
+        "{collapsed}"
+    );
+
+    let row = app
+        .hit_map
+        .blocks
+        .iter()
+        .find_map(|hit| match hit.id {
+            BlockId::DescendantEvent { session, .. } if session == child => Some(hit.id),
+            _ => None,
+        })
+        .expect("the spliced row toggles");
+    app.toggle_block(row);
+    let expanded = rendered_frame(&mut app, 160, 40);
+    assert!(
+        expanded.contains("🚨  ▾ from Implement adapter"),
+        "{expanded}"
+    );
+    assert!(
+        expanded.contains("Service temporarily unavailable"),
+        "{expanded}"
+    );
 }

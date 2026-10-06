@@ -214,30 +214,27 @@ pub(super) fn transcript_item_layout(
             children,
             ..
         } => assistant_item_layout(state, *id, attribution, children, context),
-        TranscriptItem::Event { level, text, .. } => {
+        TranscriptItem::Event {
+            id,
+            level,
+            text,
+            repeat,
+            ..
+        } => {
             // Level filtering is a pure view concern: the row stays in the
             // session projection and reappears when the threshold is lowered.
             if *level < context.minimum_event_level {
                 return ItemLayout::default();
             }
-            let badge_role = match level {
-                crate::state::EventLevel::Debug => Role::Debug,
-                crate::state::EventLevel::Info => Role::Internal,
-                crate::state::EventLevel::Warning => Role::Warning,
-                crate::state::EventLevel::Error => Role::Error,
-            };
-            ItemLayout {
-                lines: role_block(
-                    badge_role,
-                    text.lines()
-                        .map(|line| Line::from(line.to_owned()))
-                        .collect(),
-                    context.width,
-                    context.theme,
-                ),
-                regions: Vec::new(),
-                user_seq: None,
-            }
+            event_row_layout(
+                BlockId::Event(*id),
+                *level,
+                text,
+                *repeat,
+                context.expanded,
+                context.width,
+                context.theme,
+            )
         }
         TranscriptItem::Compaction { seq, commit, .. } => compaction_layout(*seq, commit, context),
         TranscriptItem::PluginMessage {

@@ -92,11 +92,32 @@ pub(super) fn role_block(
     role_block_lines(role, body, width, theme)
 }
 
+/// A `role` block without its badge row: the body hangs behind the role's
+/// gutter alone, for rows whose own first line names them.
+pub(super) fn headerless_role_block(
+    role: Role,
+    body: Vec<Line<'static>>,
+    width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    role_block_lines_with(role, body, width, theme, false)
+}
+
 pub(super) fn role_block_lines(
     role: Role,
     body: Vec<Line<'static>>,
     width: u16,
     theme: &Theme,
+) -> Vec<Line<'static>> {
+    role_block_lines_with(role, body, width, theme, true)
+}
+
+fn role_block_lines_with(
+    role: Role,
+    body: Vec<Line<'static>>,
+    width: u16,
+    theme: &Theme,
+    badge: bool,
 ) -> Vec<Line<'static>> {
     let diagnostic = matches!(
         role,
@@ -187,7 +208,7 @@ pub(super) fn role_block_lines(
         }
         return lines;
     }
-    let mut lines = if matches!(role, Role::Internal) {
+    let mut lines = if matches!(role, Role::Internal) || !badge {
         Vec::new()
     } else {
         wrapped_line(

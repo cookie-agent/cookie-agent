@@ -209,8 +209,14 @@ not captured at the time; historical events are not rewritten to invent them.
 Run failures show a concise headline followed by available model/provider identity,
 HTTP status, provider code, request ID, and response body. The same diagnostics
 are retained in session events and shown on replay. Model fallback and internal
-agent failures also include the available response diagnostics. Error rows show
-multiline text by default; expand the tool row for its display output.
+agent failures also include the available response diagnostics. Warning and
+error rows lead with 🚨 or ❌ instead of a badge row. A multiline diagnostic row
+shows only its first line, behind a `▸`; click it to show the rest, such as a
+response body. A warning or error identical to the row before it counts on that
+row (`retried 6×`) instead of adding a copy, so a retry loop hitting the
+same provider error stays one row; this includes subagent rows shown in an
+ancestor's transcript. For a failed tool, expand the tool row for its display
+output.
 Failed tools show their failure reason before their bounded inline output, even
 when they supplied separate display text. Tools with usable output do not add a
 separate TUI error row; output-less failures still do. A bash command's non-zero

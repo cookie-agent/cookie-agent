@@ -2348,6 +2348,7 @@ fn sequenced_projection_rows_use_transcript_allocator_ids() {
             version: 0,
             level: EventLevel::Warning,
             text: "old diagnostic".into(),
+            repeat: 1,
         }],
         ..SessionState::default()
     };
@@ -3282,4 +3283,65 @@ fn delegate_tool_starts_update_agent_activity() {
         },
     );
     assert_eq!(state.last_agent_activity, Some(delegated_at));
+}
+
+#[test]
+fn repeated_warnings_fold_into_one_counted_row() {
+    let session = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let model_error: ModelErrorSummary = serde_json::from_value(serde_json::json!({"kind":"timeout","message":"OpenAI request failed","retryable":true,"stage":"stream_read","http_status":503,"bytes_received":97,"vendor_code":null,"request_id":null,"retry_after_ms":null})).unwrap();
+    let mut events = Vec::new();
+    let mut push = |payload| {
+        let seq = events.len() as u64 + 1;
+        events.push(stored_event(session, Some(run), seq, payload));
+    };
+    // A retry loop: each attempt opens a block, then fails the same way.
+    for _ in 0..3 {
+        let attempt_id = AttemptId::new_v7();
+        push(EventPayload::ModelAttemptStarted {
+            attempt_id,
+            attempt_ordinal: 1,
+            fallback_index: 0,
+            retry_ordinal: 0,
+            resolved_model: resolved_model(),
+            prompt_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(b"prompt"),
+        });
+        push(EventPayload::AttemptAbandoned {
+            attempt_id,
+            model_error: Some(model_error.clone()),
+        });
+    }
+    // A different failure starts a new row.
+    let attempt_id = AttemptId::new_v7();
+    push(EventPayload::AttemptAbandoned {
+        attempt_id,
+        model_error: None,
+    });
+    let state = reduce_session_events(session, 0, &events);
+    let rows = state
+        .transcript
+        .iter()
+        .filter_map(|item| match item {
+            TranscriptItem::Event { text, repeat, .. } => Some((text.as_str(), *repeat)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(rows[0].0.contains("HTTP 503"), "{rows:?}");
+    assert_eq!(rows[0].1, 3);
+    assert_eq!(rows[1], ("model attempt abandoned", 1));
+}
+
+#[test]
+fn repeated_info_rows_stay_one_per_event() {
+    let mut state = SessionState::default();
+    for _ in 0..2 {
+        super::reduce::push_event(
+            &mut state,
+            EventLevel::Info,
+            "turn committed".into(),
+            jiff::Timestamp::now(),
+        );
+    }
+    assert_eq!(state.transcript.len(), 2);
 }
