@@ -449,8 +449,8 @@ History transforms:
   never cross the fork. Unconsumed accepted messages are forked with the
   log; consumed or durably discarded ones are not replayed as pending. Compaction
   likewise preserves the discard projection alongside accepted-message state.
-- **Revert** (`SessionReverted`): goal and message events after the revert
-  point are discarded per the existing contract, which may resurrect an
+- **Revert** (log truncation): goal and message events after the revert
+  point are removed per the existing contract, which may resurrect an
    earlier goal state or unconsumed messages. Goal and delegation-owned
    registrations are reconciled with the surviving projection; plugin
    registrations cannot be reconstructed from history and remain subject to

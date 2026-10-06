@@ -1,12 +1,12 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 27 is current-only. A client must call `handshake` with
-`{ "protocol_version": 27 }` before any other method.
+Protocol 28 is current-only. A client must call `handshake` with
+`{ "protocol_version": 28 }` before any other method.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 27.
+members of protocol 28.
 
 ## Error diagnostics
 
@@ -29,7 +29,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 27 alongside independent display and output references. The
+preserved in protocol 28 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -124,7 +124,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `run.recall_steer` | Run ID | Required nullable recalled text |
 | `run.cancel` | Run ID | `cancelled` boolean |
 | `run.tool_stdin` | Run ID, tool call ID, optional data, EOF flag | `accepted` boolean |
-| `events.subscribe` | Session ID, optional cursor, optional `limit` | Stored events after the cursor; starts notifications on the final page (see [Subscriptions](events.md#subscriptions)) |
+| `events.subscribe` | Session ID, optional cursor and `cursor_timestamp`, optional `limit` | Stored events after the cursor, or `stale_cursor`; starts notifications on the final page (see [Subscriptions](events.md#subscriptions)) |
 | `approval.list` | Root session ID, optional status | Approval records and tree grants |
 | `approval.respond` | Approval identity/revision/fingerprint, client ID, decision, optional rejection feedback | Updated approval record |
 
@@ -229,10 +229,15 @@ pending.
 
 ## Revert and fork
 
-`session.revert` is idle-only and appends a `session_reverted` marker. The target
-must be a positive existing physical sequence. The physical log remains
-append-only; branch-derived transcript, context, title, usage, and approvals use
-the visible prefix plus events after the marker.
+`session.revert` is idle-only. The target must be a positive existing
+sequence. The engine removes every event after it from the log (a run left with
+nothing but its `run_started` goes too), closes any run, tool call, internal
+agent, or approval the cut left open, and deletes the subagent sessions created
+by removed delegations; a running one refuses the revert. Later appends reuse
+the freed sequence numbers. Subscribers receive a `rewound` notification (see
+[Subscriptions](events.md#subscriptions)). Logs from before protocol 28 may
+still hold `session_reverted` markers, which readers apply as before: each hides
+what followed its target on the branch visible when it was written.
 
 `session.fork` may read an active source but requires a persisted prefix that
 contains a submitted user message. The fork copies that prefix exactly under a
@@ -244,7 +249,7 @@ the title, and continues with new physical sequences.
 | Notification | Payload |
 |---|---|
 | `runtime.changed` | Previous revision, complete snapshot, sorted change reasons |
-| `events.subscription` | One stored event, live-only stream output, or a session sequence gap |
+| `events.subscription` | One stored event, live-only stream output, a session sequence gap, or a rewind |
 | `events.plugin` | Session-scoped non-durable plugin event |
 
 The shared client maps these to `ClientDelivery` variants (`Live`, replay

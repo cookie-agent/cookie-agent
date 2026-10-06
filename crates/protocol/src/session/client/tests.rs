@@ -412,7 +412,7 @@ fn delivered_text(delivery: Option<ClientDelivery>) -> Option<String> {
                 _ => None,
             },
             EventSubscriptionMessage::Event { event } => Some(format!("event {}", event.seq)),
-            EventSubscriptionMessage::Gap { .. } => None,
+            EventSubscriptionMessage::Gap { .. } | EventSubscriptionMessage::Rewound { .. } => None,
         },
         _ => None,
     }
@@ -931,6 +931,68 @@ async fn buffered_gap_schedules_one_recovery() {
 }
 
 #[tokio::test]
+async fn rewound_pulls_the_cursor_back_and_queues_one_full_replay() {
+    let session_id = SessionId::new_v7();
+    let subscriptions = Arc::new(Mutex::new(HashMap::new()));
+    let (deliveries, mut delivered) = delivery_channel();
+    let (recovery, mut recovery_receiver) = recovery();
+    for seq in 1..=5 {
+        route_live(
+            EventSubscriptionMessage::Event {
+                event: Box::new(event(session_id, seq)),
+            },
+            &deliveries,
+            &subscriptions,
+            &recovery,
+        )
+        .await;
+    }
+    route_live(
+        EventSubscriptionMessage::Rewound {
+            session_id,
+            through_seq: 3,
+        },
+        &deliveries,
+        &subscriptions,
+        &recovery,
+    )
+    .await;
+    {
+        let subscriptions = subscriptions.lock().await;
+        let subscription = &subscriptions[&session_id];
+        assert_eq!(subscription.cursor, 3);
+        assert_eq!(subscription.cursor_timestamp, None);
+    }
+    assert_eq!(
+        recovery_receiver.recv().await,
+        Some((true, Some(session_id)))
+    );
+    assert!(recovery_receiver.try_recv().is_err());
+    // The rewind reaches the application too, after the events it cuts.
+    let mut last = None;
+    while let Ok(delivery) = delivered.try_recv() {
+        last = Some(delivery);
+    }
+    assert!(matches!(
+        last,
+        Some(ClientDelivery::Live { message, .. })
+            if matches!(*message, EventSubscriptionMessage::Rewound { through_seq: 3, .. })
+    ));
+    // Appends after the cut reuse its sequences and follow on from it.
+    route_live(
+        EventSubscriptionMessage::Event {
+            event: Box::new(event(session_id, 4)),
+        },
+        &deliveries,
+        &subscriptions,
+        &recovery,
+    )
+    .await;
+    assert_eq!(subscriptions.lock().await[&session_id].cursor, 4);
+    assert!(recovery_receiver.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn stale_replay_attempt_response_is_discarded() {
     let session_id = SessionId::new_v7();
     let subscriptions = Arc::new(Mutex::new(HashMap::new()));
@@ -1163,6 +1225,60 @@ async fn replay_is_fetched_in_pages_and_delivered_whole() {
         deliveries.recv().await,
         Some(ClientDelivery::ReplayEnd { final_seq: 5, .. })
     ));
+}
+
+#[tokio::test]
+async fn recovery_checks_its_cursor_event_and_restarts_when_it_is_stale() {
+    let session_id = SessionId::new_v7();
+    let (incoming, incoming_rx) = mpsc::unbounded_channel();
+    let (sent, mut sent_rx) = mpsc::unbounded_channel();
+    let client = Client::connect_stream(ScriptedStream {
+        incoming: incoming_rx,
+        sent,
+    });
+    let _deliveries = client.subscribe_deliveries().expect("delivery receiver");
+    let subscribe = tokio::spawn({
+        let client = client.clone();
+        async move { client.subscribe_events(session_id, None).await }
+    });
+    let initial = next_request(&mut sent_rx).await;
+    assert!(initial["params"].get("cursor_timestamp").is_none());
+    let events = (1..=3)
+        .map(|seq| event(session_id, seq))
+        .collect::<Vec<_>>();
+    let cursor_timestamp = events[2].timestamp;
+    incoming
+        .send(MessageFrame::Value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": initial["id"],
+            "result": { "events": events },
+        })))
+        .expect("initial replay");
+    subscribe
+        .await
+        .expect("subscribe task")
+        .expect("subscribe result");
+
+    // An incremental recovery names the event it resumes after.
+    client.recover_session(session_id, false);
+    let resume = next_request(&mut sent_rx).await;
+    assert_eq!(resume["params"]["cursor"], 3);
+    assert_eq!(
+        resume["params"]["cursor_timestamp"],
+        serde_json::json!(cursor_timestamp)
+    );
+    incoming
+        .send(MessageFrame::Value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": resume["id"],
+            "result": { "events": [], "stale_cursor": true },
+        })))
+        .expect("stale answer");
+
+    // A revert replaced it, so the session replays from the start.
+    let full = next_request(&mut sent_rx).await;
+    assert_eq!(full["params"]["cursor"], 0);
+    assert!(full["params"].get("cursor_timestamp").is_none());
 }
 
 #[tokio::test]

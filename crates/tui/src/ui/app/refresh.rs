@@ -313,7 +313,7 @@ impl App {
                 }
             }
             RpcUpdate::Reverted { session_id, text } => {
-                // The transcript rebuild rides the SessionReverted event;
+                // The transcript rebuild rides the `rewound` notification;
                 // here only the composer's share and the tree's
                 // branch-derived rows (title/status/usage) need attention.
                 if self.selected == Some(session_id) {
@@ -742,7 +742,8 @@ impl App {
                     Some(event.as_ref())
                 }
                 cookie_agent_protocol::EventSubscriptionMessage::Transient { .. }
-                | cookie_agent_protocol::EventSubscriptionMessage::Gap { .. } => None,
+                | cookie_agent_protocol::EventSubscriptionMessage::Gap { .. }
+                | cookie_agent_protocol::EventSubscriptionMessage::Rewound { .. } => None,
             },
             ClientDelivery::ReplayEvent { event, .. } => Some(event.as_ref()),
             _ => None,
@@ -846,7 +847,14 @@ impl App {
         let revert_rebuild = event.is_some_and(|event| {
             Some(event.session_id) == self.selected
                 && matches!(&event.payload, EventPayload::SessionReverted { .. })
-        });
+        }) || matches!(
+            &delivery,
+            ClientDelivery::Live { message, .. } if matches!(
+                message.as_ref(),
+                cookie_agent_protocol::EventSubscriptionMessage::Rewound { session_id, .. }
+                    if Some(*session_id) == self.selected
+            )
+        );
         // A descendant's warning or error never mutates the viewed session's
         // projection (a replay could not reproduce that): the transcript
         // splices it in at render time by its durable time instead.

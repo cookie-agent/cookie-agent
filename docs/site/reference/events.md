@@ -51,7 +51,7 @@ origin class. This keeps the origin grammar restricted to `user`, `engine`,
 
 | Category | Event payload types |
 |---|---|
-| Session | `session_created`, `session_reverted`, `session_permission_overlay_set`, `skill_loaded`, `skill_invocation_noted`, `session_title_committed`, `delegated_context_seeded` |
+| Session | `session_created`, `session_reverted` (legacy), `session_permission_overlay_set`, `skill_loaded`, `skill_invocation_noted`, `session_title_committed`, `delegated_context_seeded` |
 | AGENTS.md context | `agent_md_loaded` |
 | Plugins | `plugin_event_added`, `plugin_diagnostic` |
 | Goals | `goal_activated`, `goal_checklist_revised`, `goal_lifecycle_changed` |
@@ -467,9 +467,27 @@ has not seen, and is dropped. The engine drops transient output for a
 subscriber whose queue is nearly full rather than spending the slot reserved
 for a gap.
 
-Revert markers are delivered like every other physical event. Clients should
-rebuild branch-derived state when one arrives; they must not assume sequence
-numbers were truncated or reused.
+A revert cuts the log and the next appends reuse the removed sequence
+numbers, so live subscribers receive a rewind:
+
+```json
+{ "type": "rewound", "session_id": "...", "through_seq": 41 }
+```
+
+A subscriber drops everything it holds past `through_seq`; later events follow
+on from it. The shared client also replays the session in full. A reader that
+was not subscribed when the cut happened cannot tell a reused sequence from the
+event it replaced, so a replay request may carry `cursor_timestamp`, the
+timestamp of the event at `cursor` as the reader saw it. When the session's
+event at `cursor` has a different timestamp (or no longer exists), the response
+is `{ "events": [], "stale_cursor": true }`, no tail is registered, and the
+reader must replay from the start. The shared client sends it on every
+recovery replay.
+
+`session_reverted` markers appear only in logs written before protocol 28.
+Each hides the events after its `through_seq` on the branch visible when it was
+written; events appended after an earlier marker stay visible up to a later
+marker's target.
 
 Tool stdout and stderr use separate snapshot, delta, and gap notifications.
 Offsets are byte offsets, and clients use a snapshot after a gap before applying

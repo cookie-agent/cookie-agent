@@ -760,9 +760,8 @@ impl App {
     }
 
     /// Revert the session to just before the menu's message (`through_seq =
-    /// seq - 1`), voiding it and every later turn from the visible branch.
-    /// The physical log is append-only; the `SessionReverted` marker drives
-    /// the transcript rebuild through the normal event flow. On success the
+    /// seq - 1`), removing it and every later turn from the log. The
+    /// `rewound` notification drives the transcript rebuild. On success the
     /// message text restores into the composer for editing and resending.
     pub(super) fn dispatch_session_revert(&mut self, menu: UserMenuState) {
         // User messages always follow `SessionCreated` (sequence 1), so

@@ -3216,6 +3216,59 @@ fn session_revert_rebuilds_transcript_across_a_persisted_sequence_gap() {
 }
 
 #[test]
+fn rewound_cuts_the_projection_and_reused_sequences_follow_on() {
+    let session_id = SessionId::new_v7();
+    let run_id = RunId::new_v7();
+    let event = |seq, input: &str| StoredEvent {
+        engine_version: None,
+        origin: None,
+        session_id,
+        run_id: Some(run_id),
+        seq,
+        timestamp: jiff::Timestamp::now(),
+        payload: EventPayload::UserInputSubmitted {
+            input: input.into(),
+        },
+    };
+    let mut store = StateStore::default();
+    for (seq, input) in [(1, "kept"), (2, "removed"), (3, "also removed")] {
+        assert!(store.apply_event(event(seq, input)));
+    }
+    let live = |message| ClientDelivery::Live {
+        message: Box::new(message),
+        generation: 0,
+    };
+    assert!(matches!(
+        store.apply_delivery(live(EventSubscriptionMessage::Rewound {
+            session_id,
+            through_seq: 1,
+        })),
+        DeliveryOutcome::Applied
+    ));
+    let users = |store: &StateStore| {
+        store.sessions[&session_id]
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::User { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(users(&store), ["kept"]);
+    assert_eq!(store.sessions[&session_id].last_seq, 1);
+    // The next append reuses sequence 2 and is applied, not dropped as a
+    // duplicate of the event it replaced.
+    assert!(matches!(
+        store.apply_delivery(live(EventSubscriptionMessage::Event {
+            event: Box::new(event(2, "edited")),
+        })),
+        DeliveryOutcome::Applied
+    ));
+    assert_eq!(users(&store), ["kept", "edited"]);
+}
+
+#[test]
 fn delegate_tool_starts_update_agent_activity() {
     let session_id = SessionId::new_v7();
     let mut state = SessionState::default();

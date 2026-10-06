@@ -363,6 +363,7 @@ async fn stream_deltas_are_delivered_live_but_never_logged() {
                     live_text.push(text);
                 }
                 EventSubscriptionMessage::Gap { .. } => panic!("unexpected gap"),
+                EventSubscriptionMessage::Rewound { .. } => panic!("unexpected rewind"),
             }
         }
     })

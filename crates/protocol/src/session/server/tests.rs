@@ -64,6 +64,7 @@ impl ServerProtocol for StubServer {
         Ok(crate::EventsSubscribeResult {
             events: Vec::new(),
             has_more: false,
+            stale_cursor: false,
         })
     }
     async fn create_session(

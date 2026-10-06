@@ -334,11 +334,94 @@ impl Engine {
         }
         Ok(meta)
     }
+    /// Delegated sessions a revert to `cut` deletes: children whose
+    /// reservation the cut removes (and no kept reservation resumes), with all
+    /// their descendants. A running one refuses the revert.
+    fn reverted_children(
+        &self,
+        events: &[Arc<cookie_agent_protocol::StoredEvent>],
+        cut: u64,
+    ) -> Result<HashSet<SessionId>, EngineError> {
+        let mut kept = HashSet::new();
+        let mut removed = Vec::new();
+        for event in events.iter() {
+            if let Event::DelegationReserved { reservation, .. } = &event.payload {
+                if event.seq <= cut {
+                    kept.insert(reservation.child_session_id);
+                } else {
+                    removed.push(reservation.child_session_id);
+                }
+            }
+        }
+        let mut deleted = HashSet::new();
+        let mut pending = removed
+            .into_iter()
+            .filter(|child| !kept.contains(child))
+            .collect::<Vec<_>>();
+        while let Some(child) = pending.pop() {
+            if !deleted.insert(child) {
+                continue;
+            }
+            match self.inner.store.get(child) {
+                Ok(projection) if projection.status == SessionStatus::Running => {
+                    return Err(EngineError::SessionRunning(child));
+                }
+                Ok(_) => {}
+                // Never published, or already gone: nothing on disk to keep.
+                Err(SessionError::Missing(_)) => continue,
+                Err(error) => return Err(error.into()),
+            }
+            pending.extend(
+                self.inner
+                    .store
+                    .children(child)?
+                    .into_iter()
+                    .map(|summary| summary.session_id),
+            );
+        }
+        Ok(deleted)
+    }
+
+    /// Forgets the in-memory state of sessions a revert deletes.
+    fn forget_deleted_sessions(&self, deleted: &HashSet<SessionId>) {
+        if deleted.is_empty() {
+            return;
+        }
+        fn forget<V>(map: &std::sync::Mutex<HashMap<SessionId, V>>, deleted: &HashSet<SessionId>) {
+            map.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .retain(|session, _| !deleted.contains(session));
+        }
+        forget(&self.inner.sessions.actors, deleted);
+        forget(&self.inner.sessions.producers, deleted);
+        forget(&self.inner.skills_runtime.grants, deleted);
+        forget(&self.inner.skills_runtime.models, deleted);
+        forget(&self.inner.skills_runtime.pending_child, deleted);
+        forget(&self.inner.compaction.deferred, deleted);
+        forget(&self.inner.compaction.context_token_estimators, deleted);
+        forget(&self.inner.delegation.recovery_pending, deleted);
+        self.inner
+            .delegation
+            .by_session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|child, record| {
+                !deleted.contains(child) && !deleted.contains(&record.parent_session_id)
+            });
+        self.inner
+            .delegation
+            .queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|child| !deleted.contains(child));
+        self.inner.delegation_events.forget_sessions(deleted);
+    }
+
     pub async fn revert_session(
         &self,
         session_id: SessionId,
         through_seq: u64,
-        origin: EventOrigin,
+        _origin: EventOrigin,
     ) -> Result<SessionRevertResult, EngineError> {
         let context_id = crate::plugin::plugin_context_id();
         let mut instructions = self
@@ -433,12 +516,15 @@ impl Engine {
                     }
                     .into());
                 }
-                engine.append_direct(
-                    session,
-                    None,
-                    origin,
-                    Event::SessionReverted { through_seq },
-                )?;
+                // A revert removes the events after the cut: the log keeps no
+                // marker, and later appends reuse the freed sequences.
+                let events = projection.log.all_events();
+                let cut = revert_cut(&events, through_seq);
+                let deleted = engine.reverted_children(&events, cut)?;
+                engine.inner.store.truncate(session, cut)?;
+                // The cut can fall inside a run, with its tool calls, internal
+                // agents or approvals still open: close them as a restart would.
+                engine.reconcile_session_with(session, "session reverted")?;
                 engine
                     .inner
                     .compaction
@@ -449,6 +535,11 @@ impl Engine {
                 engine.rebuild_visible_tree_grants();
                 engine.inner.delegation_events.reconcile_parent(session)?;
                 engine.reconcile_reverted_producers_direct(session)?;
+                engine.forget_deleted_sessions(&deleted);
+                engine
+                    .inner
+                    .store
+                    .delete_children(&deleted.iter().copied().collect::<Vec<_>>())?;
                 Ok(SessionRevertResult {
                     session: engine.inner.store.get(session)?.metadata(),
                     instructions_override,
@@ -612,6 +703,46 @@ impl Engine {
             result.session = self.inner.store.get(session_id)?.metadata();
         }
         Ok(result)
+    }
+}
+
+/// Where a revert to `through_seq` cuts the log. A run the cut would leave
+/// holding nothing but its start goes too: reverting to just before a message
+/// targets the event before it, which is usually that run's `RunStarted`.
+fn revert_cut(events: &[Arc<cookie_agent_protocol::StoredEvent>], through_seq: u64) -> u64 {
+    let mut cut = through_seq;
+    loop {
+        let mut open = None;
+        let mut started = false;
+        for event in events.iter().take_while(|event| event.seq <= cut) {
+            match &event.payload {
+                Event::RunStarted { .. } => {
+                    open = event.run_id.map(|run| (run, event.seq));
+                    started = false;
+                }
+                Event::RunCompleted { .. }
+                | Event::RunFailed { .. }
+                | Event::RunCancelled { .. }
+                | Event::RunInterrupted { .. }
+                    if open.is_some_and(|(run, _)| event.run_id == Some(run)) =>
+                {
+                    open = None;
+                }
+                Event::UserInputSubmitted { .. }
+                | Event::UserInputApplied { .. }
+                | Event::ModelAttemptStarted { .. }
+                | Event::ToolCallStarted { .. }
+                    if open.is_some_and(|(run, _)| event.run_id == Some(run)) =>
+                {
+                    started = true;
+                }
+                _ => {}
+            }
+        }
+        match open {
+            Some((_, start)) if !started && start > 1 => cut = start - 1,
+            _ => return cut,
+        }
     }
 }
 

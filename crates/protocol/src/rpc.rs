@@ -744,6 +744,11 @@ pub struct EventsSubscribeParams {
     pub session_id: SessionId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<u64>,
+    /// Timestamp of the event at `cursor` as the caller received it. When the
+    /// session's event there differs (a revert cut the log and reused the
+    /// sequence), the result is `stale_cursor` instead of events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_timestamp: Option<jiff::Timestamp>,
     /// Most events to return. When more remain after them, the result sets
     /// `has_more` and registers no live tail; the client asks again from the
     /// last returned sequence. Only the final page subscribes.
@@ -757,6 +762,22 @@ pub struct EventsSubscribeResult {
     /// This is one page of a limited request and more events follow it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub has_more: bool,
+    /// `cursor_timestamp` no longer matches the event at `cursor`: nothing is
+    /// returned and no tail is registered. The caller replays from the start.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stale_cursor: bool,
+}
+
+impl EventsSubscribeResult {
+    /// The answer to a request whose `cursor_timestamp` no longer matches.
+    #[must_use]
+    pub fn stale() -> Self {
+        Self {
+            events: Vec::new(),
+            has_more: false,
+            stale_cursor: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]

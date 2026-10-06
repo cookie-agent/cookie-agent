@@ -19,6 +19,17 @@ use crate::delegation_api::DelegateHandle;
 
 impl Engine {
     pub(super) fn reconcile_session(&self, session_id: SessionId) -> Result<(), EngineError> {
+        self.reconcile_session_with(session_id, "daemon restart")
+    }
+
+    /// Closes what `session_id`'s log leaves open — runs, tool calls, internal
+    /// agents, approvals — recording `reason`. Adoption runs it after a
+    /// restart, and a revert after cutting the log inside a run.
+    pub(super) fn reconcile_session_with(
+        &self,
+        session_id: SessionId,
+        reason: &str,
+    ) -> Result<(), EngineError> {
         self.release_recovered_producer_claims(session_id)?;
         self.reconcile_consumed_producers(session_id, true, None)?;
         self.repair_goal_completion(session_id, true, None)?;
@@ -76,7 +87,7 @@ impl Engine {
                         invocation_id,
                         internal_run_id,
                         kind,
-                        reason: Some(safe_error("daemon restart")),
+                        reason: Some(safe_error(reason)),
                     },
                 )?;
             }
@@ -90,7 +101,7 @@ impl Engine {
                     Some(run.id),
                     super::event_origin("engine:recovery"),
                     Event::RunInterrupted {
-                        reason: Some(safe_error("daemon restart")),
+                        reason: Some(safe_error(reason)),
                     },
                 )?;
             }

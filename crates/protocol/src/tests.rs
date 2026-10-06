@@ -195,11 +195,12 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 27);
+    assert_eq!(PROTOCOL_VERSION, 28);
     assert_eq!(
         serde_json::to_value(ProtocolVersion::current()).unwrap(),
         json!(PROTOCOL_VERSION)
     );
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(27)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(26)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(25)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(24)).is_err());
@@ -222,10 +223,21 @@ fn event_subscription_paging_fields_are_optional_on_the_wire() {
         serde_json::to_value(EventsSubscribeParams {
             session_id,
             cursor: Some(4),
+            cursor_timestamp: None,
             limit: None,
         })
         .unwrap(),
         json!({"session_id": session_id, "cursor": 4})
+    );
+    let checked: EventsSubscribeParams = serde_json::from_value(json!({
+        "session_id": session_id,
+        "cursor": 4,
+        "cursor_timestamp": "2026-10-06T00:00:00Z",
+    }))
+    .unwrap();
+    assert_eq!(
+        checked.cursor_timestamp,
+        Some("2026-10-06T00:00:00Z".parse().unwrap())
     );
     let paged: EventsSubscribeParams =
         serde_json::from_value(json!({"session_id": session_id, "cursor": 4, "limit": 2000}))
@@ -242,6 +254,7 @@ fn event_subscription_paging_fields_are_optional_on_the_wire() {
     let last_page = EventsSubscribeResult {
         events: Vec::new(),
         has_more: false,
+        stale_cursor: false,
     };
     assert_eq!(
         serde_json::to_value(&last_page).unwrap(),
@@ -255,9 +268,27 @@ fn event_subscription_paging_fields_are_optional_on_the_wire() {
         serde_json::to_value(EventsSubscribeResult {
             events: Vec::new(),
             has_more: true,
+            stale_cursor: false,
         })
         .unwrap(),
         json!({"events": [], "has_more": true})
+    );
+    assert_eq!(
+        serde_json::to_value(EventsSubscribeResult::stale()).unwrap(),
+        json!({"events": [], "stale_cursor": true})
+    );
+    let rewound: EventSubscriptionMessage = serde_json::from_value(json!({
+        "type": "rewound",
+        "session_id": session_id,
+        "through_seq": 41,
+    }))
+    .unwrap();
+    assert_eq!(
+        rewound,
+        EventSubscriptionMessage::Rewound {
+            session_id,
+            through_seq: 41,
+        }
     );
 }
 
@@ -952,13 +983,18 @@ fn session_revert_reduces_visible_branch_and_rpc_types_round_trip() {
         ),
         event(5, EventPayload::SessionReverted { through_seq: 3 }),
     ];
-    assert_eq!(
-        visible_events(&events)
+    let visible_seqs = |events: &[StoredEvent]| {
+        visible_events(events)
             .iter()
             .map(|event| event.seq)
-            .collect::<Vec<_>>(),
-        vec![1, 5]
-    );
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(visible_seqs(&events), vec![1, 3, 5]);
+    // A later marker cuts only the branch it was written on: events appended
+    // after an earlier revert stay visible up to its own target.
+    let mut kept = events[..4].to_vec();
+    kept.push(event(5, EventPayload::SessionReverted { through_seq: 4 }));
+    assert_eq!(visible_seqs(&kept), vec![1, 3, 4, 5]);
     let invalid = StoredEvent {
         engine_version: None,
         origin: None,

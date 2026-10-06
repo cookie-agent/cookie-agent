@@ -107,7 +107,9 @@ impl Engine {
         ),
         EngineError,
     > {
-        let (result, receiver) = self.subscribe_page(session, cursor, None, None).await?;
+        let (result, receiver) = self
+            .subscribe_page(session, cursor, None, None, None)
+            .await?;
         Ok((
             result,
             receiver.expect("an unlimited subscription is always its final page"),
@@ -123,6 +125,7 @@ impl Engine {
         &self,
         session: SessionId,
         cursor: Option<u64>,
+        cursor_timestamp: Option<jiff::Timestamp>,
         limit: Option<NonZeroU32>,
         owner: Option<crate::session::TailOwner>,
     ) -> Result<
@@ -141,10 +144,13 @@ impl Engine {
         }
         // A history page or live-tail registration appends nothing.
         self.on_actor_unreconciled(session, move |engine| {
-            Ok(engine
-                .inner
-                .store
-                .subscribe_events(session, cursor, limit, owner)?)
+            Ok(engine.inner.store.subscribe_events(
+                session,
+                cursor,
+                cursor_timestamp,
+                limit,
+                owner,
+            )?)
         })
         .await
     }
@@ -155,9 +161,13 @@ impl Engine {
         &self,
         session: SessionId,
         cursor: Option<u64>,
+        cursor_timestamp: Option<jiff::Timestamp>,
         limit: Option<NonZeroU32>,
     ) -> Result<EventsSubscribeResult, EngineError> {
-        Ok(self.inner.store.snapshot_events(session, cursor, limit)?)
+        Ok(self
+            .inner
+            .store
+            .snapshot_events(session, cursor, cursor_timestamp, limit)?)
     }
 
     /// Subscribes to a currently running call's retained output and live tail.
@@ -1162,7 +1172,6 @@ impl Engine {
                     | Event::UserInputSubmitted { .. }
                     | Event::UserInputRecalled { .. }
                     | Event::UserInputRecalledV2 { .. }
-                    | Event::SessionReverted { .. }
             ),
             SessionCommand::Start { .. }
             | SessionCommand::Resume { .. }
@@ -1199,17 +1208,7 @@ impl Engine {
                     ))));
                     return;
                 }
-                let reverted = matches!(&*event, Event::SessionReverted { .. });
-                let result = self
-                    .append_direct(session, run, origin, *event)
-                    .and_then(|result| {
-                        if reverted {
-                            self.inner.delegation_events.reconcile_parent(session)?;
-                            self.reconcile_reverted_producers_direct(session)?;
-                        }
-                        Ok(result)
-                    });
-                let _ = reply.send(result);
+                let _ = reply.send(self.append_direct(session, run, origin, *event));
             }
             SessionCommand::Start {
                 params,

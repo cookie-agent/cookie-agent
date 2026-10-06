@@ -855,6 +855,13 @@ impl StateStore {
                     session_id,
                     cursor: last_delivered_seq,
                 },
+                EventSubscriptionMessage::Rewound {
+                    session_id,
+                    through_seq,
+                } => {
+                    self.rewind_session(session_id, through_seq);
+                    DeliveryOutcome::Applied
+                }
             },
             ClientDelivery::ReplayStart {
                 session_id,
@@ -1147,7 +1154,34 @@ impl StateStore {
             EventSubscriptionMessage::Gap {
                 last_delivered_seq, ..
             } => Some(last_delivered_seq),
+            EventSubscriptionMessage::Rewound {
+                session_id,
+                through_seq,
+            } => {
+                self.rewind_session(session_id, through_seq);
+                None
+            }
         }
+    }
+
+    /// A revert cut `session_id`'s log after `through_seq`. The projection
+    /// drops what followed at once, so the appends that reuse those sequences
+    /// apply in order; the client's full replay then confirms it. A session
+    /// mid-replay is left to that replay.
+    fn rewind_session(&mut self, session_id: SessionId, through_seq: u64) {
+        if self.replays.contains_key(&session_id) {
+            return;
+        }
+        let (Some(events), Some(state)) = (
+            self.physical_events.get_mut(&session_id),
+            self.sessions.get_mut(&session_id),
+        ) else {
+            return;
+        };
+        events.retain(|event| event.seq <= through_seq);
+        let previous_version = state.version;
+        *state = reduce_session_events(session_id, state.generation, events);
+        state.version = previous_version.max(state.version).wrapping_add(1);
     }
 
     /// Drop a session projection before a full cursor-zero rebuild.

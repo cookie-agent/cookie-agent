@@ -160,8 +160,9 @@ Click a past `You` message to open its action menu. Use Up/Down and Enter, Esc
 to close, or the `c`, `r`, and `f` accelerators.
 
 - **Copy** writes the original message text to the clipboard.
-- **Revert** asks for confirmation, rolls the visible branch back to just
-  before that message, and restores the message text to the composer.
+- **Revert** asks for confirmation, removes that message and everything after
+  it from the session (including subagents it started), and restores the
+  message text to the composer.
 - **Fork** creates and selects an independent session whose copied prefix
   includes that message.
 

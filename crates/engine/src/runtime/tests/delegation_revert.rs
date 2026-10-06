@@ -3,6 +3,7 @@ use std::sync::Arc;
 use cookie_agent_protocol::{ClientRunId, EventPayload, RunStartParams, SessionId, SessionStatus};
 
 use super::support::*;
+use crate::runtime::EngineError;
 
 async fn held_background_child_server(
     expect_wake: bool,
@@ -141,8 +142,8 @@ async fn start_held_background_delegation(
 }
 
 #[tokio::test]
-async fn reverted_background_reservation_cannot_publish_child_completion() {
-    let (fixture, parent_id, release, server) = start_held_background_delegation(false).await;
+async fn revert_refuses_a_running_child_and_deletes_it_once_finished() {
+    let (fixture, parent_id, release, server) = start_held_background_delegation(true).await;
     let reservation = fixture
         .engine
         .inner
@@ -159,7 +160,55 @@ async fn reverted_background_reservation_cannot_publish_child_completion() {
             _ => None,
         })
         .expect("visible delegation reservation");
-    let reverted = fixture
+    let child_id = reservation.1.child_session_id;
+    let child_dir = fixture
+        .engine
+        .inner
+        .store
+        .resolve_dir(child_id)
+        .expect("child directory");
+    let tip_before = fixture
+        .engine
+        .inner
+        .store
+        .get(parent_id)
+        .expect("parent")
+        .log
+        .physical_tip_seq();
+
+    // The cut would delete the background child while it still runs.
+    let refused = fixture
+        .engine
+        .revert_session(
+            parent_id,
+            reservation.0 - 1,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(EngineError::SessionRunning(id)) if id == child_id),
+        "{refused:?}"
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(parent_id)
+            .expect("parent")
+            .log
+            .physical_tip_seq(),
+        tip_before,
+        "a refused revert leaves the log alone"
+    );
+
+    // Once the child finishes (and its completion wakes the root), the same
+    // revert removes the delegation and deletes the child outright.
+    release.notify_waiters();
+    let requests = server.await.expect("held delegation server");
+    assert_eq!(requests.len(), 4, "the completion woke the root");
+    wait_for_session_not_running(&fixture.engine, parent_id).await;
+    fixture
         .engine
         .revert_session(
             parent_id,
@@ -168,6 +217,9 @@ async fn reverted_background_reservation_cannot_publish_child_completion() {
         )
         .await
         .expect("revert before delegation reservation");
+
+    assert!(!child_dir.exists(), "child directory deleted");
+    assert!(fixture.engine.inner.store.get(child_id).is_err());
     assert!(
         fixture
             .engine
@@ -176,52 +228,44 @@ async fn reverted_background_reservation_cannot_publish_child_completion() {
             .get(reservation.1.invocation_id)
             .is_none()
     );
-
-    release.notify_waiters();
-    await_projection(
-        &fixture.engine,
-        reservation.1.child_session_id,
-        "reverted child completion",
-        |projection| projection.status == SessionStatus::Completed,
-    )
-    .await;
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
     let parent = fixture
         .engine
         .inner
         .store
         .get(parent_id)
         .expect("reverted parent");
-    let post_revert = parent
-        .log
-        .all_events()
-        .iter()
-        .filter(|event| event.seq > reverted.session.last_event_seq)
-        .cloned()
-        .collect::<Vec<_>>();
-    assert!(
-        post_revert.is_empty(),
-        "reverted completion wrote {post_revert:#?}"
-    );
+    assert!(parent.status != SessionStatus::Running);
     assert!(!parent.log.all_events().iter().any(|event| {
         matches!(
             &event.payload,
-            EventPayload::ProducerMessageAccepted {
-                producer_owner: cookie_agent_protocol::ProducerOwner::Delegation { invocation_id },
-                ..
-            } if *invocation_id == reservation.1.invocation_id
+            EventPayload::DelegationReserved { .. }
+                | EventPayload::DelegateFinishedV2 { .. }
+                | EventPayload::ProducerMessageAccepted { .. }
         )
     }));
-    assert!(!parent.log.all_events().iter().any(|event| {
-        matches!(
-            event.payload,
-            EventPayload::DelegateFinishedV2 { invocation_id, .. }
-                if invocation_id == reservation.1.invocation_id
-        )
-    }));
-    let requests = server.await.expect("held delegation server");
-    assert_eq!(requests.len(), 3, "reverted completion woke the root");
+    // Only what closes the run the cut fell inside follows it.
+    assert!(
+        parent
+            .log
+            .all_events()
+            .iter()
+            .filter(|event| event.seq >= reservation.0)
+            .all(|event| matches!(
+                &event.payload,
+                EventPayload::RunInterrupted { .. }
+                    | EventPayload::ToolCallTerminated { .. }
+                    | EventPayload::InternalAgentInterrupted { .. }
+            )),
+        "{:#?}",
+        parent.log.all_events()
+    );
+    let children = fixture
+        .engine
+        .inner
+        .store
+        .children(parent_id)
+        .expect("children");
+    assert!(children.is_empty(), "{children:?}");
     fixture.engine.shutdown().await;
 }
 

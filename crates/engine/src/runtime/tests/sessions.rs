@@ -37,7 +37,7 @@ async fn direct_store_appends_share_the_subscription_handoff() {
     let subscriber = tokio::task::spawn_blocking(move || {
         gate.wait();
         store
-            .subscribe_events(session_id, Some(cursor), None, None)
+            .subscribe_events(session_id, Some(cursor), None, None, None)
             .expect("subscribe")
     });
     let (snapshot, live) = with_watchdog("subscription handoff", subscriber)
@@ -52,6 +52,7 @@ async fn direct_store_appends_share_the_subscription_handoff() {
                 EventSubscriptionMessage::Event { event } => events.push(*event),
                 EventSubscriptionMessage::Transient { .. } => {}
                 EventSubscriptionMessage::Gap { .. } => panic!("unexpected gap"),
+                EventSubscriptionMessage::Rewound { .. } => panic!("unexpected rewind"),
             }
         }
     })
@@ -647,6 +648,183 @@ fn empty_startup_is_coherent_and_rejects_fabricated_sessions() {
 }
 
 #[tokio::test]
+async fn revert_truncates_closes_cut_runs_and_rewinds_live_tails() {
+    let response = |text: &str| {
+        format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n"
+        )
+    };
+    let (endpoint, _captured, _reached, _release) = scripted_server_with_delayed_response(
+        vec![response("first"), response("second"), response("third")],
+        usize::MAX,
+    )
+    .await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session_id = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session")
+        .session_id;
+    let origin = || cookie_agent_protocol::EventOrigin::new("client:test").unwrap();
+    for (run, input) in [
+        ("revert-cut-first", "first input"),
+        ("revert-cut-second", "second input"),
+    ] {
+        fixture
+            .engine
+            .start_run(
+                RunStartParams {
+                    reset_fallback: false,
+                    session_id,
+                    client_run_id: ClientRunId::new(run).expect("client run ID"),
+                    selection: selection.clone(),
+                    input: input.into(),
+                },
+                origin(),
+            )
+            .await
+            .expect("run");
+        wait_for_session_not_running(&fixture.engine, session_id).await;
+    }
+    let log = || {
+        fixture
+            .engine
+            .inner
+            .store
+            .get(session_id)
+            .expect("projection")
+            .log
+            .clone()
+    };
+    let message = log()
+        .all_events()
+        .iter()
+        .find(|event| {
+            matches!(&event.payload, EventPayload::UserInputSubmitted { input } if input == "second input")
+        })
+        .cloned()
+        .expect("second message");
+    let run_start = log()
+        .all_events()
+        .iter()
+        .find(|event| event.seq == message.seq - 1)
+        .cloned()
+        .expect("event before the message");
+    assert!(matches!(run_start.payload, EventPayload::RunStarted { .. }));
+    let (_, mut live) = fixture
+        .engine
+        .subscribe(session_id, None)
+        .await
+        .expect("live tail");
+
+    // Cutting right after the message leaves its run open with content: the
+    // revert closes it.
+    fixture
+        .engine
+        .revert_session(session_id, message.seq, origin())
+        .await
+        .expect("revert inside the run");
+    let tail = log().all_events().last().cloned().expect("tip");
+    assert_eq!(tail.seq, message.seq + 1);
+    assert_eq!(tail.run_id, message.run_id);
+    assert!(matches!(
+        &tail.payload,
+        EventPayload::RunInterrupted { reason: Some(reason) } if reason.as_str() == "session reverted"
+    ));
+    assert!(
+        fixture.engine.inner.store.get(session_id).unwrap().status
+            != cookie_agent_protocol::SessionStatus::Running
+    );
+
+    // Reverting to just before the message (the TUI's target) also drops the
+    // run start the cut would leave empty.
+    let reverted = fixture
+        .engine
+        .revert_session(session_id, message.seq - 1, origin())
+        .await
+        .expect("revert before the message");
+    let cut = run_start.seq - 1;
+    assert_eq!(log().physical_tip_seq(), cut);
+    assert_eq!(reverted.session.last_event_seq, cut);
+    let on_disk = fs::read_to_string(log().path()).expect("log file");
+    assert_eq!(on_disk.lines().count() as u64, cut);
+
+    let mut rewinds = Vec::new();
+    while let Ok(message) = live.try_recv() {
+        if let EventSubscriptionMessage::Rewound { through_seq, .. } = message {
+            rewinds.push(through_seq);
+        }
+    }
+    assert_eq!(rewinds, vec![message.seq, cut]);
+
+    // A reader whose cursor event was cut is told to start over; one whose
+    // cursor survived is served normally.
+    let (stale, stale_tail) = fixture
+        .engine
+        .inner
+        .store
+        .subscribe_events(
+            session_id,
+            Some(message.seq),
+            Some(message.timestamp),
+            None,
+            None,
+        )
+        .expect("stale subscribe");
+    assert!(stale.stale_cursor && stale.events.is_empty() && stale_tail.is_none());
+    let kept = log().last_event().expect("kept tip");
+    let (fresh, _) = fixture
+        .engine
+        .inner
+        .store
+        .subscribe_events(session_id, Some(kept.seq), Some(kept.timestamp), None, None)
+        .expect("fresh subscribe");
+    assert!(!fresh.stale_cursor);
+
+    // The next run reuses the freed sequences.
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id,
+                client_run_id: ClientRunId::new("revert-cut-third").expect("client run ID"),
+                selection,
+                input: "third input".into(),
+            },
+            origin(),
+        )
+        .await
+        .expect("third run");
+    wait_for_session_not_running(&fixture.engine, session_id).await;
+    let reused = log()
+        .all_events()
+        .iter()
+        .find(|event| event.seq == run_start.seq)
+        .cloned()
+        .expect("reused sequence");
+    assert!(matches!(reused.payload, EventPayload::RunStarted { .. }));
+    assert_ne!(reused.timestamp, run_start.timestamp);
+    let (stale, _) = fixture
+        .engine
+        .inner
+        .store
+        .subscribe_events(
+            session_id,
+            Some(run_start.seq),
+            Some(run_start.timestamp),
+            None,
+            None,
+        )
+        .expect("reused cursor subscribe");
+    assert!(
+        stale.stale_cursor,
+        "a reused sequence is still a stale cursor"
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
     let response = |text: &str| {
         format!(
@@ -765,7 +943,9 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .expect("fork projection")
         .log
         .all_events();
-    assert_eq!(fork_physical.len(), source_prefix.len() + 2);
+    // The prefix ends between runs, so the fork closes nothing: it adds only
+    // its title.
+    assert_eq!(fork_physical.len(), source_prefix.len() + 1);
     for (source_event, fork_event) in source_prefix.iter().zip(fork_physical.iter()) {
         assert_eq!(fork_event.session_id, fork.session_id);
         assert_eq!(fork_event.engine_version, source_event.engine_version);
@@ -776,10 +956,6 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
     }
     assert!(matches!(
         fork_physical[source_prefix.len()].payload,
-        EventPayload::SessionReverted { through_seq: target } if target == through_seq
-    ));
-    assert!(matches!(
-        fork_physical[source_prefix.len() + 1].payload,
         EventPayload::SessionTitleCommitted { .. }
     ));
     release_second.notify_one();
@@ -794,6 +970,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         )
         .await
         .expect("revert completed source");
+    // A revert removes what follows its target and leaves no marker.
     let first_revert_event = fixture
         .engine
         .inner
@@ -805,11 +982,8 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .last()
         .expect("revert tip")
         .clone();
-    assert!(matches!(
-        first_revert_event.payload,
-        EventPayload::SessionReverted { through_seq: target } if target == through_seq
-    ));
-    assert_eq!(reverted.session.last_event_seq, first_revert_event.seq);
+    assert_eq!(first_revert_event.seq, through_seq);
+    assert_eq!(reverted.session.last_event_seq, through_seq);
     assert_eq!(reverted.session.last_activity, first_revert_event.timestamp);
     let first_revert_tip = first_revert_event.seq;
     fixture
@@ -1052,7 +1226,7 @@ async fn a_paged_subscription_goes_live_only_on_its_final_page() {
     let mut live = loop {
         let (page, receiver) = fixture
             .engine
-            .subscribe_page(session_id, cursor, Some(limit), None)
+            .subscribe_page(session_id, cursor, None, Some(limit), None)
             .await
             .expect("page");
         assert!(page.events.len() <= 4);
@@ -1093,12 +1267,12 @@ async fn paging_a_foreign_log_parses_it_once_until_it_changes() {
 
     let foreign = reopen_engine(&fixture);
     assert!(matches!(
-        foreign.subscribe_page(session_id, None, None, None).await,
+        foreign.subscribe_page(session_id, None, None, None, None).await,
         Err(EngineError::SessionOwnedByAnotherProcess(id)) if id == session_id
     ));
     let limit = std::num::NonZeroU32::new(4).unwrap();
     let first = foreign
-        .snapshot_events(session_id, None, Some(limit))
+        .snapshot_events(session_id, None, None, Some(limit))
         .expect("first page");
     assert!(first.has_more);
     let opens = foreign.inner.store.log_open_count(session_id);
@@ -1106,7 +1280,7 @@ async fn paging_a_foreign_log_parses_it_once_until_it_changes() {
     let mut paged = first.events;
     loop {
         let page = foreign
-            .snapshot_events(session_id, cursor, Some(limit))
+            .snapshot_events(session_id, cursor, None, Some(limit))
             .expect("page");
         cursor = page.events.last().map(|event| event.seq).or(cursor);
         paged.extend(page.events);
@@ -1124,7 +1298,7 @@ async fn paging_a_foreign_log_parses_it_once_until_it_changes() {
     // An append by the owner changes the file, so the next page reads it again.
     append_inputs(&fixture.engine, session_id, 1);
     let tail = foreign
-        .snapshot_events(session_id, cursor, Some(limit))
+        .snapshot_events(session_id, cursor, None, Some(limit))
         .expect("tail page");
     assert_eq!(seqs(&tail.events), vec![cursor.unwrap() + 1]);
     assert_eq!(foreign.inner.store.log_open_count(session_id), opens + 1);
@@ -1153,7 +1327,7 @@ async fn paging_and_renames_skip_producer_reconciliation() {
 
     fixture
         .engine
-        .subscribe_page(session_id, None, std::num::NonZeroU32::new(1), None)
+        .subscribe_page(session_id, None, None, std::num::NonZeroU32::new(1), None)
         .await
         .expect("history page");
     fixture
@@ -1193,7 +1367,7 @@ async fn a_tail_owner_holds_one_live_tail_per_session() {
         let engine = fixture.engine.clone();
         async move {
             engine
-                .subscribe_page(session_id, None, None, owner)
+                .subscribe_page(session_id, None, None, None, owner)
                 .await
                 .expect("subscribe")
                 .1
@@ -1239,6 +1413,7 @@ async fn a_tail_owner_holds_one_live_tail_per_session() {
                     format!("transient after {}", event.after_seq)
                 }
                 EventSubscriptionMessage::Gap { .. } => "gap".into(),
+                EventSubscriptionMessage::Rewound { .. } => "rewound".into(),
             });
         }
         seen

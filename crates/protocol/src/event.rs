@@ -2841,20 +2841,18 @@ impl TransientEvent {
     }
 }
 
-/// Reduces an append-only event stream to the currently visible branch.
-/// Revert markers are physical control records and are not model/transcript content.
+/// Reduces an event stream to its visible branch. Reverts truncate the log,
+/// so only legacy logs carry `SessionReverted` markers: each hides what
+/// follows its target on the branch visible when it was written. Markers are
+/// physical control records and are not model/transcript content.
 #[must_use]
 pub fn visible_events(events: &[StoredEvent]) -> Vec<StoredEvent> {
     let mut visible = Vec::new();
-    let mut historical_ceiling = u64::MAX;
     for event in events {
         if let EventPayload::SessionReverted { through_seq } = &event.payload {
-            historical_ceiling = historical_ceiling.min(*through_seq);
-            visible.retain(|candidate: &StoredEvent| candidate.seq <= historical_ceiling);
-            visible.push(event.clone());
-        } else {
-            visible.push(event.clone());
+            visible.retain(|candidate: &StoredEvent| candidate.seq <= *through_seq);
         }
+        visible.push(event.clone());
     }
     visible
 }
@@ -3249,6 +3247,14 @@ pub enum EventSubscriptionMessage {
     Gap {
         session_id: SessionId,
         last_delivered_seq: u64,
+    },
+    /// The session's log was cut after `through_seq` by a revert: the events
+    /// past it are gone and their sequence numbers are reused by the next
+    /// appends. A follower drops what it holds past `through_seq` and replays
+    /// the session in full.
+    Rewound {
+        session_id: SessionId,
+        through_seq: u64,
     },
 }
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]

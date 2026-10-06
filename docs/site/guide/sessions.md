@@ -69,11 +69,18 @@ internal agent.
 
 ## Revert
 
-Revert is available only while the session is idle. It appends a
-`session_reverted` control event; it never truncates the physical event log.
-Events through the selected positive sequence remain visible, and subsequent
-events form a new branch. Title, status, usage, approvals, transcript, and model
-context are derived from that visible branch.
+Revert is available only while the session is idle. It removes every event
+after the selected positive sequence from `events.jsonl`; new events reuse the
+freed sequence numbers. A run left holding nothing but its start goes with it,
+and a run the cut falls inside is closed as interrupted, along with its open
+tool calls, internal agents, and approvals. Subagent sessions created by the
+removed delegations are deleted, together with their own subagents; a revert
+that would delete a running subagent is refused. A revert cannot be undone:
+fork first to keep the current branch.
+
+Logs written before protocol 28 may contain `session_reverted` markers. They
+are still read: each hides what followed its target on the branch visible when
+it was written.
 
 In the TUI, click a past user message, choose **Revert**, and confirm. The TUI
 targets the sequence immediately before that user message and restores the

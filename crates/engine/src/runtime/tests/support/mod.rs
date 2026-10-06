@@ -204,6 +204,11 @@ pub(crate) async fn await_session_change<T>(
                         cursor = Some(last_delivered_seq);
                         break;
                     }
+                    Some(EventSubscriptionMessage::Rewound { through_seq, .. }) => {
+                        last_seen.retain(|event| event.seq <= through_seq);
+                        cursor = Some(through_seq);
+                        break;
+                    }
                     None => panic!("event subscription closed while waiting for {description}"),
                 }
             }
@@ -1880,6 +1885,7 @@ pub(crate) async fn live_progress_chunks(
                 }
             }
             EventSubscriptionMessage::Gap { .. } => panic!("unexpected gap"),
+            EventSubscriptionMessage::Rewound { .. } => panic!("unexpected rewind"),
         }
     }
     assert!(terminated, "the call terminated");

@@ -58,7 +58,8 @@ pub struct EventLog {
     append: Mutex<()>,
     events: Mutex<EventStorage>,
     diagnostics: Vec<EventLoadDiagnostic>,
-    initial_validation_taint: ValidationTaint,
+    /// Damage found at load. Truncation drops what it no longer reaches.
+    initial_validation_taint: Mutex<ValidationTaint>,
     validation: Mutex<ValidationState>,
     next_seq: AtomicU64,
     persisted: AtomicBool,
@@ -166,7 +167,6 @@ struct EventStorage {
     all: EventSnapshot,
     /// The currently visible branch, in log order.
     visible: EventSnapshot,
-    visible_ceiling: u64,
     index: EventIndex,
     /// Physical `ModelTurnCommitted` records. Model turn sequences are
     /// session-global and stay contiguous across reverts, so this counts
@@ -184,7 +184,6 @@ impl EventStorage {
         let mut storage = Self {
             all: Arc::new(all),
             visible: Arc::default(),
-            visible_ceiling: u64::MAX,
             index: EventIndex::default(),
             physical_model_turns,
         };
@@ -197,10 +196,9 @@ impl EventStorage {
         self.physical_model_turns += u64::from(is_model_turn(&event));
         Arc::make_mut(&mut self.all).push(event.clone());
         if let EventPayload::SessionReverted { through_seq } = &event.payload {
-            self.visible_ceiling = self.visible_ceiling.min(*through_seq);
-            let ceiling = self.visible_ceiling;
+            let through_seq = *through_seq;
             let visible = Arc::make_mut(&mut self.visible);
-            visible.retain(|candidate| candidate.seq <= ceiling);
+            visible.retain(|candidate| candidate.seq <= through_seq);
             visible.push(event);
             self.rebuild_index();
         } else {
@@ -209,19 +207,27 @@ impl EventStorage {
         }
     }
 
+    /// Legacy `SessionReverted` markers each hide what follows their target
+    /// on the branch visible when they were written. Reverts no longer write
+    /// markers; they truncate the log (see [`Self::truncate`]).
     fn rebuild_visible(&mut self) {
         let mut visible: Vec<Arc<StoredEvent>> = Vec::with_capacity(self.all.len());
-        self.visible_ceiling = u64::MAX;
         for event in self.all.iter() {
             if let EventPayload::SessionReverted { through_seq } = &event.payload {
-                self.visible_ceiling = self.visible_ceiling.min(*through_seq);
-                let ceiling = self.visible_ceiling;
-                visible.retain(|candidate| candidate.seq <= ceiling);
+                visible.retain(|candidate| candidate.seq <= *through_seq);
             }
             visible.push(event.clone());
         }
         self.visible = Arc::new(visible);
         self.rebuild_index();
+    }
+
+    /// Drops every physical event after `through_seq`.
+    fn truncate(&mut self, through_seq: u64) {
+        Arc::make_mut(&mut self.all).retain(|event| event.seq <= through_seq);
+        self.physical_model_turns =
+            self.all.iter().filter(|event| is_model_turn(event)).count() as u64;
+        self.rebuild_visible();
     }
 
     fn rebuild_index(&mut self) {
@@ -366,7 +372,7 @@ impl EventLog {
             append: Mutex::new(()),
             events: Mutex::new(EventStorage::new(Vec::new())),
             diagnostics: Vec::new(),
-            initial_validation_taint: ValidationTaint::default(),
+            initial_validation_taint: Mutex::default(),
             validation: Mutex::new(ValidationState::default()),
             next_seq: AtomicU64::new(1),
             persisted: AtomicBool::new(persisted),
@@ -467,7 +473,7 @@ impl EventLog {
             append: Mutex::new(()),
             events: Mutex::new(EventStorage::new(records)),
             diagnostics: loaded.diagnostics,
-            initial_validation_taint: loaded.validation_taint,
+            initial_validation_taint: Mutex::new(loaded.validation_taint),
             validation: Mutex::new(validation),
             next_seq: AtomicU64::new(loaded.next_seq),
             persisted: AtomicBool::new(true),
@@ -577,7 +583,7 @@ impl EventLog {
                 &self.path,
                 self.session_id,
                 &events.all,
-                &self.initial_validation_taint,
+                &self.initial_taint(),
                 None,
             )?;
             return Err(error);
@@ -602,7 +608,7 @@ impl EventLog {
                 &self.path,
                 self.session_id,
                 &events.all,
-                &self.initial_validation_taint,
+                &self.initial_taint(),
                 None,
             )?;
             return Err(error);
@@ -688,7 +694,20 @@ impl EventLog {
         cookie_agent_protocol::EventsSubscribeResult {
             events: page,
             has_more: after.next().is_some(),
+            stale_cursor: false,
         }
+    }
+
+    /// Whether the event at `seq` is the one a reader saw at `timestamp`. A
+    /// revert truncates the log and reuses sequences, so a cursor alone
+    /// cannot tell the replaced event from its replacement.
+    #[must_use]
+    pub fn event_matches(&self, seq: u64, timestamp: Timestamp) -> bool {
+        let storage = self.storage();
+        storage
+            .all
+            .binary_search_by_key(&seq, |event| event.seq)
+            .is_ok_and(|index| storage.all[index].timestamp == timestamp)
     }
 
     #[must_use]
@@ -788,6 +807,72 @@ impl EventLog {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
+    }
+
+    fn initial_taint(&self) -> ValidationTaint {
+        self.initial_validation_taint
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Removes every event after `through_seq`, from the file (cut at the
+    /// first later record and synced) and from memory. The removed sequence
+    /// numbers are reused by the next appends. `SessionCreated` always stays.
+    pub(crate) fn truncate_after(
+        &self,
+        capability: &WriteCapability,
+        through_seq: u64,
+    ) -> Result<(), EventLogError> {
+        if self.read_only
+            || !self
+                .write_capability
+                .as_ref()
+                .is_some_and(|expected| capability.authorizes(expected))
+        {
+            return Err(EventLogError::ReadOnly(self.path.clone()));
+        }
+        let _append = self
+            .append
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if through_seq == 0 {
+            return Err(EventLogError::Corrupt {
+                path: self.path.clone(),
+                message: "truncation must keep SessionCreated".into(),
+            });
+        }
+        if through_seq >= self.physical_tip_seq() {
+            return Ok(());
+        }
+        if self.persisted.load(Ordering::Acquire) {
+            // Close the append handle first so nothing writes past the cut.
+            self.writer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            truncate_event_file(&self.path, through_seq)?;
+        }
+        let mut events = self
+            .events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        events.truncate(through_seq);
+        let taint = {
+            let mut taint = self
+                .initial_validation_taint
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            taint.truncate(through_seq);
+            taint.clone()
+        };
+        *self
+            .validation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            validate_records(&self.path, self.session_id, &events.all, &taint, None)?;
+        self.next_seq.store(through_seq + 1, Ordering::Release);
+        Ok(())
     }
 
     /// Appends one record and syncs it before returning. The caller holds
@@ -999,6 +1084,40 @@ const INTERNAL_PHASE_TAINT_LIMIT_MESSAGE: &str =
     "internal-agent phase taint history exceeds the 64-transition per-run limit";
 
 impl ValidationTaint {
+    /// Forgets damage recorded after `through_seq`, which a truncation removed.
+    fn truncate(&mut self, through_seq: u64) {
+        let kept = |seq: &u64| *seq <= through_seq;
+        self.broad.retain(|(start, _)| kept(start));
+        for (_, end) in &mut self.broad {
+            *end = (*end).min(through_seq);
+        }
+        self.runs.retain(|_, seq| kept(seq));
+        self.attempts.retain(|_, seq| kept(seq));
+        self.attempt_runs.retain(|_, seq| kept(seq));
+        self.turns.retain(|_, seq| kept(seq));
+        self.tools.retain(|_, seq| kept(seq));
+        self.approvals.retain(|_, seq| kept(seq));
+        self.internal_runs.retain(|_, seq| kept(seq));
+        for phases in self
+            .internal_model_phases
+            .values_mut()
+            .chain(self.internal_usage_phases.values_mut())
+        {
+            phases.retain(kept);
+        }
+        self.internal_model_phases
+            .retain(|_, phases| !phases.is_empty());
+        self.internal_usage_phases
+            .retain(|_, phases| !phases.is_empty());
+        self.tool_terminals.retain(|_, seq| kept(seq));
+        self.admissions.retain(|_, seq| kept(seq));
+        self.delegations.retain(|_, seq| kept(seq));
+        self.delegation_repairs.retain(|_, seq| kept(seq));
+        self.run_ordering.retain(|_, seq| kept(seq));
+        self.turn_ordering = self.turn_ordering.filter(kept);
+        self.active_run_ordering = self.active_run_ordering.filter(kept);
+    }
+
     fn broad_before(&self, seq: u64) -> bool {
         self.broad.iter().any(|(start, _)| *start < seq)
     }
@@ -3066,6 +3185,35 @@ fn read_complete_jsonl(path: &Path, torn_tail: TornTail) -> Result<Vec<u8>, Even
         }
     }
     Ok(bytes)
+}
+
+/// Cuts `path` at the first record whose sequence is past `through_seq` and
+/// syncs it. Records keep their bytes; lines without a sequence before the cut
+/// stay too, as the loader already tolerated them.
+fn truncate_event_file(path: &Path, through_seq: u64) -> Result<(), EventLogError> {
+    #[derive(Deserialize)]
+    struct Sequenced {
+        seq: u64,
+    }
+    let io_error = |source| EventLogError::Io {
+        path: path.to_owned(),
+        source,
+    };
+    let bytes = fs::read(path).map_err(io_error)?;
+    let mut length = 0_usize;
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        if serde_json::from_slice::<Sequenced>(line).is_ok_and(|record| record.seq > through_seq) {
+            break;
+        }
+        length += line.len();
+    }
+    let file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(io_error)?;
+    file.set_len(length as u64)
+        .and_then(|()| file.sync_all())
+        .map_err(io_error)
 }
 
 pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<(), EventLogError> {

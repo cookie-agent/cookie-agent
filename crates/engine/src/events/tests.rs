@@ -1547,7 +1547,7 @@ fn assert_log_rebuilt_against_reference(log: &EventLog) {
         log.path(),
         log.session_id,
         &records,
-        &log.initial_validation_taint,
+        &log.initial_taint(),
         None,
     )
     .expect("reference accepts retained log");
@@ -1646,6 +1646,104 @@ fn event_storage_snapshot_and_indexes_match_full_projection() {
         storage.push(record);
         assert_storage_matches_full_projection(&mut storage);
     }
+}
+
+#[test]
+fn legacy_revert_markers_cut_only_their_own_branch() {
+    let creation = stored_event();
+    let session_id = creation.session_id;
+    let title = |seq, text: &str| {
+        event(
+            session_id,
+            None,
+            seq,
+            EventPayload::SessionTitleCommitted {
+                change: cookie_agent_protocol::SessionTitleChange::FallbackSet {
+                    title: SessionTitle::new(text).expect("title"),
+                },
+                input_through_seq: 1,
+            },
+        )
+    };
+    // 2 is reverted away by 3; 4 and 5 follow on the new branch, and the
+    // later marker 6 cuts after 4 only. A running minimum of targets would
+    // also hide 4, which is what wiped days of history from a real session.
+    let records = vec![
+        creation,
+        title(2, "first"),
+        event(
+            session_id,
+            None,
+            3,
+            EventPayload::SessionReverted { through_seq: 1 },
+        ),
+        title(4, "kept"),
+        title(5, "dropped"),
+        event(
+            session_id,
+            None,
+            6,
+            EventPayload::SessionReverted { through_seq: 4 },
+        ),
+    ];
+    let storage = EventStorage::new(records.into_iter().map(Arc::new).collect());
+    assert_eq!(
+        storage
+            .snapshot()
+            .iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>(),
+        vec![1, 3, 4, 6]
+    );
+}
+
+#[test]
+fn truncation_cuts_the_file_and_later_appends_reuse_its_sequences() {
+    let records = attribution_records();
+    let creation = records[0].clone();
+    let origin = || EventOrigin::new("engine:test").expect("origin");
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let log = EventLog::create(
+        path.clone(),
+        creation.session_id,
+        origin(),
+        creation.payload.clone(),
+    )
+    .expect("create log");
+    for record in &records[1..] {
+        log.append(record.run_id, origin(), record.payload.clone())
+            .expect("append record");
+    }
+    assert!(log.physical_tip_seq() > 3);
+    let kept = log.all_events()[..2].to_vec();
+    let replaced = log.all_events()[2].clone();
+    let capability = log.write_capability.clone().expect("owned log");
+
+    log.truncate_after(&capability, 2).expect("truncate");
+    assert_eq!(log.physical_tip_seq(), 2);
+    assert_eq!(log.all_events().as_slice(), kept.as_slice());
+    assert_log_rebuilt_against_reference(&log);
+    let reopened = EventLog::open_read_only(path.clone(), creation.session_id).expect("reopen");
+    assert_eq!(reopened.all_events().as_slice(), kept.as_slice());
+
+    // The freed sequence is reused, and only its timestamp tells the new
+    // event from the one it replaced.
+    let appended = log
+        .append(records[2].run_id, origin(), records[2].payload.clone())
+        .expect("append after truncation");
+    assert_eq!(appended.seq, 3);
+    assert!(log.event_matches(3, appended.timestamp));
+    assert!(!log.event_matches(3, replaced.timestamp));
+    assert!(!log.event_matches(4, replaced.timestamp));
+    let reopened = EventLog::open_read_only(path, creation.session_id).expect("reopen");
+    assert_eq!(reopened.physical_tip_seq(), 3);
+
+    // At or past the tip nothing changes; creation is never cut.
+    log.truncate_after(&capability, 3)
+        .expect("no-op truncation");
+    assert_eq!(log.physical_tip_seq(), 3);
+    assert!(log.truncate_after(&capability, 0).is_err());
 }
 
 fn current_delegation_records() -> Vec<StoredEvent> {

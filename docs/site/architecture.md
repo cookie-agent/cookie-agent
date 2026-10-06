@@ -290,9 +290,11 @@ session and drive the run loop:
 
 Sessions are append-only event logs. A new session exists only in memory until
 its first user message, when its directory, `events.jsonl`, and `metadata`
-cache are published atomically while its ownership lock is held. Revert appends
-a `session_reverted` marker and fork copies a persisted prefix under a new
-session ID; neither truncates physical events.
+cache are published atomically while its ownership lock is held. Revert
+truncates the log after its target, closes whatever the cut left open, and
+deletes the subagent sessions the removed delegations created; live
+subscribers get a `rewound` notification. Fork copies a persisted prefix under
+a new session ID.
 
 ### Work-dir layout
 
@@ -444,7 +446,7 @@ source's tree and therefore needs that tree's lock, taking it when it is free
 and failing as foreign-owned when it is not. Grants and grant invalidations
 committed by another process become
 visible after restart. Concurrent MCP configuration edits remain last-writer
-wins. Ownership failures in protocol 27 use an ordinary fault
+wins. Ownership failures in protocol 28 use an ordinary fault
 message rather than a new wire error.
 
 The data directory must be on a local filesystem with correct `flock` or
@@ -482,7 +484,7 @@ details.
 ## Protocol surface
 
 The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
-an authenticated WebSocket at `/ws`, protocol 27 current-only, `handshake` first.
+an authenticated WebSocket at `/ws`, protocol 28 current-only, `handshake` first.
 Discovery is a single `runtime.snapshot.get` call that returns one coherent
 runtime snapshot (schema 5). Session events stream through `events.subscribe`
 and plugin bus events through `events.plugin`. Raw tool output is not streamed

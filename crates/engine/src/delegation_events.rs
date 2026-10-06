@@ -433,6 +433,26 @@ impl DelegationEventStore {
             .collect()
     }
 
+    /// Drops every entry a deleted session took part in, as parent or child.
+    pub fn forget_sessions(&self, deleted: &std::collections::HashSet<SessionId>) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.entries.retain(|_, entry| {
+            !deleted.contains(&entry.reservation.parent_session_id)
+                && !deleted.contains(&entry.reservation.child_session_id)
+        });
+        let retained = state
+            .entries
+            .keys()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        state
+            .order
+            .retain(|invocation_id| retained.contains(invocation_id));
+    }
+
     pub fn reconcile_parent(
         &self,
         parent_session_id: SessionId,

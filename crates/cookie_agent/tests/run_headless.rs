@@ -461,7 +461,9 @@ async fn wait_for_session_terminal(engine: &Engine, session_id: SessionId) -> Re
                     }
                 }
                 EventSubscriptionMessage::Transient { .. } => {}
-                EventSubscriptionMessage::Gap { .. } => break,
+                EventSubscriptionMessage::Gap { .. } | EventSubscriptionMessage::Rewound { .. } => {
+                    break;
+                }
             }
         }
     }
@@ -493,7 +495,9 @@ async fn wait_for_run_terminal(
                 }
             }
             EventSubscriptionMessage::Transient { .. } => {}
-            EventSubscriptionMessage::Gap { .. } => break,
+            EventSubscriptionMessage::Gap { .. } | EventSubscriptionMessage::Rewound { .. } => {
+                break;
+            }
         }
     }
     Err("subscription closed before the run finished".into())
@@ -1523,7 +1527,8 @@ async fn successful_fallback_suffix_survives_runs_restart_and_explicit_resets() 
                         }
                     }
                     EventSubscriptionMessage::Transient { .. } => {}
-                    EventSubscriptionMessage::Gap { .. } => break,
+                    EventSubscriptionMessage::Gap { .. }
+                    | EventSubscriptionMessage::Rewound { .. } => break,
                 }
             }
             panic!("run did not complete");

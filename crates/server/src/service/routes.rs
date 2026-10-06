@@ -284,6 +284,7 @@ impl ServerProtocol for Server {
             .subscribe_page(
                 params.session_id,
                 params.cursor,
+                params.cursor_timestamp,
                 params.limit,
                 // One tail per session per connection: a re-subscribe (a
                 // reselected session, a recovery replay) replaces the tail
@@ -298,7 +299,12 @@ impl ServerProtocol for Server {
                 // half of this response and deliberately register no live tail.
                 return self
                     .engine
-                    .snapshot_events(params.session_id, params.cursor, params.limit)
+                    .snapshot_events(
+                        params.session_id,
+                        params.cursor,
+                        params.cursor_timestamp,
+                        params.limit,
+                    )
                     .map_err(protocol_fault);
             }
             Err(error) => return Err(protocol_fault(error)),

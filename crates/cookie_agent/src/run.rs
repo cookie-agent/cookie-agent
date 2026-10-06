@@ -796,6 +796,13 @@ where
                         state.event_recoveries = state.event_recoveries.saturating_add(1);
                         recover_events(engine, &mut prepared, state.cursor).await?;
                     }
+                    // A revert refuses a running session, so this run's own
+                    // events are never cut; resume from the cut regardless.
+                    Some(EventSubscriptionMessage::Rewound { through_seq, .. }) => {
+                        state.cursor = state.cursor.min(through_seq);
+                        state.event_recoveries = state.event_recoveries.saturating_add(1);
+                        recover_events(engine, &mut prepared, state.cursor).await?;
+                    }
                 }
             }
             _ = approvals.tick(), if !state.cancellation_requested => {

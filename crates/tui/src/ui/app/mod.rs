@@ -738,7 +738,7 @@ pub(super) enum RpcUpdate {
         session_id: SessionId,
         text: String,
     },
-    /// A revert RPC committed; the `SessionReverted` event rebuilds the
+    /// A revert RPC committed; the `rewound` notification rebuilds the
     /// transcript, and the message text is owed back to the composer.
     Reverted {
         session_id: SessionId,

@@ -1626,6 +1626,119 @@ impl SessionStore {
         Ok(envelope)
     }
 
+    /// Removes `id`'s events after `through_seq` (a revert) and refolds it.
+    /// Live tails are told with [`EventSubscriptionMessage::Rewound`].
+    pub(crate) fn truncate(&self, id: SessionId, through_seq: u64) -> Result<(), SessionError> {
+        self.ensure_tree_for(id)?;
+        let _mutation = self.lock_mutation();
+        self.ensure_open()?;
+        let capability = self.write_capability(id, false)?;
+        let (log, _) = self.resident_log(id)?;
+        log.truncate_after(&capability, through_seq)?;
+        let rebuilt = Arc::new(refold(log.clone(), None)?);
+        if log.is_persisted() {
+            self.refresh_meta_cache(id, &rebuilt.meta)?;
+        }
+        let runs = rebuilt
+            .runs
+            .keys()
+            .map(ToString::to_string)
+            .collect::<HashSet<_>>();
+        {
+            let mut residency = self
+                .residency
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            residency.resident.insert(id, rebuilt);
+            residency.evicted.remove(&id);
+            residency.stale_meta_caches.remove(&id);
+        }
+        // A reverted child forgets the terminal runs the cut removed.
+        if let Some(root) = self.parent_root_of(id) {
+            if let Some(state) = self
+                .trees
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get_mut(&root)
+                && let Some(terminal) = state.terminal_runs.get_mut(&id)
+            {
+                terminal.retain(|run, _| runs.contains(run));
+            }
+            self.persist_subagent_index(root)?;
+        }
+        self.publish_rewound(id, through_seq);
+        Ok(())
+    }
+
+    /// Deletes delegated sessions — directories and every cached trace — for a
+    /// revert that removed the delegations creating them. `ids` must already
+    /// include their descendants; roots are never deleted here.
+    pub(crate) fn delete_children(&self, ids: &[SessionId]) -> Result<(), SessionError> {
+        let _mutation = self.lock_mutation();
+        let mut roots = HashSet::new();
+        for &id in ids {
+            let Ok(dir) = self.resolve_dir(id) else {
+                continue;
+            };
+            let Some(SessionLocation::Child { root }) = self.cached_location(id) else {
+                continue;
+            };
+            {
+                let mut residency = self
+                    .residency
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                residency.resident.remove(&id);
+                residency.evicted.remove(&id);
+                residency.stale_meta_caches.remove(&id);
+            }
+            if let Some(state) = self
+                .trees
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get_mut(&root)
+            {
+                state.children.remove(&id);
+                for children in state.children.values_mut() {
+                    children.retain(|child| *child != id);
+                }
+                state.terminal_runs.remove(&id);
+                state.producer_sessions.retain(|child| *child != id);
+            }
+            {
+                let mut ownership = self
+                    .ownership
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                ownership.writable.remove(&id);
+                ownership.adopting.remove(&id);
+            }
+            self.subscribers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&id);
+            self.read_only_logs
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0
+                .retain(|(cached, _, _)| *cached != id);
+            self.locations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&id);
+            match fs::remove_dir_all(&dir) {
+                Ok(()) => {}
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => return Err(SessionError::Io { path: dir, source }),
+            }
+            roots.insert(root);
+        }
+        for root in roots {
+            self.persist_subagent_index(root)?;
+        }
+        Ok(())
+    }
+
     /// One page of `session`'s events after `cursor`. The final page (no
     /// `has_more`) also registers a live tail, which is the only case that
     /// returns a receiver. The tail replaces `owner`'s earlier one for the
@@ -1634,6 +1747,7 @@ impl SessionStore {
         &self,
         session: SessionId,
         cursor: Option<u64>,
+        cursor_timestamp: Option<jiff::Timestamp>,
         limit: Option<NonZeroU32>,
         owner: Option<TailOwner>,
     ) -> Result<
@@ -1648,6 +1762,9 @@ impl SessionStore {
         // direct journal writes, closing the snapshot-to-live handoff gap.
         let _mutation = self.lock_mutation();
         let log = self.get(session)?.log.clone();
+        if cursor_is_stale(&log, cursor, cursor_timestamp) {
+            return Ok((EventsSubscribeResult::stale(), None));
+        }
         let result = log.events_after(cursor, limit);
         if result.has_more {
             return Ok((result, None));
@@ -1673,17 +1790,22 @@ impl SessionStore {
         &self,
         session: SessionId,
         cursor: Option<u64>,
+        cursor_timestamp: Option<jiff::Timestamp>,
         limit: Option<NonZeroU32>,
     ) -> Result<EventsSubscribeResult, SessionError> {
         self.ensure_tree_for(session)?;
-        if let Some(resident) = self.get_resident(session) {
-            return Ok(resident.log.events_after(cursor, limit));
+        let log = if let Some(resident) = self.get_resident(session) {
+            resident.log.clone()
+        } else {
+            let session_dir = self.resolve_dir(session)?;
+            if !session_dir.is_dir() {
+                return Err(SessionError::Missing(session));
+            }
+            self.read_only_log(session, session_dir.join(EVENTS_FILE))?
+        };
+        if cursor_is_stale(&log, cursor, cursor_timestamp) {
+            return Ok(EventsSubscribeResult::stale());
         }
-        let session_dir = self.resolve_dir(session)?;
-        if !session_dir.is_dir() {
-            return Err(SessionError::Missing(session));
-        }
-        let log = self.read_only_log(session, session_dir.join(EVENTS_FILE))?;
         Ok(log.events_after(cursor, limit))
     }
 
@@ -1706,6 +1828,27 @@ impl SessionStore {
                 }
             };
             sender.try_send(message).is_ok() && !is_gap
+        });
+    }
+
+    fn publish_rewound(&self, session_id: SessionId, through_seq: u64) {
+        let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(tails) = subscribers.get_mut(&session_id) else {
+            return;
+        };
+        tails.last_seq = through_seq;
+        tails.senders.retain(|Tail { sender, .. }| {
+            // The final slot reserved for a gap fits the rewind as well: it
+            // makes the reader replay in full, so a tail that needed that
+            // slot is dropped like one that got a gap.
+            let room = sender.capacity() > 1;
+            sender
+                .try_send(EventSubscriptionMessage::Rewound {
+                    session_id,
+                    through_seq,
+                })
+                .is_ok()
+                && room
         });
     }
 
@@ -1860,12 +2003,25 @@ impl SessionStore {
                 },
             )?;
             let log = EventLog::open_owned(log_path, session_id, capability.clone())?;
-            log.append_owned(
-                &capability,
-                None,
-                origin,
-                EventPayload::SessionReverted { through_seq },
-            )?;
+            // A prefix cut inside a run leaves it open; the fork closes it.
+            let open_runs = projection(log.clone())?
+                .runs
+                .values()
+                .filter(|run| run.status == SessionStatus::Running)
+                .map(|run| run.id)
+                .collect::<Vec<_>>();
+            for run in open_runs {
+                log.append_owned(
+                    &capability,
+                    Some(run),
+                    origin.clone(),
+                    EventPayload::RunInterrupted {
+                        reason: Some(cookie_agent_protocol::diagnostics::headline(
+                            "session forked",
+                        )),
+                    },
+                )?;
+            }
             let prefix_projection = projection(log.clone())?;
             let title = fork_title(prefix_projection.meta.title.as_ref())?;
             log.append_owned(
@@ -2930,6 +3086,19 @@ impl SessionStore {
 impl Drop for SessionStore {
     fn drop(&mut self) {
         self.release_ownership();
+    }
+}
+
+/// Whether a replay from `cursor` would mix branches: the reader saw the event
+/// there at `timestamp`, and a revert has since replaced it (or cut below it).
+fn cursor_is_stale(
+    log: &EventLog,
+    cursor: Option<u64>,
+    timestamp: Option<jiff::Timestamp>,
+) -> bool {
+    match (cursor, timestamp) {
+        (Some(cursor), Some(timestamp)) if cursor > 0 => !log.event_matches(cursor, timestamp),
+        _ => false,
     }
 }
 

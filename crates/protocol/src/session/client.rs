@@ -35,6 +35,7 @@ use crate::{
     SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult, StoredEvent, Transport,
     TransportError,
 };
+use jiff::Timestamp;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use thiserror::Error;
@@ -222,13 +223,19 @@ struct PendingCommand {
 #[derive(Default)]
 struct Subscription {
     cursor: u64,
+    /// Timestamp of the event at `cursor`, when this view received it. A
+    /// replay from `cursor` sends it so the server can tell whether a revert
+    /// has since replaced that event (`stale_cursor`).
+    cursor_timestamp: Option<Timestamp>,
     rollback_cursor: u64,
+    rollback_cursor_timestamp: Option<Timestamp>,
     generation: u64,
     next_attempt: u64,
     active_attempt: u64,
     fetching: bool,
     rebuild: bool,
     final_seq: u64,
+    final_timestamp: Option<Timestamp>,
     buffered: Vec<ClientDelivery>,
     recovery_requested: Option<bool>,
     /// Earlier pages of the replay attempt `replay_pages_attempt`, held until
@@ -240,6 +247,7 @@ struct Subscription {
 impl Subscription {
     fn abort_replay(&mut self) {
         self.cursor = self.rollback_cursor;
+        self.cursor_timestamp = self.rollback_cursor_timestamp;
         self.fetching = false;
         self.replay_pages = Vec::new();
     }
@@ -647,7 +655,7 @@ impl Client {
         let subscriptions = self.subscriptions.clone();
         let recovery = self.recovery.clone();
         tokio::spawn(async move {
-            let result = request_replay(&commands, request, cursor).await;
+            let result = request_replay(&commands, request, cursor, None).await;
             if result.is_err() {
                 abort_replay(&subscriptions, session_id).await;
                 Self::schedule_recovery_queue(&recovery, cursor == 0, Some(session_id));
@@ -742,6 +750,10 @@ async fn prepare_subscription(
         return Err(ClientError::ReplayInProgress);
     }
     subscription.rollback_cursor = subscription.cursor;
+    subscription.rollback_cursor_timestamp = subscription.cursor_timestamp;
+    if cursor != subscription.cursor {
+        subscription.cursor_timestamp = None;
+    }
     subscription.cursor = cursor;
     subscription.fetching = true;
     subscription.rebuild = rebuild;
@@ -771,23 +783,35 @@ async fn request_replay(
     commands: &mpsc::Sender<Command>,
     replay: ReplayRequest,
     cursor: u64,
+    cursor_timestamp: Option<Timestamp>,
 ) -> Result<(), ClientError> {
-    request_replay_with_timeout(commands, replay, cursor, REPLAY_RESPONSE_TIMEOUT).await
+    request_replay_with_timeout(
+        commands,
+        replay,
+        cursor,
+        cursor_timestamp,
+        REPLAY_RESPONSE_TIMEOUT,
+    )
+    .await
 }
 
 /// Fetch a replay page by page. The connection task holds the pages and
 /// delivers the whole replay once the final page arrives; each page's
 /// response names the cursor of the next one, or is `null` after the last.
+/// Only the first page checks `cursor_timestamp`: later pages start from
+/// events this same replay just received.
 async fn request_replay_with_timeout(
     commands: &mpsc::Sender<Command>,
     replay: ReplayRequest,
     mut cursor: u64,
+    mut cursor_timestamp: Option<Timestamp>,
     timeout: Duration,
 ) -> Result<(), ClientError> {
     loop {
         let params = EventsSubscribeParams {
             session_id: replay.session_id,
             cursor: Some(cursor),
+            cursor_timestamp: cursor_timestamp.take(),
             limit: Some(REPLAY_PAGE_EVENTS),
         };
         let (response, receiver) = oneshot::channel();
@@ -972,8 +996,12 @@ async fn recover_all(
                     return None;
                 }
                 subscription.rollback_cursor = subscription.cursor;
+                subscription.rollback_cursor_timestamp = subscription.cursor_timestamp;
                 let rebuild = full_replay;
                 let cursor = if rebuild { 0 } else { subscription.cursor };
+                if rebuild {
+                    subscription.cursor_timestamp = None;
+                }
                 subscription.cursor = cursor;
                 subscription.fetching = true;
                 subscription.rebuild = rebuild;
@@ -990,14 +1018,16 @@ async fn recover_all(
                         attempt: subscription.active_attempt,
                     },
                     cursor,
+                    subscription.cursor_timestamp,
                 ))
             })
             .collect::<Vec<_>>()
     };
-    for (request, cursor) in targets {
+    for (request, cursor, cursor_timestamp) in targets {
         let session_id = request.session_id;
         if let Err(error) =
-            request_replay_with_timeout(commands, request, cursor, replay_timeout).await
+            request_replay_with_timeout(commands, request, cursor, cursor_timestamp, replay_timeout)
+                .await
         {
             let mut subscriptions = subscriptions.lock().await;
             if let Some(subscription) = subscriptions.get_mut(&session_id) {
@@ -1224,6 +1254,21 @@ async fn handle_frame(
             match (command.replay, result) {
                 (Some(replay), Ok(value)) => {
                     match serde_json::from_value::<EventsSubscribeResult>(value) {
+                        Ok(result) if result.stale_cursor => {
+                            // A revert replaced the event at the cursor while
+                            // this view was away: what it holds past the cut
+                            // is wrong, so it starts over from scratch. The
+                            // replay ends before its caller hears back, so a
+                            // recovery worker waiting on it finds the session
+                            // free for the full replay queued here.
+                            abort_stale_replay(replay, subscriptions).await;
+                            Client::schedule_recovery_queue(
+                                recovery,
+                                true,
+                                Some(replay.session_id),
+                            );
+                            let _ = command.response.send(Ok(Value::Null));
+                        }
                         Ok(result) => {
                             let page = if result.has_more {
                                 match hold_replay_page(replay, result.events, subscriptions).await {
@@ -1324,6 +1369,21 @@ async fn take_replay_pages(
     }
 }
 
+/// Ends `replay` without delivering anything, if it is still the current
+/// attempt.
+async fn abort_stale_replay(
+    replay: ReplayRequest,
+    subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
+) {
+    let mut subscriptions = subscriptions.lock().await;
+    if let Some(subscription) = subscriptions
+        .get_mut(&replay.session_id)
+        .filter(|subscription| replay_is_current(subscription, &replay))
+    {
+        subscription.abort_replay();
+    }
+}
+
 async fn begin_replay(
     replay: ReplayRequest,
     events: Vec<StoredEvent>,
@@ -1344,6 +1404,10 @@ async fn begin_replay(
             .map(|event| event.seq)
             .max()
             .unwrap_or(subscription.cursor);
+        subscription.final_timestamp = match events.last() {
+            Some(last) => Some(last.timestamp),
+            None => subscription.cursor_timestamp,
+        };
         subscription.final_seq = final_seq;
         subscription.rebuild = replay.rebuild;
         final_seq
@@ -1374,7 +1438,8 @@ async fn route_live(
     let session_id = match &message {
         EventSubscriptionMessage::Event { event } => event.session_id,
         EventSubscriptionMessage::Transient { event } => event.session_id,
-        EventSubscriptionMessage::Gap { session_id, .. } => *session_id,
+        EventSubscriptionMessage::Gap { session_id, .. }
+        | EventSubscriptionMessage::Rewound { session_id, .. } => *session_id,
     };
     let publish;
     let mut recover = None;
@@ -1383,9 +1448,16 @@ async fn route_live(
         let subscription = subscriptions.entry(session_id).or_default();
         let generation = subscription.generation;
         if subscription.fetching {
-            if matches!(message, EventSubscriptionMessage::Gap { .. }) {
-                subscription.recovery_requested =
-                    Some(subscription.recovery_requested.unwrap_or(false));
+            match message {
+                EventSubscriptionMessage::Gap { .. } => {
+                    subscription.recovery_requested =
+                        Some(subscription.recovery_requested.unwrap_or(false));
+                }
+                // The replay in flight may already hold removed events.
+                EventSubscriptionMessage::Rewound { .. } => {
+                    subscription.recovery_requested = Some(true);
+                }
+                _ => {}
             }
             subscription.buffered.push(ClientDelivery::Live {
                 message: Box::new(message),
@@ -1399,12 +1471,25 @@ async fn route_live(
             }
             EventSubscriptionMessage::Event { event } if event.seq == subscription.cursor + 1 => {
                 subscription.cursor = event.seq;
+                subscription.cursor_timestamp = Some(event.timestamp);
             }
             EventSubscriptionMessage::Gap {
                 last_delivered_seq, ..
             } => {
+                if *last_delivered_seq != subscription.cursor {
+                    subscription.cursor_timestamp = None;
+                }
                 subscription.cursor = *last_delivered_seq;
                 recover = Some((false, Some(session_id)));
+            }
+            // Later appends reuse the removed sequence numbers, so they
+            // follow on from the cut while a full replay rebuilds the view.
+            EventSubscriptionMessage::Rewound { through_seq, .. } => {
+                if *through_seq < subscription.cursor {
+                    subscription.cursor = *through_seq;
+                    subscription.cursor_timestamp = None;
+                }
+                recover = Some((true, Some(session_id)));
             }
             // Live-only output belongs right after the durable event it
             // follows. Anywhere else it is stale or outruns a durable event
@@ -1446,6 +1531,7 @@ async fn finish_ready_replay(
         // live-only output that does not directly follow the durable event
         // it was published after.
         let mut cursor = subscription.final_seq;
+        let mut cursor_timestamp = subscription.final_timestamp;
         let mut tail_has_gap = false;
         let mut buffered = std::mem::take(&mut subscription.buffered);
         buffered.retain(|delivery| {
@@ -1456,18 +1542,22 @@ async fn finish_ready_replay(
                 EventSubscriptionMessage::Event { event } if event.seq <= cursor => false,
                 EventSubscriptionMessage::Event { event } if event.seq == cursor + 1 => {
                     cursor = event.seq;
+                    cursor_timestamp = Some(event.timestamp);
                     true
                 }
                 EventSubscriptionMessage::Transient { event } => {
                     !tail_has_gap && event.after_seq == cursor
                 }
-                EventSubscriptionMessage::Event { .. } | EventSubscriptionMessage::Gap { .. } => {
+                EventSubscriptionMessage::Event { .. }
+                | EventSubscriptionMessage::Gap { .. }
+                | EventSubscriptionMessage::Rewound { .. } => {
                     tail_has_gap = true;
                     true
                 }
             }
         });
         subscription.cursor = cursor;
+        subscription.cursor_timestamp = cursor_timestamp;
         (
             subscription.generation,
             subscription.final_seq,
