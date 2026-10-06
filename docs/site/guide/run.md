@@ -213,7 +213,7 @@ agent failures also include the available response diagnostics. Warning and
 error rows lead with 🚨 or ❌ instead of a badge row. A multiline diagnostic row
 shows only its first line, behind a `▸`; click it to show the rest, such as a
 response body. A warning or error identical to the row before it counts on that
-row (`retried 6×`) instead of adding a copy, so a retry loop hitting the
+row (`repeated 6×`) instead of adding a copy, so a retry loop hitting the
 same provider error stays one row; this includes subagent rows shown in an
 ancestor's transcript. For a failed tool, expand the tool row for its display
 output.

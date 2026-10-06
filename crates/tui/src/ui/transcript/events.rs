@@ -270,7 +270,7 @@ pub(super) fn event_row_layout(
     let mut lines = text.lines();
     let mut title = lines.next().unwrap_or_default().to_owned();
     if repeat > 1 {
-        title.push_str(&format!(" · retried {repeat}×"));
+        title.push_str(&format!(" · repeated {repeat}×"));
     }
     let details = lines.map(|line| Line::from(line.to_owned()));
     let marker = marker

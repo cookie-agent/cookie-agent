@@ -456,7 +456,7 @@ async fn descendant_retry_errors_fold_into_one_expandable_row() {
         1,
         "{collapsed}"
     );
-    assert_eq!(collapsed.matches("retried 6×").count(), 1, "{collapsed}");
+    assert_eq!(collapsed.matches("repeated 6×").count(), 1, "{collapsed}");
     // No badge row; the marker leads the title (a wide glyph and its pad cell).
     assert!(!collapsed.contains("WARNING"), "{collapsed}");
     assert!(
