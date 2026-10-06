@@ -736,16 +736,26 @@ impl App {
 
     pub(super) async fn handle_revert_confirm_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('n' | 'N') => self.modal = Modal::UserMessage,
+            KeyCode::Esc | KeyCode::Char('n' | 'N') => {
+                self.answer_revert_confirm(ConfirmButton::Cancel);
+            }
             KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
-                let Some(menu) = self.user_menu.take() else {
-                    self.modal = Modal::None;
-                    return;
-                };
-                self.modal = Modal::None;
-                self.dispatch_session_revert(menu);
+                self.answer_revert_confirm(ConfirmButton::Confirm);
             }
             _ => {}
+        }
+    }
+
+    /// Answer the revert guard from its hotkeys or buttons: confirm
+    /// dispatches the revert, cancel backs out to the message menu.
+    pub(super) fn answer_revert_confirm(&mut self, button: ConfirmButton) {
+        if button == ConfirmButton::Cancel {
+            self.modal = Modal::UserMessage;
+            return;
+        }
+        self.modal = Modal::None;
+        if let Some(menu) = self.user_menu.take() {
+            self.dispatch_session_revert(menu);
         }
     }
 
@@ -825,23 +835,31 @@ impl App {
         );
     }
 
-    pub(super) fn render_revert_confirm(&mut self, frame: &mut ratatui::Frame, area: Rect) {
-        paint_panel(frame, area, &self.theme);
+    pub(super) fn render_revert_confirm(&mut self, frame: &mut ratatui::Frame, screen: Rect) {
         let Some(menu) = self.user_menu.as_ref() else {
             return;
         };
-        let preview = ellipsize_single_line(&menu.text, 48);
-        let content = format!(
-            "Revert to before \"{preview}\"?\n\nThe message and every later turn leave the visible branch; the append-only log is kept. The message text returns to the composer for editing and resending.\n\nPress Enter/Y to revert or Esc/N to go back."
-        );
-        frame.render_widget(
-            Paragraph::new(content).wrap(Wrap { trim: false }).block(
-                crate::ui::panel_block()
-                    .border_style(self.theme.panel_border())
-                    .title(crate::ui::panel_title("Confirm revert")),
-            ),
-            area,
-        );
+        let theme = &self.theme;
+        let body = |width: u16| {
+            let mut lines = vec![
+                Line::styled("Revert to before this message?", theme.heading()),
+                Line::default(),
+            ];
+            lines.extend(quoted_user_message(&menu.text, width, theme));
+            lines.push(Line::default());
+            lines.extend(wrapped_line(
+                Line::styled(
+                    "This message and everything after it will be removed from the \
+                     conversation. Its text goes back into the composer so you can edit \
+                     and resend. To keep both versions, fork instead.",
+                    theme.muted_text(),
+                ),
+                width,
+            ));
+            lines
+        };
+        self.hit_map.confirm_buttons =
+            render_confirm_panel(frame, screen, "Revert conversation", body, theme);
     }
 
     pub async fn send_stdin(&mut self, input: String, eof: bool) {
@@ -1022,4 +1040,41 @@ impl App {
             Err(error) => format!("context compaction failed: {error}"),
         };
     }
+}
+
+/// Lines a revert guard quotes of the reverted message.
+const REVERT_QUOTE_LINES: usize = 3;
+
+/// The message as the transcript draws a user turn: a `│` gutter in the
+/// user color, wrapped to `width`, and cut with an ellipsis after
+/// [`REVERT_QUOTE_LINES`] lines. Whitespace runs flatten to single spaces.
+fn quoted_user_message(text: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    let gutter = "│ ";
+    let text_width = width.saturating_sub(2);
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut lines = wrapped_line(Line::styled(flat, theme.body()), text_width);
+    if lines.len() > REVERT_QUOTE_LINES {
+        lines.truncate(REVERT_QUOTE_LINES);
+        if let Some(last) = lines.last_mut() {
+            let content = last
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            *last = Line::styled(
+                truncate_with_ellipsis(
+                    &format!("{}…", content.trim_end()),
+                    usize::from(text_width),
+                ),
+                theme.body(),
+            );
+        }
+    }
+    lines
+        .into_iter()
+        .map(|mut line| {
+            line.spans.insert(0, Span::styled(gutter, theme.user()));
+            line
+        })
+        .collect()
 }

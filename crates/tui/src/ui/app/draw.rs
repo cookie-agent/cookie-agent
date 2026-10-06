@@ -371,7 +371,7 @@ impl App {
                 self.render_user_menu(frame, centered(frame.area(), 52, 26));
             }
             Modal::RevertConfirm => {
-                self.render_revert_confirm(frame, centered(frame.area(), 64, 30));
+                self.render_revert_confirm(frame, frame.area());
             }
             Modal::Mcp => {
                 crate::ui::management::render_mcp(

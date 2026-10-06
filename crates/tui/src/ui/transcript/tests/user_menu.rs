@@ -113,6 +113,44 @@ async fn menu_revert_is_confirm_guarded_and_targets_seq_minus_one() {
 }
 
 #[tokio::test]
+async fn revert_confirm_fits_a_standard_terminal_and_its_buttons_click() {
+    let (mut app, _, _) = app_with_user_messages().await;
+    let (client, recorded, _incoming) = live_recording_client();
+    app.client = client;
+    rendered_frame(&mut app, 80, 24);
+    let hit = user_hit(&app, 2);
+    app.handle_click(hit.rect.x + 2, hit.rect.y).await;
+    let revert = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
+    app.handle_key(revert).await;
+    // The panel sizes to its content: both buttons and their hotkeys fit
+    // 80x24.
+    let frame = rendered_frame(&mut app, 80, 24);
+    for text in ["Confirm", "enter/y", "Cancel", "esc/n"] {
+        assert!(frame.contains(text), "{text} rendered");
+    }
+    let button = |app: &App, which: ConfirmButton| {
+        app.hit_map
+            .confirm_buttons
+            .iter()
+            .find(|(_, button)| *button == which)
+            .map(|(rect, _)| *rect)
+            .expect("button rendered")
+    };
+    // Cancel backs out to the menu without any RPC.
+    let cancel = button(&app, ConfirmButton::Cancel);
+    app.handle_click(cancel.x + 1, cancel.y + 1).await;
+    assert_eq!(app.modal, Modal::UserMessage);
+    assert_eq!(recorded_method_count(&recorded, "session.revert"), 0);
+    // Confirm dispatches the revert.
+    app.handle_key(revert).await;
+    rendered_frame(&mut app, 80, 24);
+    let confirm = button(&app, ConfirmButton::Confirm);
+    app.handle_click(confirm.x + 1, confirm.y + 1).await;
+    assert_eq!(app.modal, Modal::None);
+    wait_for_recorded_request(&recorded, "session.revert", 1).await;
+}
+
+#[tokio::test]
 async fn menu_fork_targets_the_message_seq_and_switches_sessions() {
     let (mut app, session, _) = app_with_user_messages().await;
     let (client, recorded, _incoming) = live_recording_client();

@@ -820,6 +820,14 @@ impl App {
                     .filter(|rect| over(*rect))
                     .map(|_| HoverTarget::GoalClose);
             }
+            if let Some((_, button)) = self
+                .hit_map
+                .confirm_buttons
+                .iter()
+                .find(|(rect, _)| over(*rect))
+            {
+                return Some(HoverTarget::ConfirmButton(*button));
+            }
             if self.hit_map.provider_submit.is_some_and(over) {
                 return Some(HoverTarget::ProviderSubmit);
             }
@@ -1052,6 +1060,16 @@ impl App {
                     patch(frame, rect, fill_style);
                 }
             }
+            HoverTarget::ConfirmButton(button) => {
+                if let Some((rect, _)) = self
+                    .hit_map
+                    .confirm_buttons
+                    .iter()
+                    .find(|(_, hit)| *hit == button)
+                {
+                    patch(frame, *rect, fill_style);
+                }
+            }
             HoverTarget::ApprovalAction(decision) => {
                 if let Some(hit) = self
                     .hit_map
@@ -1217,6 +1235,18 @@ impl App {
                     .is_some_and(|rect| contains(rect, column, row))
                 {
                     self.handle_goal_detail_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                }
+                return;
+            }
+            if let Some((_, button)) = self
+                .hit_map
+                .confirm_buttons
+                .iter()
+                .find(|(rect, _)| contains(*rect, column, row))
+                .copied()
+            {
+                if self.modal == Modal::RevertConfirm {
+                    self.answer_revert_confirm(button);
                 }
                 return;
             }

@@ -92,7 +92,7 @@ use crate::{
         RuntimePhase, RuntimeState, StateStore, ToolStatus, TranscriptItem,
         approval_state_from_record,
     },
-    theme::Theme,
+    theme::{DecisionTone, Theme},
 };
 
 use super::events::{RenderScheduler, TerminalRestore, install_terminal_panic_hook};
@@ -400,6 +400,7 @@ pub(super) enum HoverTarget {
     ProviderField(ProviderFormFocus),
     ProviderSubmit,
     ProviderCancel,
+    ConfirmButton(ConfirmButton),
     GoalAction(GoalBarAction),
     GoalClose,
     TranscriptBlock(BlockId),
@@ -443,6 +444,8 @@ pub(super) struct UiHitMap {
     pub(super) provider_fields: Vec<ProviderFieldHit>,
     pub(super) provider_submit: Option<Rect>,
     pub(super) provider_cancel: Option<Rect>,
+    /// The open confirm panel's Confirm/Cancel buttons.
+    pub(super) confirm_buttons: Vec<(Rect, ConfirmButton)>,
     pub(super) goal_actions: Vec<(Rect, GoalBarAction)>,
     pub(super) goal_close: Option<Rect>,
 }
@@ -471,6 +474,7 @@ impl UiHitMap {
         self.provider_fields.clear();
         self.provider_submit = None;
         self.provider_cancel = None;
+        self.confirm_buttons.clear();
         self.goal_actions.clear();
         self.goal_close = None;
     }
@@ -1616,6 +1620,124 @@ fn inner_rect(area: Rect) -> Rect {
         area.width.saturating_sub(2),
         area.height.saturating_sub(2),
     )
+}
+
+/// The two answers of a confirm panel; each has a button and hotkeys.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ConfirmButton {
+    Confirm,
+    Cancel,
+}
+
+/// Columns between a confirm panel's border and its text, either side.
+const CONFIRM_PAD: u16 = 2;
+
+/// A content-sized confirm dialog centered on `screen`: the body above a
+/// centered Confirm/Cancel button pair, each button naming its hotkeys under
+/// its label. `body` receives the text column's width and returns its lines
+/// already wrapped. The buttons anchor to the bottom, so a short terminal
+/// clips the body, never the way out. Returns the buttons' hit rects.
+pub(super) fn render_confirm_panel(
+    frame: &mut ratatui::Frame,
+    screen: Rect,
+    title: &str,
+    body: impl FnOnce(u16) -> Vec<Line<'static>>,
+    theme: &Theme,
+) -> Vec<(Rect, ConfirmButton)> {
+    let preferred = u16::try_from(u32::from(screen.width) * 64 / 100).unwrap_or(u16::MAX);
+    let width = preferred.clamp(52.min(screen.width), 76.min(screen.width));
+    let lines = body(width.saturating_sub(2 + 2 * CONFIRM_PAD));
+    // Roomy terminals get framed two-line buttons (label over hotkeys);
+    // cramped ones a flat row with both on one line.
+    let framed = screen.height >= 13;
+    let button_height = if framed { 4 } else { 1 };
+    let body_height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    // Border, top pad, body, gap, buttons.
+    let height = body_height
+        .saturating_add(4 + button_height)
+        .min(screen.height);
+    let area = Rect::new(
+        screen.x + (screen.width - width) / 2,
+        screen.y + (screen.height - height) / 2,
+        width,
+        height,
+    );
+    paint_panel(frame, area, theme);
+    frame.render_widget(
+        crate::ui::panel_block()
+            .border_style(theme.panel_border())
+            .title(crate::ui::fitted_panel_title(title.to_owned(), width)),
+        area,
+    );
+    let inner = inner_rect(area);
+    let button_height = button_height.min(inner.height);
+    let buttons_y = inner.bottom() - button_height;
+    let body_area = Rect::new(
+        inner.x + CONFIRM_PAD.min(inner.width),
+        inner.y.saturating_add(1).min(buttons_y),
+        inner.width.saturating_sub(2 * CONFIRM_PAD),
+        buttons_y.saturating_sub(inner.y.saturating_add(2)),
+    );
+    frame.render_widget(Paragraph::new(lines), body_area);
+
+    let buttons = [
+        (
+            ConfirmButton::Confirm,
+            "Confirm",
+            "enter/y",
+            DecisionTone::Deny,
+        ),
+        (
+            ConfirmButton::Cancel,
+            "Cancel",
+            "esc/n",
+            DecisionTone::Neutral,
+        ),
+    ];
+    // Equal-width buttons centered as one group with a two-cell gutter:
+    // framed ones stack label and keys, flat ones put them side by side.
+    let content_width = |label: &str, keys: &str| {
+        let (label, keys) = (UnicodeWidthStr::width(label), UnicodeWidthStr::width(keys));
+        if framed {
+            label.max(keys) + 6
+        } else {
+            label + 1 + keys + 2
+        }
+    };
+    let button_width = buttons
+        .iter()
+        .map(|(_, label, keys, _)| content_width(label, keys))
+        .max()
+        .map_or(0, |width| u16::try_from(width).unwrap_or(u16::MAX))
+        .min(inner.width.saturating_sub(2) / 2);
+    let group_width = button_width * 2 + 2;
+    let mut x = inner.x + inner.width.saturating_sub(group_width) / 2;
+    let mut hits = Vec::new();
+    for (button, label, keys, tone) in buttons {
+        let rect = Rect::new(x, buttons_y, button_width, button_height);
+        let style = theme.decision(tone, false);
+        let label = Span::styled(label, style);
+        let keys = Span::styled(keys, theme.internal());
+        let (content, content_area) = if framed {
+            frame.render_widget(
+                crate::ui::panel_block()
+                    .border_style(style)
+                    .style(theme.panel()),
+                rect,
+            );
+            let content = vec![Line::from(label), Line::from(keys)];
+            (content, inner_rect(rect))
+        } else {
+            (vec![Line::from(vec![label, Span::raw(" "), keys])], rect)
+        };
+        frame.render_widget(
+            Paragraph::new(content).alignment(ratatui::layout::Alignment::Center),
+            content_area,
+        );
+        hits.push((rect, button));
+        x += button_width + 2;
+    }
+    hits
 }
 
 /// One compact connect-form action button: a border-colored frame sized to
