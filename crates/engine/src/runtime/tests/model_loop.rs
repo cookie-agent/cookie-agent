@@ -1045,3 +1045,83 @@ async fn model_tools_are_recorded_once_while_unchanged() {
         .expect("request prepared for the recorded attempt");
     assert!(seq < prepared.seq, "tools are recorded before the request");
 }
+
+/// Runs a model that makes the same allowed write three times and returns the
+/// outputs the engine committed for those calls.
+async fn repeated_write_outputs(loop_warning: bool) -> Vec<String> {
+    let (endpoint, captured) = scripted_repeated_write_server(3).await;
+    let (mut fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Loop test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nTest loop warnings.\n",
+    );
+    if !loop_warning {
+        fixture.engine.shutdown().await;
+        fixture.config.runtime.loop_warning.enabled = false;
+        fixture.engine = reopen_engine(&fixture);
+    }
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::new(TestFlag::default()),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("loop-warning").expect("run ID"),
+                selection,
+                input: "repeat the same write".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("run");
+    await_event(
+        &fixture.engine,
+        session.session_id,
+        "run completion",
+        |event| matches!(event.payload, EventPayload::RunCompleted { .. }),
+    )
+    .await;
+    let outputs = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection")
+        .log
+        .events()
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination } => termination
+                .result
+                .as_ref()
+                .map(|result| result.output.clone()),
+            _ => None,
+        })
+        .collect();
+    captured.abort();
+    fixture.engine.shutdown().await;
+    outputs
+}
+
+#[tokio::test]
+async fn repeating_identical_tool_calls_warns_the_model() {
+    let outputs = repeated_write_outputs(true).await;
+    assert_eq!(outputs.len(), 3);
+    assert_eq!(outputs[..2], ["executed", "executed"]);
+    assert!(outputs[2].starts_with("executed\n\n<system-reminder>\nRepeated tool calls detected"));
+    assert!(outputs[2].contains("the same tool call 3 times in a row"));
+}
+
+#[tokio::test]
+async fn loop_warning_can_be_disabled() {
+    let outputs = repeated_write_outputs(false).await;
+    assert_eq!(outputs, ["executed", "executed", "executed"]);
+}

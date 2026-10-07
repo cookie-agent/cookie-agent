@@ -384,6 +384,7 @@ pub(crate) fn fixture() -> Fixture {
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
             agent_md: cookie_agent_config::AgentMdConfig::default(),
+            loop_warning: cookie_agent_config::LoopWarningConfig::default(),
             approval: ApprovalConfig::default(),
             model_retry: cookie_agent_config::ModelRetryConfig::default(),
             context_compaction: ContextCompactionConfig::default(),

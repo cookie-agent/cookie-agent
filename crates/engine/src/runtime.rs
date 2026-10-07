@@ -60,6 +60,7 @@ mod get_history;
 pub(crate) mod handles;
 mod helpers;
 mod internal_agents;
+mod loop_guard;
 mod mailbox;
 pub(crate) mod messaging_api;
 mod model_loop;

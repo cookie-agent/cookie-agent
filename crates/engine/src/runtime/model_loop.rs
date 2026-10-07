@@ -1662,6 +1662,20 @@ impl Engine {
                 }
             }
         }
+        if let Ok(result) = &mut result
+            && !cancelled
+            && self.inner.config.runtime.loop_warning.enabled
+            && let Some(warning) = super::loop_guard::loop_warning(
+                &self.inner.store.log(active.session)?.event_snapshot(),
+                run,
+                id,
+                &result.output,
+            )
+            && result.output.len() + warning.len()
+                <= cookie_agent_protocol::PersistedToolResult::MAX_OUTPUT_BYTES
+        {
+            result.output.push_str(&warning);
+        }
         self.submit_tool_result_status(active.session, run, id, result, cancelled)
             .await?;
         Ok(())

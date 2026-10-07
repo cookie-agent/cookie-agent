@@ -294,6 +294,8 @@ pub struct EngineConfig {
     #[serde(default)]
     pub agent_md: AgentMdConfig,
     #[serde(default)]
+    pub loop_warning: LoopWarningConfig,
+    #[serde(default)]
     pub approval: ApprovalConfig,
     #[serde(default)]
     pub model_retry: ModelRetryConfig,
@@ -319,6 +321,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) server: Option<ServerConfig>,
     pub(crate) tool_output: Option<ToolOutputConfig>,
     pub(crate) agent_md: Option<AgentMdConfig>,
+    pub(crate) loop_warning: Option<LoopWarningConfig>,
     pub(crate) approval: Option<ApprovalConfig>,
     pub(crate) model_retry: Option<ModelRetryConfig>,
     pub(crate) context_compaction: Option<ContextCompactionConfig>,
@@ -426,6 +429,18 @@ pub struct AgentMdConfig {
     pub enabled: bool,
 }
 impl Default for AgentMdConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LoopWarningConfig {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+}
+impl Default for LoopWarningConfig {
     fn default() -> Self {
         Self { enabled: true }
     }
@@ -683,6 +698,9 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     }
     if let Some(value) = &layer.agent_md {
         runtime.agent_md = value.clone();
+    }
+    if let Some(value) = &layer.loop_warning {
+        runtime.loop_warning = value.clone();
     }
     if let Some(value) = &layer.approval {
         runtime.approval = value.clone();
