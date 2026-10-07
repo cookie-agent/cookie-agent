@@ -118,6 +118,14 @@ impl App {
         })
     }
 
+    /// The session whose conversation is on screen: the selected one, unless a
+    /// new-session draft (`/new`, or the one `cookie` starts on) replaces it
+    /// with a fresh, still uncreated session. Selecting a session ends the
+    /// draft, so this never hides a session the user just chose.
+    pub(in crate::ui) fn viewed_session(&self) -> Option<SessionId> {
+        self.selected.filter(|_| self.new_session_draft.is_none())
+    }
+
     /// The metadata of the currently watched session, from the session list
     /// or the delegation tree.
     pub(in crate::ui) fn selected_session_meta(&self) -> Option<&SessionMeta> {

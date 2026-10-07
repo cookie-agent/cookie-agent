@@ -876,3 +876,32 @@ async fn compact_step_accepts_an_empty_focus() {
     app.handle_key(key(KeyCode::Enter)).await;
     assert!(!app.command_palette_visible());
 }
+
+#[tokio::test]
+async fn new_session_draft_empties_the_conversation_until_cancelled() {
+    let (mut app, session, _) = app_with_user_messages().await;
+    let before = rendered_frame(&mut app, 80, 24);
+    assert!(before.contains("second question"), "{before}");
+    assert!(!app.hit_map.user_messages.is_empty());
+
+    // The agent picker opens on a fresh session, not the one selected
+    // behind the draft: no old messages, and none of their click targets.
+    app.run_command(SlashCommand::New).await;
+    assert_eq!(app.modal, Modal::Agents);
+    let drafting = rendered_frame(&mut app, 80, 24);
+    assert!(!drafting.contains("question"), "{drafting}");
+    assert!(app.hit_map.user_messages.is_empty());
+    // With the picker closed on a chosen agent, the draft stays and so does
+    // the fresh session.
+    app.modal = Modal::None;
+    assert!(app.new_session_draft.is_some());
+    let picked = rendered_frame(&mut app, 80, 24);
+    assert!(picked.contains("Fresh session"), "{picked}");
+    assert!(!picked.contains("question"), "{picked}");
+    assert_eq!(app.selected, Some(session));
+
+    // Choosing the selected session again ends the draft and shows it.
+    app.set_selected_session(session);
+    let back = rendered_frame(&mut app, 80, 24);
+    assert!(back.contains("second question"), "{back}");
+}

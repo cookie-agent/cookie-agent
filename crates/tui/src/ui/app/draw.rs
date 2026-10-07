@@ -451,7 +451,7 @@ impl App {
         });
 
         let state = self
-            .selected
+            .viewed_session()
             .and_then(|session_id| self.store.sessions.get(&session_id));
         let context_tokens = state.and_then(|state| state.context_tokens);
         // No token data → no context segment at all; a bare dash would be

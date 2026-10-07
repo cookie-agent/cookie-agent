@@ -924,6 +924,11 @@ impl App {
                 }
                 self.new_session_draft =
                     self.draft_selection_for_preset(self.selected_preset.as_deref(), None);
+                // The conversation pane now shows the fresh session; a drag
+                // selection addresses lines of the one it replaced.
+                if matches!(self.selection, Some(TextSelection::Conversation { .. })) {
+                    self.selection = None;
+                }
                 self.open_selection_modal(Modal::Agents);
                 if self.modal == Modal::Agents {
                     self.status = "Select the agent for the new root session.".into();

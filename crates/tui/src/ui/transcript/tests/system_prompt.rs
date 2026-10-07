@@ -631,12 +631,11 @@ async fn new_session_draft_does_not_leak_into_selected_prompt_provenance() {
         app.draft.as_ref().map(|draft| draft.agent.as_str()),
         Some("primary")
     );
+    // The draft shows the fresh session it will create, not the selected
+    // conversation behind it.
     let while_new = rendered_frame(&mut app, 100, 30);
-    assert!(while_new.contains(expected), "{while_new}");
-    assert!(
-        !while_new.contains("system prompt · primary (last run) · next: reviewer"),
-        "{while_new}"
-    );
+    assert!(while_new.contains("Fresh session"), "{while_new}");
+    assert!(!while_new.contains("system prompt"), "{while_new}");
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
         .await;
@@ -774,8 +773,11 @@ async fn failed_then_repeated_new_never_replaces_selected_session_draft() {
         app.draft.as_ref().map(|draft| draft.agent.as_str()),
         Some("reviewer")
     );
+    // The failed create keeps the draft, so the pane stays on the fresh
+    // session it still means to create.
     let failed = rendered_frame(&mut app, 100, 30);
-    assert!(failed.contains(expected), "{failed}");
+    assert!(failed.contains("Fresh session"), "{failed}");
+    assert!(!failed.contains("system prompt"), "{failed}");
 
     app.run_command(SlashCommand::New).await;
     assert_eq!(
@@ -789,7 +791,7 @@ async fn failed_then_repeated_new_never_replaces_selected_session_draft() {
         Some("reviewer")
     );
     let repeated = rendered_frame(&mut app, 100, 30);
-    assert!(repeated.contains(expected), "{repeated}");
+    assert!(repeated.contains("Fresh session"), "{repeated}");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
         .await;
     assert!(app.new_session_draft.is_none());
@@ -797,6 +799,9 @@ async fn failed_then_repeated_new_never_replaces_selected_session_draft() {
         app.draft.as_ref().map(|draft| draft.agent.as_str()),
         Some("reviewer")
     );
+    // Cancelling brings the selected conversation back, its own draft intact.
+    let cancelled = rendered_frame(&mut app, 100, 30);
+    assert!(cancelled.contains(expected), "{cancelled}");
 }
 
 #[test]

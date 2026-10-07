@@ -808,7 +808,7 @@ impl App {
     pub(super) fn notice_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut notice_lines = Vec::new();
         let goal_notices = self
-            .selected
+            .viewed_session()
             .and_then(|session_id| self.goal_notices.get(&session_id));
         for notice in self
             .transient_notices
@@ -836,7 +836,7 @@ impl App {
     /// Descendant warning and error rows for the viewed session, at or
     /// above the event-level filter.
     fn viewed_descendant_events(&self) -> Vec<DescendantEvent> {
-        self.selected
+        self.viewed_session()
             .map(|selected| self.descendant_events(selected, self.tui_config.minimum_event_level))
             .unwrap_or_default()
     }
@@ -1068,11 +1068,12 @@ impl App {
     /// what the last frame rendered at this width, so logical-line
     /// coordinates from the mouse map one-to-one.
     pub(super) fn conversation_chain(&self, width: u16) -> Cow<'_, [Line<'static>]> {
-        let session_present = self
-            .selected
-            .is_some_and(|session_id| self.store.sessions.contains_key(&session_id));
-        let transcript_empty = self
-            .selected
+        // A new-session draft shows the fresh session it will create, not the
+        // conversation still selected behind it.
+        let viewed = self.viewed_session();
+        let session_present = self.new_session_draft.is_some()
+            || viewed.is_some_and(|session_id| self.store.sessions.contains_key(&session_id));
+        let transcript_empty = viewed
             .and_then(|session_id| self.store.sessions.get(&session_id))
             .is_none_or(|state| state.transcript.is_empty() && state.run_snapshot.is_none());
         let descendant_events = self.viewed_descendant_events();
@@ -1140,9 +1141,11 @@ impl App {
         // overflowing.
         let descendant_events = self.viewed_descendant_events();
         let width = pane_text_width(area.width);
-        let session_present = self
-            .selected
-            .is_some_and(|session_id| self.store.sessions.contains_key(&session_id));
+        // A new-session draft shows the fresh session it will create, not the
+        // conversation still selected behind it.
+        let viewed = self.viewed_session();
+        let session_present = self.new_session_draft.is_some()
+            || viewed.is_some_and(|session_id| self.store.sessions.contains_key(&session_id));
         let empty_layout = TranscriptLayout {
             lines: empty_conversation_lines(session_present, width, &self.theme),
             regions: Vec::new(),
@@ -1161,7 +1164,7 @@ impl App {
             .then(|| self.layout_cache.scroll_anchor(unspliced_offset))
             .flatten();
         let mut layout_changed = false;
-        let layout = if let Some((session_id, state)) = self.selected.and_then(|session_id| {
+        let layout = if let Some((session_id, state)) = viewed.and_then(|session_id| {
             self.store
                 .sessions
                 .get(&session_id)
