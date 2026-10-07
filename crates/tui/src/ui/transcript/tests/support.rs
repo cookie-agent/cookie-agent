@@ -915,6 +915,7 @@ pub(crate) fn session_meta(id: SessionId) -> SessionMeta {
         // filter set this back to 1 explicitly.
         last_event_seq: 2,
         last_activity: "2026-08-06T12:00:00Z".parse().expect("timestamp"),
+        last_agent_activity: None,
         status: SessionStatus::Idle,
         skipped_events: Vec::new(),
     }

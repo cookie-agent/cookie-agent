@@ -46,7 +46,11 @@ again.
 
 Use `/new` to create a fresh root session and `/sessions` to search and switch
 between sessions. Delegated sessions form a tree beneath the root that created
-them. Accepted runs retain their frozen model binding even if catalog,
+them. The Agents panel lists each session's subagents by their latest
+user-initiated activity, newest first: a user input submitted or admitted, or a
+`delegate_subagent` call started. Output and tool results never reorder it.
+Session metadata carries this time as `last_agent_activity`, so a reopened
+session orders its subagents the same way before any of them is replayed. Accepted runs retain their frozen model binding even if catalog,
 configuration, or provider-store state changes later.
 
 Several cookie processes may share one project directory, but a root session

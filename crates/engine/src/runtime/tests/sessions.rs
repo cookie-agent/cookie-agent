@@ -648,6 +648,52 @@ fn empty_startup_is_coherent_and_rejects_fabricated_sessions() {
 }
 
 #[tokio::test]
+async fn session_meta_tracks_user_initiated_activity_only() {
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+    let (endpoint, _captured, _reached, _release) =
+        scripted_server_with_delayed_response(vec![body.to_owned()], usize::MAX).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    assert_eq!(session.last_agent_activity, None);
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("activity-run").expect("client run ID"),
+                selection,
+                input: "do the thing".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("run");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let projection = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection");
+    let submitted = projection
+        .log
+        .event_snapshot()
+        .iter()
+        .find(|event| matches!(event.payload, EventPayload::UserInputSubmitted { .. }))
+        .map(|event| event.timestamp)
+        .expect("submission");
+    // The model's output and the run's completion come later but are not
+    // user-initiated, so only the submission counts.
+    assert_eq!(projection.meta.last_agent_activity, Some(submitted));
+    assert!(projection.meta.last_activity > submitted);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn revert_truncates_closes_cut_runs_and_rewinds_live_tails() {
     let response = |text: &str| {
         format!(

@@ -1372,6 +1372,7 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
         title_updated_seq: 0,
         last_event_seq: 1,
         last_activity,
+        last_agent_activity: None,
         status: SessionStatus::Idle,
         skipped_events: Vec::new(),
     };

@@ -159,6 +159,46 @@ async fn agent_tree_rows_are_agent_colon_title() {
 }
 
 #[tokio::test]
+async fn unreplayed_children_order_by_the_engine_reported_activity() {
+    let mut app = test_app().await;
+    let root = SessionId::new_v7();
+    // Created in this order, so id order alone would list them as is.
+    let ids = [
+        SessionId::new_v7(),
+        SessionId::new_v7(),
+        SessionId::new_v7(),
+    ];
+    let at = |seconds| Some(jiff::Timestamp::new(seconds, 0).expect("timestamp"));
+    let child = |id, title, activity| SessionTree {
+        session: cookie_agent_protocol::SessionMeta {
+            last_agent_activity: activity,
+            ..titled_meta(id, title, 1)
+        },
+        children: Vec::new(),
+    };
+    app.tree_root = Some(root);
+    app.selected = Some(root);
+    app.tree = Some(SessionTree {
+        session: titled_meta(root, "root", 1),
+        children: vec![
+            child(ids[0], "oldest", at(10)),
+            child(ids[1], "newest", at(30)),
+            child(ids[2], "middle", at(20)),
+        ],
+    });
+    // Nothing is replayed for the children, as after opening a session:
+    // the order still follows their activity, newest first.
+    assert!(ids.iter().all(|id| !app.store.sessions.contains_key(id)));
+    let order = app
+        .tree_entries()
+        .into_iter()
+        .skip(1)
+        .map(|(id, _, _)| id)
+        .collect::<Vec<_>>();
+    assert_eq!(order, [ids[1], ids[2], ids[0]]);
+}
+
+#[tokio::test]
 async fn watched_and_cursor_tree_rows_are_marked_by_style_alone() {
     let mut app = test_app().await;
     // Pin the default true-color theme so the assertions do not depend

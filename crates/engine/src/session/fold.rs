@@ -19,6 +19,7 @@ pub(super) fn fold_consumed(payload: &EventPayload) -> bool {
             | EventPayload::SessionTitleCommitted { .. }
             | EventPayload::DelegateChildTerminated { .. }
             | EventPayload::RunStarted { .. }
+            | EventPayload::UserInputAdmitted { .. }
             | EventPayload::UserInputSubmitted { .. }
             | EventPayload::RunCompleted { .. }
             | EventPayload::RunFailed { .. }
@@ -199,6 +200,7 @@ fn projection_fold_with(
         title_updated_seq: 0,
         last_event_seq: log.physical_tip_seq(),
         last_activity: physical_tip.timestamp,
+        last_agent_activity: None,
         status: SessionStatus::Idle,
         skipped_events: log
             .diagnostics()
@@ -273,6 +275,13 @@ fn projection_fold_with(
             }
             continue;
         }
+        // An admission (a steer, or input queued for later) may have no run.
+        if matches!(
+            envelope.payload,
+            EventPayload::UserInputAdmitted { .. } | EventPayload::UserInputSubmitted { .. }
+        ) {
+            meta.last_agent_activity = Some(envelope.timestamp);
+        }
         let Some(run_id) = envelope.run_id else {
             continue;
         };
@@ -343,6 +352,9 @@ fn projection_fold_with(
                         .get_or_insert_with(|| CommittedTurns::index(&events))
                         .tool_name(&start.owner)
                         .unwrap_or_default();
+                    if tool == "delegate_subagent" {
+                        meta.last_agent_activity = Some(envelope.timestamp);
+                    }
                     run.pending_calls.insert(start.tool_call_id, tool);
                 }
             }

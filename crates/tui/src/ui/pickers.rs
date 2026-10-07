@@ -394,12 +394,20 @@ pub(crate) fn flatten_tree(
     entries.push((tree.session.session_id, tree.session.clone(), depth));
     if !collapsed.contains(&tree.session.session_id) {
         let mut children = tree.children.iter().collect::<Vec<_>>();
+        // A child this view has replayed knows its activity live; any other
+        // (every child of a freshly opened session) has it from the engine's
+        // fold of its log, carried in the tree's metadata.
+        let activity = |child: &SessionTree| {
+            states
+                .get(&child.session.session_id)
+                .and_then(|state| state.last_agent_activity)
+                .or(child.session.last_agent_activity)
+        };
         children.sort_by(|left, right| {
             let left_state = states.get(&left.session.session_id);
             let right_state = states.get(&right.session.session_id);
-            right_state
-                .and_then(|state| state.last_agent_activity)
-                .cmp(&left_state.and_then(|state| state.last_agent_activity))
+            activity(right)
+                .cmp(&activity(left))
                 .then_with(|| {
                     match (
                         left_state.and_then(|state| state.created_at),

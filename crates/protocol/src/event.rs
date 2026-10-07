@@ -288,6 +288,12 @@ pub struct SessionMeta {
     #[schemars(range(min = 1))]
     pub last_event_seq: u64,
     pub last_activity: Timestamp,
+    /// Latest user-initiated activity in the session: a user input submitted
+    /// or admitted, or a `delegate_subagent` call started. Unlike
+    /// `last_activity`, output and tool results never move it, so it orders
+    /// sibling sessions without letting a busy one reorder itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_agent_activity: Option<Timestamp>,
     pub status: SessionStatus,
     pub skipped_events: Vec<SkippedEvent>,
 }
@@ -330,6 +336,8 @@ impl<'de> Deserialize<'de> for SessionMeta {
             title_updated_seq: u64,
             last_event_seq: u64,
             last_activity: Timestamp,
+            #[serde(default)]
+            last_agent_activity: Option<Timestamp>,
             status: SessionStatus,
             #[serde(default)]
             skipped_events: Vec<SkippedEvent>,
@@ -352,6 +360,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             title_updated_seq: w.title_updated_seq,
             last_event_seq: w.last_event_seq,
             last_activity: w.last_activity,
+            last_agent_activity: w.last_agent_activity,
             status: w.status,
             skipped_events: w.skipped_events,
         };

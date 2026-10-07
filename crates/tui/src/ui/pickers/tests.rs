@@ -86,6 +86,7 @@ fn session_meta(session_id: SessionId) -> SessionMeta {
         title_updated_seq: 0,
         last_event_seq: 1,
         last_activity: "2026-08-06T12:00:00Z".parse().expect("timestamp"),
+        last_agent_activity: None,
         status: SessionStatus::Idle,
         skipped_events: Vec::new(),
     }
