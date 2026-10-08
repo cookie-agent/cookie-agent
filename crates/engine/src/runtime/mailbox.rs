@@ -1,14 +1,13 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     num::NonZeroU32,
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{Arc, Mutex},
 };
 
 use cookie_agent_protocol::{
     EventOrigin, EventSubscriptionMessage, EventsSubscribeResult, ExtensionBusEventParams,
     ExtensionEmitStatus, PersistedToolResult as ToolResult, PluginDiagnosticKind, RunId,
-    SafeToolError, SessionId, SessionStatus, StoredEvent, ToolCallId, ToolCallTermination,
-    ToolTerminationOutcome,
+    SafeToolError, SessionId, StoredEvent, ToolCallId, ToolCallTermination, ToolTerminationOutcome,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -17,8 +16,7 @@ use super::PagingRaceHook;
 use super::ToolCallFailureCode;
 use super::{
     Engine, EngineError, Event, MAX_COMPACTION_DEFERRED_COMMANDS, PendingInput,
-    PendingPromotionState, PredictiveCompactionInput, SESSION_MAILBOX_CAPACITY, SessionCommand,
-    ToolFailure, helpers::safe_error, model_loop,
+    SESSION_MAILBOX_CAPACITY, SessionCommand, ToolFailure, helpers::safe_error,
 };
 use crate::{actor::SessionActor, events, session::SessionError};
 
@@ -1271,124 +1269,15 @@ impl Engine {
                 complete_if_empty,
                 reply,
             } => {
-                let producer_promoted =
-                    match self.promote_producer_inputs_direct(session, run, false) {
-                        Ok(promoted) => promoted,
-                        Err(error) => {
-                            let _ = reply.send(Err(error));
-                            return;
-                        }
-                    };
-                let active = match self.active_run_in(session, run) {
-                    Ok(active) => active,
-                    Err(error) => {
-                        let _ = reply.send(Err(error));
-                        return;
-                    }
-                };
-                let pending = match self.inner.store.get(session) {
-                    Ok(projection) => pending_inputs(&projection.log.event_snapshot(), run),
-                    Err(error) => {
-                        let _ = reply.send(Err(error.into()));
-                        return;
-                    }
-                };
-                if pending.is_empty() {
-                    let result = if complete_if_empty && !producer_promoted {
-                        self.append_direct(
-                            session,
-                            Some(run),
-                            super::event_origin("engine:model-loop"),
-                            Event::RunCompleted { final_text },
-                        )
-                    } else {
-                        Ok(())
-                    }
-                    .map(|()| producer_promoted);
-                    let _ = reply.send(result);
-                } else if !self.reserve_compaction(session) {
-                    let _ = reply.send(Err(EngineError::SessionRunning(session)));
-                } else {
-                    let engine = self.clone();
-                    tokio::spawn(async move {
-                        let mut pending = pending;
-                        let mut promoted = false;
-                        let result = loop {
-                            let fallback_index =
-                                active.fallback_index.load(Ordering::Acquire) as usize;
-                            let through_admission_seq = pending
-                                .last()
-                                .expect("pending batch is nonempty")
-                                .admission_seq;
-                            let mut failed = None;
-                            let mut serialized_message_bytes = 0_usize;
-                            for pending_input in &pending {
-                                let input_bytes = match model_loop::serialized_input_bytes(
-                                    &pending_input.input,
-                                ) {
-                                    Ok(input_bytes) => input_bytes,
-                                    Err(error) => {
-                                        failed = Some(error);
-                                        break;
-                                    }
-                                };
-                                serialized_message_bytes =
-                                    serialized_message_bytes.saturating_add(input_bytes);
-                                match engine
-                                    .maybe_predictive_compact_before_input(
-                                        PredictiveCompactionInput {
-                                            session,
-                                            run,
-                                            serialized_message_bytes,
-                                            policy: &active.policy,
-                                            fallback_index,
-                                            cancellation: &active.cancellation,
-                                            actor_direct: false,
-                                        },
-                                    )
-                                    .await
-                                {
-                                    Ok(true) => break,
-                                    Ok(false) => {}
-                                    Err(error) => {
-                                        failed = Some(error);
-                                        break;
-                                    }
-                                }
-                            }
-                            if let Some(error) = failed {
-                                break Err(error);
-                            }
-                            match engine
-                                .commit_pending_promotion(
-                                    session,
-                                    run,
-                                    through_admission_seq,
-                                    final_text.clone(),
-                                    complete_if_empty,
-                                    promoted,
-                                )
-                                .await
-                            {
-                                Ok(state) if state.pending.is_empty() => {
-                                    break Ok(state.continue_run);
-                                }
-                                Ok(state) => {
-                                    promoted = state.promoted;
-                                    pending = state.pending;
-                                }
-                                Err(error) => break Err(error),
-                            }
-                        };
-                        let mut result = result;
-                        if result.is_err()
-                            && let Err(error) = engine.finish_compaction(session).await
-                        {
-                            result = Err(error);
-                        }
-                        let _ = reply.send(result);
-                    });
-                }
+                let result = self.active_run_in(session, run).and_then(|_| {
+                    self.promote_pending_or_complete_direct(
+                        session,
+                        run,
+                        final_text,
+                        complete_if_empty,
+                    )
+                });
+                let _ = reply.send(result);
             }
             SessionCommand::PromotePendingInputs { run, reply } => {
                 let result = self.active_run_in(session, run).and_then(|_| {
@@ -1430,71 +1319,38 @@ impl Engine {
         }
     }
 
-    /// Submits the pending inputs admitted through `through_admission_seq`,
-    /// completing the run when nothing was left to promote, and releases the
-    /// compaction hold once no input is pending.
-    async fn commit_pending_promotion(
+    /// Submits the run's pending inputs, completing the run when nothing was
+    /// left to promote. Returns whether the run continues. Called on the
+    /// session actor.
+    fn promote_pending_or_complete_direct(
         &self,
         session: SessionId,
         run: RunId,
-        through_admission_seq: u64,
         final_text: Option<String>,
         complete_if_empty: bool,
-        already_promoted: bool,
-    ) -> Result<PendingPromotionState, EngineError> {
-        self.on_actor_async(session, move |engine| async move {
-            let result = (|| {
-                let projection = engine.inner.store.get(session)?;
-                if !projection
-                    .runs
-                    .get(&run)
-                    .is_some_and(|run| run.status == SessionStatus::Running)
-                {
-                    return Ok(PendingPromotionState {
-                        promoted: already_promoted,
-                        pending: Vec::new(),
-                        continue_run: false,
-                    });
-                }
-                let eligible = pending_inputs(&projection.log.event_snapshot(), run)
-                    .into_iter()
-                    .take_while(|pending| pending.admission_seq <= through_admission_seq)
-                    .collect::<Vec<_>>();
-                for pending in &eligible {
-                    engine.append_direct(
-                        session,
-                        Some(run),
-                        pending.origin.clone(),
-                        Event::UserInputSubmitted {
-                            input: pending.input.clone(),
-                        },
-                    )?;
-                }
-                let producer_promoted =
-                    engine.promote_producer_inputs_direct(session, run, false)?;
-                let promoted = already_promoted || !eligible.is_empty() || producer_promoted;
-                let pending =
-                    pending_inputs(&engine.inner.store.log(session)?.event_snapshot(), run);
-                if pending.is_empty() && !promoted && complete_if_empty {
-                    engine.append_direct(
-                        session,
-                        Some(run),
-                        super::event_origin("engine:model-loop"),
-                        Event::RunCompleted { final_text },
-                    )?;
-                }
-                Ok(PendingPromotionState {
-                    promoted,
-                    continue_run: promoted,
-                    pending,
-                })
-            })();
-            if result.as_ref().is_ok_and(|state| state.pending.is_empty()) {
-                engine.release_compaction_direct(session).await;
-            }
-            result
-        })
-        .await
+    ) -> Result<bool, EngineError> {
+        let mut promoted = self.promote_producer_inputs_direct(session, run, false)?;
+        for pending in pending_inputs(&self.inner.store.log(session)?.event_snapshot(), run) {
+            self.append_direct(
+                session,
+                Some(run),
+                pending.origin,
+                Event::UserInputSubmitted {
+                    input: pending.input,
+                },
+            )?;
+            promoted = true;
+        }
+        promoted |= self.promote_producer_inputs_direct(session, run, false)?;
+        if !promoted && complete_if_empty {
+            self.append_direct(
+                session,
+                Some(run),
+                super::event_origin("engine:model-loop"),
+                Event::RunCompleted { final_text },
+            )?;
+        }
+        Ok(promoted)
     }
 }
 

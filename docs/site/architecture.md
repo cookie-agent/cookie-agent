@@ -251,8 +251,8 @@ session and drive the run loop:
   emits `attempt_abandoned`, which is visible in the TUI. When its budget is
   exhausted, the loop advances to the next fallback and emits
   `model_fallback`; the fallback position is sticky. Before each
-  request the loop runs predictive compaction and, after a completed turn,
-  post-check compaction (see [Compaction](guide/compaction.md)).
+  request the loop compacts when the latest turn's reported usage reaches the
+  threshold (see [Compaction](guide/compaction.md)).
 - **Permissions.** Every prepared tool call is matched against the agent's
   ordered permission rules (see [Permissions](guide/agents.md#permissions)), and
   unmatched checks deny by default. Tool visibility is gated the same way: a

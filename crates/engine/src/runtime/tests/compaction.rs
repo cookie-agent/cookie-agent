@@ -575,23 +575,38 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
 
 #[tokio::test]
 async fn automatic_compaction_failure_limit_suppresses_after_three_and_resets() {
+    // Every main turn reports usage at the trigger, so each follow-up request
+    // in a run attempts automatic compaction until the run's limit is hit.
+    let tool_call = |index: usize| {
+        format!(
+            "data: {}\n\ndata: {}\n\n",
+            serde_json::json!({"choices":[{"delta":{"tool_calls":[{
+                "index": 0,
+                "id": format!("write-{index}"),
+                "type": "function",
+                "function": {"name": "write", "arguments": serde_json::json!({"value": index.to_string()}).to_string()}
+            }]},"finish_reason":null}]}),
+            serde_json::json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":8_192,"completion_tokens":1,"total_tokens":8_193}}),
+        )
+    };
     let root = scripted_text_usage_body("root", 8_192, Some(1), 0);
     let failure = (400, r#"{"error":{"message":"invalid request","type":"invalid_request_error","code":"invalid_request"}}"#.to_owned());
     let summary = scripted_text_usage_body("checkpoint", 1, Some(1), 0);
-    let mut bodies = vec![(200, root.clone())];
-    for _ in 0..3 {
+    let mut bodies = vec![(200, tool_call(0))];
+    for index in 1..=3 {
         bodies.push(failure.clone());
-        bodies.push((200, root.clone()));
+        bodies.push((200, tool_call(index)));
     }
+    // Suppressed for the rest of the run: no compaction request precedes this.
     bodies.push((200, root.clone()));
+    // A new run starts with a fresh failure budget.
     bodies.push((200, summary));
-    bodies.push(failure);
     bodies.push((200, root));
     let (endpoint, captured, ..) = scripted_server_with_status_and_delay(bodies, usize::MAX).await;
-    let (mut fixture, selection) =
+    let (fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
             &endpoint,
-            "---\ndescription: auto compaction\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest auto compaction.\n",
+            "---\ndescription: auto compaction\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nTest auto compaction.\n",
             Some((
                 "compaction.md",
                 "---\ndescription: compaction\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 256 }\npermissions: {}\n---\nSummarize.\n",
@@ -603,10 +618,13 @@ async fn automatic_compaction_failure_limit_suppresses_after_three_and_resets() 
             8_192,
             None,
         );
-    fixture.engine.shutdown().await;
-    fixture.engine = reopen_engine(&fixture);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::new(TestFlag::default()),
+        }));
     let session = fixture.engine.create_session(selection.clone()).unwrap();
-    for index in 0..7 {
+    for index in 0..2 {
         fixture
             .engine
             .start_run(
@@ -626,6 +644,19 @@ async fn automatic_compaction_failure_limit_suppresses_after_three_and_resets() 
     let requests = with_watchdog("captured fixture completion", captured)
         .await
         .unwrap();
+    // Diagnostics are appended in batches, after the run that raised them.
+    let disabled = |event: &cookie_agent_protocol::StoredEvent| {
+        matches!(&event.payload,
+            EventPayload::PluginDiagnostic { message, .. } if message.contains("disabled after 3 consecutive failures")
+        )
+    };
+    await_projection(
+        &fixture.engine,
+        session.session_id,
+        "compaction disabled diagnostic",
+        |projection| projection.log.events().iter().any(&disabled),
+    )
+    .await;
     let events = fixture
         .engine
         .inner
@@ -634,9 +665,7 @@ async fn automatic_compaction_failure_limit_suppresses_after_three_and_resets() 
         .unwrap()
         .log
         .events();
-    assert_eq!(events.iter().filter(|event| matches!(event.payload,
-        EventPayload::PluginDiagnostic { ref message, .. } if message.contains("disabled after 3 consecutive failures")
-    )).count(), 1);
+    assert_eq!(events.iter().filter(|event| disabled(event)).count(), 1);
     assert_eq!(
         events
             .iter()
@@ -649,9 +678,14 @@ async fn automatic_compaction_failure_limit_suppresses_after_three_and_resets() 
     );
     let summary_requests = requests
         .iter()
-        .filter(|request| request.contains("Summarize."))
-        .count();
-    assert_eq!(summary_requests, 5);
+        .map(|request| request.contains("Summarize."))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        summary_requests,
+        [
+            false, true, false, true, false, true, false, false, true, false
+        ]
+    );
     fixture.engine.shutdown().await;
 }
 

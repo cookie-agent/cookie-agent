@@ -19,14 +19,13 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     ActiveRun, ApprovalToolInput, AttemptTurn, Engine, EngineError, Event,
-    MAX_PENDING_PREPARED_TOOLS, ModelApprovalInput, PendingTool, PredictiveCompactionInput,
-    SessionCommand, ToolCallFailureCode, ToolFailure, UserInputInterception,
+    MAX_PENDING_PREPARED_TOOLS, ModelApprovalInput, PendingTool, SessionCommand,
+    ToolCallFailureCode, ToolFailure, UserInputInterception,
     approval_projection::denied_tool_failure,
-    compaction::{CompactionInput, resolve_compaction_trigger},
+    compaction::CompactionInput,
     event_origin,
     helpers::safe_error,
     prompt_blocks::{PROMPT_BLOCK_SEPARATOR, push_prompt_block},
-    should_run_predictive_compaction,
     tool_execution::fallback_operation_fingerprint,
 };
 use crate::{
@@ -630,40 +629,6 @@ impl Engine {
                     .await);
             }
         }
-        let serialized_message_bytes = match serialized_input_bytes(&params.input) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                return Err(self
-                    .terminalize_run_setup_failure(&active, run_id, error)
-                    .await);
-            }
-        };
-        let compacted = self
-            .maybe_predictive_compact_before_input(PredictiveCompactionInput {
-                session: params.session_id,
-                run: run_id,
-                serialized_message_bytes,
-                policy: &active.policy,
-                fallback_index: 0,
-                cancellation: &active.cancellation,
-                actor_direct: false,
-            })
-            .await;
-        if active.cancellation.is_cancelled() {
-            self.append_run_cancelled_once(&active, run_id, None)?;
-            self.inner
-                .sessions
-                .active
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&run_id);
-            return Ok(RunStartResult { run_id });
-        }
-        if let Err(error) = compacted {
-            return Err(self
-                .terminalize_run_setup_failure(&active, run_id, error)
-                .await);
-        }
         let setup_result = async {
             if producer_start {
                 return Ok(());
@@ -831,82 +796,6 @@ impl Engine {
         });
         self.register_run_task(run_id, task);
         Ok(RunStartResult { run_id })
-    }
-
-    pub(super) async fn maybe_predictive_compact_before_input(
-        &self,
-        input: PredictiveCompactionInput<'_>,
-    ) -> Result<bool, EngineError> {
-        let Some(binding) = input.policy.selected_suffix.get(input.fallback_index) else {
-            return Ok(false);
-        };
-        let Some(input_budget) = policy::input_token_budget(
-            binding,
-            policy::effective_max_output_tokens(binding, input.policy.agent.max_output_tokens),
-        ) else {
-            return Ok(false);
-        };
-        let config = &self.inner.config.runtime.context_compaction;
-        let trigger_tokens = resolve_compaction_trigger(input_budget, &config.trigger);
-        let estimator = self
-            .inner
-            .compaction
-            .context_token_estimators
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&input.session)
-            .copied()
-            .unwrap_or_default();
-        if !config.auto_compaction
-            || trigger_tokens == 0
-            || !should_run_predictive_compaction(
-                estimator,
-                input.serialized_message_bytes,
-                trigger_tokens,
-                self.inner.store.is_persisted(input.session)?,
-            )
-        {
-            return Ok(false);
-        }
-        let projection = self.inner.store.get(input.session)?;
-        let events = projection.log.event_snapshot();
-        let before = projection.log.latest_checkpoint_seq();
-        let tools = self.tool_definitions(input.session, input.policy)?;
-        let internal_policy = self.internal_agent_policy(
-            InternalAgentKind::ContextCompaction,
-            input.policy,
-            Some(binding),
-        )?;
-        match self
-            .maybe_compact_context(CompactionInput {
-                session: input.session,
-                run: input.run,
-                cancellation: input.cancellation,
-                binding,
-                owner_policy: input.policy,
-                internal_policy: &internal_policy,
-                tools: &tools,
-                events,
-                force: false,
-                skip_usage_trigger: true,
-                overflow_recovery: false,
-                focus: None,
-                actor_direct: input.actor_direct,
-                origin: event_origin("engine:auto-compact"),
-            })
-            .await
-        {
-            Ok(_) => {}
-            Err(EngineError::CompactionCancelled(_)) => return Ok(false),
-            Err(error) => return Err(error),
-        }
-        Ok(self
-            .inner
-            .store
-            .get(input.session)?
-            .log
-            .latest_checkpoint_seq()
-            > before)
     }
 
     pub(super) async fn intercept_user_input(
@@ -1769,10 +1658,8 @@ impl Engine {
                         tools: &tools,
                         events: request_events,
                         force: false,
-                        skip_usage_trigger: false,
                         overflow_recovery: false,
                         focus: None,
-                        actor_direct: false,
                         origin: event_origin("engine:auto-compact"),
                     })
                     .await
@@ -2319,10 +2206,8 @@ impl Engine {
                                 tools: &tools,
                                 events: Arc::clone(&recovery_claim.events),
                                 force: true,
-                                skip_usage_trigger: false,
                                 overflow_recovery: true,
                                 focus: None,
-                                actor_direct: false,
                                 origin: event_origin("engine:auto-compact"),
                             })
                             .await
@@ -2761,12 +2646,6 @@ fn apply_model_params(
     if let Some(top_p) = adjustments.top_p {
         request.inference.top_p = Some(top_p);
     }
-}
-
-pub(super) fn serialized_input_bytes(input: &str) -> Result<usize, EngineError> {
-    serde_json::to_vec(input)
-        .map(|bytes| bytes.len())
-        .map_err(|error| ModelError::invalid_request(error.to_string()).into())
 }
 
 #[cfg(test)]

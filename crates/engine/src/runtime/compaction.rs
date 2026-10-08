@@ -33,17 +33,6 @@ use crate::{
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ContextTokenEstimator {
     pub(crate) tokens_per_byte: f64,
-    pub(crate) last_committed_input_tokens: u64,
-}
-
-pub(crate) struct PredictiveCompactionInput<'a> {
-    pub(crate) session: SessionId,
-    pub(crate) run: RunId,
-    pub(crate) serialized_message_bytes: usize,
-    pub(crate) policy: &'a FrozenRunPolicy,
-    pub(crate) fallback_index: usize,
-    pub(crate) cancellation: &'a CancellationToken,
-    pub(crate) actor_direct: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -60,7 +49,6 @@ impl ContextTokenEstimator {
         serialized_context_bytes: usize,
         input_tokens: Option<u64>,
     ) {
-        self.last_committed_input_tokens = input_tokens.unwrap_or(0);
         if serialized_context_bytes > 0
             && let Some(input_tokens) = input_tokens.filter(|tokens| *tokens > 0)
         {
@@ -68,35 +56,10 @@ impl ContextTokenEstimator {
         }
     }
 
-    pub(crate) fn projected_tokens(self, serialized_message_bytes: usize) -> Option<u64> {
-        (self.tokens_per_byte > 0.0).then(|| {
-            self.last_committed_input_tokens
-                .saturating_add((serialized_message_bytes as f64 * self.tokens_per_byte) as u64)
-        })
-    }
-
     pub(crate) fn estimated_context_tokens(self, serialized_context_bytes: usize) -> Option<u64> {
         (self.tokens_per_byte > 0.0)
             .then(|| (serialized_context_bytes as f64 * self.tokens_per_byte).ceil() as u64)
     }
-
-    pub(crate) fn should_compact(self, serialized_message_bytes: usize, soft_tokens: u64) -> bool {
-        self.projected_tokens(serialized_message_bytes)
-            .is_some_and(|projected| projected >= soft_tokens)
-    }
-
-    pub(crate) fn record_compaction(&mut self, estimated_input_tokens: u64) {
-        self.last_committed_input_tokens = estimated_input_tokens;
-    }
-}
-
-pub(crate) fn should_run_predictive_compaction(
-    estimator: ContextTokenEstimator,
-    serialized_message_bytes: usize,
-    soft_tokens: u64,
-    session_persisted: bool,
-) -> bool {
-    session_persisted && estimator.should_compact(serialized_message_bytes, soft_tokens)
 }
 
 /// Compaction runtime state owned by [`super::Inner`].
@@ -126,11 +89,8 @@ pub(super) struct CompactionInput<'a> {
     pub(super) tools: &'a [ToolDefinition],
     pub(super) events: crate::events::EventSnapshot,
     pub(super) force: bool,
-    /// Predictive compaction has already made its own trigger decision.
-    pub(super) skip_usage_trigger: bool,
     pub(super) overflow_recovery: bool,
     pub(super) focus: Option<&'a str>,
-    pub(super) actor_direct: bool,
     pub(super) origin: cookie_agent_protocol::EventOrigin,
 }
 
@@ -246,10 +206,8 @@ impl Engine {
                 tools: &tools,
                 events,
                 force: true,
-                skip_usage_trigger: false,
                 overflow_recovery: false,
                 focus,
-                actor_direct: false,
                 origin,
             })
             .await
@@ -306,7 +264,7 @@ impl Engine {
             return Ok(input.events);
         }
         let projection = self.inner.store.get(input.session)?;
-        if !input.force && !input.skip_usage_trigger {
+        if !input.force {
             let log = &projection.log;
             let Some((usage_seq, observed_tokens)) = log.latest_real_usage() else {
                 return Ok(input.events);
@@ -340,8 +298,6 @@ impl Engine {
                 });
         let producer_claim = if !has_producer_input {
             None
-        } else if input.actor_direct {
-            Some(self.claim_producer_snapshot_direct(input.session, input.run)?)
         } else {
             Some(
                 self.claim_existing_producer_inputs(input.session, input.run)
@@ -463,12 +419,7 @@ impl Engine {
             self.estimated_request_tokens(input.session, &context.history, input.tools)?
         } else {
             events = self
-                .stage_tool_output_elision(
-                    input.session,
-                    &events,
-                    input.actor_direct,
-                    input.origin.clone(),
-                )
+                .stage_tool_output_elision(input.session, &events, input.origin.clone())
                 .await?;
             context = assemble_model_context(
                 &events,
@@ -478,10 +429,6 @@ impl Engine {
             )?;
             self.estimated_request_tokens(input.session, &context.history, input.tools)?
         };
-        if !input.force && context_tokens_before < trigger_tokens {
-            return Ok(events);
-        }
-
         let input_through_seq = events.last().map_or(0, |event| event.seq);
         let previous = projection.log.latest_checkpoint_seq();
         let mut source_from_seq = if previous == 0 {
@@ -576,15 +523,14 @@ impl Engine {
                 budgets,
             };
             if commit.validate_for_binding(input.binding).is_ok() {
-                self.append_compaction_event(
+                self.append(
                     input.session,
                     Some(input.run),
-                    Event::ContextCheckpointCommitted { commit },
-                    input.actor_direct,
                     input.origin.clone(),
+                    Event::ContextCheckpointCommitted { commit },
                 )
                 .await?;
-                return self.finalize_context_checkpoint(input.session, input_tokens_after);
+                return Ok(self.inner.store.log(input.session)?.event_snapshot());
             }
         }
 
@@ -693,7 +639,7 @@ impl Engine {
                 },
                 InternalAgentExecution {
                     cancellation: input.cancellation,
-                    actor_direct: input.actor_direct,
+                    actor_direct: false,
                 },
             )
             .await;
@@ -730,7 +676,7 @@ impl Engine {
                     },
                     InternalAgentExecution {
                         cancellation: input.cancellation,
-                        actor_direct: input.actor_direct,
+                        actor_direct: false,
                     },
                 )
                 .await;
@@ -816,41 +762,23 @@ impl Engine {
         if commit.validate().is_err() {
             return Ok(events);
         }
-        self.append_compaction_event(
+        self.append(
             input.session,
             Some(input.run),
-            Event::ContextCheckpointCommitted { commit },
-            input.actor_direct,
             input.origin.clone(),
+            Event::ContextCheckpointCommitted { commit },
         )
         .await?;
         if let Some(run) = active_run {
             run.auto_compaction_failures.store(0, Ordering::Relaxed);
         }
-        self.finalize_context_checkpoint(input.session, input_tokens_after)
-    }
-
-    fn finalize_context_checkpoint(
-        &self,
-        session: SessionId,
-        input_tokens_after: u64,
-    ) -> Result<crate::events::EventSnapshot, EngineError> {
-        self.inner
-            .compaction
-            .context_token_estimators
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .entry(session)
-            .or_default()
-            .record_compaction(input_tokens_after);
-        Ok(self.inner.store.log(session)?.event_snapshot())
+        Ok(self.inner.store.log(input.session)?.event_snapshot())
     }
 
     async fn stage_tool_output_elision(
         &self,
         session: SessionId,
         events: &[Arc<StoredEvent>],
-        actor_direct: bool,
         origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<crate::events::EventSnapshot, EngineError> {
         let protected_turns = events
@@ -900,16 +828,15 @@ impl Engine {
                 .inner
                 .artifacts
                 .retain(session, result.output.as_bytes())?;
-            self.append_compaction_event(
+            self.append(
                 session,
                 event.run_id,
+                origin.clone(),
                 Event::ToolOutputElided {
                     tool_call_id: termination.tool_call_id,
                     original_bytes: result.output.len() as u64,
                     retained,
                 },
-                actor_direct,
-                origin.clone(),
             )
             .await?;
         }
@@ -936,21 +863,6 @@ impl Engine {
             return Ok(calibrated);
         }
         Ok(estimated_tokens_for_bytes(bytes))
-    }
-
-    async fn append_compaction_event(
-        &self,
-        session: SessionId,
-        run: Option<RunId>,
-        event: Event,
-        actor_direct: bool,
-        origin: cookie_agent_protocol::EventOrigin,
-    ) -> Result<(), EngineError> {
-        if actor_direct {
-            self.append_direct(session, run, origin, event)
-        } else {
-            self.append(session, run, origin, event).await
-        }
     }
 }
 

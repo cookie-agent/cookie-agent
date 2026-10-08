@@ -104,10 +104,7 @@ pub(crate) use artifacts::ArtifactStore;
 pub(crate) use blocking_io::gate as block_artifact_io_for_test;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use compaction::ContextTokenEstimator;
-use compaction::{
-    CompactionDeferredKind, CompactionState, PredictiveCompactionInput,
-    should_run_predictive_compaction,
-};
+use compaction::{CompactionDeferredKind, CompactionState};
 use delegation::DelegationRuntimeState;
 pub use get_history::EngineHistoryView;
 use helpers::safe_code;
@@ -325,12 +322,6 @@ struct PendingInput {
 struct DelegatedResumeAdmission {
     accepted: bool,
     admission_seq: Option<u64>,
-}
-
-struct PendingPromotionState {
-    promoted: bool,
-    pending: Vec<PendingInput>,
-    continue_run: bool,
 }
 
 pub(super) enum UserInputInterception {
@@ -1454,16 +1445,14 @@ fn resolve_agent_registries(
 
 #[cfg(test)]
 mod context_token_estimator_tests {
-    use super::{ContextTokenEstimator, should_run_predictive_compaction};
+    use super::ContextTokenEstimator;
 
     #[test]
-    fn learns_from_committed_usage_and_projects() {
+    fn learns_from_committed_usage() {
         let mut estimator = ContextTokenEstimator::default();
         estimator.record_committed_turn(200, Some(50));
 
         assert_eq!(estimator.tokens_per_byte, 0.25);
-        assert_eq!(estimator.last_committed_input_tokens, 50);
-        assert_eq!(estimator.projected_tokens(40), Some(60));
         assert_eq!(estimator.estimated_context_tokens(40), Some(10));
         assert_eq!(estimator.estimated_context_tokens(41), Some(11));
     }
@@ -1472,41 +1461,14 @@ mod context_token_estimator_tests {
     fn skips_degenerate_ratio_updates() {
         let mut estimator = ContextTokenEstimator {
             tokens_per_byte: 0.5,
-            last_committed_input_tokens: 10,
         };
         estimator.record_committed_turn(0, Some(20));
         assert_eq!(estimator.tokens_per_byte, 0.5);
-        assert_eq!(estimator.last_committed_input_tokens, 20);
 
         estimator.record_committed_turn(100, None);
         assert_eq!(estimator.tokens_per_byte, 0.5);
-        assert_eq!(estimator.last_committed_input_tokens, 0);
 
         estimator.record_committed_turn(100, Some(0));
         assert_eq!(estimator.tokens_per_byte, 0.5);
-        assert_eq!(estimator.last_committed_input_tokens, 0);
-    }
-
-    #[test]
-    fn predictive_trigger_crosses_or_stays_below_effective_limit() {
-        let estimator = ContextTokenEstimator {
-            tokens_per_byte: 0.5,
-            last_committed_input_tokens: 60,
-        };
-
-        assert!(estimator.should_compact(20, 70));
-        assert!(!estimator.should_compact(18, 70));
-        assert!(!ContextTokenEstimator::default().should_compact(usize::MAX, 1));
-    }
-
-    #[test]
-    fn predictive_compaction_is_disabled_until_session_persistence() {
-        let estimator = ContextTokenEstimator {
-            tokens_per_byte: 1.0,
-            last_committed_input_tokens: 100,
-        };
-
-        assert!(!should_run_predictive_compaction(estimator, 100, 70, false));
-        assert!(should_run_predictive_compaction(estimator, 100, 70, true));
     }
 }

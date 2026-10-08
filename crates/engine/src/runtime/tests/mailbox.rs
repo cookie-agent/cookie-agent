@@ -16,13 +16,18 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"decision\\\":\\\"ask\\\"}\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
         "data: {\"choices\":[{\"delta\":{\"content\":\"compacted before steering\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
         "data: {\"choices\":[{\"delta\":{\"content\":\"continued after steering\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
+        "data: {\"choices\":[{\"delta\":{\"content\":\"answered late steering\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
     ];
     let (endpoint, captured, compaction_reached, release_compaction) =
         scripted_server_with_delayed_response(bodies, 2).await;
+    // A small summary cap leaves recent-history room for the steering inputs.
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
         "---\ndescription: Steering compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest steering compaction.\n",
-        None,
+        Some((
+            "compaction.md",
+            "---\ndescription: compaction\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 64 }\npermissions: {}\n---\nSummarize.\n",
+        )),
         Some(500),
         false,
     );
@@ -84,7 +89,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
             .recalled,
         None
     );
-    let first_pending = "first pending input with enough additional text to cross the learned predictive compaction threshold";
+    let first_pending = "first pending input";
     for input in [first_pending, "second pending", "third pending"] {
         assert!(
             fixture
@@ -147,7 +152,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
     with_watchdog("compaction_reached fixture completion", compaction_reached)
         .await
-        .expect("promotion compaction started");
+        .expect("usage compaction started");
     let during_reservation = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         fixture.engine.steer(
@@ -164,15 +169,19 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     let requests = with_watchdog("captured fixture completion", captured)
         .await
         .expect("steering server task");
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
     assert!(!requests[0].contains("first pending"));
-    for input in [first_pending, "third pending", "fourth pending"] {
+    // Promoted before compaction, the steering inputs fit the verbatim tail.
+    assert!(requests[3].contains("compacted before steering"));
+    for input in [first_pending, "second pending", "third pending"] {
         assert!(
             requests[3].contains(input),
             "missing {input:?}: {}",
             requests[3]
         );
     }
+    assert!(!requests[3].contains("fourth pending"));
+    assert!(requests[4].contains("fourth pending"));
     assert!(!requests[3].contains("recall me"));
     let events = fixture
         .engine
@@ -190,7 +199,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
                 EventPayload::ContextCheckpointCommitted { .. }
             )
         })
-        .expect("predictive checkpoint");
+        .expect("usage checkpoint");
     assert_eq!(
         checkpoint.origin.as_ref().map(|origin| origin.as_str()),
         Some("engine:auto-compact")
@@ -236,9 +245,10 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         })
         .expect("next model request");
     assert!(
-        tool_result_seq < checkpoint_seq
-            && checkpoint_seq < first_steering_seq
-            && submitted.last().expect("submitted inputs").0 < next_attempt_seq
+        tool_result_seq < first_steering_seq
+            && submitted[2].0 < checkpoint_seq
+            && checkpoint_seq < next_attempt_seq
+            && next_attempt_seq < submitted[3].0
     );
     assert!(events.iter().any(|event| {
         matches!(
@@ -258,133 +268,6 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
                 .map(cookie_agent_protocol::EventOrigin::as_str)
                 == Some("engine:approvals")
     }));
-    fixture.engine.shutdown().await;
-}
-
-#[tokio::test]
-async fn cancel_during_start_prediction_aborts_compaction_without_appending_input() {
-    let bodies = vec![
-        "data: {\"choices\":[{\"delta\":{\"content\":\"first run complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4000,\"completion_tokens\":1,\"total_tokens\":4001}}\n\n".to_owned(),
-        "data: {\"choices\":[{\"delta\":{\"content\":\"late summary\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
-    ];
-    let (endpoint, captured, compaction_reached, release_compaction) =
-        scripted_server_with_delayed_response(bodies, 1).await;
-    let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
-        &endpoint,
-        "---\ndescription: Start cancellation test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest start cancellation.\n",
-        None,
-        Some(500),
-        false,
-    );
-    let session = fixture
-        .engine
-        .create_session(selection.clone())
-        .expect("cancellation session");
-    fixture
-        .engine
-        .start_run(
-            RunStartParams {
-                reset_fallback: false,
-                session_id: session.session_id,
-                client_run_id: ClientRunId::new("prime-predictor").expect("client run ID"),
-                selection: selection.clone(),
-                input: "prime predictor".into(),
-            },
-            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
-        )
-        .await
-        .expect("first run started");
-    wait_for_session_not_running(&fixture.engine, session.session_id).await;
-
-    let start_engine = fixture.engine.clone();
-    let second_selection = selection.clone();
-    let start = tokio::spawn(async move {
-        start_engine
-            .start_run(
-                RunStartParams {
-                    reset_fallback: false,
-                    session_id: session.session_id,
-                    client_run_id: ClientRunId::new("cancel-prediction").expect("client run ID"),
-                    selection: second_selection,
-                    input: "must never be appended".into(),
-                },
-                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
-            )
-            .await
-    });
-    with_watchdog("compaction_reached fixture completion", compaction_reached)
-        .await
-        .expect("start compaction reached");
-    let run = fixture
-        .engine
-        .inner
-        .store
-        .get(session.session_id)
-        .expect("start projection")
-        .log
-        .events()
-        .iter()
-        .rev()
-        .find_map(|event| {
-            matches!(event.payload, EventPayload::RunStarted { .. }).then_some(event.run_id)
-        })
-        .flatten()
-        .expect("second run ID");
-    assert!(fixture.engine.run_active_for_test(run));
-    assert!(
-        fixture
-            .engine
-            .compaction_reserved_for_test(session.session_id)
-    );
-    fixture
-        .engine
-        .cancel_run(run)
-        .await
-        .expect("cancel during prediction");
-    assert_eq!(
-        start
-            .await
-            .expect("start task")
-            .expect("cancelled start result")
-            .run_id,
-        run
-    );
-    release_compaction.notify_one();
-    let events = fixture
-        .engine
-        .inner
-        .store
-        .get(session.session_id)
-        .expect("cancelled projection")
-        .log
-        .events();
-    assert!(events.iter().any(|event| {
-        event.run_id == Some(run)
-            && matches!(event.payload, EventPayload::InternalAgentCancelled { .. })
-    }));
-    assert!(events.iter().any(|event| {
-        event.run_id == Some(run) && matches!(event.payload, EventPayload::RunCancelled { .. })
-    }));
-    assert!(!events.iter().any(|event| {
-        event.run_id == Some(run)
-            && matches!(
-                &event.payload,
-                EventPayload::UserInputSubmitted { input } if input == "must never be appended"
-            )
-    }));
-    assert!(!fixture.engine.run_active_for_test(run));
-    assert!(
-        !fixture
-            .engine
-            .compaction_reserved_for_test(session.session_id)
-    );
-    assert_eq!(
-        with_watchdog("captured fixture completion", captured)
-            .await
-            .expect("cancel server task")
-            .len(),
-        2
-    );
     fixture.engine.shutdown().await;
 }
 
@@ -710,149 +593,6 @@ async fn cancellation_deadline_bounds_a_wedged_tool_without_hanging() {
             .len(),
         1
     );
-    fixture.engine.shutdown().await;
-}
-
-#[tokio::test]
-async fn steer_during_start_prediction_survives_initial_submission_and_reaches_model() {
-    let bodies = vec![
-        "data: {\"choices\":[{\"delta\":{\"content\":\"prime complete\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":4000,\"completion_tokens\":1,\"total_tokens\":4001}}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
-        "data: {\"choices\":[{\"delta\":{\"content\":\"start-time summary\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
-        "data: {\"choices\":[{\"delta\":{\"content\":\"initial turn\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
-        "data: {\"choices\":[{\"delta\":{\"content\":\"steered turn\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
-    ];
-    let (endpoint, captured, compaction_reached, release_compaction) =
-        scripted_server_with_delayed_response(bodies, 1).await;
-    let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
-        &endpoint,
-        "---\ndescription: Start steering race test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest start steering.\n",
-        None,
-        Some(500),
-        false,
-    );
-    let session = fixture
-        .engine
-        .create_session(selection.clone())
-        .expect("steering race session");
-    let prime_input = format!(
-        "prime predictor {}",
-        "compressible historical context ".repeat(300)
-    );
-    fixture
-        .engine
-        .start_run(
-            RunStartParams {
-                reset_fallback: false,
-                session_id: session.session_id,
-                client_run_id: ClientRunId::new("prime-start-steer").expect("client run ID"),
-                selection: selection.clone(),
-                input: prime_input,
-            },
-            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
-        )
-        .await
-        .expect("prime run");
-    wait_for_session_not_running(&fixture.engine, session.session_id).await;
-
-    let start_engine = fixture.engine.clone();
-    let start = tokio::spawn(async move {
-        start_engine
-            .start_run(
-                RunStartParams {
-                    reset_fallback: false,
-                    session_id: session.session_id,
-                    client_run_id: ClientRunId::new("start-steer-race").expect("client run ID"),
-                    selection,
-                    input: "initial second-run input".into(),
-                },
-                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
-            )
-            .await
-    });
-    with_watchdog("compaction_reached fixture completion", compaction_reached)
-        .await
-        .expect("start compaction reached");
-    let run = fixture
-        .engine
-        .inner
-        .store
-        .get(session.session_id)
-        .expect("start projection")
-        .log
-        .events()
-        .iter()
-        .rev()
-        .find_map(|event| {
-            matches!(event.payload, EventPayload::RunStarted { .. }).then_some(event.run_id)
-        })
-        .flatten()
-        .expect("second run ID");
-    let steering = "steer admitted before initial submission";
-    assert!(
-        fixture
-            .engine
-            .steer(
-                run,
-                steering.into(),
-                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
-            )
-            .await
-            .expect("steer during start compaction")
-            .accepted
-    );
-    let during_compaction = fixture
-        .engine
-        .inner
-        .store
-        .get(session.session_id)
-        .expect("admitted projection")
-        .log
-        .events();
-    assert!(during_compaction.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::UserInputAdmitted { input } if input == steering
-    )));
-    assert!(!during_compaction.iter().any(|event| {
-        event.run_id == Some(run)
-            && matches!(event.payload, EventPayload::UserInputSubmitted { .. })
-    }));
-    release_compaction.notify_one();
-    assert_eq!(
-        start
-            .await
-            .expect("start task")
-            .expect("started run")
-            .run_id,
-        run
-    );
-    wait_for_session_not_running(&fixture.engine, session.session_id).await;
-
-    let requests = with_watchdog("captured fixture completion", captured)
-        .await
-        .expect("scripted requests");
-    assert_eq!(requests.len(), 4);
-    assert!(requests[2].contains("initial second-run input"));
-    assert!(!requests[2].contains(steering));
-    assert!(requests[3].contains("initial second-run input"));
-    assert!(requests[3].contains(steering));
-    let events = fixture
-        .engine
-        .inner
-        .store
-        .get(session.session_id)
-        .expect("completed projection")
-        .log
-        .events();
-    let submissions = events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            EventPayload::UserInputSubmitted { input } if event.run_id == Some(run) => {
-                Some(input.as_str())
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(submissions, vec!["initial second-run input", steering]);
     fixture.engine.shutdown().await;
 }
 

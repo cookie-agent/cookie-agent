@@ -80,15 +80,15 @@ This subtraction saturates at zero. If the buffer equals or exceeds the input
 budget, the trigger becomes 0 and automatic compaction is disabled for that
 model.
 
-The threshold is compared against two signals:
-
-- **Post-check usage.** After each committed model turn, the reported input +
-  output tokens are compared against the threshold. This is the authoritative
-  signal.
-- **Predictive pre-send estimate.** Before a request is sent, the engine
-  estimates the serialized history size (bytes ÷ 4 as a token proxy) using a
-  per-session learned estimator and compacts in advance when the estimate is
-  close to the threshold.
+Before each model request, the engine compares the input + output tokens the
+provider reported for the latest model turn against the threshold, and compacts
+when they reach it. Usage recorded before the latest checkpoint is ignored, so a
+fresh checkpoint waits for the next reported turn. Messages added since the
+latest turn, such as a new prompt or steering input, are not counted until the
+provider reports them, and they are kept verbatim only when they fit the recent
+history budget (see step 4 below). If a request still exceeds the provider's
+context length, the engine compacts once regardless of the threshold and
+retries.
 
 ## What happens when it triggers
 
@@ -108,7 +108,7 @@ The threshold is compared against two signals:
    rejected as non-text output and counts as a compaction failure.
     The provider is authoritative for internal-agent input size; there is no
     byte-based pre-flight admission gate. The session's calibrated estimator still
-    controls compaction triggers and post-checkpoint budgeting.
+    sizes the retained recent history and the post-checkpoint budget.
 3. **Context-fit retry.** A provider context-length failure permits one pruned
    retry. Other failures do not trigger pruning. Internal model bindings are
    tried in order, advancing after provider failures. The retry uses an in-memory
