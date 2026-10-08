@@ -29,6 +29,7 @@ pub(crate) enum SlashCommand {
     Quit,
     ShowAgentPanel,
     HideAgentPanel,
+    AutoAgentPanel,
     New,
     Preset,
     Agent,
@@ -79,17 +80,24 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         writes_session: false,
     },
     CommandSpec {
-        name: "show agent panel",
-        aliases: &["show"],
-        description: "show the agent panel until toggled or a different root session is selected",
+        name: "agent-panel show",
+        aliases: &[],
+        description: "keep the agent panel shown until a different root session is selected",
         action: PaletteAction::Run(SlashCommand::ShowAgentPanel),
         writes_session: false,
     },
     CommandSpec {
-        name: "hide agent panel",
-        aliases: &["hide"],
-        description: "hide the agent panel until toggled or a different root session is selected",
+        name: "agent-panel hide",
+        aliases: &[],
+        description: "keep the agent panel hidden until a different root session is selected",
         action: PaletteAction::Run(SlashCommand::HideAgentPanel),
+        writes_session: false,
+    },
+    CommandSpec {
+        name: "agent-panel auto",
+        aliases: &[],
+        description: "show the agent panel only while delegated agents are live",
+        action: PaletteAction::Run(SlashCommand::AutoAgentPanel),
         writes_session: false,
     },
     CommandSpec {
@@ -465,11 +473,17 @@ mod tests {
         assert_eq!(names("").len(), COMMANDS.len());
         assert_eq!(names("new"), ["new"]);
         assert_eq!(names("model"), ["model"]);
-        // The exact name outranks the panel toggles that merely contain it.
+        // The exact name outranks the panel modes it merely prefixes.
         assert_eq!(
             names("agent"),
-            ["agent", "show agent panel", "hide agent panel"]
+            [
+                "agent",
+                "agent-panel show",
+                "agent-panel hide",
+                "agent-panel auto"
+            ]
         );
+        assert_eq!(names("agent-panel h"), ["agent-panel hide"]);
         // "sessions" contains "s" everywhere; the exact alias still wins.
         assert_eq!(names("q").first(), Some(&"quit"));
         assert_eq!(names("perms"), ["permissions"]);
@@ -480,10 +494,10 @@ mod tests {
         // Aliases search but never show.
         let sessions = entries("resume")[0];
         assert_eq!(sessions.label(), "/sessions — choose a session");
-        assert_eq!(names("hide"), ["hide agent panel"]);
+        assert_eq!(names("hide"), ["agent-panel hide"]);
         assert_eq!(names("  GOAL "), ["goal"]);
         let ranked = names("s");
-        assert_eq!(ranked.first(), Some(&"show agent panel"), "{ranked:?}");
+        assert_eq!(ranked.first(), Some(&"skills"), "{ranked:?}");
         assert!(names("definitely-not-a-command").is_empty());
         assert_eq!(match_rank(["compact"], "pact"), Some(2));
         assert_eq!(match_rank(["compact"], "comp"), Some(1));

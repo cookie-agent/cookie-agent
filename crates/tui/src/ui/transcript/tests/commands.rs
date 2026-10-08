@@ -96,6 +96,19 @@ async fn pastes_go_to_the_open_palette_as_one_line() {
     assert_eq!(app.input.as_str(), "draft");
 }
 
+/// The `/agent-panel` modes the palette offers, in registry order.
+fn agent_panel_entries(app: &mut App) -> Vec<String> {
+    app.open_command_palette();
+    let labels = app.palette_labels_for_test();
+    app.close_command_palette();
+    labels
+        .iter()
+        .filter_map(|label| label.strip_prefix("/agent-panel "))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .map(str::to_owned)
+        .collect()
+}
+
 #[tokio::test]
 async fn manual_agent_panel_override_wins_and_commands_are_context_sensitive() {
     let mut app = test_app().await;
@@ -117,38 +130,15 @@ async fn manual_agent_panel_override_wins_and_commands_are_context_sensitive() {
     let auto = frame_rows(&mut app, 80, 24);
     assert!(auto.iter().any(|row| row.contains("Agents")));
     let visible_conversation_y = app.hit_map.conversation.expect("conversation").y;
-    app.open_command_palette();
-    let labels = app.palette_labels_for_test();
-    app.close_command_palette();
-    assert!(
-        labels
-            .iter()
-            .any(|label| label.starts_with("/hide agent panel"))
-    );
-    assert!(
-        !labels
-            .iter()
-            .any(|label| label.starts_with("/show agent panel"))
-    );
+    // The palette offers every mode except the current one.
+    assert_eq!(agent_panel_entries(&mut app), ["show", "hide"]);
 
     app.run_command(SlashCommand::HideAgentPanel).await;
     let hidden = frame_rows(&mut app, 80, 24);
     assert!(!hidden.iter().any(|row| row.contains("Agents")));
     assert_eq!(app.hit_map.conversation.expect("conversation").y, 1);
     assert!(visible_conversation_y > 1);
-    app.open_command_palette();
-    let labels = app.palette_labels_for_test();
-    app.close_command_palette();
-    assert!(
-        labels
-            .iter()
-            .any(|label| label.starts_with("/show agent panel"))
-    );
-    assert!(
-        !labels
-            .iter()
-            .any(|label| label.starts_with("/hide agent panel"))
-    );
+    assert_eq!(agent_panel_entries(&mut app), ["show", "auto"]);
 
     let mut second_meta = delegated_meta(second, root, "reviewer");
     second_meta.status = SessionStatus::Running;
@@ -173,20 +163,17 @@ async fn manual_agent_panel_override_wins_and_commands_are_context_sensitive() {
             .any(|row| row.contains("Agents"))
     );
     assert!(app.hit_map.conversation.expect("conversation").y > 1);
+    assert_eq!(agent_panel_entries(&mut app), ["hide", "auto"]);
 
-    app.open_command_palette();
-    let labels = app.palette_labels_for_test();
-    app.close_command_palette();
+    // Back to auto: no live delegated agents, so the panel hides again.
+    app.run_command(SlashCommand::AutoAgentPanel).await;
+    let auto_after_completion = frame_rows(&mut app, 80, 24);
     assert!(
-        labels
+        !auto_after_completion
             .iter()
-            .any(|label| label.starts_with("/hide agent panel"))
+            .any(|row| row.contains("Agents"))
     );
-    assert!(
-        !labels
-            .iter()
-            .any(|label| label.starts_with("/show agent panel"))
-    );
+    assert_eq!(agent_panel_entries(&mut app), ["show", "hide"]);
 }
 
 #[tokio::test]

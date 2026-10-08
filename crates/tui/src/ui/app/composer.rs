@@ -911,11 +911,15 @@ impl App {
             SlashCommand::Quit => self.should_quit = true,
             SlashCommand::ShowAgentPanel => {
                 self.agent_panel_mode = AgentPanelMode::Shown;
-                self.status = "agent panel shown; manual visibility override active".into();
+                self.status = "agent panel always shown for this root session".into();
             }
             SlashCommand::HideAgentPanel => {
                 self.agent_panel_mode = AgentPanelMode::Hidden;
-                self.status = "agent panel hidden; manual visibility override active".into();
+                self.status = "agent panel always hidden for this root session".into();
+            }
+            SlashCommand::AutoAgentPanel => {
+                self.agent_panel_mode = AgentPanelMode::Auto;
+                self.status = "agent panel follows delegated agents".into();
             }
             SlashCommand::New => {
                 if self.runtime.is_empty() {

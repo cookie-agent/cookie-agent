@@ -797,8 +797,15 @@ impl App {
             return false;
         }
         match spec.action {
-            PaletteAction::Run(SlashCommand::ShowAgentPanel) => !self.agent_panel_visible(),
-            PaletteAction::Run(SlashCommand::HideAgentPanel) => self.agent_panel_visible(),
+            PaletteAction::Run(SlashCommand::ShowAgentPanel) => {
+                self.agent_panel_mode != AgentPanelMode::Shown
+            }
+            PaletteAction::Run(SlashCommand::HideAgentPanel) => {
+                self.agent_panel_mode != AgentPanelMode::Hidden
+            }
+            PaletteAction::Run(SlashCommand::AutoAgentPanel) => {
+                self.agent_panel_mode != AgentPanelMode::Auto
+            }
             _ => true,
         }
     }

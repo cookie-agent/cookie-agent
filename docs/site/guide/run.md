@@ -117,7 +117,7 @@ intact.
 | `/goal` | Prompt for an objective and set the root session's goal; see [Goal mode](goals.md) |
 | `/compact` | Prompt for an optional focus, then compact the selected idle session |
 | `/events` | Pick the diagnostic event filter from a list |
-| `/show agent panel`, `/hide agent panel` | Override the agent panel's visibility |
+| `/agent-panel show`, `/agent-panel hide`, `/agent-panel auto` | Pin the agent panel shown or hidden for the current root session, or return it to following delegated agents (the default) |
 | `/quit` (also `q`, `exit`) | Exit the TUI |
 
 In a read-only session owned by another cookie process, commands that write to
