@@ -26,7 +26,7 @@ use super::{
 };
 use crate::{
     model_bridge::AbortBridge,
-    model_history::{self, assemble_model_context},
+    model_history::{self, assemble_model_context, wire_model},
     policy::{self, FrozenRunPolicy},
 };
 
@@ -487,8 +487,22 @@ impl Engine {
                     compaction_focus.clone(),
                 );
                 if model.model().supports_compaction(&compact_request) {
+                    let resolved_model = wire_model(input.binding);
+                    self.publish_transient(
+                        input.session,
+                        input.run,
+                        Event::NativeCompactionStarted {
+                            resolved_model: resolved_model.clone(),
+                        },
+                    );
                     let abort = AbortBridge::new(input.cancellation.child_token());
-                    match model.model().compact(compact_request, abort.signal()).await {
+                    let result = model.model().compact(compact_request, abort.signal()).await;
+                    self.publish_transient(
+                        input.session,
+                        input.run,
+                        Event::NativeCompactionFinished { resolved_model },
+                    );
+                    match result {
                         Ok(result) => model_history::persist_native_context(
                             result.native_context,
                             input.binding,

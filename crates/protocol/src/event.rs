@@ -2080,6 +2080,24 @@ pub enum EventPayload {
         attempt_id: AttemptId,
         text: String,
     },
+    /// Live-only: text an internal agent is streaming, delivered as a
+    /// [`TransientEvent`] and never persisted. Its terminal internal-agent
+    /// event is the durable record.
+    InternalAgentTextDelta {
+        invocation_id: InternalAgentInvocationId,
+        text: String,
+    },
+    /// Live-only: a provider-native compaction call began, delivered as a
+    /// [`TransientEvent`] and never persisted.
+    NativeCompactionStarted {
+        resolved_model: ResolvedModelRef,
+    },
+    /// Live-only: the provider-native compaction call returned, whether or
+    /// not it produced a window. A committed checkpoint is the durable record
+    /// of a success.
+    NativeCompactionFinished {
+        resolved_model: ResolvedModelRef,
+    },
     AttemptAbandoned {
         attempt_id: AttemptId,
         /// The model error that ended the attempt (retry, fallback, or
@@ -2349,7 +2367,12 @@ impl EventPayload {
     pub fn is_transient(&self) -> bool {
         matches!(
             self,
-            Self::TextDelta { .. } | Self::ReasoningDelta { .. } | Self::ToolCallProgress { .. }
+            Self::TextDelta { .. }
+                | Self::ReasoningDelta { .. }
+                | Self::InternalAgentTextDelta { .. }
+                | Self::NativeCompactionStarted { .. }
+                | Self::NativeCompactionFinished { .. }
+                | Self::ToolCallProgress { .. }
         )
     }
 

@@ -1140,6 +1140,7 @@ impl App {
             .and_then(|session_id| self.store.sessions.get(&session_id))
             .is_some_and(|state| {
                 state.active_run.is_some()
+                    || state.is_compacting()
                     || crate::state::SessionState::has_open_thinking(state)
                     || crate::state::SessionState::has_running_tool(state)
                     || state.has_pending_producers()
@@ -1148,6 +1149,9 @@ impl App {
 
     pub(super) fn working_state(&self) -> Option<WorkingState> {
         let state = self.selected.and_then(|id| self.store.sessions.get(&id))?;
+        if state.is_compacting() {
+            return Some(WorkingState::Compacting);
+        }
         if state.active_run.is_some() {
             return Some(WorkingState::Working);
         }

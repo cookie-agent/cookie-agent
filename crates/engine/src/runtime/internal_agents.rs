@@ -14,7 +14,7 @@ use super::{
     helpers::{safe_code, safe_display, safe_error},
 };
 use crate::{
-    model_bridge::AbortBridge,
+    model_bridge::{AbortBridge, TurnAccumulator},
     model_history::wire_model,
     model_policy::summary as model_error_summary,
     policy::{self, FrozenRunPolicy},
@@ -137,6 +137,9 @@ impl Engine {
             project_internal_history(&mut input.history);
         }
         let timeout_ms = internal_timeout_ms(policy.limits.timeout_ms);
+        // Compaction can take a while; its summary streams live so clients
+        // can show what the session is doing.
+        let delta_run = parent_run.filter(|_| kind == InternalAgentKind::ContextCompaction);
         let mut only_context_failures = !policy.models.is_empty();
         let invocation_id = InternalAgentInvocationId::new_v7();
         let internal_run_id = InternalAgentRunId::new_v7();
@@ -206,7 +209,24 @@ impl Engine {
             let request =
                 model.prepare_request_with_cache_strategy(request, cache_strategy.as_ref());
             let abort = AbortBridge::new(execution.cancellation.child_token());
-            let call_future = model.model().complete(request, abort.signal());
+            let call_future = async {
+                let mut stream = model.model().stream(request, abort.signal()).await?.stream;
+                let mut accumulator = TurnAccumulator::default();
+                while let Some(part) = futures_util::StreamExt::next(&mut stream).await {
+                    let effect = accumulator.push(part?).map_err(|error| *error)?;
+                    if let (Some(run), Some(text)) = (delta_run, effect.text_delta) {
+                        self.publish_transient(
+                            session,
+                            run,
+                            Event::InternalAgentTextDelta {
+                                invocation_id,
+                                text,
+                            },
+                        );
+                    }
+                }
+                accumulator.finish().map_err(|error| *error)
+            };
             let result = tokio::select! {
                 result = tokio::time::timeout(
                     std::time::Duration::from_millis(timeout_ms),
@@ -242,8 +262,8 @@ impl Engine {
             match result {
                 Ok(completed) => {
                     let usage = crate::model_history::persist_usage(
-                        completed.turn.finish.usage.clone(),
-                        &completed.turn.message.content,
+                        completed.finish.usage.clone(),
+                        &completed.message.content,
                     );
                     let resolved_model = wire_model(binding);
                     let estimated_cost_pico_usd = crate::usage::estimated_cost_pico_usd(
@@ -267,7 +287,7 @@ impl Engine {
                     )
                     .await?;
                     if invalid_internal_output(
-                        &completed.turn.message.content,
+                        &completed.message.content,
                         input.reject_non_text,
                         binding.descriptor.adapter_id.as_str(),
                     ) {
@@ -284,7 +304,6 @@ impl Engine {
                         continue;
                     }
                     let output = completed
-                        .turn
                         .message
                         .content
                         .iter()

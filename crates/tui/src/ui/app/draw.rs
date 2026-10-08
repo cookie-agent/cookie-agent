@@ -444,6 +444,7 @@ impl App {
         let cwd = self.working_state().map_or(cwd, |working| {
             let glyph = ['◐', '◓', '◑', '◒'][usize::from(self.clock_bucket())];
             let label = match working {
+                WorkingState::Compacting => "compacting".to_owned(),
                 WorkingState::Working => "working".to_owned(),
                 WorkingState::Queued(count) => format!("{count} queued"),
             };

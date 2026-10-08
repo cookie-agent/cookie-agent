@@ -35,6 +35,11 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
             .await
             .expect("run");
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
+        let (_, mut live) = fixture
+            .engine
+            .subscribe(session.session_id, None)
+            .await
+            .expect("subscribe");
         assert!(
             fixture
                 .engine
@@ -46,6 +51,47 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
                 .await
                 .expect("compaction")
         );
+        // The native call is bracketed by live-only events whether or not it
+        // succeeds, ahead of the summarizer fallback and the checkpoint.
+        let mut phases = Vec::new();
+        with_watchdog("compaction delivery", async {
+            loop {
+                let payload = match live.recv().await.expect("live subscription") {
+                    cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
+                        event.payload
+                    }
+                    cookie_agent_protocol::EventSubscriptionMessage::Transient { event } => {
+                        event.validate().expect("valid transient event");
+                        event.payload
+                    }
+                    other => panic!("unexpected subscription message {other:?}"),
+                };
+                match payload {
+                    EventPayload::NativeCompactionStarted { .. } => phases.push("native started"),
+                    EventPayload::NativeCompactionFinished { .. } => phases.push("native finished"),
+                    EventPayload::InternalAgentStarted { .. } => phases.push("summarizer"),
+                    EventPayload::ContextCheckpointCommitted { .. } => {
+                        phases.push("checkpoint");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        if fail_native {
+            assert_eq!(
+                phases,
+                [
+                    "native started",
+                    "native finished",
+                    "summarizer",
+                    "checkpoint"
+                ]
+            );
+        } else {
+            assert_eq!(phases, ["native started", "native finished", "checkpoint"]);
+        }
         let events = fixture
             .engine
             .inner
@@ -1342,5 +1388,117 @@ async fn compaction_full_history_preserves_eligible_reasoning_and_recent_tail() 
     assert!(summary_request.contains(OLD_PREFIX));
     assert!(summary_request.contains(RECENT_TAIL));
     assert!(anthropic_request_has_unsigned_thinking(summary_request));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn compaction_summary_streams_live_deltas_for_its_invocation() {
+    let response = |chunks: &[&str]| {
+        let mut body = chunks
+            .iter()
+            .map(|chunk| {
+                format!(
+                    "data: {}\n\n",
+                    serde_json::json!({"choices":[{"delta":{"content":chunk},"finish_reason":null}]})
+                )
+            })
+            .collect::<String>();
+        body.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n");
+        body
+    };
+    let old_assistant = format!("OLD_ASSISTANT {}", "old ".repeat(600));
+    let (endpoint, _captured, _reached, _release) = scripted_server_with_delayed_response(
+        vec![
+            response(&[&old_assistant]),
+            response(&["RECENT_ASSISTANT"]),
+            response(&["first half, ", "second half"]),
+        ],
+        usize::MAX,
+    )
+    .await;
+    let (mut fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+            &endpoint,
+            "---\ndescription: Streamed compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest streamed compaction.\n",
+            None,
+            None,
+            false,
+            None,
+            None,
+            8_192,
+            None,
+        );
+    fixture.engine.shutdown().await;
+    fixture.config.runtime.context_compaction.keep_recent_tokens = 300;
+    fixture.engine = reopen_engine(&fixture);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    for (client_run_id, input) in [("old", "OLD_USER"), ("recent", "RECENT_USER")] {
+        fixture
+            .engine
+            .start_run(
+                RunStartParams {
+                    reset_fallback: false,
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(client_run_id).unwrap(),
+                    selection: selection.clone(),
+                    input: input.into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .unwrap();
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    }
+    let (_, mut live) = fixture
+        .engine
+        .subscribe(session.session_id, None)
+        .await
+        .expect("subscribe");
+    assert!(
+        fixture
+            .engine
+            .compact_session(
+                session.session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .unwrap()
+    );
+
+    let mut started = None;
+    let mut deltas = Vec::new();
+    with_watchdog("compaction delivery", async {
+        loop {
+            match live.recv().await.expect("live subscription") {
+                cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
+                    match event.payload {
+                        EventPayload::InternalAgentStarted {
+                            invocation_id,
+                            kind: cookie_agent_protocol::InternalAgentKind::ContextCompaction,
+                            ..
+                        } => started = Some(invocation_id),
+                        EventPayload::ContextCheckpointCommitted { .. } => break,
+                        _ => {}
+                    }
+                }
+                cookie_agent_protocol::EventSubscriptionMessage::Transient { event } => {
+                    event.validate().expect("valid transient event");
+                    let EventPayload::InternalAgentTextDelta {
+                        invocation_id,
+                        text,
+                    } = event.payload
+                    else {
+                        panic!("unexpected live output {:?}", event.payload);
+                    };
+                    assert_eq!(Some(invocation_id), started);
+                    deltas.push(text);
+                }
+                other => panic!("unexpected subscription message {other:?}"),
+            }
+        }
+    })
+    .await;
+    assert_eq!(deltas, ["first half, ", "second half"]);
     fixture.engine.shutdown().await;
 }

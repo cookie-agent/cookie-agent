@@ -2049,3 +2049,245 @@ fn crash_mid_reply_replays_as_an_interrupted_run_without_partial_output() {
     store.apply_delivery(live_delta(session, run, 7, crashed, "ghost"));
     assert!(!rendered(&store.sessions[&session]).contains("ghost"));
 }
+
+fn internal_agent_started(
+    session: SessionId,
+    seq: u64,
+    run: RunId,
+    invocation_id: cookie_agent_protocol::InternalAgentInvocationId,
+    kind: cookie_agent_protocol::InternalAgentKind,
+) -> StoredEvent {
+    event(
+        session,
+        seq,
+        run,
+        EventPayload::InternalAgentStarted {
+            invocation_id,
+            internal_run_id: cookie_agent_protocol::InternalAgentRunId::new_v7(),
+            kind,
+            backend: cookie_agent_protocol::InternalAgentBackend::Model {
+                resolved_model: resolved_model(None),
+            },
+            call: cookie_agent_protocol::SafeInternalAgentCall {
+                name: cookie_agent_protocol::SafeCode::new("context_compaction").unwrap(),
+                input_summary: SafeDisplayText::new("bounded input").unwrap(),
+                input_digest: Sha256Digest::of_bytes(b"input"),
+            },
+        },
+    )
+}
+
+fn compacting_delta(
+    session: SessionId,
+    seq: u64,
+    run: RunId,
+    invocation_id: cookie_agent_protocol::InternalAgentInvocationId,
+    text: &str,
+) -> StoredEvent {
+    event(
+        session,
+        seq,
+        run,
+        EventPayload::InternalAgentTextDelta {
+            invocation_id,
+            text: text.into(),
+        },
+    )
+}
+
+#[test]
+fn compaction_in_progress_streams_its_summary_until_the_agent_finishes() {
+    let session = SessionId::new_v7();
+    let run = run_id();
+    let invocation = cookie_agent_protocol::InternalAgentInvocationId::new_v7();
+    let mut store = StateStore::default();
+    // Other internal agents never show a compaction row.
+    assert!(store.apply_event(internal_agent_started(
+        session,
+        1,
+        run,
+        cookie_agent_protocol::InternalAgentInvocationId::new_v7(),
+        cookie_agent_protocol::InternalAgentKind::SessionTitle,
+    )));
+    assert!(!store.sessions[&session].is_compacting());
+    assert!(store.apply_event(internal_agent_started(
+        session,
+        2,
+        run,
+        invocation,
+        cookie_agent_protocol::InternalAgentKind::ContextCompaction,
+    )));
+    assert!(store.sessions[&session].is_compacting());
+    let open_blocks = HashSet::from([BlockId::Compacting(2)]);
+    let render = |store: &StateStore, expanded: bool| {
+        snapshot_lines(
+            &transcript_layout(
+                &store.sessions[&session],
+                expanded.then_some(&open_blocks),
+                80,
+            )
+            .lines,
+        )
+    };
+    let collapsed = render(&store, false);
+    assert!(collapsed.contains("🧹 ▸ compacting context"), "{collapsed}");
+    assert!(
+        render(&store, true).contains("waiting for the summary"),
+        "{}",
+        render(&store, true)
+    );
+
+    for (seq, text) in [(2, "## Goal\nship it"), (2, " today\nnext: tests")] {
+        assert!(store.apply_event(compacting_delta(session, seq, run, invocation, text)));
+    }
+    let open = render(&store, true);
+    assert!(open.contains("🧹 ▾ compacting context"), "{open}");
+    for line in ["## Goal", "ship it today", "next: tests"] {
+        assert!(open.contains(line), "{open}");
+    }
+    assert!(!render(&store, false).contains("ship it"));
+
+    // A fallback model restarts the summary from scratch.
+    assert!(store.apply_event(event(
+        session,
+        3,
+        run,
+        EventPayload::InternalAgentFallback {
+            invocation_id: invocation,
+            internal_run_id: cookie_agent_protocol::InternalAgentRunId::new_v7(),
+            kind: cookie_agent_protocol::InternalAgentKind::ContextCompaction,
+            from: cookie_agent_protocol::InternalAgentBackend::Model {
+                resolved_model: resolved_model(None),
+            },
+            to: cookie_agent_protocol::InternalAgentBackend::Model {
+                resolved_model: resolved_model(Some("high")),
+            },
+            failure: cookie_agent_protocol::InternalAgentFailure {
+                code: cookie_agent_protocol::SafeCode::new("model_failure").unwrap(),
+                message: SafeErrorMessage::new("failed").unwrap(),
+                retryable: true,
+                model_error: None,
+            },
+            attempts: 1,
+        },
+    )));
+    assert!(render(&store, true).contains("waiting for the summary"));
+
+    assert!(store.apply_event(event(
+        session,
+        4,
+        run,
+        EventPayload::InternalAgentCompleted {
+            invocation_id: invocation,
+            internal_run_id: cookie_agent_protocol::InternalAgentRunId::new_v7(),
+            kind: cookie_agent_protocol::InternalAgentKind::ContextCompaction,
+            result: cookie_agent_protocol::SafeInternalAgentResult {
+                output_summary: SafeDisplayText::new("validated output").unwrap(),
+                output_digest: Sha256Digest::of_bytes(b"summary"),
+            },
+        },
+    )));
+    assert!(!store.sessions[&session].is_compacting());
+    assert!(!render(&store, false).contains("compacting context"));
+}
+
+#[tokio::test]
+async fn bottom_bar_reads_compacting_while_a_summary_is_produced() {
+    let (mut app, session, run) = app_with_active_run().await;
+    assert!(
+        frame_rows(&mut app, 100, 12)
+            .iter()
+            .any(|row| row.contains("working"))
+    );
+    assert!(app.store.apply_event(internal_agent_started(
+        session,
+        1,
+        run,
+        cookie_agent_protocol::InternalAgentInvocationId::new_v7(),
+        cookie_agent_protocol::InternalAgentKind::ContextCompaction,
+    )));
+    // A manual compaction has no active run but still animates.
+    app.store.sessions.get_mut(&session).unwrap().active_run = None;
+    assert!(app.animation_active());
+    let rows = frame_rows(&mut app, 100, 12);
+    assert!(
+        rows.iter().any(|row| row.contains("compacting")),
+        "{rows:#?}"
+    );
+    assert!(!rows.iter().any(|row| row.contains("working")), "{rows:#?}");
+}
+
+#[test]
+fn native_compaction_shows_a_compacting_row_until_the_call_returns() {
+    let session = SessionId::new_v7();
+    let run = run_id();
+    let mut store = StateStore::default();
+    assert!(store.apply_event(internal_agent_started(
+        session,
+        1,
+        run,
+        cookie_agent_protocol::InternalAgentInvocationId::new_v7(),
+        cookie_agent_protocol::InternalAgentKind::SessionTitle,
+    )));
+    let native = |payload: fn(cookie_agent_protocol::ResolvedModelRef) -> EventPayload| {
+        event(session, 1, run, payload(resolved_model(None)))
+    };
+    let started = native(|resolved_model| EventPayload::NativeCompactionStarted { resolved_model });
+    let finished =
+        native(|resolved_model| EventPayload::NativeCompactionFinished { resolved_model });
+    let compacting_rows = |store: &StateStore| {
+        store.sessions[&session]
+            .transcript
+            .iter()
+            .filter(|item| matches!(item, TranscriptItem::Compacting { .. }))
+            .count()
+    };
+
+    assert!(store.apply_event(started.clone()));
+    assert!(store.sessions[&session].is_compacting());
+    let open_blocks = HashSet::from([BlockId::Compacting(1)]);
+    let render = |store: &StateStore, expanded: bool| {
+        snapshot_lines(
+            &transcript_layout(
+                &store.sessions[&session],
+                expanded.then_some(&open_blocks),
+                100,
+            )
+            .lines,
+        )
+    };
+    assert!(render(&store, false).contains("🧹 ▸ compacting context"));
+    assert!(!render(&store, false).contains("native compaction endpoint"));
+    let open = render(&store, true);
+    assert!(open.contains("🧹 ▾ compacting context"), "{open}");
+    assert!(
+        open.contains("calling native compaction endpoint (gateway/arbitrary-model"),
+        "{open}"
+    );
+
+    assert!(store.apply_event(finished));
+    assert!(!store.sessions[&session].is_compacting());
+
+    // A failed native call hands the row over to the summarizer.
+    assert!(store.apply_event(started));
+    assert!(store.apply_event(internal_agent_started(
+        session,
+        2,
+        run,
+        cookie_agent_protocol::InternalAgentInvocationId::new_v7(),
+        cookie_agent_protocol::InternalAgentKind::ContextCompaction,
+    )));
+    assert_eq!(compacting_rows(&store), 1);
+    assert!(
+        render(&store, false).contains("🧹 ▸ compacting context"),
+        "{}",
+        render(&store, false)
+    );
+    assert!(matches!(
+        store.sessions[&session].transcript.last(),
+        Some(TranscriptItem::Compacting {
+            source: crate::state::CompactingSource::Summary { .. },
+            ..
+        })
+    ));
+}

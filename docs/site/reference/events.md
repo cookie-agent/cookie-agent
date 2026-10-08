@@ -62,19 +62,28 @@ origin class. This keeps the origin grammar restricted to `user`, `engine`,
 | Tools | `tool_call_started`, `tool_call_terminated`, `tool_output_elided`, `tool_stdin_submitted`, `tool_call_linked`, `delegate_queued`, `delegate_finished`, `delegate_finished_v2`, `delegate_child_terminated`; live-only: `tool_call_progress` |
 | Delegation durability | `delegation_reserved`, `delegation_started`, `delegation_run_started`, `delegation_run_attached`, `delegation_finished` |
 | Approvals | `approval_requested`, `approval_evaluated`, `approval_escalated`, `approval_user_decision_recorded`, `approval_finalized`, `approval_cancelled`, `approval_doom_loop_detected`, `tree_approval_grant_committed` |
-| Internal agents | `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_completed`, `internal_agent_failed`, `internal_agent_cancelled`, `internal_agent_interrupted`, `internal_agent_fallback` |
-| Compaction | `context_checkpoint_committed`; legacy read/render only: `context_rehydrated` |
+| Internal agents | `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_completed`, `internal_agent_failed`, `internal_agent_cancelled`, `internal_agent_interrupted`, `internal_agent_fallback`; live-only: `internal_agent_text_delta` |
+| Compaction | `context_checkpoint_committed`; live-only: `native_compaction_started`, `native_compaction_finished`; legacy read/render only: `context_rehydrated` |
 
 ### Live-only stream output
 
-`text_delta`, `reasoning_delta`, and `tool_call_progress` are live-only. The
-engine delivers them to event subscribers and plugins as they stream but never
-appends them to `events.jsonl` or to a session's in-memory log, and a stored
-record carrying one fails validation. Their durable record is the committed
-turn (`model_turn_committed`) and the tool termination (`tool_call_terminated`,
-with its retained output). A replay, a reload, or a view that attaches while a
-reply streams therefore sees finished turns only; the in-flight reply appears
-from the first live delta after attach, and its commit replaces it.
+`text_delta`, `reasoning_delta`, `internal_agent_text_delta`,
+`native_compaction_started`, `native_compaction_finished`, and
+`tool_call_progress` are live-only. The engine delivers them to event
+subscribers and plugins as they stream but never appends them to
+`events.jsonl` or to a session's in-memory log, and a stored record carrying
+one fails validation. Their durable record is the committed turn
+(`model_turn_committed`), the tool termination (`tool_call_terminated`, with its
+retained output), and the internal agent's terminal event. A replay, a reload,
+or a view that attaches while a reply streams therefore sees finished turns
+only; the in-flight reply appears from the first live delta after attach, and
+its commit replaces it.
+
+`internal_agent_text_delta` (`invocation_id`, `text`) streams the compaction
+agent's summary text. Other internal agents do not stream.
+`native_compaction_started` and `native_compaction_finished` (`resolved_model`)
+bracket a provider-native compaction call, whether or not it succeeds; a
+committed `context_checkpoint_committed` is the durable record of a success.
 
 `model_output_started` (`attempt_id`, `kind`: `text` or `reasoning`) is the
 durable trace of streaming. The engine appends it before the first delta of each

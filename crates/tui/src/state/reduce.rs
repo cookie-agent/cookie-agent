@@ -44,6 +44,23 @@ pub(super) fn reduce_transient(
             bump_tool_item(state, tool_call_id);
             return true;
         }
+        EventPayload::InternalAgentTextDelta {
+            invocation_id,
+            text,
+        } => return append_compacting_text(state, invocation_id, &text),
+        EventPayload::NativeCompactionStarted { resolved_model } => {
+            let seq = state.last_seq;
+            push_item(state, timestamp, |id| TranscriptItem::Compacting {
+                id,
+                version: 0,
+                seq,
+                source: CompactingSource::Native {
+                    model: render_model(&resolved_model),
+                },
+            });
+            return true;
+        }
+        EventPayload::NativeCompactionFinished { .. } => return remove_native_compacting(state),
         _ => return false,
     };
     // Empty deltas (some providers emit an initial empty content chunk)
@@ -550,6 +567,9 @@ pub(super) fn reduce_event(
         // `reduce_transient`.
         EventPayload::TextDelta { .. }
         | EventPayload::ReasoningDelta { .. }
+        | EventPayload::InternalAgentTextDelta { .. }
+        | EventPayload::NativeCompactionStarted { .. }
+        | EventPayload::NativeCompactionFinished { .. }
         | EventPayload::ToolCallProgress { .. } => {}
         // The attempt has visible output from here on, so a later input
         // boundary no longer moves it; its deltas themselves are live-only.
@@ -1166,78 +1186,134 @@ pub(super) fn reduce_event(
             );
         }
         EventPayload::InternalAgentStarted {
+            invocation_id,
             kind,
             backend,
             call,
             ..
-        } => push_event(
-            state,
-            EventLevel::Info,
-            format!(
-                "internal agent {kind:?} started via {}: {}",
-                render_internal_backend(&backend),
-                call.input_summary
-            )
-            .to_lowercase(),
-            timestamp,
-        ),
-        EventPayload::InternalAgentCompleted { kind, result, .. } => push_event(
-            state,
-            EventLevel::Info,
-            format!(
-                "internal agent {kind:?} completed: {}",
-                result.output_summary
-            )
-            .to_lowercase(),
-            timestamp,
-        ),
-        EventPayload::InternalAgentFailed { kind, failure, .. } => push_event(
-            state,
-            EventLevel::Error,
-            format!(
-                "internal agent {kind:?} failed: {}",
-                cookie_agent_protocol::diagnostics::internal(&failure)
-            ),
-            timestamp,
-        ),
-        EventPayload::InternalAgentCancelled { kind, reason, .. } => push_event(
-            state,
-            EventLevel::Info,
-            reason.map_or_else(
-                || format!("internal agent {kind:?} cancelled").to_lowercase(),
-                |reason| format!("internal agent {kind:?} cancelled: {reason}").to_lowercase(),
-            ),
-            timestamp,
-        ),
-        EventPayload::InternalAgentInterrupted { kind, reason, .. } => push_event(
-            state,
-            EventLevel::Error,
-            reason.map_or_else(
-                || format!("internal agent {kind:?} interrupted").to_lowercase(),
-                |reason| format!("internal agent {kind:?} interrupted: {reason}").to_lowercase(),
-            ),
-            timestamp,
-        ),
+        } => {
+            push_event(
+                state,
+                EventLevel::Info,
+                format!(
+                    "internal agent {kind:?} started via {}: {}",
+                    render_internal_backend(&backend),
+                    call.input_summary
+                )
+                .to_lowercase(),
+                timestamp,
+            );
+            if kind == cookie_agent_protocol::InternalAgentKind::ContextCompaction {
+                // Native compaction failed over to the summarizer.
+                remove_native_compacting(state);
+                push_item(state, timestamp, |id| TranscriptItem::Compacting {
+                    id,
+                    version: 0,
+                    seq: sequence,
+                    source: CompactingSource::Summary {
+                        invocation_id,
+                        text: String::new(),
+                    },
+                });
+            }
+        }
+        EventPayload::InternalAgentCompleted {
+            invocation_id,
+            kind,
+            result,
+            ..
+        } => {
+            remove_compacting(state, invocation_id);
+            push_event(
+                state,
+                EventLevel::Info,
+                format!(
+                    "internal agent {kind:?} completed: {}",
+                    result.output_summary
+                )
+                .to_lowercase(),
+                timestamp,
+            );
+        }
+        EventPayload::InternalAgentFailed {
+            invocation_id,
+            kind,
+            failure,
+            ..
+        } => {
+            remove_compacting(state, invocation_id);
+            push_event(
+                state,
+                EventLevel::Error,
+                format!(
+                    "internal agent {kind:?} failed: {}",
+                    cookie_agent_protocol::diagnostics::internal(&failure)
+                ),
+                timestamp,
+            );
+        }
+        EventPayload::InternalAgentCancelled {
+            invocation_id,
+            kind,
+            reason,
+            ..
+        } => {
+            remove_compacting(state, invocation_id);
+            push_event(
+                state,
+                EventLevel::Info,
+                reason.map_or_else(
+                    || format!("internal agent {kind:?} cancelled").to_lowercase(),
+                    |reason| format!("internal agent {kind:?} cancelled: {reason}").to_lowercase(),
+                ),
+                timestamp,
+            );
+        }
+        EventPayload::InternalAgentInterrupted {
+            invocation_id,
+            kind,
+            reason,
+            ..
+        } => {
+            remove_compacting(state, invocation_id);
+            push_event(
+                state,
+                EventLevel::Error,
+                reason.map_or_else(
+                    || format!("internal agent {kind:?} interrupted").to_lowercase(),
+                    |reason| {
+                        format!("internal agent {kind:?} interrupted: {reason}").to_lowercase()
+                    },
+                ),
+                timestamp,
+            );
+        }
         EventPayload::InternalAgentFallback {
+            invocation_id,
             kind,
             from,
             to,
             failure,
             attempts,
             ..
-        } => push_event(
-            state,
-            EventLevel::Warning,
-            cookie_agent_protocol::diagnostics::internal_fallback(
-                kind, &from, &to, attempts, &failure,
-            ),
-            timestamp,
-        ),
+        } => {
+            // The next model streams its summary from the start.
+            clear_compacting_text(state, invocation_id);
+            push_event(
+                state,
+                EventLevel::Warning,
+                cookie_agent_protocol::diagnostics::internal_fallback(
+                    kind, &from, &to, attempts, &failure,
+                ),
+                timestamp,
+            );
+        }
         EventPayload::ContextCheckpointCommitted { commit } => {
             // The compaction row is the run's chronological boundary: the next
             // new segment opens fresh below it, and a block that never
             // committed anything is moved under the row itself instead of
             // being split off as an empty header.
+            remove_native_compacting(state);
             let relocate = state.split_run_at_compaction();
             push_item(state, timestamp, |id| TranscriptItem::Compaction {
                 id,
@@ -1592,6 +1668,100 @@ pub(super) fn rebind_pending_attempt(
         },
     );
     state.open_run_assistant = Some(projection);
+}
+
+/// Live compaction summary text kept per row; a checkpoint summary is
+/// bounded by `max_summary_bytes`, 256 KiB by default.
+const MAX_COMPACTING_TEXT_BYTES: usize = 256 * 1024;
+
+fn compacting_text_mut(
+    state: &mut SessionState,
+    invocation: cookie_agent_protocol::InternalAgentInvocationId,
+) -> Option<(&mut u64, &mut String)> {
+    state.transcript.iter_mut().find_map(|item| match item {
+        TranscriptItem::Compacting {
+            version,
+            source:
+                CompactingSource::Summary {
+                    invocation_id,
+                    text,
+                },
+            ..
+        } if *invocation_id == invocation => Some((version, text)),
+        _ => None,
+    })
+}
+
+/// Appends streamed summary text to its compaction row. Returns whether the
+/// projection changed.
+fn append_compacting_text(
+    state: &mut SessionState,
+    invocation: cookie_agent_protocol::InternalAgentInvocationId,
+    delta: &str,
+) -> bool {
+    let Some((version, text)) = compacting_text_mut(state, invocation) else {
+        return false;
+    };
+    let room = MAX_COMPACTING_TEXT_BYTES.saturating_sub(text.len());
+    let mut end = delta.len().min(room);
+    while !delta.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == 0 {
+        return false;
+    }
+    text.push_str(&delta[..end]);
+    *version = version.wrapping_add(1);
+    true
+}
+
+fn clear_compacting_text(
+    state: &mut SessionState,
+    invocation: cookie_agent_protocol::InternalAgentInvocationId,
+) {
+    if let Some((version, text)) = compacting_text_mut(state, invocation)
+        && !text.is_empty()
+    {
+        text.clear();
+        *version = version.wrapping_add(1);
+    }
+}
+
+fn remove_compacting(
+    state: &mut SessionState,
+    invocation: cookie_agent_protocol::InternalAgentInvocationId,
+) {
+    remove_compacting_where(
+        state,
+        |source| matches!(source, CompactingSource::Summary { invocation_id, .. } if *invocation_id == invocation),
+    );
+}
+
+/// Removes a native compaction row. Its end is live-only, so the
+/// summarizer taking over or a committed checkpoint also clears it. Returns
+/// whether a row was removed.
+fn remove_native_compacting(state: &mut SessionState) -> bool {
+    remove_compacting_where(state, |source| {
+        matches!(source, CompactingSource::Native { .. })
+    })
+}
+
+fn remove_compacting_where(
+    state: &mut SessionState,
+    matches: impl Fn(&CompactingSource) -> bool,
+) -> bool {
+    let Some(index) = state.transcript.iter().position(
+        |item| matches!(item, TranscriptItem::Compacting { source, .. } if matches(source)),
+    ) else {
+        return false;
+    };
+    state.transcript.remove(index);
+    for message in state.producer_messages.values_mut() {
+        if message.transcript_index > index {
+            message.transcript_index -= 1;
+        }
+    }
+    true
 }
 
 pub(super) fn move_transcript_item_to_end(state: &mut SessionState, index: usize) {

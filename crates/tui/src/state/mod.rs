@@ -47,6 +47,18 @@ pub enum ToolStatus {
     Interrupted,
 }
 
+/// What is producing an in-progress compaction.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CompactingSource {
+    /// The compaction agent, with the summary streamed so far (live-only).
+    Summary {
+        invocation_id: cookie_agent_protocol::InternalAgentInvocationId,
+        text: String,
+    },
+    /// A provider-native compaction call; `model` is its rendered model.
+    Native { model: String },
+}
+
 /// A tool invocation displayed inside its owning assistant item. The compact
 /// title uses only the persisted `ToolCallPresentation`; raw arguments appear
 /// only in the expanded detail. The persisted display argument is byte-capped
@@ -223,6 +235,17 @@ pub enum TranscriptItem {
         /// into one row instead of stacking (see `push_event`).
         repeat: u32,
     },
+    /// A context compaction still in progress. The summarizer's terminal
+    /// event or the native call's end removes the row, and a committed
+    /// checkpoint adds its own.
+    Compacting {
+        id: u64,
+        version: u64,
+        /// The summarizer's start sequence, or the durable sequence a native
+        /// call followed.
+        seq: u64,
+        source: CompactingSource,
+    },
     /// A committed context checkpoint rendered inline at its durable event.
     Compaction {
         id: u64,
@@ -377,6 +400,7 @@ impl TranscriptItem {
             Self::User { id, .. }
             | Self::Assistant { id, .. }
             | Self::Event { id, .. }
+            | Self::Compacting { id, .. }
             | Self::Compaction { id, .. }
             | Self::PluginMessage { id, .. }
             | Self::AgentMd { id, .. }
@@ -391,6 +415,7 @@ impl TranscriptItem {
             Self::User { version, .. }
             | Self::Assistant { version, .. }
             | Self::Event { version, .. }
+            | Self::Compacting { version, .. }
             | Self::Compaction { version, .. }
             | Self::PluginMessage { version, .. }
             | Self::AgentMd { version, .. }
@@ -694,6 +719,13 @@ impl SessionState {
         self.tools
             .values()
             .any(|tool| tool.status == ToolStatus::Running)
+    }
+
+    /// Whether a context compaction is still producing its summary.
+    pub fn is_compacting(&self) -> bool {
+        self.transcript
+            .iter()
+            .any(|item| matches!(item, TranscriptItem::Compacting { .. }))
     }
 
     /// Whether any producer message is waiting for a model run to claim it.

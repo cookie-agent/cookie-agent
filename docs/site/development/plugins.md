@@ -319,7 +319,9 @@ starts after initialization and has no replay. Events are sent only after their 
 durable; a buffered session's newly persisted prefix is sent in sequence after atomic publication.
 Per-session sequence order is preserved, while cross-session ordering is unspecified.
 
-Live-only stream output (`tool_call_progress`, `text_delta`, `reasoning_delta`)
+Live-only stream output (`tool_call_progress`, `text_delta`, `reasoning_delta`,
+`internal_agent_text_delta`, `native_compaction_started`,
+`native_compaction_finished`)
 is delivered through this same stream as it happens, although it is never stored.
 It carries the `seq` of the durable event it follows, so its `seq` repeats that
 event's rather than advancing. `tool_call_progress` includes optional sanitized

@@ -110,6 +110,7 @@ pub(super) fn for_each_item_block_id(
             }
             true
         }
+        TranscriptItem::Compacting { seq, .. } => visit(BlockId::Compacting(*seq)),
         TranscriptItem::Compaction { seq, .. } => visit(BlockId::Compaction(*seq)),
         TranscriptItem::PluginMessage { seq, .. } => visit(BlockId::PluginMessage(*seq)),
         TranscriptItem::AgentMd { seq, .. } => visit(BlockId::AgentMd(*seq)),
@@ -178,6 +179,7 @@ pub(super) fn item_is_live(state: &SessionState, item: &TranscriptItem) -> bool 
                 | AssistantChild::Notice { .. } => false,
             })
         }
+        TranscriptItem::Compacting { .. } => true,
         TranscriptItem::User { .. }
         | TranscriptItem::Event { .. }
         | TranscriptItem::Compaction { .. }
@@ -235,6 +237,7 @@ pub(super) fn transcript_item_layout(
                 context.theme,
             )
         }
+        TranscriptItem::Compacting { seq, source, .. } => compacting_layout(*seq, source, context),
         TranscriptItem::Compaction { seq, commit, .. } => compaction_layout(*seq, commit, context),
         TranscriptItem::PluginMessage {
             seq, role, input, ..

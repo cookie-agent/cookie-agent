@@ -408,6 +408,7 @@ pub(super) enum HoverTarget {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WorkingState {
+    Compacting,
     Working,
     Queued(usize),
 }

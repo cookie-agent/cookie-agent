@@ -305,6 +305,72 @@ pub(super) fn event_row_layout(
     }
 }
 
+/// A compaction in progress: an animated header and, when expanded, the
+/// tail of the summary streamed so far or the native call being made.
+pub(super) fn compacting_layout(
+    seq: u64,
+    source: &crate::state::CompactingSource,
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
+    let block_id = BlockId::Compacting(seq);
+    let is_expanded = context
+        .expanded
+        .is_some_and(|blocks| blocks.contains(&block_id));
+    let chevron = if is_expanded { '▾' } else { '▸' };
+    let dots = ".".repeat(usize::from(context.clock_bucket));
+    let mut body = vec![Line::styled(
+        format!("🧹 {chevron} compacting context{dots}"),
+        context.theme.internal(),
+    )];
+    let text = match source {
+        crate::state::CompactingSource::Summary { text, .. } => text,
+        crate::state::CompactingSource::Native { model } => {
+            if is_expanded {
+                body.extend(bounded_safe_display_text(
+                    &format!("calling native compaction endpoint ({model})"),
+                    context.theme.muted(),
+                    MAX_EXPANDED_BODY_LINES,
+                    MAX_EXPANDED_BODY_BYTES,
+                ));
+            }
+            return collapsible_event_block(block_id, body, context.width, context.theme);
+        }
+    };
+    if is_expanded {
+        if text.is_empty() {
+            body.push(Line::styled(
+                "waiting for the summary",
+                context.theme.muted(),
+            ));
+        } else {
+            // Streaming output reads at its newest end, so keep the tail.
+            let lines = text.split('\n').collect::<Vec<_>>();
+            let mut start = lines.len();
+            let mut bytes = 0;
+            while start > 0 && lines.len() - start < MAX_EXPANDED_BODY_LINES {
+                bytes += lines[start - 1].len();
+                if bytes > MAX_EXPANDED_BODY_BYTES && start < lines.len() {
+                    break;
+                }
+                start -= 1;
+            }
+            if start > 0 {
+                body.push(Line::styled(
+                    format!("… {start} earlier lines"),
+                    context.theme.muted(),
+                ));
+            }
+            body.extend(bounded_safe_display_lines(
+                lines[start..].iter().copied(),
+                context.theme.internal(),
+                MAX_EXPANDED_BODY_LINES,
+                MAX_EXPANDED_BODY_BYTES,
+            ));
+        }
+    }
+    collapsible_event_block(block_id, body, context.width, context.theme)
+}
+
 pub(super) fn compaction_layout(
     seq: u64,
     commit: &cookie_agent_protocol::ContextCheckpointCommit,

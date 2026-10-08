@@ -207,6 +207,16 @@ Compaction produces these event payloads:
 
 - `internal_agent_started` / `internal_agent_completed` / `internal_agent_failed`
   / `internal_agent_fallback` — the compaction agent invocation
+- `internal_agent_text_delta` (live-only) — the summary as it streams
+- `native_compaction_started` / `native_compaction_finished` (live-only) — a
+  provider-native compaction call
+
+While compaction runs, the TUI shows a `🧹 compacting context…` row and the
+bottom bar reads `compacting`. Expanded, the row streams the summary, or reads
+`calling native compaction endpoint (model)` during a native call. When
+compaction finishes, the row is replaced by the `context compacted` checkpoint
+row, or removed if compaction failed. A failed native call hands the row to the
+summarizer fallback.
 - `context_checkpoint_committed` — the checkpoint with boundaries and budgets
 
 The internal summarizer's in-memory pruning retry does not produce

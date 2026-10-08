@@ -283,6 +283,8 @@ pub(super) enum BlockId {
         session: SessionId,
         item: u64,
     },
+    /// A compaction still producing its summary, by its start sequence.
+    Compacting(u64),
     Compaction(u64),
     PluginMessage(u64),
     AgentMd(u64),
