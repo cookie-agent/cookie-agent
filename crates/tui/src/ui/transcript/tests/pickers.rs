@@ -447,12 +447,12 @@ async fn global_out_of_chain_models_render_and_select_at_normal_and_narrow_width
         if width == 100 {
             assert!(
                 rows.iter()
-                    .any(|row| row.contains("Outside other/catalog-model[default]")),
+                    .any(|row| row.contains("Outside other/catalog-model")),
                 "width {width}: {rows:?}"
             );
             assert!(
                 rows.iter()
-                    .any(|row| row.contains("Base gateway/arbitrary-model[base]")),
+                    .any(|row| row.contains("Base gateway/arbitrary-model")),
                 "width {width}: {rows:?}"
             );
         } else {
@@ -708,7 +708,8 @@ async fn model_search_filters_resets_transitions_focus_and_selects_filtered_indi
     );
     let rendered = rendered_frame(&mut app, 100, 30);
     assert!(rendered.contains("Model (1/3)"));
-    assert!(rendered.contains("Needle Model beta/second-model[fast]"));
+    assert!(rendered.contains("Needle Model beta/second-model"));
+    assert!(!rendered.contains("beta/second-model[fast]"));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
         .await;
@@ -1139,11 +1140,11 @@ async fn draft_clicks_do_not_mutate_active_or_committed_frozen_attribution() {
     };
     assert_eq!(
         attribution.header(&crate::state::ModelDisplayNames::default()),
-        "primary • gateway/arbitrary-model[default]"
+        "primary • gateway/arbitrary-model • default"
     );
     assert_eq!(app.active_run_agent().map(AgentId::as_str), Some("primary"));
     let rendered = frame_rows(&mut app, 80, 24).join("\n");
-    assert!(rendered.contains("primary • Arbitrary Model / gateway/arbitrary-model[default]"));
+    assert!(rendered.contains("primary • Arbitrary Model • default"));
     assert!(rendered.contains("primary • Arbitrary Model[fast]"));
 }
 

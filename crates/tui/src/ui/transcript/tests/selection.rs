@@ -129,16 +129,13 @@ fn code_line_numbers_never_reach_copied_text() {
 #[test]
 fn assistant_header_leads_with_the_agent_and_mutes_the_model() {
     let theme = Theme::default();
-    let header = assistant_header("primary • test-model[base]", 60, &theme);
+    let header = assistant_header("primary • test-model", 60, &theme);
     assert_eq!(header.len(), 1);
     let spans = &header[0].spans;
-    assert_eq!(
-        header[0].to_string().trim_end(),
-        "╭─ primary • test-model[base]"
-    );
+    assert_eq!(header[0].to_string().trim_end(), "╭─ primary • test-model");
     assert_eq!(spans[0].content, "╭─ primary");
     assert_eq!(spans[0].style, theme.assistant());
-    assert_eq!(spans[1].content, " • test-model[base]");
+    assert_eq!(spans[1].content, " • test-model");
     assert_eq!(spans[1].style, theme.muted());
 }
 

@@ -4,7 +4,7 @@
 //! Attribution stays keyed by the frozen `provider/model-id`; the name is a
 //! render-time decoration looked up here. A key with no known name (an old
 //! session replaying a model that left the catalog) or whose name merely
-//! repeats its id renders as the bare id, never blank and never `id / id`.
+//! repeats its id renders as the bare id, never blank.
 
 use std::collections::BTreeMap;
 
@@ -45,22 +45,14 @@ impl ModelDisplayNames {
             .map_or_else(|| key.to_string(), ToOwned::to_owned)
     }
 
-    /// The attribution label: `Name / provider/model-id`, or the bare id
-    /// when no distinct name is known.
-    pub fn long_label(&self, key: &ModelKey) -> String {
-        match self.name(key) {
-            Some(name) => format!("{name} / {key}"),
-            None => key.to_string(),
-        }
-    }
-
-    /// `long_label` plus the bracketed variant (`base` when exact base).
+    /// The attribution label: `short_label`, then ` • <variant>` for a named
+    /// variant. Exact base behavior shows no variant.
     pub fn selection_label(&self, selection: &ModelSelection) -> String {
-        format!(
-            "{}[{}]",
-            self.long_label(&selection.model),
-            variant_label(selection)
-        )
+        let label = self.short_label(&selection.model);
+        match &selection.variant {
+            Some(variant) => format!("{label} • {variant}"),
+            None => label,
+        }
     }
 }
 

@@ -51,8 +51,8 @@ pub(super) fn model_picker_row(
     selected: bool,
     theme: &Theme,
 ) -> Line<'static> {
-    let variant = selection.variant.as_ref().map_or("base", VariantId::as_str);
-    let canonical = format!("{}[{variant}]", selection.model);
+    // The variant is chosen in its own step or with ctrl+t, not here.
+    let canonical = selection.model.to_string();
     let Some(display_name) = display_name else {
         let style = if selected {
             theme.body().patch(theme.selected())

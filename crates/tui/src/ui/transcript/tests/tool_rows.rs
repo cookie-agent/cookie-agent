@@ -447,7 +447,7 @@ fn tool_rows_project_from_committed_turn_ownership() {
     assert_eq!(*committed_turn_seq, Some(3));
     assert_eq!(
         attribution.header(&crate::state::ModelDisplayNames::default()),
-        "primary • gateway/arbitrary-model[high]"
+        "primary • gateway/arbitrary-model • high"
     );
     assert_eq!(attribution.variant_label(), "high");
     assert!(children_has_tool(&state.transcript[0], call_id));

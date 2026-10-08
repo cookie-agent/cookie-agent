@@ -68,15 +68,22 @@ fn display_names_come_from_runnable_and_unavailable_models_and_skip_id_echoes() 
     ] {
         assert_eq!(names.name(&key(id)), None, "{id}");
         assert_eq!(names.short_label(&key(id)), id);
-        assert_eq!(names.long_label(&key(id)), id);
     }
     assert_eq!(
         names.short_label(&key("gateway/arbitrary-model")),
         "Arbitrary Model"
     );
+    let mut selection = ModelSelection {
+        model: key("gateway/arbitrary-model"),
+        variant: None,
+    };
+    assert_eq!(names.selection_label(&selection), "Arbitrary Model");
+    selection.variant = Some(cookie_agent_protocol::VariantId::new("high").unwrap());
+    assert_eq!(names.selection_label(&selection), "Arbitrary Model • high");
+    selection.model = key("gone/retired-model");
     assert_eq!(
-        names.long_label(&key("gateway/arbitrary-model")),
-        "Arbitrary Model / gateway/arbitrary-model"
+        names.selection_label(&selection),
+        "gone/retired-model • high"
     );
 }
 
@@ -120,27 +127,28 @@ fn display_name_revision_moves_only_when_a_name_changes() {
 }
 
 #[test]
-fn assistant_header_shows_name_and_id_or_falls_back_to_the_id() {
+fn assistant_header_shows_name_and_variant_or_falls_back_to_the_id() {
     let runtime = named_runtime();
     assert_eq!(
         attribution(Some("high")).header(runtime.model_names()),
-        "primary • Arbitrary Model / gateway/arbitrary-model[high]"
+        "primary • Arbitrary Model • high"
     );
+    // Exact base behavior shows no variant.
     assert_eq!(
         attribution(None).header(runtime.model_names()),
-        "primary • Arbitrary Model / gateway/arbitrary-model[base]"
+        "primary • Arbitrary Model"
     );
     // Unknown (an old session replaying a retired model) and id-echo names
-    // both render the bare id, never blank and never `id / id`.
+    // both render the bare id, never blank.
     assert_eq!(
         attribution(None).header(&ModelDisplayNames::default()),
-        "primary • gateway/arbitrary-model[base]"
+        "primary • gateway/arbitrary-model"
     );
     let mut echo = model_descriptor();
     echo.display_name = "arbitrary-model".into();
     assert_eq!(
         attribution(None).header(runtime_with("1", Vec::new(), vec![echo]).model_names()),
-        "primary • gateway/arbitrary-model[base]"
+        "primary • gateway/arbitrary-model"
     );
 }
 
@@ -195,11 +203,13 @@ fn now_using_notice_and_continuation_header_share_the_header_label() {
     );
     let rendered = snapshot_lines(&cache.layout.lines);
     assert!(
-        rendered.contains("╭─ primary • Arbitrary Model / gateway/arbitrary-model[base]"),
+        rendered
+            .lines()
+            .any(|line| line.trim_end() == "╭─ primary • Arbitrary Model"),
         "{rendered}"
     );
     assert!(
-        rendered.contains("├─ now using Arbitrary Model / gateway/arbitrary-model[high]"),
+        rendered.contains("├─ now using Arbitrary Model • high"),
         "{rendered}"
     );
 
@@ -212,7 +222,7 @@ fn now_using_notice_and_continuation_header_share_the_header_label() {
         runtime.model_names(),
     ));
     assert!(
-        resumed.contains("╭─ primary • Arbitrary Model / gateway/arbitrary-model[high]"),
+        resumed.contains("╭─ primary • Arbitrary Model • high"),
         "{resumed}"
     );
     let unnamed = snapshot_lines(&continuation_header(
@@ -223,7 +233,7 @@ fn now_using_notice_and_continuation_header_share_the_header_label() {
         &ModelDisplayNames::default(),
     ));
     assert!(
-        unnamed.contains("╭─ primary • gateway/arbitrary-model[high]"),
+        unnamed.contains("╭─ primary • gateway/arbitrary-model • high"),
         "{unnamed}"
     );
 }
@@ -267,7 +277,7 @@ fn a_name_arriving_later_relabels_cached_assistant_headers_only() {
 
     let (_, before) = layout(&mut cache, &ModelDisplayNames::default());
     assert!(
-        before.contains("╭─ primary • gateway/arbitrary-model[base]"),
+        before.contains("╭─ primary • gateway/arbitrary-model"),
         "{before}"
     );
     let item_passes = cache.item_layout_passes;
@@ -277,10 +287,7 @@ fn a_name_arriving_later_relabels_cached_assistant_headers_only() {
     let runtime = named_runtime();
     let (unchanged, after) = layout(&mut cache, runtime.model_names());
     assert!(!unchanged);
-    assert!(
-        after.contains("╭─ primary • Arbitrary Model / gateway/arbitrary-model[base]"),
-        "{after}"
-    );
+    assert!(after.contains("╭─ primary • Arbitrary Model"), "{after}");
     // Only the assistant item relayouts; its prose part is reused.
     assert_eq!(cache.item_layout_passes, item_passes + 1);
     assert_eq!(cache.assistant_part_layout_passes, part_passes);

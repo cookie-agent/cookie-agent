@@ -1,9 +1,8 @@
 ---
 source: crates/tui/src/ui/transcript/tests/diffs.rs
-assertion_line: 259
 expression: "snapshot_lines(&transcript_layout(&state, Some(&expanded), 60).lines)"
 ---
-╭─ primary • gateway/arbitrary-model[base]
+╭─ primary • gateway/arbitrary-model
 │  📖 ▾ read src/main.rs
 │
 │  arguments

@@ -2,7 +2,7 @@
 source: crates/tui/src/ui/transcript/tests/layout.rs
 expression: rendered
 ---
-╭─ primary • gateway/arbitrary-model[base]
+╭─ primary • gateway/arbitrary-model
 │ launching both
 │
 │  💻 ▾ bash sleep 2 …

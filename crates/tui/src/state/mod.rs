@@ -158,9 +158,9 @@ pub struct FrozenAssistantAttribution {
 }
 
 impl FrozenAssistantAttribution {
-    /// The visible header `<agent-id> • <Model Name> / <provider>/<model-id>[<variant>]`.
-    /// The display name is a render-time lookup; without a distinct name
-    /// the header is `<agent-id> • <provider>/<model-id>[<variant>]`.
+    /// The visible header `<agent-id> • <Model Name> • <variant>`. The display
+    /// name is a render-time lookup; without a distinct name the header shows
+    /// `<provider>/<model-id>` instead. Exact base behavior shows no variant.
     pub fn header(&self, names: &ModelDisplayNames) -> String {
         format!(
             "{} • {}",

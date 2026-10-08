@@ -231,13 +231,16 @@ fn model_change_inserts_marker_and_keeps_first_header() {
         .join("\n");
     assert_eq!(
         rendered
-            .matches("primary • gateway/arbitrary-model[base]")
+            .lines()
+            .filter(|line| line
+                .trim_end()
+                .ends_with("primary • gateway/arbitrary-model"))
             .count(),
         1
     );
     assert_eq!(
         rendered
-            .matches("├─ now using gateway/arbitrary-model[high]")
+            .matches("├─ now using gateway/arbitrary-model • high")
             .count(),
         1
     );
@@ -358,7 +361,7 @@ fn fallback_rows_sit_between_the_abandoned_block_and_the_fallback_block() {
         };
         let abandoned = position("model attempt abandoned");
         let fallback_row = position("model fallback");
-        let fallback_header = position("primary • gateway/arbitrary-model[high]");
+        let fallback_header = position("primary • gateway/arbitrary-model • high");
         assert!(
             abandoned < fallback_row && fallback_row < fallback_header,
             "{rendered}"
@@ -1501,13 +1504,16 @@ fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
     assert!(!rendered.contains("Continue"));
     assert_eq!(
         rendered
-            .matches("primary • gateway/arbitrary-model[base]")
+            .lines()
+            .filter(|line| line
+                .trim_end()
+                .ends_with("primary • gateway/arbitrary-model"))
             .count(),
         3
     );
     assert_eq!(
         rendered
-            .matches("primary • gateway/arbitrary-model[high]")
+            .matches("primary • gateway/arbitrary-model • high")
             .count(),
         1
     );

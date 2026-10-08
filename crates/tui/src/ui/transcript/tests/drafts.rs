@@ -94,10 +94,7 @@ async fn goal_activation_keeps_run_a_frozen_until_modeled_run_b_events_arrive() 
     );
     assert_eq!(draft_b.preset.as_deref(), Some("review"));
     let switched = rendered_frame(&mut app, 100, 30);
-    assert!(
-        switched.contains("primary • Arbitrary Model / gateway/arbitrary-model[base]"),
-        "{switched}"
-    );
+    assert!(switched.contains("primary • Arbitrary Model"), "{switched}");
     assert!(
         switched.contains("primary • other/model-b[high]"),
         "{switched}"
@@ -138,7 +135,7 @@ async fn goal_activation_keeps_run_a_frozen_until_modeled_run_b_events_arrive() 
     );
     let after_goal_result = rendered_frame(&mut app, 100, 30);
     assert!(
-        after_goal_result.contains("primary • Arbitrary Model / gateway/arbitrary-model[base]"),
+        after_goal_result.contains("primary • Arbitrary Model"),
         "{after_goal_result}"
     );
     assert!(
@@ -240,7 +237,7 @@ async fn goal_activation_keeps_run_a_frozen_until_modeled_run_b_events_arrive() 
     assert!(rendered.contains("run A answer"), "{rendered}");
     assert!(rendered.contains("run B answer"), "{rendered}");
     assert!(
-        rendered.contains("primary • Catalog other/model-b / other/model-b[high]"),
+        rendered.contains("primary • Catalog other/model-b • high"),
         "{rendered}"
     );
 }
@@ -425,7 +422,8 @@ async fn delegated_sessions_pin_the_frozen_child_agent_with_textual_reason() {
     assert_eq!(app.filtered_draft_models().len(), 1);
     let rendered = rendered_frame(&mut app, 140, 30);
     assert!(rendered.contains("Model (1/1)"));
-    assert!(rendered.contains("Arbitrary Model gateway/arbitrary-model[base]"));
+    assert!(rendered.contains("Arbitrary Model gateway/arbitrary-model"));
+    assert!(!rendered.contains("gateway/arbitrary-model[base]"));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .await;
     app.choose_picker_entry(0).await;

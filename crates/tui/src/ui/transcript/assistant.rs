@@ -473,8 +473,8 @@ pub(super) fn assistant_header(attribution: &str, width: u16, theme: &Theme) -> 
         .collect()
 }
 
-/// The mid-block `├─ now using <Model Name> / <provider>/<model-id>[<variant>]`
-/// row, labelled exactly like the assistant header's model part.
+/// The mid-block `├─ now using <Model Name> • <variant>` row, labelled
+/// exactly like the assistant header's model part.
 pub(super) fn attribution_line(
     resolved_model: &cookie_agent_protocol::ResolvedModelRef,
     model_names: &ModelDisplayNames,

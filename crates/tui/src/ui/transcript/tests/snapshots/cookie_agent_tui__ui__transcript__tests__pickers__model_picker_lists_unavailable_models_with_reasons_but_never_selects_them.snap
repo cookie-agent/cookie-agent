@@ -4,7 +4,7 @@ expression: "format!(\"== all ==\\n{}\\n== filtered: vision ==\\n{}\", rows.join
 ---
 == all ==
 ╭ Model (1/1) ─────────────────────────────────────────────────────────────────────╮
-│> First Choice alpha/first-model[base]                                            │
+│> First Choice alpha/first-model                                                  │
 │  Unavailable (3) — not selectable                                                │
 │    kimi-code/k2 — quarantined: invalid_catalog_model_record                      │
 │    kimi-code/k2-thinking — quarantined: invalid_catalog_model_record             │

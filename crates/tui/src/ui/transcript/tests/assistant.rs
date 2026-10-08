@@ -26,15 +26,15 @@ use super::support::*;
 fn assistant_header_projects_exact_agent_model_and_variant() {
     assert_eq!(
         attribution(None).header(&crate::state::ModelDisplayNames::default()),
-        "primary • gateway/arbitrary-model[base]"
+        "primary • gateway/arbitrary-model"
     );
     assert_eq!(
         attribution(Some("high")).header(&crate::state::ModelDisplayNames::default()),
-        "primary • gateway/arbitrary-model[high]"
+        "primary • gateway/arbitrary-model • high"
     );
     assert_eq!(
         attribution(Some("default")).header(&crate::state::ModelDisplayNames::default()),
-        "primary • gateway/arbitrary-model[default]"
+        "primary • gateway/arbitrary-model • default"
     );
     assert_eq!(attribution(Some("high")).variant_label(), "high");
     assert_eq!(attribution(None).variant_label(), "base");
@@ -81,7 +81,7 @@ fn tiny_header_wraps_frozen_attribution_never_reduces_to_a_tag() {
         assert!(!visible.contains("[A]"), "width {width}");
     }
     let rendered = snapshot_lines(&transcript_layout(&state, None, 80).lines);
-    assert!(rendered.contains("╭─ primary • gateway/arbitrary-model[base]"));
+    assert!(rendered.contains("╭─ primary • gateway/arbitrary-model"));
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn assistant_item_renders_one_header_with_inline_children() {
         .join("\n");
     assert_eq!(
         rendered
-            .matches("╭─ primary • gateway/arbitrary-model[base]")
+            .matches("╭─ primary • gateway/arbitrary-model")
             .count(),
         1
     );
@@ -136,7 +136,7 @@ fn two_turn_assistant_item_renders_one_header() {
     let rendered = snapshot_lines(&transcript_layout(&state, None, 60).lines);
     assert_eq!(
         rendered
-            .matches("╭─ primary • gateway/arbitrary-model[base]")
+            .matches("╭─ primary • gateway/arbitrary-model")
             .count(),
         1
     );
@@ -168,7 +168,7 @@ fn attribution_marker_renders_without_region_and_is_skipped_by_navigation() {
         ..SessionState::default()
     };
     let layout = transcript_layout(&state, None, 60);
-    assert!(snapshot_lines(&layout.lines).contains("├─ now using gateway/arbitrary-model[high]"));
+    assert!(snapshot_lines(&layout.lines).contains("├─ now using gateway/arbitrary-model • high"));
     assert_eq!(layout.regions.len(), 1);
     assert_eq!(item_block_ids(&item), vec![BlockId::Thinking(10)]);
 }
