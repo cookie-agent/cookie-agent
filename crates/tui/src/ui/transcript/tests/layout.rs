@@ -248,39 +248,31 @@ fn replay_projection_deduplicates_logical_transitions_without_losing_evidence() 
 
     let assert_projection = |store: &StateStore| {
         let projected = &store.sessions[&session].transcript;
+        // Identical warnings fold into one row; the repeat count keeps the
+        // evidence of each logical transition.
         let warnings = projected
             .iter()
             .filter_map(|item| match item {
                 TranscriptItem::Event {
                     level: crate::state::EventLevel::Warning,
                     text,
+                    repeat,
                     ..
-                } => Some(text.as_str()),
+                } => Some((text.as_str(), *repeat)),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(warnings.len(), 4);
-        assert_eq!(
+        assert_eq!(warnings.len(), 3);
+        let occurrences = |needle: &str| {
             warnings
                 .iter()
-                .filter(|warning| warning.contains("discarded foreign adapter"))
-                .count(),
-            2
-        );
-        assert_eq!(
-            warnings
-                .iter()
-                .filter(|warning| warning.contains("discarded foreign model selection"))
-                .count(),
-            1
-        );
-        assert_eq!(
-            warnings
-                .iter()
-                .filter(|warning| warning.contains("discarded foreign variant"))
-                .count(),
-            1
-        );
+                .filter(|(warning, _)| warning.contains(needle))
+                .map(|(_, repeat)| *repeat)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(occurrences("discarded foreign adapter"), [2]);
+        assert_eq!(occurrences("discarded foreign model selection"), [1]);
+        assert_eq!(occurrences("discarded foreign variant"), [1]);
         let reconstructions = projected
             .iter()
             .filter(|item| {

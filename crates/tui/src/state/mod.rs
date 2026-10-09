@@ -234,8 +234,9 @@ pub enum TranscriptItem {
         version: u64,
         level: EventLevel,
         text: String,
-        /// How many times this exact row was pushed in a row; repeats fold
-        /// into one row instead of stacking (see `push_event`).
+        /// How many times this exact warning or error was pushed in the
+        /// session; repeats fold into one row instead of stacking (see
+        /// `push_event`).
         repeat: u32,
     },
     /// A context compaction still in progress. The summarizer's terminal

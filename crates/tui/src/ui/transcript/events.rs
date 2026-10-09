@@ -239,7 +239,7 @@ pub(super) fn model_tools_layout(
 }
 
 /// A leveled diagnostic row. Its first line is the title, followed by the
-/// repeat count when the same row happened several times in a row; any
+/// repeat count when the same row happened several times; any
 /// further lines (a provider's response body, say) fold behind the title.
 /// Warnings and errors lead the title with their marker instead of a badge
 /// row, like the system prompt row.

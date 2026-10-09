@@ -3390,6 +3390,45 @@ fn repeated_warnings_fold_into_one_counted_row() {
 }
 
 #[test]
+fn repeated_warnings_fold_onto_one_row_across_other_rows() {
+    let mut state = SessionState::default();
+    let at = |second: i64| jiff::Timestamp::new(second, 0).unwrap();
+    let push = |state: &mut SessionState, level, text: &str, second| {
+        super::reduce::push_event(state, level, text.into(), at(second));
+    };
+    push(&mut state, EventLevel::Warning, "fallback", 1);
+    push(&mut state, EventLevel::Info, "turn committed", 2);
+    push(&mut state, EventLevel::Warning, "other warning", 3);
+    push(&mut state, EventLevel::Error, "fallback", 4);
+    push(&mut state, EventLevel::Warning, "fallback", 5);
+    let rows = state
+        .transcript
+        .iter()
+        .map(|item| match item {
+            TranscriptItem::Event {
+                id,
+                level,
+                text,
+                repeat,
+                ..
+            } => (*level, text.as_str(), *repeat, state.item_time(*id)),
+            _ => unreachable!(),
+        })
+        .collect::<Vec<_>>();
+    // The repeat moved to its latest occurrence and took its time; a row
+    // at another level never folds with it.
+    assert_eq!(
+        rows,
+        [
+            (EventLevel::Info, "turn committed", 1, Some(at(2))),
+            (EventLevel::Warning, "other warning", 1, Some(at(3))),
+            (EventLevel::Error, "fallback", 1, Some(at(4))),
+            (EventLevel::Warning, "fallback", 2, Some(at(5))),
+        ]
+    );
+}
+
+#[test]
 fn repeated_info_rows_stay_one_per_event() {
     let mut state = SessionState::default();
     for _ in 0..2 {

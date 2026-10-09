@@ -2500,28 +2500,41 @@ pub(super) fn push_event(
     if level >= EventLevel::Warning {
         state.mark_event_split_pending();
     }
-    // A warning or error identical to the latest row (a retry loop hitting
-    // the same provider error) counts on that row instead of stacking a
-    // copy. An abandoned attempt can leave an empty assistant block between
-    // the two; it carries nothing, so it does not break the run. Debug and
-    // info rows stay one per event: they mark lifecycle points whose times
-    // anchor descendant rows.
-    let latest = state.transcript.iter_mut().rev().find(
-        |item| !matches!(item, TranscriptItem::Assistant { children, .. } if children.is_empty()),
-    );
-    if level >= EventLevel::Warning
-        && let Some(TranscriptItem::Event {
+    // A warning or error identical to any earlier one (a retry loop hitting
+    // the same provider error, every approval falling back off one dead
+    // model) counts on that row instead of stacking a copy, however much
+    // happened in between. The row moves down to this occurrence and takes
+    // its time, so it stands where a fresh row would and nothing above it
+    // happened later. Debug and info rows stay one per event: they mark
+    // lifecycle points (a turn commit without usage reads the same every
+    // turn) whose times anchor descendant rows.
+    let existing = if level >= EventLevel::Warning {
+        state.transcript.iter().rposition(|item| {
+            matches!(
+                item,
+                TranscriptItem::Event {
+                    level: existing_level,
+                    text: existing_text,
+                    ..
+                } if *existing_level == level && *existing_text == text
+            )
+        })
+    } else {
+        None
+    };
+    if let Some(index) = existing {
+        if let TranscriptItem::Event {
+            id,
             version,
-            level: latest_level,
-            text: latest_text,
             repeat,
             ..
-        }) = latest
-        && *latest_level == level
-        && *latest_text == text
-    {
-        *repeat = repeat.saturating_add(1);
-        *version = version.wrapping_add(1);
+        } = &mut state.transcript[index]
+        {
+            *repeat = repeat.saturating_add(1);
+            *version = version.wrapping_add(1);
+            state.item_times.insert(*id, timestamp);
+        }
+        move_transcript_item_to_end(state, index);
         return;
     }
     push_item(state, timestamp, |id| TranscriptItem::Event {

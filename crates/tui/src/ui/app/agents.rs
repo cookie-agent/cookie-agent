@@ -935,7 +935,7 @@ pub(in crate::ui) struct DescendantEvent {
     pub(in crate::ui) level: EventLevel,
     /// Row text, prefixed with its source session.
     pub(in crate::ui) text: String,
-    /// Consecutive repeats folded into the row.
+    /// Repeats folded into the row.
     pub(in crate::ui) repeat: u32,
 }
 
