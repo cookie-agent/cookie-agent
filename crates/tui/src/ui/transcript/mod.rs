@@ -1,5 +1,6 @@
 //! Transcript layout, collapse state, wrapping, scrolling, and hit testing.
 
+mod approval_preview;
 mod assistant;
 mod diff;
 mod events;
@@ -8,6 +9,9 @@ mod output;
 mod tool_rows;
 mod wrap;
 
+pub(super) use approval_preview::{
+    ApprovalPreviewRow, approval_operation_preview, approval_tool_icon,
+};
 use assistant::*;
 use diff::*;
 pub(super) use events::producer_summary;

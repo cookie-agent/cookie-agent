@@ -884,6 +884,7 @@ pub(super) fn reduce_event(
                     owner: start.owner.clone(),
                     presentation: start.presentation.clone(),
                     arguments,
+                    operation_fingerprint: start.operation_fingerprint.clone(),
                     status: ToolStatus::Running,
                     detail: identities,
                     has_output_chunks: false,

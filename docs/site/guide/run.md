@@ -279,19 +279,34 @@ by the committed turn.
 
 ## Approvals
 
-An approval modal presents the prepared operation and the decisions allowed by
-its constraints: allow once, allow for the session tree, reject, or cancel.
-Click a button or press its key, shown on the button: `y` allows once, `a`
-allows for the session tree, `n` rejects, and Esc cancels when the request is
-cancellable. Letter keys are case-insensitive and do nothing for a decision the
-request does not offer. Long approval details scroll with arrows, Page Up/Page
-Down, Home, and End.
+An approval docks above the status bar in place of the composer, leaving the
+conversation visible above it. It shows the call it gates the way you need to
+judge it: a bash call's full command, an edit or write as its diff, and any
+other tool's resources. Below that, `why` says what asked (your permission
+rule and its source, or the model's own reason), and a second row says what the
+focused decision does. A countdown appears in the top border when the request
+expires, and `d` (or clicking `details`) expands the full prepared-operation
+identity: ids, fingerprints, and the policy trace.
+
+The decisions follow the request's constraints: allow once, allow for the
+session tree, reject, or cancel. Left/Right or Tab move focus between them and
+Enter answers with the focused one; each button also names its own key: `y`
+allows once, `a` allows for the session tree, `n` rejects, and Esc cancels when
+the request is cancellable. Letter keys are case-insensitive and do nothing for
+a decision the request does not offer. Clicking a button answers with it.
+
+`e` opens a note for a rejection: type why, or what the agent should do
+instead, and press Enter to reject with it; the agent receives the note with
+the refusal. Esc closes the note without answering, and an empty note sends a
+plain rejection. Long panels scroll with arrows, Page Up/Page Down, Home, and
+End, or the mouse wheel.
 
 While an approval is on top it owns the keyboard: other typing and pastes are
-dropped rather than landing in the hidden composer, and Ctrl-C still cancels
-the run. The letter keys ignore presses for 400 ms after a request appears, so
-keystrokes already on their way to the composer cannot answer it; press again
-once the panel has settled.
+dropped rather than landing in the hidden composer (a paste goes into an open
+note), and Ctrl-C still cancels the run. Enter, the letter keys, and `e` ignore
+presses for 400 ms after a request appears, so keystrokes already on their way
+to the composer cannot answer it; the panel says so beside its buttons, and a
+second press once it has settled goes through.
 
 The permission mode appears in the bottom bar. Click it to cycle
 `auto-approve -> auto-n -> auto-y -> ask -> yolo`; the mode applies to

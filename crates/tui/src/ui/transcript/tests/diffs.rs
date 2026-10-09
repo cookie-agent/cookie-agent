@@ -98,6 +98,7 @@ fn edit_arguments_render_added_and_removed_diff_gutters() {
             .to_string(),
             status: ToolStatus::Completed,
             detail: "Edited src/main.rs\nEdit applied atomically".into(),
+            operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
         },
     );
@@ -235,6 +236,7 @@ fn tool_code_views_snapshot() {
             arguments: r#"{"filePath":"src/main.rs"}"#.into(),
             status: ToolStatus::Completed,
             detail: read_detail(&[(1, "fn main() {"), (1000, "    println!(\"hi\");")]),
+            operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
         },
     );
@@ -252,6 +254,7 @@ fn tool_code_views_snapshot() {
             .to_string(),
             status: ToolStatus::Completed,
             detail: "Edit applied atomically".into(),
+            operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
         },
     );
@@ -279,6 +282,7 @@ fn changed_diff_rows_are_tinted_inside_the_band_padding() {
             .to_string(),
             status: ToolStatus::Completed,
             detail: "Edit applied atomically".into(),
+            operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
         },
     );

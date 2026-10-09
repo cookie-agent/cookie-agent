@@ -181,9 +181,8 @@ impl App {
             layout.bar,
         );
         if let Some(approval) = self.current_approval().cloned() {
-            let area = centered(frame.area(), 76, 40);
-            self.hit_map.approval = Some(area);
-            self.hit_map.approval_actions = self.render_approval(frame, &approval, area);
+            self.hit_map.approval_actions =
+                self.render_approval(frame, &approval, frame.area(), layout.input.bottom());
         }
         match self.modal {
             Modal::GoalDetail => self.render_goal_detail(frame),

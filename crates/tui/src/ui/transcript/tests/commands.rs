@@ -808,10 +808,10 @@ async fn approval_buttons_name_their_hotkeys() {
         .push(approval);
     let rendered = rendered_frame(&mut app, 140, 40);
     for label in [
-        "✓ Allow once [y]",
-        "✓ Allow all [a]",
-        "✗ Reject [n]",
-        "⎋ Cancel [esc]",
+        "✓ Allow once y",
+        "✓ Allow all a",
+        "✗ Reject n",
+        "⎋ Cancel esc",
     ] {
         assert!(rendered.contains(label), "{label}: {rendered}");
     }

@@ -1212,7 +1212,7 @@ fn mcp_state_label(state: cookie_agent_protocol::McpServerState) -> &'static str
     }
 }
 
-fn action_label(action: PermissionAction) -> &'static str {
+pub(super) fn action_label(action: PermissionAction) -> &'static str {
     match action {
         PermissionAction::Read => "read",
         PermissionAction::Write => "write",

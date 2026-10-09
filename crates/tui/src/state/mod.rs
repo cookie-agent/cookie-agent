@@ -70,6 +70,9 @@ pub struct ToolCallState {
     pub presentation: cookie_agent_protocol::ToolCallPresentation,
     /// Durable tool input from the owning committed turn, shown expanded.
     pub arguments: String,
+    /// The prepared operation this call runs; an approval request carries
+    /// the same fingerprint, which is how its panel finds the call.
+    pub operation_fingerprint: OperationFingerprint,
     pub status: ToolStatus,
     pub detail: String,
     pub has_output_chunks: bool,

@@ -850,6 +850,9 @@ impl App {
                 .map(|hit| HoverTarget::PickerRow(hit.index));
         }
         if self.current_approval().is_some() {
+            if self.hit_map.approval_details.is_some_and(over) {
+                return Some(HoverTarget::ApprovalDetails);
+            }
             return self
                 .hit_map
                 .approval_actions
@@ -1068,6 +1071,11 @@ impl App {
                     .find(|(_, hit)| *hit == button)
                 {
                     patch(frame, *rect, fill_style);
+                }
+            }
+            HoverTarget::ApprovalDetails => {
+                if let Some(rect) = self.hit_map.approval_details {
+                    patch(frame, rect, text_style);
                 }
             }
             HoverTarget::ApprovalAction(decision) => {
@@ -1330,6 +1338,12 @@ impl App {
                 .copied()
             {
                 self.answer_approval(hit.decision).await;
+            } else if self
+                .hit_map
+                .approval_details
+                .is_some_and(|rect| contains(rect, column, row))
+            {
+                self.toggle_approval_details();
             }
             return;
         }

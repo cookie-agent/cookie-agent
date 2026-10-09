@@ -59,7 +59,7 @@ async fn hover_follows_mouse_moves_and_styles_the_target_cells() {
         .draw(|frame| app.draw_for_test(frame))
         .expect("app render");
     let buffer = terminal.backend().buffer();
-    let cell = buffer[(target.x.saturating_add(1), target.y.saturating_add(1))].style();
+    let cell = buffer[(target.x.saturating_add(1), target.y)].style();
     // Environment-independent: whatever the detected color level, the
     // hovered button carries exactly the theme's glaze hover fill, and
     // it visibly differs from the unhovered cream panel.

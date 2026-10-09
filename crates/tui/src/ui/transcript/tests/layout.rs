@@ -1032,6 +1032,7 @@ fn cancelled_and_interrupted_tools_render_distinct_concise_markers() {
                 arguments: "{}".into(),
                 status,
                 detail: String::new(),
+                operation_fingerprint: operation_fingerprint(),
                 has_output_chunks: false,
             },
         );

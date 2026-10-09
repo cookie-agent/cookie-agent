@@ -999,9 +999,9 @@ impl App {
     /// label. The replay watchdog redraws only when this differs from what
     /// was last drawn.
     pub(in crate::ui) fn wall_clock_view(&self) -> WallClockView {
-        let approval = self
-            .current_approval()
-            .map(|approval| (approval.approval_id, approval.request_revision));
+        let current = self.current_approval();
+        let approval = current.map(|approval| (approval.approval_id, approval.request_revision));
+        let approval_seconds_left = current.and_then(super::approvals::seconds_left);
         let queue_age = self.selected_queue_entries().first().map(|oldest| {
             queue_age_label(
                 jiff::Timestamp::now()
@@ -1012,6 +1012,7 @@ impl App {
         });
         WallClockView {
             approval,
+            approval_seconds_left,
             queue_age,
         }
     }

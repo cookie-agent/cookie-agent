@@ -697,14 +697,16 @@ async fn app_draws_conversation_approval_tree_and_input() {
         let rendered = (0..buffer.area.height)
             .flat_map(|y| (0..buffer.area.width).map(move |x| buffer[(x, y)].symbol().to_owned()))
             .collect::<String>();
-        assert!(rendered.contains("Approval"));
+        assert!(rendered.contains("Permission needed"));
         assert!(!rendered.contains("Agents"));
         if width >= 80 {
             assert!(rendered.contains("Conversation"));
         }
         if (width, height) == (80, 24) {
+            // The approval docks over the composer, which has nothing to
+            // take while the approval owns the keyboard.
             assert!(rendered.contains("git status"));
-            assert!(rendered.contains("primary • Arbitrary Model[base]"));
+            assert!(!rendered.contains("primary • Arbitrary Model[base]"));
         }
     }
 }

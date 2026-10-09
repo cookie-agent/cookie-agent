@@ -2680,6 +2680,10 @@ fn tool_termination_clears_streamed_output_and_sets_detail() {
             arguments: "{}".into(),
             status: ToolStatus::Running,
             detail: String::new(),
+            operation_fingerprint: serde_json::from_value(
+                serde_json::json!({"digest": "1".repeat(64)}),
+            )
+            .unwrap(),
             has_output_chunks: false,
         },
     );

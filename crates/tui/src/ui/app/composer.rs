@@ -263,7 +263,14 @@ impl App {
             return;
         }
         // An open approval owns input; a paste must not land in the
-        // composer hidden behind it.
+        // composer hidden behind it. Its rejection note takes the paste.
+        if self.modal == Modal::None
+            && self.current_approval().is_some()
+            && let Some(note) = &mut self.approval_panel.note
+        {
+            note.insert_text(&text.replace(['\r', '\n'], " "));
+            return;
+        }
         if self.modal != Modal::None || self.current_approval().is_some() {
             return;
         }

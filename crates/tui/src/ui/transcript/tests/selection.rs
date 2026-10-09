@@ -735,13 +735,13 @@ async fn wheel_follows_topmost_first_ownership_when_modal_and_approval_coexist()
     let bottom = approval_rect.bottom().min(picker_rect.bottom());
     assert!(
         left < right && top < bottom,
-        "centered panels overlap: {approval_rect:?} {picker_rect:?}"
+        "the panels overlap: {approval_rect:?} {picker_rect:?}"
     );
     // A wheel over the overlap reaches the topmost modal — the
     // obscured approval panel never scrolls.
     app.handle_wheel(left, top, false);
     assert_eq!(
-        app.approval_scroll, 0,
+        app.approval_panel.scroll, 0,
         "the modal owns the overlap; the approval beneath never scrolled"
     );
     assert_eq!(

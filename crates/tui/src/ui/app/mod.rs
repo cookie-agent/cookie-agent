@@ -13,7 +13,7 @@ mod sessions;
 mod subscriptions;
 pub(super) use agents::DescendantEvent;
 #[cfg_attr(not(test), allow(unused_imports))]
-pub(super) use approvals::approval_content;
+pub(super) use approvals::{ApprovalPanel, approval_content};
 use emoji_backend::EmojiBackend;
 use keys::{edit_credential_input, is_newline_key, is_printable_key};
 use pickers::{agent_picker_row, draft_title, model_picker_row};
@@ -339,6 +339,8 @@ pub(super) struct PendingQueueEntry {
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::ui) struct WallClockView {
     approval: Option<(cookie_agent_protocol::ApprovalId, u64)>,
+    /// Whole seconds the approval on top has left, so its countdown ticks.
+    approval_seconds_left: Option<i64>,
     queue_age: Option<String>,
 }
 
@@ -391,6 +393,7 @@ pub(super) enum HoverTarget {
     PaletteRow(usize),
     PickerRow(usize),
     ApprovalAction(ApprovalUserDecision),
+    ApprovalDetails,
     TitleSegment(TitleSegment),
     PermissionMode,
     SessionCost,
@@ -433,6 +436,8 @@ pub(super) struct UiHitMap {
     pub(super) palette_rows: Vec<PaletteRowHit>,
     pub(super) approval_actions: Vec<ApprovalHit>,
     pub(super) approval: Option<Rect>,
+    /// The approval panel's `details` toggle row.
+    pub(super) approval_details: Option<Rect>,
     pub(super) title_segments: Vec<TitleSegmentHit>,
     /// One clickable row per rendered queue-strip line (entries and the
     /// overflow fold alike): any click recalls the newest pending input.
@@ -466,6 +471,7 @@ impl UiHitMap {
         self.palette_rows.clear();
         self.approval_actions.clear();
         self.approval = None;
+        self.approval_details = None;
         self.title_segments.clear();
         self.queue_entries.clear();
         self.user_messages.clear();
@@ -590,9 +596,7 @@ pub struct App {
     pub(super) conversation_splice_shifts: Vec<(usize, usize)>,
     pub(super) scrollbar_geometry: Option<ScrollbarGeometry>,
     pub(super) scrollbar_drag: Option<ScrollbarDrag>,
-    pub(super) approval_scroll: u16,
-    pub(super) approval_max_scroll: u16,
-    pub(super) approval_scroll_request: Option<(cookie_agent_protocol::ApprovalId, u64)>,
+    pub(super) approval_panel: ApprovalPanel,
     pub(super) pending_approval: Option<PendingApprovalSubmission>,
     /// The approval request that most recently became the topmost panel,
     /// and when. Hotkeys stay inert for [`APPROVAL_HOTKEY_GRACE`] after it
@@ -1089,9 +1093,7 @@ impl App {
             conversation_splice_shifts: Vec::new(),
             scrollbar_geometry: None,
             scrollbar_drag: None,
-            approval_scroll: 0,
-            approval_max_scroll: 0,
-            approval_scroll_request: None,
+            approval_panel: ApprovalPanel::default(),
             pending_approval: None,
             approval_shown: None,
             next_approval_request_id: 0,
