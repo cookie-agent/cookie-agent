@@ -11,9 +11,9 @@ use cookie_agent_protocol::{
     AgentSnapshot, ApprovalEvaluation, DecisionTrace, EffectivePermissionAction,
     EffectivePermissionRule, EventPayload, MatchedPermissionRule, OperationFingerprint,
     PermissionAction, PermissionEffect, PermissionRule, PermissionRuleSource,
-    PreparedOperationIdentity, SafeCode, SessionId, SessionOrigin, SessionPermissionGetResult,
-    SessionPermissionMutationResult, SessionPermissionOverlay, TreeApprovalGrant,
-    TreeApprovalGrantId, WildcardPattern,
+    PreparedOperationIdentity, RunSelection, SafeCode, SessionId, SessionOrigin,
+    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionOverlay,
+    TreeApprovalGrant, TreeApprovalGrantId, WildcardPattern,
 };
 use thiserror::Error;
 
@@ -625,6 +625,21 @@ fn matching_loose_rules(
 }
 
 impl crate::Engine {
+    /// The effective permissions a session created with `selection` and the
+    /// overlay `rules` would have, computed exactly as for a live session.
+    pub fn preview_session_permissions(
+        &self,
+        selection: &RunSelection,
+        rules: Vec<PermissionRule>,
+    ) -> Result<Vec<EffectivePermissionAction>, crate::EngineError> {
+        let overlay = SessionPermissionOverlay { rules };
+        overlay
+            .validate()
+            .map_err(|error| crate::EngineError::Permission(error.to_string()))?;
+        let (_, policy) = self.freeze_selection_policy(selection)?;
+        Ok(effective_permission_view(&policy.agent, &overlay))
+    }
+
     pub fn get_session_permissions(
         &self,
         session_id: SessionId,

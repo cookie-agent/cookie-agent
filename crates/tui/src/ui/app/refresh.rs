@@ -494,8 +494,25 @@ impl App {
                     self.poll_mcp();
                 }
             },
+            RpcUpdate::PermissionPreviewLoaded { generation, result } => {
+                if !self.permission_panel.draft
+                    || generation != self.draft_permissions.preview_generation
+                {
+                    return;
+                }
+                match result {
+                    Ok(permissions) => self.permission_panel.install(SessionPermissionGetResult {
+                        permissions,
+                        current_mode: None,
+                    }),
+                    Err(error) => {
+                        self.permission_panel.notice =
+                            Some(format!("Could not preview permissions: {error}"));
+                    }
+                }
+            }
             RpcUpdate::PermissionsLoaded { session_id, result } => {
-                if self.selected != Some(session_id) {
+                if self.selected != Some(session_id) || self.permission_panel.draft {
                     return;
                 }
                 match result {
@@ -1030,6 +1047,27 @@ impl App {
                 .await
                 .map_err(|error| error.to_string());
             let _ = updates.send(RpcUpdate::McpRefreshed { result });
+        });
+    }
+
+    /// Preview the new-session draft's effective permissions: its agent's
+    /// rules with the draft's overlay rules applied.
+    pub(super) fn load_permission_preview(&mut self) {
+        let Some(selection) = self.new_session_draft.clone() else {
+            return;
+        };
+        self.draft_permissions.preview_generation += 1;
+        let generation = self.draft_permissions.preview_generation;
+        let rules = self.draft_permissions.rules.clone();
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .preview_session_permissions(SessionPermissionPreviewParams { selection, rules })
+                .await
+                .map(|result| result.permissions)
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::PermissionPreviewLoaded { generation, result });
         });
     }
 

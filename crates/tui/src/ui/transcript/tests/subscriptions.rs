@@ -19,9 +19,7 @@ async fn create_session(server: &Arc<cookie_agent_server::Server>) -> SessionId 
     let client = Arc::clone(server).connect_in_process();
     client.handshake().await.expect("handshake");
     client
-        .create_session(SessionCreateParams {
-            selection: crate::tests::test_run_selection(),
-        })
+        .create_session(SessionCreateParams::new(crate::tests::test_run_selection()))
         .await
         .expect("create session")
         .session

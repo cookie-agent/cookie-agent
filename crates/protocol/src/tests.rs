@@ -195,7 +195,7 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 29);
+    assert_eq!(PROTOCOL_VERSION, 30);
     assert_eq!(
         serde_json::to_value(ProtocolVersion::current()).unwrap(),
         json!(PROTOCOL_VERSION)
@@ -1977,4 +1977,46 @@ fn provider_descriptor_carries_sorted_unavailable_models_with_reasons() {
     let mut invalid_environment = provider_descriptor_json(json!([]));
     invalid_environment["environment"] = json!(["kimi-key"]);
     assert!(serde_json::from_value::<ProviderDescriptor>(invalid_environment).is_err());
+}
+
+#[test]
+fn session_create_permission_settings_are_optional_and_strict() {
+    let selection = json!({
+        "agent": "primary",
+        "model": {"model": "gateway/model", "variant": null},
+        "preset": null
+    });
+    let plain: SessionCreateParams =
+        serde_json::from_value(json!({ "selection": selection })).expect("plain create");
+    assert_eq!(plain.permission_mode, None);
+    assert!(plain.permission_rules.is_empty());
+    // Unset settings stay off the wire.
+    let wire = serde_json::to_value(&plain).expect("serialize");
+    assert_eq!(
+        wire.as_object().expect("object").keys().collect::<Vec<_>>(),
+        ["selection"]
+    );
+
+    let configured: SessionCreateParams = serde_json::from_value(json!({
+        "selection": selection,
+        "permission_mode": "ask",
+        "permission_rules": [{"action": "bash", "resource": "git log*", "effect": "allow"}]
+    }))
+    .expect("configured create");
+    assert_eq!(configured.permission_mode, Some(PermissionMode::Ask));
+    assert_eq!(
+        configured.permission_rules[0].action,
+        PermissionAction::Bash
+    );
+
+    assert!(
+        serde_json::from_value::<SessionCreateParams>(json!({
+            "selection": selection,
+            "permission_overlay": []
+        }))
+        .is_err()
+    );
+    let preview: SessionPermissionPreviewParams =
+        serde_json::from_value(json!({ "selection": selection })).expect("preview");
+    assert!(preview.rules.is_empty());
 }

@@ -46,19 +46,19 @@ use cookie_agent_protocol::{
     AgentDescriptor, AgentId, ApprovalListParams, ApprovalListResult, ApprovalRespondError,
     ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision,
     AvailableModelDescriptor, ClientConnectId, ClientRequestId, ClientResponseId, ClientRunId,
-    EventPayload, McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams,
-    McpAuthCompleteParams, McpServerAddParams, McpServerEditParams, McpServerInfo,
-    McpServerNameParams, McpServerPersistParams, McpServerSetEnabledParams, McpServerState,
-    ModelKey, ModelSelection, PermissionAction, PermissionEffect, PermissionMode,
-    PermissionRuleSource, ProviderConnectParams, ProviderDescriptor, ProviderDisconnectParams,
-    RunCancelParams, RunRecallSteerParams, RunSelection, RunStartParams, RunSteerParams,
-    RunToolStdinParams, SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE, SafeDisplayText,
-    SessionCompactParams, SessionCreateParams, SessionForkParams, SessionId, SessionListParams,
-    SessionMeta, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionSetParams, SessionResumeParams,
-    SessionRevertParams, SessionSetPermissionModeParams, SessionStatus, SessionTitle,
-    SessionTitleChange, SessionTree, SessionTreeParams, SessionTreeUsageResult, SessionUsageParams,
-    SessionUsageResult, StoredEvent, VariantId,
+    EffectivePermissionAction, EventPayload, McpAuthBeginParams, McpAuthBeginResult,
+    McpAuthCancelParams, McpAuthCompleteParams, McpServerAddParams, McpServerEditParams,
+    McpServerInfo, McpServerNameParams, McpServerPersistParams, McpServerSetEnabledParams,
+    McpServerState, ModelKey, ModelSelection, PermissionAction, PermissionEffect, PermissionMode,
+    PermissionRule, PermissionRuleSource, ProviderConnectParams, ProviderDescriptor,
+    ProviderDisconnectParams, RunCancelParams, RunRecallSteerParams, RunSelection, RunStartParams,
+    RunSteerParams, RunToolStdinParams, SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE,
+    SafeDisplayText, SessionCompactParams, SessionCreateParams, SessionForkParams, SessionId,
+    SessionListParams, SessionMeta, SessionPermissionClearParams, SessionPermissionGetParams,
+    SessionPermissionGetResult, SessionPermissionPreviewParams, SessionPermissionSetParams,
+    SessionResumeParams, SessionRevertParams, SessionSetPermissionModeParams, SessionStatus,
+    SessionTitle, SessionTitleChange, SessionTree, SessionTreeParams, SessionTreeUsageResult,
+    SessionUsageParams, SessionUsageResult, StoredEvent, VariantId,
 };
 use crossterm::{
     event::{
@@ -335,6 +335,34 @@ pub(super) struct PendingQueueEntry {
     pub(super) preview: String,
 }
 
+/// Permission settings held by a new-session draft until `session.create`.
+#[derive(Clone, Debug, Default)]
+pub(super) struct DraftPermissions {
+    /// The new tree's mode; `None` keeps the server default.
+    pub(super) mode: Option<PermissionMode>,
+    /// Overlay rules, at most one per (action, pattern), in edit order.
+    pub(super) rules: Vec<PermissionRule>,
+    /// Bumped per preview request so a stale preview is dropped.
+    pub(super) preview_generation: u64,
+}
+
+impl DraftPermissions {
+    /// Set a rule, replacing any rule for the same action and pattern.
+    pub(super) fn set(&mut self, rule: PermissionRule) {
+        self.remove(rule.action, &rule.resource);
+        self.rules.push(rule);
+    }
+
+    pub(super) fn remove(
+        &mut self,
+        action: PermissionAction,
+        resource: &cookie_agent_protocol::WildcardPattern,
+    ) {
+        self.rules
+            .retain(|rule| rule.action != action || &rule.resource != resource);
+    }
+}
+
 /// See [`App::wall_clock_view`].
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::ui) struct WallClockView {
@@ -544,6 +572,9 @@ pub struct App {
     pub(super) selected_preset: Option<String>,
     /// Draft owned by the `/new` flow, independent of the viewed session draft.
     pub(super) new_session_draft: Option<RunSelection>,
+    /// The new-session draft's permission mode and overlay rules, sent with
+    /// `session.create` so its first run already sees them.
+    pub(super) draft_permissions: DraftPermissions,
     /// Revision of the current agent descriptor snapshot; refreshed
     /// coherently with the model revision.
     pub(super) agent_revision: Option<cookie_agent_protocol::AgentRevision>,
@@ -811,6 +842,10 @@ pub(super) enum RpcUpdate {
     McpAuthCancelled {
         result: Result<String, String>,
     },
+    PermissionPreviewLoaded {
+        generation: u64,
+        result: Result<Vec<EffectivePermissionAction>, String>,
+    },
     PermissionsLoaded {
         session_id: SessionId,
         result: Result<SessionPermissionGetResult, String>,
@@ -1052,6 +1087,7 @@ impl App {
             agents: Vec::new(),
             selected_preset: None,
             new_session_draft: None,
+            draft_permissions: DraftPermissions::default(),
             agent_revision: None,
             models: Vec::new(),
             model_revision: None,
@@ -1296,11 +1332,19 @@ impl App {
         let agent = selection.agent.clone();
         match self
             .client
-            .create_session(SessionCreateParams { selection })
+            .create_session(SessionCreateParams {
+                selection,
+                permission_mode: self.draft_permissions.mode,
+                permission_rules: self.draft_permissions.rules.clone(),
+            })
             .await
         {
             Ok(result) => {
                 let session_id = result.session.session_id;
+                if let Some(mode) = self.draft_permissions.mode {
+                    self.permission_modes.insert(session_id, mode);
+                }
+                self.draft_permissions = DraftPermissions::default();
                 self.note_title_sequence(&result.session);
                 self.sessions.push(result.session);
                 self.note_sessions_changed();

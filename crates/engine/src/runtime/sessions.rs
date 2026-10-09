@@ -4,10 +4,10 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    AgentId, ChildSummary, EventOrigin, InvocationId, PermissionMode, RunSelection,
-    SessionForkResult, SessionId, SessionMeta, SessionOrigin, SessionRenameChange,
-    SessionRenameParams, SessionRenameResult, SessionRevertResult, SessionStatus,
-    SessionTitleChange, SessionTreeUsageResult, SessionUsageResult, UsageRollup,
+    AgentId, ChildSummary, EventOrigin, InvocationId, PermissionMode, PermissionRule, RunSelection,
+    SessionForkResult, SessionId, SessionMeta, SessionOrigin, SessionPermissionOverlay,
+    SessionRenameChange, SessionRenameParams, SessionRenameResult, SessionRevertResult,
+    SessionStatus, SessionTitleChange, SessionTreeUsageResult, SessionUsageResult, UsageRollup,
 };
 
 use super::{
@@ -42,7 +42,18 @@ impl Engine {
         self.inner.approvals.store.replace(grants);
     }
 
-    pub fn create_session(&self, selection: RunSelection) -> Result<SessionMeta, EngineError> {
+    /// The current runtime and the root policy a session created with
+    /// `selection` would freeze.
+    pub(crate) fn freeze_selection_policy(
+        &self,
+        selection: &RunSelection,
+    ) -> Result<
+        (
+            Arc<crate::runtime_snapshot::PublishedRuntime>,
+            policy::FrozenRunPolicy,
+        ),
+        EngineError,
+    > {
         self.reconcile_provider_store()?;
         let runtime = self.current_runtime();
         if runtime.result.snapshot.models.is_empty() {
@@ -62,6 +73,41 @@ impl Engine {
             },
             self.inner.config.runtime.model_retry,
         )?;
+        Ok((runtime, policy))
+    }
+
+    /// [`Self::create_session`] that also commits an initial permission
+    /// overlay and sets the new tree's permission mode before the session
+    /// can run anything. The rules are validated before the session exists.
+    pub async fn create_session_with_permissions(
+        &self,
+        selection: RunSelection,
+        mode: Option<PermissionMode>,
+        rules: Vec<PermissionRule>,
+    ) -> Result<SessionMeta, EngineError> {
+        let overlay = SessionPermissionOverlay { rules };
+        overlay
+            .validate()
+            .map_err(|error| EngineError::Permission(error.to_string()))?;
+        let meta = self.create_session(selection)?;
+        let session_id = meta.session_id;
+        if !overlay.rules.is_empty() {
+            self.append(
+                session_id,
+                None,
+                EventOrigin::new("user").expect("static event origin is valid"),
+                Event::SessionPermissionOverlaySet { overlay },
+            )
+            .await?;
+        }
+        if let Some(mode) = mode {
+            self.set_permission_mode(session_id, mode)?;
+        }
+        Ok(meta)
+    }
+
+    pub fn create_session(&self, selection: RunSelection) -> Result<SessionMeta, EngineError> {
+        let (runtime, policy) = self.freeze_selection_policy(&selection)?;
         let id = SessionId::new_v7();
         let cwd_identity = cwd_identity(self.inner.store.cwd())?;
         // A new root begins an empty tree, so its first handle is trivially

@@ -27,13 +27,13 @@ use crate::{
     SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
     SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionId,
     SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionSetParams,
-    SessionProducersParams, SessionProducersResult, SessionRenameParams, SessionRenameResult,
-    SessionResumeParams, SessionResumeResult, SessionRevertParams, SessionRevertResult,
-    SessionSetPermissionModeParams, SessionSetPermissionModeResult, SessionTreeParams,
-    SessionTreeResult, SessionTreeUsageResult, SessionUsageParams, SessionUsageResult,
-    SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult, StoredEvent, Transport,
-    TransportError,
+    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
+    SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
+    SessionProducersResult, SessionRenameParams, SessionRenameResult, SessionResumeParams,
+    SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
+    SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, SessionTreeUsageResult,
+    SessionUsageParams, SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams,
+    SkillsListResult, StoredEvent, Transport, TransportError,
 };
 use jiff::Timestamp;
 use serde::{Serialize, de::DeserializeOwned};
@@ -493,6 +493,13 @@ impl Client {
         params: SessionPermissionClearParams,
     ) -> Result<SessionPermissionMutationResult, ClientError> {
         self.call("session.permission.clear", &params).await
+    }
+
+    pub async fn preview_session_permissions(
+        &self,
+        params: SessionPermissionPreviewParams,
+    ) -> Result<SessionPermissionPreviewResult, ClientError> {
+        self.call("session.permission.preview", &params).await
     }
 
     pub async fn list_skills(

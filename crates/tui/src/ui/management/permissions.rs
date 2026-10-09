@@ -148,6 +148,9 @@ pub(in crate::ui) struct PermissionPanel {
     offset: usize,
     /// A message about the last action, shown under the table.
     pub(in crate::ui) notice: Option<String>,
+    /// Editing a new-session draft's rules, previewed against its agent,
+    /// rather than a live session's overlay.
+    pub(in crate::ui) draft: bool,
 }
 
 impl PermissionPanel {
@@ -156,6 +159,7 @@ impl PermissionPanel {
         self.form = None;
         self.notice = None;
         self.offset = 0;
+        self.draft = false;
         self.selection.select(None);
     }
 
@@ -310,7 +314,7 @@ fn effect_phrase(effect: PermissionEffect) -> &'static str {
 
 /// The selected row in plain words: what it matches, what happens, where
 /// it comes from, and what editing it does.
-fn row_explanation(row: &PermissionRow, has_patterns: bool) -> String {
+fn row_explanation(row: &PermissionRow, has_patterns: bool, draft: bool) -> String {
     let noun = resource_noun(row.action);
     let matched = if row.resource == "*" {
         if has_patterns {
@@ -322,16 +326,24 @@ fn row_explanation(row: &PermissionRow, has_patterns: bool) -> String {
         format!("{} matching `{}`", capitalized(noun), row.resource)
     };
     let effect = effect_phrase(row.effect);
+    // A draft's overrides wait for the session that the first prompt creates.
+    let override_noun = if draft {
+        "a rule for the new session"
+    } else {
+        "a session override"
+    };
     let origin = match row.source {
-        PermissionRuleSource::SessionOverlay => {
-            "A session override, checked before the agent's rules; d removes it, Enter edits it."
-        }
+        PermissionRuleSource::SessionOverlay => format!(
+            "{}, checked before the agent's rules; d removes it, Enter edits it.",
+            capitalized(override_noun)
+        ),
         PermissionRuleSource::AgentDocument => {
-            "From the agent; changing it adds a session override."
+            format!("From the agent; changing it adds {override_noun}.")
         }
-        PermissionRuleSource::Default => {
-            "No rule covers this, so it is denied and its tools are hidden; changing it adds a session override."
-        }
+        PermissionRuleSource::Default => format!(
+            "No rule covers this, so it is denied and its tools are hidden; changing it adds \
+             {override_noun}."
+        ),
     };
     format!("{matched} {effect}. {origin}")
 }
@@ -429,13 +441,18 @@ pub(in crate::ui) fn render_permissions(
             let has_patterns = rows
                 .iter()
                 .any(|other| other.action == row.action && other.resource != "*");
-            row_explanation(&row, has_patterns)
+            row_explanation(&row, has_patterns, panel.draft)
         })
         .or_else(|| {
             panel.add_row_selected().then(|| {
-                "Add a session rule: it is checked before the agent's rules and lasts for \
-                 this session and its revert/fork branches."
-                    .to_owned()
+                if panel.draft {
+                    "Add a rule for the new session: it is checked before the agent's rules \
+                     and applies from its first run."
+                } else {
+                    "Add a session rule: it is checked before the agent's rules and lasts for \
+                     this session and its revert/fork branches."
+                }
+                .to_owned()
             })
         });
     let mut footer = Vec::new();
@@ -475,10 +492,14 @@ pub(in crate::ui) fn render_permissions(
     };
     let mut block = crate::ui::panel_block()
         .border_style(theme.panel_border())
-        .title(crate::ui::panel_title(Span::styled(
-            "Permissions",
-            theme.heading(),
-        )))
+        .title(crate::ui::panel_title(Line::from(if panel.draft {
+            vec![
+                Span::styled("Permissions", theme.heading()),
+                Span::styled(" · new session", theme.muted()),
+            ]
+        } else {
+            vec![Span::styled("Permissions", theme.heading())]
+        })))
         .style(theme.panel());
     let mode_text = mode.map(|mode| format!("mode {} · m", permission_mode_label(mode)));
     if let Some(text) = &mode_text {

@@ -130,6 +130,8 @@ macro_rules! protocol_roots {
             SessionPermissionSetParams,
             SessionPermissionClearParams,
             SessionPermissionMutationResult,
+            SessionPermissionPreviewParams,
+            SessionPermissionPreviewResult,
             SkillsListParams,
             SkillsListResult,
             SkillsGetParams,

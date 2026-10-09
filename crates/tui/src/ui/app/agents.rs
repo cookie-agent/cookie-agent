@@ -755,19 +755,34 @@ impl App {
         *generation
     }
 
+    /// The mode the bottom bar shows: the new-session draft's while one is
+    /// open, else the selected session tree's.
+    pub(super) fn displayed_permission_mode(&self) -> PermissionMode {
+        if self.new_session_draft.is_some() {
+            return self.draft_permissions.mode.unwrap_or_default();
+        }
+        self.selected
+            .map(|session_id| self.permission_mode(session_id))
+            .unwrap_or_default()
+    }
+
     pub(super) fn cycle_permission_mode(&mut self) {
+        if self.new_session_draft.is_some() {
+            // The draft has no session yet: hold the mode for creation.
+            let mode = next_permission_mode(self.displayed_permission_mode());
+            self.draft_permissions.mode = Some(mode);
+            self.status = format!(
+                "Permission mode: {} — applies when the new session starts",
+                permission_mode_label(mode)
+            );
+            return;
+        }
         let Some(selected) = self.selected else {
             return;
         };
         let session_id = self.permission_mode_root(selected);
         let previous = self.permission_mode(session_id);
-        let mode = match previous {
-            PermissionMode::AutoApprove => PermissionMode::AutoApproveN,
-            PermissionMode::AutoApproveN => PermissionMode::AutoApproveY,
-            PermissionMode::AutoApproveY => PermissionMode::Ask,
-            PermissionMode::Ask => PermissionMode::Yolo,
-            PermissionMode::Yolo => PermissionMode::AutoApprove,
-        };
+        let mode = next_permission_mode(previous);
         let generation = self.next_permission_mode_generation(session_id);
         self.permission_modes.insert(session_id, mode);
         self.status = format!(
@@ -922,4 +937,15 @@ pub(in crate::ui) struct DescendantEvent {
     pub(in crate::ui) text: String,
     /// Consecutive repeats folded into the row.
     pub(in crate::ui) repeat: u32,
+}
+
+/// The bottom bar's mode cycle.
+fn next_permission_mode(mode: PermissionMode) -> PermissionMode {
+    match mode {
+        PermissionMode::AutoApprove => PermissionMode::AutoApproveN,
+        PermissionMode::AutoApproveN => PermissionMode::AutoApproveY,
+        PermissionMode::AutoApproveY => PermissionMode::Ask,
+        PermissionMode::Ask => PermissionMode::Yolo,
+        PermissionMode::Yolo => PermissionMode::AutoApprove,
+    }
 }

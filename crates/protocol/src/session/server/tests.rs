@@ -157,6 +157,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::SessionPermissionMutationResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
+    async fn preview_session_permissions(
+        &self,
+        _: crate::SessionPermissionPreviewParams,
+    ) -> Result<crate::SessionPermissionPreviewResult, ServerFault> {
+        Err(ServerFault::method_not_found())
+    }
     async fn list_skills(
         &self,
         _: crate::SkillsListParams,

@@ -16,12 +16,13 @@ use cookie_agent_protocol::{
     SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
     SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionListParams,
     SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionSetParams,
-    SessionProducersParams, SessionProducersResult, SessionRenameErrorCode, SessionRenameParams,
-    SessionRenameResult, SessionResumeParams, SessionResumeResult, SessionRevertParams,
-    SessionRevertResult, SessionSetPermissionModeParams, SessionSetPermissionModeResult,
-    SessionTreeParams, SessionTreeResult, SessionTreeUsageResult, SessionUsageParams,
-    SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult,
+    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
+    SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
+    SessionProducersResult, SessionRenameErrorCode, SessionRenameParams, SessionRenameResult,
+    SessionResumeParams, SessionResumeResult, SessionRevertParams, SessionRevertResult,
+    SessionSetPermissionModeParams, SessionSetPermissionModeResult, SessionTreeParams,
+    SessionTreeResult, SessionTreeUsageResult, SessionUsageParams, SessionUsageResult,
+    SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult,
 };
 
 use super::Server;
@@ -42,7 +43,12 @@ impl ServerProtocol for Server {
 
     async fn create_session(&self, params: SessionCreateParams) -> Result<SessionCreateResult> {
         self.engine
-            .create_session(params.selection)
+            .create_session_with_permissions(
+                params.selection,
+                params.permission_mode,
+                params.permission_rules,
+            )
+            .await
             .map(|session| SessionCreateResult { session })
             .map_err(protocol_fault)
     }
@@ -199,6 +205,16 @@ impl ServerProtocol for Server {
                 rpc_origin(),
             )
             .await
+            .map_err(protocol_fault)
+    }
+
+    async fn preview_session_permissions(
+        &self,
+        params: SessionPermissionPreviewParams,
+    ) -> Result<SessionPermissionPreviewResult> {
+        self.engine
+            .preview_session_permissions(&params.selection, params.rules)
+            .map(|permissions| SessionPermissionPreviewResult { permissions })
             .map_err(protocol_fault)
     }
 

@@ -381,9 +381,8 @@ impl App {
                 );
             }
             Modal::Permissions => {
-                let mode = self
-                    .selected
-                    .map(|session_id| self.permission_mode(session_id));
+                let mode = (self.new_session_draft.is_some() || self.selected.is_some())
+                    .then(|| self.displayed_permission_mode());
                 self.hit_map.permissions = crate::ui::management::render_permissions(
                     frame,
                     frame.area(),
@@ -483,11 +482,7 @@ impl App {
         let cost = state
             .and_then(|state| state.estimated_cost_usd)
             .map(format_cost_usd);
-        let mode = self
-            .selected
-            .map(|session_id| self.permission_mode(session_id))
-            .unwrap_or_default();
-        let mode = permission_mode_label(mode);
+        let mode = permission_mode_label(self.displayed_permission_mode());
         let hint = "`ctrl+p` commands";
         #[derive(Clone, Copy)]
         struct Candidate<'a> {

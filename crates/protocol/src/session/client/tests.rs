@@ -591,8 +591,8 @@ async fn timed_out_calls_are_pruned_and_late_responses_are_harmless() {
             async move {
                 tokio::time::timeout(
                     Duration::from_millis(5),
-                    client.create_session(SessionCreateParams {
-                        selection: cookie_agent_protocol::RunSelection {
+                    client.create_session(SessionCreateParams::new(
+                        cookie_agent_protocol::RunSelection {
                             agent: cookie_agent_protocol::AgentId::new("primary")
                                 .expect("agent id"),
                             model: cookie_agent_protocol::ModelSelection {
@@ -603,7 +603,7 @@ async fn timed_out_calls_are_pruned_and_late_responses_are_harmless() {
                             },
                             preset: None,
                         },
-                    }),
+                    )),
                 )
                 .await
             }

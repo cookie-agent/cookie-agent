@@ -474,19 +474,30 @@ impl App {
     /// Replace an edited session rule: set the new one, then clear the old
     /// one, in order on one task so the panel ends on the final overlay.
     fn dispatch_permission_replace(
-        &self,
+        &mut self,
         (previous_action, previous_resource): (PermissionAction, String),
         action: PermissionAction,
         resource: String,
         effect: PermissionEffect,
     ) {
-        let Some(session_id) = self.selected else {
-            return;
-        };
         let (Ok(resource), Ok(previous_resource)) = (
             cookie_agent_protocol::WildcardPattern::new(resource),
             cookie_agent_protocol::WildcardPattern::new(previous_resource),
         ) else {
+            return;
+        };
+        if self.permission_panel.draft {
+            self.draft_permissions
+                .remove(previous_action, &previous_resource);
+            self.draft_permissions.set(PermissionRule {
+                action,
+                resource,
+                effect,
+            });
+            self.load_permission_preview();
+            return;
+        }
+        let Some(session_id) = self.selected else {
             return;
         };
         let client = self.client.clone();
@@ -552,11 +563,22 @@ impl App {
     }
 
     pub(super) fn dispatch_permission_set(
-        &self,
+        &mut self,
         action: PermissionAction,
         resource: String,
         effect: PermissionEffect,
     ) {
+        if self.permission_panel.draft {
+            if let Ok(resource) = cookie_agent_protocol::WildcardPattern::new(resource) {
+                self.draft_permissions.set(PermissionRule {
+                    action,
+                    resource,
+                    effect,
+                });
+                self.load_permission_preview();
+            }
+            return;
+        }
         let Some(session_id) = self.selected else {
             return;
         };
@@ -583,7 +605,14 @@ impl App {
         });
     }
 
-    pub(super) fn dispatch_permission_clear(&self, action: PermissionAction, resource: String) {
+    pub(super) fn dispatch_permission_clear(&mut self, action: PermissionAction, resource: String) {
+        if self.permission_panel.draft {
+            if let Ok(resource) = cookie_agent_protocol::WildcardPattern::new(resource) {
+                self.draft_permissions.remove(action, &resource);
+                self.load_permission_preview();
+            }
+            return;
+        }
         let Some(session_id) = self.selected else {
             return;
         };

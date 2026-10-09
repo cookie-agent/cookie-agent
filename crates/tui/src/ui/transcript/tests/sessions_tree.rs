@@ -981,7 +981,7 @@ async fn opening_a_session_over_a_new_session_draft_sends_the_prompt_to_it() {
         .await;
     let selection = app.new_session_draft.clone().expect("new-session draft");
     let existing = client
-        .create_session(cookie_agent_protocol::SessionCreateParams { selection })
+        .create_session(cookie_agent_protocol::SessionCreateParams::new(selection))
         .await
         .expect("existing session")
         .session
@@ -1047,9 +1047,9 @@ async fn successful_sessions_picker_selection_after_delivery_handoff_uses_event_
     let mut app = App::new(client.clone()).await.expect("app");
     let mut deliveries = app.take_deliveries();
     let session = client
-        .create_session(cookie_agent_protocol::SessionCreateParams {
-            selection: crate::tests::test_run_selection(),
-        })
+        .create_session(cookie_agent_protocol::SessionCreateParams::new(
+            crate::tests::test_run_selection(),
+        ))
         .await
         .expect("create session")
         .session;

@@ -935,6 +935,7 @@ impl App {
                 }
                 self.new_session_draft =
                     self.draft_selection_for_preset(self.selected_preset.as_deref(), None);
+                self.draft_permissions = DraftPermissions::default();
                 // The conversation pane now shows the fresh session; a drag
                 // selection addresses lines of the one it replaced.
                 if matches!(self.selection, Some(TextSelection::Conversation { .. })) {
@@ -975,7 +976,14 @@ impl App {
                 self.poll_mcp();
             }
             SlashCommand::Permissions => {
-                if self.selected.is_none() {
+                if self.new_session_draft.is_some() {
+                    // The draft's own rules, previewed against its agent:
+                    // never the session still selected behind the draft.
+                    self.modal = Modal::Permissions;
+                    self.permission_panel.begin_load();
+                    self.permission_panel.draft = true;
+                    self.load_permission_preview();
+                } else if self.selected.is_none() {
                     self.status = "select a session before editing permissions".into();
                 } else {
                     self.modal = Modal::Permissions;

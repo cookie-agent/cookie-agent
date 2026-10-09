@@ -1,12 +1,12 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 28 is current-only. A client must call `handshake` with
-`{ "protocol_version": 28 }` before any other method.
+Protocol 30 is current-only. A client must call `handshake` with
+`{ "protocol_version": 30 }` before any other method.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 28.
+members of protocol 30.
 
 ## Error diagnostics
 
@@ -29,7 +29,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 28 alongside independent display and output references. The
+preserved in protocol 30 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -101,7 +101,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `runtime.snapshot.get` | Empty object | One coherent runtime snapshot |
 | `provider.connect` | Provider, expected catalog revision, setup/auth values, client ID | Durable connection, effective auth, snapshot, replay state |
 | `provider.disconnect` | Provider, expected revisions/generation, client ID | Disconnect receipt, effective auth, snapshot, replay state |
-| `session.create` | Run selection | Session metadata with skipped-event diagnostics |
+| `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules) | Session metadata with skipped-event diagnostics |
 | `session.list` | Optional cwd identity | Root session metadata list with skipped-event diagnostics |
 | `session.get` | Session ID | Session metadata with skipped-event diagnostics |
 | `session.goal.get` | Session ID | Required nullable `goal: GoalState` |
@@ -113,6 +113,10 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.tree` | Session ID | Recursive session tree |
 | `session.resume` | Session ID | Resumed session metadata with skipped-event diagnostics |
 | `session.rename` | Session ID, client rename ID, set/clear/reset change | Session metadata and client ID |
+| `session.permission.get` | Session ID | Effective permissions per action and the tree's current mode |
+| `session.permission.set` | Session ID, action, wildcard pattern, effect | Effective permissions after the overlay change |
+| `session.permission.clear` | Session ID, action, wildcard pattern | Effective permissions after the overlay change |
+| `session.permission.preview` | Run selection, optional overlay `rules` | Effective permissions a session created with them would have; creates nothing |
 | `session.set_permission_mode` | Any session ID in the target tree, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo`; updates the runtime-only tree mode | Empty object |
 | `skills.list` | Session ID | Discovered skills with source, precedence, visibility, and permission effect |
 | `skills.get` | Session ID, skill name, arguments | Permission-checked rendered preview and descriptor |
@@ -281,6 +285,16 @@ flow waiting. Any other completion ends it. A `begin` with the pending
 `redirect_uri` returns the same authorization URL; one with a different
 `redirect_uri` replaces the pending flow. Protocol 26 shipped only in a nightly
 build and is not reused.
+
+Protocol 30 lets a client configure permissions before a session exists.
+`session.create` accepts an optional `permission_mode` for the new tree and
+optional `permission_rules`, which are validated like any overlay (no duplicate
+action and pattern, at most 256) before the session is created and committed as
+its first `session_permission_overlay_set` event, so the first run already sees
+them. `session.permission.preview { selection, rules }` returns the effective
+permissions such a session would have, computed from the selection's frozen
+agent policy exactly as `session.permission.get` computes them for a live
+session.
 
 Session metadata includes additive `skipped_events` entries with the physical
 sequence (or source line number when no sequence was readable) and a safe reason.

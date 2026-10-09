@@ -182,6 +182,26 @@ pub struct ServerHello {
 #[serde(deny_unknown_fields)]
 pub struct SessionCreateParams {
     pub selection: RunSelection,
+    /// The new tree's permission mode; the default mode when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<PermissionMode>,
+    /// The session's initial permission overlay, committed with its
+    /// creation; empty when omitted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub permission_rules: Vec<PermissionRule>,
+}
+
+impl SessionCreateParams {
+    /// Create a session with the default mode and no overlay rules.
+    #[must_use]
+    pub const fn new(selection: RunSelection) -> Self {
+        Self {
+            selection,
+            permission_mode: None,
+            permission_rules: Vec::new(),
+        }
+    }
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -475,6 +495,23 @@ pub struct SessionPermissionClearParams {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionPermissionMutationResult {
+    pub permissions: Vec<EffectivePermissionAction>,
+}
+
+/// Preview the effective permissions a session created with `selection`
+/// and the overlay `rules` would have, without creating it.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPermissionPreviewParams {
+    pub selection: RunSelection,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub rules: Vec<PermissionRule>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPermissionPreviewResult {
     pub permissions: Vec<EffectivePermissionAction>,
 }
 

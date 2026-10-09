@@ -3,6 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventK
 
 use crate::ui::app::*;
 use crate::ui::management::{PermissionFormFocus, sample_permissions};
+use crate::ui::slash::SlashCommand;
 
 use super::support::*;
 
@@ -174,4 +175,132 @@ async fn new_rule_row_click_opens_the_form_and_m_cycles_the_mode() {
     app.handle_key(key(KeyCode::Char('m'))).await;
     wait_for_method(&recorded, "session.set_permission_mode", 1).await;
     drop(incoming_guard);
+}
+
+/// Handle RPC updates until `done` holds.
+async fn pump_until(app: &mut App, done: impl Fn(&App) -> bool) {
+    for _ in 0..50 {
+        if done(app) {
+            return;
+        }
+        let update =
+            tokio::time::timeout(std::time::Duration::from_secs(2), app.rpc_updates_rx.recv())
+                .await
+                .expect("rpc update timeout")
+                .expect("rpc update");
+        app.handle_rpc_update(update);
+    }
+    panic!("condition never held");
+}
+
+#[tokio::test]
+async fn a_new_session_draft_holds_its_mode_and_rules_until_creation() {
+    let (_directory, server) = crate::tests::in_process_server();
+    let client = server.connect_in_process();
+    client.handshake().await.expect("handshake");
+    // An existing session stays selected behind the draft: nothing below
+    // may touch it.
+    let existing = client
+        .create_session(cookie_agent_protocol::SessionCreateParams::new(
+            crate::tests::test_run_selection(),
+        ))
+        .await
+        .expect("existing session")
+        .session
+        .session_id;
+    let mut app = App::new(client.clone()).await.expect("app");
+    let _deliveries = app.take_deliveries();
+    app.open_session(existing).await;
+    app.run_command(SlashCommand::New).await;
+    // The first Enter moves to the agent list, the second picks the agent.
+    app.handle_key(key(KeyCode::Enter)).await;
+    app.handle_key(key(KeyCode::Enter)).await;
+    assert_eq!(app.modal, Modal::None);
+    assert!(app.new_session_draft.is_some());
+
+    // Clicking the bottom-bar mode cycles the draft's mode.
+    rendered_frame(&mut app, 120, 40);
+    let mode = app.hit_map.permission_mode.expect("bottom-bar mode");
+    app.handle_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        mode.x,
+        mode.y,
+    ))
+    .await;
+    assert_eq!(
+        app.draft_permissions.mode,
+        Some(cookie_agent_protocol::PermissionMode::AutoApproveN)
+    );
+    assert!(rendered_frame(&mut app, 120, 40).contains("auto-n"));
+
+    // /permissions previews the draft agent's real rules.
+    app.run_command(SlashCommand::Permissions).await;
+    assert!(app.permission_panel.draft);
+    pump_until(&mut app, |app| app.permission_panel.result.is_some()).await;
+    let rendered = rendered_frame(&mut app, 120, 40);
+    assert!(rendered.contains("Permissions · new session"), "{rendered}");
+
+    // Overriding the first rule edits only the draft, then re-previews.
+    let first = app.permission_panel.selected().expect("first rule");
+    // Step toward whichever end the effect is not already at.
+    app.handle_key(key(
+        if first.effect == cookie_agent_protocol::PermissionEffect::Deny {
+            KeyCode::Left
+        } else {
+            KeyCode::Right
+        },
+    ))
+    .await;
+    assert_eq!(app.draft_permissions.rules.len(), 1);
+    assert_eq!(app.draft_permissions.rules[0].action, first.action);
+    pump_until(&mut app, |app| {
+        app.permission_panel.selected().is_some_and(|row| {
+            row.source == cookie_agent_protocol::PermissionRuleSource::SessionOverlay
+        })
+    })
+    .await;
+    app.handle_key(key(KeyCode::Esc)).await;
+
+    let untouched = client
+        .get_session_permissions(cookie_agent_protocol::SessionPermissionGetParams {
+            session_id: existing,
+        })
+        .await
+        .expect("existing permissions");
+    assert_eq!(
+        untouched.current_mode,
+        Some(cookie_agent_protocol::PermissionMode::AutoApprove)
+    );
+    assert!(untouched.permissions.iter().all(|permission| {
+        permission.source != cookie_agent_protocol::PermissionRuleSource::SessionOverlay
+    }));
+
+    // The first prompt creates the session with both settings.
+    type_input(&mut app, "hello").await;
+    app.handle_key(key(KeyCode::Enter)).await;
+    let created = app.selected.expect("created session");
+    assert_ne!(created, existing);
+    assert!(app.new_session_draft.is_none());
+    let live = client
+        .get_session_permissions(cookie_agent_protocol::SessionPermissionGetParams {
+            session_id: created,
+        })
+        .await
+        .expect("created permissions");
+    assert_eq!(
+        live.current_mode,
+        Some(cookie_agent_protocol::PermissionMode::AutoApproveN)
+    );
+    let overridden = live
+        .permissions
+        .iter()
+        .find(|permission| permission.action == first.action)
+        .expect("overridden action");
+    assert_eq!(
+        overridden.source,
+        cookie_agent_protocol::PermissionRuleSource::SessionOverlay
+    );
+    // The draft's settings were consumed.
+    assert!(app.draft_permissions.rules.is_empty());
+    assert!(app.draft_permissions.mode.is_none());
 }

@@ -311,7 +311,8 @@ second press once it has settled goes through.
 The permission mode appears in the bottom bar. Click it to cycle
 `auto-approve -> auto-n -> auto-y -> ask -> yolo`; the mode applies to
 subsequent approvals throughout the selected session tree, including delegated
-descendants. Hard policy denies and doom-loop rejection still win in every
+descendants. While a new-session draft is open, the mode shown and cycled is the
+draft's own, applied when its first prompt creates the session. Hard policy denies and doom-loop rejection still win in every
 mode. See [Permissions](agents.md#permissions).
 
 When pricing is available, the bottom bar also shows the selected session's

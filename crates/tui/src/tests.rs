@@ -657,9 +657,7 @@ async fn app_draws_conversation_approval_tree_and_input() {
         "custom.gateway/arbitrary-model"
     );
     let session = client
-        .create_session(SessionCreateParams {
-            selection: test_run_selection(),
-        })
+        .create_session(SessionCreateParams::new(test_run_selection()))
         .await
         .expect("session")
         .session;
@@ -717,9 +715,7 @@ async fn client_round_trips_handshake_create_and_event_replay_in_process() {
     let client = server.connect_in_process();
     client.handshake().await.expect("handshake");
     let session = client
-        .create_session(SessionCreateParams {
-            selection: test_run_selection(),
-        })
+        .create_session(SessionCreateParams::new(test_run_selection()))
         .await
         .expect("create session")
         .session;
@@ -750,9 +746,7 @@ async fn fresh_session_selection_discovers_skill_slash_commands() {
     let setup = server.clone().connect_in_process();
     setup.handshake().await.expect("setup handshake");
     let session = setup
-        .create_session(SessionCreateParams {
-            selection: test_run_selection(),
-        })
+        .create_session(SessionCreateParams::new(test_run_selection()))
         .await
         .expect("session")
         .session;
@@ -849,9 +843,7 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
     let setup = server.clone().connect_in_process();
     setup.handshake().await.expect("setup handshake");
     let session = setup
-        .create_session(SessionCreateParams {
-            selection: test_run_selection(),
-        })
+        .create_session(SessionCreateParams::new(test_run_selection()))
         .await
         .expect("session")
         .session;
@@ -1023,9 +1015,7 @@ async fn local_startup_creates_a_fresh_root_while_attach_keeps_existing_selectio
     let setup = server.clone().connect_in_process();
     setup.handshake().await.expect("setup handshake");
     let existing = setup
-        .create_session(SessionCreateParams {
-            selection: test_run_selection(),
-        })
+        .create_session(SessionCreateParams::new(test_run_selection()))
         .await
         .expect("existing session")
         .session;

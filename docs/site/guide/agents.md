@@ -636,6 +636,13 @@ rule edits it in the same form, and `d` or Delete removes it. Agent and default
 rules cannot be removed, only overridden. The editor does not accept freeform
 YAML.
 
+Before the first prompt of a new session (the draft `cookie` starts on, or one
+opened with `/new`), `/permissions` edits the draft instead: the table previews
+the chosen agent's rules with the draft's rules applied, and the title reads
+`Permissions · new session`. The draft's rules and permission mode are sent with
+the session's creation, so its first run already uses them; a session that was
+selected before `/new` is never changed.
+
 An overlay rule is evaluated before matching rules from the frozen agent
 snapshot. If no overlay rule matches, evaluation falls back to the agent
 document and then the normal default (`deny`). This default affects evaluation

@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use cookie_agent_protocol::{
     ApprovalBoundary, ApprovalCapability, ApprovalId, ApprovalResourceSource, ClientRunId,
-    EventPayload, PermissionAction, PermissionEffect, PermissionMode, PermissionRuleSource,
-    PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
-    PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, RunSelection,
-    SessionId, Sha256Digest, ToolCallId, TreeApprovalGrant, TreeApprovalGrantId, WildcardPattern,
+    EventPayload, PermissionAction, PermissionEffect, PermissionMode, PermissionRule,
+    PermissionRuleSource, PreparedApprovalResource, PreparedBindingLifetime,
+    PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
+    PreparedResourceIdentity, RunSelection, SessionId, Sha256Digest, ToolCallId, TreeApprovalGrant,
+    TreeApprovalGrantId, WildcardPattern,
 };
 
 use jiff::Timestamp;
@@ -38,6 +39,111 @@ async fn permission_query_reports_the_current_session_mode() {
             .expect("updated permission query")
             .current_mode,
         Some(PermissionMode::AutoApproveY)
+    );
+    fixture.engine.shutdown().await;
+}
+
+fn rule(action: PermissionAction, resource: &str, effect: PermissionEffect) -> PermissionRule {
+    PermissionRule {
+        action,
+        resource: WildcardPattern::new(resource).expect("pattern"),
+        effect,
+    }
+}
+
+#[tokio::test]
+async fn preview_matches_the_session_a_create_with_the_same_rules_produces() {
+    let (fixture, selection) = custom_fixture();
+    let rules = vec![
+        rule(PermissionAction::Bash, "git log*", PermissionEffect::Allow),
+        rule(PermissionAction::Webfetch, "*", PermissionEffect::Deny),
+    ];
+    let preview = fixture
+        .engine
+        .preview_session_permissions(&selection, rules.clone())
+        .expect("preview");
+    let bash = preview
+        .iter()
+        .find(|permission| permission.action == PermissionAction::Bash)
+        .expect("bash");
+    assert!(bash.patterns.iter().any(|pattern| {
+        pattern.resource.as_str() == "git log*"
+            && pattern.source == PermissionRuleSource::SessionOverlay
+    }));
+    // Previewing creates nothing.
+    assert!(fixture.engine.list_sessions().is_empty());
+
+    let session = fixture
+        .engine
+        .create_session_with_permissions(selection, Some(PermissionMode::Ask), rules)
+        .await
+        .expect("session");
+    let live = fixture
+        .engine
+        .get_session_permissions(session.session_id)
+        .expect("live permissions");
+    assert_eq!(live.permissions, preview);
+    assert_eq!(live.current_mode, Some(PermissionMode::Ask));
+    // The overlay is durable, committed right after the creation event.
+    let projection = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("session projection");
+    assert_eq!(projection.permission_overlay.rules.len(), 2);
+    let events = projection.log.event_snapshot();
+    assert!(matches!(
+        events[1].payload,
+        EventPayload::SessionPermissionOverlaySet { .. }
+    ));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn invalid_initial_rules_fail_before_a_session_exists() {
+    let (fixture, selection) = custom_fixture();
+    let duplicate = vec![
+        rule(PermissionAction::Bash, "git*", PermissionEffect::Allow),
+        rule(PermissionAction::Bash, "git*", PermissionEffect::Deny),
+    ];
+    assert!(
+        fixture
+            .engine
+            .preview_session_permissions(&selection, duplicate.clone())
+            .is_err()
+    );
+    assert!(
+        fixture
+            .engine
+            .create_session_with_permissions(selection.clone(), None, duplicate)
+            .await
+            .is_err()
+    );
+    assert!(fixture.engine.list_sessions().is_empty());
+
+    // No settings: the plain create, with the default mode.
+    let session = fixture
+        .engine
+        .create_session_with_permissions(selection, None, Vec::new())
+        .await
+        .expect("session");
+    let live = fixture
+        .engine
+        .get_session_permissions(session.session_id)
+        .expect("permissions");
+    assert_eq!(live.current_mode, Some(PermissionMode::AutoApprove));
+    assert_eq!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("projection")
+            .log
+            .event_snapshot()
+            .len(),
+        1
     );
     fixture.engine.shutdown().await;
 }

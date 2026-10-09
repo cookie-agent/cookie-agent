@@ -29,10 +29,11 @@ use crate::{
     SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
     SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionId,
     SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionSetParams,
-    SessionProducersParams, SessionProducersResult, SessionRenameChange, SessionRenameError,
-    SessionRenameErrorCode, SessionRenameParams, SessionRenameResult, SessionResumeParams,
-    SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
+    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
+    SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
+    SessionProducersResult, SessionRenameChange, SessionRenameError, SessionRenameErrorCode,
+    SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
+    SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
     SessionSetPermissionModeResult, SessionTitle, SessionTreeParams, SessionTreeResult,
     SessionTreeUsageResult, SessionUsageParams, SessionUsageResult, SkillsGetParams,
     SkillsGetResult, SkillsListParams, SkillsListResult, SuccessResponse, Transport,
@@ -286,6 +287,10 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: SessionPermissionClearParams,
     ) -> Result<SessionPermissionMutationResult, ServerFault>;
+    async fn preview_session_permissions(
+        &self,
+        params: SessionPermissionPreviewParams,
+    ) -> Result<SessionPermissionPreviewResult, ServerFault>;
     async fn list_skills(&self, params: SkillsListParams) -> Result<SkillsListResult, ServerFault>;
     async fn get_skill(&self, params: SkillsGetParams) -> Result<SkillsGetResult, ServerFault>;
     async fn compact_session(
@@ -570,6 +575,9 @@ async fn dispatch<S: ServerProtocol>(
         "session.permission.set" => value(server.set_session_permission(decode(params)?).await?),
         "session.permission.clear" => {
             value(server.clear_session_permission(decode(params)?).await?)
+        }
+        "session.permission.preview" => {
+            value(server.preview_session_permissions(decode(params)?).await?)
         }
         "skills.list" => value(server.list_skills(decode(params)?).await?),
         "skills.get" => value(server.get_skill(decode(params)?).await?),

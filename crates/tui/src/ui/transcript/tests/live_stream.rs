@@ -267,9 +267,7 @@ async fn start_reply_elsewhere(
     let runner = Arc::clone(server).connect_in_process();
     runner.handshake().await.expect("runner handshake");
     let session = runner
-        .create_session(SessionCreateParams {
-            selection: crate::tests::test_run_selection(),
-        })
+        .create_session(SessionCreateParams::new(crate::tests::test_run_selection()))
         .await
         .expect("create session")
         .session
@@ -490,9 +488,7 @@ async fn switching_away_and_back_mid_reply_streams_each_delta_once() {
     .await;
 
     let other = runner
-        .create_session(SessionCreateParams {
-            selection: crate::tests::test_run_selection(),
-        })
+        .create_session(SessionCreateParams::new(crate::tests::test_run_selection()))
         .await
         .expect("other session")
         .session
