@@ -327,73 +327,228 @@ impl App {
     }
 
     pub(super) async fn handle_permissions_key(&mut self, key: KeyEvent) {
-        if let Some(form) = &mut self.permission_panel.form {
-            match key.code {
-                KeyCode::Esc => self.permission_panel.form = None,
-                KeyCode::Tab | KeyCode::BackTab => form.focus_pattern = !form.focus_pattern,
-                KeyCode::Up if !form.focus_pattern => form.cycle_action(true),
-                KeyCode::Down if !form.focus_pattern => form.cycle_action(false),
-                KeyCode::Left if !form.focus_pattern => {
-                    form.effect = cycle_effect(form.effect, true)
-                }
-                KeyCode::Right | KeyCode::Char(' ') if !form.focus_pattern => {
-                    form.effect = cycle_effect(form.effect, false)
-                }
-                KeyCode::Enter => self.submit_permission_form(),
-                _ if form.focus_pattern => edit_plain_input(&mut form.pattern, key),
-                _ => {}
-            }
+        if self.permission_panel.form.is_some() {
+            self.handle_permission_form_key(key);
             return;
         }
-        let rows = self.permission_panel.rows();
+        self.permission_panel.notice = None;
         match key.code {
             KeyCode::Esc => self.modal = Modal::None,
-            KeyCode::Up => {
-                move_picker_selection(&mut self.permission_panel.selection, rows.len(), true)
-            }
-            KeyCode::Down => {
-                move_picker_selection(&mut self.permission_panel.selection, rows.len(), false)
-            }
-            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') => {
+            KeyCode::Up => self.permission_panel.move_selection(-1),
+            KeyCode::Down => self.permission_panel.move_selection(1),
+            KeyCode::PageUp => self.permission_panel.move_selection(-10),
+            KeyCode::PageDown => self.permission_panel.move_selection(10),
+            KeyCode::Home => self.permission_panel.selection.select(Some(0)),
+            KeyCode::End => self.permission_panel.select_last(),
+            KeyCode::Left | KeyCode::Right => {
                 if let Some(row) = self.permission_panel.selected() {
-                    let effect = cycle_effect(row.effect, key.code == KeyCode::Left);
-                    self.dispatch_permission_set(row.action, row.resource, effect);
+                    let effect = step_effect(row.effect, key.code == KeyCode::Left);
+                    self.set_permission_effect(&row, effect);
                 }
             }
-            KeyCode::Char('n') => {
-                let action = self
+            KeyCode::Enter => {
+                if self.permission_panel.add_row_selected() {
+                    self.open_permission_form();
+                } else if let Some(row) = self
                     .permission_panel
                     .selected()
-                    .map_or(PermissionAction::Read, |row| row.action);
-                self.permission_panel.form = Some(PermissionForm::new(action));
-            }
-            KeyCode::Char('d') => {
-                if let Some(row) = self.permission_panel.selected() {
-                    if row.source == PermissionRuleSource::SessionOverlay {
-                        self.dispatch_permission_clear(row.action, row.resource);
-                    } else {
-                        self.status = "only session overlay rules can be cleared".into();
-                    }
+                    .filter(|row| row.source == PermissionRuleSource::SessionOverlay)
+                {
+                    self.permission_panel.form = Some(PermissionForm::edit(&row));
                 }
             }
+            KeyCode::Char('n') | KeyCode::Char('+') => self.open_permission_form(),
+            KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => {
+                self.remove_selected_permission();
+            }
+            KeyCode::Char('m') => self.cycle_permission_mode(),
             _ => {}
         }
     }
 
+    fn handle_permission_form_key(&mut self, key: KeyEvent) {
+        let Some(form) = &mut self.permission_panel.form else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.permission_panel.form = None;
+                return;
+            }
+            KeyCode::Tab => form.cycle_focus(false),
+            KeyCode::BackTab => form.cycle_focus(true),
+            KeyCode::Up => form.cycle_focus(true),
+            KeyCode::Down => form.cycle_focus(false),
+            KeyCode::Enter => {
+                self.submit_permission_form();
+                return;
+            }
+            KeyCode::Left | KeyCode::Right => {
+                let backward = key.code == KeyCode::Left;
+                match form.focus {
+                    PermissionFormFocus::Action => form.cycle_action(backward),
+                    PermissionFormFocus::Effect => form.effect = step_effect(form.effect, backward),
+                    PermissionFormFocus::Pattern => edit_plain_input(&mut form.pattern, key),
+                }
+            }
+            _ if form.focus == PermissionFormFocus::Pattern => {
+                edit_plain_input(&mut form.pattern, key);
+            }
+            _ => {}
+        }
+        form.error = None;
+    }
+
+    /// Open the new-rule form for the selected row's action.
+    pub(super) fn open_permission_form(&mut self) {
+        let action = self
+            .permission_panel
+            .selected()
+            .map_or(PermissionAction::Bash, |row| row.action);
+        self.permission_panel.form = Some(PermissionForm::new(action));
+    }
+
+    /// Change a row's effect. An agent or default rule gains a session
+    /// override with the same pattern; a session rule is updated.
+    pub(super) fn set_permission_effect(&mut self, row: &PermissionRow, effect: PermissionEffect) {
+        if row.effect == effect {
+            return;
+        }
+        self.dispatch_permission_set(row.action, row.resource.clone(), effect);
+    }
+
+    fn remove_selected_permission(&mut self) {
+        let Some(row) = self.permission_panel.selected() else {
+            return;
+        };
+        if row.source == PermissionRuleSource::SessionOverlay {
+            self.dispatch_permission_clear(row.action, row.resource);
+        } else {
+            self.permission_panel.notice = Some(format!(
+                "Only session rules can be removed; this one comes from the {}. \
+                 Change its effect to override it for this session.",
+                if row.source == PermissionRuleSource::Default {
+                    "default"
+                } else {
+                    "agent"
+                }
+            ));
+        }
+    }
+
     pub(super) fn submit_permission_form(&mut self) {
-        let Some(form) = self.permission_panel.form.take() else {
+        let Some(form) = &mut self.permission_panel.form else {
             return;
         };
         let pattern = form.pattern.as_str().trim();
         let resource = match cookie_agent_protocol::WildcardPattern::new(pattern) {
             Ok(resource) => resource.to_string(),
             Err(error) => {
-                self.status = format!("invalid permission pattern: {error}");
-                self.permission_panel.form = Some(form);
+                form.error = Some(if pattern.is_empty() {
+                    "enter a pattern, or * for everything".into()
+                } else {
+                    format!("invalid pattern: {error}")
+                });
+                form.focus = PermissionFormFocus::Pattern;
                 return;
             }
         };
-        self.dispatch_permission_set(form.action, resource, form.effect);
+        let form = self
+            .permission_panel
+            .form
+            .take()
+            .expect("permission form is open");
+        match form.editing {
+            Some((action, previous)) if action != form.action || previous != resource => {
+                self.dispatch_permission_replace(
+                    (action, previous),
+                    form.action,
+                    resource,
+                    form.effect,
+                );
+            }
+            _ => self.dispatch_permission_set(form.action, resource, form.effect),
+        }
+    }
+
+    /// Replace an edited session rule: set the new one, then clear the old
+    /// one, in order on one task so the panel ends on the final overlay.
+    fn dispatch_permission_replace(
+        &self,
+        (previous_action, previous_resource): (PermissionAction, String),
+        action: PermissionAction,
+        resource: String,
+        effect: PermissionEffect,
+    ) {
+        let Some(session_id) = self.selected else {
+            return;
+        };
+        let (Ok(resource), Ok(previous_resource)) = (
+            cookie_agent_protocol::WildcardPattern::new(resource),
+            cookie_agent_protocol::WildcardPattern::new(previous_resource),
+        ) else {
+            return;
+        };
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = async {
+                client
+                    .set_session_permission(SessionPermissionSetParams {
+                        session_id,
+                        action,
+                        resource,
+                        effect,
+                    })
+                    .await?;
+                client
+                    .clear_session_permission(SessionPermissionClearParams {
+                        session_id,
+                        action: previous_action,
+                        resource: previous_resource,
+                    })
+                    .await
+            }
+            .await
+            .map(|result| SessionPermissionGetResult {
+                permissions: result.permissions,
+                current_mode: None,
+            })
+            .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::PermissionsLoaded { session_id, result });
+        });
+    }
+
+    /// A click in the `/permissions` panel: the mode cycles, an effect
+    /// segment sets that effect, and a row selects (the `new rule` row
+    /// opens the form).
+    fn click_permissions(&mut self, column: u16, row: u16) {
+        let hits = self.hit_map.permissions.clone();
+        let over = |rect: Rect| contains(rect, column, row);
+        if hits.mode.is_some_and(over) {
+            self.cycle_permission_mode();
+            return;
+        }
+        if let Some(form) = &mut self.permission_panel.form {
+            if let Some((_, effect)) = hits.form_effects.iter().find(|(rect, _)| over(*rect)) {
+                form.effect = *effect;
+                form.focus = PermissionFormFocus::Effect;
+            }
+            return;
+        }
+        self.permission_panel.notice = None;
+        if let Some((_, effect)) = hits.effects.iter().find(|(rect, _)| over(*rect))
+            && let Some(selected) = self.permission_panel.selected()
+        {
+            self.set_permission_effect(&selected, *effect);
+            return;
+        }
+        if let Some((_, index)) = hits.rows.iter().find(|(rect, _)| over(*rect)) {
+            self.permission_panel.selection.select(Some(*index));
+            if self.permission_panel.add_row_selected() {
+                self.open_permission_form();
+            }
+        }
     }
 
     pub(super) fn dispatch_permission_set(
@@ -820,6 +975,28 @@ impl App {
                     .filter(|rect| over(*rect))
                     .map(|_| HoverTarget::GoalClose);
             }
+            if self.modal == Modal::Permissions {
+                let hits = &self.hit_map.permissions;
+                if hits.mode.is_some_and(over) {
+                    return Some(HoverTarget::PermissionPanelMode);
+                }
+                if let Some((_, effect)) = hits
+                    .form_effects
+                    .iter()
+                    .chain(&hits.effects)
+                    .find(|(rect, _)| over(*rect))
+                {
+                    return Some(HoverTarget::PermissionEffect(*effect));
+                }
+                if self.permission_panel.form.is_some() {
+                    return None;
+                }
+                return hits
+                    .rows
+                    .iter()
+                    .find(|(rect, _)| over(*rect))
+                    .map(|(_, index)| HoverTarget::PermissionRow(*index));
+            }
             if let Some((_, button)) = self
                 .hit_map
                 .confirm_buttons
@@ -1031,6 +1208,33 @@ impl App {
                     .find(|hit| hit.index == index)
                 {
                     patch(frame, hit.rect, text_style);
+                }
+            }
+            HoverTarget::PermissionPanelMode => {
+                if let Some(rect) = self.hit_map.permissions.mode {
+                    patch(frame, rect, text_style);
+                }
+            }
+            HoverTarget::PermissionEffect(effect) => {
+                let hits = &self.hit_map.permissions;
+                if let Some((rect, _)) = hits
+                    .form_effects
+                    .iter()
+                    .chain(&hits.effects)
+                    .find(|(_, candidate)| *candidate == effect)
+                {
+                    patch(frame, *rect, fill_style);
+                }
+            }
+            HoverTarget::PermissionRow(index) => {
+                if let Some((rect, _)) = self
+                    .hit_map
+                    .permissions
+                    .rows
+                    .iter()
+                    .find(|(_, candidate)| *candidate == index)
+                {
+                    patch(frame, *rect, text_style);
                 }
             }
             HoverTarget::PickerRow(index) => {
@@ -1248,6 +1452,10 @@ impl App {
                 {
                     self.handle_goal_detail_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
                 }
+                return;
+            }
+            if self.modal == Modal::Permissions {
+                self.click_permissions(column, row);
                 return;
             }
             if let Some((_, button)) = self
@@ -1531,6 +1739,13 @@ impl App {
         if self.modal != Modal::None {
             if self.modal == Modal::GoalDetail {
                 self.scroll_goal_detail(up);
+                return;
+            }
+            if self.modal == Modal::Permissions {
+                if self.permission_panel.form.is_none() {
+                    self.permission_panel
+                        .move_selection(if up { -1 } else { 1 });
+                }
                 return;
             }
             if self.modal == Modal::Usage {

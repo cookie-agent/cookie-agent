@@ -98,8 +98,8 @@ use crate::{
 use super::events::{RenderScheduler, TerminalRestore, install_terminal_panic_hook};
 use super::input::{self, InputState};
 use super::management::{
-    AuthListener, McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm, PermissionPanel,
-    UsagePanel, cycle_effect,
+    AuthListener, McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm,
+    PermissionFormFocus, PermissionHits, PermissionPanel, PermissionRow, UsagePanel, step_effect,
 };
 use super::pickers::{
     SearchPickerFocus, SearchPickerState, SessionSearchRow, agent_matches, cycle_selection,
@@ -394,6 +394,9 @@ pub(super) enum HoverTarget {
     PickerRow(usize),
     ApprovalAction(ApprovalUserDecision),
     ApprovalDetails,
+    PermissionRow(usize),
+    PermissionEffect(PermissionEffect),
+    PermissionPanelMode,
     TitleSegment(TitleSegment),
     PermissionMode,
     SessionCost,
@@ -438,6 +441,8 @@ pub(super) struct UiHitMap {
     pub(super) approval: Option<Rect>,
     /// The approval panel's `details` toggle row.
     pub(super) approval_details: Option<Rect>,
+    /// The `/permissions` panel's rows, effect segments, and mode.
+    pub(super) permissions: PermissionHits,
     pub(super) title_segments: Vec<TitleSegmentHit>,
     /// One clickable row per rendered queue-strip line (entries and the
     /// overflow fold alike): any click recalls the newest pending input.
@@ -472,6 +477,7 @@ impl UiHitMap {
         self.approval_actions.clear();
         self.approval = None;
         self.approval_details = None;
+        self.permissions = PermissionHits::default();
         self.title_segments.clear();
         self.queue_entries.clear();
         self.user_messages.clear();
@@ -1386,7 +1392,7 @@ pub(super) fn format_cost_usd(cost: f64) -> String {
     }
 }
 
-const fn permission_mode_label(mode: PermissionMode) -> &'static str {
+pub(in crate::ui) const fn permission_mode_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::AutoApprove => "auto-approve",
         PermissionMode::AutoApproveN => "auto-n",

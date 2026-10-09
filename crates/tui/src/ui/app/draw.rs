@@ -381,10 +381,14 @@ impl App {
                 );
             }
             Modal::Permissions => {
-                crate::ui::management::render_permissions(
+                let mode = self
+                    .selected
+                    .map(|session_id| self.permission_mode(session_id));
+                self.hit_map.permissions = crate::ui::management::render_permissions(
                     frame,
-                    centered(frame.area(), 82, 76),
+                    frame.area(),
                     &mut self.permission_panel,
+                    mode,
                     &self.theme,
                 );
             }

@@ -16,6 +16,7 @@ mod layout;
 mod live_stream;
 mod markdown;
 mod model_names;
+mod permissions;
 mod pickers;
 mod producers;
 mod providers;

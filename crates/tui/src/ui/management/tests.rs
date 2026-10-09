@@ -154,37 +154,112 @@ fn mcp_panel_renders_copyable_oauth_wait() {
     assert!(panel.auth.is_none());
 }
 
-#[test]
-fn permission_editor_renders_effect_and_source() {
-    let mut panel = super::PermissionPanel::default();
-    panel.install(SessionPermissionGetResult {
-        permissions: vec![EffectivePermissionAction {
-            action: PermissionAction::Write,
-            effect: PermissionEffect::Deny,
-            source: PermissionRuleSource::SessionOverlay,
-            patterns: Vec::new(),
-        }],
-        current_mode: None,
-    });
-    let mut terminal = Terminal::new(TestBackend::new(80, 12)).expect("terminal");
+fn render_panel(panel: &mut super::PermissionPanel, width: u16, height: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
         .draw(|frame| {
             super::render_permissions(
                 frame,
                 frame.area(),
-                &mut panel,
+                panel,
+                Some(cookie_agent_protocol::PermissionMode::Ask),
                 &crate::theme::Theme::default(),
             );
         })
         .expect("render permissions");
-    let text = terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect::<String>();
-    assert!(text.contains("write  *  deny  [session_overlay]"), "{text}");
+    let buffer = terminal.backend().buffer();
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn permission_table_groups_rules_by_action_and_explains_the_selection() {
+    let mut panel = super::PermissionPanel::default();
+    panel.install(super::permissions::sample_permissions());
+    // The bash `git status*` rule.
+    panel.selection.select(Some(7));
+    let text = render_panel(&mut panel, 110, 34);
+    for needle in [
+        "Permissions",
+        "mode ask · m",
+        "ACTION",
+        "SOURCE",
+        "├ *.env",
+        "└ rm -rf *",
+        "✗ deny",
+        "? ask",
+        "session",
+        "default",
+        // The selected row's effect is a segmented control.
+        " allow │ ask │ deny ",
+        "Bash commands matching `git status*` run without asking.",
+        "changing it adds a session override",
+        "+ new session rule",
+    ] {
+        assert!(text.contains(needle), "missing {needle}:\n{text}");
+    }
+    // Patterns sit beside their action's `*` row, not under a new label.
+    assert_eq!(text.matches("bash").count(), 1, "{text}");
+}
+
+#[test]
+fn permission_panel_shows_loading_until_the_result_lands() {
+    let mut panel = super::PermissionPanel::default();
+    let text = render_panel(&mut panel, 100, 30);
+    assert!(text.contains("Loading permissions…"), "{text}");
+    assert_eq!(panel.row_count(), 0);
+}
+
+#[test]
+fn permission_form_offers_every_action_and_effects_stop_at_the_ends() {
+    let mut form = super::PermissionForm::new(PermissionAction::Read);
+    let mut seen = vec![form.action];
+    for _ in 1..9 {
+        form.cycle_action(false);
+        seen.push(form.action);
+    }
+    form.cycle_action(false);
+    assert_eq!(form.action, PermissionAction::Read);
+    seen.sort_by_key(|action| format!("{action:?}"));
+    seen.dedup();
+    assert_eq!(seen.len(), 9);
+
+    assert_eq!(
+        super::step_effect(PermissionEffect::Allow, true),
+        PermissionEffect::Allow
+    );
+    assert_eq!(
+        super::step_effect(PermissionEffect::Allow, false),
+        PermissionEffect::Ask
+    );
+    assert_eq!(
+        super::step_effect(PermissionEffect::Deny, false),
+        PermissionEffect::Deny
+    );
+}
+
+#[test]
+fn install_keeps_the_selection_on_the_same_rule() {
+    let mut panel = super::PermissionPanel::default();
+    panel.install(super::permissions::sample_permissions());
+    panel.selection.select(Some(7));
+    let mut changed = super::permissions::sample_permissions();
+    // A new read pattern shifts every later row down by one.
+    changed.permissions[0]
+        .patterns
+        .push(cookie_agent_protocol::EffectivePermissionRule {
+            resource: cookie_agent_protocol::WildcardPattern::new("src/**").unwrap(),
+            effect: PermissionEffect::Allow,
+            source: PermissionRuleSource::SessionOverlay,
+        });
+    panel.install(changed);
+    assert_eq!(panel.selected().expect("row").resource, "git status*");
 }
 
 #[test]

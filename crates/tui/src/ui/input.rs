@@ -188,7 +188,7 @@ impl InputState {
             && self.content_rows(self.layout_width) > usize::from(self.layout_height)
     }
 
-    #[cfg(test)]
+    /// The cursor's (row, column) when the value wraps at `width`.
     pub(crate) fn cursor_visual_position(&self, width: u16) -> (usize, u16) {
         let rows = visual_rows(&self.value, width);
         cursor_position(&rows, self.cursor)

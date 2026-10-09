@@ -2,8 +2,7 @@ use std::collections::BTreeMap;
 
 use cookie_agent_protocol::{
     McpConfigTarget, McpServerDefinition, McpServerInfo, McpServerState, ModelUsageRollup,
-    PermissionAction, PermissionEffect, PermissionRuleSource, SessionPermissionGetResult,
-    SessionTreeUsageResult, SessionUsageResult, UsageRollup,
+    PermissionAction, SessionTreeUsageResult, SessionUsageResult, UsageRollup,
 };
 use ratatui::{
     Frame,
@@ -335,79 +334,6 @@ impl McpPanel {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct PermissionRow {
-    pub(super) action: PermissionAction,
-    pub(super) resource: String,
-    pub(super) effect: PermissionEffect,
-    pub(super) source: PermissionRuleSource,
-}
-
-pub(super) fn permission_rows(result: &SessionPermissionGetResult) -> Vec<PermissionRow> {
-    result
-        .permissions
-        .iter()
-        .flat_map(|action| {
-            std::iter::once(PermissionRow {
-                action: action.action,
-                resource: "*".into(),
-                effect: action.effect,
-                source: action.source,
-            })
-            .chain(action.patterns.iter().map(|rule| PermissionRow {
-                action: action.action,
-                resource: rule.resource.as_str().to_owned(),
-                effect: rule.effect,
-                source: rule.source,
-            }))
-        })
-        .collect()
-}
-
-pub(super) struct PermissionForm {
-    pub(super) action: PermissionAction,
-    pub(super) pattern: InputState,
-    pub(super) effect: PermissionEffect,
-    pub(super) focus_pattern: bool,
-}
-
-impl PermissionForm {
-    pub(super) fn new(action: PermissionAction) -> Self {
-        Self {
-            action,
-            pattern: InputState::default(),
-            effect: PermissionEffect::Ask,
-            focus_pattern: true,
-        }
-    }
-
-    pub(super) fn cycle_action(&mut self, backward: bool) {
-        let actions = [
-            PermissionAction::Read,
-            PermissionAction::Write,
-            PermissionAction::Bash,
-            PermissionAction::Delegate,
-            PermissionAction::Mcp,
-        ];
-        let index = actions
-            .iter()
-            .position(|action| *action == self.action)
-            .unwrap_or(0);
-        self.action = actions[if backward {
-            (index + actions.len() - 1) % actions.len()
-        } else {
-            (index + 1) % actions.len()
-        }];
-    }
-}
-
-#[derive(Default)]
-pub(super) struct PermissionPanel {
-    pub(super) result: Option<SessionPermissionGetResult>,
-    pub(super) selection: ListState,
-    pub(super) form: Option<PermissionForm>,
-}
-
 #[derive(Default)]
 pub(super) struct UsagePanel {
     pub(super) session: Option<SessionUsageResult>,
@@ -443,34 +369,6 @@ impl UsagePanel {
 
     pub(super) fn page_down(&mut self) {
         self.scroll_down(self.page_size.max(1));
-    }
-}
-
-impl PermissionPanel {
-    pub(super) fn begin_load(&mut self) {
-        self.result = None;
-        self.form = None;
-        self.selection.select(None);
-    }
-
-    pub(super) fn rows(&self) -> Vec<PermissionRow> {
-        self.result
-            .as_ref()
-            .map(permission_rows)
-            .unwrap_or_default()
-    }
-
-    pub(super) fn selected(&self) -> Option<PermissionRow> {
-        self.selection
-            .selected()
-            .and_then(|index| self.rows().get(index).cloned())
-    }
-
-    pub(super) fn install(&mut self, result: SessionPermissionGetResult) {
-        self.result = Some(result);
-        let len = self.rows().len();
-        self.selection
-            .select((len > 0).then(|| self.selection.selected().unwrap_or(0).min(len - 1)));
     }
 }
 
@@ -649,72 +547,6 @@ fn render_mcp_form(frame: &mut Frame, area: Rect, form: &McpForm, theme: &Theme)
                 )),
         ),
         area,
-    );
-}
-
-pub(super) fn render_permissions(
-    frame: &mut Frame,
-    area: Rect,
-    panel: &mut PermissionPanel,
-    theme: &Theme,
-) {
-    paint_panel(frame, area, theme);
-    if let Some(form) = &panel.form {
-        let action = format!("{:?}", form.action).to_ascii_lowercase();
-        let effect = format!("{:?}", form.effect).to_ascii_lowercase();
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(format!("Action: {action}")),
-                Line::from(format!("Pattern: {}", form.pattern.as_str())),
-                Line::from(format!("Effect: {effect}")),
-            ])
-            .block(
-                crate::ui::panel_block()
-                    .border_style(theme.panel_border())
-                    .title(crate::ui::panel_title("Add permission pattern"))
-                    .title_bottom(crate::ui::panel_title(
-                        Line::from(Span::styled(
-                            "tab field | arrows action/effect | enter add | esc cancel",
-                            theme.internal(),
-                        ))
-                        .right_aligned(),
-                    )),
-            ),
-            area,
-        );
-        return;
-    }
-    let rows = panel.rows();
-    let items = rows
-        .iter()
-        .map(|row| {
-            ListItem::new(format!(
-                "{}  {}  {}  [{}]",
-                action_label(row.action),
-                row.resource,
-                effect_label(row.effect),
-                source_label(row.source),
-            ))
-        })
-        .collect::<Vec<_>>();
-    frame.render_stateful_widget(
-        List::new(items)
-            .highlight_symbol("> ")
-            .highlight_style(theme.selected())
-            .block(
-                crate::ui::panel_block()
-                    .border_style(theme.panel_border())
-                    .title(crate::ui::panel_title("Session permissions"))
-                    .title_bottom(crate::ui::panel_title(
-                        Line::from(Span::styled(
-                            "arrows effect | n add pattern | d clear overlay | esc close",
-                            theme.internal(),
-                        ))
-                        .right_aligned(),
-                    )),
-            ),
-        area,
-        &mut panel.selection,
     );
 }
 
@@ -1226,30 +1058,13 @@ pub(super) fn action_label(action: PermissionAction) -> &'static str {
     }
 }
 
-fn effect_label(effect: PermissionEffect) -> &'static str {
-    match effect {
-        PermissionEffect::Allow => "allow",
-        PermissionEffect::Ask => "ask",
-        PermissionEffect::Deny => "deny",
-    }
-}
-
-fn source_label(source: PermissionRuleSource) -> &'static str {
-    match source {
-        PermissionRuleSource::SessionOverlay => "session_overlay",
-        PermissionRuleSource::AgentDocument => "agent_document",
-        PermissionRuleSource::Default => "default",
-    }
-}
-
-pub(super) fn cycle_effect(effect: PermissionEffect, backward: bool) -> PermissionEffect {
-    match (effect, backward) {
-        (PermissionEffect::Allow, false) | (PermissionEffect::Deny, true) => PermissionEffect::Ask,
-        (PermissionEffect::Ask, false) => PermissionEffect::Deny,
-        (PermissionEffect::Deny, false) | (PermissionEffect::Ask, true) => PermissionEffect::Allow,
-        (PermissionEffect::Allow, true) => PermissionEffect::Deny,
-    }
-}
+mod permissions;
+pub(super) use permissions::{
+    PermissionForm, PermissionFormFocus, PermissionHits, PermissionPanel, PermissionRow,
+    render_permissions, step_effect,
+};
+#[cfg(test)]
+pub(super) use permissions::{permission_rows, sample_permissions};
 
 #[cfg(test)]
 mod tests;

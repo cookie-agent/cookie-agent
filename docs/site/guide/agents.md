@@ -618,12 +618,23 @@ internal-agent escalation.
 
 ### Session permission overlays
 
-Run `/permissions` to edit the selected session's permission overlay. Each
-action exposes its effective `allow`, `ask`, or `deny` effect and its individual
-resource patterns. Source labels distinguish `session_overlay`,
-`agent_document`, and `default`. Left/right changes an effect, `n` adds a
-validated wildcard pattern, and `d` removes a selected session-overlay rule.
-The editor does not accept freeform YAML.
+Run `/permissions` to edit the selected session's permission overlay. The
+panel lists every action with its effective `allow`, `ask`, or `deny` effect,
+and each action's resource patterns hang beneath it. The source column marks
+where a rule comes from: `session` (an overlay rule), `agent` (the agent
+document), or `default` (no rule covers the action). The selected rule is
+explained in plain words under the table, and the header shows the session
+tree's permission mode; `m` cycles it, like clicking the mode in the bottom bar.
+
+Up/down (or the mouse) selects a rule. Left/right steps its effect through
+allow, ask, and deny, or click a segment of the selected rule's effect; changing
+an agent or default rule adds a session rule with the same pattern. `n` (or the
+`new session rule` row) opens a form for the action, pattern, and effect: Tab
+moves between fields, left/right changes the action or effect, and Enter adds
+the rule once the pattern validates as a wildcard pattern. Enter on a session
+rule edits it in the same form, and `d` or Delete removes it. Agent and default
+rules cannot be removed, only overridden. The editor does not accept freeform
+YAML.
 
 An overlay rule is evaluated before matching rules from the frozen agent
 snapshot. If no overlay rule matches, evaluation falls back to the agent

@@ -256,7 +256,7 @@ impl App {
         }
         if self.modal == Modal::Permissions {
             if let Some(form) = &mut self.permission_panel.form
-                && form.focus_pattern
+                && form.focus == PermissionFormFocus::Pattern
             {
                 form.pattern.insert_text(&text.replace(['\r', '\n'], ""));
             }
