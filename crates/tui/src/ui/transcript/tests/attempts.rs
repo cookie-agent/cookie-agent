@@ -941,6 +941,7 @@ fn goal_activation_precedes_triggered_streaming_and_preserves_existing_output() 
                     kind: cookie_agent_protocol::GoalReminderKind::Started,
                 }),
                 agent_hop: None,
+                retained_output: None,
             },
         ));
         if !existing_run {
@@ -1130,6 +1131,7 @@ fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
         body: body.into(),
         reminder: None,
         agent_hop: None,
+        retained_output: None,
     };
     let commit = |seq, attempt, input, content, variant| {
         let mut stored = turn_committed(

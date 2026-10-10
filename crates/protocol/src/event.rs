@@ -599,17 +599,7 @@ impl PersistedToolResult {
             return Err(EventSchemaError::ToolOutputTooLarge);
         }
         if let Some(retained) = &self.retained_output {
-            retained.reference.validate()?;
-            if retained.streams.is_empty() || retained.streams.len() > crate::MAX_TOOL_STREAMS {
-                return Err(EventSchemaError::ToolOutputTooLarge);
-            }
-            for stream in &retained.streams {
-                stream.reference.validate()?;
-                if let Some(name) = &stream.name {
-                    crate::validate_tool_stream_name(name)
-                        .map_err(|_| EventSchemaError::InvalidArtifactReference)?;
-                }
-            }
+            retained.validate()?;
         }
         if serde_json::to_vec(&self.metadata)
             .map_err(|_| EventSchemaError::InvalidJson)?
@@ -1940,6 +1930,11 @@ pub enum EventPayload {
         /// mail accepted before hop counting existed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_hop: Option<u32>,
+        /// Engine-retained output the body points the agent at (a background
+        /// job's full stdout/stderr). Recording it here keeps the artifacts
+        /// alive for later reads; plugins cannot supply it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retained_output: Option<crate::RetainedToolOutput>,
     },
     /// Run-scoped reference, not a second body or consumption marker. Its event
     /// sequence participates in ModelTurnCommitted.input_through_seq coverage.
@@ -2245,7 +2240,7 @@ pub enum EventPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         short_id: Option<String>,
         status: SessionStatus,
-        #[schemars(length(max = 2048))]
+        #[schemars(length(max = 65536))]
         preview: String,
         total_lines: u64,
     },
@@ -2403,8 +2398,11 @@ impl EventPayload {
             Self::GoalActivated { objective, .. } if objective.trim().is_empty() => {
                 return Err(EventSchemaError::InvalidGoalEvent);
             }
-            Self::GoalLifecycleChanged { status, selection: Some(_), .. }
-                if *status != GoalStatus::Active => {
+            Self::GoalLifecycleChanged {
+                status,
+                selection: Some(_),
+                ..
+            } if *status != GoalStatus::Active => {
                 return Err(EventSchemaError::InvalidGoalEvent);
             }
             Self::GoalChecklistRevised { items, .. } => {
@@ -2412,13 +2410,21 @@ impl EventPayload {
                     return Err(EventSchemaError::InvalidGoalEvent);
                 }
             }
-            Self::ProducerMessageAccepted { producer_owner, reminder, .. } => {
+            Self::ProducerMessageAccepted {
+                producer_owner,
+                reminder,
+                retained_output,
+                ..
+            } => {
                 if matches!(producer_owner, ProducerOwner::Plugin { plugin } if plugin.trim().is_empty())
                     || reminder.as_ref().is_some_and(|identity| {
                         !matches!(producer_owner, ProducerOwner::Goal { goal_id } if *goal_id == identity.goal_id)
                     })
                 {
                     return Err(EventSchemaError::InvalidProducerMessage);
+                }
+                if let Some(retained) = retained_output {
+                    retained.validate()?;
                 }
             }
             Self::ProducerMessagesClaimed { message_ids }
@@ -2486,10 +2492,7 @@ impl EventPayload {
             Self::ModelToolsPublished { tool_names, .. } if !valid_model_tool_names(tool_names) => {
                 return Err(EventSchemaError::InvalidModelTools);
             }
-            Self::AgentMdSkipped {
-                path,
-                byte_length,
-            } => {
+            Self::AgentMdSkipped { path, byte_length } => {
                 if byte_length <= &AgentMdSkipped::MAX_SKIP_BYTES || path.as_str().is_empty() {
                     return Err(EventSchemaError::InvalidAgentMd);
                 }
@@ -2611,13 +2614,18 @@ impl EventPayload {
                     .map_err(|_| EventSchemaError::InvalidResolvedModel)?;
             }
             Self::ToolCallStarted { start } => {
-                start.output.validate().map_err(|_| EventSchemaError::InvalidToolTermination)?;
+                start
+                    .output
+                    .validate()
+                    .map_err(|_| EventSchemaError::InvalidToolTermination)?;
                 if start.owner.model_turn_seq == 0 {
                     return Err(EventSchemaError::ZeroModelTurnSequence);
                 }
             }
             Self::ToolCallProgress { display, .. } => {
-                if display.as_ref().is_some_and(|text| !crate::tool_output::validate_display(text, SafeDisplayText::MAX_BYTES)) {
+                if display.as_ref().is_some_and(|text| {
+                    !crate::tool_output::validate_display(text, SafeDisplayText::MAX_BYTES)
+                }) {
                     return Err(EventSchemaError::ToolOutputTooLarge);
                 }
             }
@@ -2685,7 +2693,7 @@ impl EventPayload {
                         | SessionStatus::Failed
                         | SessionStatus::Interrupted
                         | SessionStatus::Cancelled
-                ) || preview.len() > 2048
+                ) || preview.len() > crate::MAX_DELEGATE_PREVIEW_BYTES
                 {
                     return Err(EventSchemaError::InvalidDelegateFinished);
                 }
@@ -3339,6 +3347,23 @@ pub struct OutputSnapshot {
     pub start_offset: u64,
     pub end_offset: u64,
     pub chunks: Vec<OutputDelta>,
+}
+
+impl crate::RetainedToolOutput {
+    pub fn validate(&self) -> Result<(), EventSchemaError> {
+        self.reference.validate()?;
+        if self.streams.is_empty() || self.streams.len() > crate::MAX_TOOL_STREAMS {
+            return Err(EventSchemaError::ToolOutputTooLarge);
+        }
+        for stream in &self.streams {
+            stream.reference.validate()?;
+            if let Some(name) = &stream.name {
+                crate::validate_tool_stream_name(name)
+                    .map_err(|_| EventSchemaError::InvalidArtifactReference)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

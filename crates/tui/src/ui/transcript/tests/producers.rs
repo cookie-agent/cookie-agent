@@ -450,6 +450,7 @@ fn goal_control_messages_move_from_queue_to_transcript_when_consumed() {
                 body: body.into(),
                 reminder: None,
                 agent_hop: None,
+                retained_output: None,
             },
         };
         assert!(store.apply_event(accepted.clone()));

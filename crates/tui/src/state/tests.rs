@@ -798,6 +798,7 @@ fn accepted_message(
         body: key.into(),
         reminder,
         agent_hop: None,
+        retained_output: None,
     }
 }
 
@@ -1094,6 +1095,7 @@ fn producer_queue_survives_terminal_and_consumption_updates_one_non_user_row() {
                 body: "build finished".into(),
                 reminder: None,
                 agent_hop: None,
+                retained_output: None,
             },
         ),
         stored_event(
@@ -1109,6 +1111,7 @@ fn producer_queue_survives_terminal_and_consumption_updates_one_non_user_row() {
                 body: "build finished".into(),
                 reminder: None,
                 agent_hop: None,
+                retained_output: None,
             },
         ),
         stored_event(
@@ -1512,6 +1515,7 @@ fn goal_control_messages_survive_terminal_and_reminder_discard() {
                 body: body.into(),
                 reminder: None,
                 agent_hop: None,
+                retained_output: None,
             },
         ),
         stored_event(
@@ -1573,6 +1577,7 @@ fn goal_reminder_discard_updates_one_row_without_entering_composer_lanes() {
                 body: "full internal reminder body".into(),
                 reminder: Some(reminder),
                 agent_hop: None,
+                retained_output: None,
             },
         ),
         (
@@ -1643,6 +1648,7 @@ fn discard_inside_committed_input_window_stays_discarded_and_reverts() {
                 body: "internal reminder".into(),
                 reminder: Some(reminder),
                 agent_hop: None,
+                retained_output: None,
             },
         ),
         stored_event(
@@ -2283,6 +2289,7 @@ fn producer_can_be_readmitted_after_interruption_but_not_to_terminal_run() {
                 body: "result".into(),
                 reminder: None,
                 agent_hop: None,
+                retained_output: None,
             },
         ),
         stored_event(
@@ -2375,6 +2382,7 @@ fn sequenced_projection_rows_use_transcript_allocator_ids() {
                 body: "message".into(),
                 reminder: None,
                 agent_hop: None,
+                retained_output: None,
             },
         ),
     ] {
@@ -2420,6 +2428,7 @@ fn producer_queue_identity_survives_admission_reordering_timing_pruning_and_repl
                 body: "first".into(),
                 reminder: None,
                 agent_hop: None,
+                retained_output: None,
             },
         ),
         stored_event(
@@ -2437,6 +2446,7 @@ fn producer_queue_identity_survives_admission_reordering_timing_pruning_and_repl
                 body: "second".into(),
                 reminder: None,
                 agent_hop: None,
+                retained_output: None,
             },
         ),
         stored_event(

@@ -1182,6 +1182,123 @@ async fn webfetch_admission_visibility_and_fail_closed_permission_pipeline() {
     fixture.shutdown().await;
 }
 
+/// The first producer message a background job sent to `session_id`, once
+/// it arrives.
+async fn wait_for_background_report(
+    engine: &Engine,
+    session_id: SessionId,
+) -> (String, Option<cookie_agent_protocol::RetainedToolOutput>) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let (replay, _live) = engine
+            .subscribe(session_id, None)
+            .await
+            .expect("session subscription");
+        if let Some(report) = replay.events.iter().find_map(|event| match &event.payload {
+            EventPayload::ProducerMessageAccepted {
+                producer_owner: cookie_agent_protocol::ProducerOwner::Tool { .. },
+                body,
+                retained_output,
+                ..
+            } => Some((body.clone(), retained_output.clone())),
+            _ => None,
+        }) {
+            return report;
+        }
+        assert!(Instant::now() < deadline, "background report never arrived");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn background_bash_returns_at_once_and_reports_when_it_exits() {
+    let fixture = Fixture::new().await;
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "bash",
+        r#"{"command":"sleep 2; echo background-done; echo background-err >&2","background":true}"#,
+    )));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("started")));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("noted")));
+    let mut args = run_args("start a background job");
+    args.output = Some(OutputMode::Json);
+    args.allowed_tools = vec![AllowedTool::Bash];
+    let started = Instant::now();
+    let run = fixture.run(args, "").await;
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let session_id: SessionId = serde_json::from_value(
+        parse_json_lines(&run.stdout).last().expect("summary")["session_id"].clone(),
+    )
+    .expect("session ID");
+    // The run finished while the job still sleeps.
+    let (replay, _live) = fixture
+        .engine
+        .subscribe(session_id, None)
+        .await
+        .expect("session subscription");
+    assert!(
+        !replay
+            .events
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::ProducerMessageAccepted { .. }))
+    );
+    let start_request = fixture.server.requests().pop().expect("second request");
+    let pid = start_request
+        .split_once("Started in the background as process ")
+        .and_then(|(_, rest)| rest.split_once(':'))
+        .map(|(pid, _)| pid.to_owned())
+        .unwrap_or_else(|| panic!("start result names the process: {start_request}"));
+    assert!(pid.parse::<u32>().is_ok(), "{pid}");
+
+    // The report is keyed by that process and previews output like a tool result.
+    let (body, retained) = wait_for_background_report(&fixture.engine, session_id).await;
+    assert!(started.elapsed() >= Duration::from_secs(2));
+    assert!(
+        body.starts_with(&format!(
+            "<background_bash from=\"{pid}\">\nCommand: sleep 2; echo background-done; echo \
+             background-err >&2\nStatus: exited with code 0 after "
+        )),
+        "{body}"
+    );
+    assert!(
+        body.ends_with(
+            "s\n[stdout]\nbackground-done\n\n[stderr]\nbackground-err\n</background_bash>"
+        ),
+        "{body}"
+    );
+    let digest = retained
+        .expect("retained output")
+        .reference
+        .uri
+        .strip_prefix("artifact://sha256/")
+        .expect("manifest digest")
+        .to_owned();
+    for (stream, text) in [("stdout", "background-done"), ("stderr", "background-err")] {
+        let path = format!("artifact://{digest}/{stream}");
+        let page = fixture
+            .engine
+            .read_artifact(session_id, &path, 0, 10)
+            .expect("background output");
+        assert_eq!(page.content.trim_end(), text);
+    }
+
+    // The report wakes the finished session for one more turn.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fixture.server.requests().len() < 3 {
+        assert!(
+            Instant::now() < deadline,
+            "the report never woke the session"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let woken = fixture.server.requests().pop().expect("woken request");
+    assert!(woken.contains("background_bash"), "{woken}");
+    fixture.shutdown().await;
+}
+
 #[tokio::test]
 async fn skill_grant_allows_explicit_ask_bash_for_one_turn_only() {
     let fixture = Fixture::new().await;

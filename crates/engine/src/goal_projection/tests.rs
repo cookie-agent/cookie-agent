@@ -40,6 +40,7 @@ fn accepted(
             body: body.into(),
             reminder,
             agent_hop: None,
+            retained_output: None,
         },
     )
 }
@@ -744,6 +745,7 @@ fn accepted_hop(
             body: body.into(),
             reminder: None,
             agent_hop,
+            retained_output: None,
         },
     )
 }

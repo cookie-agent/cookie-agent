@@ -9,6 +9,8 @@ pub const MAX_TOOL_STREAMS: usize = 8;
 pub const MAX_TOOL_STREAM_NAME_BYTES: usize = 64;
 pub const MAX_TOOL_DELTA_BYTES: usize = 64 * 1024;
 pub const MAX_TOOL_DISPLAY_BYTES: usize = 64 * 1024;
+/// The longest stored subagent report preview, omission marker included.
+pub const MAX_DELEGATE_PREVIEW_BYTES: usize = 64 * 1024;
 
 pub(crate) fn validate_display(text: &str, maximum: usize) -> bool {
     text.len() <= maximum

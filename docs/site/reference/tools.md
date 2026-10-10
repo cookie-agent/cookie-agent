@@ -153,11 +153,31 @@ accepts. The effective model must also declare the modality and limits.
 
 ## Bash
 
-`bash` accepts a complete `command`, an optional timeout in milliseconds, and
-`interactive` (default `false`). Interactive calls can receive bytes or EOF
+`bash` accepts a complete `command`, an optional `timeout` in milliseconds
+(default 120000; `0` never times out), `interactive` (default `false`), and
+`background` (default `false`). Interactive calls can receive bytes or EOF
 through the `run.tool_stdin` RPC while the call is active. Standard output and
 standard error are streamed separately during execution and retained as
 separate artifacts for the terminal result.
+
+The command runs in its own session and process group (a job object on
+Windows). When the shell exits, whatever it left in that group is killed, so
+`cmd &` and `nohup cmd &` do not outlive the call; only a process that leaves
+the group, such as one started with `setsid`, does.
+
+With `background: true` the call returns as soon as the command starts. Its
+result names the process ID, which is also the process group, so
+`kill -- -PID` stops the job early (`taskkill //T //F //PID PID` on Windows). The job keeps the same timeout and process-group
+cleanup. When it exits, the engine accepts one producer message owned by
+`tool { tool_call_id }` that steers into the active run or wakes the idle
+session: a `<background_bash from="PID">` block with the command, the exit
+status and duration, and the job's standard output and standard error previewed
+exactly like a tool result: the first and last lines of each stream, with a
+`read` path into the retained artifact for anything omitted. The job reports only after its
+starting call is committed as completed. It is killed without a report if that
+call is cancelled before it commits, if a revert removes the call, if its
+session is deleted, or when the daemon stops. `background` cannot be combined
+with `interactive`.
 
 ## Retained tool output
 
@@ -203,8 +223,8 @@ without artifact retention or truncation metadata, regardless of
 arguments. A requested page above the event schema's 2 MiB output limit fails
 with a resource-limit tool error; it is never silently truncated. The
 `delegate_subagent` terminal result also opts out, because its teaser preview is
-already capped internally; the owner of the delegation flow is the only place it
-is bounded. MCP and plugin tools remain subject to normal truncation. External
+bounded by `[subagent_output]` instead; the owner of the delegation flow is the
+only place it is bounded. MCP and plugin tools remain subject to normal truncation. External
 opt-out would require a future extension-protocol capability and is not currently
 authorable.
 
@@ -317,10 +337,12 @@ error that lists the live candidates as
 pre-wrap the handle, for example
 `Subagent started. [subagent session explore_1a2b3c4d]` and
 `[subagent session explore_1a2b3c4d; completed; 79 lines; use get_subagent_result with session_id "explore_1a2b3c4d" for the full output]`.
-The completion notice carries a preview of at most 20 lines and 2048 bytes,
-with its line breaks and tabs kept and other control characters folded to
-spaces. It points at `get_subagent_result` only when that preview is cut, and
-otherwise ends in `full output shown`.
+The completion notice previews the report per
+[`[subagent_output]`](../engine/subagent_output.md), with its line breaks and
+tabs kept and other control characters folded to spaces. A report over the limit
+shows its first and last lines around a marker such as
+`[… 200 lines omitted. Read more: get_subagent_result(session_id="explore_1a2b3c4d", offset=20)]`;
+a complete one ends in `full output shown`.
 Terminal and lifecycle results keep the UUID under the unified `session_id`
 metadata key and add `handle`. `resume_session_id` accepts the same two forms,
 and a terminal child woken by `send_message` reports as running until its new

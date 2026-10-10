@@ -66,6 +66,7 @@ pub(super) fn producer_owner_label(owner: &ProducerOwner) -> String {
         ProducerOwner::Goal { .. } => "goal controller".to_owned(),
         ProducerOwner::GoalControl { .. } => "goal control".to_owned(),
         ProducerOwner::Agent { session_id } => format!("agent {session_id}"),
+        ProducerOwner::Tool { tool_call_id } => format!("background job {tool_call_id}"),
     }
 }
 
@@ -139,13 +140,7 @@ pub(super) fn discarded_producer_message_layout(
     width: u16,
     theme: &Theme,
 ) -> ItemLayout {
-    let owner = match owner {
-        ProducerOwner::Plugin { plugin } => format!("plugin {plugin}"),
-        ProducerOwner::Delegation { invocation_id } => format!("delegation {invocation_id}"),
-        ProducerOwner::Goal { .. } => "goal controller".to_owned(),
-        ProducerOwner::GoalControl { .. } => "goal control".to_owned(),
-        ProducerOwner::Agent { session_id } => format!("agent {session_id}"),
-    };
+    let owner = producer_owner_label(owner);
     ItemLayout {
         lines: role_block(
             Role::Debug,

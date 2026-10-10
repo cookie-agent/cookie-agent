@@ -446,14 +446,25 @@ impl Engine {
                 }
             }
         }
+        let started = match &event {
+            Event::ToolCallTerminated { termination } => Some((
+                termination.tool_call_id,
+                super::background_tasks::completed_start(termination),
+            )),
+            _ => None,
+        };
         let was_persisted = self.inner.store.is_persisted(session)?;
         let envelope = if recovery {
             self.inner
                 .store
-                .append_recovery(session, run, origin, event)?
+                .append_recovery(session, run, origin, event)
         } else {
-            self.inner.store.append(session, run, origin, event)?
+            self.inner.store.append(session, run, origin, event)
         };
+        if let Some((tool_call_id, completed)) = started {
+            self.settle_background_job(tool_call_id, completed && envelope.is_ok());
+        }
+        let envelope = envelope?;
         if !was_persisted && self.inner.store.is_persisted(session)? {
             for durable in self.inner.store.log(session)?.all_events().iter() {
                 let drops = self

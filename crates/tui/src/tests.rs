@@ -334,6 +334,7 @@ fn build_in_process_server(
             pricing: cookie_agent_config::PricingConfig::default(),
             headers: BTreeMap::new(),
             providers,
+            subagent_output: Default::default(),
         },
         agents: BTreeMap::from([(agent_id.clone(), agent)]),
         agent_presets: BTreeMap::new(),

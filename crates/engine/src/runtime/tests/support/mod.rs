@@ -394,6 +394,7 @@ pub(crate) fn fixture() -> Fixture {
             pricing: cookie_agent_config::PricingConfig::default(),
             headers: BTreeMap::new(),
             providers: BTreeMap::new(),
+            subagent_output: Default::default(),
         },
         agents: BTreeMap::new(),
         agent_presets: BTreeMap::new(),
@@ -1175,8 +1176,7 @@ pub(crate) fn try_frozen_root_policy(
         &selection.model,
         3,
         crate::policy::ResultLimits {
-            tool_output_max_lines: 2_000,
-            tool_output_max_bytes: 50 * 1024,
+            tool_output: crate::preview::PreviewLimits::halves(2_000, 50 * 1024),
         },
         fixture.config.runtime.model_retry,
     )

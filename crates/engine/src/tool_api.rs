@@ -354,9 +354,23 @@ pub struct ToolExecutionContext {
     /// Static agent/model context shared with preparation for this batch.
     pub turn_context: Arc<TurnAgentContext>,
     pub(crate) artifacts: Arc<ArtifactRouter>,
+    /// Present for calls the engine runs; lets the call start a background job.
+    pub(crate) background: Option<crate::runtime::background_tasks::BackgroundCapability>,
 }
 
 impl ToolExecutionContext {
+    /// Reserves a job that outlives this call and reports back to the session
+    /// through a producer message when it finishes.
+    pub async fn start_background(
+        &self,
+    ) -> Result<crate::runtime::background_tasks::BackgroundJob, ToolError> {
+        let capability = self
+            .background
+            .as_ref()
+            .ok_or_else(|| ToolError::execution("background jobs are unavailable here"))?;
+        crate::runtime::background_tasks::BackgroundJob::reserve(capability, self.session).await
+    }
+
     pub async fn read_artifact(
         &self,
         path: &str,
@@ -389,6 +403,7 @@ impl ToolExecutionContext {
             turn_context,
             artifacts: ArtifactRouter::open_flat(artifact_directory.into())
                 .map_err(|error| ToolError::execution(error.to_string()))?,
+            background: None,
         })
     }
 

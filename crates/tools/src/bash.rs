@@ -48,10 +48,14 @@ pub struct BashTool {
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
 struct BashArgs {
     command: String,
+    /// Milliseconds before the command is killed; 0 never times out.
     #[serde(default = "default_timeout")]
     timeout: u64,
     #[serde(default)]
     interactive: bool,
+    /// Run in the background: return at once and get a notification when it exits.
+    #[serde(default)]
+    background: bool,
 }
 
 fn default_timeout() -> u64 {
@@ -135,7 +139,7 @@ async fn read_output<R>(
     stream: OutputStream,
     progress: ProgressSink,
     tool_call_id: ToolCallId,
-    merged: Arc<Mutex<MergedOutput>>,
+    merged: Option<Arc<Mutex<MergedOutput>>>,
 ) -> Result<(), ToolError>
 where
     R: AsyncRead + Unpin,
@@ -151,7 +155,7 @@ where
                 let count = read.map_err(|error| ToolError::execution(error.to_string()))?;
                 undecoded.extend_from_slice(&read_buffer[..count]);
                 let text = decode_output(&mut undecoded, count == 0);
-                {
+                if let Some(merged) = &merged {
                     // Record read arrival, independently of the per-pipe preview batches.
                     // Separate pipes cannot reconstruct the process's exact write order.
                     let mut merged = merged.lock().await;
@@ -406,12 +410,14 @@ impl ToolProvider for BashTool {
         ctx: ToolPreparationContext,
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
-        let mut args: BashArgs = parse_args("bash", call.arguments)?;
+        let args: BashArgs = parse_args("bash", call.arguments)?;
         if args.command.trim().is_empty() {
             return Err(ToolError::execution("command must not be empty"));
         }
-        if args.timeout == 0 {
-            args.timeout = default_timeout();
+        if args.interactive && args.background {
+            return Err(ToolError::execution(
+                "interactive and background cannot be combined",
+            ));
         }
         let executable_path = resolve_executable("bash")?;
         let executable = fs_cap::prepare_existing(Path::new("/"), &executable_path)?;
@@ -474,9 +480,9 @@ fn bash_tool_description() -> &'static str {
 /// The description sent on Windows, where commands run in Git Bash, or on Unix.
 pub(crate) fn bash_tool_description_for(windows: bool) -> &'static str {
     if windows {
-        "Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\\Users\\name\\file') or use C:/ paths."
+        "Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\\Users\\name\\file') or use C:/ paths. Set background for long-running commands: the call returns at once with the process ID, and a <background_bash from=\"PID\"> notification with the exit status and output arrives when the command exits."
     } else {
-        "Execute one prepared shell command."
+        "Execute one prepared shell command. Set background for long-running commands: the call returns at once with the process ID, and a <background_bash from=\"PID\"> notification with the exit status and output arrives when the command exits."
     }
 }
 
@@ -484,8 +490,145 @@ fn compact_command_line(command: &str) -> String {
     command.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// The spawned shell and everything it starts: a process group on Unix, a
+/// job object on Windows. Dropping it unfinished kills the whole tree.
+#[cfg(unix)]
+type ProcessTree = ProcessGroupChild;
+#[cfg(windows)]
+type ProcessTree = JobChild;
+
+#[cfg(unix)]
+impl ProcessGroupChild {
+    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.child
+            .as_mut()
+            .expect("prepared child exists")
+            .wait()
+            .await
+    }
+
+    /// The shell exited on its own: kill what it left in its group.
+    async fn settle_exited(&mut self) {
+        self.complete = true;
+        self.kill_group();
+    }
+
+    fn pid(&self) -> Option<u32> {
+        u32::try_from(self.process_group).ok()
+    }
+}
+
+#[cfg(windows)]
+impl JobChild {
+    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        let wrapped_child = self.child.as_mut().expect("prepared child exists");
+        // SAFETY: only the raw parent's wait state is observed. The wrapper
+        // remains owned by JobChild and retains all job/kill state and pipes.
+        unsafe { wrapped_child.inner_child_mut() }.wait().await
+    }
+
+    /// The shell exited on its own: kill what it left in its job.
+    async fn settle_exited(&mut self) {
+        self.kill_and_reap().await;
+    }
+
+    fn pid(&self) -> Option<u32> {
+        self.child.as_ref().and_then(|child| child.id())
+    }
+}
+
+struct SpawnedShell {
+    tree: ProcessTree,
+    stdout: tokio::process::ChildStdout,
+    stderr: tokio::process::ChildStderr,
+    stdin: Option<tokio::process::ChildStdin>,
+}
+
+/// Waits for `future`, giving up after `timeout_ms`; 0 waits indefinitely.
+async fn within_timeout<F: std::future::Future>(timeout_ms: u64, future: F) -> Option<F::Output> {
+    if timeout_ms == 0 {
+        Some(future.await)
+    } else {
+        tokio::time::timeout(Duration::from_millis(timeout_ms), future)
+            .await
+            .ok()
+    }
+}
+
 impl BashExecutor {
-    #[cfg(unix)]
+    fn spawn(&self, interactive: bool) -> Result<SpawnedShell, ToolError> {
+        let mut command = Command::new(self.executable.proc_fd_path());
+        command
+            .arg("-c")
+            .arg(&self.args.command)
+            .current_dir(self.cwd.proc_fd_path())
+            .stdin(if interactive {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        let (tree, stdout, stderr, stdin) = {
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        Err(std::io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    }
+                });
+            }
+            let mut child = command
+                .spawn()
+                .map_err(|error| ToolError::execution(error.to_string()))?;
+            let process_group = child
+                .id()
+                .and_then(|id| i32::try_from(id).ok())
+                .ok_or_else(|| ToolError::execution("prepared bash child has no process id"))?;
+            let (stdout, stderr, stdin) =
+                (child.stdout.take(), child.stderr.take(), child.stdin.take());
+            let tree = ProcessGroupChild {
+                child: Some(child),
+                process_group,
+                complete: false,
+            };
+            (tree, stdout, stderr, stdin)
+        };
+        #[cfg(windows)]
+        let (tree, stdout, stderr, stdin) = {
+            let mut wrapped = CommandWrap::from(command);
+            wrapped.wrap(ProcessJobObject).wrap(KillOnDrop);
+            // ProcessJobObject adds CREATE_SUSPENDED, assigns the process to the
+            // job, and only then resumes its threads, so descendants cannot escape.
+            let mut child = wrapped
+                .spawn()
+                .map_err(|error| ToolError::execution(error.to_string()))?;
+            let (stdout, stderr, stdin) = (
+                child.stdout().take(),
+                child.stderr().take(),
+                child.stdin().take(),
+            );
+            let tree = JobChild {
+                child: Some(child),
+                complete: false,
+            };
+            (tree, stdout, stderr, stdin)
+        };
+        Ok(SpawnedShell {
+            tree,
+            stdout: stdout.ok_or_else(|| ToolError::execution("bash stdout pipe missing"))?,
+            stderr: stderr.ok_or_else(|| ToolError::execution("bash stderr pipe missing"))?,
+            stdin: if interactive {
+                Some(stdin.ok_or_else(|| ToolError::execution("bash stdin pipe missing"))?)
+            } else {
+                None
+            },
+        })
+    }
+
     async fn execute_process(
         self,
         progress: ProgressSink,
@@ -497,63 +640,28 @@ impl BashExecutor {
         if cancellation.is_cancelled() {
             return Err(ToolError::execution("prepared bash cancelled"));
         }
-        let mut command = Command::new(self.executable.proc_fd_path());
-        command
-            .arg("-c")
-            .arg(&self.args.command)
-            .current_dir(self.cwd.proc_fd_path())
-            .stdin(if self.args.interactive {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            });
-        }
-        let mut child = command
-            .spawn()
-            .map_err(|error| ToolError::execution(error.to_string()))?;
-        let process_group = child
-            .id()
-            .and_then(|id| i32::try_from(id).ok())
-            .ok_or_else(|| ToolError::execution("prepared bash child has no process id"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| ToolError::execution("bash stdout pipe missing"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| ToolError::execution("bash stderr pipe missing"))?;
+        let SpawnedShell {
+            mut tree,
+            stdout,
+            stderr,
+            stdin: child_stdin,
+        } = self.spawn(self.args.interactive)?;
         let merged = Arc::new(Mutex::new(MergedOutput::default()));
         let stdout_task = tokio::spawn(read_output(
             stdout,
             OutputStream::Stdout,
             progress.clone(),
             self.tool_call_id,
-            merged.clone(),
+            Some(merged.clone()),
         ));
         let stderr_task = tokio::spawn(read_output(
             stderr,
             OutputStream::Stderr,
             progress,
             self.tool_call_id,
-            merged.clone(),
+            Some(merged.clone()),
         ));
-        let stdin_task = if self.args.interactive {
-            let mut child_stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| ToolError::execution("bash stdin pipe missing"))?;
+        let stdin_task = if let Some(mut child_stdin) = child_stdin {
             let mut writes = stdin
                 .ok_or_else(|| ToolError::execution("interactive bash stdin channel missing"))?;
             Some(tokio::spawn(async move {
@@ -570,61 +678,46 @@ impl BashExecutor {
         } else {
             None
         };
-        let mut grouped = ProcessGroupChild {
-            child: Some(child),
-            process_group,
-            complete: false,
-        };
         enum WaitOutcome {
             Finished(std::io::Result<std::process::ExitStatus>),
             TimedOut,
             Cancelled,
         }
         let outcome = {
-            let wait = grouped
-                .child
-                .as_mut()
-                .expect("prepared child exists")
-                .wait();
+            let wait = within_timeout(self.args.timeout, tree.wait());
             tokio::pin!(wait);
             tokio::select! {
-                result = tokio::time::timeout(Duration::from_millis(self.args.timeout), &mut wait) => {
-                    match result {
-                        Ok(result) => WaitOutcome::Finished(result),
-                        Err(_) => WaitOutcome::TimedOut,
-                    }
-                }
+                result = &mut wait => match result {
+                    Some(result) => WaitOutcome::Finished(result),
+                    None => WaitOutcome::TimedOut,
+                },
                 _ = cancellation.cancelled() => WaitOutcome::Cancelled,
             }
         };
         let status = match outcome {
             WaitOutcome::Finished(result) => {
-                grouped.complete = true;
+                tree.settle_exited().await;
                 result.map_err(|error| ToolError::execution(error.to_string()))?
             }
-            WaitOutcome::TimedOut => {
-                grouped.kill_and_reap().await;
+            WaitOutcome::TimedOut | WaitOutcome::Cancelled => {
+                tree.kill_and_reap().await;
                 if let Some(task) = &stdin_task {
                     task.abort();
                 }
                 let _ = stdout_task.await;
                 let _ = stderr_task.await;
-                return Err(ToolError::execution("bash timed out"));
-            }
-            WaitOutcome::Cancelled => {
-                grouped.kill_and_reap().await;
-                if let Some(task) = &stdin_task {
-                    task.abort();
-                }
-                let _ = stdout_task.await;
-                let _ = stderr_task.await;
-                return Err(ToolError::execution("prepared bash cancelled"));
+                return Err(ToolError::execution(
+                    if matches!(outcome, WaitOutcome::TimedOut) {
+                        "bash timed out"
+                    } else {
+                        "prepared bash cancelled"
+                    },
+                ));
             }
         };
         if let Some(task) = &stdin_task {
             task.abort();
         }
-        grouped.kill_group();
         stdout_task
             .await
             .map_err(|error| ToolError::execution(error.to_string()))??;
@@ -649,153 +742,80 @@ impl BashExecutor {
         })
     }
 
-    #[cfg(windows)]
-    async fn execute_process(
+    /// Spawns the command as a background job and returns as soon as it runs.
+    /// The job reports through the engine when it exits.
+    async fn execute_background(
         self,
-        progress: ProgressSink,
-        cancellation: CancellationToken,
-        stdin: Option<ToolStdin>,
-    ) -> Result<ToolResult, ToolError> {
+        context: &ToolExecutionContext,
+    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
         self.cwd.revalidate()?;
         self.executable.revalidate()?;
-        if cancellation.is_cancelled() {
-            return Err(ToolError::execution("prepared bash cancelled"));
-        }
-        let mut command = Command::new(self.executable.proc_fd_path());
-        command
-            .arg("-c")
-            .arg(&self.args.command)
-            .current_dir(self.cwd.proc_fd_path())
-            .stdin(if self.args.interactive {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut wrapped = CommandWrap::from(command);
-        wrapped.wrap(ProcessJobObject).wrap(KillOnDrop);
-        // ProcessJobObject adds CREATE_SUSPENDED, assigns the process to the
-        // job, and only then resumes its threads, so descendants cannot escape.
-        let mut child = wrapped
-            .spawn()
-            .map_err(|error| ToolError::execution(error.to_string()))?;
-        let stdout = child
-            .stdout()
-            .take()
-            .ok_or_else(|| ToolError::execution("bash stdout pipe missing"))?;
-        let stderr = child
-            .stderr()
-            .take()
-            .ok_or_else(|| ToolError::execution("bash stderr pipe missing"))?;
-        let merged = Arc::new(Mutex::new(MergedOutput::default()));
+        let job = context.start_background().await?;
+        let SpawnedShell {
+            mut tree,
+            stdout,
+            stderr,
+            ..
+        } = self.spawn(false)?;
+        let pid = tree.pid();
+        let progress = job.progress();
         let stdout_task = tokio::spawn(read_output(
             stdout,
             OutputStream::Stdout,
             progress.clone(),
             self.tool_call_id,
-            merged.clone(),
+            None,
         ));
         let stderr_task = tokio::spawn(read_output(
             stderr,
             OutputStream::Stderr,
             progress,
             self.tool_call_id,
-            merged.clone(),
+            None,
         ));
-        let stdin_task = if self.args.interactive {
-            let mut child_stdin = child
-                .stdin()
-                .take()
-                .ok_or_else(|| ToolError::execution("bash stdin pipe missing"))?;
-            let mut writes = stdin
-                .ok_or_else(|| ToolError::execution("interactive bash stdin channel missing"))?;
-            Some(tokio::spawn(async move {
-                while let Some(write) = writes.recv().await {
-                    child_stdin.write_all(&write.data).await?;
-                    child_stdin.flush().await?;
-                    if write.eof {
-                        child_stdin.shutdown().await?;
-                        break;
-                    }
+        let job_id = self.tool_call_id;
+        let command = compact_command_line(&self.args.command);
+        let timeout = self.args.timeout;
+        let notice = background_started_notice(pid, &command);
+        job.launch(async move {
+            let started = std::time::Instant::now();
+            let exit = match within_timeout(timeout, tree.wait()).await {
+                Some(result) => {
+                    tree.settle_exited().await;
+                    BackgroundExit::Finished(result)
                 }
-                Ok::<(), std::io::Error>(())
-            }))
-        } else {
-            None
-        };
-        let mut grouped = JobChild {
-            child: Some(child),
-            complete: false,
-        };
-        enum WaitOutcome {
-            Finished(std::io::Result<std::process::ExitStatus>),
-            TimedOut,
-            Cancelled,
-        }
-        let outcome = {
-            let wrapped_child = grouped.child.as_mut().expect("prepared child exists");
-            // SAFETY: only the raw parent's wait state is observed. The wrapper
-            // remains owned by JobChild and retains all job/kill state and pipes.
-            let wait = unsafe { wrapped_child.inner_child_mut() }.wait();
-            tokio::pin!(wait);
-            tokio::select! {
-                result = tokio::time::timeout(Duration::from_millis(self.args.timeout), &mut wait) => {
-                    match result {
-                        Ok(result) => WaitOutcome::Finished(result),
-                        Err(_) => WaitOutcome::TimedOut,
-                    }
+                None => {
+                    tree.kill_and_reap().await;
+                    BackgroundExit::TimedOut
                 }
-                _ = cancellation.cancelled() => WaitOutcome::Cancelled,
-            }
-        };
-        let status = match outcome {
-            WaitOutcome::Finished(result) => {
-                result.map_err(|error| ToolError::execution(error.to_string()))?
-            }
-            WaitOutcome::TimedOut => {
-                grouped.kill_and_reap().await;
-                if let Some(task) = &stdin_task {
-                    task.abort();
-                }
-                let _ = stdout_task.await;
-                let _ = stderr_task.await;
-                return Err(ToolError::execution("bash timed out"));
-            }
-            WaitOutcome::Cancelled => {
-                grouped.kill_and_reap().await;
-                if let Some(task) = &stdin_task {
-                    task.abort();
-                }
-                let _ = stdout_task.await;
-                let _ = stderr_task.await;
-                return Err(ToolError::execution("prepared bash cancelled"));
-            }
-        };
-        if let Some(task) = &stdin_task {
-            task.abort();
-        }
-        grouped.kill_and_reap().await;
-        stdout_task
-            .await
-            .map_err(|error| ToolError::execution(error.to_string()))??;
-        stderr_task
-            .await
-            .map_err(|error| ToolError::execution(error.to_string()))??;
-        Ok(ToolResult {
-            display: Some(completed_display(
-                std::mem::take(&mut *merged.lock().await),
-                status.code(),
-            )),
+            };
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            background_report(pid, &command, &exit, started.elapsed())
+        })?;
+        let mut completion = cookie_agent_engine::ToolCompletion::streamed(ToolResult {
+            display: Some(notice.clone()),
             retained_output: None,
             title: crate::safe_title("Bash"),
             output: String::new(),
-            metadata: serde_json::json!({"status":status.code(),"success":status.success()}),
+            metadata: serde_json::json!({"background": true, "job_id": job_id, "pid": pid}),
             truncation: None,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
-        })
+        });
+        completion.output = cookie_agent_protocol::ToolCompletionOutput::Named {
+            streams: vec![
+                cookie_agent_protocol::ToolOutputChunk {
+                    stream: Some("stdout".into()),
+                    text: notice,
+                },
+                cookie_agent_protocol::ToolOutputChunk {
+                    stream: Some("stderr".into()),
+                    text: String::new(),
+                },
+            ],
+        };
+        Ok(completion)
     }
 }
 
@@ -810,12 +830,78 @@ impl PreparedExecutor for BashExecutor {
         self: Box<Self>,
         context: ToolExecutionContext,
     ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+        if self.args.background {
+            return self.execute_background(&context).await;
+        }
         let result: Result<ToolResult, ToolError> = async move {
             self.execute_process(context.progress, context.cancellation, context.stdin)
                 .await
         }
         .await;
         result.map(cookie_agent_engine::ToolCompletion::streamed)
+    }
+}
+
+enum BackgroundExit {
+    Finished(std::io::Result<std::process::ExitStatus>),
+    TimedOut,
+}
+
+/// How to stop a background job from another bash call.
+fn background_kill_hint(pid: u32) -> String {
+    if cfg!(windows) {
+        format!("taskkill //T //F //PID {pid}")
+    } else {
+        format!("kill -- -{pid}")
+    }
+}
+
+fn background_started_notice(pid: Option<u32>, command: &str) -> String {
+    let Some(pid) = pid else {
+        return format!(
+            "Started in the background: {command}\nYou will get a <background_bash> notification \
+             with its exit status and output when it exits; there is no need to poll it."
+        );
+    };
+    format!(
+        "Started in the background as process {pid}: {command}\nYou will get a \
+         <background_bash from=\"{pid}\"> notification with its exit status and output when it \
+         exits; there is no need to poll it. Stop it early with `{}`.",
+        background_kill_hint(pid)
+    )
+}
+
+fn background_report(
+    pid: Option<u32>,
+    command: &str,
+    exit: &BackgroundExit,
+    elapsed: Duration,
+) -> cookie_agent_engine::BackgroundReport {
+    let elapsed = format!("{:.1}s", elapsed.as_secs_f64());
+    let status = match exit {
+        BackgroundExit::Finished(Ok(status)) => match status.code() {
+            Some(code) => format!("exited with code {code}"),
+            None => {
+                #[cfg(unix)]
+                let signal = std::os::unix::process::ExitStatusExt::signal(status);
+                #[cfg(not(unix))]
+                let signal: Option<i32> = None;
+                signal.map_or_else(
+                    || "terminated by a signal".to_owned(),
+                    |signal| format!("terminated by signal {signal}"),
+                )
+            }
+        },
+        BackgroundExit::Finished(Err(error)) => format!("could not be waited on ({error})"),
+        BackgroundExit::TimedOut => "timed out and was killed".to_owned(),
+    };
+    cookie_agent_engine::BackgroundReport {
+        summary: format!("bash {status}: {command}"),
+        element: "background_bash".into(),
+        attributes: pid
+            .map(|pid| vec![("from".into(), pid.to_string())])
+            .unwrap_or_default(),
+        body: format!("Command: {command}\nStatus: {status} after {elapsed}"),
     }
 }
 

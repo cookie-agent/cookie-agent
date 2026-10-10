@@ -82,6 +82,7 @@ nav:
       - config.toml: guide/configuration.md
       - 'Server [server]': engine/server.md
       - 'Tool Output [tool_output]': engine/tool_output.md
+      - 'Subagent Output [subagent_output]': engine/subagent_output.md
       - 'AGENTS.md Context [agent_md]': engine/agent_md.md
       - 'Loop Warning [loop_warning]': engine/loop_warning.md
       - 'Approval [approval]': engine/approval.md

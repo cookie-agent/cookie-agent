@@ -41,8 +41,7 @@ impl Engine {
             suffix,
             agents,
             runtime,
-            self.inner.config.runtime.tool_output.max_lines,
-            self.inner.config.runtime.tool_output.max_bytes,
+            crate::policy::ResultLimits::from_config(&self.inner.config.runtime),
             self.inner.config.runtime.model_retry,
         )?;
         policy.preset = preset;

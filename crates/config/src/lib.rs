@@ -31,7 +31,8 @@ pub use runtime::{
     AgentMdConfig, ApprovalConfig, ContextCompactionConfig, ContextCompactionTrigger,
     DelegationConfig, EngineConfig, LoopWarningConfig, McpConfig, McpOAuthConfig, McpOAuthSettings,
     McpServerConfig, MessagingConfig, ModelPricing, ModelRetryConfig, PicoUsdPerMillion,
-    PluginConfig, PluginsConfig, PricingConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
+    PluginConfig, PluginsConfig, PricingConfig, SUBAGENT_OUTPUT_MAX_BYTES, ServerConfig,
+    SessionTitleConfig, SubagentOutputConfig, ToolOutputConfig,
 };
 pub use skills::{
     SkillAllowedTool, SkillContext, SkillDiagnostic, SkillDiscovery, SkillDocument,

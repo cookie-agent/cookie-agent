@@ -125,7 +125,7 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
         .finish(ToolCompletion::single(result(output.clone())), false)
         .await
         .unwrap();
-    let raw_preview = bounded.output.split_once("\n[Truncated.").unwrap().0;
+    let raw_preview = bounded.output.split_once("[… ").unwrap().0;
     assert!(raw_preview.len() <= 1024);
     assert!(output.starts_with(raw_preview));
     assert_eq!(bounded.metadata, metadata);

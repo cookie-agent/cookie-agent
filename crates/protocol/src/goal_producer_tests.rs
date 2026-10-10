@@ -295,6 +295,7 @@ fn durable_goal_and_message_events_round_trip_with_correct_run_scope() {
             body: "Ship the change\n[ ] Verify the root's test results\nrevision: 2".into(),
             reminder: Some(reminder),
             agent_hop: None,
+            retained_output: None,
         },
         EventPayload::ProducerMessageDiscarded {
             message_id,
@@ -605,6 +606,7 @@ fn goal_control_messages_are_real_steers_not_reminders() {
         body: "The goal was paused by the user.".into(),
         reminder: None,
         agent_hop: None,
+        retained_output: None,
     };
     let event = stored(payload.clone(), None);
     assert!(event.validate().is_ok());
@@ -643,6 +645,7 @@ fn reminder_kind_round_trips_and_legacy_events_default_to_continuation() {
                 kind,
             }),
             agent_hop: None,
+            retained_output: None,
         };
         assert!(stored(payload.clone(), None).validate().is_ok());
         round_trip(payload.clone());
@@ -684,6 +687,7 @@ fn producer_description_round_trips_and_legacy_events_default_to_empty() {
         body: "Full model-facing result\nwith details".into(),
         reminder: None,
         agent_hop: None,
+        retained_output: None,
     };
     round_trip(payload.clone());
     let mut wire = serde_json::to_value(payload).unwrap();
@@ -720,6 +724,7 @@ fn reminder_metadata_is_not_send_identity_and_is_best_effort_on_read() {
         body: "Establish checklist".into(),
         reminder: Some(reminder),
         agent_hop: None,
+        retained_output: None,
     };
     let first = make(ProducerMessageId::new_v7(), "continuation-1");
     let second = make(ProducerMessageId::new_v7(), "continuation-2");
@@ -810,5 +815,55 @@ fn recovery_handshake_has_only_explicit_completion_outcomes_and_exact_version() 
     strict::<ExtensionEngineCapabilities>(serde_json::to_value(params.capabilities).unwrap());
     strict::<ExtensionPluginCapabilities>(
         json!({"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}),
+    );
+}
+
+#[test]
+fn background_job_messages_carry_validated_retained_output() {
+    let tool_call_id = ToolCallId::new_v7();
+    let reference = |digest: char| ArtifactReference {
+        uri: format!("artifact://sha256/{}", digest.to_string().repeat(64)),
+    };
+    let mut payload = EventPayload::ProducerMessageAccepted {
+        message_id: ProducerMessageId::new_v7(),
+        producer_owner: ProducerOwner::Tool { tool_call_id },
+        mode: ProducerDeliveryMode::Steer,
+        idempotency_key: ProducerIdempotencyKey::new("background-completion").unwrap(),
+        description: SafeDisplayText::new("Background: bash exited with code 0: make").unwrap(),
+        body: "<background_notification>\nStatus: done\n</background_notification>".into(),
+        reminder: None,
+        agent_hop: None,
+        retained_output: Some(RetainedToolOutput {
+            reference: reference('a'),
+            streams: vec![RetainedToolStream {
+                name: Some("stdout".into()),
+                reference: reference('b'),
+                sha256: Sha256Digest::new("b".repeat(64)).unwrap(),
+                byte_length: 5,
+                line_count: 1,
+                truncated: false,
+                next_offset: None,
+            }],
+            incomplete: false,
+        }),
+    };
+    let event = stored(payload.clone(), None);
+    assert!(event.validate().is_ok());
+    round_trip(event);
+    let wire = serde_json::to_value(&payload).unwrap();
+    assert_eq!(
+        wire["producer_owner"],
+        json!({"type": "tool", "tool_call_id": tool_call_id})
+    );
+    if let EventPayload::ProducerMessageAccepted {
+        retained_output: Some(retained),
+        ..
+    } = &mut payload
+    {
+        retained.streams.clear();
+    }
+    assert_eq!(
+        stored(payload, None).validate(),
+        Err(EventSchemaError::ToolOutputTooLarge)
     );
 }

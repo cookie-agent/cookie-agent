@@ -612,6 +612,7 @@ fn producer_accepted_event(
             body: body.into(),
             reminder: None,
             agent_hop: None,
+            retained_output: None,
         },
     );
     event.run_id = None;

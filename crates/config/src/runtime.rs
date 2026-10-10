@@ -292,6 +292,8 @@ pub struct EngineConfig {
     #[serde(default)]
     pub tool_output: ToolOutputConfig,
     #[serde(default)]
+    pub subagent_output: SubagentOutputConfig,
+    #[serde(default)]
     pub agent_md: AgentMdConfig,
     #[serde(default)]
     pub loop_warning: LoopWarningConfig,
@@ -320,6 +322,7 @@ pub struct EngineConfig {
 pub(crate) struct RawRuntimeLayer {
     pub(crate) server: Option<ServerConfig>,
     pub(crate) tool_output: Option<ToolOutputConfig>,
+    pub(crate) subagent_output: Option<SubagentOutputConfig>,
     pub(crate) agent_md: Option<AgentMdConfig>,
     pub(crate) loop_warning: Option<LoopWarningConfig>,
     pub(crate) approval: Option<ApprovalConfig>,
@@ -413,6 +416,10 @@ const fn default_port() -> u16 {
     DEFAULT_PORT
 }
 
+/// Inline previews of tool output streams. Output within both limits is
+/// shown whole; longer output shows its first and last lines (see
+/// [`ToolOutputConfig::kept_lines`]), splitting `max_bytes` between them in
+/// the same ratio.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolOutputConfig {
@@ -420,7 +427,79 @@ pub struct ToolOutputConfig {
     pub max_lines: usize,
     #[serde(default = "default_output_bytes")]
     pub max_bytes: usize,
+    #[serde(default)]
+    pub head_lines: Option<usize>,
+    #[serde(default)]
+    pub tail_lines: Option<usize>,
 }
+
+/// Inline previews of a subagent's final report, truncated like tool output.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubagentOutputConfig {
+    #[serde(default = "default_subagent_output_lines")]
+    pub max_lines: usize,
+    #[serde(default = "default_subagent_output_bytes")]
+    pub max_bytes: usize,
+    #[serde(default)]
+    pub head_lines: Option<usize>,
+    #[serde(default)]
+    pub tail_lines: Option<usize>,
+}
+
+/// Lines a truncated preview keeps from its start and its end. An omitted
+/// count is `default`, capped to the room `max_lines` leaves it: the rest
+/// after the other count, or its half (the start's rounded up) when both are
+/// omitted.
+fn kept_lines(
+    max_lines: usize,
+    (head, tail): (Option<usize>, Option<usize>),
+    default: usize,
+) -> (usize, usize) {
+    match (head, tail) {
+        (Some(head), Some(tail)) => (head, tail),
+        (Some(head), None) => (head, default.min(max_lines.saturating_sub(head))),
+        (None, Some(tail)) => (default.min(max_lines.saturating_sub(tail)), tail),
+        (None, None) => (
+            default.min(max_lines - max_lines / 2),
+            default.min(max_lines / 2),
+        ),
+    }
+}
+
+impl ToolOutputConfig {
+    /// Lines kept from each end of a truncated stream when not configured.
+    pub const DEFAULT_KEPT_LINES: usize = 100;
+
+    /// Lines a truncated stream keeps from its start and its end.
+    #[must_use]
+    pub fn kept_lines(&self) -> (usize, usize) {
+        kept_lines(
+            self.max_lines,
+            (self.head_lines, self.tail_lines),
+            Self::DEFAULT_KEPT_LINES,
+        )
+    }
+}
+
+impl SubagentOutputConfig {
+    /// Lines kept from each end of a truncated report when not configured.
+    pub const DEFAULT_KEPT_LINES: usize = 20;
+
+    /// Lines a truncated report keeps from its start and its end.
+    #[must_use]
+    pub fn kept_lines(&self) -> (usize, usize) {
+        kept_lines(
+            self.max_lines,
+            (self.head_lines, self.tail_lines),
+            Self::DEFAULT_KEPT_LINES,
+        )
+    }
+}
+
+/// The largest `subagent_output.max_bytes`: a stored subagent preview, with
+/// its omission marker, must fit the 64 KiB event bound.
+pub const SUBAGENT_OUTPUT_MAX_BYTES: usize = 60 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -450,14 +529,32 @@ impl Default for ToolOutputConfig {
         Self {
             max_lines: default_output_lines(),
             max_bytes: default_output_bytes(),
+            head_lines: None,
+            tail_lines: None,
+        }
+    }
+}
+impl Default for SubagentOutputConfig {
+    fn default() -> Self {
+        Self {
+            max_lines: default_subagent_output_lines(),
+            max_bytes: default_subagent_output_bytes(),
+            head_lines: None,
+            tail_lines: None,
         }
     }
 }
 const fn default_output_lines() -> usize {
-    2_000
+    500
 }
 const fn default_output_bytes() -> usize {
-    50 * 1024
+    12_800
+}
+const fn default_subagent_output_lines() -> usize {
+    100
+}
+const fn default_subagent_output_bytes() -> usize {
+    10 * 1024
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -696,6 +793,9 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     if let Some(value) = &layer.tool_output {
         runtime.tool_output = value.clone();
     }
+    if let Some(value) = &layer.subagent_output {
+        runtime.subagent_output = value.clone();
+    }
     if let Some(value) = &layer.agent_md {
         runtime.agent_md = value.clone();
     }
@@ -731,6 +831,15 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     }
 }
 
+/// Whether the authored counts alone exceed `max_lines`.
+fn kept_lines_overflow(max_lines: usize, head: Option<usize>, tail: Option<usize>) -> bool {
+    head.unwrap_or(0).saturating_add(tail.unwrap_or(0)) > max_lines
+}
+
+fn kept_lines_empty((head, tail): (usize, usize)) -> bool {
+    head + tail == 0
+}
+
 pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError> {
     validate_header_ownership(&runtime.headers, "global").map_err(ConfigError::HeaderOwnership)?;
     validate_header_limits(&runtime.headers).map_err(|_| {
@@ -748,6 +857,39 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
         (
             runtime.tool_output.max_bytes == 0,
             "tool_output.max_bytes must be positive",
+        ),
+        (
+            kept_lines_overflow(
+                runtime.tool_output.max_lines,
+                runtime.tool_output.head_lines,
+                runtime.tool_output.tail_lines,
+            ),
+            "tool_output.head_lines plus tail_lines must not exceed max_lines",
+        ),
+        (
+            kept_lines_empty(runtime.tool_output.kept_lines()),
+            "tool_output.head_lines and tail_lines must keep at least one line",
+        ),
+        (
+            runtime.subagent_output.max_lines == 0,
+            "subagent_output.max_lines must be positive",
+        ),
+        (
+            runtime.subagent_output.max_bytes == 0
+                || runtime.subagent_output.max_bytes > SUBAGENT_OUTPUT_MAX_BYTES,
+            "subagent_output.max_bytes must be 1..=61440",
+        ),
+        (
+            kept_lines_overflow(
+                runtime.subagent_output.max_lines,
+                runtime.subagent_output.head_lines,
+                runtime.subagent_output.tail_lines,
+            ),
+            "subagent_output.head_lines plus tail_lines must not exceed max_lines",
+        ),
+        (
+            kept_lines_empty(runtime.subagent_output.kept_lines()),
+            "subagent_output.head_lines and tail_lines must keep at least one line",
         ),
         (
             runtime.approval.timeout_ms == 0,

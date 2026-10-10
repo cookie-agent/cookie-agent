@@ -5,6 +5,7 @@ pub(crate) mod support;
 mod agents;
 mod approvals;
 mod artifacts;
+mod background_tasks;
 mod compaction;
 mod delegation;
 mod delegation_queue;

@@ -277,6 +277,7 @@ async fn execute(
             turn_context: turn_context(),
             artifacts: crate::ArtifactRouter::open_flat(harness.directory.path().join("artifacts"))
                 .expect("artifact store"),
+            background: None,
         })
         .await?
         .into_result_for_test()

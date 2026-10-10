@@ -56,8 +56,7 @@ fn parent_model_resolves_exact_binding_skips_parentless_and_replays_historically
         owner.selected_suffix.clone(),
         Arc::clone(&owner.registry),
         Arc::clone(&owner.runtime),
-        owner.result_limits.tool_output_max_lines,
-        owner.result_limits.tool_output_max_bytes,
+        owner.result_limits,
         owner.model_retry,
     )
     .expect("replayed owner policy");

@@ -178,26 +178,27 @@ Apply a precomputed semantic replacement atomically.
 ## `bash`
 
 ```text
-bash(command: string, interactive?: boolean, timeout?: integer)
+bash(background?: boolean, command: string, interactive?: boolean, timeout?: integer)
 ```
 
 Description sent to the model on Linux and macOS:
 
 ```text
-Execute one prepared shell command.
+Execute one prepared shell command. Set background for long-running commands: the call returns at once with the process ID, and a <background_bash from="PID"> notification with the exit status and output arrives when the command exits.
 ```
 
 Description sent to the model on Windows, where commands run in Git Bash:
 
 ```text
-Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\Users\name\file') or use C:/ paths.
+Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\Users\name\file') or use C:/ paths. Set background for long-running commands: the call returns at once with the process ID, and a <background_bash from="PID"> notification with the exit status and output arrives when the command exits.
 ```
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
+| `background` | `boolean` | no | Run in the background: return at once and get a notification when it exits. Default: `false`. |
 | `command` | `string` | yes |  |
 | `interactive` | `boolean` | no | Default: `false`. |
-| `timeout` | `integer` | no | Default: `120000`. |
+| `timeout` | `integer` | no | Milliseconds before the command is killed; 0 never times out. Default: `120000`. |
 
 ??? note "Parameters JSON Schema"
 
@@ -205,6 +206,11 @@ Execute one prepared Git Bash command. Single-quote native Windows paths (for ex
     {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "background": {
+          "default": false,
+          "description": "Run in the background: return at once and get a notification when it exits.",
+          "type": "boolean"
+        },
         "command": {
           "type": "string"
         },
@@ -214,6 +220,7 @@ Execute one prepared Git Bash command. Single-quote native Windows paths (for ex
         },
         "timeout": {
           "default": 120000,
+          "description": "Milliseconds before the command is killed; 0 never times out.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"

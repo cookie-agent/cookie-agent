@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{GoalId, InvocationId, ProducerId, SessionId};
+use crate::{GoalId, InvocationId, ProducerId, SessionId, ToolCallId};
 
 /// Stable identity used with session + idempotency key for durable deduplication.
 /// Plugin connection authorization is runtime-only; the engine derives `plugin`
@@ -12,6 +12,9 @@ use crate::{GoalId, InvocationId, ProducerId, SessionId};
 /// reminder; its accepted messages survive goal-controller teardown.
 /// Agent identifies an in-tree agent mail sender; the session identity is
 /// engine-derived from the executing tool context, never from model arguments.
+/// Tool identifies a background job started by one tool call (a background
+/// `bash` command); the call identity is engine-derived from the executing
+/// tool context, never from model arguments.
 /// The owner is durable and participates in `(session, owner, key)` dedup.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -21,6 +24,7 @@ pub enum ProducerOwner {
     Goal { goal_id: GoalId },
     GoalControl { goal_id: GoalId },
     Agent { session_id: SessionId },
+    Tool { tool_call_id: ToolCallId },
 }
 
 /// Per-send mode. Queue remains accepted-but-deferred during an active run;

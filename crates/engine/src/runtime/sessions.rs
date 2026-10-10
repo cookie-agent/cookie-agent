@@ -67,10 +67,7 @@ impl Engine {
             Arc::clone(&runtime),
             &selection.model,
             self.inner.config.runtime.delegation.max_depth,
-            policy::ResultLimits {
-                tool_output_max_lines: self.inner.config.runtime.tool_output.max_lines,
-                tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
-            },
+            policy::ResultLimits::from_config(&self.inner.config.runtime),
             self.inner.config.runtime.model_retry,
         )?;
         Ok((runtime, policy))
@@ -438,6 +435,7 @@ impl Engine {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .retain(|session, _| !deleted.contains(session));
         }
+        self.kill_deleted_background_jobs(deleted);
         forget(&self.inner.sessions.actors, deleted);
         forget(&self.inner.sessions.producers, deleted);
         forget(&self.inner.skills_runtime.grants, deleted);

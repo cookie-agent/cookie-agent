@@ -70,10 +70,26 @@ async fn named_streams_capture_in_declaration_order_with_independent_previews() 
         .unwrap();
     assert_eq!(result.display.as_deref(), Some("final UI display"));
     assert!(!result.output.contains("final UI display"));
-    assert!(result.output.starts_with("[results]\nabcde\n[Truncated."));
-    assert!(result.output.contains("/results\", offset=0)"));
-    assert!(result.output.contains("/diagnostics\", offset=1)"));
-    assert!(result.output.ends_with("[empty]\n"));
+    // A one-line limit keeps no tail, so the head gets every byte.
+    let digest = result
+        .retained_output
+        .as_ref()
+        .unwrap()
+        .reference
+        .uri
+        .strip_prefix("artifact://sha256/")
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        result.output,
+        format!(
+            "[results]\nabcde\n[… 1 line omitted. Read more: \
+             read(filePath=\"artifact://{digest}/results\", offset=0)]\n\n\
+             [diagnostics]\nbad\n[… 5 bytes omitted. Read more: \
+             read(filePath=\"artifact://{digest}/diagnostics\", offset=1)]\n\n\
+             [empty]\n"
+        )
+    );
     let retained = result.retained_output.unwrap();
     assert_eq!(
         retained
@@ -149,8 +165,18 @@ async fn streamed_completion_rejects_resupply_and_preserves_incomplete_utf8_outp
         .finish(completion(ToolCompletionOutput::Streamed), true)
         .await
         .unwrap();
-    assert!(result.output.starts_with("a\n[Truncated."));
-    assert!(result.output.contains("offset=0)"));
+    // Head and tail split the byte limit; the middle is counted in bytes when
+    // no line break falls there.
+    assert!(
+        result
+            .output
+            .starts_with("a\n[… 3 bytes omitted. Read more:")
+    );
+    assert!(
+        result.output.ends_with("offset=0)]\nz"),
+        "{}",
+        result.output
+    );
     let retained = result.retained_output.unwrap();
     assert!(retained.incomplete);
     assert_eq!(retained.streams[0].byte_length, 5);
@@ -213,7 +239,7 @@ async fn terminal_output_uses_capture_and_opt_out_never_publishes_an_artifact() 
         crate::test_session_id(),
         ToolOutputDeclaration::Single,
         1,
-        4,
+        8,
     )
     .await
     .unwrap();
@@ -226,7 +252,11 @@ async fn terminal_output_uses_capture_and_opt_out_never_publishes_an_artifact() 
         )
         .await
         .unwrap();
-    assert!(result.output.starts_with("one\n\n[Truncated."));
+    assert!(
+        result
+            .output
+            .starts_with("one\n[… 1 line omitted. Read more:")
+    );
     let stream = &result.retained_output.as_ref().unwrap().streams[0];
     assert_eq!(stream.next_offset, Some(1));
     assert_eq!(stream.line_count, 2);
@@ -672,4 +702,60 @@ async fn capture_finalization_does_not_block_async_workers_or_publication_releas
     release.send(()).unwrap();
     assert_eq!(finishing.await.unwrap().unwrap().output, "complete\n");
     assert!(store.publication().try_write().is_ok());
+}
+
+#[tokio::test]
+async fn truncated_previews_show_the_first_and_last_lines() {
+    let root = tempfile::tempdir().unwrap();
+    let store = ArtifactRouter::open_flat(root.path().join("artifacts")).unwrap();
+    for (lines, max_bytes) in [(10, 1_000), (10_000, 64)] {
+        let capture = OutputCapture::new(
+            store.clone(),
+            crate::test_session_id(),
+            ToolOutputDeclaration::Single,
+            4,
+            max_bytes,
+        )
+        .await
+        .unwrap();
+        // Many small appends roll the bounded tail buffer over repeatedly.
+        for line in 0..lines {
+            append(
+                &capture,
+                &[ToolOutputChunk {
+                    stream: None,
+                    text: format!("line{line}\n"),
+                }],
+            )
+            .await
+            .unwrap();
+        }
+        let result = capture
+            .finish(completion(ToolCompletionOutput::Streamed), false)
+            .await
+            .unwrap();
+        let digest = result
+            .retained_output
+            .as_ref()
+            .unwrap()
+            .reference
+            .uri
+            .strip_prefix("artifact://sha256/")
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            result.output,
+            format!(
+                "line0\nline1\n[… {} lines omitted. Read more: read(filePath=\"artifact://{digest}\", \
+                 offset=2)]\nline{}\nline{}\n",
+                lines - 4,
+                lines - 2,
+                lines - 1
+            )
+        );
+        assert_eq!(
+            result.retained_output.unwrap().streams[0].next_offset,
+            Some(2)
+        );
+    }
 }

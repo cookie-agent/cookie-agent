@@ -190,6 +190,7 @@ impl GoalProducerProjection {
                     body,
                     reminder,
                     agent_hop,
+                    ..
                 } => {
                     if !valid_reminder_owner(producer_owner, reminder.as_ref()) {
                         projection.reject(event.seq, "invalid producer reminder ownership");

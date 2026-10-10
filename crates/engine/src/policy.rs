@@ -17,8 +17,15 @@ use crate::{
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ResultLimits {
-    pub tool_output_max_lines: usize,
-    pub tool_output_max_bytes: usize,
+    pub tool_output: crate::preview::PreviewLimits,
+}
+
+impl ResultLimits {
+    pub(crate) fn from_config(config: &cookie_agent_config::EngineConfig) -> Self {
+        Self {
+            tool_output: (&config.tool_output).into(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -504,8 +511,7 @@ pub(crate) fn policy_from_snapshot(
     selected_suffix: Vec<protocol::FrozenModelBinding>,
     registry: Arc<AgentRegistry>,
     runtime: Arc<PublishedRuntime>,
-    tool_output_max_lines: usize,
-    tool_output_max_bytes: usize,
+    result_limits: ResultLimits,
     model_retry: cookie_agent_config::ModelRetryConfig,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if selected_suffix.is_empty() {
@@ -525,10 +531,7 @@ pub(crate) fn policy_from_snapshot(
         selected_suffix,
         runtime,
         registry,
-        result_limits: ResultLimits {
-            tool_output_max_lines,
-            tool_output_max_bytes,
-        },
+        result_limits,
         model_retry,
         cache_strategies,
     })

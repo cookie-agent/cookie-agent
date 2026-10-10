@@ -37,6 +37,7 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 |---|---|
 | `server` | [Server](../engine/server.md) |
 | `tool_output` | [Tool Output](../engine/tool_output.md) |
+| `subagent_output` | [Subagent Output](../engine/subagent_output.md) |
 | `agent_md` | [AGENTS.md Context](../engine/agent_md.md) |
 | `loop_warning` | [Loop Warning](../engine/loop_warning.md) |
 | `approval` | [Approval](../engine/approval.md) |

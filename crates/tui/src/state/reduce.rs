@@ -197,6 +197,8 @@ pub(super) fn reduce_event(
             // Internal guard metadata: never transcript-visible, so replay
             // ignores it rather than carrying a second projection.
             agent_hop: _,
+            // The body already previews the output it keeps alive.
+            retained_output: _,
         } => {
             if !valid_producer_reminder_owner(&producer_owner, reminder.as_ref())
                 || state.producer_messages.contains_key(&message_id)

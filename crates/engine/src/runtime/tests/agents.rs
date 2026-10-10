@@ -702,8 +702,7 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
             child_projection.meta.creation_selection.preset.as_deref(),
             &switched_child,
             crate::policy::ResultLimits {
-                tool_output_max_lines: 100,
-                tool_output_max_bytes: 10_000,
+                tool_output: crate::preview::PreviewLimits::halves(100, 10_000),
             },
         )
         .expect("delegated child stays pinned to its preset");

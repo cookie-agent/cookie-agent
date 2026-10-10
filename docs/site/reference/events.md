@@ -109,7 +109,7 @@ even before its first model request.
 | `goal_activated` | `goal_id`, `objective`, `revision` | Runless allowed |
 | `goal_checklist_revised` | `goal_id`, `items`, `revision` | Runless allowed |
 | `goal_lifecycle_changed` | `goal_id`, `status`, `revision` | Runless allowed |
-| `producer_message_accepted` | `message_id`, `producer_owner`, `mode`, `idempotency_key`, `description`, `body`; optional `reminder` | Runless allowed, including during an active run |
+| `producer_message_accepted` | `message_id`, `producer_owner`, `mode`, `idempotency_key`, `description`, `body`; optional `reminder`, `retained_output` | Runless allowed, including during an active run |
 | `producer_message_admitted` | `message_id` | Requires the destination run |
 | `producer_messages_claimed` | Nonempty `message_ids` | Requires the admission run; envelope `seq` identifies the claim |
 | `producer_messages_released` | Positive `claim_seq` | Requires the claimed run |
@@ -138,7 +138,7 @@ promised here; the versionless best-effort session-history contract still applie
 
 `ProducerOwner` is tagged by `type`: `plugin { plugin }`,
 `delegation { invocation_id }`, `goal { goal_id }`,
-`goal_control { goal_id }`, or `agent { session_id }`. It identifies a specific
+`goal_control { goal_id }`, `agent { session_id }`, or `tool { tool_call_id }`. It identifies a specific
 stable owner, not a volatile registration or merely an owner kind. Accepted events
 are the sole authoritative message body/mode storage, including deferred queue
 sends while a run is active. Registration records are never session events.
@@ -148,6 +148,11 @@ and reminder invalidation. Accepted agent-owned messages may carry optional
 `agent_hop` metadata for the messaging loop guard. It is absent on non-agent
 producers and legacy agent mail, is not rendered in the agent-visible envelope,
 and does not participate in idempotency comparison.
+`Tool { tool_call_id }` owns the single completion report of a background job
+started by that tool call. Its accepted message carries the job's captured
+output as `retained_output`, the same shape a tool result uses, and the body
+previews it the way a tool result does. Recording the reference on the event is what keeps
+those artifacts alive; plugins cannot supply `retained_output`.
 
 The optional accepted-event
 `reminder: GoalReminderIdentity { goal_id, revision, kind }` identifies a goal
@@ -251,8 +256,9 @@ Current model-bound plugin sends must use an explicitly registered producer;
 Delegation persistence includes `delegate_queued` and `delegate_finished`. The completion event is
 written to the parent run and carries `{ session_id, status, preview, short_id,
 total_lines }`; `short_id` is the optional child handle so replay can render the
-same teaser the runtime pushed, and `preview` is limited to the first 20 lines
-and 2 KiB. It becomes model-visible at the next turn boundary, while full output
+same teaser the runtime pushed, and `preview` is the report as
+[`[subagent_output]`](../engine/subagent_output.md) previews it: whole, or its
+first and last lines around an omission marker (at most 64 KiB). It becomes model-visible at the next turn boundary, while full output
 remains available through `get_subagent_result`.
 
 Later delegation records add `delegated_context_seeded` and `delegate_finished_v2`.

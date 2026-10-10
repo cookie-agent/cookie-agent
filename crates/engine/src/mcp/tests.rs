@@ -265,6 +265,7 @@ async fn execute(
             turn_context: turn_context(),
             artifacts: crate::ArtifactRouter::open_flat(directory.path().join("artifacts"))
                 .expect("artifact store"),
+            background: None,
         })
         .await
         .expect("execute MCP call")
@@ -294,6 +295,7 @@ fn tool_result_retains_only_distinct_structured_content() {
             false,
         )),
         artifacts: crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap(),
+        background: None,
     };
     let structured = json!({"a": 1, "b": [2]});
     for (texts, data, retain) in [
@@ -362,6 +364,7 @@ fn base64_attachments_follow_the_media_gate() {
         turn_context: Arc::new(turn),
         artifacts: crate::ArtifactRouter::open_flat(directory.path().join("artifacts"))
             .expect("artifact store"),
+        background: None,
     };
 
     let rejected = super::retain_base64_attachment(
@@ -543,6 +546,7 @@ fn tool_result_caps_combined_attachments_and_degrades_overflow_inline() {
         turn_context: Arc::new(make_turn_context(AdaptorId::Anthropic, true)),
         artifacts: crate::ArtifactRouter::open_flat(directory.path().join("artifacts"))
             .expect("artifact store"),
+        background: None,
     };
 
     let mapped = super::map_tool_result(&context, "images", result).expect("bounded result");

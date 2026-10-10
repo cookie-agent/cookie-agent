@@ -111,10 +111,7 @@ impl Engine {
             runtime,
             &selection.model,
             self.inner.config.runtime.delegation.max_depth,
-            policy::ResultLimits {
-                tool_output_max_lines: self.inner.config.runtime.tool_output.max_lines,
-                tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
-            },
+            policy::ResultLimits::from_config(&self.inner.config.runtime),
             self.inner.config.runtime.model_retry,
         )?;
         Ok((policy, selection))
@@ -288,10 +285,7 @@ impl Engine {
             return Err(EngineError::SessionRunning(params.session_id));
         }
         self.resolve_interrupted_direct(params.session_id).await?;
-        let result_limits = policy::ResultLimits {
-            tool_output_max_lines: self.inner.config.runtime.tool_output.max_lines,
-            tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
-        };
+        let result_limits = policy::ResultLimits::from_config(&self.inner.config.runtime);
         let is_root = matches!(session.meta.origin, SessionOrigin::Root);
         let mut run_policy = match &session.meta.origin {
             SessionOrigin::Root => {
@@ -1524,7 +1518,7 @@ impl Engine {
                     if intercepted.action == ExtensionToolAfterResultAction::Replace =>
                 {
                     if let Some(replacement) = intercepted.replacement_content {
-                        if replacement.len() > active.policy.result_limits.tool_output_max_bytes {
+                        if replacement.len() > active.policy.result_limits.tool_output.max_bytes {
                             self.record_plugin_diagnostic(
                                 active.session,
                                 plugin,

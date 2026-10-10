@@ -254,9 +254,11 @@ fragment, only with the handle in place of the UUID:
 
 ```
 <subagent_notification>
-<first ~20 lines of preview>
+<first 20 lines of the report>
+[… 200 lines omitted. Read more: get_subagent_result(session_id="explore_1a2b3c4d", offset=20)]
+<last 20 lines of the report>
 
-[subagent session explore_1a2b3c4d; completed; 79 lines; use get_subagent_result with session_id "explore_1a2b3c4d" for the full output]
+[subagent session explore_1a2b3c4d; completed; 240 lines]
 </subagent_notification>
 ```
 
@@ -280,9 +282,10 @@ drift.
 
 ### Result Truncation
 
-Both delegate result surfaces are already internally bounded — the teaser
-preview is capped (`sanitize_safe_text`, 2048 bytes / 20 lines) — so both opt
-out of the generic tool-result truncation pipeline:
+Both delegate result surfaces are already bounded — the teaser preview follows
+`[subagent_output]` (by default the first and last 20 lines once a report passes
+100 lines or 10 KiB) — so both opt out of the generic tool-result truncation
+pipeline:
 
 - `delegate_subagent`'s terminal result opts out, matching `get_subagent_result`'s
   existing opt-out (`result_truncation_policy`, `crates/tools/src/delegate.rs`).

@@ -53,6 +53,7 @@ mod approval_flow;
 mod approval_projection;
 mod artifact_reads;
 pub(crate) mod artifacts;
+pub(crate) mod background_tasks;
 mod blocking_io;
 pub(crate) mod compaction;
 mod delegation;
@@ -653,6 +654,7 @@ pub(crate) struct Inner {
     pub(crate) approvals: ApprovalRuntimeState,
     pub(crate) skills_runtime: SkillRuntimeState,
     pub(crate) output: OutputState,
+    pub(crate) background: background_tasks::BackgroundTaskState,
     pub(crate) compaction: CompactionState,
     runtime: Option<tokio::runtime::Handle>,
     janitor_task: Mutex<Option<JoinHandle<()>>>,
@@ -765,6 +767,7 @@ impl Engine {
                 approvals: ApprovalRuntimeState::default(),
                 skills_runtime: SkillRuntimeState::default(),
                 output: OutputState::default(),
+                background: background_tasks::BackgroundTaskState::default(),
                 compaction: CompactionState::default(),
                 runtime: tokio::runtime::Handle::try_current().ok(),
                 janitor_task: Mutex::new(None),

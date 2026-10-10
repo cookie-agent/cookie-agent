@@ -29,6 +29,7 @@ use crate::{
     delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation},
     delegation_events::{self, DelegationEventError},
     policy::{self, FrozenRunPolicy, freeze_delegated_agent_policy, resolve_agent},
+    preview::{self, PreviewLimits},
     session,
 };
 
@@ -541,10 +542,7 @@ impl Engine {
             &child_selection,
             inherited,
             parent_delegation.effective_depth_ceiling,
-            policy::ResultLimits {
-                tool_output_max_lines: self.inner.config.runtime.tool_output.max_lines,
-                tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
-            },
+            policy::ResultLimits::from_config(&self.inner.config.runtime),
         )?;
         let seeded_context = if invocation.inherit_context {
             self.delegated_context_seed(invocation.parent_session_id)
@@ -1157,7 +1155,12 @@ impl Engine {
                 | SessionStatus::Interrupted => {
                     self.mark_delegation_finished(handle.invocation_id, status)
                         .await?;
-                    let result = terminal_delegate_result(&child, handle.child_run_id, status);
+                    let result = terminal_delegate_result(
+                        &child,
+                        handle.child_run_id,
+                        status,
+                        self.subagent_preview_limits(),
+                    );
                     let mut records = self
                         .inner
                         .delegation
@@ -1896,7 +1899,13 @@ impl Engine {
                 total_lines: 0,
             }
         } else {
-            delegate_teaser(&child, child_session_id, exact_status, entry.child_run_id)
+            delegate_teaser(
+                &child,
+                child_session_id,
+                exact_status,
+                entry.child_run_id,
+                self.subagent_preview_limits(),
+            )
         };
         // Historical V2-only completions have already been model-visible. New
         // completions durably accept the producer message before the V2 teaser.
@@ -3397,6 +3406,13 @@ fn delegation_producer_authority(invocation_id: InvocationId) -> ProducerAuthori
     }
 }
 
+impl Engine {
+    /// How subagent reports are previewed, per `[subagent_output]`.
+    pub(super) fn subagent_preview_limits(&self) -> PreviewLimits {
+        (&self.inner.config.runtime.subagent_output).into()
+    }
+}
+
 /// The completion body shared by the foreground `delegate_subagent` result and
 /// the pushed `<subagent_notification>`. Both the runtime renderer
 /// ([`render_background_completion`]) and the history-replay renderer
@@ -3408,16 +3424,21 @@ pub(crate) fn render_delegate_teaser_body(
     total_lines: u64,
     handle: &str,
 ) -> String {
-    // Only a cut preview points at `get_subagent_result`; a complete one
-    // would send the model to re-read what it already has.
-    let more = if preview_is_truncated(preview, total_lines) {
+    // A cut preview's marker already says where the rest is; a complete one
+    // says so, so the model does not re-read what it already has.
+    let more = if preview.lines().any(is_omission_marker) {
+        String::new()
+    } else if preview_line_count(preview) < total_lines {
         format!("; use get_subagent_result with session_id \"{handle}\" for the full output")
     } else {
         "; full output shown".to_owned()
     };
     // Line breaks and tabs survive so lists, tables, and code in the report
     // keep their shape; every other control character is folded away.
-    let preview = crate::tool_api::sanitize_tool_display(preview, PREVIEW_MAX_BYTES);
+    let preview = crate::tool_api::sanitize_tool_display(
+        preview,
+        cookie_agent_protocol::MAX_DELEGATE_PREVIEW_BYTES,
+    );
     let preview = if preview.trim().is_empty() {
         "(no output)"
     } else {
@@ -3429,20 +3450,19 @@ pub(crate) fn render_delegate_teaser_body(
     )
 }
 
-/// Whether [`preview_text`] cut the output, judged from the preview and line
-/// count alone so history replay, which keeps only those, renders the same
-/// body. A byte cut lands within a character of the cap, so a complete
-/// preview of 2045..=2048 bytes also counts as cut: that errs toward the hint.
-fn preview_is_truncated(preview: &str, total_lines: u64) -> bool {
-    let preview_lines = if preview.is_empty() {
+/// Whether `line` is the marker [`preview_text`] puts where it cut a report.
+fn is_omission_marker(line: &str) -> bool {
+    line.starts_with("[… ") && line.contains(" omitted. Read more: get_subagent_result(")
+}
+
+fn preview_line_count(preview: &str) -> u64 {
+    if preview.is_empty() {
         0
     } else {
         // Counted by separator, not `lines()`, which drops a trailing empty
         // line the full count kept.
         preview.split('\n').count() as u64
-    };
-    // A UTF-8 character is at most four bytes, so a cut ends past this.
-    preview_lines < total_lines || preview.len() > PREVIEW_MAX_BYTES - 4
+    }
 }
 
 /// The pushed `<subagent_notification>` envelope, shared by the runtime and
@@ -3583,17 +3603,19 @@ fn delegate_teaser(
     child_session_id: SessionId,
     status: SessionStatus,
     child_run_id: Option<RunId>,
+    limits: PreviewLimits,
 ) -> DelegateTeaser {
     let text = delegate_final_text(child, child_run_id);
+    let short_id = child
+        .meta
+        .short_id
+        .clone()
+        .unwrap_or_else(|| child_session_id.to_string());
     DelegateTeaser {
         session_id: child_session_id,
-        short_id: child
-            .meta
-            .short_id
-            .clone()
-            .unwrap_or_else(|| child_session_id.to_string()),
+        preview: preview_text(text, &short_id, limits),
+        short_id,
         status,
-        preview: preview_text(text),
         total_lines: text.lines().count() as u64,
     }
 }
@@ -3638,23 +3660,23 @@ fn last_assistant_message(child: &session::SessionProjection) -> String {
         .unwrap_or_default()
 }
 
-const PREVIEW_MAX_LINES: usize = 20;
-const PREVIEW_MAX_BYTES: usize = 2048;
-
-fn preview_text(text: &str) -> String {
-    let first_lines = text
-        .lines()
-        .take(PREVIEW_MAX_LINES)
-        .collect::<Vec<_>>()
-        .join("\n");
-    if first_lines.len() <= PREVIEW_MAX_BYTES {
-        return first_lines;
+/// A subagent report within `limits`, or its first and last lines around a
+/// marker that pages the rest through `get_subagent_result`.
+fn preview_text(text: &str, handle: &str, limits: PreviewLimits) -> String {
+    let limits = limits.with_byte_ceiling(cookie_agent_config::SUBAGENT_OUTPUT_MAX_BYTES);
+    let whole = text.lines().collect::<Vec<_>>().join("\n");
+    if text.lines().count() <= limits.max_lines && whole.len() <= limits.max_bytes {
+        return whole;
     }
-    let mut end = PREVIEW_MAX_BYTES;
-    while !first_lines.is_char_boundary(end) {
-        end -= 1;
-    }
-    first_lines[..end].to_owned()
+    let (head, tail) = preview::split(text, text, true, text.len() as u64, limits);
+    let marker = preview::marker(
+        &preview::omitted(preview::newlines(text), text.len() as u64, head, tail),
+        &format!(
+            "get_subagent_result(session_id=\"{handle}\", offset={})",
+            preview::newlines(head)
+        ),
+    );
+    preview::render(head, &marker, tail.trim_end_matches('\n'))
 }
 
 pub(super) const fn session_status_name(status: SessionStatus) -> &'static str {
@@ -3711,16 +3733,18 @@ fn reference_label(session_id: Option<SessionId>, short_id: Option<&str>) -> Opt
 pub(crate) fn completed_delegate_result(
     child: &session::SessionProjection,
     child_run_id: Option<RunId>,
+    limits: PreviewLimits,
 ) -> ToolResult {
-    terminal_delegate_result(child, child_run_id, SessionStatus::Completed)
+    terminal_delegate_result(child, child_run_id, SessionStatus::Completed, limits)
 }
 
 fn terminal_delegate_result(
     child: &session::SessionProjection,
     child_run_id: Option<RunId>,
     status: SessionStatus,
+    limits: PreviewLimits,
 ) -> ToolResult {
-    let teaser = delegate_teaser(child, child.meta.session_id, status, child_run_id);
+    let teaser = delegate_teaser(child, child.meta.session_id, status, child_run_id, limits);
     let output = render_delegate_teaser_body(
         &teaser.preview,
         teaser.status,
@@ -3859,8 +3883,8 @@ mod concurrency_tests {
         DELEGATED_CONTEXT_MAX_BYTES, DelegateTeaser, background_queue_limit_reached,
         cancelled_delegate_result, cancelled_delegate_result_with_reason,
         context_seed_from_history, delegate_failure_result, paginated_subagent_result,
-        preview_is_truncated, preview_text, render_background_completion,
-        render_delegate_teaser_body, validate_redelivery_mode,
+        preview_text, render_background_completion, render_delegate_teaser_body,
+        validate_redelivery_mode,
     };
 
     #[test]
@@ -4057,46 +4081,75 @@ second line
         assert!(empty.starts_with("(no output)\n\n[subagent session"));
     }
 
+    fn report_limits() -> crate::preview::PreviewLimits {
+        crate::preview::PreviewLimits {
+            max_lines: 100,
+            max_bytes: 10 * 1024,
+            head_lines: 20,
+            tail_lines: 20,
+        }
+    }
+
     #[test]
-    fn truncation_is_judged_from_the_preview_the_output_produced() {
-        let cases = [
-            ("", false),
-            ("one line", false),
-            ("trailing blank\n\n", false),
-            ("two\nlines", false),
-        ]
-        .into_iter()
-        .map(|(text, cut)| (text.to_owned(), cut))
-        .chain([
-            // Line cap: 21 lines keep 20.
-            (vec!["line"; 21].join("\n"), true),
-            (vec!["line"; 20].join("\n"), false),
-            // Byte cap inside the last kept line.
-            ("é".repeat(1100), true),
-            // A multibyte cut backs off below the cap and still counts.
-            (format!("a{}", "€".repeat(700)), true),
-        ]);
-        for (text, cut) in cases {
-            let preview = preview_text(&text);
-            let total_lines = text.lines().count() as u64;
-            assert_eq!(
-                preview_is_truncated(&preview, total_lines),
-                cut,
-                "{} bytes, {total_lines} lines",
-                text.len()
+    fn long_reports_show_their_first_and_last_lines_around_a_marker() {
+        let limits = report_limits();
+        let report = (1..=150)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let preview = preview_text(&report, "explore_1a2b3c4d", limits);
+        let mut expected = (1..=20)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        expected.push_str(
+            "[… 110 lines omitted. Read more: get_subagent_result(session_id=\"explore_1a2b3c4d\", \
+             offset=20)]\n",
+        );
+        expected.push_str(
+            &(131..=150)
+                .map(|line| format!("line {line}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        assert_eq!(preview, expected);
+        // The marker replaces the footer's hint.
+        let body = render_delegate_teaser_body(
+            &preview,
+            cookie_agent_protocol::SessionStatus::Completed,
+            150,
+            "explore_1a2b3c4d",
+        );
+        assert!(body.ends_with("\n\n[subagent session explore_1a2b3c4d; completed; 150 lines]"));
+
+        // Within both limits the report is whole and says so.
+        for report in ["", "one line", "trailing blank\n\n", "two\nlines"] {
+            let preview = preview_text(report, "h", limits);
+            assert!(!preview.contains("omitted"), "{preview:?}");
+            let body = render_delegate_teaser_body(
+                &preview,
+                cookie_agent_protocol::SessionStatus::Completed,
+                report.lines().count() as u64,
+                "h",
             );
+            assert!(body.ends_with("full output shown]"), "{body:?}");
         }
     }
 
     #[test]
     fn preview_is_line_and_utf8_bounded() {
+        let limits = report_limits();
         let text = (0..30)
             .map(|index| format!("{index}: {}", "é".repeat(200)))
             .collect::<Vec<_>>()
             .join("\n");
-        let preview = preview_text(&text);
-        assert!(preview.lines().count() <= 20);
-        assert!(preview.len() <= 2048);
+        let preview = preview_text(&text, "h", limits);
+        // At most twenty lines from each end, the marker, and 10 KiB of report.
+        assert!(preview.lines().count() <= 41);
+        let marker = preview
+            .lines()
+            .find(|line| line.starts_with("[… "))
+            .expect("marker");
+        assert!(preview.len() - marker.len() <= 10 * 1024 + 2);
         assert!(std::str::from_utf8(preview.as_bytes()).is_ok());
     }
 

@@ -124,6 +124,7 @@ pub(crate) fn production_provider_harness(
             pricing: cookie_agent_config::PricingConfig::default(),
             headers: BTreeMap::new(),
             providers: BTreeMap::new(),
+            subagent_output: Default::default(),
         },
         agents: BTreeMap::new(),
         agent_presets: BTreeMap::new(),
@@ -2253,6 +2254,7 @@ pub(crate) fn producer_accepted(
             body: body.to_owned(),
             reminder,
             agent_hop: None,
+            retained_output: None,
         },
     )
 }

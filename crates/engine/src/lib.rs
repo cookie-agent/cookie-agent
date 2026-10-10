@@ -17,6 +17,7 @@ mod ownership;
 pub mod permissions;
 mod plugin;
 mod policy;
+mod preview;
 pub(crate) mod runtime;
 mod runtime_snapshot;
 pub mod session;
@@ -30,6 +31,7 @@ pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
 pub use mcp::{McpRegistry, McpServerState, McpServerStatus};
 pub use media::{AttachmentGate, approved_media_type, attachment_gate_error, gate_attachment};
 pub use plugin::{EngineEvent, PluginRegistry, PluginState, PluginStatus};
+pub use runtime::background_tasks::{BackgroundJob, BackgroundReport};
 /// Stable `send_message:<code>` error strings carried by
 /// [`EngineError::Messaging`]. The tool layer surfaces them verbatim so sending
 /// models can react predictably (retry, back off, or give up).

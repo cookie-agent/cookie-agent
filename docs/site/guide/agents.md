@@ -197,8 +197,9 @@ into the child agent's model context and must be appropriate for that child.
 
 Background sessions move through `queued`, `running`, and a terminal
 `completed`, `failed`, `interrupted`, or `cancelled` state. Completion appends a
-parent event containing the session ID and handle, status, first 20 result lines
-(at most 2 KiB), and total line count. Use `get_subagent_result` with the
+parent event containing the session ID and handle, status, a preview of the
+result (see [`[subagent_output]`](../engine/subagent_output.md)), and total line
+count. Use `get_subagent_result` with the
 child's handle or UUID and zero-based `offset`/`limit` to read the last assistant
 message of the child's most recent turn in pages; a running child (including one
 just woken by `send_message`) reports as running and returns no text. It never

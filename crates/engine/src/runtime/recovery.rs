@@ -386,7 +386,11 @@ impl Engine {
                         self.inner
                             .delegation_events
                             .mark_finished(invocation, SessionStatus::Completed)?;
-                        let result = completed_delegate_result(&child, entry.child_run_id);
+                        let result = completed_delegate_result(
+                            &child,
+                            entry.child_run_id,
+                            self.subagent_preview_limits(),
+                        );
                         self.terminate_tool_direct(
                             session_id,
                             run.id,

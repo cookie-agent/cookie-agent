@@ -308,7 +308,7 @@ async fn output_reader_preserves_utf8_across_pipe_reads_and_flushes() {
         OutputStream::Stdout,
         progress,
         call_id,
-        merged.clone(),
+        Some(merged.clone()),
     ));
     writer.write_all(&[0xe2]).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(75)).await;
@@ -342,13 +342,13 @@ async fn output_reader_streams_bounded_display_without_buffering_full_output() {
     .await
     .unwrap();
     let (mut writer, reader) = tokio::io::duplex(2 * 1024 * 1024);
-    let merged = Default::default();
+    let merged = std::sync::Arc::new(tokio::sync::Mutex::new(super::MergedOutput::default()));
     let read = tokio::spawn(read_output(
         reader,
         OutputStream::Stdout,
         progress,
         call_id,
-        std::sync::Arc::clone(&merged),
+        Some(std::sync::Arc::clone(&merged)),
     ));
     writer.write_all(b"first\n").await.expect("first output");
     let first = tokio::time::timeout(std::time::Duration::from_millis(250), progress_rx.recv())
@@ -402,6 +402,7 @@ async fn real_bash_completion_keeps_read_order_and_nonzero_exits_are_data() {
                 ),
                 timeout: 2_000,
                 interactive: false,
+                background: false,
             },
             cwd: crate::fs_cap::prepare_existing(Path::new("/"), root.path()).unwrap(),
             executable: crate::fs_cap::prepare_existing(Path::new("/"), &executable).unwrap(),
@@ -497,6 +498,7 @@ async fn real_bash_timeout_drains_progress_before_terminal_completion() {
                 command: "printf 'ready\\n'; sleep 10".into(),
                 timeout: 2_000,
                 interactive: false,
+                background: false,
             },
             cwd: crate::fs_cap::prepare_existing(Path::new("/"), root.path())
                 .expect("prepared cwd"),
@@ -606,4 +608,149 @@ async fn killing_prepared_process_group_removes_descendants() {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
     panic!("descendant process survived process-group cancellation");
+}
+
+async fn prepare_arguments(
+    root: &Path,
+    arguments: serde_json::Value,
+) -> Result<cookie_agent_engine::PreparedTool, ToolError> {
+    BashTool::new(root)
+        .prepare(
+            ToolPreparationContext {
+                session: SessionId::new_v7(),
+                run: RunId::new_v7(),
+                cwd: root.to_owned(),
+                workspace_root: root.to_owned(),
+                turn_context: crate::test_turn_context(),
+            },
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: "bash".into(),
+                arguments,
+            },
+        )
+        .await
+}
+
+#[tokio::test]
+async fn background_cannot_be_interactive() {
+    let root = tempfile::tempdir().unwrap();
+    let error = prepare_arguments(
+        root.path(),
+        serde_json::json!({"command":"cat","interactive":true,"background":true}),
+    )
+    .await
+    .err()
+    .expect("interactive background is rejected");
+    assert!(error.to_string().contains("cannot be combined"), "{error}");
+}
+
+#[tokio::test]
+async fn background_needs_an_engine_run() {
+    let root = tempfile::tempdir().unwrap();
+    let artifacts = tempfile::tempdir().unwrap();
+    let prepared = prepare_arguments(
+        root.path(),
+        serde_json::json!({"command":"true","background":true}),
+    )
+    .await
+    .expect("prepare");
+    let context = cookie_agent_engine::ToolExecutionContext::for_test(
+        artifacts.path().join("artifacts"),
+        crate::test_turn_context(),
+    )
+    .unwrap();
+    let error = prepared.execute_for_test(context).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("background jobs are unavailable"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn zero_timeout_never_times_out() {
+    use cookie_agent_engine::PreparedExecutor;
+    let root = tempfile::tempdir().unwrap();
+    let artifacts = tempfile::tempdir().unwrap();
+    let call_id = ToolCallId::new_v7();
+    let executable = resolve_executable("bash").unwrap();
+    let executor = BashExecutor {
+        tool_call_id: call_id,
+        args: BashArgs {
+            command: "sleep 0.2; exit 3".into(),
+            timeout: 0,
+            interactive: false,
+            background: false,
+        },
+        cwd: crate::fs_cap::prepare_existing(Path::new("/"), root.path()).unwrap(),
+        executable: crate::fs_cap::prepare_existing(Path::new("/"), &executable).unwrap(),
+    };
+    let (sender, _receiver) = tokio::sync::mpsc::channel(128);
+    let mut context = cookie_agent_engine::ToolExecutionContext::for_test(
+        artifacts.path().join("artifacts"),
+        crate::test_turn_context(),
+    )
+    .unwrap();
+    context.progress = ProgressSink::for_test(
+        sender,
+        OutputHub::new(call_id, 64 * 1024),
+        artifacts.path().join("streams"),
+        cookie_agent_protocol::ToolOutputDeclaration::Named {
+            streams: vec!["stdout".into(), "stderr".into()],
+        },
+    )
+    .await
+    .unwrap();
+    let completion = Box::new(executor).execute(context).await.unwrap();
+    assert_eq!(completion.result.metadata["status"], 3);
+}
+
+#[test]
+fn background_report_is_keyed_by_the_process_id() {
+    let report = super::background_report(
+        Some(4242),
+        "make test",
+        &super::BackgroundExit::TimedOut,
+        std::time::Duration::from_millis(120_000),
+    );
+    assert_eq!(report.summary, "bash timed out and was killed: make test");
+    assert_eq!(report.element, "background_bash");
+    assert_eq!(report.attributes, [("from".to_owned(), "4242".to_owned())]);
+    assert_eq!(
+        report.body,
+        "Command: make test\nStatus: timed out and was killed after 120.0s"
+    );
+    let notice = super::background_started_notice(Some(4242), "make test");
+    assert!(
+        notice.starts_with("Started in the background as process 4242: make test\n"),
+        "{notice}"
+    );
+    assert!(
+        notice.contains("<background_bash from=\"4242\">"),
+        "{notice}"
+    );
+    assert!(
+        notice.ends_with("Stop it early with `kill -- -4242`."),
+        "{notice}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn background_report_names_the_killing_signal() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let report = super::background_report(
+        None,
+        "sleep 100",
+        &super::BackgroundExit::Finished(Ok(std::process::ExitStatus::from_raw(15))),
+        std::time::Duration::from_secs(3),
+    );
+    assert_eq!(report.summary, "bash terminated by signal 15: sleep 100");
+    assert!(report.attributes.is_empty());
+    assert_eq!(
+        report.body,
+        "Command: sleep 100\nStatus: terminated by signal 15 after 3.0s"
+    );
 }

@@ -890,6 +890,7 @@ async fn producer_reminders_never_restore_into_the_user_composer() {
                 kind: cookie_agent_protocol::GoalReminderKind::Continuation,
             }),
             agent_hop: None,
+            retained_output: None,
         },
         EventPayload::UserInputAdmitted {
             input: "user pending text".into(),

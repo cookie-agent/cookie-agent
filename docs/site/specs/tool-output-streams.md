@@ -92,17 +92,21 @@ streams separately:
 
 ```text
 [stdout]
-<stdout preview>
-[Truncated. Read more: read(filePath="artifact://<digest>/stdout", offset=...)]
+<first stdout lines>
+[… N lines omitted. Read more: read(filePath="artifact://<digest>/stdout", offset=...)]
+<last stdout lines>
 
 [stderr]
 <stderr preview>
-[Truncated. Read more: read(filePath="artifact://<digest>/stderr", offset=...)]
 ```
 
 The digest in named-stream hints identifies the generic manifest. Each stream
-uses the configured `[tool_output]` line and byte limits independently. Emit a
-read hint only when that stream was truncated. The hint must address the full
+uses the configured `[tool_output]` line and byte limits independently. A stream
+within both limits renders whole, with no hint. A truncated stream spends the
+larger half of each limit on its first lines and the smaller half on its last
+whole lines, joined by a hint naming how much was left out: lines when a line
+break falls in the gap, otherwise bytes. A tail line cut by the byte limit is
+dropped unless it is the only one. The hint must address the full
 original stream and contain a correct zero-based continuation offset. If a byte
 limit cuts a line, the hint must allow that line to be recovered without skipping
 unseen content. Single output renders one preview without a stream heading and

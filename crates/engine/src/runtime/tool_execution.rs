@@ -675,12 +675,11 @@ impl Engine {
                 && result_truncation != crate::ToolResultTruncationPolicy::OptOut
             {
                 Some(
-                    OutputCapture::new(
+                    OutputCapture::with_limits(
                         engine.inner.artifacts.clone(),
                         active.session,
                         output_declaration,
-                        active.policy.result_limits.tool_output_max_lines,
-                        active.policy.result_limits.tool_output_max_bytes,
+                        active.policy.result_limits.tool_output,
                     )
                     .await
                     .map_err(ToolFailure::from)?,
@@ -724,6 +723,11 @@ impl Engine {
                 stdin: interactive.then_some(stdin),
                 turn_context,
                 artifacts: engine.inner.artifacts.clone(),
+                background: Some(super::background_tasks::BackgroundCapability {
+                    inner: Arc::downgrade(&engine.inner),
+                    tool_call_id: call.id,
+                    limits: active.policy.result_limits.tool_output,
+                }),
             }))
             .catch_unwind()
             .map(|result| {

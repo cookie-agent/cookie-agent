@@ -1196,6 +1196,17 @@ impl Engine {
         params: ExtensionProducerSendParams,
         reminder: Option<GoalReminderIdentity>,
     ) -> Result<ProducerMessageId, EngineError> {
+        self.accept_producer_with_output_direct(authority, params, reminder, None)
+    }
+
+    /// Accepts a message whose body points at engine-retained output.
+    pub(super) fn accept_producer_with_output_direct(
+        &self,
+        authority: &ProducerAuthority,
+        params: ExtensionProducerSendParams,
+        reminder: Option<GoalReminderIdentity>,
+        retained_output: Option<RetainedToolOutput>,
+    ) -> Result<ProducerMessageId, EngineError> {
         let ExtensionProducerSendParams {
             session_id: session,
             producer_id,
@@ -1244,10 +1255,27 @@ impl Engine {
                 body,
                 reminder,
                 agent_hop: None,
+                retained_output,
             },
         )?;
         self.inner.store.persist_buffered_session(session)?;
         Ok(message_id)
+    }
+
+    /// Drops one registration without the actor round trip `unregister_producer` takes.
+    pub(super) fn drop_producer_registration(&self, session: SessionId, producer_id: ProducerId) {
+        if let Some(state) = self
+            .inner
+            .sessions
+            .producers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(&session)
+        {
+            state
+                .registrations
+                .retain(|record| record.id != producer_id);
+        }
     }
 
     #[cfg(test)]
@@ -1348,6 +1376,7 @@ impl Engine {
                 body: envelope,
                 reminder: None,
                 agent_hop: Some(hop),
+                retained_output: None,
             },
         )?;
         self.inner.store.persist_buffered_session(session)?;
@@ -1772,6 +1801,7 @@ impl Engine {
                     _ => true,
                 });
         }
+        self.kill_reverted_background_jobs(session)?;
         self.reconcile_goal_registration(session, None)
     }
 }

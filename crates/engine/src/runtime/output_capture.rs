@@ -12,7 +12,11 @@ use cookie_agent_protocol::{
 use sha2::{Digest as _, Sha256};
 
 use super::{artifacts::ArtifactRouter, blocking_io};
-use crate::{ToolCompletion, ToolError, ToolProgress, events::OutputHub};
+use crate::{
+    ToolCompletion, ToolError, ToolProgress,
+    events::OutputHub,
+    preview::{self, PreviewLimits},
+};
 use cookie_agent_protocol::ToolCallId;
 
 /// Tool output capture state owned by [`super::Inner`].
@@ -33,6 +37,8 @@ struct Channel {
     newlines: u64,
     ends_with_newline: bool,
     preview: String,
+    /// The most recent output, at most twice the preview byte limit.
+    tail: String,
 }
 
 #[derive(Debug)]
@@ -54,8 +60,7 @@ struct Capture {
     store: Arc<ArtifactRouter>,
     session: SessionId,
     declaration: ToolOutputDeclaration,
-    max_lines: usize,
-    max_bytes: usize,
+    limits: PreviewLimits,
     state: Mutex<State>,
     operations: Arc<tokio::sync::Semaphore>,
     publication: Mutex<Publication>,
@@ -91,6 +96,8 @@ impl OutputCapture {
         publication.guard.take();
     }
 
+    /// A capture whose previews keep half of the lines from each end.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn new(
         store: Arc<ArtifactRouter>,
         session: SessionId,
@@ -98,28 +105,40 @@ impl OutputCapture {
         max_lines: usize,
         max_bytes: usize,
     ) -> Result<Self, ToolError> {
-        blocking_io::run(move || Self::create(store, session, declaration, max_lines, max_bytes))
-            .await?
+        Self::with_limits(
+            store,
+            session,
+            declaration,
+            PreviewLimits::halves(max_lines, max_bytes),
+        )
+        .await
+    }
+
+    pub(crate) async fn with_limits(
+        store: Arc<ArtifactRouter>,
+        session: SessionId,
+        declaration: ToolOutputDeclaration,
+        limits: PreviewLimits,
+    ) -> Result<Self, ToolError> {
+        blocking_io::run(move || Self::create(store, session, declaration, limits)).await?
     }
 
     fn create(
         store: Arc<ArtifactRouter>,
         session: SessionId,
         declaration: ToolOutputDeclaration,
-        max_lines: usize,
-        max_bytes: usize,
+        limits: PreviewLimits,
     ) -> Result<Self, ToolError> {
         declaration.validate().map_err(ToolError::execution)?;
         let names = declaration.channels();
         // Leave room for headings and truthful read hints inside the existing event bound.
-        let max_bytes =
-            max_bytes.min((PersistedToolResult::MAX_OUTPUT_BYTES - 16 * 1024) / names.len());
+        let limits = limits
+            .with_byte_ceiling((PersistedToolResult::MAX_OUTPUT_BYTES - 16 * 1024) / names.len());
         let capture = Self(Arc::new(Capture {
             store,
             session,
             declaration,
-            max_lines,
-            max_bytes,
+            limits,
             state: Mutex::new(State {
                 channels: Vec::new(),
                 accepted_deltas: false,
@@ -148,6 +167,7 @@ impl OutputCapture {
                     newlines: 0,
                     ends_with_newline: false,
                     preview: String::new(),
+                    tail: String::new(),
                 });
             }
         }
@@ -262,13 +282,14 @@ impl OutputCapture {
                 "tool output capture failed: {error}"
             )));
         }
+        let limits = self.0.limits;
         let preview_lines = usize::try_from(channel.newlines).unwrap_or(usize::MAX);
-        if channel.preview.len() as u64 == channel.bytes && preview_lines < self.0.max_lines {
+        if channel.preview.len() as u64 == channel.bytes && preview_lines < limits.max_lines {
             let mut lines = preview_lines;
-            let room = self.0.max_bytes.saturating_sub(channel.preview.len());
+            let room = limits.max_bytes.saturating_sub(channel.preview.len());
             let mut end = 0;
             for (offset, character) in text.char_indices() {
-                if lines >= self.0.max_lines || offset + character.len_utf8() > room {
+                if lines >= limits.max_lines || offset + character.len_utf8() > room {
                     break;
                 }
                 end = offset + character.len_utf8();
@@ -277,6 +298,14 @@ impl OutputCapture {
                 }
             }
             channel.preview.push_str(&text[..end]);
+        }
+        channel.tail.push_str(text);
+        if channel.tail.len() > 2 * limits.max_bytes {
+            let mut start = channel.tail.len() - limits.max_bytes;
+            while !channel.tail.is_char_boundary(start) {
+                start += 1;
+            }
+            channel.tail.drain(..start);
         }
         channel.hash.update(text.as_bytes());
         channel.bytes = channel.bytes.saturating_add(text.len() as u64);
@@ -379,6 +408,7 @@ impl OutputCapture {
         }
         state.finalized = true;
         let mut streams = Vec::new();
+        let mut previews = Vec::new();
         for channel in &state.channels {
             let (artifact, _) = self
                 .0
@@ -389,6 +419,17 @@ impl OutputCapture {
                 return Err(ToolError::execution("captured output digest mismatch"));
             }
             let truncated = channel.preview.len() as u64 != channel.bytes;
+            let preview = if truncated {
+                preview::split(
+                    &channel.preview,
+                    &channel.tail,
+                    channel.tail.len() as u64 == channel.bytes,
+                    channel.bytes,
+                    self.0.limits,
+                )
+            } else {
+                (channel.preview.as_str(), "")
+            };
             streams.push(RetainedToolStream {
                 name: channel.name.clone(),
                 reference: artifact.reference,
@@ -398,14 +439,9 @@ impl OutputCapture {
                 line_count: channel.newlines
                     + u64::from(channel.bytes > 0 && !channel.ends_with_newline),
                 truncated,
-                next_offset: truncated.then(|| {
-                    channel
-                        .preview
-                        .bytes()
-                        .filter(|byte| *byte == b'\n')
-                        .count() as u64
-                }),
+                next_offset: truncated.then(|| preview::newlines(preview.0)),
             });
+            previews.push(preview);
         }
         let (reference, digest) = if self.0.declaration == ToolOutputDeclaration::Single {
             (streams[0].reference.clone(), streams[0].sha256.to_string())
@@ -420,21 +456,35 @@ impl OutputCapture {
                 .map_err(|e| ToolError::execution(e.to_string()))?
         };
         let mut rendered = String::new();
-        for (channel, stream) in state.channels.iter().zip(&streams) {
+        for ((channel, stream), &(head, tail)) in state.channels.iter().zip(&streams).zip(&previews)
+        {
             if let Some(name) = &channel.name {
+                // One blank line between sections, however the last one ended.
                 if !rendered.is_empty() {
-                    rendered.push_str("\n\n");
+                    rendered.push_str(if rendered.ends_with('\n') {
+                        "\n"
+                    } else {
+                        "\n\n"
+                    });
                 }
                 rendered.push_str(&format!("[{name}]\n"));
             }
-            rendered.push_str(&channel.preview);
-            if let Some(offset) = stream.next_offset {
-                let suffix = stream
-                    .name
-                    .as_ref()
-                    .map_or_else(String::new, |name| format!("/{name}"));
-                rendered.push_str(&format!("\n[Truncated. Read more: read(filePath=\"artifact://{digest}{suffix}\", offset={offset})]"));
-            }
+            let Some(offset) = stream.next_offset else {
+                rendered.push_str(head);
+                continue;
+            };
+            let suffix = stream
+                .name
+                .as_ref()
+                .map_or_else(String::new, |name| format!("/{name}"));
+            rendered.push_str(&preview::render(
+                head,
+                &preview::marker(
+                    &preview::omitted(channel.newlines, channel.bytes, head, tail),
+                    &format!("read(filePath=\"artifact://{digest}{suffix}\", offset={offset})"),
+                ),
+                tail,
+            ));
         }
         completion.result.output = rendered;
         completion.result.truncation = None;
