@@ -464,7 +464,7 @@ pub(super) fn reduce_event(
             push_item(state, timestamp, |id| TranscriptItem::User {
                 id,
                 version: 0,
-                text: input,
+                markdown: MarkdownDocument::with_hard_breaks(input),
                 seq: sequence,
             });
         }

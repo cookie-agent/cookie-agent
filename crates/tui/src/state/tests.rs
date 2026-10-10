@@ -3225,7 +3225,7 @@ fn session_revert_rebuilds_transcript_across_a_persisted_sequence_gap() {
     assert_eq!(state.transcript.len(), 1);
     assert!(matches!(
         &state.transcript[0],
-        TranscriptItem::User { text, .. } if text == "kept"
+        TranscriptItem::User { markdown, .. } if markdown.as_str() == "kept"
     ));
 }
 
@@ -3264,7 +3264,7 @@ fn rewound_cuts_the_projection_and_reused_sequences_follow_on() {
             .transcript
             .iter()
             .filter_map(|item| match item {
-                TranscriptItem::User { text, .. } => Some(text.clone()),
+                TranscriptItem::User { markdown, .. } => Some(markdown.as_str().to_owned()),
                 _ => None,
             })
             .collect::<Vec<_>>()

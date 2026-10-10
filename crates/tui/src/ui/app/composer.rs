@@ -679,7 +679,9 @@ impl App {
         };
         let text = self.store.sessions.get(&session_id).and_then(|state| {
             state.transcript.iter().find_map(|item| match item {
-                TranscriptItem::User { seq, text, .. } if *seq == hit.seq => Some(text.clone()),
+                TranscriptItem::User { seq, markdown, .. } if *seq == hit.seq => {
+                    Some(markdown.as_str().to_owned())
+                }
                 _ => None,
             })
         });

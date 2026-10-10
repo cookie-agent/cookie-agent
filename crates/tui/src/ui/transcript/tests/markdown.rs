@@ -172,3 +172,27 @@ fn tab_indented_code_expands_to_tab_stops_on_a_solid_band() {
         .collect::<Vec<_>>();
     assert!(widths.iter().all(|width| *width == widths[0]), "{widths:?}");
 }
+
+#[test]
+fn user_messages_render_markdown_and_keep_typed_newlines() {
+    let mut state = assistant_state(Vec::new());
+    state.transcript = vec![TranscriptItem::user(
+        "fix **this** and `that`\nsecond line\n\n- item",
+    )];
+    let rendered = transcript_layout(&state, None, 60)
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        rendered,
+        [
+            "┌─ You",
+            "│ fix this and that",
+            "│ second line",
+            "│ ",
+            "│ • item",
+        ]
+    );
+}

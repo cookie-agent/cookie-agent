@@ -40,6 +40,9 @@ pub struct MarkdownDocument {
     stable_reference_definitions: BTreeMap<String, ReferenceDefinition>,
     reference_definitions: BTreeMap<String, ReferenceDefinition>,
     stable_reference_dependencies: BTreeSet<String>,
+    /// Render every source newline as a line break instead of joining soft
+    /// breaks with a space: typed text means its newlines.
+    hard_breaks: bool,
     parse_passes: u64,
     parsed_bytes: u64,
     reference_reparses: u64,
@@ -247,6 +250,18 @@ impl MarkdownDocument {
         document
     }
 
+    /// A document whose soft line breaks render as hard breaks, for text a
+    /// person typed (user messages) rather than prose a model reflowed.
+    pub fn with_hard_breaks(source: String) -> Self {
+        let mut document = Self {
+            source,
+            hard_breaks: true,
+            ..Self::default()
+        };
+        document.reparse_open_tail();
+        document
+    }
+
     pub fn append(&mut self, delta: &str) {
         self.source.push_str(delta);
         self.reparse_open_tail();
@@ -305,7 +320,7 @@ impl MarkdownDocument {
     fn parse(&mut self, source: &str) -> ParsedDocument {
         self.parse_passes = self.parse_passes.wrapping_add(1);
         self.parsed_bytes = self.parsed_bytes.wrapping_add(source.len() as u64);
-        parse_document(source)
+        parse_document(source, self.hard_breaks)
     }
 
     fn effective_definitions(
@@ -384,7 +399,7 @@ struct ParsedReferenceDefinition {
     span: std::ops::Range<usize>,
 }
 
-fn parse_document(source: &str) -> ParsedDocument {
+fn parse_document(source: &str, hard_breaks: bool) -> ParsedDocument {
     let (definitions, events, broken_references) = {
         let mut broken_references = Vec::new();
         let mut broken_link_callback = |broken: BrokenLink<'_>| {
@@ -431,7 +446,10 @@ fn parse_document(source: &str) -> ParsedDocument {
             Event::End(_) => depth = depth.saturating_sub(1),
             _ => {}
         }
-        current.push(event.into_static());
+        current.push(match event {
+            Event::SoftBreak if hard_breaks => Event::HardBreak,
+            event => event.into_static(),
+        });
         if depth == 0 {
             let range = current_start..current_end;
             blocks.push(ParsedBlock {

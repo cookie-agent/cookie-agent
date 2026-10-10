@@ -1440,7 +1440,7 @@ fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
         .transcript
         .iter()
         .filter_map(|item| match item {
-            TranscriptItem::User { text, .. } => Some(format!("user: {text}")),
+            TranscriptItem::User { markdown, .. } => Some(format!("user: {}", markdown.as_str())),
             TranscriptItem::Assistant {
                 children,
                 attribution,

@@ -197,15 +197,23 @@ pub(super) fn transcript_item_layout(
     context: &mut TranscriptRenderContext<'_>,
 ) -> ItemLayout {
     match item {
-        TranscriptItem::User { text, seq, .. } => ItemLayout {
-            lines: role_block(
-                Role::User,
-                text.lines()
-                    .map(|line| Line::from(line.to_owned()))
-                    .collect(),
-                context.width,
-                context.theme,
-            ),
+        TranscriptItem::User { markdown, seq, .. } => ItemLayout {
+            lines: {
+                let width = context.width;
+                let theme = context.theme;
+                let mut lines = role_block(Role::User, Vec::new(), width, theme);
+                lines.extend(
+                    crate::markdown::render_markdown_lines_width(
+                        markdown,
+                        theme,
+                        context.highlighter,
+                        markdown_body_width(width),
+                    )
+                    .into_iter()
+                    .flat_map(|line| markdown_body_line(line, width, theme.user())),
+                );
+                lines
+            },
             regions: Vec::new(),
             user_seq: Some(*seq),
         },

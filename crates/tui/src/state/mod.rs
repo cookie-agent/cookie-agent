@@ -206,7 +206,8 @@ pub enum TranscriptItem {
     User {
         id: u64,
         version: u64,
-        text: String,
+        /// The submitted text, rendered as markdown with typed newlines kept.
+        markdown: MarkdownDocument,
         /// Physical sequence of the `UserInputSubmitted` event that created
         /// the row: the revert/fork menu targets it with `through_seq`.
         seq: u64,
@@ -440,7 +441,7 @@ impl TranscriptItem {
         Self::User {
             id: 1,
             version: 0,
-            text: text.into(),
+            markdown: MarkdownDocument::with_hard_breaks(text.into()),
             // Layout fixtures never target the row; any plausible physical
             // sequence (SessionCreated owns 1) keeps the field inhabited.
             seq: 2,

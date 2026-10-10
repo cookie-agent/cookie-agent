@@ -337,15 +337,14 @@ pub(super) fn assistant_child_layout(
     match child {
         AssistantChild::Text { markdown, .. } => ItemLayout {
             lines: {
-                let markdown_width = width.saturating_sub(u16::from(width >= 3) * 2);
                 crate::markdown::render_markdown_lines_width(
                     markdown,
                     theme,
                     highlighter,
-                    markdown_width,
+                    markdown_body_width(width),
                 )
                 .into_iter()
-                .flat_map(|line| assistant_markdown_body_line(line, width, theme))
+                .flat_map(|line| markdown_body_line(line, width, theme.assistant()))
                 .collect()
             },
             regions: Vec::new(),
@@ -549,12 +548,20 @@ pub(super) fn assistant_body_line(
     repeated_prefixed_wrapped_line(prefix.unwrap_or_default(), line, width)
 }
 
-pub(super) fn assistant_markdown_body_line(
+/// The text width a markdown body gets once [`markdown_body_line`] spends two
+/// columns on its gutter.
+pub(super) fn markdown_body_width(width: u16) -> u16 {
+    width.saturating_sub(u16::from(width >= 3) * 2)
+}
+
+/// One rendered markdown line behind a `│ ` gutter in `gutter_style`,
+/// wrapped by its kind: prose wraps, list items hang, code and tables clip.
+pub(super) fn markdown_body_line(
     line: MarkdownLine,
     width: u16,
-    theme: &Theme,
+    gutter_style: Style,
 ) -> Vec<Line<'static>> {
-    let prefix = (width >= 3).then(|| vec![Span::styled("│ ", theme.assistant())]);
+    let prefix = (width >= 3).then(|| vec![Span::styled("│ ", gutter_style)]);
     let prefix = prefix.unwrap_or_default();
     match line.kind {
         MarkdownLineKind::Prose => repeated_prefixed_wrapped_line(prefix, line.line, width),

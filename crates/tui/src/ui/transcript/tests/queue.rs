@@ -45,7 +45,7 @@ async fn pending_lane_tracks_admit_promote_and_recall_events() {
         .transcript
         .iter()
         .filter_map(|item| match item {
-            TranscriptItem::User { text, .. } => Some(text.as_str()),
+            TranscriptItem::User { markdown, .. } => Some(markdown.as_str()),
             _ => None,
         })
         .collect();
