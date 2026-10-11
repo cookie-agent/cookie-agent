@@ -1908,11 +1908,25 @@ impl SessionStore {
         }
     }
 
+    #[cfg(test)]
     pub fn fork(
         &self,
         source_id: SessionId,
         through_seq: u64,
         origin: cookie_agent_protocol::EventOrigin,
+    ) -> Result<SessionId, SessionError> {
+        self.fork_with(source_id, through_seq, origin, &|_| Ok(()))
+    }
+
+    /// Forks `source_id` through `through_seq`. A fork that opens a tree of its
+    /// own calls `prepare_tree` with the unpublished tree directory, so what it
+    /// adds there (the fork's artifacts) publishes with the fork or not at all.
+    pub fn fork_with(
+        &self,
+        source_id: SessionId,
+        through_seq: u64,
+        origin: cookie_agent_protocol::EventOrigin,
+        prepare_tree: &dyn Fn(&Path) -> std::io::Result<()>,
     ) -> Result<SessionId, SessionError> {
         // A fork reads its source's tree and files the new session into it, so
         // the tree has to be complete *before* `mutation` is taken: a load
@@ -2051,6 +2065,12 @@ impl SessionStore {
                 &fork_projection.meta,
                 CacheSync::Durable,
             )?;
+            if matches!(location, SessionLocation::Root) {
+                prepare_tree(&temporary).map_err(|source| SessionError::Io {
+                    path: temporary.clone(),
+                    source,
+                })?;
+            }
             // Only a root opens a tree, and only a root takes a lock: on unix
             // inside the temporary directory that is about to become the root,
             // on Windows from the sidecar path derived from the final one. A

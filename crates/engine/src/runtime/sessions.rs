@@ -723,23 +723,30 @@ impl Engine {
                 Err(error) => self.record_interception_error(session_id, plugin, error),
             }
         }
-        let forked = self.inner.store.fork(session_id, through_seq, origin)?;
         // A fork into a new tree takes the artifacts its history references
         // along, so it never resolves anything in the tree it came from
         // (tree-local D2).
-        let mut referenced = std::collections::HashSet::new();
+        let mut referenced = HashSet::new();
         crate::runtime::artifacts::artifact_references_in_events(
             self.inner
                 .store
-                .log(forked)?
+                .log(session_id)?
                 .event_snapshot()
                 .iter()
+                .filter(|event| event.seq <= through_seq)
                 .map(AsRef::as_ref),
             &mut referenced,
         )?;
-        self.inner
-            .artifacts
-            .copy_into_tree(session_id, forked, referenced)?;
+        let forked = self
+            .inner
+            .store
+            .fork_with(session_id, through_seq, origin, &|tree| {
+                self.inner.artifacts.link_into(
+                    session_id,
+                    &tree.join(crate::runtime::artifacts::ARTIFACTS_DIR),
+                    &referenced,
+                )
+            })?;
         let producer_state = self.goal_producer_projection(forked)?;
         if producer_state.goal.is_some()
             || producer_state

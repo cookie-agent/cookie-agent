@@ -296,7 +296,7 @@ mod unix {
     use bytes::Bytes;
     use cookie_agent_protocol::{ArtifactReference, ToolAttachment};
     use fs2::FileExt as _;
-    use rustix::fs::{AtFlags, Mode, OFlags, fsync, openat, renameat, unlinkat};
+    use rustix::fs::{AtFlags, Mode, OFlags, fsync, linkat, openat, renameat, unlinkat};
     use sha2::{Digest, Sha256};
     use uuid::Uuid;
 
@@ -422,6 +422,24 @@ mod unix {
                 }
             }
             Ok(deleted)
+        }
+
+        /// Hard-links blob `digest` into `into`; a blob this store lacks is
+        /// skipped and one `into` already has is kept.
+        pub(crate) fn link_to(&self, into: &Self, digest: &str) -> std::io::Result<()> {
+            if !is_digest_name(digest) {
+                return Ok(());
+            }
+            match linkat(
+                &*self.directory_handle,
+                digest,
+                &*into.directory_handle,
+                digest,
+                AtFlags::empty(),
+            ) {
+                Ok(()) | Err(rustix::io::Errno::NOENT | rustix::io::Errno::EXIST) => Ok(()),
+                Err(error) => Err(error.into()),
+            }
         }
 
         pub(crate) fn open_existing(&self, name: &str) -> std::io::Result<Option<fs::File>> {
@@ -989,6 +1007,26 @@ mod windows {
             Ok(bytes)
         }
 
+        /// Hard-links blob `digest` into `into`; a blob this store lacks is
+        /// skipped and one `into` already has is kept.
+        pub(crate) fn link_to(&self, into: &Self, digest: &str) -> std::io::Result<()> {
+            if !is_digest_name(digest) {
+                return Ok(());
+            }
+            match fs::hard_link(self.directory.join(digest), into.directory.join(digest)) {
+                Ok(()) => Ok(()),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::AlreadyExists
+                    ) =>
+                {
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        }
+
         pub(crate) fn open_existing(&self, name: &str) -> std::io::Result<Option<fs::File>> {
             let path = self.directory.join(name);
             match fs::OpenOptions::new().read(true).write(true).open(&path) {
@@ -1337,7 +1375,7 @@ pub(crate) use windows::*;
 
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -1571,53 +1609,32 @@ impl ArtifactRouter {
         }
     }
 
-    /// Copies every artifact `digests` names — and every artifact those name in
-    /// turn, such as a named-stream manifest's streams — from `source`'s tree
-    /// into `target`'s, so a fork never depends on the tree it came from
-    /// (tree-local D2). Content already present is kept; content the source no
-    /// longer holds is skipped, exactly as a read of it would fail there.
-    pub(crate) fn copy_into_tree(
+    /// Hard-links every artifact `digests` names — and every artifact those
+    /// name in turn, such as a named-stream manifest's streams — from
+    /// `source`'s tree into the artifact `directory` of a new tree, so a fork
+    /// never depends on the tree it came from (tree-local D2). Blobs are
+    /// immutable, so both trees share one copy on disk. Content the source no
+    /// longer holds is skipped, exactly as a read of it would fail there; any
+    /// other failure fails the fork.
+    pub(crate) fn link_into(
         &self,
         source: SessionId,
-        target: SessionId,
-        digests: HashSet<String>,
+        directory: &Path,
+        digests: &HashSet<String>,
     ) -> std::io::Result<()> {
-        if self.flat.is_some()
-            || self.tree_for(source) == self.tree_for(target)
-            || digests.is_empty()
-        {
+        if self.flat.is_some() || digests.is_empty() {
             return Ok(());
         }
         let Some(from) = self.read_store(source)? else {
             return Ok(());
         };
-        let read = |digest: &str| -> std::io::Result<Option<Vec<u8>>> {
-            use std::io::Read as _;
-            let Some(mut file) = from.open_existing(digest)? else {
-                return Ok(None);
-            };
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)?;
-            Ok(Some(bytes))
-        };
-        let mut all = digests;
+        let mut all = digests.clone();
         expand_transitive_artifact_references(&mut all, |digest| {
-            let Some(file) = from.open_existing(digest)? else {
-                return Ok(None);
-            };
-            if file.metadata()?.len() > MAX_TRANSITIVE_ARTIFACT_BYTES {
-                return Ok(None);
-            }
-            read(digest)
+            read_small_artifact(&from, digest)
         })?;
-        let into = self.write_store(target)?;
-        for digest in all {
-            if into.open_existing(&digest)?.is_some() {
-                continue;
-            }
-            if let Some(bytes) = read(&digest)? {
-                into.retain(&bytes)?;
-            }
+        let into = ArtifactStore::open(directory.to_path_buf())?;
+        for digest in &all {
+            from.link_to(&into, digest)?;
         }
         Ok(())
     }

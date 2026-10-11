@@ -165,7 +165,7 @@ fn reads_resolve_only_in_the_readers_tree() {
 /// Tree-local sessions D2: content copied into a fork's tree includes what a
 /// manifest names, and survives the source tree going away.
 #[test]
-fn copying_into_a_tree_takes_manifests_and_their_streams_along() {
+fn linking_into_a_tree_takes_manifests_and_their_streams_along() {
     let fixture = placement();
     let (source, target) = (fixture.roots[0], fixture.roots[1]);
     let (_, stream) = fixture
@@ -182,14 +182,24 @@ fn copying_into_a_tree_takes_manifests_and_their_streams_along() {
         .expect("manifest");
     fixture
         .router
-        .copy_into_tree(
+        .link_into(
             source,
-            target,
-            [manifest_digest.clone(), "f".repeat(64)]
+            &tree_dir(fixture.workdir.path(), target).join(super::ARTIFACTS_DIR),
+            &[manifest_digest.clone(), "f".repeat(64)]
                 .into_iter()
                 .collect(),
         )
-        .expect("copy into the fork's tree");
+        .expect("link into the fork's tree");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let inode = |root| {
+            fs::metadata(tree_blob(fixture.workdir.path(), root, &stream))
+                .expect("stream blob")
+                .ino()
+        };
+        assert_eq!(inode(source), inode(target), "one blob, linked twice");
+    }
     fs::remove_dir_all(tree_dir(fixture.workdir.path(), source)).expect("drop the source tree");
     let reopened =
         ArtifactRouter::open(fixture.workdir.path().to_path_buf()).expect("reopened router");

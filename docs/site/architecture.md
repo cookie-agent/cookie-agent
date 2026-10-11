@@ -369,9 +369,9 @@ Tool output is content-addressed under a digest-named file, and every artifact
 belongs to exactly one tree: output written by a root or one of its descendants
 lands in that root's `artifacts/`. A session reads only its own tree's
 artifacts, so a URI naming content another tree stored does not resolve there.
-A fork of a root copies every artifact its history references — and the
-streams a named-stream manifest lists — into the new tree before the fork
-returns, so it never depends on its source. Collection is therefore per tree
+A fork of a root hard-links every artifact its history references — and the
+streams a named-stream manifest lists — into the new tree before the fork is
+published, so it never depends on its source; a link that fails fails the fork. Collection is therefore per tree
 and needs nothing from any other tree. It runs only on revert: a digest the
 reverted events referenced is unlinked unless the tree's remaining root or
 child logs still reference it, and the sweep is skipped while the tree runs or
