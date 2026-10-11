@@ -90,7 +90,7 @@ pub fn gate_attachment(
     family: OvenAdapterFamily,
     capabilities: &ModelCapabilities,
     mime_type: &str,
-    bytes: &[u8],
+    size: u64,
 ) -> AttachmentGate {
     let kind = if mime_type.starts_with("image/") {
         CapabilityMediaKind::Image
@@ -116,7 +116,7 @@ pub fn gate_attachment(
     if !accepted {
         return AttachmentGate::RejectUnsupportedModel;
     }
-    if bytes.len() as u64 > capability.max_bytes {
+    if size > capability.max_bytes {
         return AttachmentGate::RejectTooLarge {
             max_bytes: capability.max_bytes,
         };
@@ -180,7 +180,7 @@ pub fn gate_attachment(
         _ => return AttachmentGate::RejectUnsupportedFamily,
     };
     let max_bytes = capability.max_bytes.min(family_limit);
-    if bytes.len() as u64 > max_bytes {
+    if size > max_bytes {
         AttachmentGate::RejectTooLarge { max_bytes }
     } else {
         delivery
@@ -353,7 +353,43 @@ fn capability_media_kind(mime_type: &str) -> Option<CapabilityMediaKind> {
     }
 }
 
+/// Leading bytes that [`sniff_media_type`] needs to recognize every format.
+pub const MEDIA_SNIFF_BYTES: usize = 16 * 1024;
+
+/// Recognizes a media file from its first [`MEDIA_SNIFF_BYTES`] (or all of
+/// it, when shorter) and its total length, so size limits apply before the
+/// whole file is read. A recognized file still needs [`approved_media_type`].
+pub fn sniff_media_type(
+    path: &Path,
+    head: &[u8],
+    len: u64,
+) -> Result<Option<&'static str>, ToolError> {
+    Ok(sniff(path, head, len)?.map(|(mime, _)| mime))
+}
+
+/// Recognizes and fully validates a media file.
 pub fn approved_media_type(path: &Path, bytes: &[u8]) -> Result<Option<&'static str>, ToolError> {
+    let Some((mime, kind)) = sniff(path, bytes, bytes.len() as u64)? else {
+        return Ok(None);
+    };
+    let valid = match kind {
+        MediaKind::Image(container) => validate_image(bytes, container),
+        MediaKind::Pdf => validate_pdf(bytes),
+        MediaKind::Audio => true,
+        MediaKind::Video => true,
+    };
+    if valid {
+        Ok(Some(mime))
+    } else {
+        Err(malformed_media())
+    }
+}
+
+fn sniff(
+    path: &Path,
+    bytes: &[u8],
+    len: u64,
+) -> Result<Option<(&'static str, MediaKind)>, ToolError> {
     let known_extension = known_media_extension(path);
     let candidate = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some(("image/png", MediaKind::Image(ImageContainer::Png)))
@@ -376,7 +412,7 @@ pub fn approved_media_type(path: &Path, bytes: &[u8]) -> Result<Option<&'static 
         Some(("audio/ogg", MediaKind::Audio))
     } else if bytes.starts_with(b"fLaC") {
         Some(("audio/flac", MediaKind::Audio))
-    } else if let Some(mime) = iso_base_media_type(bytes) {
+    } else if let Some(mime) = iso_base_media_type(bytes, len) {
         Some((mime, MediaKind::Video))
     } else if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
         let mime = if path
@@ -419,23 +455,12 @@ pub fn approved_media_type(path: &Path, bytes: &[u8]) -> Result<Option<&'static 
         MediaKind::Video => MAX_VIDEO_ENCODED_BYTES,
         MediaKind::Image(_) | MediaKind::Pdf | MediaKind::Audio => MAX_ENCODED_BYTES,
     };
-    if bytes.len() > max_encoded_bytes {
+    if len > max_encoded_bytes as u64 {
         return Err(ToolError::resource_limit(format!(
-            "attachment is {} bytes; the absolute validation cap is {max_encoded_bytes} bytes",
-            bytes.len()
+            "attachment is {len} bytes; the absolute validation cap is {max_encoded_bytes} bytes"
         )));
     }
-    let valid = match kind {
-        MediaKind::Image(container) => validate_image(bytes, container),
-        MediaKind::Pdf => validate_pdf(bytes),
-        MediaKind::Audio => true,
-        MediaKind::Video => true,
-    };
-    if valid {
-        Ok(Some(mime))
-    } else {
-        Err(malformed_media())
-    }
+    Ok(Some((mime, kind)))
 }
 
 pub(crate) fn canonical_video_mime_type(value: &str) -> &str {
@@ -463,7 +488,8 @@ enum MediaKind {
     Video,
 }
 
-fn iso_base_media_type(bytes: &[u8]) -> Option<&'static str> {
+/// `bytes` may be a prefix of a file `len` bytes long.
+fn iso_base_media_type(bytes: &[u8], len: u64) -> Option<&'static str> {
     if bytes.len() < 12 || &bytes[4..8] != b"ftyp" {
         return None;
     }
@@ -479,7 +505,7 @@ fn iso_base_media_type(bytes: &[u8]) -> Option<&'static str> {
             }
             size => (size as usize, 8, 16),
         };
-    if box_size < compatible_offset || box_size > bytes.len() {
+    if box_size < compatible_offset || box_size as u64 > len {
         return None;
     }
     let brand = &bytes[major_offset..major_offset + 4];
@@ -488,7 +514,12 @@ fn iso_base_media_type(bytes: &[u8]) -> Option<&'static str> {
     }
     // Scan the compatible-brand list with a hard bound: an oversized ftyp box must not turn
     // sniffing into a full scan of unbounded input.
-    let scan_end = box_size.min(compatible_offset + MAX_BRAND_SCAN_BYTES);
+    let scan_end = box_size
+        .min(compatible_offset + MAX_BRAND_SCAN_BYTES)
+        .min(bytes.len());
+    if scan_end < compatible_offset {
+        return None;
+    }
     bytes[compatible_offset..scan_end]
         .as_chunks::<4>()
         .0
@@ -1485,7 +1516,7 @@ mod tests {
                 (MediaKind::Pdf, "application/pdf", pdf_delivery),
             ] {
                 assert_eq!(
-                    gate_attachment(family, &capabilities(None), mime_type, b"media"),
+                    gate_attachment(family, &capabilities(None), mime_type, 5),
                     AttachmentGate::RejectUnsupportedModel,
                     "{family:?} {kind:?} without capability"
                 );
@@ -1494,7 +1525,7 @@ mod tests {
                         family,
                         &capabilities(Some((kind, mime_type, 20 * 1024 * 1024))),
                         mime_type,
-                        b"media",
+                        5,
                     ),
                     delivery,
                     "{family:?} {kind:?} with capability"
@@ -1515,7 +1546,7 @@ mod tests {
                     OvenAdapterFamily::OpenaiChat,
                     &capabilities(Some((MediaKind::Video, advertised, 1024))),
                     observed,
-                    b"video",
+                    5,
                 ),
                 AttachmentGate::RejectUnsupportedFamily
             );
@@ -1527,7 +1558,7 @@ mod tests {
                 OvenAdapterFamily::AwsBedrockConverse,
                 &image,
                 "image/png",
-                &vec![0; BEDROCK_IMAGE_BYTES as usize + 1],
+                BEDROCK_IMAGE_BYTES + 1,
             ),
             AttachmentGate::RejectTooLarge {
                 max_bytes: BEDROCK_IMAGE_BYTES
@@ -1538,7 +1569,7 @@ mod tests {
                 OvenAdapterFamily::AwsBedrockConverse,
                 &pdf,
                 "application/pdf",
-                &vec![0; BEDROCK_PDF_BYTES as usize + 1],
+                BEDROCK_PDF_BYTES + 1,
             ),
             AttachmentGate::RejectTooLarge {
                 max_bytes: BEDROCK_PDF_BYTES
@@ -1566,7 +1597,7 @@ mod tests {
                 OvenAdapterFamily::AwsBedrockConverse,
                 &video,
                 "video/mp4",
-                b"video",
+                5,
             ),
             AttachmentGate::AttachToolResult
         );
@@ -1575,7 +1606,7 @@ mod tests {
                 OvenAdapterFamily::AwsBedrockConverse,
                 &video,
                 "video/mp4",
-                &vec![0; super::BEDROCK_VIDEO_BYTES as usize],
+                super::BEDROCK_VIDEO_BYTES,
             ),
             AttachmentGate::AttachToolResult
         );
@@ -1584,7 +1615,7 @@ mod tests {
                 OvenAdapterFamily::AwsBedrockConverse,
                 &video,
                 "video/mp4",
-                &vec![0; super::BEDROCK_VIDEO_BYTES as usize + 1],
+                super::BEDROCK_VIDEO_BYTES + 1,
             ),
             AttachmentGate::RejectTooLarge {
                 max_bytes: super::BEDROCK_VIDEO_BYTES
@@ -1603,7 +1634,7 @@ mod tests {
                 OvenAdapterFamily::OpenaiChat,
                 &small_cap,
                 "application/pdf",
-                &[0; 16],
+                16,
             ),
             AttachmentGate::RejectTooLarge { max_bytes: 8 }
         );
@@ -1646,22 +1677,12 @@ mod tests {
             ),
         ] {
             assert_ne!(
-                gate_attachment(
-                    family,
-                    capabilities,
-                    mime_type,
-                    &vec![0; max_bytes as usize]
-                ),
+                gate_attachment(family, capabilities, mime_type, max_bytes),
                 AttachmentGate::RejectTooLarge { max_bytes },
                 "{family:?} {mime_type} at the limit"
             );
             assert_eq!(
-                gate_attachment(
-                    family,
-                    capabilities,
-                    mime_type,
-                    &vec![0; max_bytes as usize + 1]
-                ),
+                gate_attachment(family, capabilities, mime_type, max_bytes + 1),
                 AttachmentGate::RejectTooLarge { max_bytes },
                 "{family:?} {mime_type} over the limit"
             );
@@ -1684,7 +1705,7 @@ mod tests {
             OvenAdapterFamily::GoogleVertexGemini,
         ] {
             assert_eq!(
-                gate_attachment(family, &video, "video/mp4", b"video"),
+                gate_attachment(family, &video, "video/mp4", 5),
                 AttachmentGate::DeliverViaUserTurn,
                 "{family:?}"
             );
@@ -1694,7 +1715,7 @@ mod tests {
                 OvenAdapterFamily::AwsBedrockConverse,
                 &video,
                 "video/mp4",
-                b"video"
+                5
             ),
             AttachmentGate::AttachToolResult
         );
@@ -1703,12 +1724,12 @@ mod tests {
                 OvenAdapterFamily::OpenaiCompatible,
                 &capabilities(None),
                 "video/mp4",
-                b"video"
+                5
             ),
             AttachmentGate::RejectUnsupportedModel
         );
         assert_eq!(
-            gate_attachment(OvenAdapterFamily::Anthropic, &video, "video/mp4", b"video"),
+            gate_attachment(OvenAdapterFamily::Anthropic, &video, "video/mp4", 5),
             AttachmentGate::RejectUnsupportedFamily
         );
     }
@@ -1739,7 +1760,7 @@ mod tests {
             OvenAdapterFamily::GoogleVertexGemini,
         ] {
             assert_eq!(
-                gate_attachment(family, &audio, "audio/mpeg", b"ID3payload"),
+                gate_attachment(family, &audio, "audio/mpeg", 10),
                 AttachmentGate::DeliverViaUserTurn
             );
         }

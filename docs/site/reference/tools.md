@@ -70,6 +70,11 @@ Errors distinguish `invalid_url`, `redirect_error`, `timeout`,
 `read` accepts `filePath`, plus optional zero-based `offset` and positive
 `limit`. The defaults return at most 2,000 lines or directory entries. The path
 is resolved when the call is prepared; the content is read when it executes.
+A text line longer than 4 KiB is cut and ends with a
+`[line truncated: N more bytes]` marker, and a page that would exceed the result
+size limit stops early with a `continue with offset=N` note (also reported as
+`next_offset` in the metadata). Media files are checked against the size limits
+before they are read in full.
 
 `write` accepts `filePath` and complete `content`. `edit` accepts `filePath`,
 `oldString`, and `newString`, and requires the old text to identify one

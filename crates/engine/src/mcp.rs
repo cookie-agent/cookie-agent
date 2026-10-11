@@ -3199,7 +3199,7 @@ fn retain_base64_attachment(
             context.turn_context.adapter_family,
             &context.turn_context.capabilities,
             mime,
-            &bytes,
+            bytes.len() as u64,
         );
         if let Some(error) = crate::media::attachment_gate_error(
             gate,

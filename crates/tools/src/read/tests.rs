@@ -5,11 +5,11 @@ use cookie_agent_engine::{
     ToolProvider, ToolResultTruncationPolicy, TurnAgentContext,
 };
 use cookie_agent_protocol::{
-    AdaptorId, MediaCapability, MediaKind, MimeType, Modality, PermissionAction, RunId, SessionId,
-    ToolCallId, ToolEmittedContent,
+    AdaptorId, MediaCapability, MediaKind, MimeType, Modality, PermissionAction,
+    PersistedToolResult, RunId, SessionId, ToolCallId, ToolEmittedContent,
 };
 
-use super::{ReadTool, directory_page, text_page, text_result};
+use super::{MAX_LINE_BYTES, ReadTool, directory_page, text_result};
 
 const PNG: &[u8] = &[
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -84,25 +84,58 @@ fn turn_context(
     })
 }
 
+fn page(text: &str, offset: usize, limit: usize) -> PersistedToolResult {
+    text_result(
+        Path::new("/file.txt"),
+        &mut std::io::Cursor::new(text.as_bytes()),
+        offset,
+        limit,
+    )
+    .unwrap()
+}
+
 #[test]
-fn large_single_line_read_is_full_and_declares_absolute_opt_out() {
-    let root = tempfile::tempdir().unwrap();
-    let text = "x".repeat(60 * 1024);
-    fs::write(root.path().join("large.txt"), &text).unwrap();
-    let result = text_result(
-        &root.path().join("large.txt"),
-        &text,
-        0,
-        super::DEFAULT_LIMIT,
+fn long_lines_are_cut_so_any_page_fits_the_result_limit() {
+    let long = "x".repeat(3 * 1024 * 1024);
+    let result = page(&format!("{long}\nshort\n"), 0, 1);
+    let first = result.output.lines().nth(3).unwrap();
+    assert!(first.starts_with(&format!("1: {}...", "x".repeat(MAX_LINE_BYTES))));
+    assert!(first.ends_with(&format!(
+        "[line truncated: {} more bytes]",
+        long.len() - MAX_LINE_BYTES
+    )));
+    assert_eq!(result.metadata["total_lines"], 2);
+    assert!(result.metadata["next_offset"].is_null());
+
+    let exact = "y".repeat(MAX_LINE_BYTES);
+    assert!(page(&exact, 0, 1).output.contains(&format!("1: {exact}\n")));
+
+    // Many long lines stop at the page budget and say where to continue.
+    let text = format!("{}\n", "z".repeat(MAX_LINE_BYTES)).repeat(2_000);
+    let result = page(&text, 0, 2_000);
+    assert!(result.output.len() <= PersistedToolResult::MAX_OUTPUT_BYTES);
+    let next = result.metadata["next_offset"].as_u64().unwrap();
+    assert!(next > 0 && next < 2_000);
+    assert!(
+        result
+            .output
+            .contains(&format!("continue with offset={next}]"))
     );
-    assert!(result.output.contains(&text));
-    assert!(result.output.len() > 50 * 1024);
-    assert!(result.truncation.is_none());
+    assert_eq!(result.metadata["total_lines"], 2_000);
+
     let spec = ReadTool::new("/tmp")
         .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
         .unwrap()
         .remove(0);
     assert_eq!(spec.result_truncation, ToolResultTruncationPolicy::OptOut);
+}
+
+#[test]
+fn multibyte_characters_are_not_split_by_a_line_cut() {
+    let line = format!("{}é tail", "a".repeat(MAX_LINE_BYTES - 1));
+    let output = page(&line, 0, 1).output;
+    assert!(output.contains(&format!("1: {}...", "a".repeat(MAX_LINE_BYTES - 1))));
+    assert!(output.contains("[line truncated: 7 more bytes]"));
 }
 
 #[test]
@@ -200,25 +233,38 @@ fn schema_documents_zero_based_offset_and_limit_default() {
 
 #[test]
 fn text_pagination_handles_zero_based_boundaries() {
-    let empty = Vec::<&str>::new();
-    assert!(text_page(&empty, 0, usize::MAX).next().is_none());
+    let numbered = |text: &str, offset, limit| {
+        let output = page(text, offset, limit).output;
+        output
+            .lines()
+            .skip(3)
+            .take_while(|line| *line != "</content>")
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    assert!(numbered("", 0, usize::MAX).is_empty());
+    assert_eq!(page("", 0, 1).metadata["total_lines"], 0);
 
-    let lines = ["first", "second", "third"];
+    let text = "first\r\nsecond\nthird";
+    assert_eq!(numbered(text, 0, 2), ["1: first", "2: second"]);
+    assert_eq!(numbered(text, 1, 1), ["2: second"]);
+    assert!(numbered(text, 3, usize::MAX).is_empty());
+    assert!(numbered(text, 4, usize::MAX).is_empty());
+    assert!(numbered(text, usize::MAX, usize::MAX).is_empty());
     assert_eq!(
-        text_page(&lines, 0, 2).collect::<Vec<_>>(),
-        [(0, "first"), (1, "second")]
+        numbered(text, 0, usize::MAX),
+        ["1: first", "2: second", "3: third"]
     );
-    assert_eq!(text_page(&lines, 1, 1).collect::<Vec<_>>(), [(1, "second")]);
-    assert!(text_page(&lines, lines.len(), usize::MAX).next().is_none());
+    assert_eq!(page(text, 0, 1).metadata["total_lines"], 3);
+    assert_eq!(page("a\nb\n", 0, 1).metadata["total_lines"], 2);
     assert!(
-        text_page(&lines, lines.len() + 1, usize::MAX)
-            .next()
-            .is_none()
-    );
-    assert!(text_page(&lines, usize::MAX, usize::MAX).next().is_none());
-    assert_eq!(
-        text_page(&lines, 0, usize::MAX).collect::<Vec<_>>(),
-        [(0, "first"), (1, "second"), (2, "third")]
+        text_result(
+            Path::new("/file.txt"),
+            &mut std::io::Cursor::new(b"ok\n\xff\n".as_slice()),
+            0,
+            2,
+        )
+        .is_err()
     );
 }
 

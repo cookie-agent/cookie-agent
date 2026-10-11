@@ -29,7 +29,10 @@ mod usage;
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
 pub use mcp::{McpRegistry, McpServerState, McpServerStatus};
-pub use media::{AttachmentGate, approved_media_type, attachment_gate_error, gate_attachment};
+pub use media::{
+    AttachmentGate, MEDIA_SNIFF_BYTES, approved_media_type, attachment_gate_error, gate_attachment,
+    sniff_media_type,
+};
 pub use plugin::{EngineEvent, PluginRegistry, PluginState, PluginStatus};
 pub use runtime::background_tasks::{BackgroundJob, BackgroundReport};
 /// Stable `send_message:<code>` error strings carried by
