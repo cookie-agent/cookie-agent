@@ -54,6 +54,9 @@ pub struct MarkdownDocument {
 #[derive(Debug)]
 struct HighlightCache {
     entries: HashMap<HighlightCacheKey, HighlightCacheEntry>,
+    /// Entries by last use, oldest first, so eviction pops instead of
+    /// scanning every entry.
+    recency: BTreeMap<u64, HighlightCacheKey>,
     budget_bytes: usize,
     used_bytes: usize,
     generation: u64,
@@ -64,6 +67,7 @@ impl Default for HighlightCache {
     fn default() -> Self {
         Self {
             entries: HashMap::new(),
+            recency: BTreeMap::new(),
             budget_bytes: HIGHLIGHT_CACHE_BUDGET_BYTES,
             used_bytes: 0,
             generation: 0,
@@ -93,6 +97,7 @@ impl HighlightCache {
     fn set_theme(&mut self, theme: ThemeKey) {
         if self.theme.is_some_and(|current| current != theme) {
             self.entries = HashMap::new();
+            self.recency = BTreeMap::new();
             self.used_bytes = 0;
         }
         self.theme = Some(theme);
@@ -106,6 +111,9 @@ impl HighlightCache {
         // same-length collision from reusing spans for different source text.
         if entry.source.as_ref() != source {
             return None;
+        }
+        if let Some(key) = self.recency.remove(&entry.last_used) {
+            self.recency.insert(generation, key);
         }
         entry.last_used = generation;
         Some(entry.lines.clone())
@@ -121,16 +129,12 @@ impl HighlightCache {
             return;
         }
         if let Some(replaced) = self.entries.remove(&key) {
+            self.recency.remove(&replaced.last_used);
             self.used_bytes = self.used_bytes.saturating_sub(replaced.bytes);
         }
         let available = self.budget_bytes - bytes;
         while self.used_bytes > available {
-            let Some(oldest) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.last_used)
-                .map(|(key, _)| key.clone())
-            else {
+            let Some((_, oldest)) = self.recency.pop_first() else {
                 break;
             };
             if let Some(evicted) = self.entries.remove(&oldest) {
@@ -146,6 +150,7 @@ impl HighlightCache {
             last_used: self.generation,
         };
         self.used_bytes += bytes;
+        self.recency.insert(self.generation, key.clone());
         self.entries.insert(key, entry);
         debug_assert!(self.used_bytes <= self.budget_bytes);
     }
@@ -836,6 +841,7 @@ impl SyntectHighlighter {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         cache.entries = HashMap::new();
+        cache.recency = BTreeMap::new();
         cache.used_bytes = 0;
         cache.budget_bytes = budget_bytes;
     }
