@@ -480,7 +480,7 @@ async fn signalled_bash_is_still_a_tool_failure() {
     .unwrap();
     let error = prepared.execute_for_test(context).await.unwrap_err();
     assert!(
-        error.to_string().contains("terminated by a signal"),
+        error.to_string().contains("terminated by signal 15"),
         "{error}"
     );
 }

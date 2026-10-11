@@ -725,7 +725,10 @@ impl BashExecutor {
             .await
             .map_err(|error| ToolError::execution(error.to_string()))??;
         if status.code().is_none() {
-            return Err(ToolError::execution("bash terminated by a signal"));
+            return Err(ToolError::execution(format!(
+                "bash {}",
+                signal_termination(&status)
+            )));
         }
         Ok(ToolResult {
             display: Some(completed_display(
@@ -871,6 +874,18 @@ fn background_started_notice(pid: Option<u32>, command: &str) -> String {
     )
 }
 
+/// Describes an exit status that carries no exit code.
+fn signal_termination(status: &std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    let signal = std::os::unix::process::ExitStatusExt::signal(status);
+    #[cfg(not(unix))]
+    let signal: Option<i32> = None;
+    signal.map_or_else(
+        || "terminated by a signal".to_owned(),
+        |signal| format!("terminated by signal {signal}"),
+    )
+}
+
 fn background_report(
     pid: Option<u32>,
     command: &str,
@@ -881,16 +896,7 @@ fn background_report(
     let status = match exit {
         BackgroundExit::Finished(Ok(status)) => match status.code() {
             Some(code) => format!("exited with code {code}"),
-            None => {
-                #[cfg(unix)]
-                let signal = std::os::unix::process::ExitStatusExt::signal(status);
-                #[cfg(not(unix))]
-                let signal: Option<i32> = None;
-                signal.map_or_else(
-                    || "terminated by a signal".to_owned(),
-                    |signal| format!("terminated by signal {signal}"),
-                )
-            }
+            None => signal_termination(status),
         },
         BackgroundExit::Finished(Err(error)) => format!("could not be waited on ({error})"),
         BackgroundExit::TimedOut => "timed out and was killed".to_owned(),
