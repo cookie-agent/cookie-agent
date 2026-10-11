@@ -500,7 +500,7 @@ async fn capture_io_errors_latch_and_preserve_previously_accepted_output() {
         let mut state = capture.0.state.lock().unwrap();
         let channel = &mut state.channels[0];
         let readonly = File::open(directory.join(&channel.temporary)).unwrap();
-        *channel.file.get_mut().unwrap() = readonly;
+        channel.file = readonly;
     }
     assert!(
         append(
@@ -739,4 +739,55 @@ async fn truncated_previews_show_the_first_and_last_lines() {
             Some(2)
         );
     }
+}
+
+#[tokio::test]
+async fn small_chunks_are_written_in_batches() {
+    let root = tempfile::tempdir().unwrap();
+    let store = ArtifactRouter::open_flat(root.path().join("artifacts")).unwrap();
+    let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&writes);
+    store.io_test_hook().set(Arc::new(move |operation, _| {
+        if operation == "capture_write" {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        Ok(())
+    }));
+    let capture = OutputCapture::new(
+        store.clone(),
+        crate::test_session_id(),
+        ToolOutputDeclaration::Single,
+        1,
+        8,
+    )
+    .await
+    .unwrap()
+    .with_flush_bytes(64);
+    let line = "nineteen bytes ...\n";
+    for _ in 0..10 {
+        append(
+            &capture,
+            &[ToolOutputChunk {
+                stream: None,
+                text: line.into(),
+            }],
+        )
+        .await
+        .unwrap();
+    }
+    // 190 bytes: a write at 76 and 152 buffered bytes, the rest at finish.
+    assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 2);
+    let result = capture
+        .finish(completion(ToolCompletionOutput::Streamed), false)
+        .await
+        .unwrap();
+    assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 3);
+    let stream = &result.retained_output.as_ref().unwrap().streams[0];
+    assert_eq!(
+        store
+            .read_paged(crate::test_session_id(), stream.sha256.as_str(), 0, 20)
+            .unwrap()
+            .content,
+        line.repeat(10)
+    );
 }

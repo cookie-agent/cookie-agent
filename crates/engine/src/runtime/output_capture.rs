@@ -27,11 +27,21 @@ pub(crate) struct OutputState {
     pub(crate) finalized_hubs: Mutex<VecDeque<ToolCallId>>,
 }
 
+/// Accepted output waits in memory until a channel holds this much, so a
+/// tool streaming small chunks costs one blocking write per mebibyte rather
+/// than one per chunk. Unit tests write through, chunk by chunk, unless they
+/// ask for batching.
+const FLUSH_BYTES: usize = if cfg!(test) { 1 } else { 1024 * 1024 };
+
 #[derive(Debug)]
 struct Channel {
     name: Option<String>,
     temporary: String,
-    file: Mutex<File>,
+    file: File,
+    /// Accepted bytes not yet written to `file`.
+    pending: Vec<u8>,
+    /// Bytes written to `file`; `hash` covers exactly these.
+    written: u64,
     hash: Sha256,
     bytes: u64,
     newlines: u64,
@@ -64,6 +74,7 @@ struct Capture {
     state: Mutex<State>,
     operations: Arc<tokio::sync::Semaphore>,
     publication: Mutex<Publication>,
+    flush_bytes: usize,
 }
 
 impl Drop for Capture {
@@ -76,7 +87,7 @@ impl Drop for Capture {
             let Channel {
                 temporary, file, ..
             } = channel;
-            drop(file.into_inner().unwrap_or_else(|p| p.into_inner()));
+            drop(file);
             self.store.discard_capture(self.session, &temporary);
         }
     }
@@ -147,6 +158,7 @@ impl OutputCapture {
             }),
             operations: Arc::new(tokio::sync::Semaphore::new(1)),
             publication: Mutex::new(Publication::default()),
+            flush_bytes: FLUSH_BYTES,
         }));
         {
             let mut state = capture.0.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -161,7 +173,9 @@ impl OutputCapture {
                 state.channels.push(Channel {
                     name,
                     temporary,
-                    file: Mutex::new(file),
+                    file,
+                    pending: Vec::new(),
+                    written: 0,
                     hash: Sha256::new(),
                     bytes: 0,
                     newlines: 0,
@@ -172,6 +186,15 @@ impl OutputCapture {
             }
         }
         Ok(capture)
+    }
+
+    /// Batch writes until a channel holds `bytes` (tests only).
+    #[cfg(test)]
+    pub(crate) fn with_flush_bytes(mut self, bytes: usize) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("a new capture is unshared")
+            .flush_bytes = bytes;
+        self
     }
 
     pub(crate) async fn emit(
@@ -187,42 +210,47 @@ impl OutputCapture {
             .acquire_owned()
             .await
             .map_err(|_| ToolError::execution("output capture closed"))?;
-        let capture = self.clone();
         let writes_output = !progress.output.is_empty();
-        let emit = move || {
+        // Accepting is a memory copy; only a full buffer costs a blocking write.
+        let flush = self.append(&progress.output)?;
+        for chunk in &progress.output {
+            output.emit(
+                cookie_agent_protocol::OutputStream::from_channel(chunk.stream.as_deref()),
+                chunk.text.as_bytes(),
+            );
+        }
+        progress.output.clear();
+        if let Some(permit) = permit {
+            permit.send(progress);
+        }
+        // Tests also hop for output that needs no write, so a hook can hold
+        // the delivery the way a slow write would.
+        if !(flush || cfg!(test) && writes_output) {
+            return Ok(());
+        }
+        let capture = self.clone();
+        blocking_io::run(move || {
             // The permit travels with the I/O, not its awaiter. Cancellation cannot
             // release it early and let terminal finalization overtake accepted bytes.
             let _operation = operation;
-            capture.append_blocking(&progress.output)?;
-            for chunk in &progress.output {
-                output.emit(
-                    cookie_agent_protocol::OutputStream::from_channel(chunk.stream.as_deref()),
-                    chunk.text.as_bytes(),
-                );
-            }
-            progress.output.clear();
-            if let Some(permit) = permit {
-                permit.send(progress);
+            if flush {
+                capture.flush_blocking(capture.0.flush_bytes)?;
             }
             #[cfg(test)]
-            if writes_output {
-                capture
-                    .0
-                    .store
-                    .io_test_hook()
-                    .run("capture_delivery", "")
-                    .map_err(|error| ToolError::execution(error.to_string()))?;
-            }
+            capture
+                .0
+                .store
+                .io_test_hook()
+                .run("capture_delivery", "")
+                .map_err(|error| ToolError::execution(error.to_string()))?;
             Ok(())
-        };
-        if writes_output {
-            blocking_io::run(emit).await?
-        } else {
-            emit()
-        }
+        })
+        .await?
     }
 
-    fn append_blocking(&self, chunks: &[ToolOutputChunk]) -> Result<(), ToolError> {
+    /// Accepts `chunks` into memory, reporting whether a channel's buffer is
+    /// now due to be written.
+    fn append(&self, chunks: &[ToolOutputChunk]) -> Result<bool, ToolError> {
         if chunks.len() > cookie_agent_protocol::MAX_TOOL_STREAMS
             || chunks.iter().map(|chunk| chunk.text.len()).sum::<usize>() > MAX_TOOL_DELTA_BYTES
         {
@@ -259,29 +287,15 @@ impl OutputCapture {
                 .iter_mut()
                 .find(|channel| channel.name == chunk.stream)
                 .expect("validated channel");
-            if let Err(error) = self.append_channel(channel, &chunk.text) {
-                state.error = Some(error.to_string());
-                return Err(error);
-            }
+            self.append_channel(channel, &chunk.text);
         }
-        Ok(())
+        Ok(state
+            .channels
+            .iter()
+            .any(|channel| channel.pending.len() >= self.0.flush_bytes))
     }
 
-    fn append_channel(&self, channel: &mut Channel, text: &str) -> Result<(), ToolError> {
-        #[cfg(test)]
-        self.0
-            .store
-            .io_test_hook()
-            .run("capture_write", &channel.temporary)
-            .map_err(|e| ToolError::execution(e.to_string()))?;
-        let file = channel.file.get_mut().unwrap_or_else(|p| p.into_inner());
-        if let Err(error) = file.write_all(text.as_bytes()) {
-            let _ = file.set_len(channel.bytes);
-            let _ = file.seek(SeekFrom::End(0));
-            return Err(ToolError::execution(format!(
-                "tool output capture failed: {error}"
-            )));
-        }
+    fn append_channel(&self, channel: &mut Channel, text: &str) {
         let limits = self.0.limits;
         let preview_lines = usize::try_from(channel.newlines).unwrap_or(usize::MAX);
         if channel.preview.len() as u64 == channel.bytes && preview_lines < limits.max_lines {
@@ -307,7 +321,7 @@ impl OutputCapture {
             }
             channel.tail.drain(..start);
         }
-        channel.hash.update(text.as_bytes());
+        channel.pending.extend_from_slice(text.as_bytes());
         channel.bytes = channel.bytes.saturating_add(text.len() as u64);
         channel.newlines = channel
             .newlines
@@ -315,6 +329,44 @@ impl OutputCapture {
         if !text.is_empty() {
             channel.ends_with_newline = text.ends_with('\n');
         }
+    }
+
+    /// Writes out every channel holding at least `threshold` buffered bytes.
+    /// A failure latches: the capture accepts nothing more.
+    fn flush_blocking(&self, threshold: usize) -> Result<(), ToolError> {
+        let mut state = self.0.state.lock().unwrap_or_else(|p| p.into_inner());
+        let state = &mut *state;
+        for channel in &mut state.channels {
+            if channel.pending.is_empty() || channel.pending.len() < threshold {
+                continue;
+            }
+            if let Err(error) = self.flush_channel(channel) {
+                state.error = Some(error.to_string());
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes a channel's buffer and folds it into the digest. On failure the
+    /// buffer is dropped and the file cut back to what was written before.
+    fn flush_channel(&self, channel: &mut Channel) -> Result<(), ToolError> {
+        let pending = std::mem::take(&mut channel.pending);
+        #[cfg(test)]
+        self.0
+            .store
+            .io_test_hook()
+            .run("capture_write", &channel.temporary)
+            .map_err(|e| ToolError::execution(e.to_string()))?;
+        if let Err(error) = channel.file.write_all(&pending) {
+            let _ = channel.file.set_len(channel.written);
+            let _ = channel.file.seek(SeekFrom::Start(channel.written));
+            return Err(ToolError::execution(format!(
+                "tool output capture failed: {error}"
+            )));
+        }
+        channel.hash.update(&pending);
+        channel.written = channel.written.saturating_add(pending.len() as u64);
         Ok(())
     }
 
@@ -400,12 +452,16 @@ impl OutputCapture {
                     .iter_mut()
                     .find(|channel| channel.name == chunk.stream)
                     .expect("validated channel");
-                if let Err(error) = self.append_channel(channel, &chunk.text) {
-                    state.error = Some(error.to_string());
-                    return Err(error);
-                }
+                self.append_channel(channel, &chunk.text);
             }
         }
+        drop(state);
+        if let Err(error) = self.flush_blocking(0)
+            && !incomplete
+        {
+            return Err(error);
+        }
+        let mut state = self.0.state.lock().unwrap_or_else(|p| p.into_inner());
         state.finalized = true;
         let mut streams = Vec::new();
         let mut previews = Vec::new();
@@ -414,7 +470,7 @@ impl OutputCapture {
             let reference = self
                 .0
                 .store
-                .commit_capture(self.session(), &channel.temporary, &sha256, channel.bytes)
+                .commit_capture(self.session(), &channel.temporary, &sha256, channel.written)
                 .map_err(|e| ToolError::execution(e.to_string()))?;
             let truncated = channel.preview.len() as u64 != channel.bytes;
             let preview = if truncated {
