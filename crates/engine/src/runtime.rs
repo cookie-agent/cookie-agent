@@ -695,14 +695,6 @@ impl Engine {
         artifacts.install_tree_resolver(Arc::new(move |session| {
             Some(placement.root_of(session).unwrap_or(session))
         }));
-        // A sweep reuses what a tree load harvested only while the store
-        // still agrees the harvest is current, so it has to ask the store:
-        // resident tip and durable length, the same pair a fold is verified
-        // against (§3.3, §5.2).
-        let fingerprinting = Arc::clone(&store);
-        artifacts.install_log_fingerprint_probe(Arc::new(move |session| {
-            fingerprinting.log_fingerprint(session)
-        }));
         let mcp = Arc::new(
             crate::McpRegistry::new(
                 options.config.mcp_servers.clone(),
@@ -1149,15 +1141,6 @@ impl Engine {
             }
         }
         self.reconcile_loaded_tree_producers(products.producer_projections.clone());
-        // Its child logs are now part of the durable live set for artifact
-        // collection, and its own directory may be collected: the set the one
-        // fold harvested replaces any later child-log scan (§3.3(b), §5.2).
-        self.inner.artifacts.note_tree_live_refs(
-            products.root,
-            products.artifact_refs.clone(),
-            products.child_log_fingerprints.clone(),
-        );
-        self.inner.artifacts.note_tree_loaded(products.root);
         Ok(())
     }
 

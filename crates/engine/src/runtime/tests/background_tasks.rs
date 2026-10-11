@@ -337,13 +337,6 @@ async fn background_job_reports_after_its_call_commits_and_keeps_its_output() {
         .uri
         .strip_prefix("artifact://sha256/")
         .expect("manifest digest");
-    // The producer event alone keeps the job's output alive.
-    fixture
-        .engine
-        .inner
-        .artifacts
-        .collect_garbage(std::time::Duration::ZERO)
-        .expect("artifact gc");
     let page = fixture
         .engine
         .read_artifact(session_id, &format!("artifact://{digest}/stdout"), 0, 10)

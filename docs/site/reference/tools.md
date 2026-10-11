@@ -233,16 +233,13 @@ mode `0600` on Unix. Their digest is verified when content is first read. A
 missing or corrupt artifact produces a normal tool error and does not prevent
 the engine or session from opening.
 
-The idle janitor scans durable `events.jsonl` files for live artifact references
-and removes unreferenced digest files only after a one-hour grace period. It also
-follows generic manifests to their stream artifacts and skips malformed or
-torn event lines. Publication guards exclude garbage collection until terminal
-references have been appended and flushed. Concurrent publishers can coexist;
-the artifact write mutex still protects individual retain/commit operations.
-Deduplication refreshes artifact modification time. Temporary artifact and capture
-files also hold an exclusive file lock while their writer is alive. Startup
-cleanup removes only files older than one hour whose lock is immediately
-available, so a silent long-running capture is not mistaken for abandoned work.
+Artifacts are collected only when a session is reverted. The revert deletes
+the digests that the cut-away events (and any delegated children the revert
+deletes) referenced, directly or through a generic manifest, unless an event
+still in the tree's logs references them too. The sweep is skipped while any
+session of the tree runs or a capture is still publishing its terminal
+references. Artifacts orphaned any other way, such as by a crash or a cancelled
+capture, stay in the tree's `artifacts/` directory until the tree is deleted.
 
 Artifact lookup uses the existing `read` tool:
 
@@ -283,9 +280,7 @@ non-manifests are errors. There is no separate `stream` argument. Stored
 Returned pages include `next_offset` metadata when more lines remain. A zero
 limit fails; larger limits are capped at 2000 lines. Pages over the 2 MiB
 terminal-result limit fail and must be requested with a smaller limit. Missing
-and corrupt artifacts produce tool errors. Artifact-ID access does not change
-garbage-collection lifetime: unreferenced retry artifacts remain subject to the
-existing one-hour grace period.
+and corrupt artifacts produce tool errors.
 
 ```json
 {"filePath":"artifact://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/results","offset":0,"limit":200}

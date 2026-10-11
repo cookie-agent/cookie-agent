@@ -709,3 +709,156 @@ async fn a_forked_tree_keeps_its_artifacts_after_the_source_tree_is_deleted() {
     assert_eq!(page.content, "one\ntwo\n");
     reopened.shutdown().await;
 }
+
+/// A revert deletes the artifacts only the cut events referenced, and keeps
+/// what an earlier event or a subagent of the same tree still references.
+#[tokio::test]
+async fn a_revert_deletes_artifacts_only_the_reverted_events_referenced() {
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+    let (endpoint, _captured, _reached, _release) =
+        scripted_server_with_delayed_response(vec![body.to_owned(), body.to_owned()], usize::MAX)
+            .await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let root = fixture
+        .engine
+        .create_session(selection.clone())
+        .unwrap()
+        .session_id;
+    let binding = frozen_root_policy(&fixture, &selection)
+        .selected_suffix
+        .first()
+        .unwrap()
+        .clone();
+    let artifacts = fixture.engine.inner.artifacts.clone();
+    let run = |input: &'static str| {
+        let fixture = &fixture;
+        let selection = selection.clone();
+        async move {
+            let run = fixture
+                .engine
+                .start_run(
+                    RunStartParams {
+                        reset_fallback: false,
+                        session_id: root,
+                        client_run_id: ClientRunId::new(input).unwrap(),
+                        selection,
+                        input: input.into(),
+                    },
+                    cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+                )
+                .await
+                .unwrap();
+            wait_for_session_not_running(&fixture.engine, root).await;
+            run.run_id
+        }
+    };
+    let truncated = |reference| cookie_agent_protocol::PersistedToolResult {
+        display: None,
+        retained_output: None,
+        title: cookie_agent_protocol::SafeDisplayText::new("Historical output").unwrap(),
+        output: "head\n".into(),
+        metadata: serde_json::Value::Null,
+        truncation: Some(cookie_agent_protocol::ToolOutputTruncation {
+            original_bytes: 64,
+            original_lines: 2,
+            retained: reference,
+        }),
+        attachments: Vec::new(),
+        additional_messages: Vec::new(),
+    };
+
+    let first = run("first-input").await;
+    let (kept_ref, kept) = artifacts
+        .retain(root, b"referenced before the cut\n")
+        .unwrap();
+    append_compaction_tool_history(&fixture, root, first, &binding, truncated(kept_ref), 1);
+    let second = run("second-input").await;
+    let (dropped_ref, dropped) = artifacts
+        .retain(root, b"referenced after the cut\n")
+        .unwrap();
+    let (shared_ref, shared) = artifacts
+        .retain(root, b"also used by a subagent\n")
+        .unwrap();
+    append_compaction_tool_history(&fixture, root, second, &binding, truncated(dropped_ref), 1);
+    append_compaction_tool_history(
+        &fixture,
+        root,
+        second,
+        &binding,
+        truncated(shared_ref.clone()),
+        1,
+    );
+    let child = create_buffered_delegated_child(&fixture.engine, root);
+    fixture
+        .engine
+        .append_direct(
+            child,
+            None,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+            EventPayload::ProducerMessageAccepted {
+                message_id: cookie_agent_protocol::ProducerMessageId::new_v7(),
+                producer_owner: cookie_agent_protocol::ProducerOwner::Tool {
+                    tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
+                },
+                mode: cookie_agent_protocol::ProducerDeliveryMode::Steer,
+                idempotency_key: cookie_agent_protocol::ProducerIdempotencyKey::new("job").unwrap(),
+                description: cookie_agent_protocol::SafeDisplayText::new("Background job").unwrap(),
+                body: "done".into(),
+                reminder: None,
+                agent_hop: None,
+                retained_output: Some(cookie_agent_protocol::RetainedToolOutput {
+                    reference: shared_ref.clone(),
+                    streams: vec![cookie_agent_protocol::RetainedToolStream {
+                        name: None,
+                        reference: shared_ref,
+                        sha256: Sha256Digest::new(shared.clone()).unwrap(),
+                        byte_length: 24,
+                        line_count: 1,
+                        truncated: true,
+                        next_offset: Some(0),
+                    }],
+                    incomplete: false,
+                }),
+            },
+        )
+        .unwrap();
+
+    let second_input = fixture
+        .engine
+        .inner
+        .store
+        .get(root)
+        .unwrap()
+        .log
+        .events()
+        .iter()
+        .find(|event| {
+            matches!(&event.payload,
+                EventPayload::UserInputSubmitted { input } if input == "second-input")
+        })
+        .map(|event| event.seq)
+        .unwrap();
+    fixture
+        .engine
+        .revert_session(
+            root,
+            second_input - 1,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        artifacts.blob_path(root, &kept).is_file(),
+        "kept before the cut"
+    );
+    assert!(
+        artifacts.blob_path(root, &shared).is_file(),
+        "kept by the subagent"
+    );
+    assert!(
+        !artifacts.blob_path(root, &dropped).exists(),
+        "only the reverted events referenced it"
+    );
+    fixture.engine.shutdown().await;
+}

@@ -1242,7 +1242,7 @@ fn cached_summary_and_fork_do_not_bypass_the_tree_load() {
 /// the products the engine would have folded in — and can reject them.
 #[derive(Default)]
 struct CapturingObserver {
-    deliveries: Mutex<Vec<(SessionId, Vec<String>, usize)>>,
+    deliveries: Mutex<Vec<(SessionId, usize)>>,
     reject: AtomicBool,
 }
 
@@ -1254,13 +1254,10 @@ impl TreeLoadObserver for CapturingObserver {
         if self.reject.load(Ordering::SeqCst) {
             return Err(crate::runtime::EngineError::ActorStopped);
         }
-        let mut references = products.artifact_refs.iter().cloned().collect::<Vec<_>>();
-        references.sort();
-        self.deliveries.lock().expect("observer lock").push((
-            products.root,
-            references,
-            products.grants.len(),
-        ));
+        self.deliveries
+            .lock()
+            .expect("observer lock")
+            .push((products.root, products.grants.len()));
         Ok(())
     }
 }
@@ -1618,7 +1615,7 @@ fn loads_completed_without_an_observer_are_delivered_when_it_arrives() {
         .expect("install observer");
     assert_eq!(
         observer.deliveries.lock().expect("observer lock").clone(),
-        vec![(root, vec![], 0)],
+        vec![(root, 0)],
         "the queued products reached the late observer once"
     );
     assert_eq!(

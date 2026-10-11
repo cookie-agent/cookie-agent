@@ -543,56 +543,141 @@ impl Engine {
             }
         }
         let session = session_id;
-        self.on_actor_async(session, move |engine| async move {
-            if !engine.reserve_compaction(session) {
-                return Err(EngineError::SessionRunning(session));
-            }
-            let result = (|| {
-                let projection = engine.inner.store.get(session)?;
-                if projection.status == SessionStatus::Running {
+        let (result, dropped) = self
+            .on_actor_async(session, move |engine| async move {
+                if !engine.reserve_compaction(session) {
                     return Err(EngineError::SessionRunning(session));
                 }
-                let tip = projection.log.last_event().map_or(0, |event| event.seq);
-                if through_seq == 0 || through_seq > tip {
-                    return Err(SessionError::InvalidSequence {
-                        session_id: session,
-                        through_seq,
+                let result = (|| {
+                    let projection = engine.inner.store.get(session)?;
+                    if projection.status == SessionStatus::Running {
+                        return Err(EngineError::SessionRunning(session));
                     }
-                    .into());
-                }
-                // A revert removes the events after the cut: the log keeps no
-                // marker, and later appends reuse the freed sequences.
-                let events = projection.log.all_events();
-                let cut = revert_cut(&events, through_seq);
-                let deleted = engine.reverted_children(&events, cut)?;
-                engine.inner.store.truncate(session, cut)?;
-                // The cut can fall inside a run, with its tool calls, internal
-                // agents or approvals still open: close them as a restart would.
-                engine.reconcile_session_with(session, "session reverted")?;
-                engine
-                    .inner
-                    .compaction
-                    .context_token_estimators
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .remove(&session);
-                engine.rebuild_visible_tree_grants();
-                engine.inner.delegation_events.reconcile_parent(session)?;
-                engine.reconcile_reverted_producers_direct(session)?;
-                engine.forget_deleted_sessions(&deleted);
-                engine
-                    .inner
-                    .store
-                    .delete_children(&deleted.iter().copied().collect::<Vec<_>>())?;
-                Ok(SessionRevertResult {
-                    session: engine.inner.store.get(session)?.metadata(),
-                    instructions_override,
+                    let tip = projection.log.last_event().map_or(0, |event| event.seq);
+                    if through_seq == 0 || through_seq > tip {
+                        return Err(SessionError::InvalidSequence {
+                            session_id: session,
+                            through_seq,
+                        }
+                        .into());
+                    }
+                    // A revert removes the events after the cut: the log keeps no
+                    // marker, and later appends reuse the freed sequences.
+                    let events = projection.log.all_events();
+                    let cut = revert_cut(&events, through_seq);
+                    let deleted = engine.reverted_children(&events, cut)?;
+                    // What the cut events and deleted children referenced is all a
+                    // revert can orphan; the sweep below keeps what is still used.
+                    let mut dropped = HashSet::new();
+                    crate::runtime::artifacts::artifact_references_in_events(
+                        events
+                            .iter()
+                            .filter(|event| event.seq > cut)
+                            .map(AsRef::as_ref),
+                        &mut dropped,
+                    )?;
+                    for child in &deleted {
+                        if let Ok(child) = engine.inner.store.get(*child) {
+                            crate::runtime::artifacts::artifact_references_in_events(
+                                child.log.event_snapshot().iter().map(AsRef::as_ref),
+                                &mut dropped,
+                            )?;
+                        }
+                    }
+                    engine.inner.store.truncate(session, cut)?;
+                    // The cut can fall inside a run, with its tool calls, internal
+                    // agents or approvals still open: close them as a restart would.
+                    engine.reconcile_session_with(session, "session reverted")?;
+                    engine
+                        .inner
+                        .compaction
+                        .context_token_estimators
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .remove(&session);
+                    engine.rebuild_visible_tree_grants();
+                    engine.inner.delegation_events.reconcile_parent(session)?;
+                    engine.reconcile_reverted_producers_direct(session)?;
+                    engine.forget_deleted_sessions(&deleted);
+                    engine
+                        .inner
+                        .store
+                        .delete_children(&deleted.iter().copied().collect::<Vec<_>>())?;
+                    Ok((
+                        SessionRevertResult {
+                            session: engine.inner.store.get(session)?.metadata(),
+                            instructions_override,
+                        },
+                        dropped,
+                    ))
+                })();
+                engine.release_compaction_direct(session).await;
+                result
+            })
+            .await?;
+        self.collect_reverted_artifacts(session, dropped).await;
+        Ok(result)
+    }
+
+    /// Deletes the artifacts only the reverted events referenced, off the async
+    /// workers. A failure leaves orphans behind, never a broken session.
+    async fn collect_reverted_artifacts(&self, session: SessionId, dropped: HashSet<String>) {
+        if dropped.is_empty() {
+            return;
+        }
+        let engine = self.clone();
+        let collected = super::blocking_io::run(move || {
+            engine
+                .inner
+                .artifacts
+                .collect_reverted(session, dropped, || {
+                    engine.tree_artifact_references(session)
                 })
-            })();
-            engine.release_compaction_direct(session).await;
-            result
         })
-        .await
+        .await;
+        match collected {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => eprintln!("artifact collection after revert failed: {error}"),
+            Err(error) => eprintln!("artifact collection after revert failed: {error}"),
+        }
+    }
+
+    /// Every artifact reference the logs of `session`'s tree hold, or `None`
+    /// while a session of the tree runs and may still add one.
+    fn tree_artifact_references(
+        &self,
+        session: SessionId,
+    ) -> std::io::Result<Option<HashSet<String>>> {
+        let store = &self.inner.store;
+        let projection = store.get(session).map_err(std::io::Error::other)?;
+        let mut pending = vec![root_id(&projection.meta.origin, session)];
+        let mut seen = HashSet::new();
+        let mut references = HashSet::new();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let projection = match store.get(id) {
+                Ok(projection) => projection,
+                Err(SessionError::Missing(_)) => continue,
+                Err(error) => return Err(std::io::Error::other(error)),
+            };
+            if projection.status == SessionStatus::Running {
+                return Ok(None);
+            }
+            crate::runtime::artifacts::artifact_references_in_events(
+                projection.log.event_snapshot().iter().map(AsRef::as_ref),
+                &mut references,
+            )?;
+            pending.extend(
+                store
+                    .children(id)
+                    .map_err(std::io::Error::other)?
+                    .into_iter()
+                    .map(|summary| summary.session_id),
+            );
+        }
+        Ok(Some(references))
     }
     pub async fn fork_session(
         &self,
@@ -643,8 +728,13 @@ impl Engine {
         // along, so it never resolves anything in the tree it came from
         // (tree-local D2).
         let mut referenced = std::collections::HashSet::new();
-        crate::runtime::artifacts::collect_artifact_references_in_events(
-            &self.inner.store.log(forked)?.event_snapshot(),
+        crate::runtime::artifacts::artifact_references_in_events(
+            self.inner
+                .store
+                .log(forked)?
+                .event_snapshot()
+                .iter()
+                .map(AsRef::as_ref),
             &mut referenced,
         )?;
         self.inner

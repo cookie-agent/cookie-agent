@@ -13,7 +13,6 @@ pub(crate) use fold::projection;
 use fold::refold;
 pub(crate) use fold::restart_stable_grant;
 use fold::*;
-pub(crate) use tree_load::LogFingerprint;
 pub(crate) use tree_load::TreeLoadObserver;
 pub(crate) use tree_load::TreeLoadProducts;
 pub(crate) use tree_load::TreeState;

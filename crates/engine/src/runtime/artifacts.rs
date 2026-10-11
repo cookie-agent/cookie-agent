@@ -2,7 +2,6 @@ use std::{
     collections::{HashSet, VecDeque},
     fs::File,
     io::{BufRead, BufReader, Seek, SeekFrom},
-    path::Path,
 };
 
 use bytes::Bytes;
@@ -14,16 +13,9 @@ pub(crate) struct ArtifactPage {
     pub(crate) next_offset_lines: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ArtifactGcReport {
-    pub(crate) deleted: usize,
-    pub(crate) retained: usize,
-}
-
 const MAX_TRANSITIVE_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024;
 const VERIFIED_FILE_CACHE_CAPACITY: usize = 32;
 const VERIFIED_BYTES_CACHE_CAPACITY: usize = 8;
-const TEMPORARY_ARTIFACT_GRACE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 #[derive(Debug, Default)]
 struct VerifiedFileCache {
@@ -151,90 +143,6 @@ mod verified_bytes_cache_tests {
         assert_eq!(cached, bytes);
         assert_eq!(cached.as_ptr(), bytes.as_ptr());
     }
-}
-
-#[cfg(test)]
-mod temporary_cleanup_tests {
-    use std::time::{Duration, SystemTime};
-
-    use fs2::FileExt as _;
-
-    use super::ArtifactStore;
-
-    #[test]
-    fn startup_cleanup_preserves_fresh_temporary_artifacts_and_removes_old_ones() {
-        let root = tempfile::tempdir().expect("temporary root");
-        let artifacts = root.path().join("artifacts");
-        let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
-        drop(store);
-        let name = format!(".{}.{}.tmp", "a".repeat(64), uuid::Uuid::now_v7());
-        let path = artifacts.join(name);
-        std::fs::write(&path, b"in flight").expect("write temporary artifact");
-
-        drop(ArtifactStore::open(artifacts.clone()).expect("reopen with fresh temporary"));
-        assert!(path.is_file());
-
-        let old = SystemTime::now() - Duration::from_secs(2 * 60 * 60);
-        let active = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .expect("open temporary");
-        active.lock_exclusive().expect("lock active temporary");
-        active
-            .set_times(std::fs::FileTimes::new().set_modified(old))
-            .expect("age temporary");
-        drop(ArtifactStore::open(artifacts.clone()).expect("reopen with active old temporary"));
-        assert!(path.is_file());
-
-        drop(active);
-        // Dropping `active` releases the flock in this process, but any child
-        // this test binary forked in the window between `fork` and `exec`
-        // still holds a duplicate of the open file description, and an flock
-        // lives on the description rather than on the descriptor. The
-        // temporary therefore stays locked for a few milliseconds longer than
-        // the drop, and `cleanup_temporary_artifacts` skips it with
-        // `try_lock_once`. Production semantics are "an abandoned temporary is
-        // removed on a later startup", so retry the startup rather than
-        // assuming the very first one wins the race.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            drop(ArtifactStore::open(artifacts.clone()).expect("reopen with abandoned temporary"));
-            if !path.exists() || std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(!path.exists());
-    }
-}
-
-#[cfg(test)]
-fn scan_durable_artifact_references(sessions_dir: &Path) -> std::io::Result<HashSet<String>> {
-    let mut live = HashSet::new();
-    'sessions: for entry in std::fs::read_dir(sessions_dir)? {
-        let entry = entry?;
-        if !entry.path().is_dir() {
-            continue;
-        }
-        let file = match File::open(entry.path().join("events.jsonl")) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
-        };
-        for line in BufReader::new(file).lines() {
-            let line = match line {
-                Ok(line) => line,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue 'sessions,
-                Err(error) => return Err(error),
-            };
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
-                continue;
-            };
-            collect_artifact_references(&value, &mut live);
-        }
-    }
-    Ok(live)
 }
 
 fn collect_artifact_references(value: &serde_json::Value, live: &mut HashSet<String>) {
@@ -388,20 +296,11 @@ mod unix {
     use bytes::Bytes;
     use cookie_agent_protocol::{ArtifactReference, ToolAttachment};
     use fs2::FileExt as _;
-    use rustix::fs::{AtFlags, Dir, Mode, OFlags, fsync, openat, renameat, unlinkat};
+    use rustix::fs::{AtFlags, Mode, OFlags, fsync, openat, renameat, unlinkat};
     use sha2::{Digest, Sha256};
     use uuid::Uuid;
 
-    use super::{
-        ArtifactGcReport, ArtifactPage, VerifiedBytesCache, VerifiedFileCache,
-        read_verified_file_paged,
-    };
-
-    #[cfg(test)]
-    use super::{
-        MAX_TRANSITIVE_ARTIFACT_BYTES, expand_transitive_artifact_references,
-        scan_durable_artifact_references,
-    };
+    use super::{ArtifactPage, VerifiedBytesCache, VerifiedFileCache, read_verified_file_paged};
 
     pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 
@@ -410,7 +309,6 @@ mod unix {
         #[cfg(test)]
         pub(crate) io_test_hook: super::ArtifactIoTestHook,
         directory_handle: Arc<fs::File>,
-        pub(crate) publication: Arc<tokio::sync::RwLock<()>>,
         writes: Mutex<()>,
         verified_reads: Mutex<VerifiedFileCache>,
         verified_attachment_bytes: Mutex<VerifiedBytesCache>,
@@ -429,12 +327,10 @@ mod unix {
                 #[cfg(test)]
                 io_test_hook: super::ArtifactIoTestHook::default(),
                 directory_handle: Arc::new(handle),
-                publication: Arc::new(tokio::sync::RwLock::new(())),
                 writes: Mutex::new(()),
                 verified_reads: Mutex::new(VerifiedFileCache::default()),
                 verified_attachment_bytes: Mutex::new(VerifiedBytesCache::default()),
             });
-            store.cleanup_temporary_artifacts()?;
             Ok(store)
         }
 
@@ -497,93 +393,35 @@ mod unix {
             ))
         }
 
-        #[cfg(test)]
-        pub(crate) fn collect_garbage(
+        /// Deletes blobs by digest, returning how many existed.
+        pub(crate) fn remove<'a>(
             &self,
-            sessions_dir: &Path,
-            grace: std::time::Duration,
-        ) -> std::io::Result<ArtifactGcReport> {
-            let Ok(_publication) = self.publication.try_write() else {
-                return Ok(ArtifactGcReport::default());
-            };
-            let mut live = scan_durable_artifact_references(sessions_dir)?;
-            expand_transitive_artifact_references(&mut live, |digest| {
-                let Some(mut file) = self.open_existing(digest)? else {
-                    return Ok(None);
-                };
-                if file.metadata()?.len() > MAX_TRANSITIVE_ARTIFACT_BYTES {
-                    return Ok(None);
-                }
-                let mut bytes = Vec::new();
-                file.read_to_end(&mut bytes)?;
-                Ok(Some(bytes))
-            })?;
-            self.collect_expired(&live, grace)
-        }
-
-        /// Collect against a live set the caller assembled: the router merges
-        /// root scans, loaded trees and the cross-reference ledger (§5.2).
-        pub(crate) fn collect_garbage_with(
-            &self,
-            live: &std::collections::HashSet<String>,
-            grace: std::time::Duration,
-        ) -> std::io::Result<ArtifactGcReport> {
-            let Ok(_publication) = self.publication.try_write() else {
-                return Ok(ArtifactGcReport::default());
-            };
-            self.collect_expired(live, grace)
-        }
-
-        fn collect_expired(
-            &self,
-            live: &std::collections::HashSet<String>,
-            grace: std::time::Duration,
-        ) -> std::io::Result<ArtifactGcReport> {
+            digests: impl IntoIterator<Item = &'a String>,
+        ) -> std::io::Result<usize> {
             let _write = self
                 .writes
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let now = std::time::SystemTime::now();
-            let mut report = ArtifactGcReport::default();
-            for digest in directory_names(&self.directory_handle)? {
-                if !is_digest_name(&digest) {
+            let mut deleted = 0;
+            for digest in digests {
+                if !is_digest_name(digest) {
                     continue;
                 }
-                if live.contains(&digest) {
-                    report.retained += 1;
-                    continue;
-                }
-                let Some(file) = self.open_existing(&digest)? else {
-                    continue;
-                };
-                let modified = file.metadata()?.modified()?;
-                let age = now
-                    .duration_since(modified)
-                    .unwrap_or(std::time::Duration::ZERO);
-                drop(file);
-                if age < grace {
-                    report.retained += 1;
-                    continue;
-                }
-                let mut verified = self
-                    .verified_reads
+                self.verified_reads
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                verified.evict(&digest);
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .evict(digest);
                 self.verified_attachment_bytes
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .evict(&digest);
-                match unlinkat(&*self.directory_handle, &digest, AtFlags::empty()) {
-                    Ok(()) => report.deleted += 1,
-                    Err(error) if error == rustix::io::Errno::NOENT => {}
+                    .evict(digest);
+                match unlinkat(&*self.directory_handle, digest.as_str(), AtFlags::empty()) {
+                    Ok(()) => deleted += 1,
+                    Err(rustix::io::Errno::NOENT) => {}
                     Err(error) => return Err(error.into()),
                 }
             }
-            if report.deleted > 0 {
-                fsync(&*self.directory_handle)?;
-            }
-            Ok(report)
+            Ok(deleted)
         }
 
         pub(crate) fn open_existing(&self, name: &str) -> std::io::Result<Option<fs::File>> {
@@ -597,38 +435,6 @@ mod unix {
                 Err(error) if error == rustix::io::Errno::NOENT => Ok(None),
                 Err(error) => Err(error.into()),
             }
-        }
-
-        fn cleanup_temporary_artifacts(&self) -> std::io::Result<()> {
-            let now = std::time::SystemTime::now();
-            let mut deleted = false;
-            for name in directory_names(&self.directory_handle)? {
-                if !valid_temporary_artifact_name(&name) {
-                    continue;
-                }
-                let Some(file) = self.open_existing(&name)? else {
-                    continue;
-                };
-                let age = now
-                    .duration_since(file.metadata()?.modified()?)
-                    .unwrap_or(std::time::Duration::ZERO);
-                if age < super::TEMPORARY_ARTIFACT_GRACE {
-                    continue;
-                }
-                match cookie_agent_models::secure_store::try_lock_once(&file) {
-                    Ok(true) => {}
-                    Ok(false) | Err(_) => continue,
-                }
-                match unlinkat(&*self.directory_handle, &name, AtFlags::empty()) {
-                    Ok(()) => deleted = true,
-                    Err(error) if error == rustix::io::Errno::NOENT => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            if deleted {
-                fsync(&*self.directory_handle)?;
-            }
-            Ok(())
         }
 
         pub(crate) fn read_paged(
@@ -865,22 +671,6 @@ mod unix {
         Ok((digest, total, newlines))
     }
 
-    pub(super) fn directory_names(directory: &fs::File) -> std::io::Result<Vec<String>> {
-        let mut names = Vec::new();
-        let mut entries = Dir::read_from(directory)?;
-        for entry in &mut entries {
-            let entry = entry?;
-            let name = entry.file_name().to_bytes();
-            if matches!(name, b"." | b"..") {
-                continue;
-            }
-            if let Ok(name) = std::str::from_utf8(name) {
-                names.push(name.to_owned());
-            }
-        }
-        Ok(names)
-    }
-
     pub(super) fn valid_temporary_artifact_name(name: &str) -> bool {
         if let Some(value) = name
             .strip_prefix(".capture-")
@@ -1040,25 +830,13 @@ mod windows {
         sync::{Arc, Mutex},
     };
 
-    #[cfg(test)]
-    use std::path::Path;
-
     use bytes::Bytes;
     use cookie_agent_protocol::{ArtifactReference, ToolAttachment};
     use fs2::FileExt as _;
     use sha2::{Digest, Sha256};
     use uuid::Uuid;
 
-    use super::{
-        ArtifactGcReport, ArtifactPage, VerifiedBytesCache, VerifiedFileCache,
-        read_verified_file_paged,
-    };
-
-    #[cfg(test)]
-    use super::{
-        MAX_TRANSITIVE_ARTIFACT_BYTES, expand_transitive_artifact_references,
-        scan_durable_artifact_references,
-    };
+    use super::{ArtifactPage, VerifiedBytesCache, VerifiedFileCache, read_verified_file_paged};
 
     pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 
@@ -1067,7 +845,6 @@ mod windows {
         #[cfg(test)]
         pub(crate) io_test_hook: super::ArtifactIoTestHook,
         directory: PathBuf,
-        pub(crate) publication: Arc<tokio::sync::RwLock<()>>,
         writes: Mutex<()>,
         verified_reads: Mutex<VerifiedFileCache>,
         verified_attachment_bytes: Mutex<VerifiedBytesCache>,
@@ -1082,12 +859,10 @@ mod windows {
                 #[cfg(test)]
                 io_test_hook: super::ArtifactIoTestHook::default(),
                 directory,
-                publication: Arc::new(tokio::sync::RwLock::new(())),
                 writes: Mutex::new(()),
                 verified_reads: Mutex::new(VerifiedFileCache::default()),
                 verified_attachment_bytes: Mutex::new(VerifiedBytesCache::default()),
             });
-            store.cleanup_temporary_artifacts()?;
             Ok(store)
         }
 
@@ -1137,87 +912,35 @@ mod windows {
             ))
         }
 
-        #[cfg(test)]
-        pub(crate) fn collect_garbage(
+        /// Deletes blobs by digest, returning how many existed.
+        pub(crate) fn remove<'a>(
             &self,
-            sessions_dir: &Path,
-            grace: std::time::Duration,
-        ) -> std::io::Result<ArtifactGcReport> {
-            let mut live = scan_durable_artifact_references(sessions_dir)?;
-            let Ok(_publication) = self.publication.try_write() else {
-                return Ok(ArtifactGcReport::default());
-            };
-            expand_transitive_artifact_references(&mut live, |digest| {
-                let Some(mut file) = self.open_existing(digest)? else {
-                    return Ok(None);
-                };
-                if file.metadata()?.len() > MAX_TRANSITIVE_ARTIFACT_BYTES {
-                    return Ok(None);
-                }
-                let mut bytes = Vec::new();
-                file.read_to_end(&mut bytes)?;
-                Ok(Some(bytes))
-            })?;
-            self.collect_expired(&live, grace)
-        }
-
-        /// Collect against a live set the caller assembled (§5.2).
-        pub(crate) fn collect_garbage_with(
-            &self,
-            live: &std::collections::HashSet<String>,
-            grace: std::time::Duration,
-        ) -> std::io::Result<ArtifactGcReport> {
-            let Ok(_publication) = self.publication.try_write() else {
-                return Ok(ArtifactGcReport::default());
-            };
-            self.collect_expired(live, grace)
-        }
-
-        fn collect_expired(
-            &self,
-            live: &std::collections::HashSet<String>,
-            grace: std::time::Duration,
-        ) -> std::io::Result<ArtifactGcReport> {
+            digests: impl IntoIterator<Item = &'a String>,
+        ) -> std::io::Result<usize> {
             let _write = self
                 .writes
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let now = std::time::SystemTime::now();
-            let mut report = ArtifactGcReport::default();
-            for entry in fs::read_dir(&self.directory)? {
-                let entry = entry?;
-                let digest = entry.file_name().to_string_lossy().into_owned();
-                if !is_digest_name(&digest) {
+            let mut deleted = 0;
+            for digest in digests {
+                if !is_digest_name(digest) {
                     continue;
                 }
-                if live.contains(&digest) {
-                    report.retained += 1;
-                    continue;
-                }
-                let modified = entry.metadata()?.modified()?;
-                let age = now
-                    .duration_since(modified)
-                    .unwrap_or(std::time::Duration::ZERO);
-                if age < grace {
-                    report.retained += 1;
-                    continue;
-                }
-                let mut verified = self
-                    .verified_reads
+                self.verified_reads
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                verified.evict(&digest);
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .evict(digest);
                 self.verified_attachment_bytes
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .evict(&digest);
-                match fs::remove_file(entry.path()) {
-                    Ok(()) => report.deleted += 1,
+                    .evict(digest);
+                match fs::remove_file(self.directory.join(digest)) {
+                    Ok(()) => deleted += 1,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error),
                 }
             }
-            Ok(report)
+            Ok(deleted)
         }
 
         pub(crate) fn read_verified_attachment(
@@ -1286,36 +1009,6 @@ mod windows {
             let file = cookie_agent_models::secure_store::create_windows_private_file(&path)?;
             file.lock_exclusive()?;
             Ok(file)
-        }
-
-        fn cleanup_temporary_artifacts(&self) -> std::io::Result<()> {
-            let now = std::time::SystemTime::now();
-            for entry in fs::read_dir(&self.directory)? {
-                let entry = entry?;
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if !valid_temporary_artifact_name(&name) {
-                    continue;
-                }
-                let age = now
-                    .duration_since(entry.metadata()?.modified()?)
-                    .unwrap_or(std::time::Duration::ZERO);
-                if age < super::TEMPORARY_ARTIFACT_GRACE {
-                    continue;
-                }
-                let Some(file) = self.open_existing(&name)? else {
-                    continue;
-                };
-                match cookie_agent_models::secure_store::try_lock_once(&file) {
-                    Ok(true) => {}
-                    Ok(false) | Err(_) => continue,
-                }
-                match fs::remove_file(entry.path()) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error),
-                }
-            }
-            Ok(())
         }
 
         pub(crate) fn read_paged(
@@ -1643,7 +1336,7 @@ mod windows {
 pub(crate) use windows::*;
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::HashMap,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -1653,58 +1346,16 @@ use cookie_agent_protocol::{ArtifactReference, SessionId, ToolAttachment};
 /// Keyed placement decision: which root tree directory owns a session's writes.
 type TreeResolver = Arc<dyn Fn(SessionId) -> Option<SessionId> + Send + Sync>;
 
-/// The store's own view of one session log — resident tip and durable length —
-/// asked for on demand. A sweep needs it to decide whether data a tree load
-/// harvested is still current, and only the store knows what its resident logs
-/// hold in a buffered writer (§3.3, §5.2).
-type LogFingerprintProbe = Arc<dyn Fn(SessionId) -> crate::session::LogFingerprint + Send + Sync>;
-
-/// Is an enumerated path a directory? Only a vanished entry proves it is not;
-/// any other stat failure is returned so a garbage-collection sweep cannot read
-/// an unprovable entry as "not a session" (§5.2, fail-closed).
-fn entry_is_directory(path: &std::path::Path) -> std::io::Result<bool> {
-    match std::fs::metadata(path) {
-        Ok(metadata) => Ok(metadata.is_dir()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
 /// Directory holding a tree's own artifacts (`<root>/artifacts`).
 pub(crate) const ARTIFACTS_DIR: &str = "artifacts";
-
-/// Child references a lazy tree load harvested, and the proof they are still
-/// complete: the [`LogFingerprint`](crate::session::LogFingerprint) of every
-/// child log at fold time — resident tip *and* durable length, the same pair a
-/// fold is verified against. Durable size alone would not do: a resident append
-/// that adds a reference does not change the file until its writer syncs, and a
-/// sweep keyed on sizes would keep using a set that misses it (§3.3, §5.2).
-#[derive(Clone, Debug)]
-struct TreeLiveRefs {
-    digests: HashSet<String>,
-    child_log_fingerprints: BTreeMap<SessionId, crate::session::LogFingerprint>,
-}
-
-/// What a sweep may do with a loaded tree's harvested child references.
-enum HarvestedRefs {
-    /// Nothing has moved: the harvested set still names every child reference.
-    Current(HashSet<String>),
-    /// Something durable moved and no child is resident, so scanning the child
-    /// logs again is a complete answer.
-    Reharvest,
-    /// A child of this tree is resident and moved since the harvest. Its newest
-    /// records may still be in that log's writer buffer, so no scan of disk can
-    /// establish its references: this tree must not be collected at all.
-    Unprovable,
-}
 
 /// Content-addressed artifacts, each belonging to exactly one root tree
 /// (tree-local sessions, D).
 ///
 /// A work-dir router keeps every tree's artifacts in that root's `artifacts/`
 /// directory: a session writes to and reads from its own tree only, a fork
-/// copies what it references into its new tree, and a sweep collects one tree
-/// against that tree's own logs. A flat router — a standalone tool context
+/// copies what it references into its new tree, and a revert deletes from its
+/// tree only what the reverted events alone referenced. A flat router — a standalone tool context
 /// with no sessions around it — keeps everything in the one directory it was
 /// opened on.
 pub(crate) struct ArtifactRouter {
@@ -1714,19 +1365,12 @@ pub(crate) struct ArtifactRouter {
     flat_directory: Option<PathBuf>,
     /// Directory whose children are the per-root tree directories.
     sessions_dir: PathBuf,
-    /// A sweep holds this while a capture publication may still be in flight,
-    /// subsuming the per-store lock it replaces.
+    /// A capture holds this until its terminal event is in the log, so a
+    /// revert sweep never deletes output a log is about to reference.
     publication: Arc<tokio::sync::RwLock<()>>,
     #[cfg(test)]
     io_test_hook: Arc<ArtifactIoTestHook>,
     roots: Mutex<HashMap<SessionId, Arc<ArtifactStore>>>,
-    loaded_trees: Mutex<HashSet<SessionId>>,
-    /// Per loaded tree: the child references the one bulk fold harvested, plus
-    /// the log fingerprints it was taken at (§3.3(b), §5.2).
-    tree_live_refs: Mutex<HashMap<SessionId, TreeLiveRefs>>,
-    /// Asks the store what a session log looks like right now. Without it the
-    /// harvested sets can never be proven current, so they are never reused.
-    fingerprint_probe: Mutex<Option<LogFingerprintProbe>>,
     /// Maps a session to the root whose directory holds its artifacts (§5.1).
     /// The engine installs this once the store exists; a session no resolver
     /// places is treated as its own tree.
@@ -1786,9 +1430,6 @@ impl ArtifactRouter {
             #[cfg(test)]
             io_test_hook: Arc::new(ArtifactIoTestHook::default()),
             roots: Mutex::new(HashMap::new()),
-            loaded_trees: Mutex::new(HashSet::new()),
-            tree_live_refs: Mutex::new(HashMap::new()),
-            fingerprint_probe: Mutex::new(None),
             tree_resolver: Mutex::new(None),
         })
     }
@@ -1981,118 +1622,39 @@ impl ArtifactRouter {
         Ok(())
     }
 
-    /// Collects each loaded tree against that tree's own logs (tree-local D4).
+    /// Deletes what a revert cut away from `session`'s tree: each artifact
+    /// `dropped` names, directly or through a manifest, that `live` — the
+    /// references the tree's remaining logs hold — does not keep. Returns how
+    /// many blobs were deleted.
     ///
-    /// Fail-closed per tree: a tree whose live set cannot be established
-    /// completely — an unreadable log or `subagents/`, or a resident child whose
-    /// newest records may still be buffered — is left untouched, and the other
-    /// trees are still collected. Unloaded trees are never collected, because
-    /// their children are unknown. A flat router (test contexts only) has no
-    /// logs behind it, so nothing in it counts as referenced.
-    pub(crate) fn collect_garbage(
+    /// Nothing is deleted while a capture is publishing, because its terminal
+    /// event is not in any log yet, and `live` answers `None` to skip the sweep
+    /// when it cannot see every reference, such as while the tree runs.
+    pub(crate) fn collect_reverted(
         &self,
-        grace: std::time::Duration,
-    ) -> std::io::Result<ArtifactGcReport> {
-        let _publication = match self.publication.try_write() {
-            Ok(guard) => guard,
-            // A capture is publishing; the next sweep will see its bytes.
-            Err(_) => return Ok(ArtifactGcReport::default()),
-        };
-        if let Some(flat) = &self.flat {
-            return flat.collect_garbage_with(&HashSet::new(), grace);
+        session: SessionId,
+        mut dropped: HashSet<String>,
+        live: impl FnOnce() -> std::io::Result<Option<HashSet<String>>>,
+    ) -> std::io::Result<usize> {
+        if dropped.is_empty() {
+            return Ok(0);
         }
-        let mut report = ArtifactGcReport::default();
-        let loaded = self
-            .loaded_trees
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
-        for tree in loaded {
-            let Some(store) = self.cached_tree_store(tree) else {
-                continue;
-            };
-            let live = match self.tree_live_set(tree, &store) {
-                Ok(Some(live)) => live,
-                Ok(None) => continue,
-                Err(error) => {
-                    eprintln!("artifact collection skipped tree {tree}: {error}");
-                    continue;
-                }
-            };
-            let tree_report = store.collect_garbage_with(&live, grace)?;
-            report.deleted += tree_report.deleted;
-            report.retained += tree_report.retained;
-        }
-        Ok(report)
-    }
-
-    /// Digests one tree's logs reference, expanded transitively through that
-    /// tree's own artifacts, or `None` when the set cannot be proven complete.
-    fn tree_live_set(
-        &self,
-        tree: SessionId,
-        store: &ArtifactStore,
-    ) -> std::io::Result<Option<HashSet<String>>> {
-        let Some(mut live) = self.scan_tree_references(&self.tree_dir(tree), tree)? else {
-            return Ok(None);
+        let Ok(_publication) = self.publication.try_write() else {
+            return Ok(0);
         };
-        expand_transitive_artifact_references(&mut live, |digest| {
-            let Some(mut file) = store.open_existing(digest)? else {
-                return Ok(None);
-            };
-            if file.metadata()?.len() > MAX_TRANSITIVE_ARTIFACT_BYTES {
-                return Ok(None);
-            }
-            use std::io::Read as _;
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)?;
-            Ok(Some(bytes))
+        let Some(store) = self.read_store(session)? else {
+            return Ok(0);
+        };
+        let Some(mut live) = live()? else {
+            return Ok(0);
+        };
+        expand_transitive_artifact_references(&mut dropped, |digest| {
+            read_small_artifact(&store, digest)
         })?;
-        Ok(Some(live))
-    }
-
-    /// The root log plus every child log of a loaded tree, or `None` when a
-    /// child's references cannot be established at all.
-    ///
-    /// Fail-closed: an unreadable `subagents/` hides live child references, so
-    /// only a missing directory counts as "no children" and every other error
-    /// is returned. A tree whose harvested set may be stale is never guessed at
-    /// (§5.2, review F4).
-    fn scan_tree_references(
-        &self,
-        directory: &Path,
-        tree: SessionId,
-    ) -> std::io::Result<Option<HashSet<String>>> {
-        let mut live =
-            scan_artifact_references_in_log(&directory.join(crate::session::EVENTS_FILE))?;
-        // The one bulk fold already read every child log of a loaded tree; while
-        // the store still agrees with that fold, its harvested set *is* the child
-        // live set and the sweep opens none of them again (§3.3, §5.2).
-        match self.harvested_tree_refs(directory, tree)? {
-            HarvestedRefs::Current(installed) => {
-                live.extend(installed);
-                return Ok(Some(live));
-            }
-            HarvestedRefs::Unprovable => return Ok(None),
-            HarvestedRefs::Reharvest => {}
-        }
-        let children = match std::fs::read_dir(directory.join(crate::session::SUBAGENTS_DIR)) {
-            Ok(children) => children,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Some(live)),
-            Err(error) => return Err(error),
-        };
-        for child in children {
-            let path = child?.path();
-            if !entry_is_directory(&path)? {
-                continue;
-            }
-            live.extend(scan_artifact_references_in_log(
-                &path.join(crate::session::EVENTS_FILE),
-            )?);
-        }
-        Ok(Some(live))
+        expand_transitive_artifact_references(&mut live, |digest| {
+            read_small_artifact(&store, digest)
+        })?;
+        store.remove(dropped.difference(&live))
     }
 
     /// Teach the router which root tree a session belongs to; a session the
@@ -2104,25 +1666,6 @@ impl ArtifactRouter {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(resolver);
     }
 
-    /// Teach the router how to ask the store about a session log, which is what
-    /// makes a loaded tree's harvested child references reusable at all. A router
-    /// without a probe never reuses them (§3.3(b), §5.2).
-    pub(crate) fn install_log_fingerprint_probe(&self, probe: LogFingerprintProbe) {
-        *self
-            .fingerprint_probe
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(probe);
-    }
-
-    /// The store's current fingerprint of one log, or `None` when this router has
-    /// no way to ask the store.
-    fn log_fingerprint_probe(&self) -> Option<LogFingerprintProbe> {
-        self.fingerprint_probe
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
     fn tree_of(&self, session: SessionId) -> Option<SessionId> {
         self.tree_resolver
             .lock()
@@ -2131,7 +1674,7 @@ impl ArtifactRouter {
             .and_then(|resolve| resolve(session))
     }
 
-    /// Gate for artifact garbage collection across every store this router owns.
+    /// Gate for revert collection across every store this router owns.
     pub(crate) fn publication(&self) -> Arc<tokio::sync::RwLock<()>> {
         Arc::clone(&self.publication)
     }
@@ -2175,136 +1718,20 @@ impl ArtifactRouter {
             .get(&tree)
             .map(Arc::clone)
     }
+}
 
-    /// Mark a tree as loaded so its own artifact directory becomes collectable
-    /// and its child references join the live set (§5.2).
-    pub(crate) fn note_tree_loaded(&self, tree: SessionId) {
-        self.loaded_trees
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(tree);
+/// A blob small enough to be a manifest that names other artifacts, or `None`.
+fn read_small_artifact(store: &ArtifactStore, digest: &str) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read as _;
+    let Some(mut file) = store.open_existing(digest)? else {
+        return Ok(None);
+    };
+    if file.metadata()?.len() > MAX_TRANSITIVE_ARTIFACT_BYTES {
+        return Ok(None);
     }
-
-    /// Installs the child-reference set one bulk tree load harvested, together
-    /// with the log fingerprints it was taken at (§3.3(b), §5.2). Called when the
-    /// load's products are applied, so a loaded tree always has a set that was
-    /// proven against the same bytes.
-    pub(crate) fn note_tree_live_refs(
-        &self,
-        tree: SessionId,
-        digests: HashSet<String>,
-        child_log_fingerprints: BTreeMap<SessionId, crate::session::LogFingerprint>,
-    ) {
-        self.tree_live_refs
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(
-                tree,
-                TreeLiveRefs {
-                    digests,
-                    child_log_fingerprints,
-                },
-            );
-    }
-
-    /// Whether one loaded tree's harvested child references may still be reused,
-    /// re-harvested from disk, or cannot be established at all.
-    ///
-    /// The validity proof is the store's fold-validity signal: every child must
-    /// still have the fingerprint the harvest recorded, and the harvest must
-    /// still cover exactly the children that exist. Durable bytes alone are not
-    /// the proof — see [`HarvestedRefs::Unprovable`].
-    fn harvested_tree_refs(
-        &self,
-        directory: &Path,
-        tree: SessionId,
-    ) -> std::io::Result<HarvestedRefs> {
-        let installed = self
-            .tree_live_refs
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&tree)
-            .cloned();
-        let Some(installed) = installed else {
-            return Ok(HarvestedRefs::Reharvest);
-        };
-        let Some(probe) = self.log_fingerprint_probe() else {
-            // Durable bytes are all a router that cannot ask the store would
-            // compare, and they are not enough to prove a set current.
-            return Ok(HarvestedRefs::Reharvest);
-        };
-        let durable =
-            self.child_log_fingerprints(&directory.join(crate::session::SUBAGENTS_DIR), &probe)?;
-        // A child the harvest never saw, and one whose directory is gone, both
-        // make the recorded set incomplete; the union reports either.
-        let children = installed
-            .child_log_fingerprints
-            .keys()
-            .chain(durable.keys())
-            .copied()
-            .collect::<BTreeSet<_>>();
-        for child in children {
-            let current = match durable.get(&child) {
-                Some(fingerprint) => *fingerprint,
-                // Off disk: only the store can say whether it is still resident.
-                None => probe(child),
-            };
-            if installed.child_log_fingerprints.get(&child) == Some(&current) {
-                continue;
-            }
-            return Ok(if current.resident_tip.is_some() {
-                // This process is writing that log and its newest records can
-                // still be in the writer's buffer: no scan of the file can
-                // complete the live set for this tree.
-                HarvestedRefs::Unprovable
-            } else {
-                HarvestedRefs::Reharvest
-            });
-        }
-        Ok(HarvestedRefs::Current(installed.digests))
-    }
-
-    /// Current fingerprint of every child `events.jsonl` under `subagents_dir`,
-    /// keyed by child id: durable bytes, plus this process's resident tip.
-    /// Fingerprints only — no log content is read. Fail-closed like every other
-    /// enumeration here: only a missing directory means "no children".
-    fn child_log_fingerprints(
-        &self,
-        subagents_dir: &Path,
-        probe: &LogFingerprintProbe,
-    ) -> std::io::Result<BTreeMap<SessionId, crate::session::LogFingerprint>> {
-        let mut fingerprints = BTreeMap::new();
-        let entries = match std::fs::read_dir(subagents_dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(fingerprints),
-            Err(error) => return Err(error),
-        };
-        for entry in entries {
-            let path = entry?.path();
-            if !entry_is_directory(&path)? {
-                continue;
-            }
-            let Some(id) = path
-                .file_name()
-                .and_then(|name| name.to_string_lossy().parse::<SessionId>().ok())
-            else {
-                continue;
-            };
-            let size = match std::fs::metadata(path.join(crate::session::EVENTS_FILE)) {
-                Ok(metadata) => metadata.len(),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
-                Err(error) => return Err(error),
-            };
-            fingerprints.insert(
-                id,
-                crate::session::LogFingerprint {
-                    resident_tip: probe(id).resident_tip,
-                    durable_len: size,
-                },
-            );
-        }
-        Ok(fingerprints)
-    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(Some(bytes))
 }
 
 /// An [`ArtifactRouter`] bound to the session whose artifacts are read, so a
@@ -2330,53 +1757,24 @@ impl SessionArtifacts<'_> {
     }
 }
 
-pub(crate) fn scan_artifact_references_in_log(path: &Path) -> std::io::Result<HashSet<String>> {
-    use std::io::BufRead as _;
-
-    let mut live = HashSet::new();
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(live),
-        Err(error) => return Err(error),
-    };
-    for line in std::io::BufReader::new(file).lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-            Err(error) => return Err(error),
-        };
-        // A reference needs the bytes `artifact://` *after* JSON decoding, and
-        // any one of them may arrive as a `\uXXXX` escape. So a line is only
-        // skippable when it carries neither a literal `artifact` nor a single
-        // escape sequence: an encoded URI cannot exist in such a line, and every
-        // line that could hold one is parsed. Measured cost of the surviving
-        // test, whole log, 200k lines, on this machine:
-        //   no prefilter .......... 690 ms
-        //   this prefilter ........ 118 ms (96% of lines skipped, zero skipped
-        //                                 lines can carry a reference)
-        if !line.contains("artifact") && !line.contains("\\u") {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        collect_artifact_references(&value, &mut live);
-    }
-    Ok(live)
-}
-
-/// Harvests the same references the durable line scan finds, from envelopes an
-/// in-memory fold already read (§3.3(b)). Serializing each envelope reproduces
-/// exactly the JSON line on disk, so the folded view and the scanned view of one
-/// log cannot disagree about what is live. A value that cannot be serialized is
-/// an error: an incomplete live set must never look like an empty one.
-pub(crate) fn collect_artifact_references_in_events(
-    events: &[Arc<cookie_agent_protocol::StoredEvent>],
-    live: &mut HashSet<String>,
+/// Adds every `artifact://sha256/<digest>` the events mention. The scan runs
+/// over each event's serialized JSON, which spells these URIs out literally, so
+/// a mention inside longer text counts too: for deciding what to keep, a
+/// superset of the references is the safe side.
+pub(crate) fn artifact_references_in_events<'a>(
+    events: impl IntoIterator<Item = &'a cookie_agent_protocol::StoredEvent>,
+    references: &mut HashSet<String>,
 ) -> std::io::Result<()> {
+    const PREFIX: &str = "artifact://sha256/";
     for event in events {
-        let value = serde_json::to_value(event).map_err(std::io::Error::other)?;
-        collect_artifact_references(&value, live);
+        let line = serde_json::to_string(event).map_err(std::io::Error::other)?;
+        for (index, _) in line.match_indices(PREFIX) {
+            if let Some(digest) = line.get(index + PREFIX.len()..index + PREFIX.len() + 64)
+                && is_digest_name_common(digest)
+            {
+                references.insert(digest.to_owned());
+            }
+        }
     }
     Ok(())
 }
@@ -2458,135 +1856,6 @@ mod verified_read_cache_tests {
             store.read_paged(&digests[0], 0, 1).unwrap_err().kind(),
             std::io::ErrorKind::NotFound
         );
-    }
-}
-
-#[cfg(test)]
-mod gc_tests {
-    use std::time::{Duration, SystemTime};
-
-    use super::ArtifactStore;
-
-    fn age(path: &std::path::Path) {
-        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
-        file.set_times(
-            std::fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn garbage_collection_tracks_logs_manifests_grace_and_torn_lines() {
-        let root = tempfile::tempdir().unwrap();
-        let artifacts_dir = root.path().join("artifacts");
-        let sessions_dir = root.path().join("sessions");
-        let session_dir = sessions_dir.join(cookie_agent_protocol::SessionId::new_v7().to_string());
-        std::fs::create_dir_all(&session_dir).unwrap();
-        std::fs::create_dir_all(
-            sessions_dir.join(cookie_agent_protocol::SessionId::new_v7().to_string()),
-        )
-        .unwrap();
-        let store = ArtifactStore::open(artifacts_dir.clone()).unwrap();
-
-        let (referenced, referenced_digest) = store.retain(b"referenced").unwrap();
-        let (elided, elided_digest) = store.retain(b"elided").unwrap();
-        let (persisted_file, persisted_file_digest) = store.retain(b"file").unwrap();
-        let (_, unreferenced_digest) = store.retain(b"unreferenced").unwrap();
-        let (_, young_digest) = store.retain(b"young").unwrap();
-        let (stdout_ref, stdout_digest) = store.retain(b"stdout").unwrap();
-        let (stderr_ref, stderr_digest) = store.retain(b"stderr").unwrap();
-        let manifest = serde_json::to_vec(&serde_json::json!({
-            "title":"bash",
-            "streams":{
-                "stdout":{"reference":stdout_ref,"sha256":stdout_digest},
-                "stderr":{"reference":stderr_ref,"sha256":stderr_digest}
-            }
-        }))
-        .unwrap();
-        let (manifest_ref, manifest_digest) = store.retain(&manifest).unwrap();
-
-        for digest in [
-            &referenced_digest,
-            &unreferenced_digest,
-            &elided_digest,
-            &persisted_file_digest,
-            &stdout_digest,
-            &stderr_digest,
-            &manifest_digest,
-        ] {
-            age(&artifacts_dir.join(digest));
-        }
-        store
-            .read_paged(&unreferenced_digest, 0, 1)
-            .expect("cache unreferenced artifact");
-        let line = serde_json::json!({
-            "payload":{
-                "result":{"attachments":[{"reference":referenced}]},
-                "truncation":{"retained":manifest_ref},
-                "tool_output_elided":{"retained":elided},
-                "persisted_file":{"source":{"type":"artifact","reference":persisted_file}}
-            }
-        });
-        std::fs::write(
-            session_dir.join("events.jsonl"),
-            format!("{}\n{{torn", serde_json::to_string(&line).unwrap()),
-        )
-        .unwrap();
-
-        let report = store
-            .collect_garbage(&sessions_dir, Duration::from_secs(60))
-            .unwrap();
-        assert_eq!(report.deleted, 1);
-        assert!(!artifacts_dir.join(unreferenced_digest).exists());
-        for digest in [
-            referenced_digest,
-            elided_digest,
-            persisted_file_digest,
-            young_digest,
-            stdout_digest,
-            stderr_digest,
-            manifest_digest,
-        ] {
-            assert!(artifacts_dir.join(digest).exists());
-        }
-    }
-
-    #[test]
-    fn garbage_collection_aborts_before_deletion_for_unreadable_event_log() {
-        let root = tempfile::tempdir().unwrap();
-        let artifacts_dir = root.path().join("artifacts");
-        let sessions_dir = root.path().join("sessions");
-        let session_dir = sessions_dir.join(cookie_agent_protocol::SessionId::new_v7().to_string());
-        std::fs::create_dir_all(session_dir.join("events.jsonl")).unwrap();
-        let store = ArtifactStore::open(artifacts_dir.clone()).unwrap();
-        let (_, digest) = store.retain(b"must survive failed scan").unwrap();
-        age(&artifacts_dir.join(&digest));
-
-        let error = store
-            .collect_garbage(&sessions_dir, Duration::from_secs(60))
-            .unwrap_err();
-        assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
-        assert!(artifacts_dir.join(digest).exists());
-    }
-
-    #[test]
-    fn garbage_collection_continues_when_event_log_disappeared() {
-        let root = tempfile::tempdir().unwrap();
-        let artifacts_dir = root.path().join("artifacts");
-        let sessions_dir = root.path().join("sessions");
-        std::fs::create_dir_all(
-            sessions_dir.join(cookie_agent_protocol::SessionId::new_v7().to_string()),
-        )
-        .unwrap();
-        let store = ArtifactStore::open(artifacts_dir.clone()).unwrap();
-        let (_, digest) = store.retain(b"unreferenced").unwrap();
-        age(&artifacts_dir.join(&digest));
-
-        let report = store
-            .collect_garbage(&sessions_dir, Duration::from_secs(60))
-            .unwrap();
-        assert_eq!(report.deleted, 1);
-        assert!(!artifacts_dir.join(digest).exists());
     }
 }
 

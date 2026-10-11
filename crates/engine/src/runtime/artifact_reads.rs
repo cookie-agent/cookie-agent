@@ -143,10 +143,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn in_flight_read_does_not_reinsert_a_handle_invalidated_by_gc() {
+    async fn in_flight_read_does_not_reinsert_a_handle_invalidated_by_a_revert_sweep() {
         let directory = tempfile::tempdir().unwrap();
-        let sessions = directory.path().join("sessions");
-        std::fs::create_dir(&sessions).unwrap();
         let store = ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
         let (_, digest) = store
             .retain(crate::test_session_id(), b"verified\n")
@@ -155,7 +153,8 @@ mod tests {
         read_artifact_async(store.clone(), crate::test_session_id(), &path, 0, 1)
             .await
             .unwrap();
-        let (entered, release) = blocking_io::gate(store.io_test_hook(), "read", Some(digest));
+        let (entered, release) =
+            blocking_io::gate(store.io_test_hook(), "read", Some(digest.clone()));
         let reader = store.clone();
         let reading_path = path.clone();
         let reading = tokio::spawn(async move {
@@ -167,9 +166,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .collect_garbage(std::time::Duration::ZERO)
-                .unwrap()
-                .deleted,
+                .collect_reverted(
+                    crate::test_session_id(),
+                    [digest.clone()].into_iter().collect(),
+                    || Ok(Some(std::collections::HashSet::new())),
+                )
+                .unwrap(),
             1
         );
         release.send(()).unwrap();

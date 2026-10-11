@@ -270,60 +270,41 @@ async fn terminal_output_uses_capture_and_opt_out_never_publishes_an_artifact() 
 }
 
 #[tokio::test]
-async fn output_publication_is_protected_until_terminal_references_are_persisted() {
+async fn a_revert_sweep_skips_output_whose_terminal_event_is_not_persisted() {
     let root = tempfile::tempdir().unwrap();
     let session = crate::test_session_id();
     let store = ArtifactRouter::open(root.path().to_path_buf()).unwrap();
-    // Loaded up front, so only the in-flight publication protects the blobs
-    // from the first sweep.
-    store.note_tree_loaded(session);
     let capture = OutputCapture::new(
         store.clone(),
         session,
-        ToolOutputDeclaration::Named {
-            streams: vec!["a".into(), "b".into()],
-        },
-        10,
+        ToolOutputDeclaration::Single,
+        1,
         100,
     )
     .await
     .unwrap();
     let result = capture
         .finish(
-            completion(ToolCompletionOutput::Named {
-                streams: vec![
-                    ToolOutputChunk {
-                        stream: Some("b".into()),
-                        text: "two".into(),
-                    },
-                    ToolOutputChunk {
-                        stream: Some("a".into()),
-                        text: "one".into(),
-                    },
-                ],
+            completion(ToolCompletionOutput::Single {
+                text: "one\ntwo\n".into(),
             }),
             false,
         )
         .await
         .unwrap();
-    assert_eq!(
+    let digest = result.retained_output.unwrap().streams[0]
+        .sha256
+        .to_string();
+    let sweep = |store: &ArtifactRouter| {
         store
-            .collect_garbage(std::time::Duration::ZERO)
+            .collect_reverted(session, [digest.clone()].into_iter().collect(), || {
+                Ok(Some(std::collections::HashSet::new()))
+            })
             .unwrap()
-            .deleted,
-        0
-    );
-    std::fs::write(
-        root.path()
-            .join(session.to_string())
-            .join(crate::session::EVENTS_FILE),
-        serde_json::to_vec(&result).unwrap(),
-    )
-    .unwrap();
-    drop(capture);
-    let report = store.collect_garbage(std::time::Duration::ZERO).unwrap();
-    assert_eq!(report.deleted, 0);
-    assert_eq!(report.retained, 3);
+    };
+    assert_eq!(sweep(&store), 0, "the publication is still in flight");
+    capture.release_publication();
+    assert_eq!(sweep(&store), 1);
 }
 
 #[tokio::test]

@@ -372,12 +372,10 @@ artifacts, so a URI naming content another tree stored does not resolve there.
 A fork of a root copies every artifact its history references — and the
 streams a named-stream manifest lists — into the new tree before the fork
 returns, so it never depends on its source. Collection is therefore per tree
-and needs nothing from any other tree: a digest is retained while the tree's
-root log or the log of one of its children references it. Unloaded trees are
-never collected, which keeps an unread child log from looking unreferenced, and
-a loaded tree whose references cannot be proven is skipped on its own while
-other trees are still collected. Expired, unreferenced digests are unlinked
-after a grace period that protects newly published files.
+and needs nothing from any other tree. It runs only on revert: a digest the
+reverted events referenced is unlinked unless the tree's remaining root or
+child logs still reference it, and the sweep is skipped while the tree runs or
+a capture is publishing. Other orphans stay until the tree is deleted.
 
 ### Delegation and ownership
 

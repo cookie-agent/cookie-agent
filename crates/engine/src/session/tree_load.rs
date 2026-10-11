@@ -53,17 +53,8 @@ pub(crate) struct TreeLoadProducts {
         Vec<(SessionId, crate::goal_projection::GoalProducerProjection)>,
     /// Every child summary the pass produced, for usage and listing caches.
     pub(crate) summaries: Vec<SessionSummary>,
-    /// `artifact://sha256/...` digests the pass found in child logs, installed
-    /// into the artifact router so a sweep of a loaded tree never reopens them
-    /// (3.3(b), 5.2).
-    pub(crate) artifact_refs: HashSet<String>,
     /// Per-child delegation-parent facts (4.1.3).
     pub(crate) parent_facts: HashMap<SessionId, ParentRunFacts>,
-    /// The [`LogFingerprint`] of each folded child log, taken with the snapshots
-    /// above. It is the freshness proof for `artifact_refs`: a sweep may reuse the
-    /// harvested set only while every child still has the same resident tip *and*
-    /// the same durable length (§3.3(b), §5.2).
-    pub(crate) child_log_fingerprints: BTreeMap<SessionId, LogFingerprint>,
 }
 
 impl TreeLoadProducts {
@@ -75,9 +66,7 @@ impl TreeLoadProducts {
             producer_sessions: Vec::new(),
             producer_projections: Vec::new(),
             summaries: Vec::new(),
-            artifact_refs: HashSet::new(),
             parent_facts: HashMap::new(),
-            child_log_fingerprints: BTreeMap::new(),
         }
     }
 }
@@ -277,9 +266,6 @@ pub(super) enum Install {
 /// This is *the* fold-validity signal of the store, and it is deliberately not
 /// just a durable byte count: a resident log holds its newest records in a
 /// buffered writer, so the file can stay the same size while the log moves.
-/// Anything else that wants to reuse data harvested by a fold (§3.3(b), §5.2)
-/// has to be invalidated by the same pair, which is why this type is crate
-/// visible rather than private to the load path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LogFingerprint {
     /// Tip of this process's resident log for the session (`None` when the
@@ -773,20 +759,7 @@ impl SessionStore {
             fold.products
                 .summaries
                 .push(summary_from_projection(&projection));
-            fold.products
-                .child_log_fingerprints
-                .insert(child, fingerprint);
             fold.fingerprints.insert(child, fingerprint);
-            crate::runtime::artifacts::collect_artifact_references_in_events(
-                &events,
-                &mut fold.products.artifact_refs,
-            )
-            .map_err(|source| SessionError::Io {
-                path: self
-                    .path_for(SessionLocation::Child { root }, child)
-                    .join(EVENTS_FILE),
-                source,
-            })?;
             fold.harvest_records(&projection, &events);
             let parent = match projection.meta.origin {
                 SessionOrigin::Delegated {
@@ -816,9 +789,7 @@ impl SessionStore {
     /// Fingerprint of one session log: this process's resident tip plus the
     /// durable byte length. Both only ever grow, so equal fingerprints before
     /// and after a fold prove the snapshot being installed is the current one.
-    /// Crate visible because the artifact sweep reuses harvested data and must be
-    /// invalidated by exactly this signal, not by a weaker one (§5.2).
-    pub(crate) fn log_fingerprint(&self, id: SessionId) -> LogFingerprint {
+    pub(super) fn log_fingerprint(&self, id: SessionId) -> LogFingerprint {
         LogFingerprint {
             resident_tip: self
                 .get_resident(id)

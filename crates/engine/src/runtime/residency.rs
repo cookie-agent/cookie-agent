@@ -9,7 +9,6 @@ use super::helpers::root_id;
 use super::{Engine, EngineError, SessionCommand, delegation::DelegationState};
 
 const JANITOR_INTERVAL: Duration = Duration::from_secs(60);
-const ARTIFACT_GC_GRACE: Duration = Duration::from_secs(60 * 60);
 
 impl Engine {
     pub(super) fn start_subagent_janitor(&self) {
@@ -35,9 +34,6 @@ impl Engine {
                 if let Err(error) = engine.evict_idle_subagents().await {
                     eprintln!("subagent session janitor failed: {error}");
                 }
-                if let Err(error) = engine.collect_artifacts(ARTIFACT_GC_GRACE) {
-                    eprintln!("artifact janitor failed: {error}");
-                }
             }
         });
         *self
@@ -51,13 +47,6 @@ impl Engine {
         let cap = self.inner.config.runtime.delegation.max_resident_subagents;
         let idle_after = self.inner.config.runtime.delegation.idle_eviction_after;
         self.evict_idle_subagents_with(cap, idle_after).await
-    }
-
-    fn collect_artifacts(
-        &self,
-        grace: Duration,
-    ) -> Result<super::artifacts::ArtifactGcReport, EngineError> {
-        Ok(self.inner.artifacts.collect_garbage(grace)?)
     }
 
     #[cfg(test)]
