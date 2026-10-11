@@ -71,6 +71,7 @@ struct BashExecutor {
 
 pub const OUTPUT_CHUNK_FLUSH_BYTES: usize = 4 * 1024;
 pub const OUTPUT_CHUNK_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
+const OUTPUT_READ_BYTES: usize = 64 * 1024;
 
 #[derive(Default)]
 struct MergedOutput {
@@ -79,30 +80,36 @@ struct MergedOutput {
 }
 
 impl MergedOutput {
-    fn append(&mut self, chunk: &str) {
+    /// Appends `text` with control characters blanked, up to the display budget.
+    fn append(&mut self, text: &str) {
         if self.truncated {
             return;
         }
-        let room = cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES.saturating_sub(self.text.len());
-        let mut end = chunk.len().min(room);
-        while !chunk.is_char_boundary(end) {
-            end -= 1;
+        for character in text.chars().map(display_character) {
+            if self.text.len() + character.len_utf8()
+                > cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES
+            {
+                self.truncated = true;
+                return;
+            }
+            self.text.push(character);
         }
-        self.text.push_str(&chunk[..end]);
-        self.truncated = end < chunk.len();
     }
 }
 
-fn sanitized_chunks(bytes: &[u8]) -> Vec<String> {
-    let text = String::from_utf8_lossy(bytes);
+fn display_character(character: char) -> char {
+    if character.is_control() && !matches!(character, '\n' | '\t') {
+        ' '
+    } else {
+        character
+    }
+}
+
+/// `text` with control characters blanked, split into display-sized chunks.
+fn sanitized_chunks(text: &str) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut chunk = String::new();
-    for character in text.chars() {
-        let character = if character.is_control() && !matches!(character, '\n' | '\t') {
-            ' '
-        } else {
-            character
-        };
+    for character in text.chars().map(display_character) {
         if chunk.len() + character.len_utf8() > SafeDisplayText::MAX_BYTES {
             chunks.push(std::mem::take(&mut chunk));
         }
@@ -114,24 +121,51 @@ fn sanitized_chunks(bytes: &[u8]) -> Vec<String> {
     chunks
 }
 
-async fn emit_preview(
-    progress: &ProgressSink,
+/// Where one pipe's output goes besides the captured stream.
+struct OutputSinks {
+    progress: ProgressSink,
     tool_call_id: ToolCallId,
-    stream: &OutputStream,
-    bytes: &[u8],
-) -> Result<(), ToolError> {
-    let stream_name = stream.name();
-    for chunk in sanitized_chunks(bytes) {
-        progress
+    stream: OutputStream,
+    /// The call's merged display; absent for background jobs.
+    merged: Option<Arc<Mutex<MergedOutput>>>,
+}
+
+impl OutputSinks {
+    /// Sends `text` as one output chunk, followed by its live display
+    /// previews when a foreground call shows them.
+    async fn flush(&self, text: String) -> Result<(), ToolError> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        let previews = if self.merged.is_some() {
+            sanitized_chunks(&text)
+        } else {
+            Vec::new()
+        };
+        let name = self.stream.name();
+        self.progress
             .send(ToolProgress {
-                output: Vec::new(),
-                tool_call_id,
-                message: format!("bash {stream_name}"),
-                display: Some(chunk),
+                tool_call_id: self.tool_call_id,
+                message: String::new(),
+                display: None,
+                output: vec![cookie_agent_protocol::ToolOutputChunk {
+                    stream: Some(name.into()),
+                    text,
+                }],
             })
             .await?;
+        for chunk in previews {
+            self.progress
+                .send(ToolProgress {
+                    output: Vec::new(),
+                    tool_call_id: self.tool_call_id,
+                    message: format!("bash {name}"),
+                    display: Some(chunk),
+                })
+                .await?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 async fn read_output<R>(
@@ -144,9 +178,15 @@ async fn read_output<R>(
 where
     R: AsyncRead + Unpin,
 {
-    let mut pending = Vec::new();
+    let sinks = OutputSinks {
+        progress,
+        tool_call_id,
+        stream,
+        merged,
+    };
+    let mut pending = String::new();
     let mut undecoded = Vec::new();
-    let mut read_buffer = [0_u8; OUTPUT_CHUNK_FLUSH_BYTES];
+    let mut read_buffer = vec![0_u8; OUTPUT_READ_BYTES];
     let flush = tokio::time::sleep(OUTPUT_CHUNK_FLUSH_INTERVAL);
     tokio::pin!(flush);
     loop {
@@ -155,46 +195,24 @@ where
                 let count = read.map_err(|error| ToolError::execution(error.to_string()))?;
                 undecoded.extend_from_slice(&read_buffer[..count]);
                 let text = decode_output(&mut undecoded, count == 0);
-                if let Some(merged) = &merged {
+                if let Some(merged) = &sinks.merged {
                     // Record read arrival, independently of the per-pipe preview batches.
                     // Separate pipes cannot reconstruct the process's exact write order.
-                    let mut merged = merged.lock().await;
-                    for chunk in sanitized_chunks(text.as_bytes()) {
-                        merged.append(&chunk);
-                    }
+                    merged.lock().await.append(&text);
                 }
-                if count == 0 {
-                    if !pending.is_empty() {
-                        flush_output(
-                            &progress,
-                            tool_call_id,
-                            &stream,
-                            (&mut pending, true),
-                        ).await?;
-                    }
-                    return Ok(());
-                }
-                let bytes = &read_buffer[..count];
                 if pending.is_empty() {
                     flush.as_mut().reset(tokio::time::Instant::now() + OUTPUT_CHUNK_FLUSH_INTERVAL);
                 }
-                pending.extend_from_slice(bytes);
+                pending.push_str(&text);
+                if count == 0 {
+                    return sinks.flush(pending).await;
+                }
                 if pending.len() >= OUTPUT_CHUNK_FLUSH_BYTES {
-                    flush_output(
-                        &progress,
-                        tool_call_id,
-                        &stream,
-                        (&mut pending, false),
-                    ).await?;
+                    sinks.flush(std::mem::take(&mut pending)).await?;
                 }
             }
             () = &mut flush, if !pending.is_empty() => {
-                flush_output(
-                    &progress,
-                    tool_call_id,
-                    &stream,
-                    (&mut pending, false),
-                ).await?;
+                sinks.flush(std::mem::take(&mut pending)).await?;
                 flush.as_mut().reset(tokio::time::Instant::now() + OUTPUT_CHUNK_FLUSH_INTERVAL);
             }
         }
@@ -230,32 +248,6 @@ fn decode_output(pending: &mut Vec<u8>, eof: bool) -> String {
     }
     pending.drain(..consumed);
     text
-}
-
-async fn flush_output(
-    progress: &ProgressSink,
-    tool_call_id: ToolCallId,
-    stream: &OutputStream,
-    pending: (&mut Vec<u8>, bool),
-) -> Result<(), ToolError> {
-    let (pending, eof) = pending;
-    let text = decode_output(pending, eof);
-    if text.is_empty() {
-        return Ok(());
-    }
-    let name = stream.name();
-    progress
-        .send(ToolProgress {
-            tool_call_id,
-            message: String::new(),
-            display: None,
-            output: vec![cookie_agent_protocol::ToolOutputChunk {
-                stream: Some(name.into()),
-                text: text.clone(),
-            }],
-        })
-        .await?;
-    emit_preview(progress, tool_call_id, stream, text.as_bytes()).await
 }
 
 #[cfg(unix)]
