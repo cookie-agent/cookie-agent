@@ -79,8 +79,11 @@ rmcp = { version = "=3.1.2", default-features = false, features = ["auth", "clie
 [profile.dev]
 debug = "line-tables-only"
 
+# Thin LTO recovers most of fat LTO's cross-crate inlining (serde-heavy
+# provider and protocol code) at a fraction of its link time.
 [profile.release]
 strip = true
+lto = "thin"
 
 # Shipped binaries: fat LTO with one codegen unit trades a much slower final
 # link for the smallest binary. `panic` stays `unwind` because the engine and
