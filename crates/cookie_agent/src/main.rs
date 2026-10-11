@@ -333,8 +333,15 @@ async fn main_result() -> anyhow::Result<()> {
             url,
             token,
         }) => run_mcp(&url, &token, command).await,
-        Some(Command::Attach { url, token }) => run_attached_tui(&url, &token).await,
+        Some(Command::Attach { url, token }) => {
+            #[cfg(feature = "tui")]
+            cookie_agent_tui::markdown::warm_up_syntax_assets();
+            run_attached_tui(&url, &token).await
+        }
         None => {
+            // Syntax highlighting assets load while the runtime composes.
+            #[cfg(feature = "tui")]
+            cookie_agent_tui::markdown::warm_up_syntax_assets();
             run_local_frontend(compose(workspace.as_deref().expect("local workspace")).await?).await
         }
     }

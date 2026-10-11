@@ -594,9 +594,31 @@ struct IncrementalHighlightEntry {
     parse_state: ParseState,
 }
 
+/// The bundled syntax definitions and themes. Loading them takes tens of
+/// milliseconds, so [`warm_up_syntax_assets`] starts it in the background
+/// as the process starts; the first highlight waits only for what is left.
+static SYNTAXES: std::sync::LazyLock<SyntaxSet> =
+    std::sync::LazyLock::new(SyntaxSet::load_defaults_newlines);
+static THEMES: std::sync::LazyLock<ThemeSet> = std::sync::LazyLock::new(ThemeSet::load_defaults);
+
+/// Begin loading the syntax highlighting assets on a background thread, so
+/// the load overlaps the rest of startup instead of delaying the first
+/// frame. Idempotent.
+pub fn warm_up_syntax_assets() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let spawned = std::thread::Builder::new()
+            .name("syntax-assets".into())
+            .spawn(|| {
+                std::sync::LazyLock::force(&SYNTAXES);
+                std::sync::LazyLock::force(&THEMES);
+            });
+        // Without the thread the first highlight simply loads them inline.
+        drop(spawned);
+    });
+}
+
 pub struct SyntectHighlighter {
-    syntaxes: SyntaxSet,
-    themes: ThemeSet,
     plain: PlainHighlighter,
     cache: Mutex<HighlightCache>,
     incremental: Mutex<HashMap<IncrementalHighlightKey, IncrementalHighlightEntry>>,
@@ -609,8 +631,6 @@ pub struct SyntectHighlighter {
 impl Default for SyntectHighlighter {
     fn default() -> Self {
         Self {
-            syntaxes: SyntaxSet::load_defaults_newlines(),
-            themes: ThemeSet::load_defaults(),
             plain: PlainHighlighter,
             cache: Mutex::new(HighlightCache::default()),
             incremental: Mutex::new(HashMap::new()),
@@ -628,16 +648,16 @@ impl Highlighter for SyntectHighlighter {
         self.highlight_calls.fetch_add(1, Ordering::Relaxed);
         let language = normalized_language(language);
         let Some(syntax) = self
-            .syntaxes
+            .syntaxes()
             .find_syntax_by_token(&language)
-            .or_else(|| self.syntaxes.find_syntax_by_extension(&language))
+            .or_else(|| self.syntaxes().find_syntax_by_extension(&language))
         else {
             return self.plain.highlight(&language, code, theme);
         };
         // Match syntax highlighting to the curated surface; colors quantize
         // away in mono.
         let theme_name = syntect_theme_name(theme);
-        let Some(syntax_theme) = self.themes.themes.get(theme_name) else {
+        let Some(syntax_theme) = self.themes().themes.get(theme_name) else {
             return self.plain.highlight(&language, code, theme);
         };
         let complete_len = code.rfind('\n').map_or(0, |index| index + 1);
@@ -685,7 +705,7 @@ impl Highlighter for SyntectHighlighter {
         if append_highlighted_lines(
             &mut highlighter,
             appended,
-            &self.syntaxes,
+            self.syntaxes(),
             theme,
             &mut entry.lines,
         )
@@ -715,7 +735,7 @@ impl Highlighter for SyntectHighlighter {
             if append_highlighted_lines(
                 &mut partial,
                 partial_source,
-                &self.syntaxes,
+                self.syntaxes(),
                 theme,
                 &mut lines,
             )
@@ -772,21 +792,29 @@ impl Highlighter for SyntectHighlighter {
 }
 
 impl SyntectHighlighter {
+    fn syntaxes(&self) -> &'static SyntaxSet {
+        &SYNTAXES
+    }
+
+    fn themes(&self) -> &'static ThemeSet {
+        &THEMES
+    }
+
     fn highlight_fresh(&self, language: &str, code: &str, theme: &Theme) -> Arc<[Line<'static>]> {
         let language = normalized_language(language);
         let Some(syntax) = self
-            .syntaxes
+            .syntaxes()
             .find_syntax_by_token(&language)
-            .or_else(|| self.syntaxes.find_syntax_by_extension(&language))
+            .or_else(|| self.syntaxes().find_syntax_by_extension(&language))
         else {
             return self.plain.highlight(&language, code, theme);
         };
-        let Some(syntax_theme) = self.themes.themes.get(syntect_theme_name(theme)) else {
+        let Some(syntax_theme) = self.themes().themes.get(syntect_theme_name(theme)) else {
             return self.plain.highlight(&language, code, theme);
         };
         let mut highlighter = HighlightLines::new(syntax, syntax_theme);
         let mut lines = Vec::new();
-        if append_highlighted_lines(&mut highlighter, code, &self.syntaxes, theme, &mut lines)
+        if append_highlighted_lines(&mut highlighter, code, self.syntaxes(), theme, &mut lines)
             .is_err()
         {
             return self.plain.highlight(&language, code, theme);

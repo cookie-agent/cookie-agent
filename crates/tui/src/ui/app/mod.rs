@@ -1495,6 +1495,7 @@ pub async fn run_with_new_session(client: Client) -> anyhow::Result<()> {
 }
 
 async fn run_terminal(client: Client, create_new_session: bool) -> anyhow::Result<()> {
+    crate::markdown::warm_up_syntax_assets();
     install_terminal_panic_hook();
     let tui_config = crate::config::load(None).context("load TUI configuration")?;
     let detection = crate::terminal_detect::detect_startup_theme(tui_config.theme);
