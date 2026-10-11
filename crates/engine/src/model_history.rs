@@ -286,21 +286,21 @@ pub(crate) fn replay_decisions_with_preflight(
     merged
 }
 
-#[derive(Clone)]
-enum LogicalTurn {
-    System(String),
+/// History items borrow from the event log; only the final `HistoryTurn`s own
+/// their content.
+enum LogicalTurn<'a> {
+    System(&'a str),
     User(UserMessage),
-    SeedAssistant(String),
-    Assistant(Box<AssistantRecord>),
-    Rehydration(Vec<ContextRehydratedFile>),
+    SeedAssistant(&'a str),
+    Assistant(Box<AssistantRecord<'a>>),
+    Rehydration(&'a [ContextRehydratedFile]),
 }
 
-#[derive(Clone)]
-struct AssistantRecord {
-    turn: PersistedModelTurn,
-    resolved_model: ResolvedModelRef,
-    run_id: Option<cookie_agent_protocol::RunId>,
-    calls: Vec<CallRecord>,
+struct AssistantRecord<'a> {
+    /// Owned only when dropping unanswered calls has to edit the turn.
+    turn: std::borrow::Cow<'a, PersistedModelTurn>,
+    resolved_model: &'a ResolvedModelRef,
+    calls: Vec<CallRecord<'a>>,
     /// The turn an interrupt cut off. The marker that annotates it is injected
     /// only when the restored turn actually survives as assistant content, so a
     /// reasoning-only salvage that restore drops does not leave a dangling
@@ -308,12 +308,11 @@ struct AssistantRecord {
     interrupted: bool,
 }
 
-#[derive(Clone)]
-struct CallRecord {
-    model_call_id: cookie_agent_protocol::ModelCallId,
+struct CallRecord<'a> {
+    model_call_id: &'a cookie_agent_protocol::ModelCallId,
     engine_call_id: Option<ToolCallId>,
     result: Option<ToolResultPart>,
-    additional_messages: Vec<ToolEmittedMessage>,
+    additional_messages: &'a [ToolEmittedMessage],
     in_stream_result: bool,
 }
 
@@ -805,7 +804,39 @@ fn assemble_history_with_replay(
             .or(events.first())
             .map(|event| event.session_id),
     );
-    let producer_projection = GoalProducerProjection::from_events(context_events);
+    // One forward pass gathers everything the main loop looks up by key.
+    let mut loaded_skills = Vec::<&str>::new();
+    let mut delegation_children = HashMap::new();
+    let mut elisions = HashMap::new();
+    let mut has_producer_messages = false;
+    for event in context_events {
+        match &event.payload {
+            EventPayload::SkillLoaded { rendered_body, .. } => {
+                loaded_skills.push(rendered_body);
+            }
+            EventPayload::ToolCallLinked {
+                tool_call_id,
+                child_session_id,
+            } => {
+                delegation_children.insert((event.run_id, *tool_call_id), *child_session_id);
+            }
+            EventPayload::ToolOutputElided {
+                tool_call_id,
+                original_bytes,
+                retained,
+            } => {
+                elisions.insert(*tool_call_id, (*original_bytes, retained));
+            }
+            EventPayload::ProducerMessageAccepted { .. } => has_producer_messages = true,
+            _ => {}
+        }
+    }
+    // Producer messages exist only after an acceptance, so most logs skip the fold.
+    let producer_projection = if has_producer_messages {
+        GoalProducerProjection::from_events(context_events)
+    } else {
+        GoalProducerProjection::default()
+    };
     let current_run = context_events.iter().rev().find_map(|event| {
         matches!(event.payload, EventPayload::RunStarted { .. })
             .then_some(event.run_id)
@@ -834,80 +865,50 @@ fn assemble_history_with_replay(
             _ => None,
         })
         .collect::<HashSet<_>>();
-    let loaded_skills = context_events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            EventPayload::SkillLoaded { rendered_body, .. } => Some(rendered_body.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
     let loaded_agent_md = latest_agent_md_event(context_events).and_then(|event| {
         let EventPayload::AgentMdLoaded { entries } = &event.payload else {
             return None;
         };
         Some(agent_md_turn(entries))
     });
-    let mut logical = Vec::<LogicalTurn>::new();
-    let mut submitted = HashMap::<u64, String>::new();
+    let mut logical = Vec::<LogicalTurn<'_>>::new();
+    let mut submitted = HashMap::<u64, &str>::new();
     let mut pending_model_calls = HashMap::<
         (
             cookie_agent_protocol::RunId,
-            cookie_agent_protocol::ModelCallId,
+            &cookie_agent_protocol::ModelCallId,
         ),
         VecDeque<(usize, usize)>,
     >::new();
     let mut engine_calls =
         HashMap::<(cookie_agent_protocol::RunId, ToolCallId), (usize, usize)>::new();
-    let delegation_children = context_events
-        .iter()
-        .filter_map(|event| match event.payload {
-            EventPayload::ToolCallLinked {
-                tool_call_id,
-                child_session_id,
-            } => Some(((event.run_id, tool_call_id), child_session_id)),
-            _ => None,
-        })
-        .collect::<HashMap<_, _>>();
-    let elisions = context_events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            EventPayload::ToolOutputElided {
-                tool_call_id,
-                original_bytes,
-                retained,
-            } => Some((*tool_call_id, (*original_bytes, retained.clone()))),
-            _ => None,
-        })
-        .collect::<HashMap<_, _>>();
 
     for envelope in events {
         match &envelope.payload {
             EventPayload::DelegatedContextSeeded { turns, .. } => {
                 logical.extend(turns.iter().map(|turn| match turn.role {
                     DelegatedContextRole::User => LogicalTurn::User(user_text(&turn.text)),
-                    DelegatedContextRole::Assistant => {
-                        LogicalTurn::SeedAssistant(turn.text.clone())
-                    }
+                    DelegatedContextRole::Assistant => LogicalTurn::SeedAssistant(&turn.text),
                 }));
             }
             EventPayload::MessageInjected { role, input } => match role {
                 cookie_agent_protocol::ExtensionMessageRole::System => {
-                    logical.push(LogicalTurn::System(input.clone()));
+                    logical.push(LogicalTurn::System(input));
                 }
                 cookie_agent_protocol::ExtensionMessageRole::User => {
                     logical.push(LogicalTurn::User(user_text(input)));
                 }
                 cookie_agent_protocol::ExtensionMessageRole::Assistant => {
-                    logical.push(LogicalTurn::SeedAssistant(input.clone()));
+                    logical.push(LogicalTurn::SeedAssistant(input));
                 }
                 cookie_agent_protocol::ExtensionMessageRole::Tool => {}
             },
             EventPayload::UserInputSubmitted { input, .. } => {
-                submitted.insert(envelope.seq, input.clone());
+                submitted.insert(envelope.seq, input);
             }
             EventPayload::UserInputApplied { user_input_seq } => {
                 if let Some(input) = submitted.remove(user_input_seq) {
-                    logical.push(LogicalTurn::User(user_text(&input)));
+                    logical.push(LogicalTurn::User(user_text(input)));
                 }
             }
             EventPayload::ProducerMessageAdmitted { .. } => {
@@ -937,24 +938,23 @@ fn assemble_history_with_replay(
                         let call_index = calls.len();
                         let in_stream_result = in_stream_results.contains(id.as_str());
                         calls.push(CallRecord {
-                            model_call_id: id.clone(),
+                            model_call_id: id,
                             engine_call_id: None,
                             result: None,
-                            additional_messages: Vec::new(),
+                            additional_messages: &[],
                             in_stream_result,
                         });
                         if !in_stream_result && let Some(run_id) = envelope.run_id {
                             pending_model_calls
-                                .entry((run_id, id.clone()))
+                                .entry((run_id, id))
                                 .or_default()
                                 .push_back((logical_index, call_index));
                         }
                     }
                 }
                 logical.push(LogicalTurn::Assistant(Box::new(AssistantRecord {
-                    turn: turn.clone(),
-                    resolved_model: resolved_model.clone(),
-                    run_id: envelope.run_id,
+                    turn: std::borrow::Cow::Borrowed(turn),
+                    resolved_model,
                     calls,
                     // A turn that an interrupt cut off is annotated for the next
                     // request only: the durable event stays a faithful record of
@@ -971,7 +971,7 @@ fn assemble_history_with_replay(
                     continue;
                 };
                 let occurrence = pending_model_calls
-                    .get_mut(&(run_id, start.owner.model_call_id.clone()))
+                    .get_mut(&(run_id, &start.owner.model_call_id))
                     .and_then(VecDeque::pop_front);
                 if let Some((logical_index, call_index)) = occurrence {
                     let LogicalTurn::Assistant(assistant) = &mut logical[logical_index] else {
@@ -1023,12 +1023,12 @@ fn assemble_history_with_replay(
                                         result.additional_messages.len(),
                                     )),
                                 ),
-                                Vec::new(),
+                                &[][..],
                             )
                         } else {
                             (
                                 tool_result_part(result, store)?,
-                                result.additional_messages.clone(),
+                                result.additional_messages.as_slice(),
                             )
                         };
                     result_part.is_error = termination.outcome != ToolTerminationOutcome::Completed;
@@ -1106,11 +1106,11 @@ fn assemble_history_with_replay(
                         is_error: true,
                         metadata,
                     },
-                    Vec::new(),
+                    &[],
                 )?;
             }
             EventPayload::ContextRehydrated { files } => {
-                logical.push(LogicalTurn::Rehydration(files.clone()));
+                logical.push(LogicalTurn::Rehydration(files));
             }
             EventPayload::PluginEventAdded {
                 plugin,
@@ -1172,7 +1172,7 @@ fn assemble_history_with_replay(
     }
     history.extend(
         loaded_skills
-            .iter()
+            .into_iter()
             .map(|body| HistoryTurn::user(user_text(body))),
     );
     let mut replay_decisions = Vec::new();
@@ -1199,17 +1199,20 @@ fn assemble_history_with_replay(
                     .map(|call| call.model_call_id.as_str())
                     .collect::<std::collections::HashSet<_>>();
                 let original_call_count = assistant.calls.len();
-                assistant.turn.content.retain(|part| match part {
+                let keep = |part: &PersistedAssistantPart| match part {
                     PersistedAssistantPart::ToolCall { id, .. } => retained.contains(id.as_str()),
                     PersistedAssistantPart::ToolApproval { tool_call_id, .. } => {
                         retained.contains(tool_call_id.as_str())
                     }
                     _ => true,
-                });
+                };
+                if !assistant.turn.content.iter().all(keep) {
+                    assistant.turn.to_mut().content.retain(keep);
+                }
                 let forced_disposition = if retained.len() != original_call_count
                     && assistant.turn.native_replay.is_some()
                 {
-                    assistant.turn.native_replay = None;
+                    assistant.turn.to_mut().native_replay = None;
                     Some(ReplayDisposition::DiscardedInvalidPayload {
                         reason: safe_replay_reason(
                             "native replay was discarded because normalized tool-call history changed",
@@ -1223,7 +1226,7 @@ fn assemble_history_with_replay(
                 } else {
                     Some(restore_turn_with_store(
                         &assistant.turn,
-                        &assistant.resolved_model,
+                        assistant.resolved_model,
                         store,
                         binding,
                     )?)
@@ -1286,7 +1289,7 @@ fn assemble_history_with_replay(
                         .collect();
                     history.push(HistoryTurn::tool(ToolMessage::new(results)));
                     for message in additional_messages {
-                        append_tool_emitted_message(&mut history, &message, store)?;
+                        append_tool_emitted_message(&mut history, message, store)?;
                     }
                 }
                 // A turn an interrupt cut off is annotated right after it is
@@ -1297,19 +1300,21 @@ fn assemble_history_with_replay(
                 if has_content && assistant.interrupted {
                     history.push(HistoryTurn::user(user_text(INTERRUPTED_TURN_MARKER)));
                 }
-                let _ = assistant.run_id;
             }
             LogicalTurn::Rehydration(files) => {
                 let mut calls = Vec::with_capacity(files.len());
                 let mut results = Vec::with_capacity(files.len());
-                for (index, file) in files.into_iter().enumerate() {
+                for (index, file) in files.iter().enumerate() {
                     let id = format!("context-rehydration-{index}");
                     calls.push(AssistantPart::ToolCall(ToolCallPart::new(
                         id.clone(),
                         "read",
                         serde_json::json!({"filePath": file.path.as_str()}),
                     )));
-                    results.push(ToolResultPart::new(id, ToolContent::Text(file.content)));
+                    results.push(ToolResultPart::new(
+                        id,
+                        ToolContent::Text(file.content.clone()),
+                    ));
                 }
                 history.push(HistoryTurn::assistant(CompletedTurn::new(
                     AssistantMessage::new(calls),
@@ -1370,13 +1375,13 @@ fn escape_xml_attribute(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn attach_result(
-    logical: &mut [LogicalTurn],
+fn attach_result<'a>(
+    logical: &mut [LogicalTurn<'a>],
     engine_calls: &HashMap<(cookie_agent_protocol::RunId, ToolCallId), (usize, usize)>,
     run_id: Option<cookie_agent_protocol::RunId>,
     tool_call_id: ToolCallId,
     mut result: ToolResultPart,
-    additional_messages: Vec<ToolEmittedMessage>,
+    additional_messages: &'a [ToolEmittedMessage],
 ) -> Result<(), HistoryError> {
     let Some(run_id) = run_id else {
         return Ok(());
