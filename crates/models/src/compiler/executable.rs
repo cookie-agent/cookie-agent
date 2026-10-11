@@ -434,6 +434,7 @@ fn construct(
                         current_turn_signature_sentinel: capabilities.native_replay
                             != crate::ReplayCapability::Unsupported,
                     },
+                    client: timeouts.shared_client(),
                 },
             ))?),
             namespace(
@@ -586,6 +587,7 @@ fn construct(
                         },
                         omit_reasoning_sampling: capabilities.reasoning,
                     },
+                    client: timeouts.shared_client(),
                 },
             ))?),
             namespace(
@@ -608,6 +610,7 @@ fn construct(
                     } else {
                         AzureOpenAiResponsesCompaction::Unsupported
                     },
+                    client: timeouts.shared_client(),
                 },
             ))?),
             namespace(
@@ -631,6 +634,7 @@ fn construct(
                     presence_penalty: None,
                     stop_sequences: Vec::new(),
                     priority: None,
+                    client: timeouts.shared_client(),
                 },
             ))?),
             namespace("cohere", CohereRequestOptions::default())?,
