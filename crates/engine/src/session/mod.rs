@@ -192,6 +192,8 @@ pub struct SessionProjection {
     pub permission_overlay: SessionPermissionOverlay,
     /// Whether the visible title history still admits an automatic title.
     pub automatic_title_eligible: bool,
+    /// What an appended event needs to be folded in place.
+    pub(crate) fold: ProjectionFoldState,
     pub log: Arc<EventLog>,
 }
 
@@ -230,11 +232,11 @@ struct SessionResidency {
     resident: HashMap<SessionId, Arc<SessionProjection>>,
     evicted: HashMap<SessionId, SessionSummary>,
     /// Persisted residents whose on-disk `metadata` cache trails the resident
-    /// meta: only the tip (`last_event_seq`/`last_activity`) differs, because an
-    /// append inside a running run that the fold ignores (the per-token and
-    /// per-chunk stream records) does not rewrite the cache. The run's terminal
-    /// event is fold-consumed and rewrites it; eviction and store release
-    /// flush whatever is still pending here.
+    /// meta: only the tip (`last_event_seq`, `last_activity`,
+    /// `last_agent_activity`) differs, because an append inside a running run
+    /// that changes neither title nor status does not rewrite the cache. The
+    /// run's terminal event changes the status and rewrites it; eviction and
+    /// store release flush whatever is still pending here.
     stale_meta_caches: HashSet<SessionId>,
 }
 
@@ -1544,45 +1546,52 @@ impl SessionStore {
                     | EventPayload::AgentMdLoaded { .. }
             );
         let envelope = log.append_owned(&capability, run, origin, event)?;
-        // Fold-ignored payloads only advance the metadata tip; update the
-        // resident projection in place instead of re-folding the whole log. The resident is updated before the cache write — on a
-        // cache write failure the resident stays consistent with the log while
-        // the on-disk discovery cache lags.
+        // The event is folded into the resident projection in place; only a
+        // legacy revert marker, or a usage record that cannot be taken back
+        // exactly, refolds the whole log. The resident is updated before the
+        // cache write — on a cache write failure the resident stays
+        // consistent with the log while the on-disk discovery cache lags.
         //
-        // Inside a running run such an append does not rewrite the `metadata`
-        // cache either: all it changes there is the tip, the run's terminal
-        // event is fold-consumed and rewrites the cache, and eviction and store
-        // release flush a tip that is still pending. Outside a run (goal and
-        // producer bookkeeping on an idle session) nothing is guaranteed to
-        // follow, so the tip is written through.
-        let incremental = if fold_consumed(&envelope.payload) {
-            None
-        } else {
+        // Inside a running run an append that changes only the metadata tip
+        // (every stream, tool and usage record) does not rewrite the
+        // `metadata` cache: the run's terminal event changes the status and
+        // rewrites it, and eviction and store release flush a tip that is
+        // still pending. A title or status change, and anything outside a run
+        // (where nothing is guaranteed to follow), is written through.
+        let applied = {
             let mut residency = self
                 .residency
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if residency.resident.contains_key(&id) {
-                residency.evicted.remove(&id);
-                // Copies the projection only while a reader still holds it;
-                // its agent snapshots are shared either way.
-                let resident =
-                    Arc::make_mut(residency.resident.get_mut(&id).expect("checked above"));
-                resident.meta.last_event_seq = envelope.seq;
-                resident.meta.last_activity = envelope.timestamp;
-                if first_user_message || !log.is_persisted() {
-                    Some(None)
-                } else if resident.meta.status == SessionStatus::Running {
-                    residency.stale_meta_caches.insert(id);
-                    Some(None)
-                } else {
-                    Some(Some(resident.meta.clone()))
+            let residency = &mut *residency;
+            match residency.resident.get_mut(&id) {
+                Some(resident) if Arc::ptr_eq(&resident.log, &log) => {
+                    // Copies the projection only while a reader still holds
+                    // it; its agent snapshots are shared either way.
+                    let resident = Arc::make_mut(resident);
+                    match resident.observe(&envelope, FoldStep::Append) {
+                        Observed::Applied { durable_meta } => {
+                            resident.meta.last_event_seq = envelope.seq;
+                            resident.meta.last_activity = envelope.timestamp;
+                            residency.evicted.remove(&id);
+                            Some(if first_user_message || !log.is_persisted() {
+                                None
+                            } else if !durable_meta
+                                && resident.meta.status == SessionStatus::Running
+                            {
+                                residency.stale_meta_caches.insert(id);
+                                None
+                            } else {
+                                Some(resident.meta.clone())
+                            })
+                        }
+                        Observed::NeedsRefold => None,
+                    }
                 }
-            } else {
-                None
+                _ => None,
             }
         };
-        if let Some(refresh) = incremental {
+        if let Some(refresh) = applied {
             if first_user_message {
                 let projection = self.get(id)?;
                 self.persist_buffered(id, &projection)?;
@@ -1598,18 +1607,16 @@ impl SessionStore {
             } else if log.is_persisted() {
                 self.refresh_meta_cache(id, &rebuilt.meta)?;
             }
-            {
-                let mut residency = self
-                    .residency
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                residency.resident.insert(id, rebuilt);
-                residency.evicted.remove(&id);
-            }
-            // The publish that just happened changed the child's durable summary.
-            if !was_persisted && let Some(root) = self.parent_root_of(id) {
-                self.persist_subagent_index(root)?;
-            }
+            let mut residency = self
+                .residency
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            residency.resident.insert(id, rebuilt);
+            residency.evicted.remove(&id);
+        }
+        // The publish that just happened changed the child's durable summary.
+        if first_user_message && let Some(root) = self.parent_root_of(id) {
+            self.persist_subagent_index(root)?;
         }
         // Run-terminal events are rare and are the only thing the delegation
         // registry needs from a child log, so cache them per tree (§4.1.3).

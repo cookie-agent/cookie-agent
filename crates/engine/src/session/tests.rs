@@ -2324,9 +2324,9 @@ fn read_test_meta_cache(store: &SessionStore, id: SessionId) -> cookie_agent_pro
     super::read_cache(&meta_path(&dir), &dir.join(EVENTS_FILE)).expect("read metadata cache")
 }
 
-/// In-run records the fold ignores leave the `metadata` cache alone (they
-/// only move its tip); the run's fold-consumed terminal event brings it fully
-/// up to date, and outside a run the tip is written through.
+/// In-run records that only move the tip leave the `metadata` cache alone;
+/// the run's terminal event changes its status and brings it fully up to
+/// date, and outside a run the tip is written through.
 #[test]
 fn in_run_fold_ignored_records_defer_the_metadata_cache_until_the_run_ends() {
     let temporary = private_tempdir();
@@ -2337,7 +2337,7 @@ fn in_run_fold_ignored_records_defer_the_metadata_cache_until_the_run_ends() {
     let before = read_test_meta_cache(&store, session_id);
     assert_eq!(before, store.get(session_id).unwrap().meta);
 
-    // `ModelAttemptStarted` is not fold-consumed either.
+    // `ModelAttemptStarted` only moves the tip as well.
     let attempt = start_test_attempt(&store, session_id);
     let mut last = before.last_event_seq;
     for _ in 0..3 {
@@ -3211,7 +3211,7 @@ fn fuzz_tool_owner(turn_seq: u64, label: &str) -> cookie_agent_protocol::Assista
 }
 
 #[test]
-fn fold_ignored_appends_do_not_rebuild_projection() {
+fn appends_fold_in_place_and_only_reverts_rebuild() {
     let temporary = private_tempdir();
     let cwd = temporary.path().join("workspace");
     create_private_test_dir_all(&cwd);
@@ -3252,7 +3252,7 @@ fn fold_ignored_appends_do_not_rebuild_projection() {
     assert_eq!(
         super::projection_fold_count(),
         before,
-        "fold-ignored appends must not rebuild the projection"
+        "stream records must not rebuild the projection"
     );
     store
         .append(
@@ -3264,8 +3264,21 @@ fn fold_ignored_appends_do_not_rebuild_projection() {
         .expect("complete run");
     assert_eq!(
         super::projection_fold_count(),
+        before,
+        "a terminal run event folds in place"
+    );
+    store
+        .append(
+            session_id,
+            None,
+            fuzz_origin(),
+            EventPayload::SessionReverted { through_seq: 1 },
+        )
+        .expect("legacy revert marker");
+    assert_eq!(
+        super::projection_fold_count(),
         before + 1,
-        "fold-consumed payloads rebuild exactly once"
+        "a legacy revert marker hides events and rebuilds exactly once"
     );
 }
 
@@ -3280,7 +3293,7 @@ fn incremental_projection_matches_full_fold_across_random_event_streams() {
 /// `append_with_mode` test assertion re-folds the log after every append
 /// and compares it against the resident projection, so each step is a
 /// differential check; this test additionally pins that full folds happen
-/// exactly on fold-consumed payloads.
+/// exactly on legacy revert markers.
 fn run_projection_fuzz(seed: u64, steps: usize) {
     let temporary = private_tempdir();
     let cwd = temporary.path().join("workspace");
@@ -3311,11 +3324,11 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
     let mut next_attempt_ordinal = 2_u32;
     let mut callable_owners: Vec<cookie_agent_protocol::AssistantToolCallRef> = Vec::new();
     let mut open_tools: Vec<(ToolCallId, cookie_agent_protocol::AssistantToolCallRef)> = Vec::new();
-    let mut consumed_appends = 0_u64;
+    let mut reverts = 0_u64;
     let folds_before = super::projection_fold_count();
     let append =
         |store: &SessionStore, run: Option<RunId>, payload: EventPayload, consumed: &mut u64| {
-            if super::fold_consumed(&payload) {
+            if matches!(payload, EventPayload::SessionReverted { .. }) {
                 *consumed += 1;
             }
             store
@@ -3334,7 +3347,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                     attempt_id,
                     kind: cookie_agent_protocol::StreamedOutputKind::Text,
                 },
-                &mut consumed_appends,
+                &mut reverts,
             ),
             // ~15%: reasoning output marks (fold-ignored).
             45..=59 => append(
@@ -3344,7 +3357,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                     attempt_id,
                     kind: cookie_agent_protocol::StreamedOutputKind::Reasoning,
                 },
-                &mut consumed_appends,
+                &mut reverts,
             ),
             // ~15%: stdin to an open call (fold-ignored).
             60..=74 => {
@@ -3356,7 +3369,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                             tool_call_id: *tool_call_id,
                             byte_count: step as u64,
                         },
-                        &mut consumed_appends,
+                        &mut reverts,
                     );
                 } else {
                     append(
@@ -3366,12 +3379,12 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                             attempt_id,
                             kind: cookie_agent_protocol::StreamedOutputKind::Text,
                         },
-                        &mut consumed_appends,
+                        &mut reverts,
                     );
                 }
             }
             // ~5%: committed model turn carrying one tool-call part, plus
-            // its usage record (consumed). The part gives later tool starts
+            // its usage record. The part gives later tool starts
             // a valid owner.
             75..=79 => {
                 let turn_seq = next_turn_seq;
@@ -3405,7 +3418,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                         },
                         warnings: Vec::new(),
                     },
-                    &mut consumed_appends,
+                    &mut reverts,
                 );
                 callable_owners.push(owner);
                 append(
@@ -3418,7 +3431,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                         usage: Usage::default(),
                         estimated_cost_pico_usd: None,
                     },
-                    &mut consumed_appends,
+                    &mut reverts,
                 );
                 // A committed turn is terminal for its attempt; stream the
                 // next deltas under a fresh attempt.
@@ -3440,8 +3453,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                     .expect("start attempt");
                 next_attempt_ordinal += 1;
             }
-            // ~5%: tool call start against a committed tool-call owner
-            // (consumed).
+            // ~5%: tool call start against a committed tool-call owner.
             80..=84 => {
                 if let Some(owner) = callable_owners.pop() {
                     let tool_call_id = ToolCallId::new_v7();
@@ -3463,7 +3475,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                                 .expect("operation fingerprint"),
                             },
                         },
-                        &mut consumed_appends,
+                        &mut reverts,
                     );
                     open_tools.push((tool_call_id, owner));
                 } else {
@@ -3474,11 +3486,11 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                             attempt_id,
                             kind: cookie_agent_protocol::StreamedOutputKind::Text,
                         },
-                        &mut consumed_appends,
+                        &mut reverts,
                     );
                 }
             }
-            // ~5%: tool call termination (consumed).
+            // ~5%: tool call termination.
             85..=89 => {
                 if let Some((tool_call_id, owner)) = open_tools.pop() {
                     append(
@@ -3496,7 +3508,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                                 }),
                             },
                         },
-                        &mut consumed_appends,
+                        &mut reverts,
                     );
                 } else {
                     append(
@@ -3506,11 +3518,11 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                             attempt_id,
                             kind: cookie_agent_protocol::StreamedOutputKind::Reasoning,
                         },
-                        &mut consumed_appends,
+                        &mut reverts,
                     );
                 }
             }
-            // ~3%: titles, overlays, user input (all consumed).
+            // ~3%: titles, overlays, user input.
             90..=92 => match rng.below(3) {
                 0 => append(
                     &store,
@@ -3525,7 +3537,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                         },
                         input_through_seq: 1,
                     },
-                    &mut consumed_appends,
+                    &mut reverts,
                 ),
                 1 => append(
                     &store,
@@ -3533,7 +3545,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                     EventPayload::SessionPermissionOverlaySet {
                         overlay: SessionPermissionOverlay::default(),
                     },
-                    &mut consumed_appends,
+                    &mut reverts,
                 ),
                 _ => append(
                     &store,
@@ -3541,10 +3553,10 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                     EventPayload::UserInputSubmitted {
                         input: format!("follow-up {step}"),
                     },
-                    &mut consumed_appends,
+                    &mut reverts,
                 ),
             },
-            // ~2%: complete the run and start a fresh one (consumed).
+            // ~2%: complete the run and start a fresh one.
             // Tool owners are per-run state; model turn sequences are
             // session-global and stay contiguous across runs and reverts.
             93..=94 => {
@@ -3552,19 +3564,14 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                     &store,
                     Some(run_id),
                     EventPayload::RunCompleted { final_text: None },
-                    &mut consumed_appends,
+                    &mut reverts,
                 );
                 run_id = RunId::new_v7();
                 attempt_id = AttemptId::new_v7();
                 next_attempt_ordinal = 2;
                 callable_owners.clear();
                 open_tools.clear();
-                append(
-                    &store,
-                    Some(run_id),
-                    run_started.clone(),
-                    &mut consumed_appends,
-                );
+                append(&store, Some(run_id), run_started.clone(), &mut reverts);
                 store
                     .append(
                         session_id,
@@ -3581,7 +3588,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                     )
                     .expect("start attempt");
             }
-            // ~2%: revert to the creation event (consumed). Hidden turns
+            // ~2%: revert to the creation event (refolds). Hidden turns
             // invalidate any owners committed before the revert.
             95..=96 => {
                 callable_owners.clear();
@@ -3590,25 +3597,25 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                     &store,
                     None,
                     EventPayload::SessionReverted { through_seq: 1 },
-                    &mut consumed_appends,
+                    &mut reverts,
                 );
             }
-            // ~3%: user input on the current run (consumed).
+            // ~3%: user input on the current run.
             _ => append(
                 &store,
                 Some(run_id),
                 EventPayload::UserInputSubmitted {
                     input: format!("input {seed}-{step}"),
                 },
-                &mut consumed_appends,
+                &mut reverts,
             ),
         }
     }
 
     assert_eq!(
         super::projection_fold_count() - folds_before,
-        consumed_appends,
-        "seed {seed}: full folds happen exactly on fold-consumed payloads"
+        reverts,
+        "seed {seed}: full folds happen exactly on legacy revert markers"
     );
 }
 
@@ -3998,6 +4005,185 @@ fn append_realistic_run(
         },
     );
     next_turn_seq
+}
+
+/// Commits one model turn of `run_id` under a fresh attempt, carrying
+/// `usage` but no usage record.
+#[allow(clippy::too_many_arguments)]
+fn commit_turn_without_usage_record(
+    store: &SessionStore,
+    session_id: SessionId,
+    run_id: RunId,
+    attempt_ordinal: u32,
+    model_turn_seq: u64,
+    resolved_model: &cookie_agent_protocol::ResolvedModelRef,
+    prompt_fingerprint: &Sha256Digest,
+    usage: &Usage,
+) {
+    let attempt_id = AttemptId::new_v7();
+    store
+        .append(
+            session_id,
+            Some(run_id),
+            fuzz_origin(),
+            EventPayload::ModelAttemptStarted {
+                attempt_id,
+                attempt_ordinal,
+                fallback_index: 0,
+                retry_ordinal: 0,
+                resolved_model: resolved_model.clone(),
+                prompt_fingerprint: prompt_fingerprint.clone(),
+            },
+        )
+        .expect("start attempt");
+    store
+        .append(
+            session_id,
+            Some(run_id),
+            fuzz_origin(),
+            EventPayload::ModelTurnCommitted {
+                attempt_id,
+                model_turn_seq,
+                resolved_model: resolved_model.clone(),
+                input_through_seq: 1,
+                turn: PersistedModelTurn {
+                    content: vec![cookie_agent_protocol::PersistedAssistantPart::Text {
+                        text: format!("turn {model_turn_seq}"),
+                        metadata: None,
+                    }],
+                    provider_options: BTreeMap::new(),
+                    finish_reason: ModelFinishReason::Stop,
+                    usage: usage.clone(),
+                    response_metadata: BTreeMap::new(),
+                    provider_metadata: BTreeMap::new(),
+                    native_replay: None,
+                },
+                warnings: Vec::new(),
+            },
+        )
+        .expect("commit turn");
+}
+
+/// The resident projection is folded in place across whole runs, a
+/// truncating revert, and usage records that arrive after another turn of
+/// the same model; each append is also checked against a full fold by the
+/// `append_with_mode` test assertion.
+#[test]
+fn in_place_projection_matches_a_full_fold_through_truncation_and_late_usage() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
+    let session_id = persist_test_session(&store);
+    let (first_run, resolved_model, agent_id, prompt_fingerprint, run_started) =
+        fuzz_scaffolding(&store, session_id);
+    let mut run_end = Vec::new();
+    let mut next_turn_seq = 1;
+    for run in 0..3 {
+        let run_id = if run == 0 { first_run } else { RunId::new_v7() };
+        next_turn_seq = append_realistic_run(
+            &store,
+            session_id,
+            run_id,
+            (run > 0).then_some(&run_started),
+            &resolved_model,
+            &agent_id,
+            &prompt_fingerprint,
+            next_turn_seq,
+            3,
+            |_, _| {},
+        );
+        run_end.push(store.get(session_id).unwrap().meta.last_event_seq);
+    }
+    let folds = super::projection_fold_count();
+    store
+        .truncate(session_id, run_end[0])
+        .expect("truncate to the first run");
+    assert_eq!(super::projection_fold_count(), folds + 1);
+    let truncated = store.get(session_id).unwrap();
+    assert_eq!(truncated.runs.len(), 1);
+    assert_eq!(truncated.meta.last_event_seq, run_end[0]);
+    let next_turn_seq = truncated.log.physical_model_turns() + 1;
+    drop(truncated);
+
+    let run_id = RunId::new_v7();
+    store
+        .append(session_id, Some(run_id), fuzz_origin(), run_started.clone())
+        .expect("start run");
+    let usage = |input| Usage {
+        input_tokens: Some(input),
+        output_tokens: Some(7),
+        ..Usage::default()
+    };
+    for (ordinal, turn_seq) in [(1, next_turn_seq), (2, next_turn_seq + 1)] {
+        commit_turn_without_usage_record(
+            &store,
+            session_id,
+            run_id,
+            ordinal,
+            turn_seq,
+            &resolved_model,
+            &prompt_fingerprint,
+            &usage(100 * turn_seq),
+        );
+    }
+    let folds = super::projection_fold_count();
+    let record_usage = |turn_seq: u64| {
+        store
+            .append(
+                session_id,
+                Some(run_id),
+                fuzz_origin(),
+                EventPayload::ModelUsageRecorded {
+                    model_turn_seq: turn_seq,
+                    agent_id: agent_id.clone(),
+                    resolved_model: resolved_model.clone(),
+                    usage: usage(100 * turn_seq),
+                    estimated_cost_pico_usd: Some(turn_seq),
+                },
+            )
+            .expect("record usage");
+    };
+    record_usage(next_turn_seq + 1);
+    assert_eq!(
+        super::projection_fold_count(),
+        folds,
+        "the newest provisional turn is taken back out in place"
+    );
+    record_usage(next_turn_seq);
+    assert_eq!(
+        super::projection_fold_count(),
+        folds + 1,
+        "a usage record behind a later observation of its model refolds"
+    );
+    commit_turn_without_usage_record(
+        &store,
+        session_id,
+        run_id,
+        3,
+        next_turn_seq + 2,
+        &resolved_model,
+        &prompt_fingerprint,
+        &usage(100 * (next_turn_seq + 2)),
+    );
+    record_usage(next_turn_seq + 2);
+    assert_eq!(super::projection_fold_count(), folds + 1);
+    store
+        .append(
+            session_id,
+            Some(run_id),
+            fuzz_origin(),
+            EventPayload::RunCompleted {
+                final_text: Some("done".into()),
+            },
+        )
+        .expect("complete run");
+
+    let resident = store.get(session_id).unwrap();
+    let reference = super::projection_fold(resident.log.clone()).expect("reference fold");
+    super::assert_projection_equivalent(&resident, &reference);
+    assert_eq!(resident.usage_rollup.request_count, 3 + 3);
+    assert_eq!(read_test_meta_cache(&store, session_id), resident.meta);
 }
 
 /// Timing probe, not a regression gate: grows one persisted session to
