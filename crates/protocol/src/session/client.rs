@@ -15,11 +15,11 @@ use std::{
 use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
     ClientHello, EventSubscriptionMessage, EventsSubscribeParams, EventsSubscribeResult,
-    JsonRpcError, JsonRpcId, McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams,
-    McpAuthCancelResult, McpAuthCompleteParams, McpAuthCompleteResult, McpServerAddParams,
-    McpServerEditParams, McpServerListParams, McpServerListResult, McpServerMutationResult,
-    McpServerNameParams, McpServerPersistParams, McpServerSetEnabledParams, MessageFrame,
-    Notification, ProtocolVersion, Response, RunCancelParams, RunCancelResult,
+    JsonRpcError, JsonRpcId, JsonRpcVersion, McpAuthBeginParams, McpAuthBeginResult,
+    McpAuthCancelParams, McpAuthCancelResult, McpAuthCompleteParams, McpAuthCompleteResult,
+    McpServerAddParams, McpServerEditParams, McpServerListParams, McpServerListResult,
+    McpServerMutationResult, McpServerNameParams, McpServerPersistParams,
+    McpServerSetEnabledParams, MessageFrame, ProtocolVersion, RunCancelParams, RunCancelResult,
     RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerParams,
     RunSteerResult, RunToolStdinParams, RunToolStdinResult, ServerHello, SessionChildrenParams,
     SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
@@ -36,8 +36,8 @@ use crate::{
     SkillsListResult, StoredEvent, Transport, TransportError,
 };
 use jiff::Timestamp;
-use serde::{Serialize, de::DeserializeOwned};
-use serde_json::Value;
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
+use serde_json::{Value, value::RawValue};
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use zeroize::{Zeroize, Zeroizing};
@@ -127,8 +127,12 @@ struct Command {
     replay: Option<ReplayRequest>,
     /// Signalled once the request frame is on the transport.
     written: Option<oneshot::Sender<()>>,
-    response: oneshot::Sender<Result<Value, ClientError>>,
+    response: oneshot::Sender<CommandResult>,
 }
+
+/// A call's result as the server serialized it, decoded by the caller into
+/// the type it expects.
+type CommandResult = Result<Box<RawValue>, ClientError>;
 
 struct SerializedParams {
     value: Value,
@@ -217,7 +221,7 @@ impl Drop for SensitiveFrame {
 
 struct PendingCommand {
     replay: Option<ReplayRequest>,
-    response: oneshot::Sender<Result<Value, ClientError>>,
+    response: oneshot::Sender<CommandResult>,
 }
 
 #[derive(Default)]
@@ -715,8 +719,8 @@ impl Client {
         P: Serialize + ?Sized,
         R: DeserializeOwned,
     {
-        let value = send_command(&self.commands, method, params, None, false).await?;
-        Ok(serde_json::from_value(value)?)
+        let result = send_command(&self.commands, method, params, None, false).await?;
+        Ok(serde_json::from_str(result.get())?)
     }
 
     /// Send a secret-bearing request from wiping process-owned buffers.
@@ -731,7 +735,7 @@ impl Client {
         let value = SensitiveJson(serde_json::to_value(&params)?);
         drop(params);
         let result = send_sensitive_command(&self.commands, method, value).await?;
-        Ok(serde_json::from_value(result)?)
+        Ok(serde_json::from_str(result.get())?)
     }
 
     #[cfg(test)]
@@ -849,7 +853,7 @@ async fn request_replay_with_timeout(
             .await
             .map_err(|_| ClientError::ReplayTimedOut)?
             .map_err(|_| ClientError::Closed)??;
-        match next.as_u64() {
+        match serde_json::from_str::<Option<u64>>(next.get())? {
             Some(next) => cursor = next,
             None => return Ok(()),
         }
@@ -862,7 +866,7 @@ async fn send_command<P>(
     params: &P,
     replay: Option<ReplayRequest>,
     sensitive: bool,
-) -> Result<Value, ClientError>
+) -> CommandResult
 where
     P: Serialize + ?Sized,
 {
@@ -890,7 +894,7 @@ pub(in crate::session::client) async fn send_sensitive_command(
     commands: &mpsc::Sender<Command>,
     method: &str,
     mut params: SensitiveJson,
-) -> Result<Value, ClientError> {
+) -> CommandResult {
     let (response, receiver) = oneshot::channel();
     let id = NEXT_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let params = SerializedParams {
@@ -1152,8 +1156,8 @@ fn serialize_outbound_frame(
             .map(SensitiveFrame::new)
             .map(OutboundFrame::Sensitive)
     } else {
-        serde_json::to_value(request)
-            .map(MessageFrame::Value)
+        serde_json::to_string(&request)
+            .map(MessageFrame::Text)
             .map(OutboundFrame::Public)
     }
 }
@@ -1223,6 +1227,42 @@ fn resolve_malformed_response(error: ClientError, pending: &mut HashMap<i64, Pen
     }
 }
 
+/// A JSON-RPC message from the server. Its result or params stay
+/// unparsed text until the receiver decodes them into the type it expects.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IncomingMessage<'a> {
+    /// Checked while parsing; nothing reads it after.
+    #[serde(rename = "jsonrpc")]
+    _jsonrpc: JsonRpcVersion,
+    #[serde(default, deserialize_with = "present")]
+    id: Option<JsonRpcId>,
+    #[serde(default, borrow)]
+    method: Option<std::borrow::Cow<'a, str>>,
+    #[serde(default, borrow, deserialize_with = "present")]
+    params: Option<&'a RawValue>,
+    #[serde(default, borrow, deserialize_with = "present")]
+    result: Option<&'a RawValue>,
+    #[serde(default)]
+    error: Option<JsonRpcError>,
+}
+
+/// A field that is present, even as `null`.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// Just the id of a message that failed to parse, to fail the call it answers.
+#[derive(Deserialize)]
+struct IncomingId {
+    #[serde(default)]
+    id: Option<JsonRpcId>,
+}
+
 async fn handle_frame(
     frame: MessageFrame,
     pending: &mut HashMap<i64, PendingCommand>,
@@ -1230,19 +1270,22 @@ async fn handle_frame(
     subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
     recovery: &Arc<RecoveryQueue>,
 ) -> Result<(), ClientError> {
-    let value = match frame {
-        MessageFrame::Value(value) => value,
-        MessageFrame::Text(text) => serde_json::from_str(&text)?,
+    let serialized;
+    let bytes: &[u8] = match &frame {
+        MessageFrame::Text(text) => text.as_bytes(),
+        MessageFrame::Bytes(bytes) => bytes,
+        MessageFrame::Value(value) => {
+            serialized = serde_json::to_vec(value)?;
+            &serialized
+        }
     };
-    if value.get("id").is_some() {
-        let request_id = value
-            .get("id")
-            .cloned()
-            .and_then(|id| serde_json::from_value::<JsonRpcId>(id).ok());
-        let response: Response = match serde_json::from_value(value) {
-            Ok(response) => response,
+    let message =
+        match serde_json::from_slice::<IncomingMessage<'_>>(bytes).and_then(validate_incoming) {
+            Ok(message) => message,
             Err(error) => {
-                if let Some(JsonRpcId::Number(id)) = request_id
+                if let Ok(IncomingId {
+                    id: Some(JsonRpcId::Number(id)),
+                }) = serde_json::from_slice(bytes)
                     && let Some(command) = pending.remove(&id)
                 {
                     let _ = command.response.send(Err(ClientError::InvalidFrame(error)));
@@ -1251,16 +1294,18 @@ async fn handle_frame(
                 return Err(ClientError::InvalidFrame(error));
             }
         };
-        let (id, result) = match response {
-            Response::Success(response) => (response.id, Ok(response.result)),
-            Response::Error(response) => (response.id, Err(ClientError::Rpc(response.error))),
+    if let Some(id) = message.id {
+        let result = match (message.result, message.error) {
+            (Some(result), None) => Ok(result),
+            (None, Some(error)) => Err(ClientError::Rpc(error)),
+            _ => unreachable!("validated as a response"),
         };
         if let JsonRpcId::Number(id) = id
             && let Some(command) = pending.remove(&id)
         {
             match (command.replay, result) {
-                (Some(replay), Ok(value)) => {
-                    match serde_json::from_value::<EventsSubscribeResult>(value) {
+                (Some(replay), Ok(result)) => {
+                    match serde_json::from_str::<EventsSubscribeResult>(result.get()) {
                         Ok(result) if result.stale_cursor => {
                             // A revert replaced the event at the cursor while
                             // this view was away: what it holds past the cut
@@ -1274,13 +1319,13 @@ async fn handle_frame(
                                 true,
                                 Some(replay.session_id),
                             );
-                            let _ = command.response.send(Ok(Value::Null));
+                            let _ = command.response.send(Ok(replay_next(None)));
                         }
                         Ok(result) => {
                             let page = if result.has_more {
                                 match hold_replay_page(replay, result.events, subscriptions).await {
                                     Ok(next) => {
-                                        let _ = command.response.send(Ok(Value::from(next)));
+                                        let _ = command.response.send(Ok(replay_next(Some(next))));
                                         return Ok(());
                                     }
                                     Err(page) => page,
@@ -1293,7 +1338,7 @@ async fn handle_frame(
                             // The application can now start draining the sole
                             // mpsc consumer while this task injects a large
                             // replay under natural channel backpressure.
-                            let _ = command.response.send(Ok(Value::Null));
+                            let _ = command.response.send(Ok(replay_next(None)));
                             begin_replay(replay, events, subscriptions, deliveries, recovery).await;
                         }
                         Err(error) => {
@@ -1302,32 +1347,58 @@ async fn handle_frame(
                     }
                 }
                 (_, result) => {
-                    let _ = command.response.send(result);
+                    let _ = command.response.send(result.map(RawValue::to_owned));
                 }
             }
         }
         return Ok(());
     }
-    let notification: Notification = serde_json::from_value(value)?;
-    let Some(params) = notification.params else {
+    let Some(params) = message.params else {
         return Ok(());
     };
-    match notification.method.as_str() {
-        "events.subscription" => {
-            let message: EventSubscriptionMessage = serde_json::from_value(params)?;
+    match message.method.as_deref() {
+        Some("events.subscription") => {
+            let message: EventSubscriptionMessage = serde_json::from_str(params.get())?;
             route_live(message, deliveries, subscriptions, recovery).await;
         }
-        "events.plugin" => {
-            let event = serde_json::from_value(params)?;
+        Some("events.plugin") => {
+            let event = serde_json::from_str(params.get())?;
             let _ = deliveries.send(ClientDelivery::PluginEvent(event));
         }
-        crate::RUNTIME_CHANGED_METHOD => {
-            let changed = serde_json::from_value(params)?;
+        Some(crate::RUNTIME_CHANGED_METHOD) => {
+            let changed = serde_json::from_str(params.get())?;
             let _ = deliveries.send(ClientDelivery::RuntimeChanged(Box::new(changed)));
         }
         _ => {}
     }
     Ok(())
+}
+
+/// Checks that a message is exactly a response (an id with one of a result
+/// or an error) or a notification (a method, maybe params, and no id).
+fn validate_incoming(
+    message: IncomingMessage<'_>,
+) -> Result<IncomingMessage<'_>, serde_json::Error> {
+    let valid = if message.id.is_some() {
+        message.method.is_none()
+            && message.params.is_none()
+            && (message.result.is_some() != message.error.is_some())
+    } else {
+        message.method.is_some() && message.result.is_none() && message.error.is_none()
+    };
+    if valid {
+        Ok(message)
+    } else {
+        Err(serde::de::Error::custom(
+            "message is neither a JSON-RPC response nor a notification",
+        ))
+    }
+}
+
+/// What a replay page tells the replay loop: the cursor of the next page,
+/// or `null` once the replay has ended.
+fn replay_next(next: Option<u64>) -> Box<RawValue> {
+    serde_json::value::to_raw_value(&next).expect("a cursor serializes")
 }
 
 /// Whether `replay` is still the attempt its session is fetching.

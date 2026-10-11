@@ -193,6 +193,9 @@ impl cookie_agent_protocol::Transport for CountingStream {
             cookie_agent_protocol::MessageFrame::Text(text) => {
                 serde_json::from_str(text).unwrap_or_default()
             }
+            cookie_agent_protocol::MessageFrame::Bytes(bytes) => {
+                serde_json::from_slice(bytes).unwrap_or_default()
+            }
         };
         if value["method"] == "events.subscribe" {
             let params = &value["params"];

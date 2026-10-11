@@ -1332,6 +1332,7 @@ pub(crate) fn recording_client() -> (Client, Arc<Mutex<Vec<Value>>>) {
             let value = match frame {
                 MessageFrame::Value(value) => value,
                 MessageFrame::Text(text) => serde_json::from_str(&text).unwrap_or(Value::Null),
+                MessageFrame::Bytes(bytes) => serde_json::from_slice(&bytes).unwrap_or(Value::Null),
             };
             sink.lock().expect("recorded lock").push(value);
         }
@@ -1359,6 +1360,7 @@ pub(crate) fn live_recording_client() -> (
             let value = match frame {
                 MessageFrame::Value(value) => value,
                 MessageFrame::Text(text) => serde_json::from_str(&text).unwrap_or(Value::Null),
+                MessageFrame::Bytes(bytes) => serde_json::from_slice(&bytes).unwrap_or(Value::Null),
             };
             sink.lock().expect("recorded lock").push(value);
         }

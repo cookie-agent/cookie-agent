@@ -92,6 +92,7 @@ async fn plugin_events_are_filtered_by_connection_session_subscription() {
             .await
             .expect("session A notification")
             .expect("session A queue");
+    let notification: Value = serde_json::from_str(&notification).expect("JSON notification");
     assert_eq!(notification["method"], "events.plugin");
     assert_eq!(notification["params"]["session_id"], session_a.to_string());
     assert!(
@@ -441,6 +442,7 @@ async fn request(
         let value = match frame {
             MessageFrame::Value(value) => value,
             MessageFrame::Text(text) => serde_json::from_str(&text).expect("JSON frame"),
+            MessageFrame::Bytes(bytes) => serde_json::from_slice(&bytes).expect("JSON frame"),
         };
         if value.get("id") == Some(&json!(id)) {
             return (value, notifications);
@@ -621,6 +623,9 @@ async fn disconnect_publishes_one_ordered_runtime_changed_notification() {
         notifications.push(match frame {
             MessageFrame::Value(value) => value,
             MessageFrame::Text(text) => serde_json::from_str(&text).expect("JSON notification"),
+            MessageFrame::Bytes(bytes) => {
+                serde_json::from_slice(&bytes).expect("JSON notification")
+            }
         });
     }
     let changed = notifications

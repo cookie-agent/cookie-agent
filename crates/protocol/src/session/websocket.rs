@@ -112,12 +112,8 @@ fn websocket_error(error: &tokio_tungstenite::tungstenite::Error) -> TransportEr
 #[async_trait]
 impl Transport for WebSocketTransport {
     async fn send(&mut self, frame: MessageFrame) -> Result<(), TransportError> {
-        let text = match frame {
-            MessageFrame::Text(text) => text,
-            MessageFrame::Value(value) => serde_json::to_string(&value)?,
-        };
         self.socket
-            .send(Message::Text(text.into()))
+            .send(Message::Text(frame.into_text()?.into()))
             .await
             .map_err(|error| websocket_error(&error))
     }
@@ -126,7 +122,7 @@ impl Transport for WebSocketTransport {
         loop {
             match self.socket.next().await {
                 Some(Ok(Message::Text(text))) => {
-                    return Ok(Some(MessageFrame::Text(text.to_string())));
+                    return Ok(Some(MessageFrame::Bytes(text.into())));
                 }
                 Some(Ok(Message::Close(_))) | None => return Ok(None),
                 Some(Ok(_)) => {}

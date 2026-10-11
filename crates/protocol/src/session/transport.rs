@@ -8,14 +8,35 @@ use tokio::sync::mpsc;
 /// One complete JSON-RPC message exchanged by a protocol transport.
 #[derive(Clone, PartialEq)]
 pub enum MessageFrame {
+    /// JSON text this process serialized.
     Text(String),
+    /// JSON text as received from a socket, shared rather than copied. A
+    /// reader parses it directly from these bytes; they are not checked to
+    /// be UTF-8 until then.
+    Bytes(bytes::Bytes),
     Value(Value),
+}
+
+impl MessageFrame {
+    /// The frame's JSON text, for a transport that writes text. A
+    /// [`Self::Value`] is serialized; a [`Self::Bytes`] that is not UTF-8
+    /// is an invalid frame.
+    pub fn into_text(self) -> Result<String, TransportError> {
+        match self {
+            Self::Text(text) => Ok(text),
+            Self::Bytes(bytes) => String::from_utf8(bytes.into()).map_err(|error| {
+                TransportError::Other(format!("frame is not UTF-8 text: {error}"))
+            }),
+            Self::Value(value) => Ok(serde_json::to_string(&value)?),
+        }
+    }
 }
 
 impl fmt::Debug for MessageFrame {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Text(_) => formatter.write_str("MessageFrame::Text(<redacted>)"),
+            Self::Bytes(_) => formatter.write_str("MessageFrame::Bytes(<redacted>)"),
             Self::Value(_) => formatter.write_str("MessageFrame::Value(<redacted>)"),
         }
     }

@@ -79,6 +79,7 @@ impl Harness {
                 let request = match frame {
                     MessageFrame::Value(value) => value,
                     MessageFrame::Text(text) => serde_json::from_str(&text).unwrap(),
+                    MessageFrame::Bytes(bytes) => serde_json::from_slice(&bytes).unwrap(),
                 };
                 if request["method"] == "run.start" {
                     let _ = runs.send(request);

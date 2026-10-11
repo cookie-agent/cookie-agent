@@ -352,10 +352,10 @@ impl Connection {
             .await
             .expect("frame in time")
             .expect("server open");
-        let MessageFrame::Value(value) = frame else {
-            panic!("expected a value frame");
+        let MessageFrame::Text(text) = frame else {
+            panic!("expected a text frame");
         };
-        value
+        serde_json::from_str(&text).expect("JSON frame")
     }
 }
 
@@ -387,11 +387,12 @@ async fn a_request_s_notifications_follow_its_response() {
 
 #[tokio::test]
 async fn a_replacement_session_tail_forwards_after_the_tail_it_replaces() {
-    async fn next_gap(outbound: &mut mpsc::Receiver<Value>) -> u64 {
-        let value = tokio::time::timeout(Duration::from_secs(2), outbound.recv())
+    async fn next_gap(outbound: &mut mpsc::Receiver<String>) -> u64 {
+        let text = tokio::time::timeout(Duration::from_secs(2), outbound.recv())
             .await
             .expect("notification in time")
             .expect("connection open");
+        let value: Value = serde_json::from_str(&text).expect("JSON notification");
         assert_eq!(value["method"], "events.subscription");
         value["params"]["last_delivered_seq"]
             .as_u64()

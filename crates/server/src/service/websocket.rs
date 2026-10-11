@@ -26,14 +26,8 @@ struct WebSocketStream {
 #[async_trait]
 impl MessageStream for WebSocketStream {
     async fn send(&mut self, frame: MessageFrame) -> Result<(), TransportError> {
-        let text = match frame {
-            MessageFrame::Text(text) => text,
-            MessageFrame::Value(value) => {
-                serde_json::to_string(&value).map_err(|_| TransportError::Closed)?
-            }
-        };
         self.socket
-            .send(axum::extract::ws::Message::Text(text.into()))
+            .send(axum::extract::ws::Message::Text(frame.into_text()?.into()))
             .await
             .map_err(|error| TransportError::Other(error.to_string()))
     }
@@ -42,7 +36,7 @@ impl MessageStream for WebSocketStream {
         loop {
             match self.socket.next().await {
                 Some(Ok(axum::extract::ws::Message::Text(text))) => {
-                    return Ok(Some(MessageFrame::Text(text.to_string())));
+                    return Ok(Some(MessageFrame::Bytes(text.into())));
                 }
                 Some(Ok(axum::extract::ws::Message::Close(_))) | None => return Ok(None),
                 Some(Ok(_)) => {}

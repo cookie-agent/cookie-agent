@@ -37,7 +37,7 @@ impl Client {
             let result =
                 send_sensitive_command(&self.commands, crate::PROVIDER_CONNECT_METHOD, value)
                     .await?;
-            Ok(serde_json::from_value(result)?)
+            Ok(serde_json::from_str(result.get())?)
         }
     }
 

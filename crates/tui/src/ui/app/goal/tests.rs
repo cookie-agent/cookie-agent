@@ -43,6 +43,7 @@ async fn app_with_replies(
             let request: Value = match frame {
                 MessageFrame::Value(value) => value,
                 MessageFrame::Text(text) => serde_json::from_str(&text).expect("JSON request"),
+                MessageFrame::Bytes(bytes) => serde_json::from_slice(&bytes).expect("JSON request"),
             };
             let method = request["method"].as_str().unwrap_or_default();
             let response = if method.starts_with("session.goal.") {

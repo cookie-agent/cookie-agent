@@ -175,9 +175,7 @@ async fn goal_and_producer_calls_use_the_public_wire_contracts() {
                 .await
         }
     });
-    let MessageFrame::Value(request) = sent_rx.recv().await.expect("goal get request") else {
-        panic!("expected value request");
-    };
+    let request = request_json(sent_rx.recv().await.expect("goal get request"));
     assert_eq!(request["method"], crate::SESSION_GOAL_GET_METHOD);
     assert_eq!(
         request["params"],
@@ -207,9 +205,7 @@ async fn goal_and_producer_calls_use_the_public_wire_contracts() {
                 .await
         }
     });
-    let MessageFrame::Value(request) = sent_rx.recv().await.expect("goal set request") else {
-        panic!("expected value request");
-    };
+    let request = request_json(sent_rx.recv().await.expect("goal set request"));
     assert_eq!(request["method"], crate::SESSION_GOAL_SET_METHOD);
     assert_eq!(
         request["params"],
@@ -256,9 +252,7 @@ async fn goal_and_producer_calls_use_the_public_wire_contracts() {
                 .await
         }
     });
-    let MessageFrame::Value(request) = sent_rx.recv().await.expect("goal lifecycle request") else {
-        panic!("expected value request");
-    };
+    let request = request_json(sent_rx.recv().await.expect("goal lifecycle request"));
     assert_eq!(request["method"], crate::SESSION_GOAL_LIFECYCLE_METHOD);
     assert_eq!(
         request["params"],
@@ -302,10 +296,7 @@ async fn goal_and_producer_calls_use_the_public_wire_contracts() {
                 .await
         }
     });
-    let MessageFrame::Value(request) = sent_rx.recv().await.expect("session producers request")
-    else {
-        panic!("expected value request");
-    };
+    let request = request_json(sent_rx.recv().await.expect("session producers request"));
     assert_eq!(request["method"], crate::SESSION_PRODUCERS_METHOD);
     assert_eq!(
         request["params"],
@@ -542,10 +533,7 @@ async fn rpc_completes_while_an_unconsumed_replay_backlog_grows() {
         let client = client.clone();
         async move { client.subscribe_events(session_id, None).await }
     });
-    let MessageFrame::Value(subscribe_request) = sent_rx.recv().await.expect("subscribe request")
-    else {
-        panic!("expected value request");
-    };
+    let subscribe_request = request_json(sent_rx.recv().await.expect("subscribe request"));
     assert_eq!(subscribe_request["method"], "events.subscribe");
     incoming
             .send(MessageFrame::Value(serde_json::json!({
@@ -563,14 +551,12 @@ async fn rpc_completes_while_an_unconsumed_replay_backlog_grows() {
         let client = client.clone();
         async move { client.session_tree(SessionTreeParams { session_id }).await }
     });
-    let MessageFrame::Value(tree_request) =
+    let tree_request = request_json(
         tokio::time::timeout(Duration::from_secs(1), sent_rx.recv())
             .await
             .expect("tree request was not blocked")
-            .expect("connection open")
-    else {
-        panic!("expected value request");
-    };
+            .expect("connection open"),
+    );
     assert_eq!(tree_request["method"], "session.tree");
     tree.abort();
 }
@@ -608,14 +594,12 @@ async fn timed_out_calls_are_pruned_and_late_responses_are_harmless() {
                 .await
             }
         });
-        let MessageFrame::Value(request) =
+        let request = request_json(
             tokio::time::timeout(Duration::from_secs(1), sent_rx.recv())
                 .await
                 .expect("session.create request timeout")
-                .expect("connection open")
-        else {
-            panic!("expected value request");
-        };
+                .expect("connection open"),
+        );
         assert_eq!(request["method"], "session.create");
         timed_out_requests.push(request);
         assert!(call.await.expect("call task").is_err());
@@ -644,13 +628,12 @@ async fn timed_out_calls_are_pruned_and_late_responses_are_harmless() {
         let client = client.clone();
         async move { client.runtime_snapshot().await }
     });
-    let MessageFrame::Value(request) = tokio::time::timeout(Duration::from_secs(1), sent_rx.recv())
-        .await
-        .expect("runtime snapshot request timeout")
-        .expect("connection open")
-    else {
-        panic!("expected value request");
-    };
+    let request = request_json(
+        tokio::time::timeout(Duration::from_secs(1), sent_rx.recv())
+            .await
+            .expect("runtime snapshot request timeout")
+            .expect("connection open"),
+    );
     assert_eq!(request["method"], "runtime.snapshot.get");
     incoming
         .send(MessageFrame::Value(serde_json::json!({
@@ -1148,14 +1131,12 @@ async fn queued_recovery_dies_with_a_disconnected_connection() {
 }
 
 async fn next_request(sent: &mut mpsc::UnboundedReceiver<MessageFrame>) -> Value {
-    let MessageFrame::Value(request) = tokio::time::timeout(Duration::from_secs(1), sent.recv())
-        .await
-        .expect("request sent")
-        .expect("connection open")
-    else {
-        panic!("expected value request");
-    };
-    request
+    request_json(
+        tokio::time::timeout(Duration::from_secs(1), sent.recv())
+            .await
+            .expect("request sent")
+            .expect("connection open"),
+    )
 }
 
 fn replay_page(
@@ -1326,4 +1307,96 @@ async fn a_replay_outlives_a_caller_that_stops_waiting() {
         .send(replay_page(&request, session_id, [], false))
         .expect("empty final page");
     again.await.expect("second caller").expect("second replay");
+}
+
+fn request_json(frame: MessageFrame) -> Value {
+    let MessageFrame::Text(text) = frame else {
+        panic!("expected a text request");
+    };
+    serde_json::from_str(&text).expect("JSON request")
+}
+
+#[tokio::test]
+async fn a_malformed_response_fails_only_the_call_it_answers() {
+    let session_id = SessionId::new_v7();
+    let (incoming, incoming_rx) = mpsc::unbounded_channel();
+    let (sent, mut sent_rx) = mpsc::unbounded_channel();
+    let client = Client::connect_stream(ScriptedStream {
+        incoming: incoming_rx,
+        sent,
+    });
+    let mut deliveries = client.subscribe_deliveries().expect("deliveries");
+    let call = |client: &Client| {
+        let client = client.clone();
+        tokio::spawn(async move {
+            client
+                .get_session_goal(SessionGoalGetParams { session_id })
+                .await
+        })
+    };
+    let malformed = call(&client);
+    let malformed_id = request_json(sent_rx.recv().await.expect("first request"))["id"].clone();
+    let healthy = call(&client);
+    let healthy_id = request_json(sent_rx.recv().await.expect("second request"))["id"].clone();
+
+    // A response may not carry both a result and an error.
+    incoming
+        .send(MessageFrame::Bytes(
+            serde_json::to_vec(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": malformed_id,
+                "result": { "goal": null },
+                "error": { "code": -32603, "message": "internal error" },
+            }))
+            .expect("frame")
+            .into(),
+        ))
+        .expect("malformed response");
+    assert!(matches!(
+        malformed.await.expect("malformed task"),
+        Err(ClientError::InvalidFrame(_))
+    ));
+
+    let plugin_event = crate::ExtensionBusEventParams {
+        session_id,
+        context_id: None,
+        plugin: "fixture".into(),
+        name: "notice".into(),
+        payload: serde_json::json!({ "ok": true }),
+    };
+    incoming
+        .send(MessageFrame::Bytes(
+            serde_json::to_vec(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "events.plugin",
+                "params": plugin_event,
+            }))
+            .expect("frame")
+            .into(),
+        ))
+        .expect("plugin notification");
+    incoming
+        .send(MessageFrame::Bytes(
+            serde_json::to_vec(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": healthy_id,
+                "result": { "goal": null },
+            }))
+            .expect("frame")
+            .into(),
+        ))
+        .expect("healthy response");
+    assert_eq!(
+        healthy
+            .await
+            .expect("healthy task")
+            .expect("healthy call")
+            .goal,
+        None
+    );
+    let delivery = tokio::time::timeout(Duration::from_secs(1), deliveries.recv())
+        .await
+        .expect("delivery in time")
+        .expect("delivery");
+    assert!(matches!(delivery, ClientDelivery::PluginEvent(event) if event == plugin_event));
 }

@@ -8,7 +8,7 @@ use std::{
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Value, json, value::RawValue};
 use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -19,7 +19,7 @@ use crate::{
     McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult, McpAuthCompleteParams,
     McpAuthCompleteResult, McpServerAddParams, McpServerEditParams, McpServerListParams,
     McpServerListResult, McpServerMutationResult, McpServerNameParams, McpServerPersistParams,
-    McpServerSetEnabledParams, MessageFrame, Notification, ProviderConnectParams,
+    McpServerSetEnabledParams, MessageFrame, Notification, NotificationRef, ProviderConnectParams,
     ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, Request, Response,
     RunCancelParams, RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams,
     RunStartResult, RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
@@ -36,8 +36,7 @@ use crate::{
     SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
     SessionSetPermissionModeResult, SessionTitle, SessionTreeParams, SessionTreeResult,
     SessionTreeUsageResult, SessionUsageParams, SessionUsageResult, SkillsGetParams,
-    SkillsGetResult, SkillsListParams, SkillsListResult, SuccessResponse, Transport,
-    TransportError,
+    SkillsGetResult, SkillsListParams, SkillsListResult, Transport, TransportError,
 };
 
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
@@ -54,7 +53,8 @@ static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone)]
 pub struct ServerContext {
     connection_id: u64,
-    notifications: mpsc::Sender<Value>,
+    /// Serialized frames, written to the transport in queue order.
+    notifications: mpsc::Sender<String>,
     shutdown: CancellationToken,
     subscribed_sessions: Arc<Mutex<HashSet<SessionId>>>,
     /// The task forwarding each session's live tail on this connection.
@@ -65,7 +65,7 @@ pub struct ServerContext {
 }
 
 impl ServerContext {
-    fn new(notifications: mpsc::Sender<Value>, shutdown: CancellationToken) -> Self {
+    fn new(notifications: mpsc::Sender<String>, shutdown: CancellationToken) -> Self {
         Self {
             connection_id: NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed),
             notifications,
@@ -136,13 +136,14 @@ impl ServerContext {
     /// registered by `events.subscribe`) is held until that request's
     /// response is queued, so the client never sees the tail before the
     /// snapshot it continues.
-    pub async fn notify<T: Serialize>(
+    ///
+    /// The notification is serialized once, straight to its frame text.
+    pub async fn notify<T: Serialize + ?Sized>(
         &self,
         method: &str,
         params: &T,
     ) -> Result<(), TransportError> {
-        let params = serde_json::to_value(params)?;
-        let notification = serde_json::to_value(Notification::new(method, Some(params)))?;
+        let notification = NotificationRef::new(method, params).to_text()?;
         if let Some(response_sent) = &self.response_sent {
             tokio::select! {
                 () = self.shutdown.cancelled() => return Err(TransportError::Closed),
@@ -193,7 +194,7 @@ impl ServerContext {
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 #[must_use]
-pub fn test_server_context() -> (ServerContext, mpsc::Receiver<Value>) {
+pub fn test_server_context() -> (ServerContext, mpsc::Receiver<String>) {
     let (notifications, receiver) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
     (
         ServerContext::new(notifications, CancellationToken::new()),
@@ -456,7 +457,7 @@ where
                 let incoming = match parse_incoming(frame).and_then(classify_incoming) {
                     Ok(incoming) => incoming,
                     Err(fault) => {
-                        transport.send(MessageFrame::Value(error_response(None, fault)?)).await?;
+                        transport.send(MessageFrame::Text(error_response(None, fault)?)).await?;
                         continue;
                     }
                 };
@@ -470,12 +471,12 @@ where
                         match decode_handshake(params) {
                             Ok(()) => {
                                 handshaken = true;
-                                success_response(id, server_hello())?
+                                success_response(&id, &server_hello())?
                             }
                             Err(fault) => error_response(Some(id), fault)?,
                         }
                     };
-                    transport.send(MessageFrame::Value(response)).await?;
+                    transport.send(MessageFrame::Text(response)).await?;
                     if handshaken {
                         server.connected(context.clone()).await;
                     }
@@ -499,7 +500,7 @@ where
                 });
             }
             Some(frame) = outbound_rx.recv() => {
-                transport.send(MessageFrame::Value(frame)).await?;
+                transport.send(MessageFrame::Text(frame)).await?;
             }
         }
     }
@@ -510,7 +511,7 @@ async fn handle<S: ServerProtocol>(
     server: &S,
     incoming: Incoming,
     context: &ServerContext,
-) -> Option<Value> {
+) -> Option<String> {
     match incoming {
         Incoming::Request { id, method, params } => {
             let result = if method == "handshake" {
@@ -519,7 +520,7 @@ async fn handle<S: ServerProtocol>(
                 dispatch(server, &method, params, context, true).await
             };
             let response = match result {
-                Ok(value) => success_response(id.clone(), value),
+                Ok(result) => success_response(&id, &result),
                 Err(fault) => error_response(Some(id.clone()), fault),
             };
             Some(response.unwrap_or_else(|_| {
@@ -538,8 +539,8 @@ async fn handle<S: ServerProtocol>(
     }
 }
 
-fn server_hello() -> Value {
-    serde_json::to_value(ServerHello {
+fn server_hello() -> Box<RawValue> {
+    serde_json::value::to_raw_value(&ServerHello {
         protocol_version: crate::ProtocolVersion::current(),
     })
     .expect("server hello serializes")
@@ -551,7 +552,7 @@ async fn dispatch<S: ServerProtocol>(
     params: Option<Value>,
     context: &ServerContext,
     has_request_id: bool,
-) -> Result<Value, ServerFault> {
+) -> Result<Box<RawValue>, ServerFault> {
     match method {
         "session.create" => value(server.create_session(decode(params)?).await?),
         "session.list" => value(server.list_sessions(decode_default(params)?).await?),
@@ -692,8 +693,9 @@ fn rename_invalid_title(raw: &RawSessionRenameParams) -> ServerFault {
     )
 }
 
-fn value<T: Serialize>(result: T) -> Result<Value, ServerFault> {
-    serde_json::to_value(result).map_err(|_| ServerFault::internal())
+/// A result serialized once, to the text its response frame embeds.
+fn value<T: Serialize>(result: T) -> Result<Box<RawValue>, ServerFault> {
+    serde_json::value::to_raw_value(&result).map_err(|_| ServerFault::internal())
 }
 
 enum Incoming {
@@ -709,12 +711,12 @@ enum Incoming {
 }
 
 fn parse_incoming(frame: MessageFrame) -> Result<Value, ServerFault> {
-    match frame {
-        MessageFrame::Value(value) => Ok(value),
-        MessageFrame::Text(text) => {
-            serde_json::from_str(&text).map_err(|_| ServerFault::new(-32700, "parse error", None))
-        }
-    }
+    let parsed = match frame {
+        MessageFrame::Value(value) => return Ok(value),
+        MessageFrame::Text(text) => serde_json::from_str(&text),
+        MessageFrame::Bytes(bytes) => serde_json::from_slice(&bytes),
+    };
+    parsed.map_err(|_| ServerFault::new(-32700, "parse error", None))
 }
 
 fn classify_incoming(value: Value) -> Result<Incoming, ServerFault> {
@@ -777,25 +779,27 @@ fn handshake_required() -> ServerFault {
     ServerFault::new(-32001, "handshake required", None)
 }
 
-/// Wraps an already-built result without re-serializing it: a replay result
-/// can run to tens of megabytes, and a round trip through `to_value` would
-/// deep-copy all of it.
-fn success_response(id: JsonRpcId, result: Value) -> Result<Value, TransportError> {
-    let Value::Object(mut response) = serde_json::to_value(Response::Success(SuccessResponse {
-        jsonrpc: JsonRpcVersion::current(),
-        id,
-        result: Value::Null,
-    }))?
-    else {
-        unreachable!("a success response serializes to an object");
-    };
-    response.insert("result".into(), result);
-    Ok(Value::Object(response))
+/// A success response borrowing its id and its already-serialized result.
+#[derive(Serialize)]
+struct SuccessResponseRef<'a> {
+    jsonrpc: JsonRpcVersion,
+    id: &'a JsonRpcId,
+    result: &'a RawValue,
 }
 
-fn error_response(id: Option<JsonRpcId>, fault: ServerFault) -> Result<Value, TransportError> {
+/// Wraps an already-serialized result without re-serializing it: a replay
+/// page can run to megabytes, and it is copied into the frame as text.
+fn success_response(id: &JsonRpcId, result: &RawValue) -> Result<String, TransportError> {
+    Ok(serde_json::to_string(&SuccessResponseRef {
+        jsonrpc: JsonRpcVersion::current(),
+        id,
+        result,
+    })?)
+}
+
+fn error_response(id: Option<JsonRpcId>, fault: ServerFault) -> Result<String, TransportError> {
     match id {
-        Some(id) => Ok(serde_json::to_value(Response::Error(ErrorResponse {
+        Some(id) => Ok(serde_json::to_string(&Response::Error(ErrorResponse {
             jsonrpc: JsonRpcVersion::current(),
             id,
             error: JsonRpcError {
@@ -808,7 +812,8 @@ fn error_response(id: Option<JsonRpcId>, fault: ServerFault) -> Result<Value, Tr
             "jsonrpc": "2.0",
             "id": null,
             "error": { "code": fault.code, "message": fault.message, "data": fault.data },
-        })),
+        })
+        .to_string()),
     }
 }
 
