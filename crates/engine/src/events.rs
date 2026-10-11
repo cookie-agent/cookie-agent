@@ -756,7 +756,7 @@ impl EventLog {
     /// returned events are cloned, so paging through a long log costs one
     /// page per call rather than the whole log.
     ///
-    /// A limited page also stops before [`REPLAY_PAGE_MAX_BYTES`] of
+    /// A limited page also stops before `REPLAY_PAGE_MAX_BYTES` (4 MiB) of
     /// serialized events, since it goes out as one WebSocket frame; it always
     /// holds at least one event, so paging makes progress.
     #[must_use]
