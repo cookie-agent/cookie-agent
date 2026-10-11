@@ -39,6 +39,10 @@ impl RenderScheduler {
         self.dirty = true;
         self.immediate = true;
     }
+    /// Whether a frame is waiting to be drawn.
+    pub(super) fn pending(&self) -> bool {
+        self.dirty
+    }
     pub(super) fn should_draw(&self, now: Instant) -> bool {
         self.dirty
             && (self.immediate

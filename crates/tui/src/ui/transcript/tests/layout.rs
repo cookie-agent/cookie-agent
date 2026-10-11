@@ -86,8 +86,11 @@ fn render_scheduler_coalesces_streams_and_prioritizes_input() {
     let now = std::time::Instant::now();
     assert!(scheduler.should_draw(now));
     scheduler.drew(now);
+    assert!(!scheduler.pending());
     scheduler.mark_stream();
+    assert!(scheduler.pending());
     assert!(!scheduler.should_draw(now));
+    assert!(scheduler.should_draw(now + RenderScheduler::FRAME_INTERVAL));
     scheduler.mark_immediate();
     assert!(scheduler.should_draw(now));
 }

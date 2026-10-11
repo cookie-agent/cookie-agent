@@ -1556,6 +1556,9 @@ async fn event_loop(
     let mut replay_watchdog = tokio::time::interval(std::time::Duration::from_millis(250));
     let mut mcp_poll = tokio::time::interval(std::time::Duration::from_secs(1));
     let mut frame_tick = tokio::time::interval(RenderScheduler::FRAME_INTERVAL);
+    // The tick is polled only while something animates or a coalesced frame
+    // waits; resuming must not replay the ticks an idle TUI never took.
+    frame_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut render = RenderScheduler::default();
     let mut drawn_wall_clock_view = app.wall_clock_view();
     loop {
@@ -1568,10 +1571,17 @@ async fn event_loop(
                 return (Err(error), app.session_errors.clone());
             }
             render.drew(Instant::now());
+            // The next tick lands one full frame after this draw, when a
+            // coalesced frame is allowed to draw.
+            frame_tick.reset();
         }
         if app.should_quit {
             return (Ok(()), app.session_errors.clone());
         }
+        // An idle TUI takes no frame ticks at all: the cadence runs only for
+        // animation or to flush a frame coalesced below.
+        let animating = app.animation_active();
+        let frame_due = animating || render.pending();
         tokio::select! {
             Some(event) = events.next() => match event {
                 Ok(CrosstermEvent::Key(key)) => {
@@ -1579,8 +1589,24 @@ async fn event_loop(
                     render.mark_immediate();
                 }
                 Ok(CrosstermEvent::Mouse(mouse)) => {
+                    // Wheel and pointer motion arrive in bursts (a trackpad
+                    // sends ~100 scroll events a second): draw them at the
+                    // frame cadence. Clicks still draw at once.
+                    let burst = matches!(
+                        mouse.kind,
+                        MouseEventKind::ScrollUp
+                            | MouseEventKind::ScrollDown
+                            | MouseEventKind::ScrollLeft
+                            | MouseEventKind::ScrollRight
+                            | MouseEventKind::Moved
+                            | MouseEventKind::Drag(_)
+                    );
                     if app.handle_mouse(mouse).await {
-                        render.mark_immediate();
+                        if burst {
+                            render.mark_stream();
+                        } else {
+                            render.mark_immediate();
+                        }
                     }
                 }
                 Ok(CrosstermEvent::Paste(text)) => {
@@ -1633,11 +1659,12 @@ async fn event_loop(
             _ = mcp_poll.tick() => {
                 app.poll_mcp();
             },
-            _ = frame_tick.tick() => {
-                // The frame cadence drives only the clock bucket (the
-                // "thinking…" ellipsis and the working spinner), which steps
-                // every ~400ms; everything else redraws on events.
-                if app.animation_active() && app.animation_tick() {
+            _ = frame_tick.tick(), if frame_due => {
+                // The frame cadence drives the clock bucket (the "thinking…"
+                // ellipsis and the working spinner), which steps every
+                // ~400ms, and flushes coalesced frames; everything else
+                // redraws on events.
+                if animating && app.animation_tick() {
                     render.mark_stream();
                 }
             },
@@ -1650,7 +1677,9 @@ pub(super) fn handle_terminal_resize<B: Backend>(
     render: &mut RenderScheduler,
 ) -> Result<(), B::Error> {
     terminal.autoresize()?;
-    render.mark_immediate();
+    // A drag-resize sends a burst of events; each relayouts the whole
+    // transcript at a new width, so draw them at the frame cadence.
+    render.mark_stream();
     Ok(())
 }
 
