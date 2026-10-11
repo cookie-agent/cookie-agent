@@ -2206,7 +2206,7 @@ impl SessionStore {
             let log_path = temporary.join(EVENTS_FILE);
             #[cfg(windows)]
             create_windows_session_file(&log_path)?;
-            crate::events::write_event_jsonl(
+            let lines = crate::events::write_event_jsonl(
                 &log_path,
                 log.all_events().iter().map(AsRef::as_ref),
             )?;
@@ -2281,7 +2281,7 @@ impl SessionStore {
                 }
                 ownership.writable.insert(session_id, root);
             }
-            log.mark_persisted();
+            log.mark_written(lines);
             let fork_origin = fork_projection.meta.origin.clone();
             self.residency
                 .lock()
@@ -2329,7 +2329,7 @@ impl SessionStore {
             let log_path = temporary.join(EVENTS_FILE);
             #[cfg(windows)]
             create_windows_session_file(&log_path)?;
-            crate::events::write_event_jsonl(
+            let lines = crate::events::write_event_jsonl(
                 &log_path,
                 projection.log.all_events().iter().map(AsRef::as_ref),
             )?;
@@ -2402,13 +2402,16 @@ impl SessionStore {
                     _ => return Err(SessionError::SessionLocked(session_id)),
                 },
             }
-            Ok::<(), SessionError>(())
+            Ok::<_, SessionError>(lines)
         })();
-        if result.is_err() {
-            let _ = fs::remove_dir_all(&temporary);
-            return result;
-        }
-        projection.log.mark_persisted();
+        let lines = match result {
+            Ok(lines) => lines,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&temporary);
+                return Err(error);
+            }
+        };
+        projection.log.mark_written(lines);
         // The child directory is durable now, so the cache may name it (§3.4).
         if let SessionLocation::Child { root } = location {
             self.persist_subagent_index(root)?;

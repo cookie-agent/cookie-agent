@@ -4395,6 +4395,22 @@ fn session_append_timing() {
         .expect("fork at tip");
     let fork = fork.elapsed();
 
+    let scan = std::time::Instant::now();
+    let bytes = fs::read(store.session_dir(session_id).join(EVENTS_FILE)).expect("read log");
+    let kept = crate::events::scanned_cut_length(&bytes, last_seq / 2);
+    let scan = scan.elapsed();
+    let revert = std::time::Instant::now();
+    store
+        .truncate(session_id, last_seq / 2)
+        .expect("revert to half");
+    let revert = revert.elapsed();
+    assert_eq!(
+        fs::metadata(store.session_dir(session_id).join(EVENTS_FILE))
+            .expect("log metadata")
+            .len(),
+        kept
+    );
+
     drop(store);
     let reopen = std::time::Instant::now();
     let store = SessionStore::open(&data, &cwd).unwrap();
@@ -4411,7 +4427,8 @@ fn session_append_timing() {
     println!(
         "session_append_timing: {last_seq} events, {} KiB log, total {total:?} \
          ({:?}/append); last 1000 appends mean {tail_mean:?} p50 {tail_p50:?} \
-         p99 {tail_p99:?}; fork at tip {fork:?}; cold get {cold_get:?}; \
+         p99 {tail_p99:?}; fork at tip {fork:?}; revert to half {revert:?} \
+         (reading and scanning the file alone {scan:?}); cold get {cold_get:?}; \
          resume (begin_write) {resume:?}",
         log_bytes / 1024,
         total / u32::try_from(last_seq).expect("event count"),

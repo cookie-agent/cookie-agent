@@ -3502,3 +3502,62 @@ fn a_replay_evaluation_base_must_be_an_earlier_attempt_of_its_run_and_model() {
         );
     }
 }
+
+/// The line index cuts a revert where scanning the file's sequences would,
+/// across loaded records, a damaged line without a sequence, a dropped
+/// legacy stream record, and records appended after the load.
+#[test]
+fn indexed_revert_cuts_match_a_sequence_scan() {
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let records = attribution_records();
+    let session_id = records[0].session_id;
+    let last = records.last().expect("last record").seq;
+    let timestamp = records.last().expect("last record").timestamp;
+    let mut lines = records
+        .iter()
+        .map(|record| serde_json::to_string(record).expect("serialize event"))
+        .collect::<Vec<_>>();
+    lines.insert(2, "{damaged".to_owned());
+    lines.push(format!(
+        r#"{{"engine_version":"0.2.0","origin":"engine:model-loop","session_id":"{session_id}","seq":{},"timestamp":"{timestamp}","payload":{{"type":"text_delta","text":"partial"}}}}"#,
+        last + 1
+    ));
+    fs::write(&path, lines.join("\n") + "\n").expect("write log");
+
+    let log = EventLog::open(path.clone(), session_id).expect("open owned");
+    let appended = log
+        .append(
+            None,
+            EventOrigin::new("user").expect("origin"),
+            EventPayload::SessionTitleCommitted {
+                change: cookie_agent_protocol::SessionTitleChange::UserSet {
+                    title: SessionTitle::new("indexed").expect("title"),
+                    client_rename_id: cookie_agent_protocol::ClientRenameId::new("indexed")
+                        .expect("rename id"),
+                },
+                input_through_seq: 1,
+            },
+        )
+        .expect("append after load");
+    let bytes = fs::read(&path).expect("read log");
+    for through_seq in 1..=appended.seq + 1 {
+        assert_eq!(
+            log.indexed_cut_for_test(through_seq),
+            Some(scanned_cut_length(&bytes, through_seq)),
+            "cut after {through_seq}"
+        );
+    }
+
+    let capability = log.write_capability.clone().expect("owned log");
+    log.truncate_after(&capability, 3).expect("truncate");
+    assert_eq!(
+        fs::read(&path).expect("read truncated log").len() as u64,
+        scanned_cut_length(&bytes, 3)
+    );
+    assert_eq!(
+        log.indexed_cut_for_test(3),
+        Some(scanned_cut_length(&bytes, 3))
+    );
+    assert_eq!(log.physical_tip_seq(), 3);
+}

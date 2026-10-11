@@ -175,6 +175,45 @@ struct EventStorage {
     /// session-global and stay contiguous across reverts, so this counts
     /// hidden records too.
     physical_model_turns: u64,
+    /// Where each sequenced line of the persisted file starts, so a revert
+    /// cuts the file without reading it. `None` when the file's layout is not
+    /// known (a buffered log published without one, or after a failed
+    /// write); a cut then scans the file.
+    lines: Option<LineIndex>,
+}
+
+/// Byte offsets of the sequenced lines of an event file, in file order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct LineIndex {
+    /// `(seq, start offset)` of every line that carries a sequence, records
+    /// and skipped lines alike. Sequences strictly increase down the file.
+    starts: Vec<(u64, u64)>,
+    /// Length of the file's complete lines.
+    len: u64,
+}
+
+impl LineIndex {
+    /// Notes a line of `length` bytes, newline included, appended at the end.
+    pub(crate) fn push(&mut self, seq: Option<u64>, length: u64) {
+        if let Some(seq) = seq {
+            self.starts.push((seq, self.len));
+        }
+        self.len += length;
+    }
+
+    /// The length that keeps every line up to the first one sequenced after
+    /// `through_seq`; lines without a sequence before it stay.
+    fn cut_after(&self, through_seq: u64) -> (usize, u64) {
+        let kept = self.starts.partition_point(|(seq, _)| *seq <= through_seq);
+        let length = self.starts.get(kept).map_or(self.len, |(_, start)| *start);
+        (kept, length)
+    }
+
+    fn truncate(&mut self, through_seq: u64) {
+        let (kept, length) = self.cut_after(through_seq);
+        self.starts.truncate(kept);
+        self.len = length;
+    }
 }
 
 fn is_model_turn(event: &StoredEvent) -> bool {
@@ -189,8 +228,15 @@ impl EventStorage {
             visible: Arc::default(),
             index: EventIndex::default(),
             physical_model_turns,
+            lines: None,
         };
         storage.rebuild_visible();
+        storage
+    }
+
+    fn with_lines(all: Vec<Arc<StoredEvent>>, lines: LineIndex) -> Self {
+        let mut storage = Self::new(all);
+        storage.lines = Some(lines);
         storage
     }
 
@@ -227,6 +273,9 @@ impl EventStorage {
 
     /// Drops every physical event after `through_seq`.
     fn truncate(&mut self, through_seq: u64) {
+        if let Some(lines) = &mut self.lines {
+            lines.truncate(through_seq);
+        }
         Arc::make_mut(&mut self.all).retain(|event| event.seq <= through_seq);
         self.physical_model_turns =
             self.all.iter().filter(|event| is_model_turn(event)).count() as u64;
@@ -369,11 +418,15 @@ impl EventLog {
         persisted: bool,
         _test_authority: Option<WriteAuthority>,
     ) -> Result<Arc<Self>, EventLogError> {
+        let mut storage = EventStorage::new(Vec::new());
+        if persisted {
+            storage.lines = Some(LineIndex::default());
+        }
         let log = Arc::new(Self {
             path,
             session_id,
             append: Mutex::new(()),
-            events: Mutex::new(EventStorage::new(Vec::new())),
+            events: Mutex::new(storage),
             diagnostics: Vec::new(),
             initial_validation_taint: Mutex::default(),
             validation: Mutex::new(ValidationState::default()),
@@ -475,7 +528,7 @@ impl EventLog {
             path,
             session_id,
             append: Mutex::new(()),
-            events: Mutex::new(EventStorage::new(records)),
+            events: Mutex::new(EventStorage::with_lines(records, loaded.lines)),
             diagnostics: loaded.diagnostics,
             initial_validation_taint: Mutex::new(loaded.validation_taint),
             validation: Mutex::new(validation),
@@ -674,16 +727,19 @@ impl EventLog {
         }
         drop(validation);
         drop(events);
-        let write_result = if self.persisted.load(Ordering::Acquire) {
+        let written = self.persisted.load(Ordering::Acquire);
+        let write_result = if written {
             self.write_record(&record)
         } else {
             Ok(())
         };
         if let Err(error) = write_result {
-            let events = self
+            let mut events = self
                 .events
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // Part of the record may have reached the file.
+            events.lines = None;
             let mut validation = self
                 .validation
                 .lock()
@@ -702,6 +758,9 @@ impl EventLog {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let event = Arc::new(event);
+        if written && let Some(lines) = &mut events.lines {
+            lines.push(Some(event.seq), record.len() as u64);
+        }
         events.push(event.clone());
         self.next_seq.store(event.seq + 1, Ordering::Release);
         Ok(Arc::unwrap_or_clone(event))
@@ -898,6 +957,17 @@ impl EventLog {
         self.persisted.store(true, Ordering::Release);
     }
 
+    /// Marks a buffered log persisted once its file was written whole with
+    /// the layout `lines`.
+    pub(crate) fn mark_written(&self, lines: LineIndex) {
+        let _append = self
+            .append
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.storage().lines = Some(lines);
+        self.mark_persisted();
+    }
+
     /// Closes the append handle; the next append reopens it.
     pub(crate) fn suspend_writer(&self) {
         let _append = self
@@ -952,7 +1022,15 @@ impl EventLog {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .take();
-            truncate_event_file(&self.path, through_seq)?;
+            let cut = self
+                .storage()
+                .lines
+                .as_ref()
+                .map(|lines| lines.cut_after(through_seq).1);
+            match cut {
+                Some(length) => cut_event_file(&self.path, length)?,
+                None => truncate_event_file(&self.path, through_seq)?,
+            }
         }
         let mut events = self
             .events
@@ -1042,6 +1120,16 @@ impl EventLog {
             .lock()
             .expect("event log writer lock poisoned")
             .is_some()
+    }
+
+    /// Test-only: the file length a revert to `through_seq` keeps, by the
+    /// line index, or `None` without one.
+    #[cfg(test)]
+    pub(crate) fn indexed_cut_for_test(&self, through_seq: u64) -> Option<u64> {
+        self.storage()
+            .lines
+            .as_ref()
+            .map(|lines| lines.cut_after(through_seq).1)
     }
 
     #[cfg(test)]
@@ -2712,6 +2800,7 @@ fn validate_record_incremental(
 
 struct LoadedEvents {
     records: Vec<StoredEvent>,
+    lines: LineIndex,
     /// The file ended in a partial record, cut or ignored per [`TornTail`].
     torn_tail: bool,
     diagnostics: Vec<EventLoadDiagnostic>,
@@ -2791,6 +2880,11 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
     #[cfg(test)]
     EVENT_LOG_PARSES.with(|parses| parses.set(parses.get() + 1));
     let (bytes, torn) = read_complete_jsonl(path, torn_tail)?;
+    let mut lines = LineIndex {
+        starts: Vec::new(),
+        len: bytes.len() as u64,
+    };
+    let line_start = |line: &[u8]| (line.as_ptr() as usize - bytes.as_ptr() as usize) as u64;
     let mut records = Vec::new();
     let mut diagnostics = Vec::new();
     let mut validation_taint = ValidationTaint::default();
@@ -2814,6 +2908,7 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
                 &mut diagnostics,
                 &mut validation_taint,
             )?;
+            lines.starts.push((seq, line_start(line)));
             continue;
         }
         // Nearly every record is intact: type it straight from the bytes and
@@ -2826,6 +2921,7 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
                 &mut diagnostics,
                 &mut validation_taint,
             )?;
+            lines.starts.push((event.seq, line_start(line)));
             records.push(event);
             continue;
         }
@@ -2880,6 +2976,7 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
                 &mut diagnostics,
                 &mut validation_taint,
             )?;
+            lines.starts.push((seq, line_start(line)));
         }
         if index > 0
             && object
@@ -3045,6 +3142,7 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
     );
     Ok(LoadedEvents {
         records,
+        lines,
         torn_tail: torn,
         diagnostics,
         validation_taint,
@@ -3338,15 +3436,20 @@ fn read_complete_jsonl(path: &Path, torn_tail: TornTail) -> Result<(Vec<u8>, boo
 /// syncs it. Records keep their bytes; lines without a sequence before the cut
 /// stay too, as the loader already tolerated them.
 fn truncate_event_file(path: &Path, through_seq: u64) -> Result<(), EventLogError> {
+    let bytes = fs::read(path).map_err(|source| EventLogError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    cut_event_file(path, scanned_cut_length(&bytes, through_seq))
+}
+
+/// The length [`truncate_event_file`] keeps of `bytes`, found by reading the
+/// sequence of each line.
+pub(crate) fn scanned_cut_length(bytes: &[u8], through_seq: u64) -> u64 {
     #[derive(Deserialize)]
     struct Sequenced {
         seq: u64,
     }
-    let io_error = |source| EventLogError::Io {
-        path: path.to_owned(),
-        source,
-    };
-    let bytes = fs::read(path).map_err(io_error)?;
     let mut length = 0_usize;
     for line in bytes.split_inclusive(|byte| *byte == b'\n') {
         if serde_json::from_slice::<Sequenced>(line).is_ok_and(|record| record.seq > through_seq) {
@@ -3354,11 +3457,20 @@ fn truncate_event_file(path: &Path, through_seq: u64) -> Result<(), EventLogErro
         }
         length += line.len();
     }
+    length as u64
+}
+
+/// Cuts `path` to its first `length` bytes and syncs it.
+fn cut_event_file(path: &Path, length: u64) -> Result<(), EventLogError> {
+    let io_error = |source| EventLogError::Io {
+        path: path.to_owned(),
+        source,
+    };
     let file = OpenOptions::new()
         .write(true)
         .open(path)
         .map_err(io_error)?;
-    file.set_len(length as u64)
+    file.set_len(length)
         .and_then(|()| file.sync_all())
         .map_err(io_error)
 }
@@ -3399,7 +3511,7 @@ pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<(), EventLog
 pub(crate) fn write_event_jsonl<'a>(
     path: &Path,
     events: impl IntoIterator<Item = &'a StoredEvent>,
-) -> Result<(), EventLogError> {
+) -> Result<LineIndex, EventLogError> {
     let io_error = |source| EventLogError::Io {
         path: path.to_owned(),
         source,
@@ -3412,17 +3524,23 @@ pub(crate) fn write_event_jsonl<'a>(
         options.mode(0o600);
     }
     let mut writer = io::BufWriter::new(options.open(path).map_err(io_error)?);
+    let mut lines = LineIndex::default();
+    let mut record = Vec::new();
     for event in events {
-        serde_json::to_writer(&mut writer, event).map_err(|source| EventLogError::Json {
+        record.clear();
+        serde_json::to_writer(&mut record, event).map_err(|source| EventLogError::Json {
             path: path.to_owned(),
             source,
         })?;
-        writer.write_all(b"\n").map_err(io_error)?;
+        record.push(b'\n');
+        writer.write_all(&record).map_err(io_error)?;
+        lines.push(Some(event.seq), record.len() as u64);
     }
     let file = writer
         .into_inner()
         .map_err(|error| io_error(error.into_error()))?;
-    file.sync_all().map_err(io_error)
+    file.sync_all().map_err(io_error)?;
+    Ok(lines)
 }
 
 #[cfg(unix)]
