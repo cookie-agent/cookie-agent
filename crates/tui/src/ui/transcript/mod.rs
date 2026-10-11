@@ -1134,7 +1134,7 @@ impl App {
     /// The transient notice rows rendered after the transcript (transient
     /// notices and goal notices), exactly as [`Self::render_conversation`]
     /// appends them. Descendant warnings and errors are spliced into the
-    /// transcript body instead; see [`Self::spliced_conversation_lines`].
+    /// transcript body instead; see [`Self::spliced_conversation_rows`].
     /// Selection extraction consumes the same chain so copied text matches
     /// what is on screen.
     pub(super) fn notice_lines(&self, width: u16) -> Vec<Line<'static>> {

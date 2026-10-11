@@ -77,7 +77,7 @@ pub struct ToolCallState {
     pub detail: String,
     pub has_output_chunks: bool,
     /// Changes with every mutation of this call, unique across sessions and
-    /// rebuilds (see [`next_tool_revision`]), so its rendered row can be
+    /// rebuilds (see `next_tool_revision`), so its rendered row can be
     /// cached by it.
     pub revision: u64,
 }
