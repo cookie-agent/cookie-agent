@@ -1442,6 +1442,16 @@ async fn paging_and_renames_skip_producer_reconciliation() {
             .producer_reconciles
             .load(std::sync::atomic::Ordering::Relaxed)
     };
+    // An actor reconciles after it replies; a no-op behind that work is the
+    // point where every earlier command's pass has been counted.
+    let settled = || async {
+        fixture
+            .engine
+            .on_actor_unreconciled(session_id, |_| Ok(()))
+            .await
+            .expect("actor barrier");
+    };
+    settled().await;
     let before = reconciles();
 
     fixture
@@ -1463,14 +1473,11 @@ async fn paging_and_renames_skip_producer_reconciliation() {
         )
         .await
         .expect("rename");
+    settled().await;
     assert_eq!(reconciles(), before, "paging and renames do not reconcile");
 
     fixture.engine.resume(session_id).await.expect("resume");
-    // The actor reconciles after it replies, so the count can trail the reply.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while reconciles() == before && std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
+    settled().await;
     assert_eq!(reconciles(), before + 1, "other commands still reconcile");
 }
 

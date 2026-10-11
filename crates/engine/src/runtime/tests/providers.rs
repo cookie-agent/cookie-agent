@@ -1,7 +1,7 @@
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt as _;
+use std::{fs, os::unix::fs::PermissionsExt as _};
 
-use std::{collections::BTreeMap, fs, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use cookie_agent_models::{
     ModelManager,
