@@ -497,7 +497,7 @@ fn descendant_warnings_splice_at_chronological_position() {
         row(9, "late warning"),
     ];
     // No cached item layouts: every item is one segment at its own time.
-    let (spliced, shifts, _) = App::splice_descendant_events(
+    let spliced_rows = App::splice_descendant_events(
         &lines,
         &[],
         &offsets,
@@ -508,6 +508,13 @@ fn descendant_warnings_splice_at_chronological_position() {
         &Theme::default(),
         &crate::state::ModelDisplayNames::default(),
     );
+    let spliced = spliced_rows.materialize(&lines);
+    let shifts = &spliced_rows.shifts;
+    // Reading through the splice agrees with the copied-out lines.
+    for (index, line) in spliced.iter().enumerate() {
+        assert_eq!(spliced_rows.line(&lines, index), Some(line));
+    }
+    assert_eq!(spliced_rows.line(&lines, spliced.len()), None);
     let text_of = |line: &Line<'_>| {
         line.spans
             .iter()
@@ -547,7 +554,7 @@ fn descendant_warnings_splice_at_chronological_position() {
     );
     assert!(shifts.iter().all(|(_, inserted)| *inserted > 0));
     // Empty warnings leave the layout untouched.
-    let (untouched, empty_shifts, _) = App::splice_descendant_events(
+    let untouched = App::splice_descendant_events(
         &lines,
         &[],
         &offsets,
@@ -558,8 +565,8 @@ fn descendant_warnings_splice_at_chronological_position() {
         &Theme::default(),
         &crate::state::ModelDisplayNames::default(),
     );
-    assert_eq!(untouched.len(), 7);
-    assert!(empty_shifts.is_empty());
+    assert_eq!(untouched.materialize(&lines), lines);
+    assert!(untouched.shifts.is_empty());
 }
 
 #[tokio::test]

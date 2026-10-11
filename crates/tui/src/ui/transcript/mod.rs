@@ -368,6 +368,9 @@ pub(super) struct LayoutCacheKey {
 #[derive(Default)]
 pub(super) struct LayoutCache {
     pub(super) key: Option<LayoutCacheKey>,
+    /// Bumped whenever `layout` changes, so views derived from it (the
+    /// descendant splice) know when to rebuild.
+    pub(super) revision: u64,
     pub(super) layout: TranscriptLayout,
     items: Vec<CachedItemLayout>,
     item_offsets: Vec<ItemAssemblyOffset>,
@@ -728,13 +731,116 @@ pub(super) fn ensure_cached_transcript_layout(
     }
     cache.items.truncate(state.transcript.len());
     cache.item_offsets.truncate(state.transcript.len());
+    cache.revision = cache.revision.wrapping_add(1);
     false
 }
 
-/// Transcript lines with descendant rows spliced in, plus each splice
-/// point's original-line position and inserted line count, and the spliced
-/// rows' own collapsible regions in spliced-line coordinates.
-type SplicedLines = (Vec<Line<'static>>, Vec<(usize, usize)>, Vec<BlockRegion>);
+/// Descendant rows spliced into a rendered transcript, kept apart from the
+/// transcript's own lines: the view reads through both, so no frame copies
+/// the transcript to show a handful of rows.
+#[derive(Clone, Debug, Default)]
+pub(super) struct SplicedRows {
+    /// Every inserted row, in order.
+    rows: Vec<Line<'static>>,
+    /// Per splice point, ascending: its original-line position and the
+    /// number of rows inserted there.
+    pub(super) shifts: Vec<(usize, usize)>,
+    /// Per splice point: the spliced-line index of its first row.
+    starts: Vec<usize>,
+    /// The inserted rows' own collapsible regions, in spliced coordinates.
+    pub(super) regions: Vec<BlockRegion>,
+}
+
+impl SplicedRows {
+    fn is_empty(&self) -> bool {
+        self.shifts.is_empty()
+    }
+
+    /// Spliced line count over `base_len` original lines.
+    fn len(&self, base_len: usize) -> usize {
+        base_len + self.rows.len()
+    }
+
+    /// Spliced line `index` over the original `base` lines.
+    pub(super) fn line<'a>(
+        &'a self,
+        base: &'a [Line<'static>],
+        index: usize,
+    ) -> Option<&'a Line<'static>> {
+        let splice = self.starts.partition_point(|start| *start <= index);
+        let Some(splice) = splice.checked_sub(1) else {
+            return base.get(index);
+        };
+        let start = self.starts[splice];
+        let (position, inserted) = self.shifts[splice];
+        let inserted_before = start - position;
+        if index < start + inserted {
+            self.rows.get(inserted_before + index - start)
+        } else {
+            base.get(index - inserted_before - inserted)
+        }
+    }
+
+    /// Shift one original line coordinate by the rows spliced in before it;
+    /// see [`splice_shifted`].
+    fn shift(&self, line: usize, inclusive: bool) -> usize {
+        let splices = self
+            .shifts
+            .partition_point(|(position, _)| *position < line || (inclusive && *position == line));
+        let Some(last) = splices.checked_sub(1) else {
+            return line;
+        };
+        let (position, inserted) = self.shifts[last];
+        line + (self.starts[last] - position) + inserted
+    }
+
+    fn shift_region(&self, mut region: BlockRegion) -> BlockRegion {
+        let start = self.shift(region.start_line, true);
+        region.end_line = self.shift(region.end_line, false).max(start);
+        region.start_line = start;
+        region
+    }
+
+    fn shift_user_region(&self, mut region: UserRegion) -> UserRegion {
+        let start = self.shift(region.start_line, true);
+        region.end_line = self.shift(region.end_line, false).max(start);
+        region.start_line = start;
+        region
+    }
+
+    /// Every spliced line, copied out.
+    pub(super) fn materialize(&self, base: &[Line<'static>]) -> Vec<Line<'static>> {
+        (0..self.len(base.len()))
+            .filter_map(|index| self.line(base, index).cloned())
+            .collect()
+    }
+}
+
+/// The descendant splice over the cached layout, rebuilt only when the
+/// layout, the descendant rows, or their presentation changed.
+#[derive(Default)]
+pub(in crate::ui) struct SpliceCache {
+    key: Option<SpliceKey>,
+    /// The aggregated descendant rows and the state they were read from.
+    events_key: Option<u64>,
+    events: Vec<DescendantEvent>,
+    rows: SplicedRows,
+    /// The layout's regions shifted into spliced coordinates, then the
+    /// spliced rows' own.
+    block_regions: Vec<BlockRegion>,
+    user_regions: Vec<UserRegion>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SpliceKey {
+    layout_revision: u64,
+    events_key: u64,
+    /// Expansion of each descendant row, in row order.
+    expanded: Vec<bool>,
+    width: u16,
+    theme: ThemeKey,
+    model_names: u64,
+}
 
 /// One descendant row's splice point in the unspliced layout, and the
 /// assistant block it breaks, as (item index, child index), when the row
@@ -847,17 +953,15 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// The viewed session's rendered transcript lines with aggregated
-    /// descendant warnings and errors spliced in at their chronological
-    /// position; see [`Self::splice_descendant_events`]. Returns `None` when
-    /// there is nothing to splice, so callers keep borrowing the untouched
-    /// layout instead of copying every line each frame.
-    fn spliced_conversation_lines(
+    /// The viewed session's descendant rows spliced into `layout_lines`; see
+    /// [`Self::splice_descendant_events`]. `None` when there is nothing to
+    /// splice.
+    fn spliced_conversation_rows(
         &self,
         width: u16,
         layout_lines: &[Line<'static>],
         events: &[DescendantEvent],
-    ) -> Option<SplicedLines> {
+    ) -> Option<SplicedRows> {
         let state = self
             .selected
             .and_then(|session_id| self.store.sessions.get(&session_id))
@@ -876,28 +980,74 @@ impl App {
         ))
     }
 
-    /// Shift a block region's line coordinates by the splice insertions
-    /// before it.
-    fn shift_region_lines(
-        mut region: BlockRegion,
-        splice_shifts: &[(usize, usize)],
-    ) -> BlockRegion {
-        let start = splice_shifted(region.start_line, splice_shifts, true);
-        region.end_line = splice_shifted(region.end_line, splice_shifts, false).max(start);
-        region.start_line = start;
-        region
+    /// Refresh the cached descendant rows when any descendant projection,
+    /// its label, or the filter changed since they were aggregated.
+    fn refresh_descendant_events(&self, cache: &mut SpliceCache) {
+        let key = self
+            .viewed_session()
+            .map(|viewed| self.descendant_events_key(viewed, self.tui_config.minimum_event_level));
+        if cache.events_key == key && key.is_some() {
+            return;
+        }
+        cache.events = self.viewed_descendant_events();
+        cache.events_key = key;
     }
 
-    /// Shift a user region's line coordinates by the splice insertions
-    /// before it.
-    fn shift_user_region_lines(
-        mut region: UserRegion,
-        splice_shifts: &[(usize, usize)],
-    ) -> UserRegion {
-        let start = splice_shifted(region.start_line, splice_shifts, true);
-        region.end_line = splice_shifted(region.end_line, splice_shifts, false).max(start);
-        region.start_line = start;
-        region
+    /// Bring `cache` up to date for this frame's layout. `base` is the
+    /// layout being drawn; only the cached transcript layout (`cacheable`)
+    /// is worth keeping a splice for.
+    fn refresh_splice(
+        &self,
+        cache: &mut SpliceCache,
+        base: &TranscriptLayout,
+        cacheable: bool,
+        width: u16,
+    ) {
+        self.refresh_descendant_events(cache);
+        let expanded = self
+            .selected
+            .and_then(|session_id| self.expanded_blocks.get(&session_id));
+        let key = cache.events_key.map(|events_key| SpliceKey {
+            layout_revision: self.layout_cache.revision,
+            events_key,
+            expanded: cache
+                .events
+                .iter()
+                .map(|row| {
+                    expanded.is_some_and(|blocks| {
+                        blocks.contains(&BlockId::DescendantEvent {
+                            session: row.session,
+                            item: row.item,
+                        })
+                    })
+                })
+                .collect(),
+            width,
+            theme: self.theme.key(),
+            model_names: self.runtime.model_names().revision(),
+        });
+        if cacheable && key.is_some() && cache.key == key {
+            return;
+        }
+        cache.key = key.filter(|_| cacheable);
+        cache.rows = self
+            .spliced_conversation_rows(width, &base.lines, &cache.events)
+            .unwrap_or_default();
+        cache.block_regions.clear();
+        cache.user_regions.clear();
+        if !cache.rows.is_empty() {
+            cache.block_regions.extend(
+                base.regions
+                    .iter()
+                    .map(|region| cache.rows.shift_region(*region))
+                    .chain(cache.rows.regions.iter().copied()),
+            );
+            cache.user_regions.extend(
+                base.user_regions
+                    .iter()
+                    .map(|region| cache.rows.shift_user_region(*region)),
+            );
+        }
     }
 
     /// Splice aggregated descendant warning and error blocks into a rendered
@@ -939,7 +1089,7 @@ impl App {
         width: u16,
         theme: &Theme,
         model_names: &ModelDisplayNames,
-    ) -> SplicedLines {
+    ) -> SplicedRows {
         let mut placements: Vec<Placement<'_>> = Vec::with_capacity(events.len());
         let mut next = 0;
         for (index, item) in state.transcript.iter().enumerate() {
@@ -1006,27 +1156,28 @@ impl App {
         // guards stale cached offsets.
         placements.sort_by_key(|(position, _, _)| *position);
 
-        let mut out = Vec::with_capacity(lines.len() + placements.len() * 4);
-        // Splice points and inserted counts, in original-line coordinates.
-        let mut splice_shifts: Vec<(usize, usize)> = Vec::new();
-        let mut regions = Vec::new();
-        let mut cursor = 0usize;
+        let mut spliced = SplicedRows::default();
         let mut placements = placements.into_iter().peekable();
         while let Some((position, event, resume)) = placements.next() {
             let position = position.min(lines.len());
-            out.extend_from_slice(&lines[cursor..position]);
-            cursor = position;
-            let before = out.len();
+            let before = spliced.rows.len();
             let mut resume = resume;
             let mut event = Some(event);
             while let Some(row) = event.take() {
-                let needs_separator = out.last().is_some_and(|line| {
+                // The line above: this splice's previous row, else the
+                // transcript line before the splice point.
+                let above = if spliced.rows.len() > before {
+                    spliced.rows.last()
+                } else {
+                    position.checked_sub(1).and_then(|line| lines.get(line))
+                };
+                let needs_separator = above.is_some_and(|line| {
                     line.spans
                         .iter()
                         .any(|span| !span.content.trim().is_empty())
                 });
                 if needs_separator {
-                    out.push(Line::default());
+                    spliced.rows.push(Line::default());
                 }
                 let row_layout = event_row_layout(
                     BlockId::DescendantEvent {
@@ -1040,13 +1191,15 @@ impl App {
                     width,
                     theme,
                 );
-                let row_start = out.len();
-                regions.extend(row_layout.regions.into_iter().map(|region| BlockRegion {
-                    start_line: row_start + region.start_line,
-                    end_line: row_start + region.end_line,
-                    ..region
-                }));
-                out.extend(row_layout.lines);
+                let row_start = position + spliced.rows.len();
+                spliced
+                    .regions
+                    .extend(row_layout.regions.into_iter().map(|region| BlockRegion {
+                        start_line: row_start + region.start_line,
+                        end_line: row_start + region.end_line,
+                        ..region
+                    }));
+                spliced.rows.extend(row_layout.lines);
                 if let Some((_, row, row_resume)) =
                     placements.next_if(|(next, _, _)| (*next).min(lines.len()) == position)
                 {
@@ -1057,16 +1210,18 @@ impl App {
             if let Some((item, child)) = resume
                 && let Some(item) = state.transcript.get(item)
             {
-                out.push(Line::default());
-                out.extend(continuation_header(item, child, width, theme, model_names));
+                spliced.rows.push(Line::default());
+                spliced
+                    .rows
+                    .extend(continuation_header(item, child, width, theme, model_names));
             }
-            let inserted = out.len() - before;
+            let inserted = spliced.rows.len() - before;
             if inserted > 0 {
-                splice_shifts.push((position, inserted));
+                spliced.shifts.push((position, inserted));
+                spliced.starts.push(position + before);
             }
         }
-        out.extend_from_slice(&lines[cursor..]);
-        (out, splice_shifts, regions)
+        spliced
     }
 
     /// The full rendered conversation chain — transcript lines plus the
@@ -1100,8 +1255,8 @@ impl App {
                 &self.theme,
             ))
         };
-        let mut lines = match self.spliced_conversation_lines(width, &base, &descendant_events) {
-            Some((spliced, _, _)) => spliced,
+        let mut lines = match self.spliced_conversation_rows(width, &base, &descendant_events) {
+            Some(spliced) => spliced.materialize(&base),
             None => base.into_owned(),
         };
         if !lines.is_empty() && !notices.is_empty() {
@@ -1145,7 +1300,6 @@ impl App {
         // because the reservation is constant, the wrap width (a
         // `LayoutCacheKey` input) never flips when content starts or stops
         // overflowing.
-        let descendant_events = self.viewed_descendant_events();
         let width = pane_text_width(area.width);
         // A new-session draft shows the fresh session it will create, not the
         // conversation still selected behind it.
@@ -1170,7 +1324,8 @@ impl App {
             .then(|| self.layout_cache.scroll_anchor(unspliced_offset))
             .flatten();
         let mut layout_changed = false;
-        let layout = if let Some((session_id, state)) = viewed.and_then(|session_id| {
+        let mut cached_layout = false;
+        if let Some((session_id, state)) = viewed.and_then(|session_id| {
             self.store
                 .sessions
                 .get(&session_id)
@@ -1192,30 +1347,27 @@ impl App {
             // A fresh session greets with guidance instead of a blank pane;
             // a filtered-down transcript (lines hidden by the event level)
             // keeps its own rows, empty-looking or not.
-            if state.transcript.is_empty() && state.run_snapshot.is_none() {
-                &empty_layout
-            } else {
-                &self.layout_cache.layout
-            }
+            cached_layout = !(state.transcript.is_empty() && state.run_snapshot.is_none());
+        }
+        let layout = if cached_layout {
+            &self.layout_cache.layout
         } else {
             &empty_layout
         };
+        // Descendant rows read through to the layout instead of copying it;
+        // the splice itself is rebuilt only when its inputs change.
+        let mut splice = std::mem::take(&mut self.splice_cache);
+        self.refresh_splice(&mut splice, layout, cached_layout, width);
         let mut notice_lines = self.notice_lines(width);
         // Notices follow the same rhythm as transcript items: one blank row
         // between real content and the first notice block.
         if !layout.lines.is_empty() && !notice_lines.is_empty() {
             notice_lines.insert(0, Line::default());
         }
-        // Nothing to splice (the common case) borrows the cached layout; only
-        // frames with descendant warnings pay for a spliced copy.
-        let (spliced_lines, splice_shifts, spliced_regions) = self
-            .spliced_conversation_lines(width, &layout.lines, &descendant_events)
-            .unwrap_or_default();
-        let layout_lines: &[Line<'static>] = if splice_shifts.is_empty() {
-            &layout.lines
-        } else {
-            &spliced_lines
-        };
+        let spliced = &splice.rows;
+        let splice_shifts = spliced.shifts.as_slice();
+        let layout_len = spliced.len(layout.lines.len());
+        let line_at = |index: usize| spliced.line(&layout.lines, index);
         let viewport = Rect::new(
             area.x.saturating_add(1),
             area.y.saturating_add(1),
@@ -1223,7 +1375,7 @@ impl App {
             area.height.saturating_sub(2),
         );
         let scrollbar_track = pane_scrollbar_track(area, viewport);
-        let content_height = layout_lines.len() + notice_lines.len();
+        let content_height = layout_len + notice_lines.len();
         if layout_changed
             && anchor_key == self.layout_cache.key
             && let Some((point, row_offset)) = anchor
@@ -1234,54 +1386,29 @@ impl App {
             // inside spliced rows keeps its depth into them.
             let line = line.saturating_add(row_offset);
             self.conversation_scroll.offset = match spliced_depth {
-                Some(depth) => splice_shifted(line, &splice_shifts, false).saturating_add(depth),
-                None => splice_shifted(line, &splice_shifts, true),
+                Some(depth) => splice_shifted(line, splice_shifts, false).saturating_add(depth),
+                None => splice_shifted(line, splice_shifts, true),
             };
         }
-        self.conversation_splice_shifts.clone_from(&splice_shifts);
+        self.conversation_splice_shifts.clear();
+        self.conversation_splice_shifts
+            .extend_from_slice(splice_shifts);
         self.conversation_scroll
             .clamp(content_height, viewport.height);
         self.hit_map.conversation = Some(viewport);
         self.hit_map.scrollbar = (scrollbar_track.width > 0).then_some(scrollbar_track);
         self.hit_map.blocks.clear();
-        let shifted_block_regions: Vec<BlockRegion>;
-        let block_regions: &[BlockRegion] = if splice_shifts.is_empty() {
-            &layout.regions
+        let (block_regions, user_regions) = if spliced.is_empty() {
+            (&layout.regions, &layout.user_regions)
         } else {
-            shifted_block_regions = layout
-                .regions
-                .iter()
-                .map(|region| Self::shift_region_lines(*region, &splice_shifts))
-                .collect();
-            &shifted_block_regions
+            (&splice.block_regions, &splice.user_regions)
         };
         self.hit_map
             .blocks
-            .extend(
-                block_regions
-                    .iter()
-                    .chain(&spliced_regions)
-                    .filter_map(|region| {
-                        block_hit(
-                            *region,
-                            layout_lines,
-                            viewport,
-                            self.conversation_scroll.offset,
-                        )
-                    }),
-            );
+            .extend(block_regions.iter().filter_map(|region| {
+                block_hit_at(*region, line_at, viewport, self.conversation_scroll.offset)
+            }));
         self.hit_map.user_messages.clear();
-        let shifted_user_regions: Vec<UserRegion>;
-        let user_regions: &[UserRegion] = if splice_shifts.is_empty() {
-            &layout.user_regions
-        } else {
-            shifted_user_regions = layout
-                .user_regions
-                .iter()
-                .map(|region| Self::shift_user_region_lines(*region, &splice_shifts))
-                .collect();
-            &shifted_user_regions
-        };
         self.hit_map
             .user_messages
             .extend(user_regions.iter().filter_map(|region| {
@@ -1337,16 +1464,19 @@ impl App {
         // Rendering borrowed Lines avoids viewport clones. Line::style paints
         // the full row, so future background or REVERSED line styles must be
         // reviewed as row-wide rather than span-local styling.
-        for (row, line) in layout_lines
-            .iter()
-            .chain(notice_lines.iter())
-            .skip(self.conversation_scroll.offset)
-            .take(usize::from(viewport.height))
-            .enumerate()
-        {
+        for row in 0..viewport.height {
+            let index = self.conversation_scroll.offset + usize::from(row);
+            let line = if index < layout_len {
+                line_at(index)
+            } else {
+                notice_lines.get(index - layout_len)
+            };
+            let Some(line) = line else {
+                break;
+            };
             frame.render_widget(
                 line,
-                Rect::new(viewport.x, viewport.y + row as u16, viewport.width, 1),
+                Rect::new(viewport.x, viewport.y + row, viewport.width, 1),
             );
         }
         // The reservation always exists; the thumb only does. A pane too tight
@@ -1361,6 +1491,7 @@ impl App {
         if let Some(geometry) = self.scrollbar_geometry {
             render_scrollbar_track(frame, geometry, &self.theme);
         }
+        self.splice_cache = splice;
     }
 
     pub(super) fn toggle_block(&mut self, block_id: BlockId) {
@@ -1542,9 +1673,21 @@ fn append_item_layout(assembled: &mut TranscriptLayout, item_layout: ItemLayout)
     }
 }
 
+#[cfg(test)]
 pub(super) fn block_hit(
     region: BlockRegion,
     lines: &[Line<'static>],
+    viewport: Rect,
+    scroll_offset: usize,
+) -> Option<BlockHit> {
+    block_hit_at(region, |index| lines.get(index), viewport, scroll_offset)
+}
+
+/// [`block_hit`] over lines read by index, so a spliced view need not be
+/// copied into one slice.
+pub(super) fn block_hit_at<'a>(
+    region: BlockRegion,
+    line_at: impl Fn(usize) -> Option<&'a Line<'static>>,
     viewport: Rect,
     scroll_offset: usize,
 ) -> Option<BlockHit> {
@@ -1574,10 +1717,10 @@ pub(super) fn block_hit(
     // could be a continuation indent or indentation inside the content — as
     // content, matching `extract_line` rather than hiding columns a reader
     // could have selected.
-    let hovered = start.min(lines.len())..header_end.max(start).min(lines.len());
+    let hovered = start..header_end.max(start);
     let gutter = region.header_gutter.unwrap_or_else(|| {
-        lines[hovered]
-            .iter()
+        hovered
+            .filter_map(&line_at)
             .map(leading_gutter_columns)
             .max()
             .unwrap_or(0)

@@ -861,6 +861,43 @@ impl App {
         self.set_draft_agent(selectable[next].clone());
     }
 
+    /// A fingerprint of everything [`Self::descendant_events`] reads for
+    /// `viewed`: each strict descendant's projection version and the label
+    /// its rows carry. Equal fingerprints mean equal rows, so the view keeps
+    /// them instead of re-walking every descendant transcript per frame.
+    pub(in crate::ui) fn descendant_events_key(
+        &self,
+        viewed: SessionId,
+        minimum_level: EventLevel,
+    ) -> u64 {
+        use std::hash::{Hash, Hasher};
+        fn walk(app: &App, node: &SessionTree, viewed: SessionId, hasher: &mut impl Hasher) {
+            let meta = &node.session;
+            if meta.session_id != viewed {
+                meta.session_id.hash(hasher);
+                app.store
+                    .sessions
+                    .get(&meta.session_id)
+                    .map(|state| state.version)
+                    .hash(hasher);
+                match &meta.title {
+                    Some(title) => title.to_string().hash(hasher),
+                    None => meta.creation_selection.agent.to_string().hash(hasher),
+                }
+                short_id(meta).hash(hasher);
+            }
+            for child in &node.children {
+                walk(app, child, viewed, hasher);
+            }
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (viewed, minimum_level.max(EventLevel::Warning) as u8).hash(&mut hasher);
+        if let Some(node) = self.tree.as_ref().and_then(|tree| find_node(tree, viewed)) {
+            walk(self, node, viewed, &mut hasher);
+        }
+        hasher.finish()
+    }
+
     /// Warning and error rows from strict descendants of the viewed session
     /// at or above `minimum_level`, attributed to their owning session and
     /// paired with the durable time of the row, oldest first, so the

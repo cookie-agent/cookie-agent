@@ -550,3 +550,35 @@ async fn descendant_rows_follow_the_event_level_filter() {
     );
     assert_order(&rows, &["parent resumes", "child provider exploded"]);
 }
+
+#[tokio::test]
+async fn spliced_descendant_rows_follow_child_changes_between_frames() {
+    let root = SessionId::new_v7();
+    let child = SessionId::new_v7();
+    let events = delegate_run(root, child);
+    let mut app = tree_app(root, child).await;
+    for event in events.iter().filter(|event| event.session_id == root) {
+        assert!(app.store.apply_event(event.clone()));
+    }
+    let rows = conversation_rows(&mut app);
+    assert!(!rows.iter().any(|row| row.contains("child provider hiccup")));
+
+    // The child's warning arrives after the view was drawn.
+    for event in events.iter().filter(|event| event.session_id == child) {
+        assert!(app.store.apply_event(event.clone()));
+    }
+    let rows = conversation_rows(&mut app);
+    assert_order(
+        &rows,
+        &["delegating now", "child provider hiccup", "parent resumes"],
+    );
+    assert!(rows.iter().any(|row| row.contains("from child session")));
+
+    // Relabeling the child relabels its spliced row.
+    if let Some(tree) = app.tree.as_mut() {
+        tree.children[0].session = titled_meta(child, "renamed child", 2);
+    }
+    let rows = conversation_rows(&mut app);
+    assert!(rows.iter().any(|row| row.contains("from renamed child")));
+    assert!(!rows.iter().any(|row| row.contains("from child session")));
+}

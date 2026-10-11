@@ -631,6 +631,7 @@ pub struct App {
     /// cached layout, as (unspliced line, inserted rows): the scroll
     /// offset addresses the spliced lines, the scroll anchor the unspliced.
     pub(super) conversation_splice_shifts: Vec<(usize, usize)>,
+    pub(super) splice_cache: super::transcript::SpliceCache,
     pub(super) scrollbar_geometry: Option<ScrollbarGeometry>,
     pub(super) scrollbar_drag: Option<ScrollbarDrag>,
     pub(super) approval_panel: ApprovalPanel,
@@ -1133,6 +1134,7 @@ impl App {
             next_cost_refresh_request_id: 0,
             conversation_scroll: ConversationScroll::default(),
             conversation_splice_shifts: Vec::new(),
+            splice_cache: Default::default(),
             scrollbar_geometry: None,
             scrollbar_drag: None,
             approval_panel: ApprovalPanel::default(),
