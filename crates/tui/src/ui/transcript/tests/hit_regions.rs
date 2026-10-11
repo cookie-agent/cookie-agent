@@ -383,6 +383,7 @@ async fn running_tool_display_is_the_only_implicit_output_click_region() {
             detail: text.clone(),
             operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
+            revision: 0,
         },
     );
     app.store.sessions.insert(session, state);
@@ -491,6 +492,7 @@ fn title_hover_starts_on_the_margin_so_the_highlight_covers_the_padding() {
             detail: "a.txt".into(),
             operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
+            revision: 0,
         },
     );
     let expanded = HashSet::from([BlockId::Tool(call_id), BlockId::Thinking(10)]);

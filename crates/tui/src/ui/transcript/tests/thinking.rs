@@ -73,7 +73,7 @@ fn streaming_thinking_header_animates_its_ellipsis_with_the_clock() {
             u8::try_from(bucket).expect("bucket"),
             &crate::state::ModelDisplayNames::default(),
         );
-        let rendered = snapshot_lines(&cache.layout.lines);
+        let rendered = snapshot_lines(&cache.layout.lines.to_vec());
         assert!(
             rendered.contains(&format!("💭 ▸ {expected} ")),
             "bucket {bucket}: {rendered}"

@@ -664,7 +664,7 @@ fn tool_output_expansion_invalidates_the_layout_cache() {
         &crate::state::ModelDisplayNames::default(),
     ));
     let passes = cache.item_layout_passes;
-    let collapsed = snapshot_lines(&cache.layout.lines);
+    let collapsed = snapshot_lines(&cache.layout.lines.to_vec());
 
     expanded.insert(tool_output_id(call_id, ToolOutputSection::Detail));
     assert!(!ensure_cached_transcript_layout(
@@ -681,7 +681,7 @@ fn tool_output_expansion_invalidates_the_layout_cache() {
         &crate::state::ModelDisplayNames::default(),
     ));
     assert_eq!(cache.item_layout_passes, passes + 1);
-    assert_ne!(snapshot_lines(&cache.layout.lines), collapsed);
+    assert_ne!(snapshot_lines(&cache.layout.lines.to_vec()), collapsed);
 }
 
 #[test]
@@ -720,7 +720,7 @@ fn child_layout_cache_recomputes_only_the_changed_assistant_segment() {
     let item_passes = cache.item_layout_passes;
     let assembly_passes = cache.item_assembly_passes;
     let line_count = cache.layout.lines.len();
-    let lines_ptr = cache.layout.lines.as_ptr();
+    let chunks = cache.layout.lines.chunks().to_vec();
     // A cache hit for the identical projection recomputes nothing.
     ensure_cached_transcript_layout(
         &mut cache,
@@ -739,7 +739,16 @@ fn child_layout_cache_recomputes_only_the_changed_assistant_segment() {
     assert_eq!(cache.item_layout_passes, item_passes);
     assert_eq!(cache.item_assembly_passes, assembly_passes);
     assert_eq!(cache.layout.lines.len(), line_count);
-    assert_eq!(cache.layout.lines.as_ptr(), lines_ptr);
+    assert_eq!(cache.layout.lines.chunks().len(), chunks.len());
+    assert!(
+        cache
+            .layout
+            .lines
+            .chunks()
+            .iter()
+            .zip(&chunks)
+            .all(|(now, before)| std::sync::Arc::ptr_eq(now, before))
+    );
     // A version bump on one child (and its owning item, exactly as the
     // reducer maintains) recomputes only that child.
     let mut changed = state;
@@ -825,8 +834,8 @@ fn toggling_a_tool_while_text_streams_in_the_same_item_relayouts_the_tool() {
     let mut fresh = LayoutCache::default();
     layout(&mut fresh, &store, &expanded);
     assert_eq!(
-        snapshot_lines(&cache.layout.lines),
-        snapshot_lines(&fresh.layout.lines)
+        snapshot_lines(&cache.layout.lines.to_vec()),
+        snapshot_lines(&fresh.layout.lines.to_vec())
     );
 }
 
@@ -862,13 +871,13 @@ fn streaming_delta_reassembles_only_the_tail_item() {
     );
     assert_eq!(cache.item_offsets.len(), 2);
     let tail_offset = cache.item_offsets[1];
-    let clean_prefix = cache.layout.lines[..tail_offset.lines].to_vec();
+    let clean_prefix = cache.layout.lines.to_vec()[..tail_offset.lines].to_vec();
     let item_passes = cache.item_layout_passes;
     let assembly_passes = cache.item_assembly_passes;
-    let stable_part = &cache.items[1].assistant_parts[0];
-    let stable_span_ptr = cache.items[1].layout.lines[stable_part.lines.start].spans[0]
-        .content
-        .as_ptr();
+    let part_passes = cache.assistant_part_layout_passes;
+    // Header, thinking, the gutter row before prose, then the streaming text.
+    let item_chunks = cache.items[1].layout.lines.chunks().to_vec();
+    assert_eq!(item_chunks.len(), 4);
 
     assert!(store.apply_event(text_delta(session, 5, run, attempt, " tail")));
     ensure_cached_transcript_layout(
@@ -885,18 +894,20 @@ fn streaming_delta_reassembles_only_the_tail_item() {
         &crate::state::ModelDisplayNames::default(),
     );
 
-    assert_eq!(cache.item_layout_passes, item_passes);
+    // Only the tail item re-assembles, and of its parts only the
+    // streaming text re-renders; the settled rows are shared, not copied.
+    assert_eq!(cache.item_layout_passes, item_passes + 1);
     assert_eq!(cache.item_assembly_passes, assembly_passes + 1);
+    assert_eq!(cache.assistant_part_layout_passes, part_passes + 1);
     assert_eq!(cache.item_offsets[1], tail_offset);
-    assert_eq!(cache.layout.lines[..tail_offset.lines], clean_prefix);
-    let stable_part = &cache.items[1].assistant_parts[0];
     assert_eq!(
-        cache.items[1].layout.lines[stable_part.lines.start].spans[0]
-            .content
-            .as_ptr(),
-        stable_span_ptr
+        cache.layout.lines.to_vec()[..tail_offset.lines],
+        clean_prefix
     );
-    assert!(snapshot_lines(&cache.layout.lines).contains("streaming tail"));
+    let now = cache.items[1].layout.lines.chunks();
+    assert!(std::sync::Arc::ptr_eq(&now[1], &item_chunks[1]));
+    assert!(!std::sync::Arc::ptr_eq(&now[3], &item_chunks[3]));
+    assert!(snapshot_lines(&cache.layout.lines.to_vec()).contains("streaming tail"));
 }
 
 #[test]
@@ -1033,6 +1044,7 @@ fn cancelled_and_interrupted_tools_render_distinct_concise_markers() {
                 detail: String::new(),
                 operation_fingerprint: operation_fingerprint(),
                 has_output_chunks: false,
+                revision: 0,
             },
         );
     }
@@ -1041,4 +1053,80 @@ fn cancelled_and_interrupted_tools_render_distinct_concise_markers() {
     assert!(rendered.contains("💻 ▸ bash make interrupted"));
     assert!(!rendered.contains("failed"));
     assert!(!rendered.contains("COMPLETED"));
+}
+
+#[test]
+fn running_tool_updates_rerender_only_the_tool_row() {
+    let session = SessionId::new_v7();
+    let run = run_id();
+    let attempt = AttemptId::new_v7();
+    let call_id = ToolCallId::new_v7();
+    let mut store = StateStore::default();
+    for event in [
+        user_input(session, 1, run, "build it"),
+        attempt_started(session, 2, run, attempt, None),
+        turn_committed(
+            session,
+            3,
+            run,
+            attempt,
+            3,
+            vec![text_part("building now"), tool_part("call-1")],
+            Vec::new(),
+            None,
+        ),
+        tool_started_at(session, 4, run, call_id, 3, "call-1", 1, "call-1", None),
+    ] {
+        assert!(store.apply_event(event));
+    }
+    let theme = Theme::default();
+    let highlighter = crate::markdown::SyntectHighlighter::default();
+    let layout = |cache: &mut LayoutCache, store: &StateStore, clock: u8| {
+        ensure_cached_transcript_layout(
+            cache,
+            session,
+            &store.sessions[&session],
+            None,
+            None,
+            60,
+            &theme,
+            &highlighter,
+            crate::state::EventLevel::Debug,
+            clock,
+            &crate::state::ModelDisplayNames::default(),
+        );
+    };
+    let assistant_chunks = |cache: &LayoutCache| cache.items[1].layout.lines.chunks().to_vec();
+    let mut cache = LayoutCache::default();
+    layout(&mut cache, &store, 0);
+    // Header, the reply, the gutter row after prose, then the tool row.
+    let before = assistant_chunks(&cache);
+    assert_eq!(before.len(), 4);
+    let part_passes = cache.assistant_part_layout_passes;
+
+    assert!(store.apply_event(event(
+        session,
+        5,
+        run,
+        EventPayload::ToolCallProgress {
+            tool_call_id: call_id,
+            message: cookie_agent_protocol::SafeDisplayText::new("bash stdout").unwrap(),
+            display: Some("compiling\n".into()),
+        },
+    )));
+    layout(&mut cache, &store, 0);
+    let progressed = assistant_chunks(&cache);
+    assert!(std::sync::Arc::ptr_eq(&progressed[1], &before[1]));
+    assert!(!std::sync::Arc::ptr_eq(&progressed[3], &before[3]));
+
+    // The running marker animates the tool row alone.
+    layout(&mut cache, &store, 2);
+    let animated = assistant_chunks(&cache);
+    assert!(std::sync::Arc::ptr_eq(&animated[1], &before[1]));
+    assert!(!std::sync::Arc::ptr_eq(&animated[3], &progressed[3]));
+    assert_eq!(cache.assistant_part_layout_passes, part_passes);
+
+    let mut fresh = LayoutCache::default();
+    layout(&mut fresh, &store, 2);
+    assert_eq!(cache.layout.lines.to_vec(), fresh.layout.lines.to_vec());
 }

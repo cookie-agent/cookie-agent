@@ -191,6 +191,24 @@ pub(super) fn item_is_live(state: &SessionState, item: &TranscriptItem) -> bool 
     }
 }
 
+/// One item's layout over shared chunks, for the layout cache: an assistant
+/// item reuses its unchanged parts and tool rows by reference.
+pub(super) fn chunked_item_layout(
+    state: &SessionState,
+    item: &TranscriptItem,
+    context: &mut TranscriptRenderContext<'_>,
+) -> ChunkedItem {
+    match item {
+        TranscriptItem::Assistant {
+            id,
+            attribution,
+            children,
+            ..
+        } => assistant_item_layout(state, *id, attribution, children, context),
+        _ => transcript_item_layout(state, item, context).into(),
+    }
+}
+
 pub(super) fn transcript_item_layout(
     state: &SessionState,
     item: &TranscriptItem,
@@ -222,7 +240,7 @@ pub(super) fn transcript_item_layout(
             attribution,
             children,
             ..
-        } => assistant_item_layout(state, *id, attribution, children, context),
+        } => assistant_item_layout(state, *id, attribution, children, context).flatten(),
         TranscriptItem::Event {
             id,
             level,

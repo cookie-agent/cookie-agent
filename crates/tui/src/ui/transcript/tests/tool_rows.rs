@@ -68,7 +68,7 @@ async fn running_tool_rows_pulse_with_the_clock() {
             bucket,
             &crate::state::ModelDisplayNames::default(),
         );
-        seen.push(snapshot_lines(&cache.layout.lines));
+        seen.push(snapshot_lines(&cache.layout.lines.to_vec()));
     }
     assert!(seen[0].contains("💻 ▸ bash sleep 2 …"), "{}", seen[0]);
     assert!(seen[1].contains("💻 ▸ bash sleep 2 ."), "{}", seen[1]);
@@ -116,6 +116,7 @@ fn expandable_rows_render_emoji_before_collapsed_and_expanded_chevrons() {
             detail: String::new(),
             operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
+            revision: 0,
         },
     );
 
@@ -244,6 +245,7 @@ fn tool_children_render_compact_titles_with_status_semantics() {
             detail: String::new(),
             operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
+            revision: 0,
         },
     );
     let rendered = transcript_layout(&state, None, 60)
@@ -313,6 +315,7 @@ fn wrapped_tool_arguments_keep_the_assistant_gutter() {
             detail: String::new(),
             operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
+            revision: 0,
         },
     );
     let width = 18;

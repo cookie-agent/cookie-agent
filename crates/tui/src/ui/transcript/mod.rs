@@ -27,7 +27,6 @@ use wrap::*;
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    ops::Range,
     time::Duration,
 };
 
@@ -355,6 +354,155 @@ pub(super) struct TranscriptLayout {
     pub(super) user_regions: Vec<UserRegion>,
 }
 
+/// Rendered rows shared by reference: a part, tool row, or item renders its
+/// rows once and every cache and assembled view above it holds the same
+/// allocation.
+pub(super) type Chunk = std::sync::Arc<[Line<'static>]>;
+
+/// The one blank row between transcript items.
+fn blank_chunk() -> Chunk {
+    static BLANK: std::sync::LazyLock<Chunk> =
+        std::sync::LazyLock::new(|| std::sync::Arc::from(vec![Line::default()]));
+    Chunk::clone(&BLANK)
+}
+
+/// A line sequence assembled from shared [`Chunk`]s: appending an unchanged
+/// item, part, or tool row costs a pointer, never a copy of its rows.
+#[derive(Clone, Default)]
+pub(super) struct LineChunks {
+    chunks: Vec<Chunk>,
+    /// The line index each chunk starts at.
+    starts: Vec<usize>,
+    len: usize,
+}
+
+impl LineChunks {
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub(super) fn push_chunk(&mut self, chunk: Chunk) {
+        if chunk.is_empty() {
+            return;
+        }
+        self.starts.push(self.len);
+        self.len += chunk.len();
+        self.chunks.push(chunk);
+    }
+
+    fn push_lines(&mut self, lines: Vec<Line<'static>>) {
+        if !lines.is_empty() {
+            self.push_chunk(lines.into());
+        }
+    }
+
+    pub(super) fn get(&self, index: usize) -> Option<&Line<'static>> {
+        if index >= self.len {
+            return None;
+        }
+        let chunk = self.starts.partition_point(|start| *start <= index) - 1;
+        self.chunks[chunk].get(index - self.starts[chunk])
+    }
+
+    /// Keep the first `len` lines.
+    fn truncate(&mut self, len: usize) {
+        if len >= self.len {
+            return;
+        }
+        let kept = self.starts.partition_point(|start| *start < len);
+        self.chunks.truncate(kept);
+        self.starts.truncate(kept);
+        self.len = len;
+        if let (Some(last), Some(start)) = (self.chunks.last_mut(), self.starts.last())
+            && start + last.len() > len
+        {
+            *last = last[..len - start].into();
+        }
+    }
+
+    pub(super) fn iter(&self) -> impl Iterator<Item = &Line<'static>> {
+        self.chunks.iter().flat_map(|chunk| chunk.iter())
+    }
+
+    pub(super) fn to_vec(&self) -> Vec<Line<'static>> {
+        self.iter().cloned().collect()
+    }
+
+    #[cfg(test)]
+    pub(super) fn chunks(&self) -> &[Chunk] {
+        &self.chunks
+    }
+}
+
+impl std::ops::Index<usize> for LineChunks {
+    type Output = Line<'static>;
+
+    fn index(&self, index: usize) -> &Line<'static> {
+        self.get(index).expect("line index in range")
+    }
+}
+
+/// Indexed read access to rendered lines, whether one slice or chunks.
+pub(super) trait LineSource {
+    fn line_count(&self) -> usize;
+    fn line_at(&self, index: usize) -> Option<&Line<'static>>;
+}
+
+impl LineSource for [Line<'static>] {
+    fn line_count(&self) -> usize {
+        self.len()
+    }
+
+    fn line_at(&self, index: usize) -> Option<&Line<'static>> {
+        self.get(index)
+    }
+}
+
+impl LineSource for Vec<Line<'static>> {
+    fn line_count(&self) -> usize {
+        self.len()
+    }
+
+    fn line_at(&self, index: usize) -> Option<&Line<'static>> {
+        self.get(index)
+    }
+}
+
+impl LineSource for LineChunks {
+    fn line_count(&self) -> usize {
+        self.len
+    }
+
+    fn line_at(&self, index: usize) -> Option<&Line<'static>> {
+        self.get(index)
+    }
+}
+
+/// The cached, assembled transcript: [`TranscriptLayout`] over shared
+/// chunks.
+#[derive(Clone, Default)]
+pub(super) struct ChunkedLayout {
+    pub(super) lines: LineChunks,
+    pub(super) regions: Vec<BlockRegion>,
+    pub(super) user_regions: Vec<UserRegion>,
+}
+
+impl From<TranscriptLayout> for ChunkedLayout {
+    fn from(layout: TranscriptLayout) -> Self {
+        let mut lines = LineChunks::default();
+        lines.push_lines(layout.lines);
+        Self {
+            lines,
+            regions: layout.regions,
+            user_regions: layout.user_regions,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct LayoutCacheKey {
     pub(super) session_id: SessionId,
@@ -371,10 +519,11 @@ pub(super) struct LayoutCache {
     /// Bumped whenever `layout` changes, so views derived from it (the
     /// descendant splice) know when to rebuild.
     pub(super) revision: u64,
-    pub(super) layout: TranscriptLayout,
+    pub(super) layout: ChunkedLayout,
     items: Vec<CachedItemLayout>,
     item_offsets: Vec<ItemAssemblyOffset>,
     assistant_parts: HashMap<u64, CachedAssistantPartLayout>,
+    tool_rows: HashMap<BlockId, CachedToolLayout>,
     system_prompt: Option<CachedSystemPromptLayout>,
     #[cfg(test)]
     pub(super) item_layout_passes: u64,
@@ -446,7 +595,7 @@ struct ItemAssemblyOffset {
 }
 
 impl ItemAssemblyOffset {
-    fn at_end(layout: &TranscriptLayout) -> Self {
+    fn at_end(layout: &ChunkedLayout) -> Self {
         Self {
             lines: layout.lines.len(),
             regions: layout.regions.len(),
@@ -491,25 +640,69 @@ struct ItemLayout {
     user_seq: Option<u64>,
 }
 
+/// [`ItemLayout`] over shared chunks: an assistant item holds one chunk per
+/// child, so re-laying it out after one child changed reuses every other
+/// child's rows by reference.
+#[derive(Clone, Default)]
+struct ChunkedItem {
+    lines: LineChunks,
+    regions: Vec<BlockRegion>,
+    user_seq: Option<u64>,
+}
+
+impl ChunkedItem {
+    /// Append one child's rows and its regions, shifted to where they land.
+    fn push(&mut self, lines: &Chunk, regions: &[BlockRegion]) {
+        let start = self.lines.len();
+        self.regions
+            .extend(regions.iter().map(|region| BlockRegion {
+                start_line: start + region.start_line,
+                end_line: start + region.end_line,
+                ..*region
+            }));
+        self.lines.push_chunk(Chunk::clone(lines));
+    }
+
+    fn push_layout(&mut self, layout: ItemLayout) {
+        let start = self.lines.len();
+        self.regions
+            .extend(layout.regions.into_iter().map(|region| BlockRegion {
+                start_line: start + region.start_line,
+                end_line: start + region.end_line,
+                ..region
+            }));
+        self.lines.push_lines(layout.lines);
+    }
+
+    fn flatten(self) -> ItemLayout {
+        ItemLayout {
+            lines: self.lines.to_vec(),
+            regions: self.regions,
+            user_seq: self.user_seq,
+        }
+    }
+}
+
+impl From<ItemLayout> for ChunkedItem {
+    fn from(layout: ItemLayout) -> Self {
+        let mut lines = LineChunks::default();
+        lines.push_lines(layout.lines);
+        Self {
+            lines,
+            regions: layout.regions,
+            user_seq: layout.user_seq,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct CachedItemLayout {
     key: ItemLayoutKey,
-    layout: ItemLayout,
-    assistant_parts: Vec<AssistantPartRange>,
+    layout: ChunkedItem,
     /// For an assistant item, one line per child: where that child's rows
     /// (with the gutter row separating it from a different kind) begin in
     /// `layout.lines`. Descendant rows splice between children there.
     child_lines: Vec<usize>,
-}
-
-#[derive(Clone)]
-struct AssistantPartRange {
-    /// Index of the part among its item's children.
-    child: usize,
-    id: u64,
-    key: AssistantPartLayoutKey,
-    lines: Range<usize>,
-    regions: Range<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -526,7 +719,27 @@ struct AssistantPartLayoutKey {
 #[derive(Clone)]
 struct CachedAssistantPartLayout {
     key: AssistantPartLayoutKey,
-    layout: ItemLayout,
+    lines: Chunk,
+    regions: Vec<BlockRegion>,
+}
+
+/// Everything one tool row renders from beyond the cache-wide inputs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ToolLayoutKey {
+    /// The call's [`crate::state::ToolCallState::revision`]; `None` while
+    /// the row is a placeholder.
+    revision: Option<u64>,
+    /// Expansion of the row, then of its detail, stdout and stderr output.
+    expanded: [bool; 4],
+    /// Animation bucket while the call runs (0 otherwise).
+    clock: u8,
+}
+
+#[derive(Clone)]
+struct CachedToolLayout {
+    key: ToolLayoutKey,
+    lines: Chunk,
+    regions: Vec<BlockRegion>,
 }
 
 struct TranscriptRenderContext<'a> {
@@ -540,7 +753,7 @@ struct TranscriptRenderContext<'a> {
     model_names: &'a ModelDisplayNames,
     assistant_part_cache: &'a mut HashMap<u64, CachedAssistantPartLayout>,
     assistant_part_layout_passes: &'a mut u64,
-    assistant_part_ranges: &'a mut Vec<AssistantPartRange>,
+    tool_cache: &'a mut HashMap<BlockId, CachedToolLayout>,
     assistant_child_lines: &'a mut Vec<usize>,
 }
 
@@ -579,10 +792,11 @@ pub(super) fn ensure_cached_transcript_layout(
     let full_rebuild = cache.key != Some(key);
     if full_rebuild {
         cache.key = Some(key);
-        cache.layout = TranscriptLayout::default();
+        cache.layout = ChunkedLayout::default();
         cache.items.clear();
         cache.item_offsets.clear();
         cache.assistant_parts.clear();
+        cache.tool_rows.clear();
         cache.system_prompt = None;
     }
 
@@ -601,17 +815,17 @@ pub(super) fn ensure_cached_transcript_layout(
     let system_prompt_changed =
         cache.system_prompt.as_ref().map(|cached| &cached.key) != prompt_key.as_ref();
     if system_prompt_changed {
-        cache.layout = TranscriptLayout::default();
+        cache.layout = ChunkedLayout::default();
         cache.item_offsets.clear();
         cache.system_prompt = if let (Some(snapshot), Some(prompt_key)) =
             (state.run_snapshot.as_deref(), prompt_key)
         {
             let layout = system_prompt_layout(snapshot, draft_agent, expanded, width, theme);
-            append_item_layout(&mut cache.layout, layout);
+            append_chunked_item(&mut cache.layout, &layout.into());
             if let Some(tools) = state.model_tools.as_deref() {
-                append_item_layout(
+                append_chunked_item(
                     &mut cache.layout,
-                    model_tools_layout(tools, expanded, width, theme),
+                    &model_tools_layout(tools, expanded, width, theme).into(),
                 );
             }
             Some(CachedSystemPromptLayout { key: prompt_key })
@@ -664,7 +878,7 @@ pub(super) fn ensure_cached_transcript_layout(
         cache
             .item_offsets
             .push(ItemAssemblyOffset::at_end(&cache.layout));
-        if cache.items.get(index).is_some_and(|cached| {
+        let reusable = cache.items.get(index).is_some_and(|cached| {
             item_layout_key_matches(
                 &cached.key,
                 state,
@@ -673,11 +887,9 @@ pub(super) fn ensure_cached_transcript_layout(
                 clock_bucket,
                 model_names,
             )
-        }) {
-            append_item_layout(&mut cache.layout, cache.items[index].layout.clone());
-        } else {
+        });
+        if !reusable {
             let item_key = item_layout_key(state, item, expanded, clock_bucket, model_names);
-            let mut assistant_part_ranges = Vec::new();
             let mut assistant_child_lines = Vec::new();
             let mut context = TranscriptRenderContext {
                 expanded,
@@ -689,41 +901,27 @@ pub(super) fn ensure_cached_transcript_layout(
                 model_names,
                 assistant_part_cache: &mut cache.assistant_parts,
                 assistant_part_layout_passes: &mut cache.assistant_part_layout_passes,
-                assistant_part_ranges: &mut assistant_part_ranges,
+                tool_cache: &mut cache.tool_rows,
                 assistant_child_lines: &mut assistant_child_lines,
             };
-            // Splicing re-renders only the streaming text/thinking part, so an
-            // expand/collapse elsewhere in the item (e.g. a tool row toggled
-            // while text streams after it) needs the full item layout.
-            let spliced = cache.items.get_mut(index).is_some_and(|cached| {
-                cached.key.interaction == item_key.interaction
-                    && splice_active_assistant_part(cached, state, item, &mut context)
-            });
-            let layout = if spliced {
-                let cached = &mut cache.items[index];
-                cached.key = item_key;
-                cached.layout.clone()
-            } else {
-                let layout = transcript_item_layout(state, item, &mut context);
-                let cached = CachedItemLayout {
-                    key: item_key,
-                    layout: layout.clone(),
-                    assistant_parts: assistant_part_ranges,
-                    child_lines: assistant_child_lines,
-                };
-                if index < cache.items.len() {
-                    cache.items[index] = cached;
-                } else {
-                    cache.items.push(cached);
-                }
-                #[cfg(test)]
-                {
-                    cache.item_layout_passes = cache.item_layout_passes.wrapping_add(1);
-                }
-                layout
+            // Unchanged parts and tool rows come back from their caches by
+            // reference, so this re-renders only what changed.
+            let cached = CachedItemLayout {
+                key: item_key,
+                layout: chunked_item_layout(state, item, &mut context),
+                child_lines: assistant_child_lines,
             };
-            append_item_layout(&mut cache.layout, layout);
+            if index < cache.items.len() {
+                cache.items[index] = cached;
+            } else {
+                cache.items.push(cached);
+            }
+            #[cfg(test)]
+            {
+                cache.item_layout_passes = cache.item_layout_passes.wrapping_add(1);
+            }
         }
+        append_chunked_item(&mut cache.layout, &cache.items[index].layout);
         #[cfg(test)]
         {
             cache.item_assembly_passes = cache.item_assembly_passes.wrapping_add(1);
@@ -762,14 +960,14 @@ impl SplicedRows {
     }
 
     /// Spliced line `index` over the original `base` lines.
-    pub(super) fn line<'a>(
+    pub(super) fn line<'a, L: LineSource + ?Sized>(
         &'a self,
-        base: &'a [Line<'static>],
+        base: &'a L,
         index: usize,
     ) -> Option<&'a Line<'static>> {
         let splice = self.starts.partition_point(|start| *start <= index);
         let Some(splice) = splice.checked_sub(1) else {
-            return base.get(index);
+            return base.line_at(index);
         };
         let start = self.starts[splice];
         let (position, inserted) = self.shifts[splice];
@@ -777,7 +975,7 @@ impl SplicedRows {
         if index < start + inserted {
             self.rows.get(inserted_before + index - start)
         } else {
-            base.get(index - inserted_before - inserted)
+            base.line_at(index - inserted_before - inserted)
         }
     }
 
@@ -809,8 +1007,8 @@ impl SplicedRows {
     }
 
     /// Every spliced line, copied out.
-    pub(super) fn materialize(&self, base: &[Line<'static>]) -> Vec<Line<'static>> {
-        (0..self.len(base.len()))
+    pub(super) fn materialize<L: LineSource + ?Sized>(&self, base: &L) -> Vec<Line<'static>> {
+        (0..self.len(base.line_count()))
             .filter_map(|index| self.line(base, index).cloned())
             .collect()
     }
@@ -959,7 +1157,7 @@ impl App {
     fn spliced_conversation_rows(
         &self,
         width: u16,
-        layout_lines: &[Line<'static>],
+        layout_lines: &(impl LineSource + ?Sized),
         events: &[DescendantEvent],
     ) -> Option<SplicedRows> {
         let state = self
@@ -999,7 +1197,7 @@ impl App {
     fn refresh_splice(
         &self,
         cache: &mut SpliceCache,
-        base: &TranscriptLayout,
+        base: &ChunkedLayout,
         cacheable: bool,
         width: u16,
     ) {
@@ -1080,7 +1278,7 @@ impl App {
     // width, theme, display names); bundling them would only add a type.
     #[allow(clippy::too_many_arguments)]
     fn splice_descendant_events(
-        lines: &[Line<'static>],
+        lines: &(impl LineSource + ?Sized),
         items: &[CachedItemLayout],
         item_offsets: &[ItemAssemblyOffset],
         state: &SessionState,
@@ -1101,7 +1299,7 @@ impl App {
             };
             let item_end = item_offsets
                 .get(index + 1)
-                .map_or(lines.len(), |next| next.lines);
+                .map_or(lines.line_count(), |next| next.lines);
             let child_segments = match (item, items.get(index)) {
                 (
                     TranscriptItem::Assistant {
@@ -1119,7 +1317,7 @@ impl App {
                     Some((
                         child_times,
                         &cached.child_lines,
-                        item_end.saturating_sub(cached.layout.lines.len()),
+                        item_end.saturating_sub(cached.layout.lines.line_count()),
                     ))
                 }
                 _ => None,
@@ -1150,7 +1348,7 @@ impl App {
         placements.extend(
             events[next..]
                 .iter()
-                .map(|event| (lines.len(), event, None)),
+                .map(|event| (lines.line_count(), event, None)),
         );
         // Positions already ascend with segment order; the stable sort only
         // guards stale cached offsets.
@@ -1159,7 +1357,7 @@ impl App {
         let mut spliced = SplicedRows::default();
         let mut placements = placements.into_iter().peekable();
         while let Some((position, event, resume)) = placements.next() {
-            let position = position.min(lines.len());
+            let position = position.min(lines.line_count());
             let before = spliced.rows.len();
             let mut resume = resume;
             let mut event = Some(event);
@@ -1169,7 +1367,7 @@ impl App {
                 let above = if spliced.rows.len() > before {
                     spliced.rows.last()
                 } else {
-                    position.checked_sub(1).and_then(|line| lines.get(line))
+                    position.checked_sub(1).and_then(|line| lines.line_at(line))
                 };
                 let needs_separator = above.is_some_and(|line| {
                     line.spans
@@ -1201,7 +1399,7 @@ impl App {
                     }));
                 spliced.rows.extend(row_layout.lines);
                 if let Some((_, row, row_resume)) =
-                    placements.next_if(|(next, _, _)| (*next).min(lines.len()) == position)
+                    placements.next_if(|(next, _, _)| (*next).min(lines.line_count()) == position)
                 {
                     resume = resume.or(row_resume);
                     event = Some(row);
@@ -1228,7 +1426,7 @@ impl App {
     /// notice block — for selection extraction. The cached layout is exactly
     /// what the last frame rendered at this width, so logical-line
     /// coordinates from the mouse map one-to-one.
-    pub(super) fn conversation_chain(&self, width: u16) -> Cow<'_, [Line<'static>]> {
+    pub(super) fn conversation_chain(&self, width: u16) -> Vec<Line<'static>> {
         // A new-session draft shows the fresh session it will create, not the
         // conversation still selected behind it.
         let viewed = self.viewed_session();
@@ -1239,31 +1437,20 @@ impl App {
             .is_none_or(|state| state.transcript.is_empty() && state.run_snapshot.is_none());
         let descendant_events = self.viewed_descendant_events();
         let mut notices = self.notice_lines(width);
-        if session_present
-            && !transcript_empty
-            && descendant_events.is_empty()
-            && notices.is_empty()
-        {
-            return Cow::Borrowed(&self.layout_cache.layout.lines);
-        }
         let base = if session_present && !transcript_empty {
-            Cow::Borrowed(self.layout_cache.layout.lines.as_slice())
+            self.layout_cache.layout.lines.to_vec()
         } else {
-            Cow::Owned(empty_conversation_lines(
-                session_present,
-                width,
-                &self.theme,
-            ))
+            empty_conversation_lines(session_present, width, &self.theme)
         };
         let mut lines = match self.spliced_conversation_rows(width, &base, &descendant_events) {
             Some(spliced) => spliced.materialize(&base),
-            None => base.into_owned(),
+            None => base,
         };
         if !lines.is_empty() && !notices.is_empty() {
             notices.insert(0, Line::default());
         }
         lines.extend(notices);
-        Cow::Owned(lines)
+        lines
     }
 
     /// The currently selected text, mapped from content coordinates back to
@@ -1306,11 +1493,11 @@ impl App {
         let viewed = self.viewed_session();
         let session_present = self.new_session_draft.is_some()
             || viewed.is_some_and(|session_id| self.store.sessions.contains_key(&session_id));
-        let empty_layout = TranscriptLayout {
+        let empty_layout = ChunkedLayout::from(TranscriptLayout {
             lines: empty_conversation_lines(session_present, width, &self.theme),
             regions: Vec::new(),
             user_regions: Vec::new(),
-        };
+        });
         let clock_bucket = self.clock_bucket();
         let draft_agent = self.draft.as_ref().map(|draft| draft.agent.clone());
         let anchor_key = self.layout_cache.key;
@@ -1603,6 +1790,7 @@ fn transcript_layout_at_clock(
 ) -> TranscriptLayout {
     let mut layout = TranscriptLayout::default();
     let mut assistant_parts = HashMap::new();
+    let mut tool_rows = HashMap::new();
     let mut assistant_part_layout_passes = 0;
     let model_names = ModelDisplayNames::default();
     if let Some(snapshot) = state.run_snapshot.as_deref() {
@@ -1618,7 +1806,6 @@ fn transcript_layout_at_clock(
         }
     }
     for item in &state.transcript {
-        let mut assistant_part_ranges = Vec::new();
         let mut assistant_child_lines = Vec::new();
         let item_layout = transcript_item_layout(
             state,
@@ -1633,7 +1820,7 @@ fn transcript_layout_at_clock(
                 model_names: &model_names,
                 assistant_part_cache: &mut assistant_parts,
                 assistant_part_layout_passes: &mut assistant_part_layout_passes,
-                assistant_part_ranges: &mut assistant_part_ranges,
+                tool_cache: &mut tool_rows,
                 assistant_child_lines: &mut assistant_child_lines,
             },
         );
@@ -1642,10 +1829,41 @@ fn transcript_layout_at_clock(
     layout
 }
 
+/// Append one item to the cached layout after the one-blank-row separator
+/// (see `append_item_layout`); the item's chunks are shared, not copied.
+fn append_chunked_item(assembled: &mut ChunkedLayout, item: &ChunkedItem) {
+    if item.lines.is_empty() {
+        return;
+    }
+    if !assembled.lines.is_empty() {
+        assembled.lines.push_chunk(blank_chunk());
+    }
+    let start_line = assembled.lines.len();
+    let end_line = start_line + item.lines.len();
+    for chunk in &item.lines.chunks {
+        assembled.lines.push_chunk(Chunk::clone(chunk));
+    }
+    assembled
+        .regions
+        .extend(item.regions.iter().map(|region| BlockRegion {
+            start_line: start_line + region.start_line,
+            end_line: start_line + region.end_line,
+            ..*region
+        }));
+    if let Some(seq) = item.user_seq {
+        assembled.user_regions.push(UserRegion {
+            seq,
+            start_line,
+            end_line,
+        });
+    }
+}
+
 /// One blank row of breathing room between top-level transcript items, so
 /// messages never butt against each other. Items that render nothing
 /// (event rows below the level filter) contribute no lines and no spacer —
 /// never a leading, trailing, or doubled blank row.
+#[cfg(test)]
 fn append_item_layout(assembled: &mut TranscriptLayout, item_layout: ItemLayout) {
     if item_layout.lines.is_empty() {
         return;

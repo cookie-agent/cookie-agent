@@ -2695,6 +2695,7 @@ fn tool_termination_clears_streamed_output_and_sets_detail() {
             )
             .unwrap(),
             has_output_chunks: false,
+            revision: 0,
         },
     );
 

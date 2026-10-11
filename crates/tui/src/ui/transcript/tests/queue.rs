@@ -402,7 +402,7 @@ async fn goal_reminder_kind_drives_queue_and_transcript_without_body_heuristics(
                 0,
                 &crate::state::ModelDisplayNames::default(),
             );
-            let rendered = snapshot_lines(&cache.layout.lines);
+            let rendered = snapshot_lines(&cache.layout.lines.to_vec());
             let visible = matches!(
                 status,
                 ProducerMessageStatus::Claimed | ProducerMessageStatus::Consumed

@@ -100,6 +100,7 @@ fn edit_arguments_render_added_and_removed_diff_gutters() {
             detail: "Edited src/main.rs\nEdit applied atomically".into(),
             operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
+            revision: 0,
         },
     );
     let expanded = HashSet::from([BlockId::Tool(call_id)]);
@@ -238,6 +239,7 @@ fn tool_code_views_snapshot() {
             detail: read_detail(&[(1, "fn main() {"), (1000, "    println!(\"hi\");")]),
             operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
+            revision: 0,
         },
     );
     state.tools.insert(
@@ -256,6 +258,7 @@ fn tool_code_views_snapshot() {
             detail: "Edit applied atomically".into(),
             operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
+            revision: 0,
         },
     );
     let expanded = HashSet::from([BlockId::Tool(read_id), BlockId::Tool(edit_id)]);
@@ -284,6 +287,7 @@ fn changed_diff_rows_are_tinted_inside_the_band_padding() {
             detail: "Edit applied atomically".into(),
             operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
+            revision: 0,
         },
     );
     let theme = Theme::default();

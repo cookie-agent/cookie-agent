@@ -76,6 +76,17 @@ pub struct ToolCallState {
     pub status: ToolStatus,
     pub detail: String,
     pub has_output_chunks: bool,
+    /// Changes with every mutation of this call, unique across sessions and
+    /// rebuilds (see [`next_tool_revision`]), so its rendered row can be
+    /// cached by it.
+    pub revision: u64,
+}
+
+/// A fresh tool revision: process-wide, so a projection rebuilt from history
+/// never reuses one a cached row was keyed by.
+pub(crate) fn next_tool_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl ToolCallState {

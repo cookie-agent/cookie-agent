@@ -147,7 +147,7 @@ async fn diagnostic_gutters_cover_hard_breaks_soft_wraps_and_scrolled_rows() {
             app.conversation_scroll.top();
             conversation_rows(&mut app, width, 16);
             let content_width = app.hit_map.conversation.unwrap().width;
-            let lines = &app.layout_cache.layout.lines;
+            let lines = &app.layout_cache.layout.lines.to_vec();
             assert!(
                 lines
                     .iter()

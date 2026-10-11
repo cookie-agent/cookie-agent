@@ -40,6 +40,7 @@ pub(super) fn reduce_transient(
                     end -= 1;
                 }
                 tool.detail.push_str(&display.as_str()[..end]);
+                tool.revision = next_tool_revision();
             }
             bump_tool_item(state, tool_call_id);
             return true;
@@ -890,6 +891,7 @@ pub(super) fn reduce_event(
                     status: ToolStatus::Running,
                     detail: identities,
                     has_output_chunks: false,
+                    revision: next_tool_revision(),
                 },
             );
             place_tool_rows(state);
@@ -971,6 +973,7 @@ pub(super) fn reduce_event(
                 tool.status = status;
                 tool.detail = detail;
                 tool.has_output_chunks = false;
+                tool.revision = next_tool_revision();
             }
             // A failed call is fed back to the model as its tool result and
             // carries the failure inline on its tool item; only surface an

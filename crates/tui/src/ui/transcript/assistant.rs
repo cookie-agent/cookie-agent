@@ -8,26 +8,23 @@ pub(super) fn assistant_item_layout(
     attribution: &crate::state::FrozenAssistantAttribution,
     children: &[AssistantChild],
     context: &mut TranscriptRenderContext<'_>,
-) -> ItemLayout {
-    let mut layout = ItemLayout {
-        lines: assistant_header(
-            attribution.header(context.model_names).as_str(),
-            context.width,
-            context.theme,
-        ),
-        regions: Vec::new(),
-        user_seq: None,
-    };
+) -> ChunkedItem {
+    let mut layout = ChunkedItem::default();
+    layout.lines.push_lines(assistant_header(
+        attribution.header(context.model_names).as_str(),
+        context.width,
+        context.theme,
+    ));
     let mut previous_is_prose = None;
-    for (index, child) in children.iter().enumerate() {
+    for child in children {
         context.assistant_child_lines.push(layout.lines.len());
         // Prose and the compact tool/thinking rows are separated by one blank
         // gutter row whenever the reply switches between them; runs of rows
         // stay tight. Separators sit between parts, never inside a part's
-        // line range, so streaming splices are unaffected.
+        // rows, so each part stays one shared chunk.
         let is_prose = matches!(child, AssistantChild::Text { .. });
         if previous_is_prose.is_some_and(|previous| previous != is_prose) {
-            layout.lines.extend(assistant_body_line(
+            layout.lines.push_lines(assistant_body_line(
                 Line::default(),
                 context.width,
                 context.theme,
@@ -37,12 +34,12 @@ pub(super) fn assistant_item_layout(
         match child {
             AssistantChild::Text { .. } | AssistantChild::Thinking { .. } => {
                 let key = assistant_part_layout_key(state, item_id, child, context);
-                let part_layout = if context
+                let cached = context
                     .assistant_part_cache
                     .get(&child.id())
-                    .is_some_and(|cached| cached.key == key)
-                {
-                    context.assistant_part_cache[&child.id()].layout.clone()
+                    .filter(|cached| cached.key == key);
+                if let Some(cached) = cached {
+                    layout.push(&cached.lines, &cached.regions);
                 } else {
                     let part_layout = assistant_child_layout(
                         child,
@@ -51,52 +48,23 @@ pub(super) fn assistant_item_layout(
                         context.theme,
                         context.highlighter,
                     );
-                    context.assistant_part_cache.insert(
-                        child.id(),
-                        CachedAssistantPartLayout {
-                            key,
-                            layout: part_layout.clone(),
-                        },
-                    );
+                    let cached = CachedAssistantPartLayout {
+                        key,
+                        lines: part_layout.lines.into(),
+                        regions: part_layout.regions,
+                    };
+                    layout.push(&cached.lines, &cached.regions);
+                    context.assistant_part_cache.insert(child.id(), cached);
                     *context.assistant_part_layout_passes =
                         context.assistant_part_layout_passes.wrapping_add(1);
-                    part_layout
-                };
-                let start_line = layout.lines.len();
-                let start_region = layout.regions.len();
-                layout.lines.extend(part_layout.lines);
-                layout
-                    .regions
-                    .extend(part_layout.regions.into_iter().map(|region| BlockRegion {
-                        id: region.id,
-                        start_line: start_line + region.start_line,
-                        end_line: start_line + region.end_line,
-                        ..region
-                    }));
-                context.assistant_part_ranges.push(AssistantPartRange {
-                    child: index,
-                    id: child.id(),
-                    key,
-                    lines: start_line..layout.lines.len(),
-                    regions: start_region..layout.regions.len(),
-                });
+                }
             }
             AssistantChild::Tool { call_id } => {
-                let child_layout =
-                    tool_child_layout(state, Some(*call_id), *call_id, None, context);
-                let start_line = layout.lines.len();
-                layout.lines.extend(child_layout.lines);
-                layout
-                    .regions
-                    .extend(child_layout.regions.into_iter().map(|region| BlockRegion {
-                        id: region.id,
-                        start_line: start_line + region.start_line,
-                        end_line: start_line + region.end_line,
-                        ..region
-                    }));
+                let row = cached_tool_row(state, Some(*call_id), *call_id, None, context);
+                layout.push(&row.lines, &row.regions);
             }
             AssistantChild::Attribution { resolved_model } => {
-                layout.lines.extend(attribution_line(
+                layout.lines.push_lines(attribution_line(
                     resolved_model,
                     context.model_names,
                     context.width,
@@ -104,7 +72,7 @@ pub(super) fn assistant_item_layout(
                 ));
             }
             AssistantChild::Notice { text } => {
-                layout.lines.extend(assistant_body_line(
+                layout.lines.push_lines(assistant_body_line(
                     Line::from(Span::styled(text.clone(), context.theme.muted())),
                     context.width,
                     context.theme,
@@ -115,7 +83,7 @@ pub(super) fn assistant_item_layout(
                 content_index,
                 name,
             } => {
-                let child_layout = tool_child_layout(
+                let row = cached_tool_row(
                     state,
                     None,
                     BlockKey::CommittedTool {
@@ -125,33 +93,14 @@ pub(super) fn assistant_item_layout(
                     Some(name.as_str()),
                     context,
                 );
-                let start_line = layout.lines.len();
-                layout.lines.extend(child_layout.lines);
-                layout
-                    .regions
-                    .extend(child_layout.regions.into_iter().map(|region| BlockRegion {
-                        id: region.id,
-                        start_line: start_line + region.start_line,
-                        end_line: start_line + region.end_line,
-                        ..region
-                    }));
+                layout.push(&row.lines, &row.regions);
             }
             AssistantChild::MediaFile {
                 turn_seq,
                 content_index,
                 file,
             } => {
-                let child_layout = media_file_layout(*turn_seq, *content_index, file, context);
-                let start_line = layout.lines.len();
-                layout.lines.extend(child_layout.lines);
-                layout
-                    .regions
-                    .extend(child_layout.regions.into_iter().map(|region| BlockRegion {
-                        id: region.id,
-                        start_line: start_line + region.start_line,
-                        end_line: start_line + region.end_line,
-                        ..region
-                    }));
+                layout.push_layout(media_file_layout(*turn_seq, *content_index, file, context));
             }
         }
     }
@@ -160,9 +109,65 @@ pub(super) fn assistant_item_layout(
     // durable event timestamps. Passive — no region, no hover — and absent
     // entirely when the data is missing.
     if let Some(footer) = assistant_footer_line(state, item_id, context.width, context.theme) {
-        layout.lines.extend(footer);
+        layout.lines.push_lines(footer);
     }
     layout
+}
+
+/// One tool row, from the tool-row cache unless the call, its expansion, or
+/// (while it runs) the animation clock changed since it was rendered.
+fn cached_tool_row(
+    state: &SessionState,
+    call_id: Option<cookie_agent_protocol::ToolCallId>,
+    block_key: impl Into<BlockKey>,
+    pending_name: Option<&str>,
+    context: &mut TranscriptRenderContext<'_>,
+) -> CachedToolLayout {
+    let block_key = block_key.into();
+    let block_id = match block_key {
+        BlockKey::Call(call) => BlockId::Tool(call),
+        BlockKey::CommittedTool {
+            turn_seq,
+            content_index,
+        } => BlockId::CommittedTool {
+            turn_seq,
+            content_index,
+        },
+    };
+    let tool = call_id.and_then(|call_id| state.tools.get(&call_id));
+    let is_expanded = |id: BlockId| context.expanded.is_some_and(|blocks| blocks.contains(&id));
+    let output_expanded = |section| {
+        call_id.is_some_and(|call_id| is_expanded(BlockId::ToolOutput { call_id, section }))
+    };
+    let key = ToolLayoutKey {
+        revision: tool.map(|tool| tool.revision),
+        expanded: [
+            is_expanded(block_id),
+            output_expanded(ToolOutputSection::Detail),
+            output_expanded(ToolOutputSection::Stdout),
+            output_expanded(ToolOutputSection::Stderr),
+        ],
+        clock: if tool.is_some_and(|tool| tool.status == ToolStatus::Running) {
+            context.clock_bucket
+        } else {
+            0
+        },
+    };
+    if let Some(cached) = context
+        .tool_cache
+        .get(&block_id)
+        .filter(|cached| cached.key == key)
+    {
+        return cached.clone();
+    }
+    let layout = tool_child_layout(state, call_id, block_key, pending_name, context);
+    let cached = CachedToolLayout {
+        key,
+        lines: layout.lines.into(),
+        regions: layout.regions,
+    };
+    context.tool_cache.insert(block_id, cached.clone());
+    cached
 }
 
 pub(super) fn assistant_part_layout_key(
@@ -195,136 +200,6 @@ pub(super) fn assistant_part_layout_key(
         dots: if streaming { context.clock_bucket } else { 0 },
         duration,
     }
-}
-
-pub(super) fn splice_active_assistant_part(
-    cached: &mut CachedItemLayout,
-    state: &SessionState,
-    item: &TranscriptItem,
-    context: &mut TranscriptRenderContext<'_>,
-) -> bool {
-    let TranscriptItem::Assistant { id, children, .. } = item else {
-        return false;
-    };
-    let parts = children
-        .iter()
-        .filter(|child| {
-            matches!(
-                child,
-                AssistantChild::Text { .. } | AssistantChild::Thinking { .. }
-            )
-        })
-        .collect::<Vec<_>>();
-    if parts.len() != cached.assistant_parts.len() {
-        return false;
-    }
-    let mut dirty = None;
-    for (index, (child, range)) in parts.iter().zip(&cached.assistant_parts).enumerate() {
-        if child.id() != range.id {
-            return false;
-        }
-        let key = assistant_part_layout_key(state, *id, child, context);
-        if key != range.key && dirty.replace((index, *child, key)).is_some() {
-            return false;
-        }
-    }
-    let Some((dirty_index, child, key)) = dirty else {
-        return false;
-    };
-    if !state.is_open_assistant_part(*id, child.id()) {
-        return false;
-    }
-
-    let part_layout = assistant_child_layout(
-        child,
-        key,
-        context.width,
-        context.theme,
-        context.highlighter,
-    );
-    context.assistant_part_cache.insert(
-        child.id(),
-        CachedAssistantPartLayout {
-            key,
-            layout: part_layout.clone(),
-        },
-    );
-    *context.assistant_part_layout_passes = context.assistant_part_layout_passes.wrapping_add(1);
-
-    let old = cached.assistant_parts[dirty_index].clone();
-    let old_line_len = old.lines.len();
-    let new_line_len = part_layout.lines.len();
-    let line_delta = isize::try_from(new_line_len).unwrap_or(isize::MAX)
-        - isize::try_from(old_line_len).unwrap_or(isize::MAX);
-    cached
-        .layout
-        .lines
-        .splice(old.lines.clone(), part_layout.lines);
-
-    let new_regions = part_layout
-        .regions
-        .into_iter()
-        .map(|region| BlockRegion {
-            id: region.id,
-            start_line: old.lines.start + region.start_line,
-            end_line: old.lines.start + region.end_line,
-            ..region
-        })
-        .collect::<Vec<_>>();
-    let old_region_len = old.regions.len();
-    let new_region_len = new_regions.len();
-    cached
-        .layout
-        .regions
-        .splice(old.regions.clone(), new_regions);
-    let region_delta = isize::try_from(new_region_len).unwrap_or(isize::MAX)
-        - isize::try_from(old_region_len).unwrap_or(isize::MAX);
-    let shifted_region_start = old.regions.start + new_region_len;
-    for region in &mut cached.layout.regions[shifted_region_start..] {
-        region.start_line = region
-            .start_line
-            .checked_add_signed(line_delta)
-            .expect("assistant region offset remains valid");
-        region.end_line = region
-            .end_line
-            .checked_add_signed(line_delta)
-            .expect("assistant region offset remains valid");
-    }
-
-    // Children after the re-rendered part move with its line delta.
-    let dirty_child = cached.assistant_parts[dirty_index].child;
-    for start in cached.child_lines.iter_mut().skip(dirty_child + 1) {
-        *start = start
-            .checked_add_signed(line_delta)
-            .expect("assistant child offset remains valid");
-    }
-    let range = &mut cached.assistant_parts[dirty_index];
-    range.key = key;
-    range.lines.end = range.lines.start + new_line_len;
-    range.regions.end = range.regions.start + new_region_len;
-    for range in &mut cached.assistant_parts[dirty_index + 1..] {
-        range.lines.start = range
-            .lines
-            .start
-            .checked_add_signed(line_delta)
-            .expect("assistant line offset remains valid");
-        range.lines.end = range
-            .lines
-            .end
-            .checked_add_signed(line_delta)
-            .expect("assistant line offset remains valid");
-        range.regions.start = range
-            .regions
-            .start
-            .checked_add_signed(region_delta)
-            .expect("assistant region index remains valid");
-        range.regions.end = range
-            .regions
-            .end
-            .checked_add_signed(region_delta)
-            .expect("assistant region index remains valid");
-    }
-    true
 }
 
 pub(super) fn assistant_child_layout(

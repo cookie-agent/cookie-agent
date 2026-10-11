@@ -151,11 +151,13 @@ async fn system_prompt_hover_covers_wrapped_item_rows_but_not_expanded_body() {
                     .unwrap();
                 let header_lines = region.header_lines.unwrap();
                 assert!(
-                    app.layout_cache.layout.lines[region.start_line]
+                    app.layout_cache.layout.lines.to_vec()[region.start_line]
                         .to_string()
                         .starts_with("· 📜")
                 );
-                assert!(!snapshot_lines(&app.layout_cache.layout.lines).contains("EVENT [I]"));
+                assert!(
+                    !snapshot_lines(&app.layout_cache.layout.lines.to_vec()).contains("EVENT [I]")
+                );
                 assert_eq!(header_lines > 1, width == 24);
                 if !expanded {
                     assert_eq!(header_lines, region.end_line - region.start_line);

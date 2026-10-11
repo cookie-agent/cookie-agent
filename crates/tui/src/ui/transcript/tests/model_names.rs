@@ -201,7 +201,7 @@ fn now_using_notice_and_continuation_header_share_the_header_label() {
         0,
         runtime.model_names(),
     );
-    let rendered = snapshot_lines(&cache.layout.lines);
+    let rendered = snapshot_lines(&cache.layout.lines.to_vec());
     assert!(
         rendered
             .lines()
@@ -272,7 +272,7 @@ fn a_name_arriving_later_relabels_cached_assistant_headers_only() {
             0,
             names,
         );
-        (unchanged, snapshot_lines(&cache.layout.lines))
+        (unchanged, snapshot_lines(&cache.layout.lines.to_vec()))
     };
 
     let (_, before) = layout(&mut cache, &ModelDisplayNames::default());

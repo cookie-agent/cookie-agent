@@ -676,7 +676,7 @@ fn retry_started_before_input_promotion_rebinds_without_losing_committed_tools()
             };
             let fresh = layout(state);
             let rebuilt = layout(&replay.sessions[&session]);
-            assert_eq!(cache.layout.lines, fresh.lines);
+            assert_eq!(cache.layout.lines.to_vec(), fresh.lines);
             assert_eq!(cache.layout.regions, fresh.regions);
             assert_eq!(cache.layout.user_regions, fresh.user_regions);
             if settled {
@@ -750,7 +750,7 @@ fn retry_started_before_input_promotion_rebinds_without_losing_committed_tools()
         );
         assert_eq!(state.tools[&call].status, ToolStatus::Completed);
         assert!(state.pending_inputs.is_empty());
-        let rendered = snapshot_lines(&cache.layout.lines);
+        let rendered = snapshot_lines(&cache.layout.lines.to_vec());
         let mut cursor = 0;
         for text in [
             "before steering",
@@ -1036,7 +1036,8 @@ fn goal_activation_precedes_triggered_streaming_and_preserves_existing_output() 
                 );
                 if settled {
                     assert_eq!(
-                        cache.layout.lines, rebuilt.lines,
+                        cache.layout.lines.to_vec(),
+                        rebuilt.lines,
                         "seq {} existing {existing_run}",
                         stored.seq
                     );
@@ -1055,7 +1056,7 @@ fn goal_activation_precedes_triggered_streaming_and_preserves_existing_output() 
                 );
             }
             if index >= activation_index {
-                let rendered = snapshot_lines(&caches[1].layout.lines);
+                let rendered = snapshot_lines(&caches[1].layout.lines.to_vec());
                 let action = rendered.find("/goal finish  the parser").unwrap();
                 assert_eq!(rendered.matches("/goal finish  the parser").count(), 1);
                 assert!(rendered.contains("-- Action"));
@@ -1082,7 +1083,7 @@ fn goal_activation_precedes_triggered_streaming_and_preserves_existing_output() 
         }
         let state = &live.sessions[&session];
         let assistants = assistant_projection(state);
-        let rendered = snapshot_lines(&caches[1].layout.lines);
+        let rendered = snapshot_lines(&caches[1].layout.lines.to_vec());
         assert_eq!(rendered.matches("GoalStarted:").count(), 1);
         assert!(!rendered.contains("Continue"));
         assert_eq!(assistants.len(), if existing_run { 2 } else { 1 });
@@ -1391,7 +1392,8 @@ fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
             let fresh = layout(state);
             let rebuilt = layout(&replay.sessions[&session]);
             assert_eq!(
-                cache.layout.lines, fresh.lines,
+                cache.layout.lines.to_vec(),
+                fresh.lines,
                 "cached seq {} width {width}",
                 stored.seq
             );
@@ -1428,7 +1430,7 @@ fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
                     .iter()
                     .any(|text| text.contains("after pause still before cancel"))
             );
-            let rendered = snapshot_lines(&caches[1].layout.lines);
+            let rendered = snapshot_lines(&caches[1].layout.lines.to_vec());
             assert!(
                 !rendered.contains("pause steering"),
                 "claimed is not consumed"
@@ -1501,7 +1503,7 @@ fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
             .collect::<Vec<_>>(),
         [3, 31]
     );
-    let rendered = snapshot_lines(&layout.lines);
+    let rendered = snapshot_lines(&layout.lines.to_vec());
     assert_eq!(rendered.matches("◇ ▸ goal control · steer").count(), 2);
     assert!(!rendered.contains("Continue"));
     assert_eq!(

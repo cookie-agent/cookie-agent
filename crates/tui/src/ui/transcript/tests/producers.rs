@@ -68,7 +68,7 @@ fn producer_rows_collapse_to_summary_and_expand_to_model_body() {
     render(&mut cache, &expanded, 0);
     assert_eq!(cache.item_layout_passes, 2);
     assert_eq!(
-        snapshot_lines(&cache.layout.lines),
+        snapshot_lines(&cache.layout.lines.to_vec()),
         "◇ ▸ Build completed: parser\n\n◇ ▸ Build completed: parser"
     );
     for (index, message_id) in [first, second].into_iter().enumerate() {
@@ -83,7 +83,7 @@ fn producer_rows_collapse_to_summary_and_expand_to_model_body() {
         cache.item_layout_passes, 3,
         "only the toggled producer is laid out again"
     );
-    let text = snapshot_lines(&cache.layout.lines);
+    let text = snapshot_lines(&cache.layout.lines.to_vec());
     assert!(text.starts_with(
         "◇ ▾ Build completed: parser\n· plugin build · queue · consumed\n· ACTUAL MODEL BODY"
     ));
@@ -98,7 +98,7 @@ fn producer_rows_collapse_to_summary_and_expand_to_model_body() {
     assert!(
         block_hit(
             *region,
-            &cache.layout.lines,
+            &cache.layout.lines.to_vec(),
             Rect::new(0, 0, 80, 20),
             region.start_line + 1,
         )
@@ -293,7 +293,7 @@ fn legacy_producer_summaries_stay_stable_across_successive_goals_and_replay() {
                 let fresh =
                     transcript_layout_with(state, expanded, width, &theme, &PlainHighlighter);
                 assert_eq!(
-                    snapshot_lines(&cache.layout.lines),
+                    snapshot_lines(&cache.layout.lines.to_vec()),
                     snapshot_lines(&fresh.lines)
                 );
                 assert_eq!(cache.layout.regions, fresh.regions);
@@ -311,7 +311,7 @@ fn legacy_producer_summaries_stay_stable_across_successive_goals_and_replay() {
                     &PlainHighlighter,
                 );
                 assert_eq!(
-                    snapshot_lines(&cache.layout.lines),
+                    snapshot_lines(&cache.layout.lines.to_vec()),
                     snapshot_lines(&replayed.lines)
                 );
                 assert_eq!(cache.layout.regions, replayed.regions);
@@ -326,7 +326,9 @@ fn legacy_producer_summaries_stay_stable_across_successive_goals_and_replay() {
                     };
                     assert_eq!(summary, &expected_summary);
                     assert_eq!(*status, ProducerMessageStatus::Consumed);
-                    assert!(snapshot_lines(&cache.layout.lines).contains(&expected_header));
+                    assert!(
+                        snapshot_lines(&cache.layout.lines.to_vec()).contains(&expected_header)
+                    );
                 }
             }
             let state = &live.sessions[&session];
@@ -357,7 +359,7 @@ fn legacy_producer_summaries_stay_stable_across_successive_goals_and_replay() {
                         &PlainHighlighter,
                     );
                     assert_eq!(
-                        snapshot_lines(&cache.layout.lines),
+                        snapshot_lines(&cache.layout.lines.to_vec()),
                         snapshot_lines(&replayed.lines)
                     );
                     assert_eq!(cache.layout.regions, replayed.regions);
@@ -366,7 +368,7 @@ fn legacy_producer_summaries_stay_stable_across_successive_goals_and_replay() {
                     } else {
                         expected_header.clone()
                     };
-                    assert!(snapshot_lines(&cache.layout.lines).contains(&header));
+                    assert!(snapshot_lines(&cache.layout.lines.to_vec()).contains(&header));
                 }
             }
         }
@@ -648,7 +650,7 @@ fn cached_producer_layout_stays_hidden_until_consumed_then_stabilizes() {
     };
 
     assert!(!render(&mut cache, &state));
-    assert!(cache.layout.lines.is_empty());
+    assert!(cache.layout.lines.to_vec().is_empty());
     assert!(render(&mut cache, &state));
     assert_eq!(cache.item_layout_passes, 1);
 
@@ -658,8 +660,8 @@ fn cached_producer_layout_stays_hidden_until_consumed_then_stabilizes() {
     assert_eq!(*id, 41);
     *status = crate::state::ProducerMessageStatus::Consumed;
     assert!(!render(&mut cache, &state));
-    assert!(snapshot_lines(&cache.layout.lines).contains("◇ ▸ plugin ci · queue"));
-    assert!(!snapshot_lines(&cache.layout.lines).contains("cached payload"));
+    assert!(snapshot_lines(&cache.layout.lines.to_vec()).contains("◇ ▸ plugin ci · queue"));
+    assert!(!snapshot_lines(&cache.layout.lines.to_vec()).contains("cached payload"));
     assert_eq!(cache.item_layout_passes, 2);
     assert!(render(&mut cache, &state));
     assert_eq!(cache.item_layout_passes, 2);

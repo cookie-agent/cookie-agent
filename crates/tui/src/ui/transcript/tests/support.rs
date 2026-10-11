@@ -2403,6 +2403,7 @@ pub(crate) fn read_tool_state(path: &str, status: ToolStatus, detail: &str) -> S
             detail: detail.into(),
             operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
+            revision: 0,
         },
     );
     state
