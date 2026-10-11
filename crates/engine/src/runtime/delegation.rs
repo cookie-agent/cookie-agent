@@ -1141,8 +1141,11 @@ impl Engine {
                     if let Some(active) = active {
                         // Event-driven terminal-state wakeups are post-MVP; this
                         // bounded cancellation-aware wait keeps the MVP responsive.
+                        // Once cancelled, the token is always ready: keep the
+                        // sleep so the wait yields while the child winds down.
                         tokio::select! {
-                            () = active.cancellation.cancelled() => {},
+                            () = active.cancellation.cancelled(),
+                                if !active.cancellation.is_cancelled() => {},
                             () = tokio::time::sleep(std::time::Duration::from_millis(25)) => {},
                         }
                     } else {

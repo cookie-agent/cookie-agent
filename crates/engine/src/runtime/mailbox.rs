@@ -22,6 +22,20 @@ use crate::{actor::SessionActor, events, session::SessionError};
 
 use super::{ActiveRun, producers};
 
+/// Runs a synchronous actor step, which may write and sync the session log,
+/// without stalling the other tasks of a multi-thread runtime's worker. A
+/// current-thread runtime has no other worker to hand them to, so the step
+/// runs in place there.
+fn off_worker<T>(step: impl FnOnce() -> T) -> T {
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|runtime| runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(step)
+    } else {
+        step()
+    }
+}
+
 /// A producer/goal fold and the log tip it was folded through.
 pub(super) type CachedProducerProjection = (
     Option<Arc<cookie_agent_protocol::StoredEvent>>,
@@ -740,8 +754,10 @@ impl Engine {
         session: SessionId,
         call: impl FnOnce(&Engine) -> Result<T, EngineError> + Send + 'static,
     ) -> Result<T, EngineError> {
-        self.call_on_actor(session, true, move |engine| async move { call(&engine) })
-            .await
+        self.call_on_actor(session, true, move |engine| async move {
+            off_worker(|| call(&engine))
+        })
+        .await
     }
 
     /// [`Self::on_actor`] for work that touches nothing producer
@@ -751,8 +767,10 @@ impl Engine {
         session: SessionId,
         call: impl FnOnce(&Engine) -> Result<T, EngineError> + Send + 'static,
     ) -> Result<T, EngineError> {
-        self.call_on_actor(session, false, move |engine| async move { call(&engine) })
-            .await
+        self.call_on_actor(session, false, move |engine| async move {
+            off_worker(|| call(&engine))
+        })
+        .await
     }
 
     /// [`Self::on_actor`] for work that awaits while it holds the actor.
@@ -986,10 +1004,14 @@ impl Engine {
             .entry(session)
             .or_default();
         let engine = self.clone();
-        let actor = SessionActor::spawn(SESSION_MAILBOX_CAPACITY, move |command| {
-            let engine = engine.clone();
-            async move { engine.handle_actor_command(session, command).await }
-        });
+        let runtime = tokio::runtime::Handle::try_current()
+            .ok()
+            .or_else(|| self.inner.runtime.clone());
+        let actor =
+            SessionActor::spawn(SESSION_MAILBOX_CAPACITY, runtime.as_ref(), move |command| {
+                let engine = engine.clone();
+                async move { engine.handle_actor_command(session, command).await }
+            });
         actors.insert(session, actor);
         Ok(())
     }
@@ -1225,7 +1247,9 @@ impl Engine {
                     ))));
                     return;
                 }
-                let _ = reply.send(self.append_direct(session, run, origin, *event));
+                let _ = reply.send(off_worker(|| {
+                    self.append_direct(session, run, origin, *event)
+                }));
             }
             SessionCommand::Start {
                 params,

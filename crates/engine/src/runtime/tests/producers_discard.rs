@@ -704,6 +704,9 @@ async fn recovery_releases_stale_claim_before_owner_discard() {
     server.abort();
 
     let reopened = reopen_engine(&fixture);
+    // Recovery leaves the message pending, which schedules a delivery wake.
+    // Hold it so the owner's discard is what settles the message.
+    let (_, wake_release) = reopened.install_producer_wake_hook();
     let foreign = delegation_authority();
     assert!(
         reopened
@@ -738,6 +741,7 @@ async fn recovery_releases_stale_claim_before_owner_discard() {
         owner.owner
     );
     assert!(discard_projection(&reopened, session_id).messages[0].discarded);
+    wake_release.notify_one();
     reopened.shutdown().await;
 }
 

@@ -2260,7 +2260,7 @@ async fn accepted_pause_control_survives_cancelled_run_and_wakes_without_registr
 
 #[tokio::test]
 async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_changes() {
-    let (endpoint, responses, captured) = scripted_channel_server(4).await;
+    let (endpoint, responses, captured) = scripted_channel_server(5).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
         "---\ndescription: Goal visibility test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  write: allow\n---\nExercise goal tool visibility.\n",
@@ -2347,11 +2347,8 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
         ))
         .expect("active response");
     wait_for_session_not_running(&fixture.engine, session_id).await;
-    fixture
-        .engine
-        .unregister_producer(session_id, blocker_authority.clone(), blocker)
-        .await
-        .expect("remove blocker before idle pause");
+    // Pause while the blocker still holds goal reminders back: without it the
+    // active goal would wake a reminder run before the pause lands.
 
     let paused = fixture
         .engine
@@ -2368,26 +2365,42 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
         .await
         .expect("pause goal before admission")
         .goal;
+    // The pause notice is steer mail for an idle session, so it wakes a
+    // delivery run of its own; let that run finish before the next one.
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "was paused by the user",
+            scripted_text_body("pause notice acknowledged"),
+        ))
+        .expect("pause notice response");
+    await_event(&fixture.engine, session_id, "pause notice delivery run", |event| {
+        matches!(&event.payload, EventPayload::RunCompleted { final_text } if final_text.as_deref() == Some("pause notice acknowledged"))
+    })
+    .await;
+    fixture
+        .engine
+        .unregister_producer(session_id, blocker_authority.clone(), blocker)
+        .await
+        .expect("remove blocker while paused");
     let blocker = fixture
         .engine
         .register_producer(session_id, blocker_authority.clone())
         .await
         .expect("register frozen-run producer");
-    let paused_run = fixture
-        .engine
-        .start_run(
-            RunStartParams {
-                reset_fallback: false,
-                session_id,
-                client_run_id: ClientRunId::new("goal-tools-paused").expect("paused run ID"),
-                selection,
-                input: "request admitted with paused goal".into(),
-            },
-            client_origin(),
-        )
-        .await
-        .expect("paused goal run")
-        .run_id;
+    let paused_run = start_run_when_idle(
+        &fixture.engine,
+        RunStartParams {
+            reset_fallback: false,
+            session_id,
+            client_run_id: ClientRunId::new("goal-tools-paused").expect("paused run ID"),
+            selection,
+            input: "request admitted with paused goal".into(),
+        },
+        client_origin(),
+    )
+    .await
+    .expect("paused goal run")
+    .run_id;
     await_event(
         &fixture.engine,
         session_id,
@@ -2462,7 +2475,8 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
     wait_for_session_not_running(&fixture.engine, session_id).await;
 
     let requests = captured.await.expect("goal tool visibility requests");
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
+    assert!(requests[2].contains("was paused by the user"));
     assert!(request_tool_names(&requests[0]).is_empty());
     for request in &requests[1..] {
         assert_eq!(request_tool_names(request), ["goal_get", "goal_update"]);
@@ -2478,8 +2492,8 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
             ["items"]
         );
     }
-    assert!(!requests[2].contains("cancelled by the user"));
-    assert!(requests[3].contains("cancelled by the user"));
+    assert!(!requests[3].contains("cancelled by the user"));
+    assert!(requests[4].contains("cancelled by the user"));
     fixture.engine.shutdown().await;
 }
 

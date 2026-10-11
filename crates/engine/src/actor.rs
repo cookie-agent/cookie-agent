@@ -4,15 +4,16 @@
 //! are spawned by a command handler and report back through this mailbox; they
 //! must never be awaited by the actor itself.
 
-use std::{future::Future, thread};
+use std::future::Future;
 
 use tokio::sync::mpsc;
 
-/// Handle to a dedicated session actor.
+/// Handle to a session actor: one task on the engine's runtime that runs its
+/// commands in order.
 ///
 /// The mailbox is bounded so producers apply backpressure instead of growing
-/// memory without limit. The actor has its own thread; callers on Tokio worker
-/// threads use [`Self::send`] and await capacity rather than blocking workers.
+/// memory without limit. Dropping every handle ends the task once it has
+/// drained what was already queued.
 #[derive(Debug)]
 pub struct SessionActor<M> {
     sender: mpsc::Sender<M>,
@@ -27,27 +28,38 @@ impl<M: Send + 'static> Clone for SessionActor<M> {
 }
 
 impl<M: Send + 'static> SessionActor<M> {
+    /// Spawns the actor on `runtime`, or on a thread of its own when there is
+    /// no runtime to share (an engine driven outside Tokio).
     #[must_use]
-    pub fn spawn<F, Fut>(capacity: usize, mut handler: F) -> Self
+    pub fn spawn<F, Fut>(
+        capacity: usize,
+        runtime: Option<&tokio::runtime::Handle>,
+        mut handler: F,
+    ) -> Self
     where
         F: FnMut(M) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         let (sender, mut receiver) = mpsc::channel(capacity);
-        thread::Builder::new()
-            .name("cookie_agent_session_actor".into())
-            .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("create session actor runtime");
-                runtime.block_on(async move {
-                    while let Some(message) = receiver.recv().await {
-                        handler(message).await;
-                    }
-                });
-            })
-            .expect("spawn session actor thread");
+        let run = async move {
+            while let Some(message) = receiver.recv().await {
+                handler(message).await;
+            }
+        };
+        if let Some(runtime) = runtime {
+            runtime.spawn(run);
+        } else {
+            std::thread::Builder::new()
+                .name("cookie_agent_session_actor".into())
+                .spawn(move || {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("create session actor runtime")
+                        .block_on(run);
+                })
+                .expect("spawn session actor thread");
+        }
         Self { sender }
     }
 
