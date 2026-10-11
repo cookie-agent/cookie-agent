@@ -327,6 +327,32 @@ async fn scenario(with_descendants: bool) {
     let samples = (0..repeat).map(|_| draw(&mut terminal, &mut app)).collect();
     report("unchanged redraw", samples, &app, before);
 
+    // The layout cache's own check of an unchanged transcript, apart from
+    // drawing.
+    let before = passes(&app);
+    let width = app.layout_cache.key.expect("laid out").width;
+    let samples = (0..repeat)
+        .map(|_| {
+            let clock = app.clock_bucket();
+            let start = Instant::now();
+            assert!(crate::ui::transcript::ensure_cached_transcript_layout(
+                &mut app.layout_cache,
+                root,
+                &app.store.sessions[&root],
+                None,
+                app.expanded_blocks.get(&root),
+                width,
+                &app.theme,
+                app.highlighter.as_ref(),
+                app.tui_config.minimum_event_level,
+                clock,
+                app.runtime.model_names(),
+            ));
+            start.elapsed()
+        })
+        .collect();
+    report("unchanged layout check", samples, &app, before);
+
     // The live run streams a long reply with an open code block into its
     // already long assistant block.
     let base = 1_000 + (runs as i64) * 100 + 40 * live_turns as i64;
