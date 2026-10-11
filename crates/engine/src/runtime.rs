@@ -301,6 +301,7 @@ struct ActiveRun {
     fallback_index: AtomicU64,
     auto_compaction_failures: AtomicU8,
     auto_compaction_diagnostic_emitted: AtomicBool,
+    loop_guard_digests: loop_guard::OutputDigests,
 }
 
 struct AttemptTurn {

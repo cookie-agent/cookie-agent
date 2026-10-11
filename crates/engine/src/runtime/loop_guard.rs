@@ -4,7 +4,11 @@
 //! one block of calls (same operations, same results). The guard only adds a
 //! warning to the latest result; it never blocks or stops the run.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    cell::OnceCell,
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use cookie_agent_protocol::{
     OperationFingerprint, RunId, SafeToolError, Sha256Digest, StoredEvent, ToolCallId,
@@ -23,12 +27,57 @@ const WINDOW_CALLS: usize = 64;
 /// compare the tool's own output, not a warning whose count keeps growing.
 const WARNING_MARKER: &str = "\n\n<system-reminder>\nRepeated tool calls detected";
 
+/// Output digests of a run's recent calls, so each output is hashed once
+/// however many later checks compare it. Holds at most one window of calls.
+#[derive(Debug, Default)]
+pub(super) struct OutputDigests(Mutex<HashMap<ToolCallId, Sha256Digest>>);
+
 /// What the model saw from one call.
 #[derive(PartialEq)]
 enum Observed {
     Output(Sha256Digest),
     Error(SafeToolError),
     Missing,
+}
+
+/// One call in the window; what it observed is resolved only when a
+/// comparison reaches it.
+struct Call<'a> {
+    id: ToolCallId,
+    fingerprint: &'a OperationFingerprint,
+    source: Source<'a>,
+    observed: OnceCell<Observed>,
+}
+
+enum Source<'a> {
+    Current(&'a str),
+    Terminated(Option<&'a ToolCallTermination>),
+}
+
+impl Call<'_> {
+    fn observed(&self, digests: &mut HashMap<ToolCallId, Sha256Digest>) -> &Observed {
+        self.observed.get_or_init(|| {
+            let output = match self.source {
+                Source::Current(output) => output,
+                Source::Terminated(None) => return Observed::Missing,
+                Source::Terminated(Some(termination)) => match (
+                    &termination.outcome,
+                    &termination.result,
+                    &termination.error,
+                ) {
+                    (ToolTerminationOutcome::Completed, Some(result), _) => &result.output,
+                    (_, _, Some(error)) => return Observed::Error(error.clone()),
+                    _ => return Observed::Missing,
+                },
+            };
+            Observed::Output(
+                digests
+                    .entry(self.id)
+                    .or_insert_with(|| own_output_digest(output))
+                    .clone(),
+            )
+        })
+    }
 }
 
 /// Returns the warning to append to `current`'s successful output, or `None`
@@ -39,65 +88,79 @@ pub(super) fn loop_warning(
     run: RunId,
     current: ToolCallId,
     current_output: &str,
+    digests: &OutputDigests,
 ) -> Option<String> {
-    let mut started = Vec::<(ToolCallId, &OperationFingerprint)>::new();
+    // Walk back from the tip only as far as the window reaches: to the
+    // current call and the calls started before it, stopping at the user
+    // input that resets the history or at the run's start. A termination
+    // always follows its start, so every window call's result is seen first.
+    let mut window = Vec::<(ToolCallId, &OperationFingerprint)>::new();
     let mut terminated = HashMap::<ToolCallId, &ToolCallTermination>::new();
-    for event in events.iter().filter(|event| event.run_id == Some(run)) {
+    let mut found_current = false;
+    for event in events
+        .iter()
+        .rev()
+        .filter(|event| event.run_id == Some(run))
+    {
         match &event.payload {
-            Event::UserInputSubmitted { .. } | Event::UserInputApplied { .. } => {
-                started.clear();
-                terminated.clear();
-            }
+            Event::UserInputSubmitted { .. }
+            | Event::UserInputApplied { .. }
+            | Event::RunStarted { .. } => break,
             Event::ToolCallStarted { start } => {
-                started.push((start.tool_call_id, &start.operation_fingerprint));
+                found_current |= start.tool_call_id == current;
+                if found_current {
+                    window.push((start.tool_call_id, &start.operation_fingerprint));
+                    if window.len() == WINDOW_CALLS {
+                        break;
+                    }
+                }
             }
             Event::ToolCallTerminated { termination } => {
-                terminated.insert(termination.tool_call_id, termination);
+                terminated
+                    .entry(termination.tool_call_id)
+                    .or_insert(termination);
             }
             _ => {}
         }
     }
-    let position = started.iter().position(|(id, _)| *id == current)?;
-    let window = &started[(position + 1).saturating_sub(WINDOW_CALLS)..=position];
+    if !found_current {
+        return None;
+    }
+    window.reverse();
     let calls = window
-        .iter()
-        .map(|(id, fingerprint)| {
-            let observed = if *id == current {
-                output_observed(current_output)
+        .into_iter()
+        .map(|(id, fingerprint)| Call {
+            id,
+            fingerprint,
+            source: if id == current {
+                Source::Current(current_output)
             } else {
-                terminated
-                    .get(id)
-                    .map_or(Observed::Missing, |termination| observed(termination))
-            };
-            (*fingerprint, observed)
+                Source::Terminated(terminated.get(&id).copied())
+            },
+            observed: OnceCell::new(),
         })
         .collect::<Vec<_>>();
-    let (block, repetitions) = repeated_block(&calls)?;
+    let mut digests = digests.0.lock().unwrap_or_else(|e| e.into_inner());
+    let found = repeated_block(&calls, &mut digests);
+    // Only calls still inside the window can be compared again.
+    digests.retain(|id, _| calls.iter().any(|call| call.id == *id));
+    let (block, repetitions) = found?;
     Some(warning_text(block, repetitions))
 }
 
-fn observed(termination: &ToolCallTermination) -> Observed {
-    match (
-        &termination.outcome,
-        &termination.result,
-        &termination.error,
-    ) {
-        (ToolTerminationOutcome::Completed, Some(result), _) => output_observed(&result.output),
-        (_, _, Some(error)) => Observed::Error(error.clone()),
-        _ => Observed::Missing,
-    }
-}
-
-fn output_observed(output: &str) -> Observed {
+fn own_output_digest(output: &str) -> Sha256Digest {
     let own_output = output
         .rfind(WARNING_MARKER)
         .map_or(output, |index| &output[..index]);
-    Observed::Output(Sha256Digest::of_bytes(own_output.as_bytes()))
+    Sha256Digest::of_bytes(own_output.as_bytes())
 }
 
 /// Finds the shortest block of calls that the tail of `calls` repeats at least
 /// [`MIN_REPETITIONS`] times in a row; returns its length and copy count.
-fn repeated_block(calls: &[(&OperationFingerprint, Observed)]) -> Option<(usize, usize)> {
+fn repeated_block(
+    calls: &[Call<'_>],
+    digests: &mut HashMap<ToolCallId, Sha256Digest>,
+) -> Option<(usize, usize)> {
     let last = calls.len().checked_sub(1)?;
     (1..=MAX_BLOCK_CALLS)
         .take_while(|block| calls.len() >= block * MIN_REPETITIONS)
@@ -105,7 +168,10 @@ fn repeated_block(calls: &[(&OperationFingerprint, Observed)]) -> Option<(usize,
             let matching = (0..=last - block)
                 .take_while(|offset| {
                     let (call, earlier) = (&calls[last - offset], &calls[last - offset - block]);
-                    call.1 != Observed::Missing && call == earlier
+                    call.fingerprint == earlier.fingerprint && {
+                        let observed = call.observed(digests);
+                        *observed != Observed::Missing && observed == earlier.observed(digests)
+                    }
                 })
                 .count();
             let repetitions = matching / block + 1;
@@ -140,6 +206,7 @@ mod tests {
     struct Log {
         run: RunId,
         events: Vec<Arc<StoredEvent>>,
+        digests: OutputDigests,
     }
 
     impl Log {
@@ -147,6 +214,7 @@ mod tests {
             Self {
                 run: RunId::new_v7(),
                 events: Vec::new(),
+                digests: OutputDigests::default(),
             }
         }
 
@@ -193,7 +261,7 @@ mod tests {
         /// check it, then commit its output with any warning appended.
         fn call(&mut self, operation: &str, output: &str) -> Option<String> {
             let id = self.start(operation);
-            let warning = loop_warning(&self.events, self.run, id, output);
+            let warning = loop_warning(&self.events, self.run, id, output, &self.digests);
             self.complete(id, &format!("{output}{}", warning.as_deref().unwrap_or("")));
             warning
         }
@@ -302,5 +370,32 @@ mod tests {
             log.call("ls", "a").is_none(),
             "a success differs from failures"
         );
+    }
+
+    #[test]
+    fn the_count_is_bounded_by_the_window_and_digests_stay_bounded() {
+        let mut log = Log::new();
+        let mut last = None;
+        for _ in 0..WINDOW_CALLS + 6 {
+            last = log.call("ls", "a b");
+        }
+        assert!(
+            last.expect("loop warns")
+                .contains(&format!("the same tool call {WINDOW_CALLS} times"))
+        );
+        assert!(log.digests.0.lock().unwrap().len() <= WINDOW_CALLS);
+    }
+
+    #[test]
+    fn calls_started_after_the_current_one_are_not_compared() {
+        let mut log = Log::new();
+        log.call("ls", "a");
+        log.call("ls", "a");
+        let current = log.start("ls");
+        let later = log.start("cat a");
+        log.complete(later, "text");
+        let warning = loop_warning(&log.events, log.run, current, "a", &log.digests)
+            .expect("the current call closes the loop");
+        assert!(warning.contains("the same tool call 3 times"));
     }
 }

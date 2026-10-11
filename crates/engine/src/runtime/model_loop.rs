@@ -567,6 +567,7 @@ impl Engine {
             fallback_index: AtomicU64::new(0),
             auto_compaction_failures: AtomicU8::new(0),
             auto_compaction_diagnostic_emitted: AtomicBool::new(false),
+            loop_guard_digests: Default::default(),
         });
         self.inner
             .sessions
@@ -1556,6 +1557,7 @@ impl Engine {
                 run,
                 id,
                 &result.output,
+                &active.loop_guard_digests,
             )
             && result.output.len() + warning.len()
                 <= cookie_agent_protocol::PersistedToolResult::MAX_OUTPUT_BYTES
