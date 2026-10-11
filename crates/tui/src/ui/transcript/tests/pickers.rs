@@ -976,7 +976,7 @@ async fn committed_fallback_updates_next_draft_but_preserves_explicit_picker_res
     for event in &events {
         app.handle_delivery(ClientDelivery::Live {
             message: Box::new(EventSubscriptionMessage::Event {
-                event: Box::new(event.clone()),
+                event: std::sync::Arc::new(event.clone()),
             }),
             generation: 0,
         })
@@ -997,7 +997,7 @@ async fn committed_fallback_updates_next_draft_but_preserves_explicit_picker_res
     committed.seq = 4;
     app.handle_delivery(ClientDelivery::Live {
         message: Box::new(EventSubscriptionMessage::Event {
-            event: Box::new(committed),
+            event: std::sync::Arc::new(committed),
         }),
         generation: 0,
     })

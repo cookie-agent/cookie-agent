@@ -3276,7 +3276,7 @@ fn rewound_cuts_the_projection_and_reused_sequences_follow_on() {
     // duplicate of the event it replaced.
     assert!(matches!(
         store.apply_delivery(live(EventSubscriptionMessage::Event {
-            event: Box::new(event(2, "edited")),
+            event: std::sync::Arc::new(event(2, "edited")),
         })),
         DeliveryOutcome::Applied
     ));

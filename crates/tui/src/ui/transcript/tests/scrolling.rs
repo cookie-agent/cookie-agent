@@ -221,7 +221,7 @@ async fn streaming_follows_only_when_already_at_bottom_across_expansion_and_scro
         let offset = app.conversation_scroll.offset;
         app.handle_delivery(ClientDelivery::Live {
             message: Box::new(EventSubscriptionMessage::Event {
-                event: Box::new(text_delta(
+                event: std::sync::Arc::new(text_delta(
                     session,
                     seq,
                     run,

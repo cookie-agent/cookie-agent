@@ -344,7 +344,7 @@ async fn stream_deltas_are_delivered_live_but_never_logged() {
             match live.recv().await.expect("live subscription") {
                 EventSubscriptionMessage::Event { event } => {
                     let done = matches!(event.payload, EventPayload::RunCompleted { .. });
-                    delivered.push(*event);
+                    delivered.push(event);
                     if done {
                         break;
                     }
@@ -357,10 +357,10 @@ async fn stream_deltas_are_delivered_live_but_never_logged() {
                         Some(event.after_seq),
                         delivered.last().map(|durable| durable.seq)
                     );
-                    let EventPayload::TextDelta { text, .. } = event.payload else {
+                    let EventPayload::TextDelta { text, .. } = &event.payload else {
                         panic!("unexpected live output {:?}", event.payload);
                     };
-                    live_text.push(text);
+                    live_text.push(text.clone());
                 }
                 EventSubscriptionMessage::Gap { .. } => panic!("unexpected gap"),
                 EventSubscriptionMessage::Rewound { .. } => panic!("unexpected rewind"),
@@ -387,7 +387,7 @@ async fn stream_deltas_are_delivered_live_but_never_logged() {
             .enumerate()
             .all(|(index, event)| event.seq == index as u64 + 1)
     );
-    assert_eq!(delivered, events);
+    assert_eq!(delivered, *log.event_snapshot());
     // One durable mark records where the streamed text began.
     let marks = events
         .iter()

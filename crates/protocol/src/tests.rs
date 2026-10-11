@@ -915,7 +915,7 @@ fn transient_payloads_travel_only_as_transient_events() {
     };
     assert_eq!(transient.validate(), Ok(()));
     let message = EventSubscriptionMessage::Transient {
-        event: Box::new(transient.clone()),
+        event: std::sync::Arc::new(transient.clone()),
     };
     let wire = serde_json::to_value(&message).expect("serialize");
     assert_eq!(wire["type"], "transient");

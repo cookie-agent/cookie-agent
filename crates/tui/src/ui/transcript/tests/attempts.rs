@@ -1853,7 +1853,7 @@ fn live_delta(
 ) -> crate::ClientDelivery {
     crate::ClientDelivery::Live {
         message: Box::new(cookie_agent_protocol::EventSubscriptionMessage::Transient {
-            event: Box::new(TransientEvent {
+            event: std::sync::Arc::new(TransientEvent {
                 session_id: session,
                 run_id: Some(run),
                 after_seq,

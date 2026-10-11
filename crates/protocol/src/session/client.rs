@@ -1322,8 +1322,14 @@ async fn handle_frame(
                             let _ = command.response.send(Ok(replay_next(None)));
                         }
                         Ok(result) => {
+                            // Freshly decoded, so each event has one owner.
+                            let events = result
+                                .events
+                                .into_iter()
+                                .map(std::sync::Arc::unwrap_or_clone)
+                                .collect::<Vec<_>>();
                             let page = if result.has_more {
-                                match hold_replay_page(replay, result.events, subscriptions).await {
+                                match hold_replay_page(replay, events, subscriptions).await {
                                     Ok(next) => {
                                         let _ = command.response.send(Ok(replay_next(Some(next))));
                                         return Ok(());
@@ -1331,7 +1337,7 @@ async fn handle_frame(
                                     Err(page) => page,
                                 }
                             } else {
-                                result.events
+                                events
                             };
                             let mut events = take_replay_pages(replay, subscriptions).await;
                             events.extend(page);

@@ -820,7 +820,8 @@ pub struct EventsSubscribeParams {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventsSubscribeResult {
-    pub events: Vec<StoredEvent>,
+    /// Shared with the log that holds them, so a page copies no event.
+    pub events: Vec<std::sync::Arc<StoredEvent>>,
     /// This is one page of a limited request and more events follow it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub has_more: bool,

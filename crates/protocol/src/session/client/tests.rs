@@ -329,7 +329,7 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
 
     route_live(
         EventSubscriptionMessage::Event {
-            event: Box::new(event(session_id, 2)),
+            event: std::sync::Arc::new(event(session_id, 2)),
         },
         &deliveries,
         &subscriptions,
@@ -361,7 +361,7 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
     );
     route_live(
         EventSubscriptionMessage::Event {
-            event: Box::new(event(session_id, 3)),
+            event: std::sync::Arc::new(event(session_id, 3)),
         },
         &deliveries,
         &subscriptions,
@@ -382,7 +382,7 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
 
 fn transient(session_id: SessionId, after_seq: u64, text: &str) -> EventSubscriptionMessage {
     EventSubscriptionMessage::Transient {
-        event: Box::new(crate::TransientEvent {
+        event: std::sync::Arc::new(crate::TransientEvent {
             session_id,
             run_id: Some(crate::RunId::new_v7()),
             after_seq,
@@ -398,10 +398,12 @@ fn transient(session_id: SessionId, after_seq: u64, text: &str) -> EventSubscrip
 fn delivered_text(delivery: Option<ClientDelivery>) -> Option<String> {
     match delivery? {
         ClientDelivery::Live { message, .. } => match *message {
-            EventSubscriptionMessage::Transient { event } => match event.payload {
-                EventPayload::TextDelta { text, .. } => Some(text),
-                _ => None,
-            },
+            EventSubscriptionMessage::Transient { event } => {
+                match std::sync::Arc::unwrap_or_clone(event).payload {
+                    EventPayload::TextDelta { text, .. } => Some(text),
+                    _ => None,
+                }
+            }
             EventSubscriptionMessage::Event { event } => Some(format!("event {}", event.seq)),
             EventSubscriptionMessage::Gap { .. } | EventSubscriptionMessage::Rewound { .. } => None,
         },
@@ -428,7 +430,7 @@ async fn transient_output_follows_its_durable_event_or_is_dropped() {
         transient(session_id, 1, "stale"),
         transient(session_id, 2, "after replay"),
         EventSubscriptionMessage::Event {
-            event: Box::new(event(session_id, 3)),
+            event: std::sync::Arc::new(event(session_id, 3)),
         },
         transient(session_id, 2, "overtaken"),
         transient(session_id, 3, "after three"),
@@ -852,7 +854,7 @@ async fn non_contiguous_buffered_tail_keeps_prefix_cursor_and_recovers() {
     for seq in [11, 13] {
         route_live(
             EventSubscriptionMessage::Event {
-                event: Box::new(event(session_id, seq)),
+                event: std::sync::Arc::new(event(session_id, seq)),
             },
             &deliveries,
             &subscriptions,
@@ -922,7 +924,7 @@ async fn rewound_pulls_the_cursor_back_and_queues_one_full_replay() {
     for seq in 1..=5 {
         route_live(
             EventSubscriptionMessage::Event {
-                event: Box::new(event(session_id, seq)),
+                event: std::sync::Arc::new(event(session_id, seq)),
             },
             &deliveries,
             &subscriptions,
@@ -964,7 +966,7 @@ async fn rewound_pulls_the_cursor_back_and_queues_one_full_replay() {
     // Appends after the cut reuse its sequences and follow on from it.
     route_live(
         EventSubscriptionMessage::Event {
-            event: Box::new(event(session_id, 4)),
+            event: std::sync::Arc::new(event(session_id, 4)),
         },
         &deliveries,
         &subscriptions,
@@ -1024,7 +1026,7 @@ async fn discontinuity_queues_targeted_recovery() {
     let (recovery, mut receiver) = recovery();
     route_live(
         EventSubscriptionMessage::Event {
-            event: Box::new(event(session_id, 2)),
+            event: std::sync::Arc::new(event(session_id, 2)),
         },
         &deliveries,
         &subscriptions,

@@ -630,7 +630,7 @@ impl EventLog {
         run_id: Option<RunId>,
         origin: EventOrigin,
         payload: EventPayload,
-    ) -> Result<StoredEvent, EventLogError> {
+    ) -> Result<Arc<StoredEvent>, EventLogError> {
         if !self
             .write_capability
             .as_ref()
@@ -657,7 +657,7 @@ impl EventLog {
         run_id: Option<RunId>,
         origin: EventOrigin,
         payload: EventPayload,
-    ) -> Result<StoredEvent, EventLogError> {
+    ) -> Result<Arc<StoredEvent>, EventLogError> {
         let capability = self
             .write_capability
             .as_ref()
@@ -671,7 +671,7 @@ impl EventLog {
         run_id: Option<RunId>,
         origin: EventOrigin,
         payload: EventPayload,
-    ) -> Result<StoredEvent, EventLogError> {
+    ) -> Result<Arc<StoredEvent>, EventLogError> {
         if self.read_only {
             return Err(EventLogError::ReadOnly(self.path.clone()));
         }
@@ -763,7 +763,7 @@ impl EventLog {
         }
         events.push(event.clone());
         self.next_seq.store(event.seq + 1, Ordering::Release);
-        Ok(Arc::unwrap_or_clone(event))
+        Ok(event)
     }
 
     /// Owned copies of the visible events. Deep-copies every payload; hot
@@ -811,9 +811,9 @@ impl EventLog {
             .unwrap_or_default()
     }
 
-    /// Physical events after `cursor`, at most `limit` of them. Only the
-    /// returned events are cloned, so paging through a long log costs one
-    /// page per call rather than the whole log.
+    /// Physical events after `cursor`, at most `limit` of them. The page
+    /// shares the log's events rather than copying them, and is cut from a
+    /// shared view without holding the log's lock.
     ///
     /// A limited page also stops before `REPLAY_PAGE_MAX_BYTES` (4 MiB) of
     /// serialized events, since it goes out as one WebSocket frame; it always
@@ -824,20 +824,17 @@ impl EventLog {
         cursor: Option<u64>,
         limit: Option<std::num::NonZeroU32>,
     ) -> cookie_agent_protocol::EventsSubscribeResult {
-        let events = self
-            .events
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // A shared view: the page is cut and measured without the lock.
+        let events = self.all_events();
         let max_bytes = limit.map_or(usize::MAX, |_| REPLAY_PAGE_MAX_BYTES);
         let limit = limit.map_or(usize::MAX, |limit| limit.get() as usize);
-        let after = events
-            .all
-            .iter()
-            .filter(|event| cursor.is_none_or(|cursor| event.seq > cursor));
+        let first = cursor.map_or(0, |cursor| {
+            events.partition_point(|event| event.seq <= cursor)
+        });
         let mut page = Vec::new();
         let mut page_bytes = 0_usize;
         let mut has_more = false;
-        for event in after {
+        for event in &events[first..] {
             if page.len() == limit {
                 has_more = true;
                 break;
@@ -849,7 +846,7 @@ impl EventLog {
                     break;
                 }
             }
-            page.push(event.as_ref().clone());
+            page.push(Arc::clone(event));
         }
         cookie_agent_protocol::EventsSubscribeResult {
             events: page,

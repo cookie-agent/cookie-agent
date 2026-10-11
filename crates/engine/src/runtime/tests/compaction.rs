@@ -58,11 +58,11 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
             loop {
                 let payload = match live.recv().await.expect("live subscription") {
                     cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
-                        event.payload
+                        event.payload.clone()
                     }
                     cookie_agent_protocol::EventSubscriptionMessage::Transient { event } => {
                         event.validate().expect("valid transient event");
-                        event.payload
+                        event.payload.clone()
                     }
                     other => panic!("unexpected subscription message {other:?}"),
                 };
@@ -1487,7 +1487,7 @@ async fn compaction_summary_streams_live_deltas_for_its_invocation() {
                     let EventPayload::InternalAgentTextDelta {
                         invocation_id,
                         text,
-                    } = event.payload
+                    } = event.payload.clone()
                     else {
                         panic!("unexpected live output {:?}", event.payload);
                     };

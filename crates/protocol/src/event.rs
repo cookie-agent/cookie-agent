@@ -3317,13 +3317,12 @@ fn replace_path_with_null(value: &mut Value, path: &serde_path_to_error::Path) -
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EventSubscriptionMessage {
-    Event {
-        event: Box<StoredEvent>,
-    },
+    /// A durable event, shared with the log and every other tail.
+    Event { event: std::sync::Arc<StoredEvent> },
     /// Live-only stream output. It does not advance the subscription cursor
     /// and is never replayed.
     Transient {
-        event: Box<TransientEvent>,
+        event: std::sync::Arc<TransientEvent>,
     },
     Gap {
         session_id: SessionId,

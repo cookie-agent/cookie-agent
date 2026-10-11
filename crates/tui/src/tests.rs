@@ -812,7 +812,7 @@ async fn fresh_session_selection_discovers_skill_slash_commands() {
                 let event = match deliveries.recv().await.expect("delivery") {
                     crate::ClientDelivery::Live { message, .. } => match message.as_ref() {
                         cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
-                            Some(event.clone())
+                            Some(Box::new((**event).clone()))
                         }
                         _ => None,
                     },
@@ -906,7 +906,7 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
             let event = match deliveries.recv().await.expect("escalation delivery") {
                 crate::ClientDelivery::Live { message, .. } => match message.as_ref() {
                     cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
-                        Some(event.clone())
+                        Some(Box::new((**event).clone()))
                     }
                     _ => None,
                 },
@@ -956,7 +956,7 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
             let event = match deliveries.recv().await.expect("finalization delivery") {
                 crate::ClientDelivery::Live { message, .. } => match message.as_ref() {
                     cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
-                        Some(event.clone())
+                        Some(Box::new((**event).clone()))
                     }
                     _ => None,
                 },
@@ -990,7 +990,7 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
                 let event = match deliveries.recv().await.expect("skill delivery") {
                     crate::ClientDelivery::Live { message, .. } => match message.as_ref() {
                         cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
-                            Some(event.clone())
+                            Some(Box::new((**event).clone()))
                         }
                         _ => None,
                     },

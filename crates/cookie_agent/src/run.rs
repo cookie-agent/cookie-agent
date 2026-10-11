@@ -532,7 +532,11 @@ async fn prepare_run(
         root_session_id,
         run_id,
         receiver,
-        replay: replay.events.into(),
+        replay: replay
+            .events
+            .into_iter()
+            .map(std::sync::Arc::unwrap_or_clone)
+            .collect(),
         cursor,
     })
 }
@@ -788,7 +792,7 @@ where
             message = prepared.receiver.recv() => {
                 match message {
                     Some(EventSubscriptionMessage::Event { event }) => {
-                        prepared.replay.push_back(*event);
+                        prepared.replay.push_back(std::sync::Arc::unwrap_or_clone(event));
                     }
                     // Headless output is built from durable events only.
                     Some(EventSubscriptionMessage::Transient { .. }) => {}
@@ -862,7 +866,11 @@ async fn recover_events(
         .await
         .context("recover headless event subscription")?;
     prepared.receiver = receiver;
-    prepared.replay = replay.events.into();
+    prepared.replay = replay
+        .events
+        .into_iter()
+        .map(std::sync::Arc::unwrap_or_clone)
+        .collect();
     Ok(())
 }
 

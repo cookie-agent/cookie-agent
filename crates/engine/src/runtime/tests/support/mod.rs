@@ -192,7 +192,7 @@ pub(crate) async fn await_session_change<T>(
                         if last_seen.len() == 20 {
                             last_seen.pop_front();
                         }
-                        last_seen.push_back(*event);
+                        last_seen.push_back(event);
                         if let Some(result) = check() {
                             return result;
                         }

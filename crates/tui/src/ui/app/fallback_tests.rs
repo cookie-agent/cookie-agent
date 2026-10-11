@@ -176,7 +176,7 @@ impl Harness {
         self.app
             .handle_delivery(ClientDelivery::Live {
                 message: Box::new(EventSubscriptionMessage::Event {
-                    event: Box::new(event),
+                    event: std::sync::Arc::new(event),
                 }),
                 generation: 0,
             })

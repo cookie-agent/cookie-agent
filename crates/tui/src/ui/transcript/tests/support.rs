@@ -2193,7 +2193,7 @@ pub(crate) async fn app_with_active_run() -> (App, SessionId, RunId) {
 pub(crate) fn live_event(event: StoredEvent) -> ClientDelivery {
     ClientDelivery::Live {
         message: Box::new(EventSubscriptionMessage::Event {
-            event: Box::new(event),
+            event: std::sync::Arc::new(event),
         }),
         generation: 0,
     }

@@ -2384,7 +2384,7 @@ fn append_test_in_run_record(
     store: &SessionStore,
     session_id: SessionId,
     attempt: &TestAttempt,
-) -> cookie_agent_protocol::StoredEvent {
+) -> Arc<cookie_agent_protocol::StoredEvent> {
     store
         .append(
             session_id,

@@ -510,7 +510,7 @@ async fn run_lifecycle_events_patch_watched_and_background_panel_statuses_withou
         let run = run_id();
         app.handle_delivery(ClientDelivery::Live {
             message: Box::new(cookie_agent_protocol::EventSubscriptionMessage::Event {
-                event: Box::new(run_started_with_suffix(
+                event: std::sync::Arc::new(run_started_with_suffix(
                     session_id,
                     2,
                     run,
@@ -538,7 +538,7 @@ async fn run_lifecycle_events_patch_watched_and_background_panel_statuses_withou
 
         app.handle_delivery(ClientDelivery::Live {
             message: Box::new(cookie_agent_protocol::EventSubscriptionMessage::Event {
-                event: Box::new(event(
+                event: std::sync::Arc::new(event(
                     session_id,
                     3,
                     run,
@@ -1199,7 +1199,7 @@ async fn adopted_session_upgrades_its_snapshot_subscription_once() {
     // The recovery rebuilt the projection as generation 1.
     let live_event = |event: cookie_agent_protocol::StoredEvent| ClientDelivery::Live {
         message: Box::new(cookie_agent_protocol::EventSubscriptionMessage::Event {
-            event: Box::new(event),
+            event: std::sync::Arc::new(event),
         }),
         generation: 1,
     };
@@ -1419,7 +1419,7 @@ async fn a_parent_delegation_lifecycle_event_refreshes_the_tree() {
     let before = recorded_method_count(&recorded, "session.tree");
     app.handle_delivery(ClientDelivery::Live {
         message: Box::new(cookie_agent_protocol::EventSubscriptionMessage::Event {
-            event: Box::new(cookie_agent_protocol::StoredEvent {
+            event: std::sync::Arc::new(cookie_agent_protocol::StoredEvent {
                 engine_version: None,
                 origin: None,
                 session_id: root,

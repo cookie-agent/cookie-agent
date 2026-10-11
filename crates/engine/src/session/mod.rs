@@ -1637,7 +1637,7 @@ impl SessionStore {
         run: Option<RunId>,
         origin: cookie_agent_protocol::EventOrigin,
         event: EventPayload,
-    ) -> Result<cookie_agent_protocol::StoredEvent, SessionError> {
+    ) -> Result<Arc<StoredEvent>, SessionError> {
         self.append_with_mode(id, run, origin, event, false)
     }
 
@@ -1647,7 +1647,7 @@ impl SessionStore {
         run: Option<RunId>,
         origin: cookie_agent_protocol::EventOrigin,
         event: EventPayload,
-    ) -> Result<cookie_agent_protocol::StoredEvent, SessionError> {
+    ) -> Result<Arc<StoredEvent>, SessionError> {
         self.append_with_mode(id, run, origin, event, true)
     }
 
@@ -1658,7 +1658,7 @@ impl SessionStore {
         origin: cookie_agent_protocol::EventOrigin,
         event: EventPayload,
         recovery: bool,
-    ) -> Result<cookie_agent_protocol::StoredEvent, SessionError> {
+    ) -> Result<Arc<StoredEvent>, SessionError> {
         // §3.2: the tree must be complete before a session writes into it, and
         // the load cannot run under `mutation` (it installs its own), so it runs
         // here instead. Cheap once the tree is Loaded.
@@ -1899,10 +1899,10 @@ impl SessionStore {
         SessionError,
     > {
         self.ensure_tree_for(session)?;
-        // Snapshot and registration hold the session's slot, which its appends
-        // take too, closing the snapshot-to-live handoff gap.
-        let _mutation = self.lock_session(session);
+        // A page is cut without any store lock: only the final one registers
+        // a tail, and that is where the handoff has to be exact.
         let log = self.get(session)?.log.clone();
+        let tip = log.last_event();
         if cursor_is_stale(&log, cursor, cursor_timestamp) {
             return Ok((EventsSubscribeResult::stale(), None));
         }
@@ -1910,10 +1910,34 @@ impl SessionStore {
         if result.has_more {
             return Ok((result, None));
         }
+        // The final page and the registration hold the session's slot, which
+        // its appends take too, closing the snapshot-to-live handoff gap. A
+        // log that moved since the page was cut is paged again under it.
+        let _mutation = self.lock_session(session);
+        let current = self.get(session)?.log.clone();
+        let current_tip = current.last_event();
+        let unchanged = Arc::ptr_eq(&current, &log)
+            && match (&tip, &current_tip) {
+                (Some(tip), Some(current_tip)) => Arc::ptr_eq(tip, current_tip),
+                (None, None) => true,
+                _ => false,
+            };
+        let result = if unchanged {
+            result
+        } else {
+            if cursor_is_stale(&current, cursor, cursor_timestamp) {
+                return Ok((EventsSubscribeResult::stale(), None));
+            }
+            let result = current.events_after(cursor, limit);
+            if result.has_more {
+                return Ok((result, None));
+            }
+            result
+        };
         let (sender, receiver) = mpsc::channel(PERSISTED_SUBSCRIBER_QUEUE_CAPACITY);
         let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
         let tails = subscribers.entry(session).or_default();
-        tails.last_seq = log.last_event().map_or(0, |event| event.seq);
+        tails.last_seq = current_tip.map_or(0, |event| event.seq);
         if owner.is_some() {
             tails.senders.retain(|tail| tail.owner != owner);
         }
@@ -1950,7 +1974,7 @@ impl SessionStore {
         Ok(log.events_after(cursor, limit))
     }
 
-    fn publish_stored_event(&self, envelope: &StoredEvent) {
+    fn publish_stored_event(&self, envelope: &Arc<StoredEvent>) {
         // Called under the session's slot after the projection update, which
         // keeps the session's append order.
         let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
@@ -1966,7 +1990,7 @@ impl SessionStore {
                 }
             } else {
                 EventSubscriptionMessage::Event {
-                    event: Box::new(envelope.clone()),
+                    event: Arc::clone(envelope),
                 }
             };
             sender.try_send(message).is_ok() && !is_gap
@@ -2003,24 +2027,24 @@ impl SessionStore {
         session_id: SessionId,
         run_id: Option<RunId>,
         payload: EventPayload,
-    ) -> Option<TransientEvent> {
+    ) -> Option<Arc<TransientEvent>> {
         debug_assert!(payload.is_transient());
         let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
         let tails = subscribers.get_mut(&session_id)?;
-        let event = TransientEvent {
+        let event = Arc::new(TransientEvent {
             session_id,
             run_id,
             after_seq: tails.last_seq,
             timestamp: jiff::Timestamp::now(),
             payload,
-        };
+        });
         tails.senders.retain(|Tail { sender, .. }| {
             // The final slot stays reserved for a durable gap. Output that
             // does not fit is dropped: a replay could not recover it anyway,
             // and the committed turn or tool result supersedes it.
             if sender.capacity() > 1 {
                 let _ = sender.try_send(EventSubscriptionMessage::Transient {
-                    event: Box::new(event.clone()),
+                    event: Arc::clone(&event),
                 });
             }
             !sender.is_closed()

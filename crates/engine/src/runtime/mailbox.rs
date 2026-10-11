@@ -364,7 +364,7 @@ impl Engine {
         run: Option<RunId>,
         origin: EventOrigin,
         event: Event,
-    ) -> Result<StoredEvent, EngineError> {
+    ) -> Result<Arc<StoredEvent>, EngineError> {
         self.append_direct_with_mode(session, run, origin, event, false)
     }
 
@@ -386,7 +386,7 @@ impl Engine {
         origin: EventOrigin,
         mut event: Event,
         recovery: bool,
-    ) -> Result<StoredEvent, EngineError> {
+    ) -> Result<Arc<StoredEvent>, EngineError> {
         if let Event::ToolCallTerminated { termination } = &mut event {
             // Finalization and after-result hooks can await after the executor succeeds.
             // Freeze status and retained-output state together at this append boundary.

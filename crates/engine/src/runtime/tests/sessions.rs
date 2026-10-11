@@ -49,7 +49,7 @@ async fn direct_store_appends_share_the_subscription_handoff() {
     with_watchdog("direct append delivery", async {
         while events.len() < 32 {
             match live.recv().await.expect("live subscription") {
-                EventSubscriptionMessage::Event { event } => events.push(*event),
+                EventSubscriptionMessage::Event { event } => events.push(event),
                 EventSubscriptionMessage::Transient { .. } => {}
                 EventSubscriptionMessage::Gap { .. } => panic!("unexpected gap"),
                 EventSubscriptionMessage::Rewound { .. } => panic!("unexpected rewind"),
@@ -1250,7 +1250,7 @@ fn append_inputs(
     }
 }
 
-fn seqs(events: &[cookie_agent_protocol::StoredEvent]) -> Vec<u64> {
+fn seqs(events: &[Arc<cookie_agent_protocol::StoredEvent>]) -> Vec<u64> {
     events.iter().map(|event| event.seq).collect()
 }
 
@@ -1338,7 +1338,7 @@ async fn replay_pages_stop_at_their_byte_budget_but_always_make_progress() {
             break;
         }
     }
-    let bytes = |events: &[cookie_agent_protocol::StoredEvent]| {
+    let bytes = |events: &[Arc<cookie_agent_protocol::StoredEvent>]| {
         serde_json::to_vec(events).expect("page serializes").len()
     };
     for page in &pages {

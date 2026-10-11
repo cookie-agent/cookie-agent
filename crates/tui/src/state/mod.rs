@@ -884,12 +884,18 @@ impl StateStore {
                 generation,
             } => match *message {
                 EventSubscriptionMessage::Transient { event } => {
-                    self.apply_transient_for_generation(*event, generation);
+                    self.apply_transient_for_generation(
+                        std::sync::Arc::unwrap_or_clone(event),
+                        generation,
+                    );
                     DeliveryOutcome::Applied
                 }
                 EventSubscriptionMessage::Event { event } => {
                     let session_id = event.session_id;
-                    if self.apply_event_for_generation(*event, generation) {
+                    if self.apply_event_for_generation(
+                        std::sync::Arc::unwrap_or_clone(event),
+                        generation,
+                    ) {
                         DeliveryOutcome::Applied
                     } else {
                         let cursor = self
@@ -1194,12 +1200,15 @@ impl StateStore {
                     .sessions
                     .get(&event.session_id)
                     .map_or(0, |state| state.last_seq);
-                self.apply_event_for_generation(*event, generation)
+                self.apply_event_for_generation(std::sync::Arc::unwrap_or_clone(event), generation)
                     .then_some(())
                     .map_or(Some(cursor), |_| None)
             }
             EventSubscriptionMessage::Transient { event } => {
-                self.apply_transient_for_generation(*event, generation);
+                self.apply_transient_for_generation(
+                    std::sync::Arc::unwrap_or_clone(event),
+                    generation,
+                );
                 None
             }
             EventSubscriptionMessage::Gap {

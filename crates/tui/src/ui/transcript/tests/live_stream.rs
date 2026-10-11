@@ -338,9 +338,9 @@ async fn one_connection_subscribing_twice_receives_each_live_delta_once() {
             match *message {
                 EventSubscriptionMessage::Transient { event } => {
                     if let cookie_agent_protocol::EventPayload::TextDelta { text, .. } =
-                        event.payload
+                        &event.payload
                     {
-                        streamed.push_str(&text);
+                        streamed.push_str(text);
                     }
                 }
                 EventSubscriptionMessage::Event { event }
