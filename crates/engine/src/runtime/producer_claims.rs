@@ -144,7 +144,8 @@ impl Engine {
         &self,
         session: SessionId,
     ) -> Result<(), EngineError> {
-        for (claim_seq, claim) in self.goal_producer_projection(session)?.claims {
+        let projection = self.goal_producer_projection(session)?;
+        for (&claim_seq, claim) in &projection.claims {
             self.release_producer_claim_direct(session, claim.run_id, claim_seq, true)?;
         }
         Ok(())

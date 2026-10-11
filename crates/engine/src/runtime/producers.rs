@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashSet, sync::Arc, time::Instant};
+use std::{collections::HashSet, sync::Arc, time::Instant};
 
 use cookie_agent_protocol::*;
 
@@ -50,6 +50,22 @@ struct Registration {
     id: ProducerId,
     authority: ProducerAuthority,
     registered: Instant,
+}
+
+enum ProjectionRef<'a> {
+    Harvested(&'a GoalProducerProjection),
+    Folded(Arc<GoalProducerProjection>),
+}
+
+impl std::ops::Deref for ProjectionRef<'_> {
+    type Target = GoalProducerProjection;
+
+    fn deref(&self) -> &GoalProducerProjection {
+        match self {
+            Self::Harvested(projection) => projection,
+            Self::Folded(projection) => projection,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -653,7 +669,7 @@ impl Engine {
         self.on_actor(session, move |engine| {
             engine.require_root_goal(session)?;
             Ok(SessionGoalGetResult {
-                goal: engine.goal_producer_projection(session)?.goal,
+                goal: engine.goal_producer_projection(session)?.goal.clone(),
             })
         })
         .await
@@ -800,25 +816,57 @@ impl Engine {
         .await
     }
 
+    /// The session's producer/goal fold, recomputed only when the log gained
+    /// an event since the last fold: an actor handler that reads it several
+    /// times between appends folds the log once.
     pub(crate) fn goal_producer_projection(
         &self,
         session: SessionId,
-    ) -> Result<GoalProducerProjection, EngineError> {
-        Ok(GoalProducerProjection::from_events(
-            &self.inner.store.log(session)?.event_snapshot(),
-        ))
+    ) -> Result<Arc<GoalProducerProjection>, EngineError> {
+        let log = self.inner.store.log(session)?;
+        // Holding the tip's `Arc` keeps its allocation alive, so pointer
+        // equality means no append, truncation, or reload happened since.
+        let tip = log.last_event();
+        let same_tip = |cached: &Option<Arc<StoredEvent>>| match (cached, &tip) {
+            (Some(cached), Some(tip)) => Arc::ptr_eq(cached, tip),
+            (None, None) => true,
+            _ => false,
+        };
+        if let Some((cached_tip, projection)) = self
+            .inner
+            .sessions
+            .producer_projections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&session)
+            && same_tip(cached_tip)
+        {
+            return Ok(Arc::clone(projection));
+        }
+        let projection = Arc::new(GoalProducerProjection::from_events(&log.event_snapshot()));
+        // An append that raced the fold leaves the fold unkeyed rather than
+        // filing a newer state under an older tip.
+        if same_tip(&log.last_event()) {
+            self.inner
+                .sessions
+                .producer_projections
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(session, (tip, Arc::clone(&projection)));
+        }
+        Ok(projection)
     }
 
     /// The projection a caller already harvested, or — only when it has none —
-    /// a fresh fold of the session log.
+    /// the current fold of the session log.
     fn harvested_or_folded<'a>(
         &self,
         session: SessionId,
         harvested: Option<&'a GoalProducerProjection>,
-    ) -> Result<Cow<'a, GoalProducerProjection>, EngineError> {
+    ) -> Result<ProjectionRef<'a>, EngineError> {
         Ok(match harvested {
-            Some(projection) => Cow::Borrowed(projection),
-            None => Cow::Owned(self.goal_producer_projection(session)?),
+            Some(projection) => ProjectionRef::Harvested(projection),
+            None => ProjectionRef::Folded(self.goal_producer_projection(session)?),
         })
     }
 
@@ -845,6 +893,7 @@ impl Engine {
         if self
             .goal_producer_projection(session)?
             .goal
+            .as_ref()
             .is_some_and(|goal| matches!(goal.status, GoalStatus::Active | GoalStatus::Paused))
         {
             return Err(EngineError::Goal(
@@ -871,6 +920,7 @@ impl Engine {
             goal: self
                 .goal_producer_projection(session)?
                 .goal
+                .clone()
                 .expect("validated activation"),
         })
     }
@@ -885,6 +935,7 @@ impl Engine {
         let goal = self
             .goal_producer_projection(session)?
             .goal
+            .clone()
             .ok_or_else(|| EngineError::Goal("no goal is set".into()))?;
         if goal.goal_id != goal_id || goal.revision != expected_revision {
             return Err(EngineError::Goal(format!(
@@ -942,6 +993,7 @@ impl Engine {
             goal: self
                 .goal_producer_projection(session)?
                 .goal
+                .clone()
                 .expect("validated lifecycle"),
         })
     }
@@ -1066,6 +1118,7 @@ impl Engine {
         let goal = self
             .goal_producer_projection(session)?
             .goal
+            .clone()
             .ok_or_else(|| EngineError::Goal("no goal is set".into()))?;
         if !matches!(goal.status, GoalStatus::Active | GoalStatus::Paused) {
             return Err(EngineError::Goal("terminal goals cannot be changed".into()));
@@ -1111,6 +1164,7 @@ impl Engine {
             goal: self
                 .goal_producer_projection(session)?
                 .goal
+                .clone()
                 .expect("validated checklist"),
         })
     }

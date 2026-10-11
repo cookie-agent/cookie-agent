@@ -1393,6 +1393,11 @@ async fn paging_and_renames_skip_producer_reconciliation() {
     assert_eq!(reconciles(), before, "paging and renames do not reconcile");
 
     fixture.engine.resume(session_id).await.expect("resume");
+    // The actor reconciles after it replies, so the count can trail the reply.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while reconciles() == before && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
     assert_eq!(reconciles(), before + 1, "other commands still reconcile");
 }
 

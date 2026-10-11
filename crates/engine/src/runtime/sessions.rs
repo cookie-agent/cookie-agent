@@ -438,6 +438,7 @@ impl Engine {
         self.kill_deleted_background_jobs(deleted);
         forget(&self.inner.sessions.actors, deleted);
         forget(&self.inner.sessions.producers, deleted);
+        forget(&self.inner.sessions.producer_projections, deleted);
         forget(&self.inner.skills_runtime.grants, deleted);
         forget(&self.inner.skills_runtime.models, deleted);
         forget(&self.inner.skills_runtime.pending_child, deleted);

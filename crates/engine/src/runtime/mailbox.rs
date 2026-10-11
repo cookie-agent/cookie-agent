@@ -22,12 +22,20 @@ use crate::{actor::SessionActor, events, session::SessionError};
 
 use super::{ActiveRun, producers};
 
+/// A producer/goal fold and the log tip it was folded through.
+pub(super) type CachedProducerProjection = (
+    Option<Arc<cookie_agent_protocol::StoredEvent>>,
+    Arc<crate::goal_projection::GoalProducerProjection>,
+);
+
 /// Per-session mailbox and run state owned by [`super::Inner`].
 #[derive(Default)]
 pub(crate) struct SessionRuntimeState {
     pub(super) actors: Mutex<HashMap<SessionId, SessionActor<SessionCommand>>>,
     pub(super) active: Mutex<HashMap<RunId, Arc<ActiveRun>>>,
     pub(super) producers: Mutex<HashMap<SessionId, producers::SessionProducers>>,
+    /// Each session's latest producer/goal fold, keyed by the log tip it saw.
+    pub(super) producer_projections: Mutex<HashMap<SessionId, CachedProducerProjection>>,
     /// The task driving each in-flight run loop.
     ///
     /// Shutdown joins these after cancelling their runs, so a run task gets to
@@ -268,14 +276,14 @@ impl Engine {
         result: Result<ToolResult, ToolFailure>,
         cancelled: bool,
     ) -> Result<bool, EngineError> {
-        self.on_actor(session, move |engine| {
-            let pending = engine
-                .inner
-                .store
-                .get(session)
-                .ok()
-                .and_then(|projection| projection.runs.get(&run).cloned())
-                .is_some_and(|run| run.pending_calls.contains_key(&tool_call_id));
+        // A tool termination touches nothing producer reconciliation reads.
+        self.on_actor_unreconciled(session, move |engine| {
+            let pending = engine.inner.store.get(session).is_ok_and(|projection| {
+                projection
+                    .runs
+                    .get(&run)
+                    .is_some_and(|run| run.pending_calls.contains_key(&tool_call_id))
+            });
             let response = if !pending {
                 Ok(false)
             } else {

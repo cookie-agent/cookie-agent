@@ -2816,3 +2816,51 @@ async fn paused_goal_survives_fork_and_revert_but_not_delegated_session_boundari
     );
     delegation_fixture.engine.shutdown().await;
 }
+
+/// Reads between appends share one fold; any append, including one that
+/// changes the goal, yields a fresh fold that sees it.
+#[tokio::test]
+async fn producer_projection_folds_once_per_log_tip() {
+    let (fixture, selection) = custom_fixture();
+    let session_id = fixture
+        .engine
+        .create_session(selection)
+        .expect("session")
+        .session_id;
+    let first = fixture
+        .engine
+        .goal_producer_projection(session_id)
+        .expect("projection");
+    let again = fixture
+        .engine
+        .goal_producer_projection(session_id)
+        .expect("projection");
+    assert!(
+        Arc::ptr_eq(&first, &again),
+        "an unchanged log reuses its fold"
+    );
+    assert!(first.goal.is_none());
+
+    let goal = fixture
+        .engine
+        .set_session_goal(
+            SessionGoalSetParams {
+                session_id,
+                objective: "Fold once per tip".into(),
+                selection: None,
+            },
+            client_origin(),
+        )
+        .await
+        .expect("goal")
+        .goal;
+    let after = fixture
+        .engine
+        .goal_producer_projection(session_id)
+        .expect("projection");
+    assert!(!Arc::ptr_eq(&first, &after), "an append refolds");
+    assert_eq!(
+        after.goal.as_ref().map(|state| state.goal_id),
+        Some(goal.goal_id)
+    );
+}

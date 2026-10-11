@@ -362,6 +362,12 @@ impl Engine {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&session_id);
+        self.inner
+            .sessions
+            .producer_projections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session_id);
         // Permission modes are tree-root keyed. Paging out a child must retain
         // the shared mode; an evicted root no longer owns runtime-only state.
         if root_id(origin, session_id) == session_id {
