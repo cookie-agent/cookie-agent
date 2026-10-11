@@ -51,9 +51,10 @@ uses reqwest's default redirect policy (10 hops). Redirect hops are not
 permission-checked. HTTP error statuses are returned with their text bodies.
 There are no additional SSRF, host/IP, DNS, or userinfo checks.
 
-Downloads are streamed to a fixed 16 MiB cap. Over-cap responses return the
-fetched prefix with `truncated: true`, not an error. The cap has no input or
-configuration parameter. Full results use the standard event log and result
+Downloads are streamed to a fixed 16 MiB cap, or 4 MiB for HTML that is
+converted to text. Over-cap responses return the fetched prefix with
+`truncated: true`, not an error. The caps have no input or configuration
+parameter. Full results use the standard event log and result
 store. The standard Bounded policy retains oversized output and sends a preview
 to the model. `read` with an artifact URI pages the retained header and body by physical
 line; its zero-based offset 5 starts at the body. Follow `next_offset` for

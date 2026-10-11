@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
 
 use async_trait::async_trait;
 use cookie_agent_engine::{
@@ -15,6 +15,21 @@ use crate::{parse_args, prepared_operation, prepared_resource, safe_title, schem
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_CAP: usize = 16 * 1024 * 1024;
+/// Most HTML converted to text; a longer page is cut and marked truncated.
+const HTML_CONVERSION_CAP: usize = 4 * 1024 * 1024;
+
+/// One client for every fetch, so connections and TLS state are reused.
+fn client() -> Result<&'static reqwest::Client, ToolError> {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client);
+    }
+    let client = reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|error| ToolError::TransportError(error.to_string()))?;
+    Ok(CLIENT.get_or_init(|| client))
+}
 
 #[derive(Debug, Default)]
 pub struct WebfetchTool;
@@ -127,11 +142,11 @@ fn request_error(error: reqwest::Error) -> ToolError {
 
 impl WebfetchArgs {
     async fn fetch(&self) -> Result<PersistedToolResult, ToolError> {
-        let client = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(|error| ToolError::TransportError(error.to_string()))?;
-        let mut response = client.get(&self.url).send().await.map_err(request_error)?;
+        let mut response = client()?
+            .get(&self.url)
+            .send()
+            .await
+            .map_err(request_error)?;
         let final_url = response.url().to_string();
         let status_code = response.status().as_u16();
         let content_type = response
@@ -160,18 +175,27 @@ impl WebfetchArgs {
         {
             return Err(ToolError::UnsupportedContentType(content_type));
         }
+        let convert = html && !self.raw;
+        let cap = if convert {
+            HTML_CONVERSION_CAP
+        } else {
+            DOWNLOAD_CAP
+        };
         let mut body = Vec::new();
         let mut truncated = false;
         while let Some(chunk) = response.chunk().await.map_err(request_error)? {
-            let remaining = DOWNLOAD_CAP - body.len();
+            let remaining = cap - body.len();
             body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
             if chunk.len() > remaining {
                 truncated = true;
                 break;
             }
         }
-        let text = if html && !self.raw {
-            html2text::from_read(body.as_slice(), 80).map_err(tool_error)?
+        let text = if convert {
+            tokio::task::spawn_blocking(move || html2text::from_read(body.as_slice(), 80))
+                .await
+                .map_err(tool_error)?
+                .map_err(tool_error)?
         } else {
             String::from_utf8_lossy(&body).into_owned()
         };
@@ -315,6 +339,15 @@ mod tests {
                 vec![b'x'; DOWNLOAD_CAP],
             ),
             "/binary" => ("200 OK", "Content-Type: image/png\r\n", vec![0, 255]),
+            "/big-html" => (
+                "200 OK",
+                "Content-Type: text/html\r\n",
+                [
+                    b"<p>start</p><!--".as_slice(),
+                    &vec![b'x'; HTML_CONVERSION_CAP],
+                ]
+                .concat(),
+            ),
             "/lines" => (
                 "200 OK",
                 "Content-Type: text/plain\r\n",
@@ -437,6 +470,11 @@ mod tests {
             assert_eq!(result.metadata["truncated"], truncated);
             assert_eq!(body(&result), "x".repeat(DOWNLOAD_CAP));
         }
+        let html = fetch(format!("{base}/big-html"), false).await.unwrap();
+        assert_eq!(html.metadata["truncated"], true);
+        assert_eq!(body(&html).trim(), "start");
+        let raw = fetch(format!("{base}/big-html"), true).await.unwrap();
+        assert_eq!(raw.metadata["truncated"], false);
     }
 
     async fn prepare(arguments: serde_json::Value) -> Result<PreparedTool, ToolError> {
