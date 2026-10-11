@@ -38,10 +38,6 @@ struct SkillExecutor {
 
 #[async_trait]
 impl PreparedExecutor for SkillExecutor {
-    async fn revalidate(&self) -> Result<(), ToolError> {
-        Ok(())
-    }
-
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,

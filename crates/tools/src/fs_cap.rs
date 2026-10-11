@@ -1,51 +1,52 @@
-//! Unix descriptor-anchored filesystem capabilities used by prepared tools.
+//! Filesystem targets resolved once at preparation and used at execution.
+//!
+//! Preparation resolves the requested path and keeps the target's parent
+//! directory open; execution works relative to that handle. A symlink swapped
+//! into the route while an approval is pending therefore cannot redirect the
+//! operation to a path other than the one that was approved. The target's
+//! content is deliberately not pinned: execution sees, and replaces, whatever
+//! the file holds at that moment.
 
 #[cfg(unix)]
 mod unix {
     use std::{
-        collections::VecDeque,
         ffi::{OsStr, OsString},
-        fs::{self, File},
-        io::{Read, Seek, SeekFrom, Write},
+        fs::File,
+        io::Write,
         os::fd::AsRawFd,
         os::unix::{ffi::OsStrExt, fs::MetadataExt},
         path::{Component, Path, PathBuf},
-        sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     };
 
     use cookie_agent_engine::ToolError;
-    use cookie_agent_protocol::Sha256Digest;
     use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, RawMode};
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
     static PREPARED_WEIGHT: AtomicUsize = AtomicUsize::new(0);
-    static PREPARED_WEIGHT_LIMIT: AtomicUsize = AtomicUsize::new(16_384);
-    static ATOMIC_WRITES_POISONED: AtomicBool = AtomicBool::new(false);
+    const PREPARED_WEIGHT_LIMIT: usize = 16_384;
+    /// Descriptors a prepared target holds open until it is dropped.
+    const PREPARED_DESCRIPTORS: usize = 2;
+    /// Permission bits for files and directories the write tool creates.
+    const CREATED_FILE_MODE: u32 = 0o600;
+    const CREATED_DIRECTORY_MODE: u32 = 0o700;
 
-    #[derive(Clone, Debug, Default, Eq, PartialEq)]
-    pub struct AtomicWriteOutcome {
-        pub cleanup_warning: Option<String>,
-    }
-
-    struct BudgetReservation {
-        weight: usize,
-    }
+    struct BudgetReservation;
 
     impl BudgetReservation {
-        fn reserve(weight: usize) -> Result<Self, ToolError> {
-            let limit = PREPARED_WEIGHT_LIMIT.load(Ordering::Acquire);
-            reserve_weight(&PREPARED_WEIGHT, limit, weight)?;
-            Ok(Self { weight })
-        }
-
-        fn grow(&mut self, weight: usize) -> Result<(), ToolError> {
+        fn reserve() -> Result<Self, ToolError> {
             reserve_weight(
                 &PREPARED_WEIGHT,
-                PREPARED_WEIGHT_LIMIT.load(Ordering::Acquire),
-                weight,
+                PREPARED_WEIGHT_LIMIT,
+                PREPARED_DESCRIPTORS,
             )?;
-            self.weight += weight;
-            Ok(())
+            Ok(Self)
+        }
+    }
+
+    impl Drop for BudgetReservation {
+        fn drop(&mut self) {
+            PREPARED_WEIGHT.fetch_sub(PREPARED_DESCRIPTORS, Ordering::AcqRel);
         }
     }
 
@@ -70,151 +71,35 @@ mod unix {
         }
     }
 
-    impl Drop for BudgetReservation {
-        fn drop(&mut self) {
-            PREPARED_WEIGHT.fetch_sub(self.weight, Ordering::AcqRel);
-        }
-    }
-
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    pub struct ObjectIdentity {
-        pub device: u64,
-        pub inode: u64,
-        pub mode: u32,
-        pub size: u64,
-    }
-
-    impl ObjectIdentity {
-        fn from_metadata(metadata: &fs::Metadata) -> Self {
-            Self {
-                device: metadata.dev(),
-                inode: metadata.ino(),
-                mode: metadata.mode(),
-                size: metadata.len(),
-            }
-        }
-
-        pub fn canonical_bytes(&self) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            bytes.extend_from_slice(&self.device.to_be_bytes());
-            bytes.extend_from_slice(&self.inode.to_be_bytes());
-            bytes.extend_from_slice(&self.mode.to_be_bytes());
-            bytes.extend_from_slice(&self.size.to_be_bytes());
-            bytes
-        }
-    }
-
-    #[allow(clippy::unnecessary_cast)]
-    fn stat_identity(stat: &rustix::fs::Stat) -> (u64, u64) {
-        // rustix exposes native widths; Darwin's dev_t is narrower than MetadataExt's.
-        (stat.st_dev as u64, stat.st_ino as u64)
-    }
-
     #[allow(clippy::unnecessary_cast)]
     fn permission_mode(mode: u32) -> Mode {
         // RawMode is u32 on Linux but Darwin's libc mode_t is u16.
-        Mode::from_raw_mode((mode & 0o777) as RawMode)
+        Mode::from_raw_mode((mode & 0o7777) as RawMode)
     }
 
-    pub(super) struct ChainNode {
-        pub(super) parent: File,
-        pub(super) name: OsString,
-        pub(super) identity: ObjectIdentity,
-        // Keep links and exited directories alive so their inodes cannot be reused.
-        pub(super) _object: File,
-        pub(super) link_target: Option<OsString>,
-    }
-
+    /// An existing file or directory.
     pub struct PreparedExisting {
-        pub parent: File,
-        pub file: File,
-        pub basename: OsString,
+        parent: File,
+        basename: OsString,
+        /// The object resolved at preparation. Only bash uses it, to exec the
+        /// prepared shell and enter the prepared working directory.
+        object: File,
+        /// The resolved location, with every symlink expanded.
+        resolved: PathBuf,
         pub display_path: PathBuf,
-        pub identity: ObjectIdentity,
-        pub content_digest: Sha256Digest,
         pub directory: bool,
-        chain: Vec<ChainNode>,
+        pub mode: u32,
         _budget: BudgetReservation,
     }
 
-    /// A prepared existing target whose inode may be replaced by an earlier
-    /// call in the same serialized batch.
-    pub struct PreparedChained {
-        pub target: PreparedExisting,
-        pub original_digest: Sha256Digest,
-        pub predecessor_digest: Sha256Digest,
-    }
-
-    /// What an atomic replacement expects to displace at the target.
-    pub(super) enum DisplacedExpectation {
-        /// The originally prepared identity and content.
-        PreparedIdentity,
-        /// The output of the preceding call in a serialized chain: the
-        /// displaced inode legitimately differs, only content must match.
-        PredecessorContent(Sha256Digest),
-    }
-
-    impl PreparedChained {
-        /// Digest the target's current content by name: an earlier call in the
-        /// chain may have atomically replaced the target, which leaves
-        /// `target.file` pinned to the superseded inode.
-        fn current_digest(&self) -> Result<Sha256Digest, ToolError> {
-            let file = File::from(
-                rustix::fs::openat(
-                    &self.target.parent,
-                    &self.target.basename,
-                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )
-                .map_err(|error| match error {
-                    rustix::io::Errno::NOENT | rustix::io::Errno::LOOP => {
-                        ToolError::operation_changed(
-                            "prepared target changed during chained execution",
-                        )
-                    }
-                    error => super::io_error(error),
-                })?,
-            );
-            Ok(Sha256Digest::of_bytes(&read_all(&file)?))
-        }
-
-        pub fn revalidate(&self) -> Result<(), ToolError> {
-            revalidate_chain(&self.target.chain)?;
-            let digest = self.current_digest()?;
-            if digest != self.original_digest && digest != self.predecessor_digest {
-                return Err(ToolError::operation_changed(
-                    "prepared target content changed",
-                ));
-            }
-            Ok(())
-        }
-
-        pub fn revalidate_for_execution(&self) -> Result<(), ToolError> {
-            revalidate_chain(&self.target.chain)?;
-            let digest = self.current_digest()?;
-            if digest != self.predecessor_digest {
-                return Err(ToolError::operation_changed(
-                    "prepared target content changed",
-                ));
-            }
-            Ok(())
-        }
-
-        pub fn replace_atomically(&self, bytes: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
-            self.target.replace_atomically_inner(
-                bytes,
-                || {},
-                &DisplacedExpectation::PredecessorContent(self.predecessor_digest.clone()),
-            )
-        }
-    }
-
+    /// A path whose leaf, and possibly some ancestors, did not exist.
     pub struct PreparedAbsent {
-        pub parent: File,
-        pub basename: OsString,
-        pub display_path: PathBuf,
+        /// The deepest existing directory on the route.
+        parent: File,
+        /// The components below `parent`, the last being the file itself.
         missing: Vec<OsString>,
-        chain: Vec<ChainNode>,
+        resolved: PathBuf,
+        pub display_path: PathBuf,
         _budget: BudgetReservation,
     }
 
@@ -224,73 +109,197 @@ mod unix {
     }
 
     impl PreparedTarget {
-        pub fn revalidate(&self) -> Result<(), ToolError> {
+        pub fn display_path(&self) -> &Path {
             match self {
-                Self::Existing(target) => target.revalidate(),
-                Self::Absent(target) => target.revalidate(),
+                Self::Existing(target) => &target.display_path,
+                Self::Absent(target) => &target.display_path,
             }
         }
 
-        pub fn serialization_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            let mut bytes = Vec::new();
+        /// Identifies the resolved location for approval bindings.
+        pub fn binding_bytes(&self) -> Vec<u8> {
             match self {
-                Self::Existing(target) => {
-                    bytes.extend_from_slice(&target.identity.device.to_be_bytes());
-                    bytes.extend_from_slice(&target.identity.inode.to_be_bytes());
-                }
-                Self::Absent(target) => {
-                    let parent = ObjectIdentity::from_metadata(
-                        &target.parent.metadata().map_err(super::io_error)?,
-                    );
-                    bytes.extend_from_slice(&parent.device.to_be_bytes());
-                    bytes.extend_from_slice(&parent.inode.to_be_bytes());
-                    bytes.extend_from_slice(target.basename.as_encoded_bytes());
-                }
+                Self::Existing(target) => target.binding_bytes(),
+                Self::Absent(target) => location_bytes(b"absent\0", &target.resolved),
             }
-            Ok(bytes)
         }
 
-        pub fn manifest_bytes(&self) -> Result<Vec<u8>, ToolError> {
+        /// Serializes mutations of one resolved location.
+        pub fn serialization_key(&self) -> Vec<u8> {
             match self {
-                Self::Existing(target) => target.manifest_bytes(),
-                Self::Absent(target) => target.manifest_bytes(),
+                Self::Existing(target) => target.serialization_key(),
+                Self::Absent(target) => target.resolved.as_os_str().as_bytes().to_vec(),
+            }
+        }
+
+        /// Writes `bytes` to the target: replaces the file if it exists by
+        /// now, otherwise creates it and any missing parent directories.
+        pub fn write(&self, bytes: &[u8]) -> Result<(), ToolError> {
+            match self {
+                Self::Existing(target) => target.replace(bytes),
+                Self::Absent(target) => target.create(bytes),
             }
         }
     }
 
-    pub fn cwd_context_bytes(cwd: &Path) -> Result<Vec<u8>, ToolError> {
-        let mut budget = BudgetReservation::reserve(4)?;
-        let resolved = resolve_path(&normalize_absolute(cwd.to_owned())?, &mut budget)?;
-        if !resolved.missing.is_empty() {
-            return Err(ToolError::execution("prepared directory does not exist"));
+    impl PreparedExisting {
+        pub fn binding_bytes(&self) -> Vec<u8> {
+            location_bytes(
+                if self.directory {
+                    b"directory\0"
+                } else {
+                    b"file\0"
+                },
+                &self.resolved,
+            )
         }
-        let directory = File::from(
+
+        pub fn serialization_key(&self) -> Vec<u8> {
+            self.resolved.as_os_str().as_bytes().to_vec()
+        }
+
+        pub fn proc_fd_path(&self) -> PathBuf {
+            PathBuf::from(format!("/proc/self/fd/{}", self.object.as_raw_fd()))
+        }
+
+        /// Opens the regular file now at the prepared location for reading.
+        pub fn open_file(&self) -> Result<File, ToolError> {
+            let file = self.open(OFlags::empty())?;
+            if !file.metadata().map_err(super::io_error)?.is_file() {
+                return Err(ToolError::operation_changed(
+                    "prepared target is no longer a regular file",
+                ));
+            }
+            Ok(file)
+        }
+
+        /// Lists the directory now at the prepared location, sorted by name.
+        pub fn directory_entries(&self) -> Result<Vec<(String, bool)>, ToolError> {
+            let directory = self.open(OFlags::DIRECTORY)?;
+            let mut entries = Vec::new();
+            for entry in Dir::read_from(&directory).map_err(super::io_error)? {
+                let entry = entry.map_err(super::io_error)?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if matches!(name.as_str(), "." | "..") {
+                    continue;
+                }
+                entries.push((name, entry.file_type() == FileType::Directory));
+            }
+            entries.sort_unstable();
+            Ok(entries)
+        }
+
+        /// Atomically replaces the file at the prepared location.
+        pub fn replace(&self, bytes: &[u8]) -> Result<(), ToolError> {
+            publish(&self.parent, &self.basename, bytes, self.mode)
+        }
+
+        fn open(&self, flags: OFlags) -> Result<File, ToolError> {
             rustix::fs::openat(
-                &resolved.parent,
-                &resolved.basename,
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                &self.parent,
+                &self.basename,
+                flags | OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
                 Mode::empty(),
+            )
+            .map(File::from)
+            .map_err(|error| match error {
+                rustix::io::Errno::NOENT => {
+                    ToolError::execution("prepared target no longer exists")
+                }
+                rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR => {
+                    ToolError::operation_changed("prepared target was replaced by another type")
+                }
+                error => super::io_error(error),
+            })
+        }
+    }
+
+    impl PreparedAbsent {
+        fn create(&self, bytes: &[u8]) -> Result<(), ToolError> {
+            let (leaf, directories) = self
+                .missing
+                .split_last()
+                .ok_or_else(|| ToolError::execution("missing path is empty"))?;
+            let mut created = None;
+            for name in directories {
+                let parent = created.as_ref().unwrap_or(&self.parent);
+                match rustix::fs::mkdirat(parent, name, permission_mode(CREATED_DIRECTORY_MODE)) {
+                    Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+                    Err(error) => return Err(super::io_error(error)),
+                }
+                // NOFOLLOW: a symlink planted here since preparation must not
+                // redirect the write.
+                let next = rustix::fs::openat(
+                    parent,
+                    name,
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(|error| match error {
+                    rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR => {
+                        ToolError::operation_changed(
+                            "a prepared missing directory was replaced by another type",
+                        )
+                    }
+                    error => super::io_error(error),
+                })?;
+                created = Some(File::from(next));
+            }
+            publish(
+                created.as_ref().unwrap_or(&self.parent),
+                leaf,
+                bytes,
+                CREATED_FILE_MODE,
+            )
+        }
+    }
+
+    /// Writes `bytes` to a sibling temporary and renames it over `name`: one
+    /// file sync before the rename and one directory sync after it.
+    fn publish(parent: &File, name: &OsStr, bytes: &[u8], mode: u32) -> Result<(), ToolError> {
+        let mode = match rustix::fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => match FileType::from_raw_mode(stat.st_mode) {
+                FileType::Directory => {
+                    return Err(ToolError::execution("write target is a directory"));
+                }
+                #[allow(clippy::unnecessary_cast)]
+                FileType::RegularFile => stat.st_mode as u32,
+                _ => mode,
+            },
+            Err(_) => mode,
+        };
+        let temporary = OsString::from(format!(
+            ".cookie-agent-stage-{}-{}",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut file = File::from(
+            rustix::fs::openat(
+                parent,
+                &temporary,
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC,
+                permission_mode(mode),
             )
             .map_err(super::io_error)?,
         );
-        revalidate_chain(&resolved.chain)?;
-        Ok(
-            ObjectIdentity::from_metadata(&directory.metadata().map_err(super::io_error)?)
-                .canonical_bytes(),
-        )
+        let staged = file
+            .write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(super::io_error)
+            .and_then(|()| {
+                rustix::fs::renameat(parent, &temporary, parent, name).map_err(super::io_error)
+            });
+        if let Err(error) = staged {
+            let _ = rustix::fs::unlinkat(parent, &temporary, AtFlags::empty());
+            return Err(error);
+        }
+        rustix::fs::fsync(parent).map_err(super::io_error)
     }
 
-    pub fn ensure_atomic_write_supported() -> Result<(), ToolError> {
-        #[cfg(target_os = "linux")]
-        {
-            Ok(())
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            Err(ToolError::unsupported_platform(
-                "atomic expected-target replacement is unsupported on this platform",
-            ))
-        }
+    fn location_bytes(kind: &[u8], resolved: &Path) -> Vec<u8> {
+        let mut bytes = kind.to_vec();
+        bytes.extend_from_slice(resolved.as_os_str().as_bytes());
+        bytes
     }
 
     pub fn prepare_existing(cwd: &Path, requested: &Path) -> Result<PreparedExisting, ToolError> {
@@ -311,323 +320,65 @@ mod unix {
         if absolute.file_name().is_none() {
             return Err(ToolError::unsupported_security("target has no basename"));
         }
-        let mut budget = BudgetReservation::reserve(4)?;
+        let budget = BudgetReservation::reserve()?;
         let ResolvedPath {
             parent,
+            parent_path,
             basename,
-            chain,
             missing,
-        } = resolve_path(&absolute, &mut budget)?;
+        } = resolve_path(&absolute)?;
         if !missing.is_empty() {
-            revalidate_chain(&chain)?;
+            let mut resolved = parent_path;
+            resolved.extend(&missing);
             return Ok(PreparedTarget::Absent(PreparedAbsent {
                 parent,
-                basename,
-                display_path: absolute,
                 missing,
-                chain,
+                resolved,
+                display_path: absolute,
                 _budget: budget,
             }));
         }
         let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
         match rustix::fs::openat(&parent, &basename, flags, Mode::empty()) {
             Ok(fd) => {
-                let file = File::from(fd);
-                let metadata = file.metadata().map_err(super::io_error)?;
+                let object = File::from(fd);
+                let metadata = object.metadata().map_err(super::io_error)?;
                 if !metadata.is_file() && !metadata.is_dir() {
                     return Err(ToolError::unsupported_security(
                         "prepared filesystem object is not a regular file or directory",
                     ));
                 }
-                let identity = ObjectIdentity::from_metadata(&metadata);
-                let content_digest = if metadata.is_dir() {
-                    directory_digest(&file)?
-                } else {
-                    Sha256Digest::of_bytes(&read_all(&file)?)
-                };
-                revalidate_chain(&chain)?;
+                let mut resolved = parent_path;
+                if basename != "." {
+                    resolved.push(&basename);
+                }
                 Ok(PreparedTarget::Existing(PreparedExisting {
                     parent,
-                    file,
                     basename,
+                    object,
+                    resolved,
                     display_path: absolute,
-                    identity,
-                    content_digest,
                     directory: metadata.is_dir(),
-                    chain,
+                    mode: metadata.mode(),
                     _budget: budget,
                 }))
             }
-            Err(rustix::io::Errno::NOENT) => Ok(PreparedTarget::Absent(PreparedAbsent {
-                parent,
-                basename: basename.clone(),
-                display_path: absolute,
-                missing: vec![basename],
-                chain,
-                _budget: budget,
-            })),
+            Err(rustix::io::Errno::NOENT) => {
+                let mut resolved = parent_path;
+                resolved.push(&basename);
+                Ok(PreparedTarget::Absent(PreparedAbsent {
+                    parent,
+                    missing: vec![basename],
+                    resolved,
+                    display_path: absolute,
+                    _budget: budget,
+                }))
+            }
             Err(rustix::io::Errno::LOOP) => Err(ToolError::operation_changed(
                 "prepared target became a symlink during resolution",
             )),
             Err(error) => Err(super::io_error(error)),
         }
-    }
-
-    impl PreparedExisting {
-        pub fn manifest_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            let parent =
-                ObjectIdentity::from_metadata(&self.parent.metadata().map_err(super::io_error)?);
-            Ok(existing_manifest_bytes(
-                &self.chain,
-                &parent,
-                &self.basename,
-                &self.identity,
-                self.directory,
-                &self.content_digest,
-            ))
-        }
-
-        pub fn proc_fd_path(&self) -> PathBuf {
-            PathBuf::from(format!("/proc/self/fd/{}", self.file.as_raw_fd()))
-        }
-
-        pub fn read_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            read_all(&self.file)
-        }
-
-        pub fn verified_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            self.revalidate()?;
-            let bytes = read_all(&self.file)?;
-            if Sha256Digest::of_bytes(&bytes) != self.content_digest {
-                return Err(ToolError::operation_changed(
-                    "prepared target content changed",
-                ));
-            }
-            Ok(bytes)
-        }
-
-        pub fn directory_entries(&self) -> Result<Vec<(String, bool)>, ToolError> {
-            directory_entries(&self.file)
-        }
-
-        pub fn revalidate(&self) -> Result<(), ToolError> {
-            revalidate_chain(&self.chain)?;
-            let stat = rustix::fs::statat(&self.parent, &self.basename, AtFlags::SYMLINK_NOFOLLOW)
-                .map_err(|_| {
-                    ToolError::operation_changed("prepared target disappeared or changed")
-                })?;
-            let (device, inode) = stat_identity(&stat);
-            if device != self.identity.device || inode != self.identity.inode {
-                return Err(ToolError::operation_changed(
-                    "prepared target identity changed",
-                ));
-            }
-            let digest = if self.file.metadata().map_err(super::io_error)?.is_dir() {
-                directory_digest(&self.file)?
-            } else {
-                Sha256Digest::of_bytes(&read_all(&self.file)?)
-            };
-            if digest != self.content_digest {
-                return Err(ToolError::operation_changed(
-                    "prepared target content changed",
-                ));
-            }
-            Ok(())
-        }
-
-        pub fn replace_atomically(&self, bytes: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
-            self.replace_atomically_inner(bytes, || {}, &DisplacedExpectation::PreparedIdentity)
-        }
-
-        pub(super) fn replace_atomically_inner(
-            &self,
-            bytes: &[u8],
-            before_exchange: impl FnOnce(),
-            expectation: &DisplacedExpectation,
-        ) -> Result<AtomicWriteOutcome, ToolError> {
-            if ATOMIC_WRITES_POISONED.load(Ordering::Acquire) {
-                return Err(ToolError::operation_changed(
-                    "atomic write subsystem is poisoned after an ambiguous rollback",
-                ));
-            }
-            if matches!(expectation, DisplacedExpectation::PreparedIdentity) {
-                self.revalidate()?;
-            }
-            let temporary = stage(&self.parent, bytes, self.identity.mode)?;
-            before_exchange();
-            if let Err(error) = revalidate_chain(&self.chain) {
-                let _ = rustix::fs::unlinkat(&self.parent, &temporary, AtFlags::empty());
-                return Err(error);
-            }
-            if let Err(error) = rename_exchange(&self.parent, &temporary, &self.basename) {
-                let _ = rustix::fs::unlinkat(&self.parent, &temporary, AtFlags::empty());
-                return Err(ToolError::operation_changed(format!(
-                    "target changed during atomic replacement: {}",
-                    error.message()
-                )));
-            }
-            let verification = (|| {
-                revalidate_chain(&self.chain)?;
-                injected_exchange_failure(ExchangeFailurePoint::OpenDisplaced)?;
-                let displaced = rustix::fs::openat(
-                    &self.parent,
-                    &temporary,
-                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )
-                .map(File::from)
-                .map_err(super::io_error)?;
-                injected_exchange_failure(ExchangeFailurePoint::StatDisplaced)?;
-                let displaced_identity =
-                    ObjectIdentity::from_metadata(&displaced.metadata().map_err(super::io_error)?);
-                injected_exchange_failure(ExchangeFailurePoint::ReadDisplaced)?;
-                let displaced_digest = Sha256Digest::of_bytes(&read_all(&displaced)?);
-                injected_exchange_failure(ExchangeFailurePoint::IdentityMismatch)?;
-                if matches!(expectation, DisplacedExpectation::PreparedIdentity)
-                    && (displaced_identity.device != self.identity.device
-                        || displaced_identity.inode != self.identity.inode)
-                {
-                    return Err(ToolError::operation_changed(
-                        "target changed during atomic replacement",
-                    ));
-                }
-                injected_exchange_failure(ExchangeFailurePoint::DigestMismatch)?;
-                let expected_digest = match expectation {
-                    DisplacedExpectation::PreparedIdentity => &self.content_digest,
-                    DisplacedExpectation::PredecessorContent(digest) => digest,
-                };
-                if &displaced_digest != expected_digest {
-                    return Err(ToolError::operation_changed(
-                        "target changed during atomic replacement",
-                    ));
-                }
-                injected_exchange_failure(ExchangeFailurePoint::CommitFsync)?;
-                rustix::fs::fsync(&self.parent).map_err(super::io_error)
-            })();
-            if let Err(error) = verification {
-                if rollback_exchange(&self.parent, &temporary, &self.basename).is_err() {
-                    ATOMIC_WRITES_POISONED.store(true, Ordering::Release);
-                    return Err(ToolError::operation_changed(
-                        "atomic replacement rollback durability is ambiguous; writes are poisoned",
-                    ));
-                }
-                return Err(ToolError::operation_changed(format!(
-                    "target changed during atomic replacement: {}",
-                    error.message()
-                )));
-            }
-            // Commit point: the validated exchange is now durable. Cleanup can
-            // no longer turn the committed mutation into an ordinary failure.
-            if let Err(error) = injected_exchange_failure(ExchangeFailurePoint::CleanupUnlink)
-                .and_then(|()| {
-                    rustix::fs::unlinkat(&self.parent, &temporary, AtFlags::empty())
-                        .map_err(super::io_error)
-                })
-            {
-                return Ok(AtomicWriteOutcome {
-                    cleanup_warning: Some(format!(
-                        "replacement committed; displaced object remains recoverable as {}: {}",
-                        temporary.to_string_lossy(),
-                        error.message()
-                    )),
-                });
-            }
-            if let Err(error) = injected_exchange_failure(ExchangeFailurePoint::CleanupFsync)
-                .and_then(|()| rustix::fs::fsync(&self.parent).map_err(super::io_error))
-            {
-                return Ok(AtomicWriteOutcome {
-                    cleanup_warning: Some(format!(
-                        "replacement committed; displaced-object cleanup durability is uncertain: {}",
-                        error.message()
-                    )),
-                });
-            }
-            Ok(AtomicWriteOutcome::default())
-        }
-    }
-
-    impl PreparedAbsent {
-        pub fn revalidate(&self) -> Result<(), ToolError> {
-            revalidate_chain(&self.chain)?;
-            let first = self
-                .missing
-                .first()
-                .ok_or_else(|| ToolError::execution("missing subtree is empty"))?;
-            match rustix::fs::statat(&self.parent, first, AtFlags::SYMLINK_NOFOLLOW) {
-                Err(rustix::io::Errno::NOENT) => Ok(()),
-                Ok(_) => Err(ToolError::operation_changed(
-                    "a prepared missing path component was inserted",
-                )),
-                Err(error) => Err(super::io_error(error)),
-            }
-        }
-
-        pub fn manifest_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            let mut bytes = b"expected-absent\0".to_vec();
-            for node in &self.chain {
-                append_tagged_os_string(&mut bytes, b"ancestor-name", &node.name);
-                bytes.extend_from_slice(b"ancestor-identity\0");
-                bytes.extend_from_slice(&node.identity.canonical_bytes());
-                append_link_manifest(&mut bytes, node);
-            }
-            bytes.extend_from_slice(b"parent-identity\0");
-            bytes.extend_from_slice(
-                &ObjectIdentity::from_metadata(&self.parent.metadata().map_err(super::io_error)?)
-                    .canonical_bytes(),
-            );
-            for component in &self.missing {
-                append_tagged_os_string(&mut bytes, b"missing-component", component);
-            }
-            Ok(bytes)
-        }
-
-        pub fn create_atomically(&self, bytes: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
-            self.create_atomically_inner(bytes, || {})
-        }
-
-        pub(super) fn create_atomically_inner(
-            &self,
-            bytes: &[u8],
-            before_publish: impl FnOnce(),
-        ) -> Result<AtomicWriteOutcome, ToolError> {
-            if ATOMIC_WRITES_POISONED.load(Ordering::Acquire) {
-                return Err(ToolError::operation_changed(
-                    "atomic write subsystem is poisoned after an ambiguous rollback",
-                ));
-            }
-            self.revalidate()?;
-            let first = self
-                .missing
-                .first()
-                .ok_or_else(|| ToolError::execution("missing subtree is empty"))?;
-            let before_publish = || {
-                before_publish();
-                self.revalidate()
-            };
-            if self.missing.len() == 1 {
-                let temporary = stage(&self.parent, bytes, 0o100600)?;
-                if let Err(error) = before_publish()
-                    .and_then(|()| rename_noreplace(&self.parent, &temporary, first))
-                {
-                    let _ = rustix::fs::unlinkat(&self.parent, &temporary, AtFlags::empty());
-                    return Err(error);
-                }
-            } else {
-                publish_missing_subtree(&self.parent, &self.missing, bytes, before_publish)?;
-            }
-            rustix::fs::fsync(&self.parent).map_err(super::io_error)?;
-            Ok(AtomicWriteOutcome::default())
-        }
-    }
-
-    fn rollback_exchange(
-        parent: &File,
-        temporary: &OsStr,
-        target: &OsStr,
-    ) -> Result<(), ToolError> {
-        rename_exchange(parent, temporary, target)?;
-        rustix::fs::unlinkat(parent, temporary, AtFlags::empty()).map_err(super::io_error)?;
-        rustix::fs::fsync(parent).map_err(super::io_error)
     }
 
     fn normalize_absolute(path: PathBuf) -> Result<PathBuf, ToolError> {
@@ -660,28 +411,27 @@ mod unix {
 
     struct ResolvedPath {
         parent: File,
+        /// `parent`'s location with every symlink expanded.
+        parent_path: PathBuf,
         basename: OsString,
-        chain: Vec<ChainNode>,
         missing: Vec<OsString>,
     }
 
-    fn resolve_path(
-        path: &Path,
-        budget: &mut BudgetReservation,
-    ) -> Result<ResolvedPath, ToolError> {
-        if !path.is_absolute() {
-            return Err(ToolError::unsupported_security(
-                "filesystem anchor is not absolute",
-            ));
-        }
+    /// Walks `path` one component at a time from `/`, expanding symlinks in
+    /// place, so `..` is always evaluated from the directory actually reached.
+    fn resolve_path(path: &Path) -> Result<ResolvedPath, ToolError> {
         let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let mut current =
-            File::from(rustix::fs::open("/", flags, Mode::empty()).map_err(super::io_error)?);
-        let mut chain = Vec::new();
+        let open_root = || {
+            rustix::fs::open("/", flags, Mode::empty())
+                .map(File::from)
+                .map_err(super::io_error)
+        };
+        let mut current = open_root()?;
+        let mut current_path = PathBuf::from("/");
         let mut pending = path
             .components()
             .map(|part| part.as_os_str().to_owned())
-            .collect::<VecDeque<_>>();
+            .collect::<std::collections::VecDeque<_>>();
         let mut links = 0;
         let mut steps = 0;
         while let Some(name) = pending.pop_front() {
@@ -692,9 +442,8 @@ mod unix {
                 ));
             }
             if name == "/" {
-                current = File::from(
-                    rustix::fs::open("/", flags, Mode::empty()).map_err(super::io_error)?,
-                );
+                current = open_root()?;
+                current_path = PathBuf::from("/");
                 continue;
             }
             if name == "." {
@@ -719,12 +468,11 @@ mod unix {
                             missing.push(part);
                         }
                     }
-                    budget.grow(missing.len())?;
                     let basename = missing.last().expect("missing leaf").clone();
                     return Ok(ResolvedPath {
                         parent: current,
+                        parent_path: current_path,
                         basename,
-                        chain,
                         missing,
                     });
                 }
@@ -737,27 +485,9 @@ mod unix {
                         "too many symlinks in prepared path",
                     ));
                 }
-                budget.grow(2)?;
-                let object = open_link(&current, &name)?;
-                let identity =
-                    ObjectIdentity::from_metadata(&object.metadata().map_err(super::io_error)?);
-                if stat_identity(&stat) != (identity.device, identity.inode) {
-                    return Err(ToolError::operation_changed(
-                        "symlink changed during resolution",
-                    ));
-                }
                 let target =
                     rustix::fs::readlinkat(&current, &name, Vec::new()).map_err(super::io_error)?;
                 let target = OsStr::from_bytes(target.as_bytes()).to_owned();
-                chain.push(ChainNode {
-                    parent: current.try_clone().map_err(super::io_error)?,
-                    name,
-                    identity,
-                    _object: object,
-                    link_target: Some(target.clone()),
-                });
-                // Expand target components in place: `..` is evaluated from the
-                // resolved directory, never lexically across another symlink.
                 if target.as_bytes().ends_with(b"/") || target.as_bytes().ends_with(b"/.") {
                     pending.push_front(OsString::from("."));
                 }
@@ -769,334 +499,27 @@ mod unix {
             if pending.is_empty() && name != ".." {
                 return Ok(ResolvedPath {
                     parent: current,
+                    parent_path: current_path,
                     basename: name,
-                    chain,
                     missing: Vec::new(),
                 });
             }
-            budget.grow(2)?;
-            let next = File::from(
+            current = File::from(
                 rustix::fs::openat(&current, &name, flags, Mode::empty())
                     .map_err(super::io_error)?,
             );
-            let identity =
-                ObjectIdentity::from_metadata(&next.metadata().map_err(super::io_error)?);
-            if stat_identity(&stat) != (identity.device, identity.inode) {
-                return Err(ToolError::operation_changed(
-                    "ancestor changed during resolution",
-                ));
+            if name == ".." {
+                current_path.pop();
+            } else {
+                current_path.push(&name);
             }
-            chain.push(ChainNode {
-                parent: current,
-                name,
-                identity,
-                _object: next.try_clone().map_err(super::io_error)?,
-                link_target: None,
-            });
-            current = next;
         }
         Ok(ResolvedPath {
             parent: current,
+            parent_path: current_path,
             basename: OsString::from("."),
-            chain,
             missing: Vec::new(),
         })
-    }
-
-    fn open_link(parent: &File, name: &OsStr) -> Result<File, ToolError> {
-        #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
-        let flags = OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        #[cfg(target_vendor = "apple")]
-        let flags =
-            OFlags::from_bits_retain(libc::O_SYMLINK as _) | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        #[cfg(any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "freebsd",
-            target_vendor = "apple"
-        ))]
-        {
-            rustix::fs::openat(parent, name, flags, Mode::empty())
-                .map(File::from)
-                .map_err(super::io_error)
-        }
-        #[cfg(not(any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "freebsd",
-            target_vendor = "apple"
-        )))]
-        {
-            let _ = (parent, name);
-            Err(ToolError::unsupported_platform(
-                "pinning symlink objects is unsupported on this Unix platform",
-            ))
-        }
-    }
-
-    fn revalidate_chain(chain: &[ChainNode]) -> Result<(), ToolError> {
-        for node in chain {
-            let stat = rustix::fs::statat(&node.parent, &node.name, AtFlags::SYMLINK_NOFOLLOW)
-                .map_err(|_| ToolError::operation_changed("prepared ancestor changed"))?;
-            let (device, inode) = stat_identity(&stat);
-            if device != node.identity.device || inode != node.identity.inode {
-                return Err(ToolError::operation_changed(
-                    "prepared ancestor identity changed",
-                ));
-            }
-            if let Some(target) = &node.link_target {
-                let actual = rustix::fs::readlinkat(&node.parent, &node.name, Vec::new())
-                    .map_err(|_| ToolError::operation_changed("prepared symlink changed"))?;
-                if actual.as_bytes() != target.as_encoded_bytes() {
-                    return Err(ToolError::operation_changed(
-                        "prepared symlink target changed",
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn existing_manifest_bytes(
-        chain: &[ChainNode],
-        parent: &ObjectIdentity,
-        basename: &OsStr,
-        leaf: &ObjectIdentity,
-        directory: bool,
-        digest: &Sha256Digest,
-    ) -> Vec<u8> {
-        let mut bytes = b"expected-existing\0".to_vec();
-        for node in chain {
-            append_tagged_os_string(&mut bytes, b"ancestor-name", &node.name);
-            bytes.extend_from_slice(b"ancestor-identity\0");
-            bytes.extend_from_slice(&node.identity.canonical_bytes());
-            append_link_manifest(&mut bytes, node);
-        }
-        bytes.extend_from_slice(b"parent-identity\0");
-        bytes.extend_from_slice(&parent.canonical_bytes());
-        append_tagged_os_string(&mut bytes, b"basename", basename);
-        bytes.extend_from_slice(b"leaf-identity\0");
-        bytes.extend_from_slice(&leaf.canonical_bytes());
-        bytes.extend_from_slice(if directory {
-            b"leaf-type\0directory\0"
-        } else {
-            b"leaf-type\0file\0"
-        });
-        bytes.extend_from_slice(b"leaf-content-digest\0");
-        bytes.extend_from_slice(digest.as_str().as_bytes());
-        bytes.push(0);
-        bytes
-    }
-
-    fn append_link_manifest(bytes: &mut Vec<u8>, node: &ChainNode) {
-        if let Some(target) = &node.link_target {
-            append_tagged_os_string(bytes, b"symlink-target", target);
-        }
-    }
-
-    fn append_tagged_os_string(bytes: &mut Vec<u8>, tag: &[u8], value: &OsStr) {
-        bytes.extend_from_slice(tag);
-        bytes.push(0);
-        bytes.extend_from_slice(&(value.as_encoded_bytes().len() as u64).to_be_bytes());
-        bytes.extend_from_slice(value.as_encoded_bytes());
-    }
-
-    fn read_all(file: &File) -> Result<Vec<u8>, ToolError> {
-        let mut file = file.try_clone().map_err(super::io_error)?;
-        file.seek(SeekFrom::Start(0)).map_err(super::io_error)?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).map_err(super::io_error)?;
-        Ok(bytes)
-    }
-
-    fn directory_entries(file: &File) -> Result<Vec<(String, bool)>, ToolError> {
-        let mut directory = Dir::read_from(file).map_err(super::io_error)?;
-        let mut entries = Vec::new();
-        for entry in &mut directory {
-            let entry = entry.map_err(super::io_error)?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if matches!(name.as_str(), "." | "..") {
-                continue;
-            }
-            entries.push((name, entry.file_type() == FileType::Directory));
-        }
-        entries.sort();
-        Ok(entries)
-    }
-
-    fn directory_digest(file: &File) -> Result<Sha256Digest, ToolError> {
-        serde_json::to_vec(&directory_entries(file)?)
-            .map(|bytes| Sha256Digest::of_bytes(&bytes))
-            .map_err(super::io_error)
-    }
-
-    fn publish_missing_subtree(
-        anchor: &File,
-        missing: &[OsString],
-        bytes: &[u8],
-        before_publish: impl FnOnce() -> Result<(), ToolError>,
-    ) -> Result<(), ToolError> {
-        let temporary = OsString::from(format!(
-            ".cookie-agent-subtree-{}-{}",
-            std::process::id(),
-            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        rustix::fs::mkdirat(anchor, &temporary, Mode::from_raw_mode(0o700))
-            .map_err(super::io_error)?;
-        let cleanup_path = PathBuf::from(format!(
-            "/proc/self/fd/{}/{}",
-            anchor.as_raw_fd(),
-            temporary.to_string_lossy()
-        ));
-        let result = (|| {
-            let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-            let mut current = File::from(
-                rustix::fs::openat(anchor, &temporary, flags, Mode::empty())
-                    .map_err(super::io_error)?,
-            );
-            for component in &missing[1..missing.len() - 1] {
-                rustix::fs::mkdirat(&current, component, Mode::from_raw_mode(0o700))
-                    .map_err(super::io_error)?;
-                let next = File::from(
-                    rustix::fs::openat(&current, component, flags, Mode::empty())
-                        .map_err(super::io_error)?,
-                );
-                rustix::fs::fsync(&current).map_err(super::io_error)?;
-                current = next;
-            }
-            let leaf = missing
-                .last()
-                .ok_or_else(|| ToolError::execution("missing subtree has no leaf"))?;
-            let fd = rustix::fs::openat(
-                &current,
-                leaf,
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC,
-                Mode::from_raw_mode(0o600),
-            )
-            .map_err(super::io_error)?;
-            let mut file = File::from(fd);
-            file.write_all(bytes).map_err(super::io_error)?;
-            file.sync_all().map_err(super::io_error)?;
-            rustix::fs::fsync(&current).map_err(super::io_error)?;
-            before_publish()?;
-            rename_noreplace(anchor, &temporary, &missing[0])
-        })();
-        if result.is_err() {
-            let _ = fs::remove_dir_all(&cleanup_path);
-        }
-        result
-    }
-
-    fn stage(parent: &File, bytes: &[u8], mode: u32) -> Result<OsString, ToolError> {
-        let name = OsString::from(format!(
-            ".cookie-agent-stage-{}-{}",
-            std::process::id(),
-            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        let fd = rustix::fs::openat(
-            parent,
-            &name,
-            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC,
-            permission_mode(mode),
-        )
-        .map_err(super::io_error)?;
-        let mut file = File::from(fd);
-        if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
-            let _ = rustix::fs::unlinkat(parent, &name, AtFlags::empty());
-            return Err(super::io_error(error));
-        }
-        Ok(name)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn rename_exchange(parent: &File, old: &OsStr, new: &OsStr) -> Result<(), ToolError> {
-        rustix::fs::renameat_with(parent, old, parent, new, rustix::fs::RenameFlags::EXCHANGE)
-            .map_err(super::io_error)
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn rename_exchange(_: &File, _: &OsStr, _: &OsStr) -> Result<(), ToolError> {
-        Err(ToolError::unsupported_platform(
-            "atomic expected-target exchange is unsupported on this Unix platform",
-        ))
-    }
-
-    #[cfg(target_os = "linux")]
-    fn rename_noreplace(parent: &File, old: &OsStr, new: &OsStr) -> Result<(), ToolError> {
-        rustix::fs::renameat_with(parent, old, parent, new, rustix::fs::RenameFlags::NOREPLACE)
-            .map_err(|error| {
-                if error == rustix::io::Errno::EXIST {
-                    ToolError::operation_changed("prepared absent path was inserted before commit")
-                } else {
-                    super::io_error(error)
-                }
-            })
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn rename_noreplace(_: &File, _: &OsStr, _: &OsStr) -> Result<(), ToolError> {
-        Err(ToolError::unsupported_platform(
-            "atomic no-replace is unsupported on this Unix platform",
-        ))
-    }
-
-    #[cfg(test)]
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    pub(super) enum ExchangeFailurePoint {
-        OpenDisplaced,
-        StatDisplaced,
-        ReadDisplaced,
-        IdentityMismatch,
-        DigestMismatch,
-        CommitFsync,
-        CleanupUnlink,
-        CleanupFsync,
-    }
-
-    #[cfg(not(test))]
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum ExchangeFailurePoint {
-        OpenDisplaced,
-        StatDisplaced,
-        ReadDisplaced,
-        IdentityMismatch,
-        DigestMismatch,
-        CommitFsync,
-        CleanupUnlink,
-        CleanupFsync,
-    }
-
-    #[cfg(test)]
-    std::thread_local! {
-        static EXCHANGE_FAILURE: std::cell::Cell<Option<ExchangeFailurePoint>> = const { std::cell::Cell::new(None) };
-    }
-
-    #[cfg(test)]
-    pub(super) fn inject_exchange_failure(point: ExchangeFailurePoint) {
-        EXCHANGE_FAILURE.set(Some(point));
-    }
-
-    #[cfg(test)]
-    fn injected_exchange_failure(point: ExchangeFailurePoint) -> Result<(), ToolError> {
-        let injected = EXCHANGE_FAILURE.get() == Some(point);
-        if injected {
-            EXCHANGE_FAILURE.set(None);
-            if matches!(
-                point,
-                ExchangeFailurePoint::IdentityMismatch | ExchangeFailurePoint::DigestMismatch
-            ) {
-                Err(ToolError::operation_changed(format!("injected {point:?}")))
-            } else {
-                Err(ToolError::execution(format!("injected {point:?}")))
-            }
-        } else {
-            Ok(())
-        }
-    }
-
-    #[cfg(not(test))]
-    fn injected_exchange_failure(_: ExchangeFailurePoint) -> Result<(), ToolError> {
-        Ok(())
     }
 }
 
@@ -1105,11 +528,11 @@ pub use unix::*;
 
 #[cfg(windows)]
 mod windows {
-    //! Windows path-based filesystem capabilities.
+    //! Windows path-based filesystem targets.
     //!
-    //! Documented gaps versus the Unix descriptor backend: Windows validation
-    //! cannot provide TOCTOU immunity between revalidation and mutation, and
-    //! Windows has no atomic two-file exchange for expected-target rollback.
+    //! Unlike the Unix backend, Windows cannot hold the route open: execution
+    //! resolves the path again and refuses to proceed if it now leads
+    //! elsewhere, which narrows but cannot close the window for a racing link.
 
     use std::{
         collections::VecDeque,
@@ -1126,9 +549,8 @@ mod windows {
     };
 
     use cookie_agent_engine::ToolError;
-    use cookie_agent_protocol::Sha256Digest;
     use windows_sys::Win32::{
-        Foundation::{ERROR_ACCESS_DENIED, HANDLE, INVALID_HANDLE_VALUE},
+        Foundation::{HANDLE, INVALID_HANDLE_VALUE},
         Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
             FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH,
@@ -1188,317 +610,191 @@ mod windows {
         result
     }
 
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    pub struct ObjectIdentity {
-        pub device: u64,
-        pub inode: u64,
-        pub mode: u32,
-        pub size: u64,
-    }
-    impl ObjectIdentity {
-        pub fn canonical_bytes(&self) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            bytes.extend_from_slice(&self.device.to_be_bytes());
-            bytes.extend_from_slice(&self.inode.to_be_bytes());
-            bytes.extend_from_slice(&self.mode.to_be_bytes());
-            bytes.extend_from_slice(&self.size.to_be_bytes());
-            bytes
-        }
-    }
+    /// An existing file or directory.
     pub struct PreparedExisting {
         pub display_path: PathBuf,
-        pub identity: ObjectIdentity,
-        pub content_digest: Sha256Digest,
         pub directory: bool,
+        pub mode: u32,
         execution_path: PathBuf,
         sandbox_root: PathBuf,
-        route: Vec<RouteNode>,
     }
-    pub struct PreparedChained {
-        pub target: PreparedExisting,
-        pub original_digest: Sha256Digest,
-        pub predecessor_digest: Sha256Digest,
-    }
+
+    /// A path whose leaf, and possibly some ancestors, did not exist.
     pub struct PreparedAbsent {
         pub display_path: PathBuf,
         execution_path: PathBuf,
-        first_missing: PathBuf,
         sandbox_root: PathBuf,
-        route: Vec<RouteNode>,
     }
-    struct RouteNode {
-        path: PathBuf,
-        identity: ObjectIdentity,
-        link_target: Option<PathBuf>,
-        _object: fs::File,
-    }
+
     struct ResolvedPath {
         execution_path: PathBuf,
         first_missing: Option<PathBuf>,
-        route: Vec<RouteNode>,
     }
+
     enum PendingComponent {
         Normal(OsString),
         Parent,
         RequireDirectory,
     }
-    #[derive(Clone, Debug, Default, Eq, PartialEq)]
-    pub struct AtomicWriteOutcome {
-        pub cleanup_warning: Option<String>,
-    }
+
     pub enum PreparedTarget {
         Existing(PreparedExisting),
         Absent(PreparedAbsent),
     }
+
     impl PreparedTarget {
-        pub fn revalidate(&self) -> Result<(), ToolError> {
+        pub fn display_path(&self) -> &Path {
             match self {
-                Self::Existing(target) => target.revalidate(),
-                Self::Absent(target) => target.revalidate(),
+                Self::Existing(target) => &target.display_path,
+                Self::Absent(target) => &target.display_path,
             }
         }
-        pub fn serialization_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            self.manifest_bytes()
-        }
-        pub fn manifest_bytes(&self) -> Result<Vec<u8>, ToolError> {
+
+        /// Identifies the resolved location for approval bindings.
+        pub fn binding_bytes(&self) -> Vec<u8> {
             match self {
-                Self::Existing(target) => target.manifest_bytes(),
-                Self::Absent(target) => target.manifest_bytes(),
+                Self::Existing(target) => target.binding_bytes(),
+                Self::Absent(target) => location_bytes(b"absent\0", &target.execution_path),
+            }
+        }
+
+        /// Serializes mutations of one resolved location.
+        pub fn serialization_key(&self) -> Vec<u8> {
+            match self {
+                Self::Existing(target) => target.serialization_key(),
+                Self::Absent(target) => serialization_key(&target.execution_path),
+            }
+        }
+
+        /// Writes `bytes` to the target: replaces the file if it exists by
+        /// now, otherwise creates it and any missing parent directories.
+        pub fn write(&self, bytes: &[u8]) -> Result<(), ToolError> {
+            match self {
+                Self::Existing(target) => target.replace(bytes),
+                Self::Absent(target) => target.create(bytes),
             }
         }
     }
+
     impl PreparedExisting {
-        pub fn manifest_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            let mut bytes = b"windows-existing\0".to_vec();
-            append_path(&mut bytes, &self.sandbox_root);
-            append_path(&mut bytes, &self.display_path);
-            append_path(&mut bytes, &self.execution_path);
-            append_route(&mut bytes, &self.route);
-            bytes.extend_from_slice(&self.identity.canonical_bytes());
-            bytes.extend_from_slice(self.content_digest.as_str().as_bytes());
-            Ok(bytes)
-        }
-        pub fn read_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            if self.directory {
-                return Err(ToolError::execution("prepared target is a directory"));
-            }
-            fs::read(&self.execution_path).map_err(super::io_error)
-        }
-        pub fn verified_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            self.revalidate()?;
-            let bytes = self.read_bytes()?;
-            if Sha256Digest::of_bytes(&bytes) != self.content_digest {
-                return Err(ToolError::operation_changed(
-                    "prepared target content changed",
-                ));
-            }
-            Ok(bytes)
-        }
-        pub fn directory_entries(&self) -> Result<Vec<(String, bool)>, ToolError> {
-            if !self.directory {
-                return Err(ToolError::execution("prepared target is not a directory"));
-            }
-            directory_entries(&self.execution_path)
-        }
-        pub fn revalidate(&self) -> Result<(), ToolError> {
-            revalidate_route(&self.route)?;
-            let resolved = resolve_path(&self.display_path, false).map_err(|error| {
-                ToolError::operation_changed(format!("prepared target route changed: {error}"))
-            })?;
-            if !paths_equal(&resolved.execution_path, &self.execution_path)
-                || resolved.first_missing.is_some()
-                || !routes_equal(&resolved.route, &self.route)
-            {
-                return Err(ToolError::operation_changed(
-                    "prepared target resolved to another path",
-                ));
-            }
-            validate_contained_path(&self.sandbox_root, &resolved.execution_path).map_err(
-                |error| {
-                    ToolError::operation_changed(format!(
-                        "prepared target containment changed: {error}"
-                    ))
+        pub fn binding_bytes(&self) -> Vec<u8> {
+            location_bytes(
+                if self.directory {
+                    b"directory\0"
+                } else {
+                    b"file\0"
                 },
-            )?;
-            let file = open_for_identity(&self.execution_path).map_err(|error| {
-                ToolError::operation_changed(format!("prepared target changed: {error}"))
-            })?;
-            let identity = identity(&file).map_err(|error| {
-                ToolError::operation_changed(format!("prepared target changed: {error}"))
-            })?;
-            if identity.device != self.identity.device
-                || identity.inode != self.identity.inode
-                || identity.mode != self.identity.mode
-            {
-                return Err(ToolError::operation_changed(
-                    "prepared target identity changed",
-                ));
-            }
-            let digest = content_digest(&self.execution_path, self.directory).map_err(|error| {
-                ToolError::operation_changed(format!("prepared target changed: {error}"))
-            })?;
-            if digest != self.content_digest {
-                return Err(ToolError::operation_changed(
-                    "prepared target content changed",
-                ));
-            }
-            Ok(())
+                &self.execution_path,
+            )
         }
-        fn replace_atomically_impl(
-            &self,
-            bytes: &[u8],
-            validate: bool,
-        ) -> Result<AtomicWriteOutcome, ToolError> {
+
+        pub fn serialization_key(&self) -> Vec<u8> {
+            serialization_key(&self.execution_path)
+        }
+
+        pub fn proc_fd_path(&self) -> PathBuf {
+            self.execution_path.clone()
+        }
+
+        /// Opens the regular file now at the prepared location for reading.
+        pub fn open_file(&self) -> Result<fs::File, ToolError> {
+            self.verify_route()?;
+            let file = fs::File::open(&self.execution_path).map_err(super::io_error)?;
+            if !file.metadata().map_err(super::io_error)?.is_file() {
+                return Err(ToolError::operation_changed(
+                    "prepared target is no longer a regular file",
+                ));
+            }
+            Ok(file)
+        }
+
+        /// Lists the directory now at the prepared location, sorted by name.
+        pub fn directory_entries(&self) -> Result<Vec<(String, bool)>, ToolError> {
+            self.verify_route()?;
+            let mut entries = fs::read_dir(&self.execution_path)
+                .map_err(super::io_error)?
+                .map(|entry| {
+                    let entry = entry.map_err(super::io_error)?;
+                    let file_type = entry.file_type().map_err(super::io_error)?;
+                    Ok((
+                        entry.file_name().to_string_lossy().into_owned(),
+                        file_type.is_dir(),
+                    ))
+                })
+                .collect::<Result<Vec<_>, ToolError>>()?;
+            entries.sort_unstable();
+            Ok(entries)
+        }
+
+        /// Atomically replaces the file at the prepared location.
+        pub fn replace(&self, bytes: &[u8]) -> Result<(), ToolError> {
             if self.directory {
                 return Err(ToolError::unsupported_security(
                     "cannot replace a directory with file content",
                 ));
             }
-            if validate {
-                self.revalidate()?;
-            }
-            let temporary = stage_sibling(&self.execution_path, bytes)?;
-            if let Err(error) = move_file(&temporary, &self.execution_path, true) {
-                let _ = fs::remove_file(&temporary);
-                return Err(error);
-            }
-            Ok(AtomicWriteOutcome::default())
+            self.verify_route()?;
+            publish(&self.execution_path, bytes)
         }
-        pub fn replace_atomically(&self, bytes: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
-            self.replace_atomically_impl(bytes, true)
-        }
-        pub fn proc_fd_path(&self) -> PathBuf {
-            self.execution_path.clone()
-        }
-    }
-    impl PreparedAbsent {
-        pub fn revalidate(&self) -> Result<(), ToolError> {
-            revalidate_route(&self.route)?;
-            match fs::symlink_metadata(&self.first_missing) {
-                Ok(_) => {
-                    return Err(ToolError::operation_changed(
-                        "an originally missing path component was inserted",
-                    ));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(ToolError::operation_changed(format!(
-                        "prepared missing route changed: {error}"
-                    )));
-                }
-            }
-            let resolved = resolve_path(&self.display_path, true).map_err(|error| {
-                ToolError::operation_changed(format!("prepared target route changed: {error}"))
-            })?;
-            if !paths_equal(&resolved.execution_path, &self.execution_path)
-                || resolved.first_missing.as_ref() != Some(&self.first_missing)
-                || !routes_equal(&resolved.route, &self.route)
-            {
-                return Err(ToolError::operation_changed(
-                    "prepared absent target resolved to another path",
-                ));
-            }
-            validate_contained_path(&self.sandbox_root, &resolved.execution_path).map_err(
-                |error| {
-                    ToolError::operation_changed(format!(
-                        "prepared target containment changed: {error}"
-                    ))
-                },
-            )?;
-            if self.execution_path.exists() {
-                return Err(ToolError::operation_changed(
-                    "a prepared absent path was inserted",
-                ));
+
+        fn verify_route(&self) -> Result<(), ToolError> {
+            if verify_route(&self.display_path, &self.execution_path, &self.sandbox_root)? {
+                return Err(ToolError::execution("prepared target no longer exists"));
             }
             Ok(())
         }
-        pub fn manifest_bytes(&self) -> Result<Vec<u8>, ToolError> {
-            let mut bytes = b"windows-absent\0".to_vec();
-            append_path(&mut bytes, &self.sandbox_root);
-            append_path(&mut bytes, &self.display_path);
-            append_path(&mut bytes, &self.execution_path);
-            append_path(&mut bytes, &self.first_missing);
-            append_route(&mut bytes, &self.route);
-            Ok(bytes)
-        }
-        pub fn create_atomically(&self, bytes: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
-            self.revalidate()?;
+    }
+
+    impl PreparedAbsent {
+        fn create(&self, bytes: &[u8]) -> Result<(), ToolError> {
+            verify_route(&self.display_path, &self.execution_path, &self.sandbox_root)?;
             let parent = self
                 .execution_path
                 .parent()
                 .ok_or_else(|| ToolError::unsupported_security("target has no parent"))?;
             create_private_parents(&self.sandbox_root, parent)?;
-            let temporary = stage_sibling(&self.execution_path, bytes)?;
-            if let Err(error) = move_file(&temporary, &self.execution_path, false) {
-                let _ = fs::remove_file(&temporary);
-                return Err(error);
-            }
-            Ok(AtomicWriteOutcome::default())
+            publish(&self.execution_path, bytes)
         }
     }
-    impl PreparedChained {
-        /// Ancestor route validation for chained targets: the leaf identity
-        /// legitimately changes when a predecessor replaces it, so only the
-        /// ancestors are pinned; the leaf itself is checked below.
-        fn revalidate_ancestors(&self) -> Result<(), ToolError> {
-            let (_, ancestors) =
-                self.target.route.split_last().ok_or_else(|| {
-                    ToolError::operation_changed("prepared target route is empty")
-                })?;
-            revalidate_route(ancestors)?;
-            let leaf = open_for_identity(&self.target.execution_path).map_err(|error| {
-                ToolError::operation_changed(format!("prepared target changed: {error}"))
-            })?;
-            if opened_file_is_reparse(&leaf).map_err(|error| {
-                ToolError::operation_changed(format!("prepared target changed: {error}"))
-            })? {
-                return Err(ToolError::operation_changed(
-                    "prepared target became a link during chained execution",
-                ));
-            }
-            validate_contained_path(&self.target.sandbox_root, &self.target.execution_path).map_err(
-                |error| {
-                    ToolError::operation_changed(format!(
-                        "prepared target containment changed: {error}"
-                    ))
-                },
-            )
-        }
 
-        pub fn revalidate(&self) -> Result<(), ToolError> {
-            self.revalidate_ancestors()?;
-            let digest = content_digest(&self.target.execution_path, self.target.directory)
-                .map_err(super::io_error)?;
-            if digest != self.original_digest && digest != self.predecessor_digest {
-                return Err(ToolError::operation_changed(
-                    "prepared target content changed",
-                ));
-            }
-            Ok(())
+    /// Windows cannot operate relative to an open directory handle, so the
+    /// path is resolved again right before use: a link planted on the route
+    /// since preparation must not redirect the operation. Returns whether the
+    /// target is now missing.
+    fn verify_route(
+        display_path: &Path,
+        execution_path: &Path,
+        sandbox_root: &Path,
+    ) -> Result<bool, ToolError> {
+        let resolved = resolve_path(display_path, true)?;
+        if !paths_equal(&resolved.execution_path, execution_path) {
+            return Err(ToolError::operation_changed(
+                "prepared target now resolves to another path",
+            ));
         }
-        pub fn revalidate_for_execution(&self) -> Result<(), ToolError> {
-            self.revalidate_ancestors()?;
-            let digest = content_digest(&self.target.execution_path, self.target.directory)
-                .map_err(super::io_error)?;
-            if digest != self.predecessor_digest {
-                return Err(ToolError::operation_changed(
-                    "prepared target content changed",
-                ));
-            }
-            Ok(())
-        }
-        pub fn replace_atomically(&self, bytes: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
-            self.target.replace_atomically_impl(bytes, false)
-        }
+        validate_contained_path(sandbox_root, &resolved.execution_path)?;
+        Ok(resolved.first_missing.is_some())
     }
-    pub fn cwd_context_bytes(cwd: &Path) -> Result<Vec<u8>, ToolError> {
-        let cwd = normalize_absolute(cwd)?;
-        let resolved = resolve_path(&cwd, false)?;
-        Ok(identity(&open_for_identity(&resolved.execution_path)?)?.canonical_bytes())
-    }
-    pub fn ensure_atomic_write_supported() -> Result<(), ToolError> {
+
+    fn publish(target: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+        let temporary = stage_sibling(target, bytes)?;
+        if let Err(error) = move_file(&temporary, target) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
+        }
         Ok(())
     }
+
+    fn location_bytes(kind: &[u8], path: &Path) -> Vec<u8> {
+        let mut bytes = kind.to_vec();
+        bytes.extend_from_slice(path.to_string_lossy().as_bytes());
+        bytes
+    }
+
+    fn serialization_key(path: &Path) -> Vec<u8> {
+        path.to_string_lossy().to_lowercase().into_bytes()
+    }
+
     pub fn prepare_existing(cwd: &Path, requested: &Path) -> Result<PreparedExisting, ToolError> {
         match prepare_target(cwd, requested)? {
             PreparedTarget::Existing(existing) => Ok(existing),
@@ -1507,48 +803,30 @@ mod windows {
             }
         }
     }
+
     pub fn prepare_target(cwd: &Path, requested: &Path) -> Result<PreparedTarget, ToolError> {
         let display_path = absolute_requested(cwd, requested)?;
         let sandbox_root = sandbox_root(cwd, &display_path, requested.is_absolute())?;
         let resolved = resolve_path(&display_path, true)?;
         validate_contained_path(&sandbox_root, &resolved.execution_path)?;
-        match resolved.first_missing {
-            None => {
-                let file = open_for_identity(&resolved.execution_path)?;
-                let identity = identity(&file)?;
-                let directory = file.metadata().map_err(super::io_error)?.is_dir();
-                let content_digest = content_digest(&resolved.execution_path, directory)?;
-                revalidate_route(&resolved.route)?;
-                Ok(PreparedTarget::Existing(PreparedExisting {
-                    display_path,
-                    identity,
-                    content_digest,
-                    directory,
-                    execution_path: resolved.execution_path,
-                    sandbox_root,
-                    route: resolved.route,
-                }))
-            }
-            Some(first_missing) => {
-                revalidate_route(&resolved.route)?;
-                match fs::symlink_metadata(&first_missing) {
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Ok(_) => {
-                        return Err(ToolError::operation_changed(
-                            "missing route component was inserted during preparation",
-                        ));
-                    }
-                    Err(error) => return Err(super::io_error(error)),
-                }
-                Ok(PreparedTarget::Absent(PreparedAbsent {
-                    display_path,
-                    execution_path: resolved.execution_path,
-                    first_missing,
-                    sandbox_root,
-                    route: resolved.route,
-                }))
-            }
+        if resolved.first_missing.is_some() {
+            return Ok(PreparedTarget::Absent(PreparedAbsent {
+                display_path,
+                execution_path: resolved.execution_path,
+                sandbox_root,
+            }));
         }
+        let directory = open_for_identity(&resolved.execution_path)?
+            .metadata()
+            .map_err(super::io_error)?
+            .is_dir();
+        Ok(PreparedTarget::Existing(PreparedExisting {
+            display_path,
+            directory,
+            mode: if directory { 0o040755 } else { 0o100755 },
+            execution_path: resolved.execution_path,
+            sandbox_root,
+        }))
     }
 
     fn resolve_path(path: &Path, allow_missing: bool) -> Result<ResolvedPath, ToolError> {
@@ -1558,10 +836,10 @@ mod windows {
             .into_iter()
             .map(PendingComponent::Normal)
             .collect::<VecDeque<_>>();
-        let mut route = Vec::new();
+        let mut visited = 1;
         let mut links = 0;
-        ensure_resolution_bound(1, pending.len())?;
-        pin_route_node(&mut route, current.clone(), None)?;
+        ensure_resolution_bound(visited, pending.len())?;
+        open_for_identity(&current)?;
 
         while let Some(component) = pending.pop_front() {
             let name = match component {
@@ -1586,22 +864,11 @@ mod windows {
             let candidate = current.join(&name);
             match fs::symlink_metadata(&candidate) {
                 Ok(_) => {
-                    ensure_resolution_bound(route.len() + 1, pending.len())?;
+                    visited += 1;
+                    ensure_resolution_bound(visited, pending.len())?;
                     let object = open_for_identity(&candidate)?;
-                    let is_reparse = opened_file_is_reparse(&object)?;
-                    let directory = object.metadata().map_err(super::io_error)?.is_dir();
-                    let link_target = if is_reparse {
-                        Some(read_supported_link(&candidate)?)
-                    } else {
-                        None
-                    };
-                    pin_open_route_node(
-                        &mut route,
-                        candidate.clone(),
-                        link_target.clone(),
-                        object,
-                    )?;
-                    if let Some(target) = link_target {
+                    if opened_file_is_reparse(&object)? {
+                        let target = read_supported_link(&candidate)?;
                         links += 1;
                         if links > MAX_LINK_TRAVERSALS {
                             return Err(ToolError::unsupported_security(
@@ -1611,18 +878,21 @@ mod windows {
                         let (target_root, target_components) =
                             link_target_components(&current, &target)?;
                         ensure_resolution_bound(
-                            route.len() + usize::from(target_root.is_some()),
+                            visited + usize::from(target_root.is_some()),
                             pending.len().saturating_add(target_components.len()),
                         )?;
                         if let Some(target_root) = target_root {
+                            visited += 1;
+                            open_for_identity(&target_root)?;
                             current = target_root;
-                            pin_route_node(&mut route, current.clone(), None)?;
                         }
                         for component in target_components.into_iter().rev() {
                             pending.push_front(component);
                         }
                     } else {
-                        if !pending.is_empty() && !directory {
+                        if !pending.is_empty()
+                            && !object.metadata().map_err(super::io_error)?.is_dir()
+                        {
                             return Err(ToolError::execution(format!(
                                 "filesystem path component is not a directory: {}",
                                 candidate.display()
@@ -1632,7 +902,7 @@ mod windows {
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound && allow_missing => {
-                    ensure_resolution_bound(route.len(), pending.len().saturating_add(1))?;
+                    ensure_resolution_bound(visited, pending.len().saturating_add(1))?;
                     if matches!(pending.back(), Some(PendingComponent::RequireDirectory)) {
                         return Err(ToolError::execution(
                             "symlink destination requires a directory",
@@ -1655,13 +925,13 @@ mod windows {
                     return Ok(ResolvedPath {
                         execution_path: current,
                         first_missing: Some(first_missing),
-                        route,
                     });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(ToolError::operation_changed(
-                        "prepared filesystem object disappeared",
-                    ));
+                    return Err(ToolError::execution(format!(
+                        "filesystem path does not exist: {}",
+                        candidate.display()
+                    )));
                 }
                 Err(error) => {
                     return Err(super::io_error(format!(
@@ -1674,7 +944,6 @@ mod windows {
         Ok(ResolvedPath {
             execution_path: current.canonicalize().map_err(super::io_error)?,
             first_missing: None,
-            route,
         })
     }
 
@@ -1790,76 +1059,6 @@ mod windows {
             ));
         }
         Ok((root, names))
-    }
-
-    fn pin_route_node(
-        route: &mut Vec<RouteNode>,
-        path: PathBuf,
-        link_target: Option<PathBuf>,
-    ) -> Result<(), ToolError> {
-        ensure_resolution_bound(route.len() + 1, 0)?;
-        let object = open_for_identity(&path)?;
-        pin_open_route_node(route, path, link_target, object)
-    }
-
-    fn pin_open_route_node(
-        route: &mut Vec<RouteNode>,
-        path: PathBuf,
-        link_target: Option<PathBuf>,
-        object: fs::File,
-    ) -> Result<(), ToolError> {
-        let identity = identity(&object)?;
-        route.push(RouteNode {
-            path,
-            identity,
-            link_target,
-            _object: object,
-        });
-        Ok(())
-    }
-
-    fn routes_equal(left: &[RouteNode], right: &[RouteNode]) -> bool {
-        left.len() == right.len()
-            && left.iter().zip(right).all(|(left, right)| {
-                paths_equal(&left.path, &right.path)
-                    && same_route_identity(&left.identity, &right.identity)
-                    && left.link_target == right.link_target
-            })
-    }
-
-    fn same_route_identity(left: &ObjectIdentity, right: &ObjectIdentity) -> bool {
-        left.device == right.device && left.inode == right.inode && left.mode == right.mode
-    }
-
-    fn revalidate_route(route: &[RouteNode]) -> Result<(), ToolError> {
-        for node in route {
-            let file = open_for_identity(&node.path).map_err(|_| {
-                ToolError::operation_changed("prepared route component disappeared")
-            })?;
-            let found = identity(&file)
-                .map_err(|_| ToolError::operation_changed("prepared route component changed"))?;
-            if !same_route_identity(&found, &node.identity) {
-                return Err(ToolError::operation_changed(
-                    "prepared route component identity changed",
-                ));
-            }
-            let is_reparse = opened_file_is_reparse(&file).map_err(|error| {
-                ToolError::operation_changed(format!("prepared route component changed: {error}"))
-            })?;
-            if is_reparse != node.link_target.is_some() {
-                return Err(ToolError::operation_changed(
-                    "prepared route component type changed",
-                ));
-            }
-            if let Some(expected) = &node.link_target {
-                let found = fs::read_link(&node.path)
-                    .map_err(|_| ToolError::operation_changed("prepared link target changed"))?;
-                if found != *expected {
-                    return Err(ToolError::operation_changed("prepared link target changed"));
-                }
-            }
-        }
-        Ok(())
     }
 
     fn absolute_requested(cwd: &Path, requested: &Path) -> Result<PathBuf, ToolError> {
@@ -2038,54 +1237,6 @@ mod windows {
             })
     }
 
-    fn identity(file: &fs::File) -> Result<ObjectIdentity, ToolError> {
-        let metadata = file.metadata().map_err(super::io_error)?;
-        let mut information = BY_HANDLE_FILE_INFORMATION::default();
-        let handle = file.as_raw_handle() as HANDLE;
-        if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
-            return Err(super::io_error(std::io::Error::last_os_error()));
-        }
-        Ok(ObjectIdentity {
-            device: u64::from(information.dwVolumeSerialNumber),
-            inode: (u64::from(information.nFileIndexHigh) << 32)
-                | u64::from(information.nFileIndexLow),
-            mode: if metadata.is_dir() {
-                0o040755
-            } else {
-                0o100755
-            },
-            size: metadata.len(),
-        })
-    }
-
-    fn content_digest(path: &Path, directory: bool) -> Result<Sha256Digest, ToolError> {
-        if directory {
-            serde_json::to_vec(&directory_entries(path)?)
-                .map(|bytes| Sha256Digest::of_bytes(&bytes))
-                .map_err(super::io_error)
-        } else {
-            fs::read(path)
-                .map(|bytes| Sha256Digest::of_bytes(&bytes))
-                .map_err(super::io_error)
-        }
-    }
-
-    fn directory_entries(path: &Path) -> Result<Vec<(String, bool)>, ToolError> {
-        let mut entries = fs::read_dir(path)
-            .map_err(super::io_error)?
-            .map(|entry| {
-                let entry = entry.map_err(super::io_error)?;
-                let file_type = entry.file_type().map_err(super::io_error)?;
-                Ok((
-                    entry.file_name().to_string_lossy().into_owned(),
-                    file_type.is_dir(),
-                ))
-            })
-            .collect::<Result<Vec<_>, ToolError>>()?;
-        entries.sort();
-        Ok(entries)
-    }
-
     fn create_private_parents(root: &Path, parent: &Path) -> Result<(), ToolError> {
         validate_contained_path(root, parent)?;
         let mut current = PathBuf::new();
@@ -2144,41 +1295,24 @@ mod windows {
         Ok(temporary)
     }
 
-    fn move_file(source: &Path, target: &Path, replace: bool) -> Result<(), ToolError> {
-        let source_wide = wide_path(source)?;
+    fn move_file(source: &Path, target: &Path) -> Result<(), ToolError> {
         let target_wide = wide_path(target)?;
-        // A replacing publish prefers the superseding POSIX rename: classic
-        // MoveFileExW unlinks the target before linking the source, so a reader
-        // outside the sandbox that opens the published path by name can find it
-        // absent mid-write. Every failure falls through to the classic call
-        // below, which keeps the existing error reporting and its own
-        // ERROR_ACCESS_DENIED retry. A non-replacing publish must fail when the
-        // target exists, which this rename cannot express, so it is unchanged.
-        if replace && rename_over_open_target(source, &target_wide).is_ok() {
+        // Prefer the superseding POSIX rename: classic MoveFileExW unlinks the
+        // target before linking the source, so a reader that opens the path by
+        // name can find it absent mid-write, and it rejects an open destination
+        // even when that shares DELETE. The classic call remains the fallback
+        // for filesystems without POSIX rename semantics.
+        if rename_over_open_target(source, &target_wide).is_ok() {
             return Ok(());
         }
-        let flags = MOVEFILE_WRITE_THROUGH
-            | if replace {
-                MOVEFILE_REPLACE_EXISTING
-            } else {
-                0
-            };
+        let source_wide = wide_path(source)?;
+        let flags = MOVEFILE_WRITE_THROUGH | MOVEFILE_REPLACE_EXISTING;
         if unsafe { MoveFileExW(source_wide.as_ptr(), target_wide.as_ptr(), flags) } == 0 {
-            let mut error = std::io::Error::last_os_error();
-            if replace && error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
-                // NTFS classic rename-over rejects an open destination even when
-                // it shares DELETE. Keep the pins and use a write-through POSIX
-                // rename, rather than weakening identity or durability checks.
-                match rename_over_open_target(source, &target_wide) {
-                    Ok(()) => return Ok(()),
-                    Err(rename_error) => error = rename_error,
-                }
-            }
-            Err(ToolError::operation_changed(format!(
+            Err(super::io_error(format!(
                 "atomic rename failed from {} to {}: {}",
                 source.display(),
                 target.display(),
-                error
+                std::io::Error::last_os_error()
             )))
         } else {
             Ok(())
@@ -2232,33 +1366,16 @@ mod windows {
         }
         Ok(())
     }
-
-    fn append_path(bytes: &mut Vec<u8>, path: &Path) {
-        let encoded = path.as_os_str().to_string_lossy();
-        bytes.extend_from_slice(&(encoded.len() as u64).to_be_bytes());
-        bytes.extend_from_slice(encoded.as_bytes());
-    }
-
-    fn append_route(bytes: &mut Vec<u8>, route: &[RouteNode]) {
-        bytes.extend_from_slice(&(route.len() as u64).to_be_bytes());
-        for node in route {
-            append_path(bytes, &node.path);
-            bytes.extend_from_slice(&node.identity.device.to_be_bytes());
-            bytes.extend_from_slice(&node.identity.inode.to_be_bytes());
-            bytes.extend_from_slice(&node.identity.mode.to_be_bytes());
-            match &node.link_target {
-                Some(target) => {
-                    bytes.push(1);
-                    append_path(bytes, target);
-                }
-                None => bytes.push(0),
-            }
-        }
-    }
 }
 
 #[cfg(windows)]
 pub use windows::*;
+
+/// Identifies the session working directory for operation fingerprints.
+pub fn cwd_context_bytes(cwd: &std::path::Path) -> Result<Vec<u8>, cookie_agent_engine::ToolError> {
+    let resolved = std::fs::canonicalize(cwd).map_err(io_error)?;
+    Ok(resolved.as_os_str().as_encoded_bytes().to_vec())
+}
 
 fn io_error(error: impl std::fmt::Display) -> cookie_agent_engine::ToolError {
     cookie_agent_engine::ToolError::execution(error.to_string())
@@ -2274,9 +1391,16 @@ mod windows_tests {
     use cookie_agent_engine::ToolError;
 
     use super::{
-        PreparedTarget, components_start_with, ensure_resolution_bound, paths_equal,
-        prepare_existing, prepare_target,
+        PreparedExisting, PreparedTarget, components_start_with, ensure_resolution_bound,
+        paths_equal, prepare_existing, prepare_target,
     };
+
+    fn read(target: &PreparedExisting) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut target.open_file().expect("open"), &mut bytes)
+            .expect("read destination");
+        bytes
+    }
 
     #[test]
     fn windows_path_comparisons_are_case_insensitive_and_component_bounded() {
@@ -2304,16 +1428,13 @@ mod windows_tests {
         fs::write(root.path().join("existing.txt"), "old").expect("existing");
         let existing = prepare_existing(root.path(), std::path::Path::new("existing.txt"))
             .expect("prepare existing");
-        existing.replace_atomically(b"new").expect("replace");
+        existing.replace(b"new").expect("replace");
         assert_eq!(fs::read(root.path().join("existing.txt")).unwrap(), b"new");
 
-        let PreparedTarget::Absent(absent) =
-            prepare_target(root.path(), std::path::Path::new("nested/new.txt"))
-                .expect("prepare absent")
-        else {
-            panic!("absent target")
-        };
-        absent.create_atomically(b"created").expect("create");
+        let absent = prepare_target(root.path(), std::path::Path::new("nested/new.txt"))
+            .expect("prepare absent");
+        assert!(matches!(absent, PreparedTarget::Absent(_)));
+        absent.write(b"created").expect("create");
         assert_eq!(
             fs::read(root.path().join("nested/new.txt")).unwrap(),
             b"created"
@@ -2326,7 +1447,10 @@ mod windows_tests {
         let outside_direct = prepare_existing(outside.path(), std::path::Path::new("external.txt"))
             .expect("prepare direct outside target");
         assert!(paths_equal(&outside_from_root.display_path, &outside_path));
-        assert_eq!(outside_from_root.identity, outside_direct.identity);
+        assert_eq!(
+            outside_from_root.binding_bytes(),
+            outside_direct.binding_bytes()
+        );
         assert!(!components_start_with(
             &outside_from_root.display_path,
             &root.path().canonicalize().expect("canonical sandbox")
@@ -2361,7 +1485,7 @@ mod windows_tests {
             .expect("held destination");
         let target = prepare_existing(root.path(), Path::new("target.txt")).expect("prepare");
         target
-            .replace_atomically(b"replacement")
+            .replace(b"replacement")
             .expect("replace open destination");
         let mut preimage = String::new();
         held.read_to_string(&mut preimage)
@@ -2376,8 +1500,8 @@ mod windows_tests {
             .open(&path)
             .expect("deny-delete holder");
         assert!(matches!(
-            target.replace_atomically(b"forbidden"),
-            Err(ToolError::OperationChanged(_))
+            target.replace(b"forbidden"),
+            Err(ToolError::Failed(_))
         ));
         assert_eq!(fs::read(&path).unwrap(), b"replacement");
         assert!(fs::read_dir(root.path()).unwrap().all(|entry| {
@@ -2407,10 +1531,7 @@ mod windows_tests {
             &target.display_path,
             &root.path().join("link/file.txt")
         ));
-        assert_eq!(
-            target.verified_bytes().expect("read destination"),
-            b"inside"
-        );
+        assert_eq!(read(&target), b"inside");
     }
 
     #[test]
@@ -2439,7 +1560,7 @@ mod windows_tests {
         }
         let target = prepare_existing(root.path(), Path::new("link/file.txt"))
             .expect("prepare through relative target");
-        assert_eq!(target.verified_bytes().expect("read destination"), b"value");
+        assert_eq!(read(&target), b"value");
     }
 
     #[test]
@@ -2536,29 +1657,24 @@ mod windows_tests {
             }
             panic!("create symlink: {error}");
         }
-        let PreparedTarget::Absent(target) =
-            prepare_target(root.path(), Path::new("link/nested/file.txt")).expect("prepare")
-        else {
-            panic!("absent destination")
-        };
+        let target =
+            prepare_target(root.path(), Path::new("link/nested/file.txt")).expect("prepare");
+        assert!(matches!(target, PreparedTarget::Absent(_)));
         assert!(paths_equal(
-            &target.display_path,
+            target.display_path(),
             &root.path().join("link/nested/file.txt")
         ));
-        target.create_atomically(b"created").expect("create");
+        target.write(b"created").expect("create");
         assert_eq!(
             fs::read(root.path().join("destination/nested/file.txt")).expect("destination"),
             b"created"
         );
         let slash_link = root.path().join("slash-link");
         std::os::windows::fs::symlink_dir("other\\", &slash_link).expect("directory suffix");
-        let PreparedTarget::Absent(target) =
-            prepare_target(root.path(), Path::new("slash-link/nested/file.txt"))
-                .expect("prepare child")
-        else {
-            panic!("absent child destination")
-        };
-        target.create_atomically(b"child").expect("create child");
+        let target = prepare_target(root.path(), Path::new("slash-link/nested/file.txt"))
+            .expect("prepare child");
+        assert!(matches!(target, PreparedTarget::Absent(_)));
+        target.write(b"child").expect("create child");
         assert_eq!(
             fs::read(root.path().join("other/nested/file.txt")).unwrap(),
             b"child"
@@ -2585,51 +1701,17 @@ mod windows_tests {
         fs::remove_dir(&link).expect("remove old link");
         std::os::windows::fs::symlink_dir("second", &link).expect("replace link");
         assert!(matches!(
-            target.revalidate(),
+            target.replace(b"redirected"),
             Err(ToolError::OperationChanged(_))
         ));
-    }
-
-    #[test]
-    fn windows_route_ancestor_replacement_is_operation_changed() {
-        let root = tempfile::tempdir().expect("sandbox");
-        fs::create_dir(root.path().join("ancestor")).expect("ancestor");
-        fs::write(root.path().join("ancestor/file.txt"), "same").expect("file");
-        let target =
-            prepare_existing(root.path(), Path::new("ancestor/file.txt")).expect("prepare target");
-        // NTFS forbids renaming a directory with open descendants. Move the
-        // pinned leaf out first, then put that same object under the new ancestor.
-        fs::rename(
-            root.path().join("ancestor/file.txt"),
-            root.path().join("held-file.txt"),
-        )
-        .expect("move pinned leaf out");
-        fs::rename(root.path().join("ancestor"), root.path().join("displaced"))
-            .expect("displace ancestor");
-        fs::create_dir(root.path().join("ancestor")).expect("replacement ancestor");
-        fs::rename(
-            root.path().join("held-file.txt"),
-            root.path().join("ancestor/file.txt"),
-        )
-        .expect("restore original leaf");
-        let replacement = prepare_existing(root.path(), Path::new("ancestor/file.txt"))
-            .expect("prepare replacement route");
-        assert_eq!(target.identity, replacement.identity);
-        assert!(matches!(
-            target.revalidate(),
-            Err(ToolError::OperationChanged(_))
-        ));
-    }
-
-    #[test]
-    fn windows_route_identity_ignores_mutable_directory_size() {
-        let root = tempfile::tempdir().expect("sandbox");
-        fs::create_dir(root.path().join("ancestor")).expect("ancestor");
-        fs::write(root.path().join("ancestor/file.txt"), "value").expect("file");
-        let target =
-            prepare_existing(root.path(), Path::new("ancestor/file.txt")).expect("prepare target");
-        fs::write(root.path().join("ancestor/sibling.txt"), "sibling").expect("sibling");
-        target.revalidate().expect("stable route identity");
+        assert_eq!(
+            fs::read(root.path().join("first/file.txt")).unwrap(),
+            b"first"
+        );
+        assert_eq!(
+            fs::read(root.path().join("second/file.txt")).unwrap(),
+            b"second"
+        );
     }
 
     #[test]
@@ -2651,10 +1733,7 @@ mod windows_tests {
         );
         let target = prepare_existing(root.path(), Path::new("junction/file.txt"))
             .expect("prepare through junction");
-        assert_eq!(
-            target.verified_bytes().expect("read destination"),
-            b"junction"
-        );
+        assert_eq!(read(&target), b"junction");
     }
 
     #[test]
@@ -2674,43 +1753,16 @@ mod windows_tests {
     }
 
     #[test]
-    fn windows_absent_leaf_insertion_is_operation_changed() {
+    fn windows_write_replaces_a_file_created_after_preparation() {
         let root = tempfile::tempdir().expect("sandbox");
-        let PreparedTarget::Absent(absent) =
-            prepare_target(root.path(), std::path::Path::new("target.txt")).expect("prepare")
-        else {
-            panic!("absent target")
-        };
-        fs::write(root.path().join("target.txt"), "attacker").expect("insert target");
-        assert!(matches!(
-            absent.create_atomically(b"new"),
-            Err(ToolError::OperationChanged(_))
-        ));
+        let absent =
+            prepare_target(root.path(), std::path::Path::new("target.txt")).expect("prepare");
+        assert!(matches!(absent, PreparedTarget::Absent(_)));
+        fs::write(root.path().join("target.txt"), "concurrent").expect("insert target");
+        absent.write(b"new").expect("write");
         assert_eq!(
             fs::read_to_string(root.path().join("target.txt")).unwrap(),
-            "attacker"
-        );
-    }
-
-    #[test]
-    fn windows_missing_subtree_insertion_is_operation_changed() {
-        let root = tempfile::tempdir().expect("sandbox");
-        let PreparedTarget::Absent(absent) =
-            prepare_target(root.path(), std::path::Path::new("one/two/target.txt"))
-                .expect("prepare")
-        else {
-            panic!("absent target")
-        };
-        fs::create_dir(root.path().join("one")).expect("insert subtree");
-        fs::write(root.path().join("one/attacker"), "attacker").expect("attacker");
-        assert!(matches!(
-            absent.create_atomically(b"new"),
-            Err(ToolError::OperationChanged(_))
-        ));
-        assert!(!root.path().join("one/two/target.txt").exists());
-        assert_eq!(
-            fs::read_to_string(root.path().join("one/attacker")).unwrap(),
-            "attacker"
+            "new"
         );
     }
 }

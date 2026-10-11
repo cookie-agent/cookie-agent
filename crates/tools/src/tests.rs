@@ -121,13 +121,16 @@ async fn unknown_grep_and_glob_calls_fail_closed() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn builtin_relative_paths_revalidate_a_symlinked_cwd_route() {
+async fn builtin_relative_paths_stay_on_the_prepared_cwd_route() {
     use std::os::unix::fs::symlink;
 
     let root = tempfile::tempdir().expect("root");
     let destination = root.path().join("destination");
-    std::fs::create_dir(&destination).expect("destination");
-    std::fs::write(destination.join("value.txt"), "old").expect("fixture");
+    let other = root.path().join("other");
+    for directory in [&destination, &other] {
+        std::fs::create_dir(directory).expect("directory");
+        std::fs::write(directory.join("value.txt"), "old").expect("fixture");
+    }
     let cwd = root.path().join("cwd");
     symlink(&destination, &cwd).expect("cwd symlink");
     let context = ToolPreparationContext {
@@ -142,16 +145,16 @@ async fn builtin_relative_paths_revalidate_a_symlinked_cwd_route() {
     for (name, arguments) in [
         ("read", serde_json::json!({"filePath":"value.txt"})),
         (
-            "write",
-            serde_json::json!({"filePath":"value.txt","content":"new"}),
-        ),
-        (
             "edit",
             serde_json::json!({
                 "filePath":"value.txt",
                 "oldString":"old",
-                "newString":"new"
+                "newString":"edited"
             }),
+        ),
+        (
+            "write",
+            serde_json::json!({"filePath":"created.txt","content":"new"}),
         ),
     ] {
         prepared.push(
@@ -170,20 +173,37 @@ async fn builtin_relative_paths_revalidate_a_symlinked_cwd_route() {
     }
 
     std::fs::remove_file(&cwd).expect("remove cwd route");
-    symlink(&destination, &cwd).expect("replace cwd route");
+    symlink(&other, &cwd).expect("retarget cwd route");
+    let mut outputs = Vec::new();
     for prepared in prepared {
-        let error = prepared
-            .execute_for_test(
-                cookie_agent_engine::ToolExecutionContext::for_test(
-                    root.path().join("artifacts"),
-                    crate::test_turn_context(),
+        outputs.push(
+            prepared
+                .execute_for_test(
+                    cookie_agent_engine::ToolExecutionContext::for_test(
+                        root.path().join("artifacts"),
+                        crate::test_turn_context(),
+                    )
+                    .expect("execution context"),
                 )
-                .expect("execution context"),
-            )
-            .await
-            .expect_err("cwd route swap must fail");
-        assert!(matches!(error, ToolError::OperationChanged(_)));
+                .await
+                .expect("execute on the prepared route")
+                .output,
+        );
     }
+    assert!(outputs[0].contains("1: old"));
+    assert_eq!(
+        std::fs::read_to_string(destination.join("value.txt")).unwrap(),
+        "edited"
+    );
+    assert_eq!(
+        std::fs::read_to_string(destination.join("created.txt")).unwrap(),
+        "new"
+    );
+    assert_eq!(
+        std::fs::read_to_string(other.join("value.txt")).unwrap(),
+        "old"
+    );
+    assert!(!other.join("created.txt").exists());
 }
 
 #[cfg(any(unix, windows))]

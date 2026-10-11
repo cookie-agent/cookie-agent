@@ -651,10 +651,7 @@ impl Engine {
                     code: ToolCallFailureCode::PreparedCapabilityLost,
                     message: "prepared executor capability was already consumed or lost".into(),
                 })?;
-            executor
-                .revalidate_for_execution()
-                .await
-                .map_err(ToolFailure::from)?;
+            executor.revalidate().await.map_err(ToolFailure::from)?;
             let (progress_tx, mut progress_rx) = mpsc::channel(64);
             let hub = engine
                 .inner

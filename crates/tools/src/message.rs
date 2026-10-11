@@ -173,9 +173,6 @@ struct MessageExecutor {
 
 #[async_trait]
 impl PreparedExecutor for MessageExecutor {
-    async fn revalidate(&self) -> Result<(), ToolError> {
-        Ok(())
-    }
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,

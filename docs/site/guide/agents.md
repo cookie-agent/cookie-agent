@@ -434,10 +434,10 @@ the caller. They are not canonicalized through symbolic links before permission
 matching. That one label authorizes the whole prepared `read`, `write`, or
 `edit` operation: if an allowed alias resolves outside the workspace, cookie
 agent does not perform a second permission check or require a rule for the
-resolved destination. Filesystem preparation still binds the traversed route
-and destination and can reject the operation independently. In particular,
-changing a link target after preparation fails with `operation_changed`; it
-does not cause policy to be reevaluated against the new destination.
+resolved destination. Filesystem preparation resolves the route once and
+execution stays on it: changing a link target after preparation does not
+redirect the operation, and policy is not reevaluated against the new
+destination.
 
 Bash remains independent of this path-resource contract. An allowed command has
 only its complete command-string resource and does not gain hidden `read` or

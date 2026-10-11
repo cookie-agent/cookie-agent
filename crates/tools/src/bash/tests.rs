@@ -253,10 +253,11 @@ fn fake_path_swap_cannot_change_prepared_executable() {
     fs::rename(&executable, bin.join("old-bash")).expect("swap old");
     fs::write(&executable, "#!/bin/sh\nexit 42\n").expect("replacement");
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).expect("mode");
-    assert!(matches!(
-        prepared.revalidate(),
-        Err(ToolError::OperationChanged(_))
-    ));
+    // Execution goes through the descriptor held since preparation.
+    assert_eq!(
+        fs::read_to_string(prepared.proc_fd_path()).expect("prepared executable"),
+        "#!/bin/sh\nexit 0\n"
+    );
 }
 
 #[tokio::test]

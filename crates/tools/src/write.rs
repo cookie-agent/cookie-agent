@@ -28,14 +28,8 @@ struct WriteArgs {
 }
 
 struct WriteExecutor {
-    target: WriteTarget,
+    target: fs_cap::PreparedTarget,
     bytes: Vec<u8>,
-}
-
-enum WriteTarget {
-    Existing(fs_cap::PreparedExisting),
-    Absent(fs_cap::PreparedAbsent),
-    Chained(fs_cap::PreparedChained),
 }
 
 impl WriteTool {
@@ -44,91 +38,6 @@ impl WriteTool {
         Self {
             workspace: workspace.into(),
         }
-    }
-
-    /// Build the prepared call for a resolved target. When `predecessor` is
-    /// set, the call belongs to a same-target chain: the fingerprint binds
-    /// the predecessor's output digest (the content this write replaces) and
-    /// the executor validates that digest instead of the original target
-    /// identity, which an earlier call in the chain atomically replaces.
-    fn prepare_write(
-        &self,
-        ctx: &ToolPreparationContext,
-        args: WriteArgs,
-        target: fs_cap::PreparedTarget,
-        predecessor: Option<cookie_agent_protocol::Sha256Digest>,
-    ) -> Result<PreparedTool, ToolError> {
-        let mut binding = match &target {
-            fs_cap::PreparedTarget::Existing(existing) => {
-                if existing.directory {
-                    return Err(ToolError::unsupported_security(
-                        "write target is a directory",
-                    ));
-                }
-                let mut bytes = existing.identity.canonical_bytes();
-                bytes.extend_from_slice(
-                    predecessor
-                        .clone()
-                        .unwrap_or_else(|| existing.content_digest.clone())
-                        .as_str()
-                        .as_bytes(),
-                );
-                bytes
-            }
-            fs_cap::PreparedTarget::Absent(_) => b"expected-absent".to_vec(),
-        };
-        binding.extend_from_slice(
-            cookie_agent_protocol::Sha256Digest::of_bytes(args.content.as_bytes())
-                .as_str()
-                .as_bytes(),
-        );
-        binding.extend_from_slice(&target.manifest_bytes()?);
-        let display_path = match &target {
-            fs_cap::PreparedTarget::Existing(target) => &target.display_path,
-            fs_cap::PreparedTarget::Absent(target) => &target.display_path,
-        };
-        let (resources, policy_labels) = prepared_path_resources(
-            PermissionAction::Write,
-            "file",
-            display_path,
-            &self.workspace,
-            &binding,
-        )?;
-        let serialization_key = target.serialization_bytes()?;
-        let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
-        let operation = prepared_operation(
-            "write",
-            &args,
-            vec![(PermissionAction::Write, "replace")],
-            resources,
-            &context,
-        )?;
-        let normalized_arguments = serde_json::json!({
-            "filePath": display_path,
-            "content": args.content,
-        });
-        let executor_target = match (target, predecessor) {
-            (fs_cap::PreparedTarget::Existing(existing), Some(predecessor_digest)) => {
-                WriteTarget::Chained(fs_cap::PreparedChained {
-                    original_digest: existing.content_digest.clone(),
-                    predecessor_digest,
-                    target: existing,
-                })
-            }
-            (fs_cap::PreparedTarget::Existing(existing), None) => WriteTarget::Existing(existing),
-            // Absent targets are not chained: only the first creation wins.
-            (fs_cap::PreparedTarget::Absent(absent), _) => WriteTarget::Absent(absent),
-        };
-        PreparedTool::new(
-            operation,
-            normalized_arguments,
-            Some(PreparedSerializationKey::new(serialization_key)),
-            Box::new(WriteExecutor {
-                target: executor_target,
-                bytes: args.content.into_bytes(),
-            }),
-        )?
-        .with_policy_labels(policy_labels)
     }
 }
 
@@ -151,7 +60,8 @@ impl ToolProvider for WriteTool {
             result_truncation: Default::default(),
             name: "write".into(),
             permission_name: Self::get_permission_name("write")?.into(),
-            description: "Atomically write an exact descriptor-bound target.".into(),
+            description: "Write content to a file atomically, creating missing parent directories."
+                .into(),
             parameters: schema::<WriteArgs>(),
         }])
     }
@@ -199,140 +109,69 @@ impl ToolProvider for WriteTool {
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
         let args: WriteArgs = parse_args("write", call.arguments)?;
-        fs_cap::ensure_atomic_write_supported()?;
         let target = fs_cap::prepare_target(&ctx.cwd, std::path::Path::new(&args.file_path))?;
-        self.prepare_write(&ctx, args, target, None)
-    }
-
-    async fn prepare_parallel(
-        &self,
-        ctx: ToolPreparationContext,
-        calls: Vec<ToolCall>,
-    ) -> Vec<Result<PreparedTool, ToolError>> {
-        if calls.len() == 1 {
-            let call = calls.into_iter().next().expect("single call batch");
-            return vec![self.prepare(ctx, call).await];
+        if matches!(&target, fs_cap::PreparedTarget::Existing(existing) if existing.directory) {
+            return Err(ToolError::unsupported_security(
+                "write target is a directory",
+            ));
         }
-        // Resolve each call's target individually, then group existing targets
-        // by identity: same-file writes chain in call order, with every write
-        // validating the content produced by the previous write. Absent
-        // targets are not chained; only the first creation wins.
-        let mut pending = Vec::with_capacity(calls.len());
-        for call in calls {
-            pending.push(Some((|| {
-                let args: WriteArgs = parse_args("write", call.arguments)?;
-                fs_cap::ensure_atomic_write_supported()?;
-                let target =
-                    fs_cap::prepare_target(&ctx.cwd, std::path::Path::new(&args.file_path))?;
-                Ok((args, target))
-            })()));
-        }
-        let mut groups: Vec<((u64, u64), Vec<usize>)> = Vec::new();
-        for (index, entry) in pending.iter().enumerate() {
-            let Some(Ok((_, fs_cap::PreparedTarget::Existing(existing)))) = entry else {
-                continue;
-            };
-            let key = (existing.identity.device, existing.identity.inode);
-            if let Some((_, indexes)) = groups.iter_mut().find(|(candidate, _)| *candidate == key) {
-                indexes.push(index);
-            } else {
-                groups.push((key, vec![index]));
-            }
-        }
-        let mut results: Vec<Option<Result<PreparedTool, ToolError>>> =
-            (0..pending.len()).map(|_| None).collect();
-        for (_, indexes) in groups {
-            // The predecessor of each write is the previous write's output:
-            // a failed preparation is skipped and the chain continues from
-            // the last good write.
-            let mut predecessor = None;
-            for index in indexes {
-                let (args, target) = pending[index]
-                    .take()
-                    .expect("grouped write pending")
-                    .expect("grouped write prepared");
-                let output_digest =
-                    cookie_agent_protocol::Sha256Digest::of_bytes(args.content.as_bytes());
-                let result = self.prepare_write(&ctx, args, target, predecessor.clone());
-                if result.is_ok() {
-                    predecessor = Some(output_digest);
-                }
-                results[index] = Some(result);
-            }
-        }
-        for (index, entry) in pending.into_iter().enumerate() {
-            if results[index].is_none() {
-                results[index] = Some(
-                    entry
-                        .expect("ungrouped write pending")
-                        .and_then(|(args, target)| self.prepare_write(&ctx, args, target, None)),
-                );
-            }
-        }
-        results
-            .into_iter()
-            .map(|result| result.expect("every write call is prepared"))
-            .collect()
+        let (resources, policy_labels) = prepared_path_resources(
+            PermissionAction::Write,
+            "file",
+            target.display_path(),
+            &self.workspace,
+            &target.binding_bytes(),
+        )?;
+        let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
+        let operation = prepared_operation(
+            "write",
+            &args,
+            vec![(PermissionAction::Write, "replace")],
+            resources,
+            &context,
+        )?;
+        let normalized_arguments = serde_json::json!({
+            "filePath": target.display_path(),
+            "content": args.content,
+        });
+        // Writes to one location run one at a time, in call order.
+        let serialization_key = PreparedSerializationKey::new(target.serialization_key());
+        PreparedTool::new(
+            operation,
+            normalized_arguments,
+            Some(serialization_key),
+            Box::new(WriteExecutor {
+                target,
+                bytes: args.content.into_bytes(),
+            }),
+        )?
+        .with_policy_labels(policy_labels)
     }
 }
 
 #[async_trait]
 impl PreparedExecutor for WriteExecutor {
-    async fn revalidate(&self) -> Result<(), ToolError> {
-        match &self.target {
-            WriteTarget::Existing(target) => target.revalidate(),
-            WriteTarget::Absent(target) => target.revalidate(),
-            WriteTarget::Chained(target) => target.revalidate(),
-        }
-    }
-
-    async fn revalidate_for_execution(&self) -> Result<(), ToolError> {
-        match &self.target {
-            WriteTarget::Existing(target) => target.revalidate(),
-            WriteTarget::Absent(target) => target.revalidate(),
-            WriteTarget::Chained(target) => target.revalidate_for_execution(),
-        }
-    }
-
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
     ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
-        let result: Result<ToolResult, ToolError> = async move {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::execution(
                 "prepared write cancelled before commit",
             ));
         }
-        let (path, outcome) = match &self.target {
-            WriteTarget::Existing(target) => {
-                let outcome = target.replace_atomically(&self.bytes)?;
-                (target.display_path.clone(), outcome)
-            }
-            WriteTarget::Absent(target) => {
-                let outcome = target.create_atomically(&self.bytes)?;
-                (target.display_path.clone(), outcome)
-            }
-            WriteTarget::Chained(target) => {
-                // Direct executions (tests) bypass the engine's serialization
-                // lock; the strict predecessor check must hold regardless.
-                target.revalidate_for_execution()?;
-                let outcome = target.replace_atomically(&self.bytes)?;
-                (target.target.display_path.clone(), outcome)
-            }
-        };
-        Ok(ToolResult {
-display: None,
-retained_output: None,
-            title: crate::safe_title(format!("Wrote {}", path.display())),
-            output: format!("Wrote {} bytes to {}", self.bytes.len(), path.display()),
-            metadata: serde_json::json!({"bytes":self.bytes.len(),"cleanup_warning":outcome.cleanup_warning}),
+        self.target.write(&self.bytes)?;
+        let path = self.target.display_path().display();
+        Ok(cookie_agent_engine::ToolCompletion::single(ToolResult {
+            display: None,
+            retained_output: None,
+            title: crate::safe_title(format!("Wrote {path}")),
+            output: format!("Wrote {} bytes to {path}", self.bytes.len()),
+            metadata: serde_json::json!({ "bytes": self.bytes.len() }),
             truncation: None,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
-        })
-}.await;
-        result.map(cookie_agent_engine::ToolCompletion::single)
+        }))
     }
 }
 
@@ -602,7 +441,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn write_route_swap_is_operation_changed_and_routes_affect_fingerprint() {
+    async fn retargeted_write_route_does_not_redirect_and_routes_affect_fingerprint() {
         use std::{fs, os::unix::fs::symlink};
 
         let root = tempfile::tempdir().expect("root");
@@ -631,19 +470,26 @@ mod tests {
             OperationFingerprint::from_prepared_operation(right.operation())
         );
 
+        fs::write(root.path().join("other.txt"), "other").expect("other fixture");
         fs::remove_file(root.path().join("left")).expect("remove route");
-        symlink("value.txt", root.path().join("left")).expect("replace route");
-        let error = left
-            .execute_for_test(
-                ToolExecutionContext::for_test(
-                    root.path().join("artifacts"),
-                    crate::test_turn_context(),
-                )
-                .expect("execution context"),
+        symlink("other.txt", root.path().join("left")).expect("retarget route");
+        left.execute_for_test(
+            ToolExecutionContext::for_test(
+                root.path().join("artifacts"),
+                crate::test_turn_context(),
             )
-            .await
-            .expect_err("route swap must fail");
-        assert!(matches!(error, ToolError::OperationChanged(_)));
+            .expect("execution context"),
+        )
+        .await
+        .expect("write the approved destination");
+        assert_eq!(
+            fs::read_to_string(root.path().join("value.txt")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("other.txt")).unwrap(),
+            "other"
+        );
     }
 
     #[cfg(any(unix, windows))]
@@ -663,7 +509,7 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[tokio::test]
-    async fn parallel_same_file_writes_chain_in_call_order() {
+    async fn parallel_same_file_writes_apply_in_call_order() {
         use std::fs;
 
         let root = tempfile::tempdir().expect("root");
@@ -686,13 +532,6 @@ mod tests {
             OperationFingerprint::from_prepared_operation(second.operation())
         );
 
-        // The chained write must not run before its predecessor.
-        let error = second
-            .revalidate_for_execution_for_test()
-            .await
-            .expect_err("predecessor has not run yet");
-        assert!(matches!(error, ToolError::OperationChanged(_)));
-
         first
             .execute_for_test(execution_context(root.path()))
             .await
@@ -700,7 +539,7 @@ mod tests {
         second
             .execute_for_test(execution_context(root.path()))
             .await
-            .expect("chained write");
+            .expect("second write");
         // The last write in call order wins deterministically.
         assert_eq!(
             fs::read_to_string(root.path().join("value.txt")).unwrap(),
@@ -710,28 +549,27 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[tokio::test]
-    async fn absent_write_targets_are_not_chained() {
+    async fn repeated_creation_writes_apply_in_call_order() {
         let root = tempfile::tempdir().expect("root");
         let prepared = WriteTool::new(root.path())
             .prepare_parallel(
                 context(root.path()),
                 vec![
-                    write_call("created.txt", "one"),
-                    write_call("created.txt", "two"),
+                    write_call("nested/created.txt", "one"),
+                    write_call("nested/created.txt", "two"),
                 ],
             )
             .await;
-        let mut prepared = prepared.into_iter();
-        let first = prepared.next().expect("first").expect("first write");
-        let second = prepared.next().expect("second").expect("second write");
-        first
-            .execute_for_test(execution_context(root.path()))
-            .await
-            .expect("first creation");
-        let error = second
-            .execute_for_test(execution_context(root.path()))
-            .await
-            .expect_err("second creation must observe the first");
-        assert!(matches!(error, ToolError::OperationChanged(_)));
+        for prepared in prepared {
+            prepared
+                .expect("prepare write")
+                .execute_for_test(execution_context(root.path()))
+                .await
+                .expect("write");
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("nested/created.txt")).unwrap(),
+            "two"
+        );
     }
 }

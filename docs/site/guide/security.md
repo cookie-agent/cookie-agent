@@ -10,52 +10,43 @@ filtering.
 
 ## Filesystem capabilities
 
-The `read`, `write`, and `edit` tools prepare a filesystem target before policy
-evaluation and revalidate it before use. Relative paths are rooted at the
-workspace. Absolute paths remain absolute and must be controlled with explicit
-permission patterns; the filesystem capability layer does not confine them to
-the workspace.
+The `read`, `write`, and `edit` tools resolve their filesystem target when the
+call is prepared, before policy evaluation, and operate on that resolved
+location when it executes. Relative paths are rooted at the workspace. Absolute
+paths remain absolute and must be controlled with explicit permission patterns;
+the filesystem capability layer does not confine them to the workspace.
 
-These tools follow supported filesystem links while binding both the requested
-route and its resolved destination. `write` and `edit` preserve a link and
-modify its destination rather than replacing the link itself. If a final link
-is dangling, `write` prepares the missing destination and creates it, while
-`read` and `edit` fail because their destination must already exist. Link
-resolution is bounded, so cycles and routes exceeding the bound fail closed.
-Revalidation reports a changed link, route component, or destination as
-`operation_changed` instead of accepting a newly resolved operation. The
-platform-specific validation-to-use guarantees are described below.
+These tools follow supported filesystem links. `write` and `edit` preserve a
+link and modify its destination rather than replacing the link itself. If a
+final link is dangling, `write` prepares the missing destination and creates
+it, while `read` and `edit` fail because their destination must already exist.
+Link resolution is bounded, so cycles and routes exceeding the bound fail
+closed.
+
+Only the route is bound, not the content. A file that changes while an approval
+is pending is read, edited, or replaced as it is at execution, and a `write`
+prepared for an absent path replaces a file created there in the meantime.
 
 Permission matching is deliberately separate: it uses only the normalized
 lexical path requested by the caller, even when that alias leads outside the
 workspace. The resolved destination does not receive a second permission check.
 See [Permissions](agents.md#resource-labels).
 
-### Linux
+### Unix
 
-Filesystem traversal is descriptor-anchored. Each existing path component,
-including each link object, is opened relative to a held parent descriptor with
-no-follow semantics. A relative link target is traversed from that parent; an
-absolute link target restarts from the filesystem root. cookie agent retains and
-revalidates the descriptors and identities for the traversed route, the resolved
-target identity, and prepared content before use. This avoids converting link
-traversal into an unbound path lookup. Execution uses the pinned destination even
-if an alias changes after the last route check; such a change cannot redirect
-the file operation to a different destination.
+Filesystem traversal is descriptor-anchored. Each path component is opened
+relative to its parent descriptor with no-follow semantics, and links are
+expanded in place: a relative link target is traversed from the directory that
+holds the link, an absolute one restarts from the filesystem root. Preparation
+keeps the target's parent directory open, and execution opens, creates, or
+renames the target relative to that descriptor with no-follow semantics. A link
+swapped into the route after preparation therefore cannot redirect the
+operation, and a link planted at the target itself is never followed: reads
+fail with `operation_changed` and writes replace the link. Directories missing
+at preparation are created at execution without following links.
 
-Atomic writes stage content beside the resolved target. Linux uses atomic
-no-replace publication for a prepared absent destination and atomic two-file
-exchange for replacement, which lets cookie agent verify the displaced file and
-roll back a changed target while leaving any alias link in place.
-
-### Other Unix platforms
-
-Traversal and reads use descriptor-anchored, no-follow validation. Link-object
-pinning is implemented on Apple platforms, FreeBSD, and Android; other Unix
-platforms reject links when that capability is unavailable. Expected-target
-replacement and no-replace publication currently depend on Linux-specific rename
-operations, so write preparation fails closed where those guarantees are
-unavailable.
+Writes stage the complete content in a temporary file beside the target, sync
+it, rename it over the target, and sync the directory.
 
 ### Windows
 
@@ -68,33 +59,26 @@ fail closed. The backend:
 - resolves supported links and canonicalizes the existing portion of the path,
   then checks component-wise, case-insensitive containment in the prepared
   sandbox root;
-- records and rechecks the supported link or junction route, and rejects other
-  reparse points;
-- records the target's volume and file identity plus a content digest, then
-  repeats route, canonical-path, containment, reparse, identity, and content checks
-  before use; and
+- resolves the route again immediately before use and fails with
+  `operation_changed` if it now leads to a different path; and
 - stages complete file content beside the target and publishes it by renaming
-  the staged file over the target. Replacing an existing file uses the
-  superseding POSIX rename (`SetFileInformationByHandle`, `FileRenameInfoEx`),
-  which re-points the name in one metadata transaction so a concurrent reader
-  opening the path by name never finds it absent; where that rename is
-  unavailable, and for a publication that must not replace anything, the
-  publish falls back to `MoveFileExW` with write-through and, when replacing,
-  replace-existing flags.
+  the staged file over the target with the superseding POSIX rename
+  (`SetFileInformationByHandle`, `FileRenameInfoEx`), which re-points the name
+  in one metadata transaction so a concurrent reader opening the path by name
+  never finds it absent; where that rename is unavailable the publish falls back
+  to `MoveFileExW` with write-through and replace-existing flags.
 
 Containment is a capability constraint, not another permission decision. In
 particular, a relative request remains constrained to its prepared sandbox root
 even though permission policy would authorize an external destination through
 the lexical alias. Absolute requests retain their existing native-root checks.
-Support is limited to link and junction forms that can be resolved and
-revalidated by this path-based backend; unsupported reparse tags are rejected.
+Support is limited to link and junction forms that this path-based backend can
+resolve; unsupported reparse tags are rejected.
 
 Windows does not provide the descriptor-anchored `openat` traversal used by the
-Unix backend. A path or supported link can therefore change after revalidation
-and before the path-based read or mutation. Route, reparse, and canonical
-revalidation narrow this validation-to-use window but do not eliminate it.
-Windows also has no atomic two-file exchange in this backend, so replacement
-cannot verify the displaced file and roll back with the Linux guarantee.
+Unix backend. A path or supported link can therefore change after the final
+route check and before the path-based read or mutation; the check narrows this
+window but does not eliminate it.
 
 ## Private state
 

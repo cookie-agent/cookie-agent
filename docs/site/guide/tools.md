@@ -94,7 +94,7 @@ write(content: string, filePath: string)
 Description sent to the model:
 
 ```text
-Atomically write an exact descriptor-bound target.
+Write content to a file atomically, creating missing parent directories.
 ```
 
 | Parameter | Type | Required | Description |
@@ -134,7 +134,7 @@ edit(filePath: string, newString: string, oldString: string, replaceAll?: boolea
 Description sent to the model:
 
 ```text
-Apply a precomputed semantic replacement atomically.
+Replace oldString with newString in a file, atomically.
 ```
 
 | Parameter | Type | Required | Description |

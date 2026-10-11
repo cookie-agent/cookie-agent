@@ -199,10 +199,6 @@ impl WebfetchArgs {
 
 #[async_trait]
 impl PreparedExecutor for WebfetchArgs {
-    async fn revalidate(&self) -> Result<(), ToolError> {
-        Ok(())
-    }
-
     async fn execute(
         self: Box<Self>,
         _context: ToolExecutionContext,

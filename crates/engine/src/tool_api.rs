@@ -544,12 +544,11 @@ impl PreparedSerializationKey {
 
 #[async_trait]
 pub trait PreparedExecutor: Send + Sync {
-    async fn revalidate(&self) -> Result<(), ToolError>;
-
-    /// Revalidation performed under the per-target serialization lock immediately before execution.
-    /// The default preserves the ordinary validation behavior.
-    async fn revalidate_for_execution(&self) -> Result<(), ToolError> {
-        self.revalidate().await
+    /// Checks that the prepared operation can still run as approved. Runs
+    /// when an approval is answered and again, under the per-target
+    /// serialization lock, immediately before execution.
+    async fn revalidate(&self) -> Result<(), ToolError> {
+        Ok(())
     }
 
     async fn execute(
@@ -659,16 +658,6 @@ impl PreparedTool {
             .take()
             .ok_or_else(|| ToolError::execution("prepared executor was already consumed"))?;
         executor.execute(context).await?.into_result_for_test()
-    }
-
-    #[cfg(feature = "test-support")]
-    pub async fn revalidate_for_execution_for_test(&self) -> Result<(), ToolError> {
-        let executor = self.executor.lock().await;
-        executor
-            .as_ref()
-            .ok_or_else(|| ToolError::execution("prepared executor was already consumed"))?
-            .revalidate_for_execution()
-            .await
     }
 }
 

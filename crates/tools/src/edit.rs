@@ -5,7 +5,7 @@ use cookie_agent_engine::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, SessionToolContext, ToolCall,
     ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
-use cookie_agent_protocol::{PermissionAction, PersistedToolResult as ToolResult, Sha256Digest};
+use cookie_agent_protocol::{PermissionAction, PersistedToolResult as ToolResult};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -33,13 +33,39 @@ struct EditArgs {
 }
 
 struct EditExecutor {
-    target: EditTarget,
-    new_bytes: Vec<u8>,
+    target: fs_cap::PreparedExisting,
+    args: EditArgs,
 }
 
-enum EditTarget {
-    Existing(fs_cap::PreparedExisting),
-    Chained(fs_cap::PreparedChained),
+/// Counts `old` in `text`, failing as an edit of `text` would.
+fn match_count(text: &str, args: &EditArgs) -> Result<usize, ToolError> {
+    let count = text.matches(&args.old_string).count();
+    if count == 0 {
+        return Err(ToolError::execution("oldString was not found"));
+    }
+    if !args.replace_all && count != 1 {
+        return Err(ToolError::execution(format!(
+            "oldString matched {count} times"
+        )));
+    }
+    Ok(count)
+}
+
+fn apply(text: &str, args: &EditArgs) -> Result<(String, usize), ToolError> {
+    let count = match_count(text, args)?;
+    let replaced = if args.replace_all {
+        text.replace(&args.old_string, &args.new_string)
+    } else {
+        text.replacen(&args.old_string, &args.new_string, 1)
+    };
+    Ok((replaced, count))
+}
+
+fn read_text(target: &fs_cap::PreparedExisting) -> Result<String, ToolError> {
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut target.open_file()?, &mut text)
+        .map_err(|_| ToolError::execution("edit requires UTF-8"))?;
+    Ok(text)
 }
 
 impl EditTool {
@@ -50,15 +76,13 @@ impl EditTool {
         }
     }
 
-    /// The per-call front half of preparation: parse arguments and resolve
-    /// the target. Shared by `prepare` and `prepare_parallel`.
+    /// Parses arguments and resolves the target.
     fn prepare_target(
         &self,
         ctx: &ToolPreparationContext,
         call: ToolCall,
-    ) -> Result<PendingEdit, ToolError> {
+    ) -> Result<(EditArgs, fs_cap::PreparedExisting), ToolError> {
         let args: EditArgs = parse_args("edit", call.arguments)?;
-        fs_cap::ensure_atomic_write_supported()?;
         if args.old_string.is_empty() {
             return Err(ToolError::execution("oldString must not be empty"));
         }
@@ -68,66 +92,24 @@ impl EditTool {
                 "edit target is a directory",
             ));
         }
-        let bytes = target.read_bytes()?;
-        let text =
-            String::from_utf8(bytes).map_err(|_| ToolError::execution("edit requires UTF-8"))?;
-        Ok(PendingEdit { args, target, text })
+        Ok((args, target))
     }
 
-    /// Match `oldString` against `text` and build the prepared call. When
-    /// `predecessor` is set, the call belongs to a same-target chain: the
-    /// fingerprint binds the predecessor's output digest (the content this
-    /// edit matched against) and the executor validates that digest instead
-    /// of the original target identity, which an earlier call in the chain
-    /// atomically replaces. Returns the replacement text for chain
-    /// continuation.
+    /// Builds the prepared call. The replacement itself is computed at
+    /// execution from the file's content at that moment, so an edit approved
+    /// later never reverts changes made while it waited.
     fn prepare_edit(
         &self,
         ctx: &ToolPreparationContext,
         args: EditArgs,
         target: fs_cap::PreparedExisting,
-        text: &str,
-        predecessor: Option<Sha256Digest>,
-    ) -> Result<(PreparedTool, String), ToolError> {
-        let count = text.matches(&args.old_string).count();
-        if count == 0 {
-            return Err(ToolError::execution("oldString was not found"));
-        }
-        if !args.replace_all && count != 1 {
-            return Err(ToolError::execution(format!(
-                "oldString matched {count} times"
-            )));
-        }
-        let replaced = if args.replace_all {
-            text.replace(&args.old_string, &args.new_string)
-        } else {
-            text.replacen(&args.old_string, &args.new_string, 1)
-        };
-        let new_bytes = replaced.clone().into_bytes();
-        let input_digest = predecessor
-            .clone()
-            .unwrap_or_else(|| target.content_digest.clone());
-        let mut binding = target.identity.canonical_bytes();
-        binding.extend_from_slice(input_digest.as_str().as_bytes());
-        binding.extend_from_slice(
-            Sha256Digest::of_bytes(args.old_string.as_bytes())
-                .as_str()
-                .as_bytes(),
-        );
-        binding.extend_from_slice(
-            Sha256Digest::of_bytes(args.new_string.as_bytes())
-                .as_str()
-                .as_bytes(),
-        );
-        binding.extend_from_slice(&(count as u64).to_be_bytes());
-        binding.extend_from_slice(Sha256Digest::of_bytes(&new_bytes).as_str().as_bytes());
-        binding.extend_from_slice(&target.manifest_bytes()?);
+    ) -> Result<PreparedTool, ToolError> {
         let (resources, policy_labels) = prepared_path_resources(
             PermissionAction::Write,
             "file",
             &target.display_path,
             &self.workspace,
-            &binding,
+            &target.binding_bytes(),
         )?;
         let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
         let operation = prepared_operation(
@@ -143,35 +125,17 @@ impl EditTool {
             "newString": args.new_string,
             "replaceAll": args.replace_all,
         });
-        let mut serialization_key = target.identity.device.to_be_bytes().to_vec();
-        serialization_key.extend_from_slice(&target.identity.inode.to_be_bytes());
-        let executor_target = match predecessor {
-            Some(predecessor_digest) => EditTarget::Chained(fs_cap::PreparedChained {
-                original_digest: target.content_digest.clone(),
-                predecessor_digest,
-                target,
-            }),
-            None => EditTarget::Existing(target),
-        };
-        let prepared = PreparedTool::new(
+        let serialization_key = PreparedSerializationKey::new(target.serialization_key());
+        PreparedTool::new(
             operation,
             normalized_arguments,
-            Some(PreparedSerializationKey::new(serialization_key)),
-            Box::new(EditExecutor {
-                target: executor_target,
-                new_bytes,
-            }),
+            Some(serialization_key),
+            Box::new(EditExecutor { target, args }),
         )?
-        .with_policy_labels(policy_labels)?;
-        Ok((prepared, replaced))
+        .with_policy_labels(policy_labels)
     }
 }
 
-struct PendingEdit {
-    args: EditArgs,
-    target: fs_cap::PreparedExisting,
-    text: String,
-}
 impl Default for EditTool {
     fn default() -> Self {
         Self::new(std::env::current_dir().expect("current directory"))
@@ -191,7 +155,7 @@ impl ToolProvider for EditTool {
             result_truncation: Default::default(),
             name: "edit".into(),
             permission_name: Self::get_permission_name("edit")?.into(),
-            description: "Apply a precomputed semantic replacement atomically.".into(),
+            description: "Replace oldString with newString in a file, atomically.".into(),
             parameters: schema::<EditArgs>(),
         }])
     }
@@ -238,22 +202,10 @@ impl ToolProvider for EditTool {
         ctx: ToolPreparationContext,
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
-        let args: EditArgs = parse_args("edit", call.arguments)?;
-        fs_cap::ensure_atomic_write_supported()?;
-        if args.old_string.is_empty() {
-            return Err(ToolError::execution("oldString must not be empty"));
-        }
-        let target = fs_cap::prepare_existing(&ctx.cwd, std::path::Path::new(&args.file_path))?;
-        if target.directory {
-            return Err(ToolError::unsupported_security(
-                "edit target is a directory",
-            ));
-        }
-        let bytes = target.read_bytes()?;
-        let text =
-            String::from_utf8(bytes).map_err(|_| ToolError::execution("edit requires UTF-8"))?;
-        let (prepared, _) = self.prepare_edit(&ctx, args, target, &text, None)?;
-        Ok(prepared)
+        let (args, target) = self.prepare_target(&ctx, call)?;
+        // Fail fast on an oldString that does not match the current content.
+        match_count(&read_text(&target)?, &args)?;
+        self.prepare_edit(&ctx, args, target)
     }
 
     async fn prepare_parallel(
@@ -265,98 +217,47 @@ impl ToolProvider for EditTool {
             let call = calls.into_iter().next().expect("single call batch");
             return vec![self.prepare(ctx, call).await];
         }
-        // Prepare each call's target individually, then group by target
-        // identity: same-file calls chain in call order, with every edit
-        // matching against the content produced by the previous edit.
+        // Same-file edits execute in call order under one serialization key,
+        // each on the content its predecessor produced. Validate them the
+        // same way: every edit matches against the text the previous
+        // successful edit of that file would leave.
         let mut pending = Vec::with_capacity(calls.len());
+        let mut results = Vec::with_capacity(calls.len());
         for call in calls {
-            pending.push(Some(self.prepare_target(&ctx, call)));
+            // Early per-call failures (invalid arguments, missing target,
+            // directory) stay isolated in their own slot.
+            match self.prepare_target(&ctx, call) {
+                Ok(entry) => {
+                    pending.push(Some(entry));
+                    results.push(None);
+                }
+                Err(error) => {
+                    pending.push(None);
+                    results.push(Some(Err(error)));
+                }
+            }
         }
-        let mut results: Vec<Option<Result<PreparedTool, ToolError>>> =
-            (0..pending.len()).map(|_| None).collect();
-        let mut groups: Vec<((u64, u64), Vec<usize>)> = Vec::new();
-        for (index, entry) in pending.iter_mut().enumerate() {
-            match entry {
-                Some(Ok(pending_edit)) => {
-                    let key = (
-                        pending_edit.target.identity.device,
-                        pending_edit.target.identity.inode,
-                    );
-                    if let Some((_, indexes)) =
-                        groups.iter_mut().find(|(candidate, _)| *candidate == key)
-                    {
-                        indexes.push(index);
-                    } else {
-                        groups.push((key, vec![index]));
-                    }
-                }
-                // Early per-call failures (invalid arguments, missing target,
-                // directory, non-UTF-8) stay isolated in their own slot.
-                Some(Err(_)) => {
-                    let Err(error) = entry.take().expect("each edit call is visited once") else {
-                        unreachable!("error entry");
-                    };
-                    results[index] = Some(Err(error));
-                }
-                None => unreachable!("each edit call is visited once"),
+        let mut groups: Vec<(Vec<u8>, Vec<usize>)> = Vec::new();
+        for (index, entry) in pending.iter().enumerate() {
+            let Some((_, target)) = entry else { continue };
+            let key = target.serialization_key();
+            match groups.iter_mut().find(|(candidate, _)| *candidate == key) {
+                Some((_, indexes)) => indexes.push(index),
+                None => groups.push((key, vec![index])),
             }
         }
         for (_, indexes) in groups {
-            let base_digest = pending[indexes[0]]
-                .as_ref()
-                .and_then(|entry| entry.as_ref().ok())
-                .expect("grouped edit prepared its target")
-                .target
-                .content_digest
-                .clone();
-            // Current chained content, advanced by every successful edit. A
-            // failed edit is skipped: later edits continue from the last good
-            // state. The first successful edit prepares standalone (it
-            // validates the original target identity); later edits validate
-            // their predecessor's output digest.
-            let mut chain_text: Option<String> = None;
-            let mut chain_started = false;
+            let mut text: Option<Result<String, ToolError>> = None;
             for index in indexes {
-                let pending_edit = pending[index]
-                    .take()
-                    .expect("grouped edit pending")
-                    .expect("grouped edit prepared");
-                // A member that observed different content than the chain base
-                // (external writer between preparations) prepares standalone.
-                let chained = pending_edit.target.content_digest == base_digest;
-                let (input_text, predecessor) = if chained {
-                    let predecessor = if chain_started {
-                        chain_text.as_deref().map(|text| {
-                            cookie_agent_protocol::Sha256Digest::of_bytes(text.as_bytes())
-                        })
-                    } else {
-                        None
-                    };
-                    let text = chain_text
-                        .clone()
-                        .unwrap_or_else(|| pending_edit.text.clone());
-                    (text, predecessor)
-                } else {
-                    (pending_edit.text.clone(), None)
+                let (args, target) = pending[index].take().expect("grouped edit pending");
+                let current = text.get_or_insert_with(|| read_text(&target));
+                let validated = match current {
+                    Ok(current) => apply(current, &args).map(|(next, _)| *current = next),
+                    // Every member of the group reports the shared read failure.
+                    Err(error) => Err(ToolError::execution(error.message())),
                 };
-                match self.prepare_edit(
-                    &ctx,
-                    pending_edit.args,
-                    pending_edit.target,
-                    &input_text,
-                    predecessor,
-                ) {
-                    Ok((prepared, new_text)) => {
-                        if chained {
-                            chain_text = Some(new_text);
-                            chain_started = true;
-                        }
-                        results[index] = Some(Ok(prepared));
-                    }
-                    Err(error) => {
-                        results[index] = Some(Err(error));
-                    }
-                }
+                results[index] =
+                    Some(validated.and_then(|()| self.prepare_edit(&ctx, args, target)));
             }
         }
         results
@@ -368,54 +269,28 @@ impl ToolProvider for EditTool {
 
 #[async_trait]
 impl PreparedExecutor for EditExecutor {
-    async fn revalidate(&self) -> Result<(), ToolError> {
-        match &self.target {
-            EditTarget::Existing(target) => target.revalidate(),
-            EditTarget::Chained(target) => target.revalidate(),
-        }
-    }
-    async fn revalidate_for_execution(&self) -> Result<(), ToolError> {
-        match &self.target {
-            EditTarget::Existing(target) => target.revalidate(),
-            EditTarget::Chained(target) => target.revalidate_for_execution(),
-        }
-    }
-
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
     ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
-        let result: Result<ToolResult, ToolError> = async move {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::execution(
                 "prepared edit cancelled before commit",
             ));
         }
-        let path = match &self.target {
-            EditTarget::Existing(target) => target.display_path.clone(),
-            EditTarget::Chained(target) => target.target.display_path.clone(),
-        };
-        let outcome = match &self.target {
-            EditTarget::Existing(target) => target.replace_atomically(&self.new_bytes)?,
-            EditTarget::Chained(target) => {
-                // Direct executions (tests) bypass the engine's serialization
-                // lock; the strict predecessor check must hold regardless.
-                target.revalidate_for_execution()?;
-                target.replace_atomically(&self.new_bytes)?
-            }
-        };
-        Ok(ToolResult {
-display: None,
-retained_output: None,
-            title: crate::safe_title(format!("Edited {}", path.display())),
+        let (replaced, count) = apply(&read_text(&self.target)?, &self.args)?;
+        self.target.replace(replaced.as_bytes())?;
+        let path = self.target.display_path.display();
+        Ok(cookie_agent_engine::ToolCompletion::single(ToolResult {
+            display: None,
+            retained_output: None,
+            title: crate::safe_title(format!("Edited {path}")),
             output: "Edit applied atomically".into(),
-            metadata: serde_json::json!({"new_sha256":Sha256Digest::of_bytes(&self.new_bytes),"cleanup_warning":outcome.cleanup_warning}),
+            metadata: serde_json::json!({ "replacements": count }),
             truncation: None,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
-        })
-}.await;
-        result.map(cookie_agent_engine::ToolCompletion::single)
+        }))
     }
 }
 
@@ -631,12 +506,14 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn dangling_edit_errors_and_ancestor_swap_is_operation_changed() {
+    async fn dangling_edit_errors_and_retargeted_ancestor_does_not_redirect() {
         use std::os::unix::fs::symlink;
 
         let root = tempfile::tempdir().expect("root");
         fs::create_dir(root.path().join("destination")).expect("destination");
+        fs::create_dir(root.path().join("other")).expect("other");
         fs::write(root.path().join("destination/value.txt"), "old").expect("fixture");
+        fs::write(root.path().join("other/value.txt"), "old").expect("other fixture");
         symlink("missing.txt", root.path().join("dangling")).expect("dangling route");
         let dangling = EditTool::new(root.path())
             .prepare(
@@ -658,31 +535,24 @@ mod tests {
         let prepared = EditTool::new(root.path())
             .prepare(
                 context(root.path()),
-                ToolCall {
-                    id: ToolCallId::new_v7(),
-                    name: "edit".into(),
-                    arguments: serde_json::json!({
-                        "filePath":"ancestor/value.txt",
-                        "oldString":"old",
-                        "newString":"new"
-                    }),
-                },
+                edit_call("ancestor/value.txt", "old", "new"),
             )
             .await
             .expect("prepare edit");
         fs::remove_file(root.path().join("ancestor")).expect("remove ancestor");
-        symlink("destination", root.path().join("ancestor")).expect("replace ancestor");
-        let error = prepared
-            .execute_for_test(
-                ToolExecutionContext::for_test(
-                    root.path().join("artifacts"),
-                    crate::test_turn_context(),
-                )
-                .expect("execution context"),
-            )
+        symlink("other", root.path().join("ancestor")).expect("retarget ancestor");
+        prepared
+            .execute_for_test(execution_context(root.path()))
             .await
-            .expect_err("ancestor swap must fail");
-        assert!(matches!(error, ToolError::OperationChanged(_)));
+            .expect("edit the approved destination");
+        assert_eq!(
+            fs::read_to_string(root.path().join("destination/value.txt")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("other/value.txt")).unwrap(),
+            "old"
+        );
     }
 
     #[cfg(unix)]
@@ -875,7 +745,7 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     #[tokio::test]
-    async fn chained_edit_requires_predecessor_and_detects_external_changes() {
+    async fn edit_applies_to_content_changed_while_awaiting_execution() {
         let root = tempfile::tempdir().expect("root");
         fs::write(root.path().join("value.txt"), "a b").expect("fixture");
         let tool = EditTool::new(root.path());
@@ -884,7 +754,7 @@ mod tests {
                 context(root.path()),
                 vec![
                     edit_call("value.txt", "a", "A"),
-                    edit_call("value.txt", "b", "B"),
+                    edit_call("value.txt", "A", "AA"),
                 ],
             )
             .await;
@@ -892,24 +762,32 @@ mod tests {
         let first = prepared.next().expect("first").expect("first edit");
         let second = prepared.next().expect("second").expect("second edit");
 
-        // Executing the chained edit before its predecessor must fail.
-        let error = second
-            .revalidate_for_execution_for_test()
-            .await
-            .expect_err("predecessor has not run yet");
-        assert!(matches!(error, ToolError::OperationChanged(_)));
-
+        fs::write(root.path().join("value.txt"), "a b c").expect("external write");
         first
             .execute_for_test(execution_context(root.path()))
             .await
             .expect("first edit");
-
-        // An external change after the predecessor must fail the chain.
-        fs::write(root.path().join("value.txt"), "tampered").expect("external write");
-        let error = second
+        second
             .execute_for_test(execution_context(root.path()))
             .await
-            .expect_err("external change must fail the chained edit");
-        assert!(matches!(error, ToolError::OperationChanged(_)));
+            .expect("second edit");
+        assert_eq!(
+            fs::read_to_string(root.path().join("value.txt")).unwrap(),
+            "AA b c"
+        );
+
+        let stale = tool
+            .prepare(context(root.path()), edit_call("value.txt", "b", "B"))
+            .await
+            .expect("prepare");
+        fs::write(root.path().join("value.txt"), "no match").expect("external write");
+        assert!(matches!(
+            stale.execute_for_test(execution_context(root.path())).await,
+            Err(ToolError::Failed(_))
+        ));
+        assert_eq!(
+            fs::read_to_string(root.path().join("value.txt")).unwrap(),
+            "no match"
+        );
     }
 }

@@ -191,7 +191,6 @@ output: Default::default(),
             .with_policy_labels(vec![label]);
         }
         let target = fs_cap::prepare_existing(&ctx.cwd, std::path::Path::new(&args.file_path))?;
-        let binding = target.manifest_bytes()?;
         let (resources, policy_labels) = prepared_path_resources(
             PermissionAction::Read,
             if target.directory {
@@ -201,7 +200,7 @@ output: Default::default(),
             },
             &target.display_path,
             &self.workspace,
-            &binding,
+            &target.binding_bytes(),
         )?;
         let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
         let operation = prepared_operation(
@@ -237,10 +236,6 @@ struct ArtifactReadExecutor {
 
 #[async_trait]
 impl PreparedExecutor for ArtifactReadExecutor {
-    async fn revalidate(&self) -> Result<(), ToolError> {
-        Ok(())
-    }
-
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
@@ -271,10 +266,6 @@ impl PreparedExecutor for ArtifactReadExecutor {
 
 #[async_trait]
 impl PreparedExecutor for ReadExecutor {
-    async fn revalidate(&self) -> Result<(), ToolError> {
-        self.target.revalidate()
-    }
-
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
@@ -285,18 +276,8 @@ impl PreparedExecutor for ReadExecutor {
                 "prepared read cancelled before execution",
             ));
         }
-        self.target.revalidate()?;
         if self.target.directory {
             let entries = self.target.directory_entries()?;
-            let snapshot = serde_json::to_vec(&entries)
-                .map_err(|error| ToolError::execution(error.to_string()))?;
-            if cookie_agent_protocol::Sha256Digest::of_bytes(&snapshot)
-                != self.target.content_digest
-            {
-                return Err(ToolError::operation_changed(
-                    "prepared directory snapshot changed",
-                ));
-            }
             let page = directory_page(&entries, self.offset, self.limit).collect::<Vec<_>>();
             let mut output = format!(
                 "<path>{}</path>\n<type>directory</type>\n<entries>\n",
@@ -324,7 +305,9 @@ retained_output: None,
                 additional_messages: Vec::new(),
             });
         }
-        let bytes = self.target.verified_bytes()?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut self.target.open_file()?, &mut bytes)
+            .map_err(|error| ToolError::execution(error.to_string()))?;
         if let Some(mime) = approved_media_type(&self.target.display_path, &bytes)? {
             let gate = gate_attachment(
                 context.turn_context.adapter_family,

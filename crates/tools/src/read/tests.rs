@@ -5,8 +5,8 @@ use cookie_agent_engine::{
     ToolProvider, ToolResultTruncationPolicy, TurnAgentContext,
 };
 use cookie_agent_protocol::{
-    AdaptorId, MediaCapability, MediaKind, MimeType, Modality, OperationFingerprint,
-    PermissionAction, RunId, SessionId, ToolCallId, ToolEmittedContent,
+    AdaptorId, MediaCapability, MediaKind, MimeType, Modality, PermissionAction, RunId, SessionId,
+    ToolCallId, ToolEmittedContent,
 };
 
 use super::{ReadTool, directory_page, text_page, text_result};
@@ -89,11 +89,9 @@ fn large_single_line_read_is_full_and_declares_absolute_opt_out() {
     let root = tempfile::tempdir().unwrap();
     let text = "x".repeat(60 * 1024);
     fs::write(root.path().join("large.txt"), &text).unwrap();
-    let target = crate::fs_cap::prepare_existing(root.path(), Path::new("large.txt")).unwrap();
-    let bytes = target.verified_bytes().unwrap();
     let result = text_result(
-        &target.display_path,
-        std::str::from_utf8(&bytes).unwrap(),
+        &root.path().join("large.txt"),
+        &text,
         0,
         super::DEFAULT_LIMIT,
     );
@@ -533,10 +531,6 @@ async fn prepared_read_exposes_lexical_normalized_arguments_not_raw_traversal() 
     assert_eq!(prepared.normalized_arguments()["limit"], 2_000);
 }
 
-async fn fingerprint(root: &Path, path: &str) -> OperationFingerprint {
-    OperationFingerprint::from_prepared_operation(prepared(root, path).await.operation())
-}
-
 #[tokio::test]
 async fn outside_workspace_read_has_one_absolute_labeled_resource() {
     let workspace = tempfile::tempdir().expect("workspace");
@@ -613,10 +607,9 @@ async fn hard_link_through_distinct_parent_capabilities_has_distinct_fingerprint
         .expect("left capability");
     let right_capability = crate::fs_cap::prepare_existing(root.path(), Path::new("right/value"))
         .expect("right capability");
-    assert_eq!(left_capability.identity, right_capability.identity);
     assert_ne!(
-        left_capability.manifest_bytes().expect("left manifest"),
-        right_capability.manifest_bytes().expect("right manifest")
+        left_capability.binding_bytes(),
+        right_capability.binding_bytes()
     );
 
     let left = prepared(root.path(), "left/value").await;
@@ -626,8 +619,8 @@ async fn hard_link_through_distinct_parent_capabilities_has_distinct_fingerprint
         right.operation().resources()[0].binding_digest
     );
     assert_ne!(
-        OperationFingerprint::from_prepared_operation(left.operation()),
-        OperationFingerprint::from_prepared_operation(right.operation())
+        cookie_agent_protocol::OperationFingerprint::from_prepared_operation(left.operation()),
+        cookie_agent_protocol::OperationFingerprint::from_prepared_operation(right.operation())
     );
 }
 
@@ -712,11 +705,12 @@ async fn symlink_routes_keep_lexical_read_permissions_and_arguments() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn dangling_symlink_read_errors_and_route_swaps_are_operation_changed() {
+async fn dangling_symlink_read_errors_and_retargeted_routes_do_not_redirect() {
     use std::os::unix::fs::symlink;
 
     let root = tempfile::tempdir().expect("root");
     fs::write(root.path().join("value.txt"), "value").expect("fixture");
+    fs::write(root.path().join("other.txt"), "other").expect("other fixture");
     symlink("missing.txt", root.path().join("dangling")).expect("dangling link");
     let dangling = ReadTool::new(root.path())
         .prepare(
@@ -733,8 +727,8 @@ async fn dangling_symlink_read_errors_and_route_swaps_are_operation_changed() {
     symlink("value.txt", root.path().join("route")).expect("route");
     let prepared = prepared(root.path(), "route").await;
     fs::remove_file(root.path().join("route")).expect("remove route");
-    symlink("value.txt", root.path().join("route")).expect("replace route");
-    let error = prepared
+    symlink("other.txt", root.path().join("route")).expect("retarget route");
+    let result = prepared
         .execute_for_test(
             ToolExecutionContext::for_test(
                 root.path().join("artifacts"),
@@ -743,8 +737,8 @@ async fn dangling_symlink_read_errors_and_route_swaps_are_operation_changed() {
             .expect("execution context"),
         )
         .await
-        .expect_err("route swap must fail");
-    assert!(matches!(error, ToolError::OperationChanged(_)));
+        .expect("read the approved target");
+    assert!(result.output.contains("1: value"));
 }
 
 #[cfg(unix)]
@@ -764,29 +758,7 @@ async fn symlink_routes_to_the_same_read_target_have_distinct_fingerprints() {
         right.operation().resources()[0].binding_digest
     );
     assert_ne!(
-        OperationFingerprint::from_prepared_operation(left.operation()),
-        OperationFingerprint::from_prepared_operation(right.operation())
+        cookie_agent_protocol::OperationFingerprint::from_prepared_operation(left.operation()),
+        cookie_agent_protocol::OperationFingerprint::from_prepared_operation(right.operation())
     );
-}
-
-#[tokio::test]
-async fn leaf_and_parent_swaps_change_read_fingerprint() {
-    let root = tempfile::tempdir().expect("root");
-    fs::create_dir(root.path().join("tree")).expect("tree");
-    fs::write(root.path().join("tree/value"), "same bytes").expect("fixture");
-    let original = fingerprint(root.path(), "tree/value").await;
-
-    fs::rename(
-        root.path().join("tree/value"),
-        root.path().join("tree/old-value"),
-    )
-    .expect("swap leaf");
-    fs::write(root.path().join("tree/value"), "same bytes").expect("replacement leaf");
-    let leaf_swapped = fingerprint(root.path(), "tree/value").await;
-    assert_ne!(original, leaf_swapped);
-
-    fs::rename(root.path().join("tree"), root.path().join("old-tree")).expect("swap parent");
-    fs::create_dir(root.path().join("tree")).expect("replacement parent");
-    fs::write(root.path().join("tree/value"), "same bytes").expect("replacement content");
-    assert_ne!(leaf_swapped, fingerprint(root.path(), "tree/value").await);
 }

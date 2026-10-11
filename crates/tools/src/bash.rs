@@ -421,7 +421,7 @@ impl ToolProvider for BashTool {
         }
         let executable_path = resolve_executable("bash")?;
         let executable = fs_cap::prepare_existing(Path::new("/"), &executable_path)?;
-        if executable.directory || executable.identity.mode & 0o111 == 0 {
+        if executable.directory || executable.mode & 0o111 == 0 {
             return Err(ToolError::unsupported_security(
                 "prepared bash executable is not an executable regular file",
             ));
@@ -432,7 +432,7 @@ impl ToolProvider for BashTool {
                 "bash cwd is not a directory",
             ));
         }
-        let mut executable_binding = executable.manifest_bytes()?;
+        let mut executable_binding = executable.binding_bytes();
         executable_binding.extend_from_slice(executable_path.as_os_str().as_encoded_bytes());
         let command = args.command.clone();
         let mut binding = command.as_bytes().to_vec();
@@ -446,7 +446,7 @@ impl ToolProvider for BashTool {
             ApprovalResourceSource::PrimaryOperation,
         )?];
         let policy_labels = vec![command.clone()];
-        let mut context = cwd.manifest_bytes()?;
+        let mut context = cwd.binding_bytes();
         context.extend_from_slice(&executable_binding);
         let operation = prepared_operation(
             "bash",
@@ -635,8 +635,6 @@ impl BashExecutor {
         cancellation: CancellationToken,
         stdin: Option<ToolStdin>,
     ) -> Result<ToolResult, ToolError> {
-        self.cwd.revalidate()?;
-        self.executable.revalidate()?;
         if cancellation.is_cancelled() {
             return Err(ToolError::execution("prepared bash cancelled"));
         }
@@ -751,8 +749,6 @@ impl BashExecutor {
         self,
         context: &ToolExecutionContext,
     ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
-        self.cwd.revalidate()?;
-        self.executable.revalidate()?;
         let job = context.start_background().await?;
         let SpawnedShell {
             mut tree,
@@ -824,11 +820,6 @@ impl BashExecutor {
 
 #[async_trait]
 impl PreparedExecutor for BashExecutor {
-    async fn revalidate(&self) -> Result<(), ToolError> {
-        self.cwd.revalidate()?;
-        self.executable.revalidate()
-    }
-
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,

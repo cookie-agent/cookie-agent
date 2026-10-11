@@ -376,10 +376,6 @@ fn delegate_permission_resource(
 
 #[async_trait]
 impl PreparedExecutor for DelegateExecutor {
-    async fn revalidate(&self) -> Result<(), ToolError> {
-        Ok(())
-    }
-
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,

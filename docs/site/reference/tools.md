@@ -68,17 +68,18 @@ Errors distinguish `invalid_url`, `redirect_error`, `timeout`,
 ## Filesystem tools
 
 `read` accepts `filePath`, plus optional zero-based `offset` and positive
-`limit`. The defaults return at most 2,000 lines or directory entries. Reads are
-prepared and revalidated against the target before execution.
+`limit`. The defaults return at most 2,000 lines or directory entries. The path
+is resolved when the call is prepared; the content is read when it executes.
 
 `write` accepts `filePath` and complete `content`. `edit` accepts `filePath`,
 `oldString`, and `newString`, and requires the old text to identify one
-unambiguous replacement. Both tools stage and validate filesystem mutations
-before publication. Writes and edits to the same existing file, or writes to the
-same absent path, share a prepared serialization key and cannot execute at the
-same time. Because all calls are prepared before execution, an edit in the same
-turn does not observe bytes written by an earlier sibling call; models must not
-use same-turn calls to express a write-then-edit dependency.
+unambiguous replacement. Preparation checks the replacement against the current
+content so a mismatch fails before approval, but the edit itself is applied to
+the file's content at execution: changes made while an approval was pending are
+kept, and an `oldString` that no longer matches fails the call. Both tools
+publish through a staged file renamed over the target. Writes and edits that
+resolve to the same file share a serialization key and run one at a time, in
+call order, so same-file edits in one turn apply on top of each other.
 
 Tool results may include image, PDF, audio, or video attachments. Attachments
 are validated, content-addressed, and supplied to models as file parts rather
