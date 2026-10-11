@@ -560,13 +560,10 @@ impl EventLog {
         ) {
             return Err(EventLogError::MissingCreation(path));
         }
-        let validation = validate_records(
-            &path,
-            session_id,
-            &records,
-            &ValidationTaint::default(),
-            None,
-        )?;
+        // A prefix of a log that validated, so its records hold no
+        // duplicates; the copy is only checked without the source's damage.
+        let validation =
+            rebuild_validation(&path, session_id, &records, &ValidationTaint::default())?;
         let next_seq = records.last().map_or(1, |record| record.seq + 1);
         Ok(Arc::new(Self {
             path,
@@ -716,12 +713,11 @@ impl EventLog {
         if let Err(error) =
             validate_record_incremental(&self.path, self.session_id, &event, &mut validation, true)
         {
-            *validation = validate_records(
+            *validation = rebuild_validation(
                 &self.path,
                 self.session_id,
                 &events.all,
                 &self.initial_taint(),
-                None,
             )?;
             return Err(error);
         }
@@ -744,12 +740,11 @@ impl EventLog {
                 .validation
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            *validation = validate_records(
+            *validation = rebuild_validation(
                 &self.path,
                 self.session_id,
                 &events.all,
                 &self.initial_taint(),
-                None,
             )?;
             return Err(error);
         }
@@ -1046,7 +1041,7 @@ impl EventLog {
             .validation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            validate_records(&self.path, self.session_id, &events.all, &taint, None)?;
+            rebuild_validation(&self.path, self.session_id, &events.all, &taint)?;
         self.next_seq.store(through_seq + 1, Ordering::Release);
         Ok(())
     }
@@ -1870,6 +1865,23 @@ fn validate_records<E: Borrow<StoredEvent>>(
         let record: &StoredEvent = record.borrow();
         let strict = strict_from_seq.is_some_and(|from| record.seq >= from);
         validate_record_incremental(path, session_id, record, &mut state, strict)?;
+    }
+    Ok(state)
+}
+
+/// The validation state of records that already passed [`validate_records`]
+/// as a prefix of the log (what a revert keeps, or what was there before an
+/// append that failed). Duplicates cannot appear in such a prefix, so only
+/// the per-record pass that builds the state runs.
+fn rebuild_validation<E: Borrow<StoredEvent>>(
+    path: &Path,
+    session_id: SessionId,
+    records: &[E],
+    initial_taint: &ValidationTaint,
+) -> Result<ValidationState, EventLogError> {
+    let mut state = ValidationState::new(initial_taint.clone());
+    for record in records {
+        validate_record_incremental(path, session_id, record.borrow(), &mut state, false)?;
     }
     Ok(state)
 }
