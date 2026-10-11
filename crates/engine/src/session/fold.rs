@@ -545,4 +545,7 @@ impl<'a> CommittedTurns<'a> {
 #[cfg(test)]
 thread_local! {
     pub(super) static PROJECTION_FOLDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Test-only: skips the per-append reference fold, so a timing test
+    /// measures the append path rather than the differential check.
+    pub(super) static SKIP_REFERENCE_FOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }

@@ -3819,3 +3819,266 @@ fn completed_commit_without_usage_still_counts_as_an_unpriced_request() {
     );
     assert_eq!(priced.estimated_cost_usd, None);
 }
+
+/// Appends one realistic run to `session_id`: a user input followed by
+/// `turns` model turns, each with streamed-output marks, a committed turn
+/// carrying text and two tool calls, its usage record, and both calls'
+/// start and termination. Returns the next model turn sequence.
+#[allow(clippy::too_many_arguments)]
+fn append_realistic_run(
+    store: &SessionStore,
+    session_id: SessionId,
+    run_id: RunId,
+    run_started: Option<&EventPayload>,
+    resolved_model: &cookie_agent_protocol::ResolvedModelRef,
+    agent_id: &AgentId,
+    prompt_fingerprint: &Sha256Digest,
+    mut next_turn_seq: u64,
+    turns: usize,
+    mut on_append: impl FnMut(&cookie_agent_protocol::StoredEvent, std::time::Duration),
+) -> u64 {
+    let mut append = |run: Option<RunId>, payload: EventPayload| {
+        let started = std::time::Instant::now();
+        let event = store
+            .append(session_id, run, fuzz_origin(), payload)
+            .expect("realistic append");
+        on_append(&event, started.elapsed());
+    };
+    if let Some(run_started) = run_started {
+        append(Some(run_id), run_started.clone());
+        append(
+            Some(run_id),
+            EventPayload::UserInputSubmitted {
+                input: "Please refactor the session store so appends stay cheap. ".repeat(4),
+            },
+        );
+    }
+    for turn in 0..turns {
+        let attempt_id = AttemptId::new_v7();
+        append(
+            Some(run_id),
+            EventPayload::ModelAttemptStarted {
+                attempt_id,
+                attempt_ordinal: u32::try_from(turn + 1).expect("ordinal"),
+                fallback_index: 0,
+                retry_ordinal: 0,
+                resolved_model: resolved_model.clone(),
+                prompt_fingerprint: prompt_fingerprint.clone(),
+            },
+        );
+        append(
+            Some(run_id),
+            EventPayload::ModelRequestPrepared {
+                attempt_id,
+                prompt_fingerprint: prompt_fingerprint.clone(),
+            },
+        );
+        for kind in [
+            cookie_agent_protocol::StreamedOutputKind::Reasoning,
+            cookie_agent_protocol::StreamedOutputKind::Text,
+        ] {
+            append(
+                Some(run_id),
+                EventPayload::ModelOutputStarted { attempt_id, kind },
+            );
+        }
+        let turn_seq = next_turn_seq;
+        next_turn_seq += 1;
+        let owners = (0..2_u32)
+            .map(|index| cookie_agent_protocol::AssistantToolCallRef {
+                model_turn_seq: turn_seq,
+                content_index: index + 1,
+                model_call_id: cookie_agent_protocol::ModelCallId::new(format!(
+                    "call-{turn_seq}-{index}"
+                ))
+                .expect("model call id"),
+                provider_item_id: None,
+            })
+            .collect::<Vec<_>>();
+        let mut content = vec![cookie_agent_protocol::PersistedAssistantPart::Text {
+            text: "I will read the file and then run the tests to confirm. ".repeat(16),
+            metadata: None,
+        }];
+        content.extend(owners.iter().map(|owner| {
+            cookie_agent_protocol::PersistedAssistantPart::ToolCall {
+                id: owner.model_call_id.clone(),
+                provider_item_id: None,
+                name: SafeCode::new("read").expect("tool name"),
+                input: serde_json::json!({
+                    "path": "crates/engine/src/session/mod.rs",
+                    "offset": 1200,
+                    "limit": 400,
+                }),
+                raw_input: None,
+                metadata: None,
+            }
+        }));
+        let usage = Usage {
+            input_tokens: Some(40_000),
+            output_tokens: Some(600),
+            ..Usage::default()
+        };
+        append(
+            Some(run_id),
+            EventPayload::ModelTurnCommitted {
+                attempt_id,
+                model_turn_seq: turn_seq,
+                resolved_model: resolved_model.clone(),
+                input_through_seq: 1,
+                turn: PersistedModelTurn {
+                    content,
+                    provider_options: BTreeMap::new(),
+                    finish_reason: ModelFinishReason::ToolCalls,
+                    usage: usage.clone(),
+                    response_metadata: BTreeMap::new(),
+                    provider_metadata: BTreeMap::new(),
+                    native_replay: None,
+                },
+                warnings: Vec::new(),
+            },
+        );
+        append(
+            Some(run_id),
+            EventPayload::ModelUsageRecorded {
+                model_turn_seq: turn_seq,
+                agent_id: agent_id.clone(),
+                resolved_model: resolved_model.clone(),
+                usage,
+                estimated_cost_pico_usd: Some(1_000),
+            },
+        );
+        for owner in owners {
+            let tool_call_id = ToolCallId::new_v7();
+            append(
+                Some(run_id),
+                EventPayload::ToolCallStarted {
+                    start: cookie_agent_protocol::ToolCallStart {
+                        output: Default::default(),
+                        tool_call_id,
+                        owner: owner.clone(),
+                        presentation: cookie_agent_protocol::ToolCallPresentation {
+                            title: SafeDisplayText::new("Read").expect("title"),
+                            primary_argument: None,
+                        },
+                        operation_fingerprint: serde_json::from_value(serde_json::json!({
+                            "digest": Sha256Digest::of_bytes(b"read operation")
+                        }))
+                        .expect("operation fingerprint"),
+                    },
+                },
+            );
+            append(
+                Some(run_id),
+                EventPayload::ToolCallTerminated {
+                    termination: cookie_agent_protocol::ToolCallTermination {
+                        tool_call_id,
+                        owner,
+                        outcome: cookie_agent_protocol::ToolTerminationOutcome::Completed,
+                        result: Some(cookie_agent_protocol::PersistedToolResult {
+                            title: SafeDisplayText::new("Read").expect("title"),
+                            output: "    let value = compute(input)?; // a line of source\n"
+                                .repeat(40),
+                            display: None,
+                            retained_output: None,
+                            metadata: serde_json::Value::Null,
+                            truncation: None,
+                            attachments: Vec::new(),
+                            additional_messages: Vec::new(),
+                        }),
+                        error: None,
+                    },
+                },
+            );
+        }
+    }
+    append(
+        Some(run_id),
+        EventPayload::RunCompleted {
+            final_text: Some("Done: the refactor is in place and the tests pass.".into()),
+        },
+    );
+    next_turn_seq
+}
+
+/// Timing probe, not a regression gate: grows one persisted session to
+/// ~20k events of a realistic mix and reports the append cost near the
+/// tail, plus fork and cold-reopen costs of the result. Run with
+/// `cargo test --release -p cookie-agent-engine -- --ignored --nocapture
+/// session_append_timing` (set `TMPDIR` to pick the filesystem).
+#[test]
+#[ignore = "timing probe; run manually"]
+fn session_append_timing() {
+    const TARGET_EVENTS: u64 = 20_000;
+    const TURNS_PER_RUN: usize = 8;
+    super::SKIP_REFERENCE_FOLD.with(|skip| skip.set(true));
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let store = SessionStore::open(&data, &cwd).unwrap();
+    let session_id = persist_test_session(&store);
+    let (mut run_id, resolved_model, agent_id, prompt_fingerprint, run_started) =
+        fuzz_scaffolding(&store, session_id);
+    let mut next_turn_seq = 1;
+    let mut first_run = true;
+    let mut last_seq = 0;
+    let mut tail = Vec::new();
+    let total = std::time::Instant::now();
+    while last_seq < TARGET_EVENTS {
+        next_turn_seq = append_realistic_run(
+            &store,
+            session_id,
+            run_id,
+            (!first_run).then_some(&run_started),
+            &resolved_model,
+            &agent_id,
+            &prompt_fingerprint,
+            next_turn_seq,
+            TURNS_PER_RUN,
+            |event, elapsed| {
+                last_seq = event.seq;
+                if event.seq + 1_000 > TARGET_EVENTS {
+                    tail.push(elapsed);
+                }
+            },
+        );
+        first_run = false;
+        run_id = RunId::new_v7();
+    }
+    let total = total.elapsed();
+    tail.sort();
+    let tail_mean = tail.iter().sum::<std::time::Duration>() / tail.len() as u32;
+    let tail_p50 = tail[tail.len() / 2];
+    let tail_p99 = tail[tail.len() * 99 / 100];
+    let log_bytes = fs::metadata(store.session_dir(session_id).join(EVENTS_FILE))
+        .expect("log metadata")
+        .len();
+
+    let fork = std::time::Instant::now();
+    store
+        .fork(session_id, last_seq, test_origin())
+        .expect("fork at tip");
+    let fork = fork.elapsed();
+
+    drop(store);
+    let reopen = std::time::Instant::now();
+    let store = SessionStore::open(&data, &cwd).unwrap();
+    store.get(session_id).expect("cold get");
+    let cold_get = reopen.elapsed();
+    let resume = std::time::Instant::now();
+    let adoption_lock = store.adoption_lock(session_id);
+    let _adoption = adoption_lock.lock().unwrap();
+    if store.begin_write(session_id).expect("begin write") == super::WriteOpen::Adopting {
+        store.commit_adoption(session_id).expect("commit adoption");
+    }
+    let resume = resume.elapsed();
+
+    println!(
+        "session_append_timing: {last_seq} events, {} KiB log, total {total:?} \
+         ({:?}/append); last 1000 appends mean {tail_mean:?} p50 {tail_p50:?} \
+         p99 {tail_p99:?}; fork at tip {fork:?}; cold get {cold_get:?}; \
+         resume (begin_write) {resume:?}",
+        log_bytes / 1024,
+        total / u32::try_from(last_seq).expect("event count"),
+    );
+}

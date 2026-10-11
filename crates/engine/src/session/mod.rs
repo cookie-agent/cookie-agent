@@ -1617,7 +1617,7 @@ impl SessionStore {
             self.record_terminal_run(id, terminal.0, terminal.1)?;
         }
         #[cfg(test)]
-        {
+        if !SKIP_REFERENCE_FOLD.with(std::cell::Cell::get) {
             let reference = projection_fold(log).expect("reference fold");
             let resident = self.get_resident(id).expect("resident after append");
             assert_projection_equivalent(&resident, &reference);
