@@ -811,7 +811,7 @@ impl SessionState {
         let index = self
             .transcript
             .iter()
-            .position(|item| item.id() == item_id)?;
+            .rposition(|item| item.id() == item_id)?;
         if matches!(
             &self.transcript[index],
             TranscriptItem::Assistant {

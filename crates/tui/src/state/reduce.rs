@@ -1431,7 +1431,7 @@ pub(super) fn reduce_event(
             state.active_run = None;
         }
         EventPayload::UserInputApplied { user_input_seq } => {
-            if let Some(index) = state.transcript.iter().position(
+            if let Some(index) = state.transcript.iter().rposition(
                 |item| matches!(item, TranscriptItem::User { seq, .. } if *seq == user_input_seq),
             ) {
                 move_input_to_boundary(state, index, run_id, timestamp);
@@ -1465,7 +1465,7 @@ pub(super) fn reduce_event(
                 if let Some(TranscriptItem::Assistant { version, .. }) = state
                     .transcript
                     .iter_mut()
-                    .find(|item| item.id() == item_id)
+                    .rfind(|item| item.id() == item_id)
                 {
                     *version = version.wrapping_add(1);
                 }
@@ -1628,7 +1628,7 @@ pub(super) fn rebind_pending_attempt(
     let index = state
         .transcript
         .iter()
-        .position(|item| item.id() == attempt.item_id)
+        .rposition(|item| item.id() == attempt.item_id)
         .expect("pending attempt owns an assistant item");
     let TranscriptItem::Assistant {
         attribution,
@@ -1890,7 +1890,7 @@ pub(super) fn append_attribution(
     }) = state
         .transcript
         .iter_mut()
-        .find(|item| item.id() == item_id)
+        .rfind(|item| item.id() == item_id)
     {
         let index = children.len();
         push_child(
@@ -1919,7 +1919,7 @@ pub(super) fn append_assistant_notice(
     }) = state
         .transcript
         .iter_mut()
-        .find(|item| item.id() == item_id)
+        .rfind(|item| item.id() == item_id)
     {
         let index = children.len();
         push_child(
@@ -1947,7 +1947,7 @@ pub(super) fn prune_abandoned_attempt(
     }) = state
         .transcript
         .iter_mut()
-        .find(|item| item.id() == item_id)
+        .rfind(|item| item.id() == item_id)
     {
         let timed = child_times.len() == children.len();
         let committed_prefix = committed_prefix.min(children.len());
@@ -1989,7 +1989,7 @@ pub(super) fn mark_committed(
     }) = state
         .transcript
         .iter_mut()
-        .find(|item| item.id() == item_id)
+        .rfind(|item| item.id() == item_id)
     {
         // Only the first commit may reconcile the first attempt's header.
         if committed_turn_seq.is_none() {
@@ -2106,7 +2106,7 @@ pub(super) fn rebuild_committed_children(
     }) = state
         .transcript
         .iter_mut()
-        .find(|item| item.id() == item_id)
+        .rfind(|item| item.id() == item_id)
     {
         let committed_prefix = committed_prefix.min(existing.len());
         // Whitespace-only parts leading a block with no committed content
@@ -2195,7 +2195,7 @@ pub(super) fn append_assistant_delta(
         }) = state
             .transcript
             .iter_mut()
-            .find(|item| item.id() == open.item_id)
+            .rfind(|item| item.id() == open.item_id)
     {
         if open.kind == kind {
             let part_index = children
@@ -2279,7 +2279,7 @@ pub(super) fn append_assistant_delta(
     }) = state
         .transcript
         .iter_mut()
-        .find(|item| item.id() == item_id)
+        .rfind(|item| item.id() == item_id)
     {
         push_child(
             children,
@@ -2368,7 +2368,7 @@ pub(super) fn link_tool_child(
     }) = state
         .transcript
         .iter_mut()
-        .find(|item| item.id() == item_id)
+        .rfind(|item| item.id() == item_id)
     else {
         return false;
     };
@@ -2422,7 +2422,7 @@ pub(super) fn close_open_assistant(state: &mut SessionState, sealed_at: jiff::Ti
     if let Some(TranscriptItem::Assistant { version, .. }) = state
         .transcript
         .iter_mut()
-        .find(|item| item.id() == open.item_id)
+        .rfind(|item| item.id() == open.item_id)
     {
         *version = version.wrapping_add(1);
     }
@@ -2576,7 +2576,7 @@ pub(super) fn split_assistant_if_pending(
     let Some(index) = state
         .transcript
         .iter()
-        .position(|item| item.id() == attempt.item_id)
+        .rposition(|item| item.id() == attempt.item_id)
     else {
         return Some(attempt.item_id);
     };
@@ -2645,7 +2645,7 @@ pub(super) fn relocate_empty_split_block(
     else {
         return;
     };
-    let Some(index) = state.transcript.iter().position(|item| {
+    let Some(index) = state.transcript.iter().rposition(|item| {
         matches!(
             item,
             TranscriptItem::Assistant {
@@ -2682,7 +2682,7 @@ pub(super) fn relocate_empty_split_block(
 /// landed there so no empty block is left behind.
 pub(super) fn prune_split_segment(state: &mut SessionState, item_id: u64, committed_prefix: usize) {
     prune_abandoned_attempt(state, item_id, committed_prefix);
-    let empty = state.transcript.iter().any(|item| {
+    let empty = state.transcript.iter().rev().any(|item| {
         matches!(
             item,
             TranscriptItem::Assistant {
@@ -2730,7 +2730,7 @@ pub(super) fn bump_tool_item(state: &mut SessionState, tool_call_id: ToolCallId)
     if let Some(TranscriptItem::Assistant { version, children, .. }) = state
         .transcript
         .iter_mut()
-        .find(|item| {
+        .rfind(|item| {
             matches!(item, TranscriptItem::Assistant { children, .. } if children.iter().any(
                 |child| matches!(child, AssistantChild::Tool { call_id } if *call_id == tool_call_id)))
         })
