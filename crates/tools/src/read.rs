@@ -475,12 +475,12 @@ fn text_result(
         lines += 1;
     }
     let mut output = page.output;
+    output.push_str("</content>");
     if let Some(next) = page.stopped_at {
         output.push_str(&format!(
-            "[page cut at the result size limit; continue with offset={next}]\n"
+            "\n[page cut at the result size limit; continue with offset={next}]"
         ));
     }
-    output.push_str("</content>");
     Ok(ToolResult {
         display: None,
         retained_output: None,
