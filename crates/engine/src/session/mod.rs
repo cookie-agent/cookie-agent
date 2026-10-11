@@ -2028,6 +2028,15 @@ impl SessionStore {
         Some(event)
     }
 
+    /// Whether a reader still holds a live tail on `session_id`.
+    pub(crate) fn has_live_tail(&self, session_id: SessionId) -> bool {
+        self.subscribers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&session_id)
+            .is_some_and(|tails| tails.senders.iter().any(|tail| !tail.sender.is_closed()))
+    }
+
     pub(crate) fn notify_evicted_subscribers(&self, session_id: SessionId, last_event_seq: u64) {
         let subscribers = self
             .subscribers

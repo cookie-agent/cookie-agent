@@ -1064,3 +1064,119 @@ async fn the_residency_cap_is_enforced_per_tree() {
         "a tree at the cap keeps its children"
     );
 }
+
+/// An idle root tree pages out whole once nobody watches it, and a later
+/// view reloads it unchanged. A live tail or pending work keeps it resident.
+#[tokio::test]
+async fn idle_root_trees_page_out_when_unwatched_and_reload_on_view() {
+    let (endpoint, responses, captured) = scripted_channel_server(3).await;
+    for response in [
+        MatchedScriptedResponse::last_message_contains(
+            "delegate before idling",
+            scripted_tool_body(
+                "idle-root-delegate",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type": "worker", "description": "Idle child", "prompt": "idle child work"
+                }),
+            ),
+        ),
+        MatchedScriptedResponse::last_message_contains(
+            "idle child work",
+            scripted_text_body("idle child report"),
+        ),
+        MatchedScriptedResponse::last_message_role("tool", scripted_text_body("root done")),
+    ] {
+        responses.send(response).expect("scripted response");
+    }
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let root = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("root session")
+        .session_id;
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: root,
+                client_run_id: ClientRunId::new("idle-root").expect("run ID"),
+                selection,
+                input: "delegate before idling".to_owned(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("root run");
+    await_projection(&fixture.engine, root, "root run completion", |projection| {
+        projection.status == SessionStatus::Completed
+    })
+    .await;
+    with_watchdog("idle root server", captured)
+        .await
+        .expect("scripted server");
+    let child = fixture.engine.children(root).expect("children")[0].session_id;
+    let root_tip = fixture
+        .engine
+        .inner
+        .store
+        .get(root)
+        .expect("root")
+        .meta
+        .last_event_seq;
+
+    // A watched tree stays resident however long it idles.
+    let (_, tail) = fixture.engine.subscribe(root, None).await.expect("tail");
+    let evicted = fixture
+        .engine
+        .evict_idle_roots_with(std::time::Duration::ZERO)
+        .await
+        .expect("watched janitor pass");
+    assert!(evicted.is_empty(), "a live tail pins the tree: {evicted:?}");
+    assert!(fixture.engine.inner.store.is_resident(root));
+
+    // A tree nobody has touched for the idle period is still resident.
+    drop(tail);
+    let evicted = fixture
+        .engine
+        .evict_idle_roots_with(std::time::Duration::from_secs(60 * 60))
+        .await
+        .expect("recent janitor pass");
+    assert!(evicted.is_empty(), "recent activity pins the tree");
+
+    let evicted = fixture
+        .engine
+        .evict_idle_roots_with(std::time::Duration::ZERO)
+        .await
+        .expect("idle janitor pass");
+    assert_eq!(
+        evicted,
+        vec![child, root],
+        "children page out before the root"
+    );
+    assert!(!fixture.engine.inner.store.is_resident(root));
+    assert!(!fixture.engine.inner.store.is_resident(child));
+    assert!(!fixture.engine.actor_resident_for_test(root));
+
+    let (page, _tail) = fixture
+        .engine
+        .subscribe(root, None)
+        .await
+        .expect("reload on view");
+    assert_eq!(page.events.last().map(|event| event.seq), Some(root_tip));
+    assert_eq!(
+        fixture
+            .engine
+            .get_session(child)
+            .expect("child reloads")
+            .status,
+        SessionStatus::Completed
+    );
+    fixture.engine.shutdown().await;
+}

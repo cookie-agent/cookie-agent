@@ -9,6 +9,9 @@ use super::helpers::root_id;
 use super::{Engine, EngineError, SessionCommand, delegation::DelegationState};
 
 const JANITOR_INTERVAL: Duration = Duration::from_secs(60);
+/// How long a root session tree sits unused before the janitor pages it out.
+/// Viewing it again, or any command, reloads it from disk.
+const ROOT_IDLE_EVICTION_AFTER: Duration = Duration::from_secs(30 * 60);
 
 impl Engine {
     pub(super) fn start_subagent_janitor(&self) {
@@ -33,6 +36,9 @@ impl Engine {
                 }
                 if let Err(error) = engine.evict_idle_subagents().await {
                     eprintln!("subagent session janitor failed: {error}");
+                }
+                if let Err(error) = engine.evict_idle_roots_with(ROOT_IDLE_EVICTION_AFTER).await {
+                    eprintln!("root session janitor failed: {error}");
                 }
             }
         });
@@ -231,23 +237,7 @@ impl Engine {
                 }
                 hook.release.notified().await;
             }
-            let actor = {
-                self.inner
-                    .sessions
-                    .actors
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .get(&session_id)
-                    .cloned()
-            };
-            if let Some(actor) = actor {
-                let (barrier, receiver) = SessionCommand::call(false, |_| async { Ok(()) });
-                actor
-                    .send(barrier)
-                    .await
-                    .map_err(|_| EngineError::ActorStopped)?;
-                receiver.await.map_err(|_| EngineError::ActorStopped)??;
-            }
+            self.drain_actor(session_id).await?;
             let Some(session) = self.inner.store.get_resident(session_id) else {
                 continue;
             };
@@ -283,42 +273,7 @@ impl Engine {
     ) -> Option<Timestamp> {
         if !matches!(session.meta.origin, SessionOrigin::Delegated { .. })
             || session.runs.is_empty()
-            || session
-                .runs
-                .values()
-                .any(|run| matches!(run.status, SessionStatus::Running | SessionStatus::Idle))
-            || self
-                .inner
-                .sessions
-                .active
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .values()
-                .any(|active| active.session == session.meta.session_id)
-            || self
-                .inner
-                .delegation
-                .queue
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .contains(&session.meta.session_id)
-            || self
-                .inner
-                .compaction
-                .in_progress
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .contains(&session.meta.session_id)
-            || self
-                .inner
-                .approvals
-                .pending
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .keys()
-                .any(|(session_id, _)| *session_id == session.meta.session_id)
-            || has_runless_pending_inputs(&session.log.event_snapshot())
-            || self.producers_pin_session(session.meta.session_id)
+            || self.session_has_pending_work(session)
         {
             return None;
         }
@@ -353,6 +308,197 @@ impl Engine {
             .max()?;
         let idle = Duration::try_from(now.duration_since(ended_at)).ok()?;
         (idle > idle_after).then_some(ended_at)
+    }
+
+    /// Whether anything still needs `session` in memory: a live or queued
+    /// run, compaction, an approval, unadmitted input, or producer work.
+    fn session_has_pending_work(&self, session: &crate::session::SessionProjection) -> bool {
+        let session_id = session.meta.session_id;
+        session.status == SessionStatus::Running
+            || session
+                .runs
+                .values()
+                .any(|run| matches!(run.status, SessionStatus::Running | SessionStatus::Idle))
+            || self
+                .inner
+                .sessions
+                .active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .values()
+                .any(|active| active.session == session_id)
+            || self
+                .inner
+                .delegation
+                .queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&session_id)
+            || self
+                .inner
+                .compaction
+                .in_progress
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&session_id)
+            || self
+                .inner
+                .approvals
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .keys()
+                .any(|(pending, _)| *pending == session_id)
+            || has_runless_pending_inputs(&session.log.event_snapshot())
+            || self.producers_pin_session(session_id)
+    }
+
+    /// Pages out root session trees nobody has used for `idle_after`: no
+    /// event, no live tail, and no pending work anywhere in the tree. A tree
+    /// goes whole or not at all, children first, so an evicted root never
+    /// leaves resident children behind it. Its runtime-only settings (the
+    /// permission mode, context calibration) survive for when it reloads.
+    pub(super) async fn evict_idle_roots_with(
+        &self,
+        idle_after: Duration,
+    ) -> Result<Vec<SessionId>, EngineError> {
+        let _delegation_admission = self.inner.delegation.admission.lock().await;
+        let now = Timestamp::now();
+        let resident = self.inner.store.all();
+        let candidates = resident
+            .iter()
+            .filter(|session| self.root_tree_idle(session, &resident, now, idle_after))
+            .map(|session| session.meta.session_id)
+            .collect::<Vec<_>>();
+        let mut evicted = Vec::new();
+        for root in candidates {
+            let _residency = self.inner.sessions.residency_mutation.lock().await;
+            let still_idle = |engine: &Self| {
+                let resident = engine.inner.store.all();
+                resident.iter().any(|session| {
+                    session.meta.session_id == root
+                        && engine.root_tree_idle(session, &resident, Timestamp::now(), idle_after)
+                })
+            };
+            if !still_idle(self) {
+                continue;
+            }
+            // Drain each tree member's actor so nothing it already accepted
+            // is cut off, then re-check: the drained work may have used it.
+            let members = self
+                .inner
+                .store
+                .all()
+                .into_iter()
+                .filter(|session| root_id(&session.meta.origin, session.meta.session_id) == root)
+                .map(|session| session.meta.session_id)
+                .collect::<Vec<_>>();
+            for member in &members {
+                self.drain_actor(*member).await?;
+            }
+            if !still_idle(self) {
+                continue;
+            }
+            // Children first, root last.
+            let mut ordered = members;
+            ordered.sort_by_key(|member| *member == root);
+            for member in ordered {
+                let Some(session) = self.inner.store.get_resident(member) else {
+                    continue;
+                };
+                let last_event_seq = session.meta.last_event_seq;
+                self.inner
+                    .sessions
+                    .actors
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&member);
+                if !self.inner.store.evict(member)? {
+                    // A log never persisted (an empty session) stays put.
+                    continue;
+                }
+                self.inner
+                    .store
+                    .notify_evicted_subscribers(member, last_event_seq);
+                if member == root {
+                    self.inner
+                        .sessions
+                        .producers
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&member);
+                    self.inner
+                        .sessions
+                        .producer_projections
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&member);
+                } else {
+                    self.clear_evicted_session_caches(member, &session.meta.origin);
+                }
+                evicted.push(member);
+            }
+        }
+        Ok(evicted)
+    }
+
+    /// Whether `session` is a root whose whole resident tree has been unused
+    /// for `idle_after`.
+    fn root_tree_idle(
+        &self,
+        session: &crate::session::SessionProjection,
+        resident: &[Arc<crate::session::SessionProjection>],
+        now: Timestamp,
+        idle_after: Duration,
+    ) -> bool {
+        if !matches!(session.meta.origin, SessionOrigin::Root) {
+            return false;
+        }
+        let root = session.meta.session_id;
+        let unused = |member: &crate::session::SessionProjection| {
+            // Cheap checks first: the pending-work check scans the log.
+            member.log.last_event().is_some_and(|event| {
+                Duration::try_from(now.duration_since(event.timestamp))
+                    .is_ok_and(|idle| idle > idle_after)
+            }) && !self.inner.store.has_live_tail(member.meta.session_id)
+                && !self.session_has_pending_work(member)
+        };
+        unused(session)
+            && resident
+                .iter()
+                .filter(|member| {
+                    matches!(
+                        member.meta.origin,
+                        SessionOrigin::Delegated { root_session_id, .. } if root_session_id == root
+                    )
+                })
+                .all(|child| {
+                    unused(child)
+                        && self
+                            .subagent_eviction_ended_at(child, now, idle_after)
+                            .is_some()
+                })
+    }
+
+    /// Waits until `session`'s actor has run everything queued before now.
+    async fn drain_actor(&self, session: SessionId) -> Result<(), EngineError> {
+        let actor = self
+            .inner
+            .sessions
+            .actors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session)
+            .cloned();
+        if let Some(actor) = actor {
+            let (barrier, receiver) = SessionCommand::call(false, |_| async { Ok(()) });
+            actor
+                .send(barrier)
+                .await
+                .map_err(|_| EngineError::ActorStopped)?;
+            receiver.await.map_err(|_| EngineError::ActorStopped)??;
+        }
+        Ok(())
     }
 
     fn clear_evicted_session_caches(&self, session_id: SessionId, origin: &SessionOrigin) {
