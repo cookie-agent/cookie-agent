@@ -39,21 +39,44 @@ pub(super) fn assistant_item_layout(
                     .get(&child.id())
                     .filter(|cached| cached.key == key);
                 if let Some(cached) = cached {
-                    layout.push(&cached.lines, &cached.regions);
+                    layout.push_chunks(&cached.lines, &cached.regions);
                 } else {
-                    let part_layout = assistant_child_layout(
-                        child,
-                        key,
-                        context.width,
-                        context.theme,
-                        context.highlighter,
-                    );
-                    let cached = CachedAssistantPartLayout {
-                        key,
-                        lines: part_layout.lines.into(),
-                        regions: part_layout.regions,
+                    let previous = context.assistant_part_cache.remove(&child.id());
+                    let cached = match child {
+                        AssistantChild::Text { markdown, .. } => {
+                            let (lines, blocks) = text_part_lines(
+                                markdown,
+                                previous.as_ref().map_or(&[], |previous| &previous.blocks),
+                                context.width,
+                                context.theme,
+                                context.highlighter,
+                            );
+                            CachedAssistantPartLayout {
+                                key,
+                                lines,
+                                regions: Vec::new(),
+                                blocks,
+                            }
+                        }
+                        _ => {
+                            let part_layout = assistant_child_layout(
+                                child,
+                                key,
+                                context.width,
+                                context.theme,
+                                context.highlighter,
+                            );
+                            let mut lines = LineChunks::default();
+                            lines.push_lines(part_layout.lines);
+                            CachedAssistantPartLayout {
+                                key,
+                                lines,
+                                regions: part_layout.regions,
+                                blocks: Vec::new(),
+                            }
+                        }
                     };
-                    layout.push(&cached.lines, &cached.regions);
+                    layout.push_chunks(&cached.lines, &cached.regions);
                     context.assistant_part_cache.insert(child.id(), cached);
                     *context.assistant_part_layout_passes =
                         context.assistant_part_layout_passes.wrapping_add(1);
@@ -202,6 +225,53 @@ pub(super) fn assistant_part_layout_key(
     }
 }
 
+/// A reply's rows, one chunk per markdown block. A block rendered from the
+/// same settled allocation as last time (`previous`, by position) keeps its
+/// wrapped rows, so a streaming reply re-wraps only its open tail.
+pub(super) fn text_part_lines(
+    markdown: &crate::markdown::MarkdownDocument,
+    previous: &[WrappedBlock],
+    width: u16,
+    theme: &Theme,
+    highlighter: &dyn Highlighter,
+) -> (LineChunks, Vec<WrappedBlock>) {
+    let blocks = crate::markdown::render_markdown_blocks_width(
+        markdown,
+        theme,
+        highlighter,
+        markdown_body_width(width),
+    );
+    let body_line = |line: MarkdownLine| markdown_body_line(line, width, theme.assistant());
+    let mut lines = LineChunks::default();
+    let mut wrapped_blocks = Vec::with_capacity(blocks.len());
+    let mut separator: Option<Chunk> = None;
+    for (index, block) in blocks.into_iter().enumerate() {
+        if !lines.is_empty() {
+            let separator =
+                separator.get_or_insert_with(|| body_line(MarkdownLine::default()).into());
+            lines.push_chunk(Chunk::clone(separator));
+        }
+        let wrapped = previous
+            .get(index)
+            .filter(|(source, _)| std::sync::Arc::ptr_eq(source, &block))
+            .map(|(_, wrapped)| Chunk::clone(wrapped))
+            .unwrap_or_else(|| {
+                block
+                    .iter()
+                    .cloned()
+                    .flat_map(body_line)
+                    .collect::<Vec<_>>()
+                    .into()
+            });
+        lines.push_chunk(Chunk::clone(&wrapped));
+        wrapped_blocks.push((block, wrapped));
+    }
+    if lines.is_empty() {
+        lines.push_lines(body_line(MarkdownLine::default()));
+    }
+    (lines, wrapped_blocks)
+}
+
 pub(super) fn assistant_child_layout(
     child: &AssistantChild,
     key: AssistantPartLayoutKey,
@@ -211,17 +281,9 @@ pub(super) fn assistant_child_layout(
 ) -> ItemLayout {
     match child {
         AssistantChild::Text { markdown, .. } => ItemLayout {
-            lines: {
-                crate::markdown::render_markdown_lines_width(
-                    markdown,
-                    theme,
-                    highlighter,
-                    markdown_body_width(width),
-                )
-                .into_iter()
-                .flat_map(|line| markdown_body_line(line, width, theme.assistant()))
-                .collect()
-            },
+            lines: text_part_lines(markdown, &[], width, theme, highlighter)
+                .0
+                .to_vec(),
             regions: Vec::new(),
             user_seq: None,
         },

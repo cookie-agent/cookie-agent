@@ -1293,30 +1293,53 @@ pub(crate) fn render_markdown_lines_width(
     width: u16,
 ) -> Vec<MarkdownLine> {
     let mut lines = Vec::new();
+    for block in render_markdown_blocks_width(document, theme, highlighter, width) {
+        if !lines.is_empty() {
+            lines.push(MarkdownLine::default());
+        }
+        lines.extend(block.iter().cloned());
+    }
+    if lines.is_empty() {
+        lines.push(MarkdownLine::default());
+    }
+    lines
+}
+
+/// The document's top-level blocks rendered one by one, empty blocks
+/// dropped: [`render_markdown_lines_width`] joins them with one blank line.
+/// A settled block comes back as the very allocation its block cache holds,
+/// so a caller can recognize an unchanged block by pointer and reuse what it
+/// derived from it.
+pub(crate) fn render_markdown_blocks_width(
+    document: &MarkdownDocument,
+    theme: &Theme,
+    highlighter: &dyn Highlighter,
+    width: u16,
+) -> Vec<Arc<[MarkdownLine]>> {
     let highlighter_key = highlighter.cache_key();
     let stable_tail = if document.finished {
         document.tail_blocks.as_slice()
     } else {
         &[]
     };
-    for block in document.stable_blocks.iter().chain(stable_tail) {
-        let rendered = render_stable_block(block, theme, highlighter, highlighter_key, width);
-        push_block_lines(&mut lines, rendered.iter().cloned());
-    }
+    let mut blocks = document
+        .stable_blocks
+        .iter()
+        .chain(stable_tail)
+        .map(|block| render_stable_block(block, theme, highlighter, highlighter_key, width))
+        .collect::<Vec<_>>();
     // The streaming tail renders block by block like the stable prefix, so a
     // block looks the same before and after it settles.
     if !document.finished {
-        for block in &document.tail_blocks {
-            push_block_lines(
-                &mut lines,
-                render_block(block, false, theme, highlighter, width),
-            );
-        }
+        blocks.extend(
+            document
+                .tail_blocks
+                .iter()
+                .map(|block| render_block(block, false, theme, highlighter, width).into()),
+        );
     }
-    if lines.is_empty() {
-        lines.push(MarkdownLine::default());
-    }
-    lines
+    blocks.retain(|block| !block.is_empty());
+    blocks
 }
 
 /// One settled block's rendered lines, from its per-block cache when the
@@ -1356,20 +1379,6 @@ fn render_stable_block(
         });
         rendered
     })
-}
-
-/// Append one top-level block's lines, separated from the previous block by
-/// a blank line. Blocks that render nothing (reference definitions, empty
-/// HTML) add no gap.
-fn push_block_lines(lines: &mut Vec<MarkdownLine>, block: impl IntoIterator<Item = MarkdownLine>) {
-    let mut block = block.into_iter().peekable();
-    if block.peek().is_none() {
-        return;
-    }
-    if !lines.is_empty() {
-        lines.push(MarkdownLine::default());
-    }
-    lines.extend(block);
 }
 
 fn render_block(

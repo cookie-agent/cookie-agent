@@ -663,6 +663,20 @@ impl ChunkedItem {
         self.lines.push_chunk(Chunk::clone(lines));
     }
 
+    /// [`Self::push`] for a multi-chunk child.
+    fn push_chunks(&mut self, lines: &LineChunks, regions: &[BlockRegion]) {
+        let start = self.lines.len();
+        self.regions
+            .extend(regions.iter().map(|region| BlockRegion {
+                start_line: start + region.start_line,
+                end_line: start + region.end_line,
+                ..*region
+            }));
+        for chunk in &lines.chunks {
+            self.lines.push_chunk(Chunk::clone(chunk));
+        }
+    }
+
     fn push_layout(&mut self, layout: ItemLayout) {
         let start = self.lines.len();
         self.regions
@@ -719,9 +733,15 @@ struct AssistantPartLayoutKey {
 #[derive(Clone)]
 struct CachedAssistantPartLayout {
     key: AssistantPartLayoutKey,
-    lines: Chunk,
+    lines: LineChunks,
     regions: Vec<BlockRegion>,
+    /// A reply's rendered markdown blocks and the rows each wrapped to, so
+    /// the next render of this part re-wraps only blocks that changed.
+    blocks: Vec<WrappedBlock>,
 }
+
+/// One rendered markdown block and the rows it wrapped to.
+type WrappedBlock = (std::sync::Arc<[MarkdownLine]>, Chunk);
 
 /// Everything one tool row renders from beyond the cache-wide inputs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

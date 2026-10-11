@@ -1130,3 +1130,57 @@ fn running_tool_updates_rerender_only_the_tool_row() {
     layout(&mut fresh, &store, 2);
     assert_eq!(cache.layout.lines.to_vec(), fresh.layout.lines.to_vec());
 }
+
+#[test]
+fn streaming_reply_rewraps_only_its_open_block() {
+    let session = SessionId::new_v7();
+    let run = run_id();
+    let attempt = AttemptId::new_v7();
+    let mut store = StateStore::default();
+    for event in [
+        user_input(session, 1, run, "write two paragraphs"),
+        attempt_started(session, 2, run, attempt, None),
+        text_delta(session, 3, run, attempt, "settled paragraph\n\nopen"),
+    ] {
+        assert!(store.apply_event(event));
+    }
+    let theme = Theme::default();
+    let highlighter = crate::markdown::SyntectHighlighter::default();
+    let layout = |cache: &mut LayoutCache, store: &StateStore| {
+        ensure_cached_transcript_layout(
+            cache,
+            session,
+            &store.sessions[&session],
+            None,
+            None,
+            60,
+            &theme,
+            &highlighter,
+            crate::state::EventLevel::Debug,
+            0,
+            &crate::state::ModelDisplayNames::default(),
+        );
+    };
+    let reply_chunks = |cache: &LayoutCache| {
+        let mut parts = cache.assistant_parts.values();
+        let part = parts.next().expect("one reply part");
+        assert!(parts.next().is_none());
+        part.lines.chunks().to_vec()
+    };
+    let mut cache = LayoutCache::default();
+    layout(&mut cache, &store);
+    // The settled paragraph, the blank row between blocks, the open one.
+    let before = reply_chunks(&cache);
+    assert_eq!(before.len(), 3);
+
+    assert!(store.apply_event(text_delta(session, 4, run, attempt, " paragraph")));
+    layout(&mut cache, &store);
+    let after = reply_chunks(&cache);
+    assert!(std::sync::Arc::ptr_eq(&after[0], &before[0]));
+    assert!(!std::sync::Arc::ptr_eq(&after[2], &before[2]));
+
+    let mut fresh = LayoutCache::default();
+    layout(&mut fresh, &store);
+    assert_eq!(cache.layout.lines.to_vec(), fresh.layout.lines.to_vec());
+    assert!(snapshot_lines(&cache.layout.lines.to_vec()).contains("open paragraph"));
+}
