@@ -157,6 +157,29 @@ impl Notification {
         }
     }
 }
+/// A notification that borrows its params, serialized straight to text
+/// without first building a [`Value`] tree.
+#[derive(Serialize)]
+pub struct NotificationRef<'a, P: ?Sized> {
+    pub jsonrpc: JsonRpcVersion,
+    pub method: &'a str,
+    pub params: &'a P,
+}
+impl<'a, P: Serialize + ?Sized> NotificationRef<'a, P> {
+    #[must_use]
+    pub const fn new(method: &'a str, params: &'a P) -> Self {
+        Self {
+            jsonrpc: JsonRpcVersion::current(),
+            method,
+            params,
+        }
+    }
+
+    /// The notification's JSON text.
+    pub fn to_text(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+}
 impl fmt::Debug for Notification {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Notification")

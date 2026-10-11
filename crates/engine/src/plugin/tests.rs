@@ -8,7 +8,7 @@ use cookie_agent_protocol::{
     ExtensionSessionBeforeCompactResult, ExtensionToolAfterResultAction,
     ExtensionToolAfterResultParams, ExtensionToolAfterResultResult, ExtensionToolBeforeCallAction,
     ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult, Modality, ModelCallId,
-    ModelCapabilities, Notification, PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
+    ModelCapabilities, PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
     PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD, PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
     PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD, PersistedToolResult, PluginDiagnosticKind,
     ReplayCapability, RunId, SafeDisplayText, SessionId, StoredEvent, ToolCallId,
@@ -37,6 +37,72 @@ fn plugin_rpc_rejections_preserve_selected_diagnostics() {
         assert!(error.contains("/work/helper"));
         assert!(!error.contains("private-token"));
     }
+}
+
+#[test]
+fn borrowed_event_frames_decode_as_the_extension_params() {
+    let session_id = SessionId::new_v7();
+    let timestamp = jiff::Timestamp::now();
+    let event = EventPayload::PluginDiagnostic {
+        plugin: "engine".into(),
+        kind: PluginDiagnosticKind::HookBlocked,
+        message: "blocked".into(),
+        count: 2,
+    };
+    let frame = super::notification_frame(
+        cookie_agent_protocol::PLUGIN_EVENT_METHOD,
+        &super::EventParamsRef {
+            session_id,
+            context_id: "context-1",
+            seq: 7,
+            event: &event,
+            timestamp,
+        },
+    );
+    let notification: cookie_agent_protocol::Notification =
+        serde_json::from_str(&frame).expect("event notification");
+    assert_eq!(
+        notification.method,
+        cookie_agent_protocol::PLUGIN_EVENT_METHOD
+    );
+    let params: cookie_agent_protocol::ExtensionEventParams =
+        serde_json::from_value(notification.params.expect("params")).expect("event params");
+    assert_eq!(
+        params,
+        cookie_agent_protocol::ExtensionEventParams {
+            session_id,
+            context_id: "context-1".into(),
+            seq: 7,
+            event,
+            timestamp,
+        }
+    );
+
+    let payload = serde_json::json!({"ok": true});
+    let frame = super::notification_frame(
+        cookie_agent_protocol::PLUGIN_BUS_EVENT_METHOD,
+        &super::BusEventParamsRef {
+            session_id,
+            context_id: "context-2",
+            plugin: "other",
+            name: "notice",
+            payload: &payload,
+        },
+    );
+    let notification: cookie_agent_protocol::Notification =
+        serde_json::from_str(&frame).expect("bus notification");
+    let params: ExtensionBusEventParams =
+        serde_json::from_value(notification.params.expect("params")).expect("bus params");
+    assert_eq!(
+        params,
+        ExtensionBusEventParams {
+            session_id,
+            context_id: Some("context-2".into()),
+            plugin: "other".into(),
+            name: "notice".into(),
+            payload,
+        }
+    );
 }
 
 #[test]
@@ -951,10 +1017,11 @@ async fn chunk_flood_evicts_by_priority_without_reordering_terminal() {
     assert_eq!(harness.registry.statuses()[0].dropped_events, 3);
     let mut delivered = Vec::new();
     while let Some(control) = notifications.pop() {
-        let Control::Notify { notification, .. } = control else {
+        let Control::Notify { frame, .. } = control else {
             panic!("event notification")
         };
-        let params = notification.params.expect("params");
+        let notification: serde_json::Value = serde_json::from_str(&frame).expect("frame JSON");
+        let params = &notification["params"];
         delivered.push((
             params["seq"].as_u64().expect("sequence"),
             params["event"]["type"]
@@ -1010,7 +1077,7 @@ async fn context_lifetime_starts_at_delivery_and_cancelled_queue_entry_stays_spe
     let session_id = SessionId::new_v7();
     sender
         .try_send(Control::Notify {
-            notification: Notification::new("plugin/test", None),
+            frame: r#"{"jsonrpc":"2.0","method":"plugin/test"}"#.into(),
             session_id,
             context_id: "delayed".into(),
             context_lifetime: Duration::from_millis(5),
@@ -1037,7 +1104,7 @@ async fn context_lifetime_starts_at_delivery_and_cancelled_queue_entry_stays_spe
 
     sender
         .try_send(Control::Notify {
-            notification: Notification::new("plugin/test", None),
+            frame: r#"{"jsonrpc":"2.0","method":"plugin/test"}"#.into(),
             session_id,
             context_id: "cancelled".into(),
             context_lifetime: Duration::from_secs(1),

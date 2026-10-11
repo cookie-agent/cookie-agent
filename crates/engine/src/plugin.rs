@@ -15,15 +15,15 @@ use cookie_agent_config::PluginConfig;
 use cookie_agent_protocol::{
     ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, EXTENSION_PROTOCOL_VERSION,
     ErrorResponse, ExtensionBusEventParams, ExtensionEmitParams, ExtensionEmitResultParams,
-    ExtensionEmitStatus, ExtensionEventParams, ExtensionInitializeResult,
-    ExtensionInterceptionHook, ExtensionPingParams, ExtensionPingResult,
-    ExtensionPluginCapabilities, ExtensionToolCallParams, ExtensionToolCallResult,
-    ExtensionToolDeclaration, JsonRpcError, JsonRpcId, JsonRpcVersion, Notification,
-    PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD,
-    PLUGIN_PING_METHOD, PLUGIN_TOOLS_CALL_METHOD, PermissionAction, PreparedApprovalResource,
-    PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
-    PreparedResourceDigest, PreparedResourceIdentity, Request, Response, SafeDisplayText,
-    Sha256Digest, SuccessResponse, extension_initialize_request, extension_shutdown_notification,
+    ExtensionEmitStatus, ExtensionInitializeResult, ExtensionInterceptionHook, ExtensionPingParams,
+    ExtensionPingResult, ExtensionPluginCapabilities, ExtensionToolCallParams,
+    ExtensionToolCallResult, ExtensionToolDeclaration, JsonRpcError, JsonRpcId, JsonRpcVersion,
+    Notification, PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD,
+    PLUGIN_EVENT_METHOD, PLUGIN_PING_METHOD, PLUGIN_TOOLS_CALL_METHOD, PermissionAction,
+    PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
+    PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, Request, Response,
+    SafeDisplayText, Sha256Digest, SuccessResponse, extension_initialize_request,
+    extension_shutdown_notification,
 };
 use cookie_agent_protocol::{
     ExtensionInitializeParams, ExtensionProducerDiscardParams, ExtensionProducerDiscardResult,
@@ -225,6 +225,8 @@ pub struct PluginStatus {
 
 struct PluginRuntime {
     name: String,
+    /// The origin of the session events this plugin publishes.
+    origin: cookie_agent_protocol::EventOrigin,
     config: PluginConfig,
     status: Mutex<PluginStatus>,
     control: Mutex<Option<mpsc::Sender<Control>>>,
@@ -286,7 +288,8 @@ enum Control {
         reply: oneshot::Sender<Result<ExtensionToolCallResult, String>>,
     },
     Notify {
-        notification: Notification,
+        /// The serialized notification, shared by every plugin it goes to.
+        frame: Arc<str>,
         session_id: cookie_agent_protocol::SessionId,
         context_id: String,
         context_lifetime: Duration,
@@ -503,6 +506,7 @@ impl PluginRegistry {
                 };
                 let runtime = Arc::new(PluginRuntime {
                     name: name.clone(),
+                    origin: plugin_event_origin(&name),
                     producer_connection: Mutex::new(ProducerConnection {
                         epoch: None,
                         live: false,
@@ -819,9 +823,9 @@ impl PluginRegistry {
         let source_plugin = origin.and_then(|origin| {
             self.inner
                 .plugins
-                .keys()
-                .find(|name| plugin_event_origin(name) == *origin)
-                .map(String::as_str)
+                .values()
+                .find(|runtime| runtime.origin == *origin)
+                .map(|runtime| runtime.name.as_str())
         });
         self.stream_event_payload(
             event.session_id,
@@ -855,18 +859,6 @@ impl PluginRegistry {
         timestamp: jiff::Timestamp,
         source_plugin: Option<&str>,
     ) -> Vec<PluginDeliveryDrop> {
-        let context_id = plugin_context_id();
-        let params = ExtensionEventParams {
-            session_id,
-            context_id: context_id.clone(),
-            seq,
-            event: payload.clone(),
-            timestamp,
-        };
-        let notification = Notification::new(
-            PLUGIN_EVENT_METHOD,
-            Some(serde_json::to_value(params).expect("plugin event params serialize")),
-        );
         let class = match payload {
             cookie_agent_protocol::EventPayload::ToolCallProgress {
                 display: Some(_), ..
@@ -877,12 +869,22 @@ impl PluginRegistry {
             _ => PluginDeliveryClass::Ordinary,
         };
         self.stream_notification(
-            notification,
             session_id,
-            &context_id,
             source_plugin,
             class,
             |capabilities| capabilities.subscribe_events,
+            |context_id| {
+                notification_frame(
+                    PLUGIN_EVENT_METHOD,
+                    &EventParamsRef {
+                        session_id,
+                        context_id,
+                        seq,
+                        event: payload,
+                        timestamp,
+                    },
+                )
+            },
         )
     }
 
@@ -891,33 +893,40 @@ impl PluginRegistry {
         event: &ExtensionBusEventParams,
         source_plugin: Option<&str>,
     ) -> Vec<PluginDeliveryDrop> {
-        let context_id = plugin_context_id();
-        let mut event = event.clone();
-        event.context_id = Some(context_id.clone());
-        let notification = Notification::new(
-            PLUGIN_BUS_EVENT_METHOD,
-            Some(serde_json::to_value(&event).expect("plugin bus event params serialize")),
-        );
         self.stream_notification(
-            notification,
             event.session_id,
-            &context_id,
             source_plugin,
             PluginDeliveryClass::Ordinary,
             |capabilities| capabilities.subscribe_bus,
+            |context_id| {
+                notification_frame(
+                    PLUGIN_BUS_EVENT_METHOD,
+                    &BusEventParamsRef {
+                        session_id: event.session_id,
+                        context_id,
+                        plugin: &event.plugin,
+                        name: &event.name,
+                        payload: &event.payload,
+                    },
+                )
+            },
         )
     }
 
+    /// Queues one notification for every connected plugin `subscribed`
+    /// selects, except its source. The notification and its context are
+    /// built only once a plugin wants them, and then shared by all of them.
     fn stream_notification(
         &self,
-        notification: Notification,
         session_id: cookie_agent_protocol::SessionId,
-        context_id: &str,
         source_plugin: Option<&str>,
         class: PluginDeliveryClass,
         subscribed: impl Fn(&ExtensionPluginCapabilities) -> bool,
+        build: impl FnOnce(&str) -> Arc<str>,
     ) -> Vec<PluginDeliveryDrop> {
         let mut drops = Vec::new();
+        let mut build = Some(build);
+        let mut built: Option<(String, Arc<str>)> = None;
         for runtime in self.inner.plugins.values() {
             if source_plugin == Some(runtime.name.as_str()) {
                 continue;
@@ -939,6 +948,12 @@ impl PluginRegistry {
             {
                 continue;
             }
+            let (context_id, frame) = built.get_or_insert_with(|| {
+                let context_id = plugin_context_id();
+                let build = build.take().expect("the notification is built once");
+                let frame = build(&context_id);
+                (context_id, frame)
+            });
             let notifications = runtime
                 .notifications
                 .lock()
@@ -946,9 +961,9 @@ impl PluginRegistry {
                 .clone();
             if let Some(dropped) = notifications.push(
                 Control::Notify {
-                    notification: notification.clone(),
+                    frame: Arc::clone(frame),
                     session_id,
-                    context_id: context_id.to_owned(),
+                    context_id: context_id.clone(),
                     context_lifetime: PLUGIN_NOTIFICATION_CONTEXT_LIFETIME,
                 },
                 class,
@@ -1459,13 +1474,13 @@ impl PluginRuntime {
                 () = notifications.notified() => {
                     for notification in notifications.drain() {
                         match notification {
-                            Control::Notify { notification, session_id, context_id, context_lifetime } if connected => {
+                            Control::Notify { frame, session_id, context_id, context_lifetime } if connected => {
                                 self.register_context(
                                     &context_id,
                                     session_id,
                                     Instant::now() + context_lifetime,
                                 );
-                                write_json(&mut stdin, &notification).await?;
+                                write_line(&mut stdin, frame.as_bytes()).await?;
                             }
                             Control::Notify { .. } => {}
                             _ => unreachable!("notification queue accepts only notifications"),
@@ -1519,13 +1534,13 @@ impl PluginRuntime {
                     Some(Control::ToolCall { reply, .. }) => {
                         let _ = reply.send(Err(format!("plugin `{}` is not connected", self.name)));
                     }
-                    Some(Control::Notify { notification, session_id, context_id, context_lifetime }) if connected => {
+                    Some(Control::Notify { frame, session_id, context_id, context_lifetime }) if connected => {
                         self.register_context(
                             &context_id,
                             session_id,
                             Instant::now() + context_lifetime,
                         );
-                        write_json(&mut stdin, &notification).await?;
+                        write_line(&mut stdin, frame.as_bytes()).await?;
                     }
                     Some(Control::Notify { .. }) => {}
                     Some(Control::Intercept { method, params, session_id, context_id, context_lifetime, reply }) if connected => {
@@ -2354,16 +2369,51 @@ async fn write_json(
     stdin: &mut tokio::process::ChildStdin,
     message: &impl serde::Serialize,
 ) -> Result<(), String> {
-    let mut bytes = serde_json::to_vec(message).map_err(|error| error.to_string())?;
-    bytes.push(b'\n');
-    stdin
-        .write_all(&bytes)
-        .await
-        .map_err(|error| format!("plugin write failed: {error}"))?;
+    let bytes = serde_json::to_vec(message).map_err(|error| error.to_string())?;
+    write_line(stdin, &bytes).await
+}
+
+/// Writes one already-serialized message and its line terminator.
+async fn write_line(stdin: &mut tokio::process::ChildStdin, line: &[u8]) -> Result<(), String> {
+    for bytes in [line, b"\n"] {
+        stdin
+            .write_all(bytes)
+            .await
+            .map_err(|error| format!("plugin write failed: {error}"))?;
+    }
     stdin
         .flush()
         .await
         .map_err(|error| format!("plugin flush failed: {error}"))
+}
+
+/// A plugin notification's JSON text. Every field is plain data, so it
+/// always serializes.
+fn notification_frame(method: &str, params: &impl serde::Serialize) -> Arc<str> {
+    cookie_agent_protocol::NotificationRef::new(method, params)
+        .to_text()
+        .expect("plugin notification serializes")
+        .into()
+}
+
+/// [`cookie_agent_protocol::ExtensionEventParams`] borrowing the event it carries.
+#[derive(serde::Serialize)]
+struct EventParamsRef<'a> {
+    session_id: cookie_agent_protocol::SessionId,
+    context_id: &'a str,
+    seq: u64,
+    event: &'a cookie_agent_protocol::EventPayload,
+    timestamp: jiff::Timestamp,
+}
+
+/// [`ExtensionBusEventParams`] with its context, borrowing the rest.
+#[derive(serde::Serialize)]
+struct BusEventParamsRef<'a> {
+    session_id: cookie_agent_protocol::SessionId,
+    context_id: &'a str,
+    plugin: &'a str,
+    name: &'a str,
+    payload: &'a Value,
 }
 
 async fn wait_for_deadline(deadline: Option<Instant>) {

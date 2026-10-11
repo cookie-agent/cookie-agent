@@ -473,10 +473,13 @@ for line in sys.stdin:
                         .unwrap();
                     control
                         .send(Control::Notify {
-                            notification: Notification::new(
-                                PLUGIN_BUS_EVENT_METHOD,
-                                Some(json!({})),
-                            ),
+                            frame: json!({
+                                "jsonrpc": "2.0",
+                                "method": PLUGIN_BUS_EVENT_METHOD,
+                                "params": {},
+                            })
+                            .to_string()
+                            .into(),
                             session_id: params.session_id,
                             context_id: plugin_context_id(),
                             context_lifetime: Duration::from_secs(5),
