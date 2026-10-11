@@ -334,6 +334,52 @@ fn ownership_release_waits_for_an_append_that_already_won_serialization() {
         .expect("adopt after append and release");
 }
 
+/// Appends to different sessions do not wait for each other's sync, while
+/// a structural change (eviction) waits for the append in flight.
+#[test]
+fn a_blocked_sync_holds_up_its_own_session_and_structural_changes_only() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let store = SessionStore::open(&temporary.path().join("data"), &cwd).expect("store");
+    let blocked = persist_test_session(&store);
+    let other = persist_test_session(&store);
+    let attempt = start_test_attempt(&store, blocked);
+    let other_attempt = start_test_attempt(&store, other);
+    let log = store.get(blocked).expect("blocked projection").log.clone();
+    let (syncing, release_sync) = log.install_sync_hook_for_test();
+    let append_store = Arc::clone(&store);
+    let appending =
+        thread::spawn(move || append_test_in_run_record(&append_store, blocked, &attempt).seq);
+    syncing.recv().expect("append reached its sync");
+
+    // Another session appends while the first sync is still held.
+    let appended = append_test_in_run_record(&store, other, &other_attempt);
+    assert_eq!(store.get(other).unwrap().meta.last_event_seq, appended.seq);
+
+    let evict_store = Arc::clone(&store);
+    let (evicted, evict_observed) = mpsc::channel();
+    let evicting = thread::spawn(move || {
+        evicted
+            .send(evict_store.evict(other).expect("evict"))
+            .expect("report eviction");
+    });
+    assert!(matches!(
+        evict_observed.recv_timeout(std::time::Duration::from_millis(50)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+
+    release_sync.send(()).expect("release sync");
+    let seq = appending.join().expect("append thread");
+    assert!(
+        evict_observed
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("eviction proceeds after the append")
+    );
+    evicting.join().expect("evict thread");
+    assert_eq!(store.get(blocked).unwrap().meta.last_event_seq, seq);
+}
+
 #[test]
 fn eviction_retains_ownership_and_reopens_for_the_owner() {
     let temporary = private_tempdir();

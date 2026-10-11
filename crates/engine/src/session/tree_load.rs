@@ -803,8 +803,9 @@ impl SessionStore {
     }
 
     /// Publishes a fold's in-memory state. Every snapshot is re-checked under
-    /// `mutation` first, which is the same lock appends, creates and publishes
-    /// take: a fold that raced a writer is dropped here and read again.
+    /// `mutation` held exclusively first, which waits out every append (they
+    /// hold it shared) and every create and publish: a fold that raced a
+    /// writer is dropped here and read again.
     /// Never sets `loaded` — that waits for the products (L1, L2).
     pub(super) fn install_tree_fold(
         &self,

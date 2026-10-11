@@ -31,7 +31,7 @@ use std::{
     num::NonZeroU32,
     path::{Path, PathBuf},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, RwLock,
         atomic::{AtomicBool, Ordering},
     },
     time::SystemTime,
@@ -92,7 +92,7 @@ pub struct TailOwner(pub u64);
 #[derive(Debug, Default)]
 struct SessionSubscribers {
     /// The last durable sequence published to these tails, which is the one
-    /// live-only output follows. Updated under `mutation` by every durable
+    /// live-only output follows. Updated under the session's slot by every durable
     /// publication and every tail registration.
     last_seq: u64,
     senders: Vec<Tail>,
@@ -372,7 +372,19 @@ pub struct SessionStore {
     /// Serializes publication of one session directory, so the scaffold check in
     /// [`Self::publish_prepared_dir`] stays true until its entries have moved.
     publish_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
-    mutation: Mutex<()>,
+    /// Exclusive for structural changes, shared for the writes of one
+    /// session; see [`Self::lock_mutation`] and [`Self::lock_session`].
+    mutation: RwLock<()>,
+    /// Sessions whose writes are in flight under the shared lock.
+    busy_sessions: Mutex<HashSet<SessionId>>,
+    session_released: Condvar,
+    /// Per-root gates serializing the publication of a tree's sessions, so a
+    /// child publishing into a root's directory cannot race the root's own
+    /// publication.
+    tree_publish_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
+    /// Per-root gates serializing rebuilds of `subagents/index.json`, so an
+    /// older rebuild never replaces a newer one.
+    index_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     subscribers: Mutex<HashMap<SessionId, SessionSubscribers>>,
     /// Logs parsed for readers that do not own them, see [`Self::snapshot_events`].
     read_only_logs: Mutex<ReadOnlyLogs>,
@@ -514,7 +526,11 @@ impl SessionStore {
             ownership: Mutex::new(OwnershipState::default()),
             adoption_locks: Mutex::new(HashMap::new()),
             publish_locks: Mutex::new(HashMap::new()),
-            mutation: Mutex::new(()),
+            mutation: RwLock::new(()),
+            busy_sessions: Mutex::new(HashSet::new()),
+            session_released: Condvar::new(),
+            tree_publish_locks: Mutex::new(HashMap::new()),
+            index_locks: Mutex::new(HashMap::new()),
             subscribers: Mutex::new(HashMap::new()),
             read_only_logs: Mutex::new(ReadOnlyLogs::default()),
             closed: AtomicBool::new(false),
@@ -729,15 +745,7 @@ impl SessionStore {
 
     /// Process-serial gate for one session's publication.
     fn publish_gate(&self, session_id: SessionId) -> Arc<Mutex<()>> {
-        let mut gates = self
-            .publish_locks
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Arc::clone(
-            gates
-                .entry(session_id)
-                .or_insert_with(|| Arc::new(Mutex::new(()))),
-        )
+        keyed_gate(&self.publish_locks, session_id)
     }
 
     /// Directory a new session directory is renamed into (must share the
@@ -983,7 +991,7 @@ impl SessionStore {
     }
 
     fn reopen_owned(&self, id: SessionId) -> Result<Arc<SessionProjection>, SessionError> {
-        let _mutation = self.lock_mutation();
+        let _mutation = self.lock_session(id);
         if let Some(session) = self
             .residency
             .lock()
@@ -1048,34 +1056,128 @@ impl SessionStore {
         Ok(Arc::new(snapshot))
     }
 
-    /// Takes the store's durable-mutation lock, noting the holder on this
-    /// thread. Paths that already hold it must not start a lazy tree load: the
-    /// load's install phase needs the same lock, and waiting for another thread's
-    /// tree load while holding it inverts the two (append, create, fork and
-    /// `begin_write_locked` all reach `get` from inside a mutation).
+    /// Takes the store's mutation lock exclusively, noting the holder on this
+    /// thread. Structural changes take it this way: creating, forking,
+    /// adopting, evicting, deleting and publishing sessions, installing a tree
+    /// load, and releasing ownership. It waits for every session-scoped write
+    /// in flight and keeps new ones out.
+    ///
+    /// Paths that already hold the lock in either mode must not start a lazy
+    /// tree load: the load's install phase needs it exclusively, and waiting
+    /// for another thread's tree load while holding it inverts the two
+    /// (append, create, fork and `begin_write_locked` all reach `get` from
+    /// inside a mutation).
     fn lock_mutation(&self) -> MutationGuard<'_> {
         let store = self.store_key();
-        if MUTATION_DEPTH.with(|depths| depths.borrow().contains_key(&store)) {
-            return MutationGuard {
-                locked: None,
-                store: None,
-            };
+        let held = MUTATION_DEPTH.with(|depths| {
+            depths
+                .borrow()
+                .get(&store)
+                .map(|held| matches!(held, HeldMutation::Exclusive))
+        });
+        match held {
+            Some(true) => return self.noop_guard(),
+            Some(false) => panic!(
+                "exclusive session-store mutation requested under a session-scoped one; \
+                 the shared lock cannot be upgraded"
+            ),
+            None => {}
         }
         let guard = self
             .mutation
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        MUTATION_DEPTH.with(|depths| depths.borrow_mut().insert(store, HeldMutation::Exclusive));
+        MutationGuard {
+            store: self,
+            exclusive: Some(guard),
+            shared: None,
+            session: None,
+            registered: true,
+        }
+    }
+
+    /// Takes the store's mutation lock shared, plus `id`'s session slot. The
+    /// writes of one session (appends, truncation, reopening it, registering a
+    /// live tail) take it this way, so they stay ordered against each other
+    /// and against structural changes while different sessions — a parent and
+    /// its subagents — append and sync concurrently.
+    fn lock_session(&self, id: SessionId) -> MutationGuard<'_> {
+        let store = self.store_key();
+        // `None`: nothing held; `Some(true)`: already covered.
+        let covered = MUTATION_DEPTH.with(|depths| match depths.borrow().get(&store) {
+            None => None,
+            Some(HeldMutation::Exclusive) => Some(true),
+            Some(HeldMutation::Shared(sessions)) => Some(sessions.contains(&id)),
+        });
+        let shared = match covered {
+            Some(true) => return self.noop_guard(),
+            Some(false) => None,
+            None => {
+                let shared = self
+                    .mutation
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                MUTATION_DEPTH.with(|depths| {
+                    depths
+                        .borrow_mut()
+                        .insert(store, HeldMutation::Shared(Vec::new()))
+                });
+                Some(shared)
+            }
+        };
+        let registered = shared.is_some();
+        self.acquire_session_slot(id);
+        MUTATION_DEPTH.with(|depths| {
+            if let Some(HeldMutation::Shared(sessions)) = depths.borrow_mut().get_mut(&store) {
+                sessions.push(id);
+            }
+        });
+        MutationGuard {
+            store: self,
+            exclusive: None,
+            shared,
+            session: Some(id),
+            registered,
+        }
+    }
+
+    fn noop_guard(&self) -> MutationGuard<'_> {
+        MutationGuard {
+            store: self,
+            exclusive: None,
+            shared: None,
+            session: None,
+            registered: false,
+        }
+    }
+
+    fn acquire_session_slot(&self, id: SessionId) {
+        let mut busy = self
+            .busy_sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        MUTATION_DEPTH.with(|depths| depths.borrow_mut().insert(store, ()));
-        MutationGuard {
-            locked: Some(guard),
-            store: Some(store),
+        while busy.contains(&id) {
+            busy = self
+                .session_released
+                .wait(busy)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
+        busy.insert(id);
+    }
+
+    pub(super) fn release_session_slot(&self, id: SessionId) {
+        self.busy_sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&id);
+        self.session_released.notify_all();
     }
 
     /// Identity of this store for the per-store reentrancy counter. Unique while
     /// the store is alive, which is exactly the window any of its guards span.
     #[must_use]
-    fn store_key(&self) -> usize {
+    pub(super) fn store_key(&self) -> usize {
         std::ptr::from_ref(self).cast::<()>() as usize
     }
 
@@ -1453,7 +1555,8 @@ impl SessionStore {
 
     /// Rewrites `id`'s `metadata` cache from `meta` (atomic rename, no fsync:
     /// the file is a rebuildable cache of the log) and clears any deferred tip.
-    /// The caller holds `mutation`, so no append can interleave.
+    /// The caller holds the session's slot or the exclusive lock, so no append
+    /// can interleave.
     fn refresh_meta_cache(&self, id: SessionId, meta: &SessionMeta) -> Result<(), SessionError> {
         write_cache(&self.meta_cache_path(id)?, meta, CacheSync::Atomic)?;
         self.residency
@@ -1465,7 +1568,7 @@ impl SessionStore {
     }
 
     /// Writes the resident meta of `id` if an in-run append deferred its cache
-    /// tip. The caller holds `mutation`.
+    /// tip. The caller holds the session's slot or the exclusive lock.
     fn flush_stale_meta_cache(&self, id: SessionId) -> Result<(), SessionError> {
         let meta = {
             let mut residency = self
@@ -1528,7 +1631,7 @@ impl SessionStore {
         // the load cannot run under `mutation` (it installs its own), so it runs
         // here instead. Cheap once the tree is Loaded.
         self.ensure_tree_for(id)?;
-        let _mutation = self.lock_mutation();
+        let _mutation = self.lock_session(id);
         self.ensure_open()?;
         let capability = self.write_capability(id, recovery)?;
         let (log, was_persisted) = self.resident_log(id)?;
@@ -1636,7 +1739,7 @@ impl SessionStore {
     /// Live tails are told with [`EventSubscriptionMessage::Rewound`].
     pub(crate) fn truncate(&self, id: SessionId, through_seq: u64) -> Result<(), SessionError> {
         self.ensure_tree_for(id)?;
-        let _mutation = self.lock_mutation();
+        let _mutation = self.lock_session(id);
         self.ensure_open()?;
         let capability = self.write_capability(id, false)?;
         let (log, _) = self.resident_log(id)?;
@@ -1764,9 +1867,9 @@ impl SessionStore {
         SessionError,
     > {
         self.ensure_tree_for(session)?;
-        // Snapshot and registration share the append lock with actor writes and
-        // direct journal writes, closing the snapshot-to-live handoff gap.
-        let _mutation = self.lock_mutation();
+        // Snapshot and registration hold the session's slot, which its appends
+        // take too, closing the snapshot-to-live handoff gap.
+        let _mutation = self.lock_session(session);
         let log = self.get(session)?.log.clone();
         if cursor_is_stale(&log, cursor, cursor_timestamp) {
             return Ok((EventsSubscribeResult::stale(), None));
@@ -1816,7 +1919,8 @@ impl SessionStore {
     }
 
     fn publish_stored_event(&self, envelope: &StoredEvent) {
-        // Called under mutation after projection update, preserving append order.
+        // Called under the session's slot after the projection update, which
+        // keeps the session's append order.
         let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
         let tails = subscribers.entry(envelope.session_id).or_default();
         tails.last_seq = envelope.seq;
@@ -2161,6 +2265,11 @@ impl SessionStore {
         // Only a root's publication takes a lock; a child publishes into a tree
         // this process already holds, which `write_capability` just proved.
         let root = location.root_of().unwrap_or(session_id);
+        // A session publishes under its own slot only, so the tree's members
+        // publish one at a time: a child's `subagents/` scaffold must not
+        // appear between the root's emptiness check and its rename.
+        let gate = keyed_gate(&self.tree_publish_locks, root);
+        let _publishing = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         self.record_location(session_id, location);
         self.note_placed_child(&location, &projection.meta.origin, session_id);
         let destination_parent = self.publish_parent_for(location)?;
@@ -2642,6 +2751,10 @@ impl SessionStore {
     /// rewrite on purpose (§3.4). Required refreshes are part of the durability
     /// contract, so callers must handle failures.
     fn persist_subagent_index(&self, root: SessionId) -> Result<(), SessionError> {
+        // Rebuilt from shared state and written whole: two rebuilds of one
+        // root run one at a time, so the later state is the one that lands.
+        let gate = keyed_gate(&self.index_locks, root);
+        let _rebuilding = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let cached = self
             .trees
             .lock()
@@ -3113,6 +3226,17 @@ impl Drop for SessionStore {
     fn drop(&mut self) {
         self.release_ownership();
     }
+}
+
+/// The gate for `key` in a map of lazily created per-session gates.
+fn keyed_gate(gates: &Mutex<HashMap<SessionId, Arc<Mutex<()>>>>, key: SessionId) -> Arc<Mutex<()>> {
+    Arc::clone(
+        gates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(key)
+            .or_insert_with(|| Arc::new(Mutex::new(()))),
+    )
 }
 
 /// Whether a replay from `cursor` would mix branches: the reader saw the event

@@ -1,25 +1,48 @@
-//! Rebuildable metadata caches, the subagent index, and the mutation guard.
+//! Rebuildable metadata caches, the subagent index, and the mutation guards.
 
 use super::*;
 
-/// RAII holder for the store's durable-mutation lock. `locked: None` means this
-/// thread already holds *this store's* lock further up the stack, so the guard is
-/// a no-op.
+/// RAII holder for the store's mutation lock, in either mode: exclusive for
+/// structural changes, or shared plus one session's slot for the writes of a
+/// single session. A guard with nothing held is a no-op: this thread already
+/// holds what it needs further up the stack.
 pub(super) struct MutationGuard<'a> {
-    pub(super) locked: Option<std::sync::MutexGuard<'a, ()>>,
-    pub(super) store: Option<usize>,
+    pub(super) store: &'a SessionStore,
+    pub(super) exclusive: Option<std::sync::RwLockWriteGuard<'a, ()>>,
+    pub(super) shared: Option<std::sync::RwLockReadGuard<'a, ()>>,
+    /// The session slot this guard took, released on drop.
+    pub(super) session: Option<SessionId>,
+    /// Whether this guard registered the thread's hold of the store.
+    pub(super) registered: bool,
 }
 
 impl Drop for MutationGuard<'_> {
     fn drop(&mut self) {
-        let Some(store) = self.store else {
-            return;
-        };
-        self.locked = None;
-        MUTATION_DEPTH.with(|depths| {
-            depths.borrow_mut().remove(&store);
-        });
+        let store = self.store.store_key();
+        if let Some(id) = self.session.take() {
+            self.store.release_session_slot(id);
+            MUTATION_DEPTH.with(|depths| {
+                if let Some(HeldMutation::Shared(sessions)) = depths.borrow_mut().get_mut(&store) {
+                    sessions.retain(|held| *held != id);
+                }
+            });
+        }
+        if self.registered {
+            MUTATION_DEPTH.with(|depths| {
+                depths.borrow_mut().remove(&store);
+            });
+        }
+        self.shared = None;
+        self.exclusive = None;
     }
+}
+
+/// What one thread holds of one store's mutation lock.
+#[derive(Debug)]
+pub(super) enum HeldMutation {
+    Exclusive,
+    /// The shared lock, plus the slots of these sessions.
+    Shared(Vec<SessionId>),
 }
 
 /// Whether an atomic cache replacement is also made crash-durable.
@@ -214,6 +237,6 @@ thread_local! {
     /// Which stores this thread holds a `lock_mutation` guard for. Keyed by store
     /// identity, so nesting two stores on one thread cannot make the second one
     /// skip its own mutex (review L15).
-    pub(super) static MUTATION_DEPTH: std::cell::RefCell<HashMap<usize, ()>> =
+    pub(super) static MUTATION_DEPTH: std::cell::RefCell<HashMap<usize, HeldMutation>> =
         std::cell::RefCell::new(HashMap::new());
 }
