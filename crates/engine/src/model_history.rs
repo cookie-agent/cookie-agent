@@ -1420,7 +1420,10 @@ fn append_tool_emitted_message(
             .map(|part| match part {
                 ToolEmittedContent::Text(text) => Ok(InputPart::Text(TextPart::new(text))),
                 ToolEmittedContent::File(attachment) => {
-                    attachment_file(attachment, store).map(InputPart::File)
+                    attachment_file(attachment, store).map(|file| match file {
+                        Ok(file) => InputPart::File(file),
+                        Err(note) => InputPart::Text(TextPart::new(note)),
+                    })
                 }
             })
             .collect::<Result<Vec<_>, _>>()?,
@@ -1475,7 +1478,10 @@ fn tool_result_part(
         })),
     ];
     for attachment in &result.attachments {
-        values.push(ContentValue::File(attachment_file(attachment, store)?));
+        values.push(match attachment_file(attachment, store)? {
+            Ok(file) => ContentValue::File(file),
+            Err(note) => ContentValue::Text(note),
+        });
     }
     Ok(ToolResultPart::new(
         String::new(),
@@ -1483,17 +1489,34 @@ fn tool_result_part(
     ))
 }
 
+/// A stored file for a live request, or the note that stands in for it when
+/// its artifact is missing or damaged — artifacts are written without fsync,
+/// so a crash can lose one that a durable event already references.
 fn attachment_file(
     attachment: &ToolAttachment,
     store: SessionArtifacts<'_>,
-) -> Result<FilePart, HistoryError> {
-    let bytes = store.read_verified_attachment(attachment)?;
-    Ok(FilePart {
-        media_type: attachment.mime_type.to_string(),
-        filename: attachment.filename.clone(),
-        source: FileSource::Bytes(bytes),
-        metadata: None,
-    })
+) -> Result<Result<FilePart, String>, HistoryError> {
+    match store.read_verified_attachment(attachment) {
+        Ok(bytes) => Ok(Ok(FilePart {
+            media_type: attachment.mime_type.to_string(),
+            filename: attachment.filename.clone(),
+            source: FileSource::Bytes(bytes),
+            metadata: None,
+        })),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData
+            ) =>
+        {
+            Ok(Err(format!(
+                "[{} ({}) is unavailable: its stored copy is missing or damaged]",
+                attachment.filename.as_deref().unwrap_or("file"),
+                attachment.mime_type
+            )))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn persist_assistant_part(
@@ -1751,7 +1774,7 @@ fn restore_file(file: &PersistedFilePart) -> Result<FilePart, HistoryError> {
 fn restore_file_with_store(
     file: &PersistedFilePart,
     store: SessionArtifacts<'_>,
-) -> Result<FilePart, HistoryError> {
+) -> Result<Result<FilePart, String>, HistoryError> {
     if let PersistedFileSource::Artifact {
         byte_length,
         sha256,
@@ -1767,7 +1790,7 @@ fn restore_file_with_store(
         };
         return attachment_file(&attachment, store);
     }
-    restore_file(file)
+    restore_file(file).map(Ok)
 }
 
 fn persist_replay(
@@ -2027,9 +2050,10 @@ fn restore_assistant_part_with_store(
     store: SessionArtifacts<'_>,
 ) -> Result<AssistantPart, HistoryError> {
     match part {
-        PersistedAssistantPart::File { file } => {
-            Ok(AssistantPart::File(restore_file_with_store(file, store)?))
-        }
+        PersistedAssistantPart::File { file } => Ok(match restore_file_with_store(file, store)? {
+            Ok(file) => AssistantPart::File(file),
+            Err(note) => AssistantPart::Text(TextPart::new(note)),
+        }),
         PersistedAssistantPart::ToolResult {
             tool_call_id,
             content: PersistedToolContent::Mixed { values },
@@ -2042,7 +2066,10 @@ fn restore_assistant_part_with_store(
                     PersistedContentValue::Text { text } => Ok(ContentValue::Text(text.clone())),
                     PersistedContentValue::Json { value } => Ok(ContentValue::Json(value.clone())),
                     PersistedContentValue::File { file } => {
-                        Ok(ContentValue::File(restore_file_with_store(file, store)?))
+                        Ok(match restore_file_with_store(file, store)? {
+                            Ok(file) => ContentValue::File(file),
+                            Err(note) => ContentValue::Text(note),
+                        })
                     }
                 })
                 .collect::<Result<_, HistoryError>>()?;

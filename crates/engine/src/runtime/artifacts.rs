@@ -295,7 +295,6 @@ pub(crate) struct ArtifactStore {
     #[cfg(test)]
     pub(crate) io_test_hook: ArtifactIoTestHook,
     directory: platform::Directory,
-    writes: std::sync::Mutex<()>,
     verified_reads: std::sync::Mutex<VerifiedFileCache>,
     verified_attachment_bytes: std::sync::Mutex<VerifiedBytesCache>,
 }
@@ -306,16 +305,9 @@ impl ArtifactStore {
             #[cfg(test)]
             io_test_hook: ArtifactIoTestHook::default(),
             directory: platform::Directory::at(directory)?,
-            writes: std::sync::Mutex::default(),
             verified_reads: std::sync::Mutex::default(),
             verified_attachment_bytes: std::sync::Mutex::default(),
         }))
-    }
-
-    fn lock_writes(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.writes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub(crate) fn retain(
@@ -325,23 +317,11 @@ impl ArtifactStore {
         use std::io::Write as _;
 
         let digest = sha256_hex(content);
-        let _write = self.lock_writes();
-        // Names are content addresses: a blob of the right length is the
-        // content. A torn one is replaced; readers verify digests anyway.
-        if let Some(existing) = self.directory.open(&digest)?
-            && existing.metadata()?.len() == content.len() as u64
-        {
-            existing
-                .set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))?;
-        } else {
+        if !self.holds(&digest, content.len() as u64)? {
             let temporary_name = format!(".{digest}.{}.tmp", uuid::Uuid::now_v7());
             let result = (|| -> std::io::Result<()> {
-                let mut temporary = self.directory.create(&temporary_name)?;
-                temporary.write_all(content)?;
-                temporary.sync_all()?;
-                drop(temporary);
-                self.directory.rename(&temporary_name, &digest)?;
-                self.directory.sync()
+                self.directory.create(&temporary_name)?.write_all(content)?;
+                self.publish(&temporary_name, &digest, content.len() as u64)
             })();
             if result.is_err() {
                 let _ = self.directory.remove(&temporary_name);
@@ -351,12 +331,39 @@ impl ArtifactStore {
         Ok((artifact_reference(&digest), digest))
     }
 
+    /// Whether a blob of `byte_length` bytes is stored under `digest`. Names
+    /// are content addresses, so that blob is the content; a torn one (wrong
+    /// length) is replaced, and readers verify digests anyway.
+    fn holds(&self, digest: &str, byte_length: u64) -> std::io::Result<bool> {
+        Ok(self.directory.len(digest)? == Some(byte_length))
+    }
+
+    /// Gives a fully written temporary its content address. There is no lock
+    /// and no fsync: the rename is atomic per name, two writers of one digest
+    /// write the same bytes, and a blob a crash loses reads as unavailable
+    /// rather than wrong.
+    fn publish(&self, temporary: &str, digest: &str, byte_length: u64) -> std::io::Result<()> {
+        if self.holds(digest, byte_length)? {
+            self.directory.remove(temporary)?;
+            return Ok(());
+        }
+        match self.directory.rename(temporary, digest) {
+            Ok(()) => Ok(()),
+            // A concurrent writer of the same content took the name first, and
+            // Windows cannot always replace a blob a reader holds open.
+            Err(_) if self.holds(digest, byte_length)? => {
+                self.directory.remove(temporary)?;
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Deletes blobs by digest, returning how many existed.
     pub(crate) fn remove<'a>(
         &self,
         digests: impl IntoIterator<Item = &'a String>,
     ) -> std::io::Result<usize> {
-        let _write = self.lock_writes();
         let mut deleted = 0;
         for digest in digests {
             if !is_digest_name_common(digest) {
@@ -467,39 +474,18 @@ impl ArtifactStore {
         self.directory.create(name)
     }
 
-    /// Publish a capture under `digest`, which the writer hashed while it
-    /// streamed the `byte_length` bytes in; the file is not read again.
+    /// Publish the capture file `name` under `digest`, which its writer
+    /// hashed while it streamed the `byte_length` bytes in; the file is not
+    /// read again.
     pub(crate) fn commit_capture(
         &self,
         name: &str,
-        capture: &std::sync::Mutex<File>,
         digest: &str,
         byte_length: u64,
     ) -> std::io::Result<cookie_agent_protocol::ArtifactReference> {
         #[cfg(test)]
         self.io_test_hook.run("capture_finalize", name)?;
-        let _write = self.lock_writes();
-        // LockFileEx locks overlap by handle, including handles in this
-        // process: the capture stays locked until the blob has its final name,
-        // and only then can a second handle read it.
-        let temporary = capture
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let published_at = std::time::SystemTime::now();
-        temporary.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
-        temporary.sync_all()?;
-        if let Some(existing) = self.directory.open(digest)?
-            && existing.metadata()?.len() == byte_length
-        {
-            existing.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
-            existing.sync_all()?;
-            fs2::FileExt::unlock(&*temporary)?;
-            self.directory.remove(name)?;
-        } else {
-            self.directory.rename(name, digest)?;
-            fs2::FileExt::unlock(&*temporary)?;
-        }
-        self.directory.sync()?;
+        self.publish(name, digest, byte_length)?;
         Ok(artifact_reference(digest))
     }
 
@@ -933,12 +919,11 @@ impl ArtifactRouter {
         &self,
         session: SessionId,
         name: &str,
-        capture: &Mutex<File>,
         digest: &str,
         byte_length: u64,
     ) -> std::io::Result<ArtifactReference> {
         self.write_store(session)?
-            .commit_capture(name, capture, digest, byte_length)
+            .commit_capture(name, digest, byte_length)
     }
 
     pub(crate) fn discard_capture(&self, session: SessionId, name: &str) {

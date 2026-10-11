@@ -414,13 +414,7 @@ impl OutputCapture {
             let reference = self
                 .0
                 .store
-                .commit_capture(
-                    self.session(),
-                    &channel.temporary,
-                    &channel.file,
-                    &sha256,
-                    channel.bytes,
-                )
+                .commit_capture(self.session(), &channel.temporary, &sha256, channel.bytes)
                 .map_err(|e| ToolError::execution(e.to_string()))?;
             let truncated = channel.preview.len() as u64 != channel.bytes;
             let preview = if truncated {

@@ -11,9 +11,8 @@ pub(super) use windows::Directory;
 mod unix {
     use std::{fs, path::PathBuf};
 
-    use fs2::FileExt as _;
     use rustix::{
-        fs::{AtFlags, Mode, OFlags, fsync, linkat, openat, renameat, unlinkat},
+        fs::{AtFlags, Mode, OFlags, linkat, openat, renameat, statat, unlinkat},
         io::Errno,
     };
 
@@ -41,7 +40,7 @@ mod unix {
             Ok(Self(fs::File::from(handle)))
         }
 
-        /// Creates a new private file and locks it for as long as it is open.
+        /// Creates a new private file.
         pub(in crate::runtime::artifacts) fn create(
             &self,
             name: &str,
@@ -52,9 +51,7 @@ mod unix {
                 OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::from_raw_mode(0o600),
             )?;
-            let file = fs::File::from(file);
-            file.lock_exclusive()?;
-            Ok(file)
+            Ok(fs::File::from(file))
         }
 
         pub(in crate::runtime::artifacts) fn open(
@@ -112,9 +109,16 @@ mod unix {
             }
         }
 
-        /// Makes the directory's entries durable.
-        pub(in crate::runtime::artifacts) fn sync(&self) -> std::io::Result<()> {
-            Ok(fsync(&self.0)?)
+        /// The byte length of `name`, or `None` when it does not exist.
+        pub(in crate::runtime::artifacts) fn len(
+            &self,
+            name: &str,
+        ) -> std::io::Result<Option<u64>> {
+            match statat(&self.0, name, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(stat) => Ok(Some(stat.st_size as u64)),
+                Err(Errno::NOENT) => Ok(None),
+                Err(error) => Err(error.into()),
+            }
         }
     }
 }
@@ -122,8 +126,6 @@ mod unix {
 #[cfg(windows)]
 mod windows {
     use std::{fs, path::PathBuf};
-
-    use fs2::FileExt as _;
 
     /// The artifact directory's path; Windows has no directory-relative opens.
     #[derive(Debug)]
@@ -138,28 +140,19 @@ mod windows {
             Ok(Self(path))
         }
 
-        /// Creates a new private file and locks it for as long as it is open.
+        /// Creates a new private file.
         pub(in crate::runtime::artifacts) fn create(
             &self,
             name: &str,
         ) -> std::io::Result<fs::File> {
-            let file =
-                cookie_agent_models::secure_store::create_windows_private_file(&self.0.join(name))?;
-            file.lock_exclusive()?;
-            Ok(file)
+            cookie_agent_models::secure_store::create_windows_private_file(&self.0.join(name))
         }
 
-        /// Opens for reading and writing: refreshing a blob's times needs write
-        /// access on Windows.
         pub(in crate::runtime::artifacts) fn open(
             &self,
             name: &str,
         ) -> std::io::Result<Option<fs::File>> {
-            match fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(self.0.join(name))
-            {
+            match fs::File::open(self.0.join(name)) {
                 Ok(file) => Ok(Some(file)),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 Err(error) => Err(error),
@@ -193,10 +186,9 @@ mod windows {
             from: &str,
             to: &str,
         ) -> std::io::Result<()> {
-            cookie_agent_models::secure_store::replace_windows_path(
-                &self.0.join(from),
-                &self.0.join(to),
-            )
+            // A plain rename: unlike the secure store's replace, it does not
+            // flush the directory, and artifacts are not fsynced anyway.
+            fs::rename(self.0.join(from), self.0.join(to))
         }
 
         /// Removes `name`, reporting whether it existed.
@@ -229,9 +221,16 @@ mod windows {
             }
         }
 
-        /// Renames already flush their parent directory on Windows.
-        pub(in crate::runtime::artifacts) fn sync(&self) -> std::io::Result<()> {
-            Ok(())
+        /// The byte length of `name`, or `None` when it does not exist.
+        pub(in crate::runtime::artifacts) fn len(
+            &self,
+            name: &str,
+        ) -> std::io::Result<Option<u64>> {
+            match fs::symlink_metadata(self.0.join(name)) {
+                Ok(metadata) => Ok(Some(metadata.len())),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error),
+            }
         }
     }
 }

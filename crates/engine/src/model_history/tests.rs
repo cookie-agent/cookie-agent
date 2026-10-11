@@ -382,6 +382,53 @@ fn tool_result_materializes_output_and_metadata_as_separate_values() {
 }
 
 #[test]
+fn a_missing_or_damaged_attachment_becomes_a_note_instead_of_an_error() {
+    let directory = tempfile::tempdir().unwrap();
+    let artifacts = directory.path().join("artifacts");
+    let store = crate::ArtifactRouter::open_flat(artifacts.clone()).unwrap();
+    let session = crate::test_session_id();
+    let attachment = |content: &[u8]| {
+        let (reference, digest) = store.retain(session, content).unwrap();
+        cookie_agent_protocol::ToolAttachment {
+            mime_type: cookie_agent_protocol::MimeType::new("image/png").unwrap(),
+            filename: Some("shot.png".into()),
+            byte_length: content.len() as u64,
+            sha256: cookie_agent_protocol::Sha256Digest::new(digest).unwrap(),
+            reference,
+        }
+    };
+    let (kept, lost, damaged) = (
+        attachment(b"kept image"),
+        attachment(b"lost image"),
+        attachment(b"damaged image"),
+    );
+    std::fs::remove_file(artifacts.join(lost.sha256.as_str())).unwrap();
+    std::fs::write(artifacts.join(damaged.sha256.as_str()), b"other  bytes!").unwrap();
+    let result = PersistedToolResult {
+        display: None,
+        retained_output: None,
+        title: SafeDisplayText::new("Screenshot").unwrap(),
+        output: "captured".into(),
+        metadata: serde_json::Value::Null,
+        truncation: None,
+        attachments: vec![kept, lost, damaged],
+        additional_messages: Vec::new(),
+    };
+    let part = tool_result_part(&result, store.for_session(Some(session))).unwrap();
+    let oven_sdk::ToolContent::Mixed(values) = part.content else {
+        panic!("expected mixed tool content");
+    };
+    assert!(matches!(&values[2], oven_sdk::ContentValue::File(_)));
+    for value in &values[3..] {
+        assert!(
+            matches!(value, oven_sdk::ContentValue::Text(text)
+                if text == "[shot.png (image/png) is unavailable: its stored copy is missing or damaged]"),
+            "{value:?}"
+        );
+    }
+}
+
+#[test]
 fn truncated_tool_result_names_the_readback_tool() {
     let directory = tempfile::tempdir().unwrap();
     let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();

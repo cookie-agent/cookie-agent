@@ -238,7 +238,11 @@ authorable.
 Artifacts are content-addressed by SHA-256, deduplicated, and newly created with
 mode `0600` on Unix. Their digest is verified when content is first read. A
 missing or corrupt artifact produces a normal tool error and does not prevent
-the engine or session from opening.
+the engine or session from opening. Artifacts are written without fsync and
+without a store-wide lock (each publish is one atomic rename), so a crash or
+power loss can lose an artifact a durable event already references. Reads then
+report the output as unavailable, and model history replaces a lost attachment
+with a short note instead of failing.
 
 Artifacts are collected only when a session is reverted. The revert deletes
 the digests that the cut-away events (and any delegated children the revert
