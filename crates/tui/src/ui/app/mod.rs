@@ -644,6 +644,8 @@ pub struct App {
     pub(super) approval_refresh_in_flight: Option<(SessionId, u64, u64)>,
     pub(super) next_approval_refresh_id: u64,
     pub(super) layout_cache: LayoutCache,
+    /// Layout caches of recently viewed sessions, oldest first.
+    pub(super) parked_layout_caches: Vec<LayoutCache>,
     pub(super) tui_config: TuiConfig,
     pub(super) theme: Theme,
     pub(super) highlighter: Box<dyn Highlighter>,
@@ -1144,6 +1146,7 @@ impl App {
             approval_refresh_in_flight: None,
             next_approval_refresh_id: 0,
             layout_cache: LayoutCache::default(),
+            parked_layout_caches: Vec::new(),
             tui_config,
             theme,
             highlighter: Box::<SyntectHighlighter>::default(),

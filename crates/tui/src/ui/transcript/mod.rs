@@ -958,9 +958,20 @@ pub(super) fn ensure_cached_transcript_layout(
     }
     cache.items.truncate(state.transcript.len());
     cache.item_offsets.truncate(state.transcript.len());
-    cache.revision = cache.revision.wrapping_add(1);
+    cache.revision = next_layout_revision();
     false
 }
+
+/// A fresh layout revision, unique across every [`LayoutCache`], so a view
+/// derived from one cache never mistakes another (parked) cache's layout
+/// for the one it was built from.
+fn next_layout_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Layout caches kept for recently viewed sessions besides the current one.
+const PARKED_LAYOUT_CACHES: usize = 4;
 
 /// Descendant rows spliced into a rendered transcript, kept apart from the
 /// transcript's own lines: the view reads through both, so no frame copies
@@ -1541,6 +1552,9 @@ impl App {
             .flatten();
         let mut layout_changed = false;
         let mut cached_layout = false;
+        if let Some(session_id) = viewed {
+            self.select_layout_cache(session_id);
+        }
         if let Some((session_id, state)) = viewed.and_then(|session_id| {
             self.store
                 .sessions
@@ -1708,6 +1722,26 @@ impl App {
             render_scrollbar_track(frame, geometry, &self.theme);
         }
         self.splice_cache = splice;
+    }
+
+    /// Make `session_id`'s layout cache current, parking the current one,
+    /// so switching between a few sessions does not lay each out afresh.
+    fn select_layout_cache(&mut self, session_id: SessionId) {
+        let current = self.layout_cache.key.map(|key| key.session_id);
+        if current.is_none_or(|current| current == session_id) {
+            return;
+        }
+        let parked = self
+            .parked_layout_caches
+            .iter()
+            .position(|cache| cache.key.is_some_and(|key| key.session_id == session_id))
+            .map(|index| self.parked_layout_caches.remove(index))
+            .unwrap_or_default();
+        let previous = std::mem::replace(&mut self.layout_cache, parked);
+        self.parked_layout_caches.push(previous);
+        if self.parked_layout_caches.len() > PARKED_LAYOUT_CACHES {
+            self.parked_layout_caches.remove(0);
+        }
     }
 
     pub(super) fn toggle_block(&mut self, block_id: BlockId) {

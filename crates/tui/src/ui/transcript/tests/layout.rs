@@ -1245,3 +1245,34 @@ fn moving_a_row_to_the_end_relayouts_only_that_row() {
     assert_eq!(cache.layout.regions, fresh.layout.regions);
     assert_eq!(cache.layout.user_regions, fresh.layout.user_regions);
 }
+
+#[tokio::test]
+async fn returning_to_a_recent_session_reuses_its_layout() {
+    let mut app = test_app().await;
+    let sessions = (0..3).map(|_| SessionId::new_v7()).collect::<Vec<_>>();
+    for (index, session) in sessions.iter().enumerate() {
+        let mut state = crate::state::SessionState::default();
+        state
+            .transcript
+            .push(TranscriptItem::user(format!("message in session {index}")));
+        app.store.sessions.insert(*session, state);
+    }
+    let mut chunks = Vec::new();
+    for session in &sessions {
+        app.selected = Some(*session);
+        let rows = frame_rows(&mut app, 80, 24);
+        chunks.push(app.layout_cache.layout.lines.chunks().to_vec());
+        assert!(rows.iter().any(|row| row.contains("message in session")));
+    }
+    app.selected = Some(sessions[0]);
+    let rows = frame_rows(&mut app, 80, 24);
+    assert!(rows.iter().any(|row| row.contains("message in session 0")));
+    // The very rows laid out on the first visit, not a fresh layout.
+    let now = app.layout_cache.layout.lines.chunks();
+    assert_eq!(now.len(), chunks[0].len());
+    assert!(
+        now.iter()
+            .zip(&chunks[0])
+            .all(|(now, then)| std::sync::Arc::ptr_eq(now, then))
+    );
+}
