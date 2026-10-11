@@ -102,6 +102,15 @@ pub(crate) fn schema<T: JsonSchema>() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(T)).expect("tool schemas serialize")
 }
 
+/// Runs filesystem work on tokio's blocking pool instead of a runtime worker.
+pub(crate) async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, ToolError> + Send + 'static,
+) -> Result<T, ToolError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| ToolError::execution(format!("filesystem task failed: {error}")))?
+}
+
 pub(crate) fn tool_error(error: impl std::fmt::Display) -> ToolError {
     ToolError::execution(error.to_string())
 }

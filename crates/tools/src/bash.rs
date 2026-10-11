@@ -411,14 +411,19 @@ impl ToolProvider for BashTool {
                 "interactive and background cannot be combined",
             ));
         }
-        let executable_path = resolve_executable("bash")?;
-        let executable = fs_cap::prepare_existing(Path::new("/"), &executable_path)?;
+        let cwd_path = ctx.cwd.clone();
+        let (executable_path, executable, cwd) = crate::blocking(move || {
+            let executable_path = resolve_executable("bash")?;
+            let executable = fs_cap::prepare_existing(Path::new("/"), &executable_path)?;
+            let cwd = fs_cap::prepare_existing(Path::new("/"), &cwd_path)?;
+            Ok((executable_path, executable, cwd))
+        })
+        .await?;
         if executable.directory || executable.mode & 0o111 == 0 {
             return Err(ToolError::unsupported_security(
                 "prepared bash executable is not an executable regular file",
             ));
         }
-        let cwd = fs_cap::prepare_existing(std::path::Path::new("/"), &ctx.cwd)?;
         if !cwd.directory {
             return Err(ToolError::unsupported_security(
                 "bash cwd is not a directory",

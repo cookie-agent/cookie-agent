@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{fs_cap, parse_args, prepared_operation, prepared_path_resources, schema};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct WriteTool {
     workspace: PathBuf,
 }
@@ -109,44 +109,53 @@ impl ToolProvider for WriteTool {
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
         let args: WriteArgs = parse_args("write", call.arguments)?;
-        let target = fs_cap::prepare_target(&ctx.cwd, std::path::Path::new(&args.file_path))?;
-        if matches!(&target, fs_cap::PreparedTarget::Existing(existing) if existing.directory) {
-            return Err(ToolError::unsupported_security(
-                "write target is a directory",
-            ));
-        }
-        let (resources, policy_labels) = prepared_path_resources(
-            PermissionAction::Write,
-            "file",
-            target.display_path(),
-            &self.workspace,
-            &target.binding_bytes(),
-        )?;
-        let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
-        let operation = prepared_operation(
-            "write",
-            &args,
-            vec![(PermissionAction::Write, "replace")],
-            resources,
-            &context,
-        )?;
-        let normalized_arguments = serde_json::json!({
-            "filePath": target.display_path(),
-            "content": args.content,
-        });
-        // Writes to one location run one at a time, in call order.
-        let serialization_key = PreparedSerializationKey::new(target.serialization_key());
-        PreparedTool::new(
-            operation,
-            normalized_arguments,
-            Some(serialization_key),
-            Box::new(WriteExecutor {
-                target,
-                bytes: args.content.into_bytes(),
-            }),
-        )?
-        .with_policy_labels(policy_labels)
+        let workspace = self.workspace.clone();
+        crate::blocking(move || prepare_write(&workspace, &ctx, args)).await
     }
+}
+
+fn prepare_write(
+    workspace: &std::path::Path,
+    ctx: &ToolPreparationContext,
+    args: WriteArgs,
+) -> Result<PreparedTool, ToolError> {
+    let target = fs_cap::prepare_target(&ctx.cwd, std::path::Path::new(&args.file_path))?;
+    if matches!(&target, fs_cap::PreparedTarget::Existing(existing) if existing.directory) {
+        return Err(ToolError::unsupported_security(
+            "write target is a directory",
+        ));
+    }
+    let (resources, policy_labels) = prepared_path_resources(
+        PermissionAction::Write,
+        "file",
+        target.display_path(),
+        workspace,
+        &target.binding_bytes(),
+    )?;
+    let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
+    let operation = prepared_operation(
+        "write",
+        &args,
+        vec![(PermissionAction::Write, "replace")],
+        resources,
+        &context,
+    )?;
+    let normalized_arguments = serde_json::json!({
+        "filePath": target.display_path(),
+        "content": args.content,
+    });
+    // Writes to one location run one at a time, in call order.
+    let serialization_key = PreparedSerializationKey::new(target.serialization_key());
+    PreparedTool::new(
+        operation,
+        normalized_arguments,
+        Some(serialization_key),
+        Box::new(WriteExecutor {
+            target,
+            bytes: args.content.into_bytes(),
+        }),
+    )?
+    .with_policy_labels(policy_labels)
 }
 
 #[async_trait]
@@ -160,14 +169,18 @@ impl PreparedExecutor for WriteExecutor {
                 "prepared write cancelled before commit",
             ));
         }
-        self.target.write(&self.bytes)?;
-        let path = self.target.display_path().display();
+        let (path, bytes) = crate::blocking(move || {
+            self.target.write(&self.bytes)?;
+            Ok((self.target.display_path().to_owned(), self.bytes.len()))
+        })
+        .await?;
+        let path = path.display();
         Ok(cookie_agent_engine::ToolCompletion::single(ToolResult {
             display: None,
             retained_output: None,
             title: crate::safe_title(format!("Wrote {path}")),
-            output: format!("Wrote {} bytes to {path}", self.bytes.len()),
-            metadata: serde_json::json!({ "bytes": self.bytes.len() }),
+            output: format!("Wrote {bytes} bytes to {path}"),
+            metadata: serde_json::json!({ "bytes": bytes }),
             truncation: None,
             attachments: Vec::new(),
             additional_messages: Vec::new(),

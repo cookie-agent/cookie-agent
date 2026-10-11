@@ -200,42 +200,46 @@ output: Default::default(),
             )?
             .with_policy_labels(vec![label]);
         }
-        let target = fs_cap::prepare_existing(&ctx.cwd, std::path::Path::new(&args.file_path))?;
-        let (resources, policy_labels) = prepared_path_resources(
-            PermissionAction::Read,
-            if target.directory {
-                "directory"
-            } else {
-                "file"
-            },
-            &target.display_path,
-            &self.workspace,
-            &target.binding_bytes(),
-        )?;
-        let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
-        let operation = prepared_operation(
-            "read",
-            &args,
-            vec![(PermissionAction::Read, "read")],
-            resources,
-            &context,
-        )?;
-        let normalized_arguments = serde_json::json!({
-            "filePath": target.display_path,
-            "offset": offset,
-            "limit": limit,
-        });
-        PreparedTool::new(
-            operation,
-            normalized_arguments,
-            None,
-            Box::new(ReadExecutor {
-                target,
-                offset,
-                limit,
-            }),
-        )?
-        .with_policy_labels(policy_labels)
+        let workspace = self.workspace.clone();
+        crate::blocking(move || {
+            let target = fs_cap::prepare_existing(&ctx.cwd, std::path::Path::new(&args.file_path))?;
+            let (resources, policy_labels) = prepared_path_resources(
+                PermissionAction::Read,
+                if target.directory {
+                    "directory"
+                } else {
+                    "file"
+                },
+                &target.display_path,
+                &workspace,
+                &target.binding_bytes(),
+            )?;
+            let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
+            let operation = prepared_operation(
+                "read",
+                &args,
+                vec![(PermissionAction::Read, "read")],
+                resources,
+                &context,
+            )?;
+            let normalized_arguments = serde_json::json!({
+                "filePath": target.display_path,
+                "offset": offset,
+                "limit": limit,
+            });
+            PreparedTool::new(
+                operation,
+                normalized_arguments,
+                None,
+                Box::new(ReadExecutor {
+                    target,
+                    offset,
+                    limit,
+                }),
+            )?
+            .with_policy_labels(policy_labels)
+        })
+        .await
     }
 }
 
@@ -280,7 +284,7 @@ impl PreparedExecutor for ReadExecutor {
         self: Box<Self>,
         context: ToolExecutionContext,
     ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
-        let result: Result<ToolResult, ToolError> = async move {
+        let result = crate::blocking(move || {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::execution(
                 "prepared read cancelled before execution",
@@ -346,7 +350,8 @@ retained_output: None,
             return Err(not_text());
         }
         text_result(path, &mut reader, self.offset, self.limit)
-}.await;
+        })
+        .await;
         result.map(cookie_agent_engine::ToolCompletion::single)
     }
 }

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{fs_cap, parse_args, prepared_operation, prepared_path_resources, schema};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct EditTool {
     workspace: PathBuf,
 }
@@ -202,10 +202,14 @@ impl ToolProvider for EditTool {
         ctx: ToolPreparationContext,
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
-        let (args, target) = self.prepare_target(&ctx, call)?;
-        // Fail fast on an oldString that does not match the current content.
-        match_count(&read_text(&target)?, &args)?;
-        self.prepare_edit(&ctx, args, target)
+        let tool = self.clone();
+        crate::blocking(move || {
+            let (args, target) = tool.prepare_target(&ctx, call)?;
+            // Fail fast on an oldString that does not match the current content.
+            match_count(&read_text(&target)?, &args)?;
+            tool.prepare_edit(&ctx, args, target)
+        })
+        .await
     }
 
     async fn prepare_parallel(
@@ -217,6 +221,24 @@ impl ToolProvider for EditTool {
             let call = calls.into_iter().next().expect("single call batch");
             return vec![self.prepare(ctx, call).await];
         }
+        let count = calls.len();
+        let tool = self.clone();
+        crate::blocking(move || Ok(tool.prepare_batch(&ctx, calls)))
+            .await
+            .unwrap_or_else(|error| {
+                (0..count)
+                    .map(|_| Err(ToolError::execution(error.message())))
+                    .collect()
+            })
+    }
+}
+
+impl EditTool {
+    fn prepare_batch(
+        &self,
+        ctx: &ToolPreparationContext,
+        calls: Vec<ToolCall>,
+    ) -> Vec<Result<PreparedTool, ToolError>> {
         // Same-file edits execute in call order under one serialization key,
         // each on the content its predecessor produced. Validate them the
         // same way: every edit matches against the text the previous
@@ -226,7 +248,7 @@ impl ToolProvider for EditTool {
         for call in calls {
             // Early per-call failures (invalid arguments, missing target,
             // directory) stay isolated in their own slot.
-            match self.prepare_target(&ctx, call) {
+            match self.prepare_target(ctx, call) {
                 Ok(entry) => {
                     pending.push(Some(entry));
                     results.push(None);
@@ -257,7 +279,7 @@ impl ToolProvider for EditTool {
                     Err(error) => Err(ToolError::execution(error.message())),
                 };
                 results[index] =
-                    Some(validated.and_then(|()| self.prepare_edit(&ctx, args, target)));
+                    Some(validated.and_then(|()| self.prepare_edit(ctx, args, target)));
             }
         }
         results
@@ -278,9 +300,13 @@ impl PreparedExecutor for EditExecutor {
                 "prepared edit cancelled before commit",
             ));
         }
-        let (replaced, count) = apply(&read_text(&self.target)?, &self.args)?;
-        self.target.replace(replaced.as_bytes())?;
-        let path = self.target.display_path.display();
+        let (path, count) = crate::blocking(move || {
+            let (replaced, count) = apply(&read_text(&self.target)?, &self.args)?;
+            self.target.replace(replaced.as_bytes())?;
+            Ok((self.target.display_path.clone(), count))
+        })
+        .await?;
+        let path = path.display();
         Ok(cookie_agent_engine::ToolCompletion::single(ToolResult {
             display: None,
             retained_output: None,
