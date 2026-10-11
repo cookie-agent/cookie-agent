@@ -1294,6 +1294,79 @@ async fn a_paged_subscription_goes_live_only_on_its_final_page() {
 }
 
 #[tokio::test]
+async fn replay_pages_stop_at_their_byte_budget_but_always_make_progress() {
+    const MIB: usize = 1024 * 1024;
+    let (fixture, selection) = custom_fixture();
+    let session = fixture.engine.create_session(selection).expect("session");
+    let session_id = session.session_id;
+    for size in [MIB + MIB / 2, MIB + MIB / 2, MIB + MIB / 2, 5 * MIB, MIB] {
+        fixture
+            .engine
+            .inner
+            .store
+            .append(
+                session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::UserInputAdmitted {
+                    input: "x".repeat(size),
+                },
+            )
+            .expect("direct append");
+    }
+    let (full, _) = fixture
+        .engine
+        .subscribe(session_id, None)
+        .await
+        .expect("full replay");
+    assert!(!full.has_more, "an unlimited replay is never cut by size");
+
+    let limit = std::num::NonZeroU32::new(2_000).unwrap();
+    let mut cursor = None;
+    let mut pages = Vec::new();
+    loop {
+        let (page, _) = fixture
+            .engine
+            .subscribe_page(session_id, cursor, None, Some(limit), None)
+            .await
+            .expect("page");
+        assert!(!page.events.is_empty(), "every page makes progress");
+        cursor = page.events.last().map(|event| event.seq);
+        let has_more = page.has_more;
+        pages.push(page.events);
+        if !has_more {
+            break;
+        }
+    }
+    let bytes = |events: &[cookie_agent_protocol::StoredEvent]| {
+        serde_json::to_vec(events).expect("page serializes").len()
+    };
+    for page in &pages {
+        assert!(
+            page.len() == 1 || bytes(page) <= crate::events::REPLAY_PAGE_MAX_BYTES,
+            "a page of {} events holds {} bytes",
+            page.len(),
+            bytes(page)
+        );
+    }
+    let sizes = pages
+        .iter()
+        .map(|page| {
+            page.iter()
+                .filter_map(|event| match &event.payload {
+                    EventPayload::UserInputAdmitted { input } => Some(input.len() / (MIB / 2)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    // In half-MiB units: two 1.5 MiB inputs fit a page, a third does not,
+    // and the 5 MiB input travels alone.
+    assert_eq!(sizes, [vec![3, 3], vec![3], vec![10], vec![2]]);
+    assert_eq!(seqs(&pages.concat()), seqs(&full.events));
+}
+
+#[tokio::test]
 async fn paging_a_foreign_log_parses_it_once_until_it_changes() {
     let (fixture, selection) = custom_fixture();
     let session = fixture.engine.create_session(selection).expect("session");

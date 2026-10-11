@@ -809,9 +809,11 @@ pub struct EventsSubscribeParams {
     /// sequence), the result is `stale_cursor` instead of events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor_timestamp: Option<jiff::Timestamp>,
-    /// Most events to return. When more remain after them, the result sets
-    /// `has_more` and registers no live tail; the client asks again from the
-    /// last returned sequence. Only the final page subscribes.
+    /// Most events to return. The server may end a page sooner to bound its
+    /// size, but a page always holds at least one event while any remain.
+    /// When more remain after them, the result sets `has_more` and registers
+    /// no live tail; the client asks again from the last returned sequence.
+    /// Only the final page subscribes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<std::num::NonZeroU32>,
 }

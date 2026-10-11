@@ -671,6 +671,10 @@ impl EventLog {
     /// Physical events after `cursor`, at most `limit` of them. Only the
     /// returned events are cloned, so paging through a long log costs one
     /// page per call rather than the whole log.
+    ///
+    /// A limited page also stops before [`REPLAY_PAGE_MAX_BYTES`] of
+    /// serialized events, since it goes out as one WebSocket frame; it always
+    /// holds at least one event, so paging makes progress.
     #[must_use]
     pub fn events_after(
         &self,
@@ -681,19 +685,32 @@ impl EventLog {
             .events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let max_bytes = limit.map_or(usize::MAX, |_| REPLAY_PAGE_MAX_BYTES);
         let limit = limit.map_or(usize::MAX, |limit| limit.get() as usize);
-        let mut after = events
+        let after = events
             .all
             .iter()
             .filter(|event| cursor.is_none_or(|cursor| event.seq > cursor));
-        let page = after
-            .by_ref()
-            .take(limit)
-            .map(|event| event.as_ref().clone())
-            .collect();
+        let mut page = Vec::new();
+        let mut page_bytes = 0_usize;
+        let mut has_more = false;
+        for event in after {
+            if page.len() == limit {
+                has_more = true;
+                break;
+            }
+            if max_bytes != usize::MAX {
+                page_bytes = page_bytes.saturating_add(serialized_len(event));
+                if page_bytes > max_bytes && !page.is_empty() {
+                    has_more = true;
+                    break;
+                }
+            }
+            page.push(event.as_ref().clone());
+        }
         cookie_agent_protocol::EventsSubscribeResult {
             events: page,
-            has_more: after.next().is_some(),
+            has_more,
             stale_cursor: false,
         }
     }
@@ -3489,6 +3506,26 @@ impl OutputHub {
         state.finalized = true;
         state.subscribers.clear();
     }
+}
+
+/// The serialized size past which a limited replay page ends.
+pub(crate) const REPLAY_PAGE_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// An event's serialized size, counted without building its JSON.
+fn serialized_len(event: &StoredEvent) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, event).expect("a stored event serializes");
+    counter.0
 }
 
 #[cfg(test)]

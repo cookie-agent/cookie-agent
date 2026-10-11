@@ -5,6 +5,13 @@ use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+/// The largest message, and so the largest frame, a WebSocket end accepts.
+/// Each protocol message goes out as a single frame, so this must fit the
+/// largest single event (a native context window carries up to 32 MiB) in
+/// its notification or replay page. Replay pages are otherwise kept to a few
+/// MiB by the daemon. Both ends are local and authenticated.
+pub const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
+
 /// One complete JSON-RPC message exchanged by a protocol transport.
 #[derive(Clone, PartialEq)]
 pub enum MessageFrame {

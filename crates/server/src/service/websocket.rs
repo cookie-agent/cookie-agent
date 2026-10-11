@@ -17,7 +17,9 @@ use tokio::net::TcpListener;
 use zeroize::Zeroizing;
 
 use super::{RunningServer, Server, ServerError};
-use cookie_agent_protocol::{MessageFrame, MessageStream, TransportError};
+use cookie_agent_protocol::{
+    MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, MessageStream, TransportError,
+};
 
 struct WebSocketStream {
     socket: axum::extract::ws::WebSocket,
@@ -98,9 +100,12 @@ async fn websocket_upgrade(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let server = state.server;
-    upgrade.on_upgrade(move |socket| async move {
-        let _ = server.serve_stream(WebSocketStream { socket }).await;
-    })
+    upgrade
+        .max_message_size(MAX_WEBSOCKET_MESSAGE_BYTES)
+        .max_frame_size(MAX_WEBSOCKET_MESSAGE_BYTES)
+        .on_upgrade(move |socket| async move {
+            let _ = server.serve_stream(WebSocketStream { socket }).await;
+        })
 }
 
 pub(crate) fn authorized(headers: &HeaderMap, expected: &str) -> bool {

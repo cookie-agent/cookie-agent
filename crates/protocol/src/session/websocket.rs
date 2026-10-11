@@ -7,12 +7,14 @@ use futures_util::{SinkExt as _, StreamExt as _};
 use thiserror::Error;
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
-    tungstenite::{Message, client::IntoClientRequest as _},
+    tungstenite::{Message, client::IntoClientRequest as _, protocol::WebSocketConfig},
 };
 use url::{Host, Url};
 use zeroize::Zeroizing;
 
-use super::{Client, ClientError, MessageFrame, Transport, TransportError};
+use super::{
+    Client, ClientError, MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, Transport, TransportError,
+};
 use crate::diagnostics;
 
 /// Length of the base64url encoding of the daemon's 32-byte bearer token.
@@ -89,9 +91,13 @@ impl WebSocketTransport {
     pub async fn connect_with_token(url: &str, token: &str) -> Result<Self, TransportError> {
         validate_websocket_url(url).map_err(|error| TransportError::Other(error.to_string()))?;
         let request = authenticated_request(url, token)?;
-        let (socket, _) = tokio_tungstenite::connect_async(request)
-            .await
-            .map_err(|error| websocket_error(&error))?;
+        let config = WebSocketConfig::default()
+            .max_message_size(Some(MAX_WEBSOCKET_MESSAGE_BYTES))
+            .max_frame_size(Some(MAX_WEBSOCKET_MESSAGE_BYTES));
+        let (socket, _) =
+            tokio_tungstenite::connect_async_with_config(request, Some(config), false)
+                .await
+                .map_err(|error| websocket_error(&error))?;
         Ok(Self { socket })
     }
 }
@@ -160,7 +166,52 @@ fn authenticated_request(
 
 #[cfg(test)]
 mod tests {
+    use futures_util::{SinkExt as _, StreamExt as _};
+    use serde_json::{Value, json};
+    use tokio_tungstenite::tungstenite::Message;
+
     use super::authenticated_request;
+    use crate::Client;
+
+    /// A replay page or a single large event (a model turn, a native context
+    /// window) arrives as one frame well past tungstenite's 16 MiB default.
+    #[tokio::test]
+    async fn a_response_past_the_default_frame_limit_arrives_whole() {
+        const BLOB_BYTES: usize = 40 * 1024 * 1024;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("listener address");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut socket = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("WebSocket accept");
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                let request: Value = serde_json::from_str(&text).expect("request");
+                let response = json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": { "blob": "x".repeat(BLOB_BYTES) },
+                });
+                socket
+                    .send(Message::Text(response.to_string().into()))
+                    .await
+                    .expect("send response");
+            }
+        });
+        let client =
+            Client::connect_websocket_with_token(&format!("ws://{address}/ws"), &"A".repeat(43))
+                .await
+                .expect("connect");
+        let result: Value = client
+            .call("test.large", &json!({}))
+            .await
+            .expect("large response");
+        assert_eq!(result["blob"].as_str().map(str::len), Some(BLOB_BYTES));
+        client.shutdown();
+        server.abort();
+    }
 
     #[test]
     fn websocket_rejection_preserves_decoded_body_and_context() {
