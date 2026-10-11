@@ -236,6 +236,14 @@ async fn network_cache_and_304_send_the_cached_etag() {
 
     let second = manager.refresh_at(now()).await.unwrap();
     assert_eq!(second.source, CatalogSource::Network);
+    // The 304 reuses the body parsed for the first response: both snapshots
+    // share one copy of the catalog rows.
+    assert!(Arc::ptr_eq(&first.providers, &second.providers));
+    assert!(Arc::ptr_eq(
+        &first.canonical_models,
+        &second.canonical_models
+    ));
+    assert!(Arc::ptr_eq(&first.quarantine, &second.quarantine));
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0], None);

@@ -219,16 +219,16 @@ pub(crate) fn production_openai_catalog(label: char, quarantined: bool) -> Arc<C
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::from([(
+        providers: Arc::new(BTreeMap::from([(
             provider_id.clone(),
             CatalogProviderEntry {
                 id: provider_id,
                 record: Some(record),
                 quarantine: None,
             },
-        )]),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        )])),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     })
 }
 
@@ -249,9 +249,9 @@ pub(crate) fn production_empty_catalog(label: char) -> Arc<CatalogSnapshot> {
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::new(),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        providers: Arc::new(BTreeMap::new()),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     })
 }
 

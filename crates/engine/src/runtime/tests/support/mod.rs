@@ -367,9 +367,9 @@ pub(crate) fn fixture() -> Fixture {
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::new(),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        providers: Arc::new(BTreeMap::new()),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     });
     let manager = Arc::new(
         ModelManager::new(
@@ -494,16 +494,16 @@ pub(crate) fn bedrock_catalog() -> Arc<CatalogSnapshot> {
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::from([(
+        providers: Arc::new(BTreeMap::from([(
             provider_id.clone(),
             CatalogProviderEntry {
                 id: provider_id,
                 record: Some(record),
                 quarantine: None,
             },
-        )]),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        )])),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     })
 }
 
@@ -638,16 +638,16 @@ compaction = "openai-responses-compact"
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::from([(
+        providers: Arc::new(BTreeMap::from([(
             provider_id.clone(),
             CatalogProviderEntry {
                 id: provider_id,
                 record: Some(record),
                 quarantine: None,
             },
-        )]),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        )])),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     });
     let provider_store = directory.path().join("provider-store");
     create_private_test_dir(&provider_store);
@@ -1114,9 +1114,9 @@ __MODEL_CAPABILITIES__
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::new(),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        providers: Arc::new(BTreeMap::new()),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     });
     let manager = Arc::new(
         ModelManager::new(
@@ -1236,9 +1236,9 @@ default_variant = "precise"
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::new(),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        providers: Arc::new(BTreeMap::new()),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     });
     let manager = Arc::new(
         ModelManager::new(

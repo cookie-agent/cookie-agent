@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    sync::Arc,
 };
 
 use cookie_agent_identity::{CanonicalModelId, CatalogRevision, ProviderId, ProviderModelId};
@@ -28,11 +29,13 @@ const MAX_ENV_FIELDS: usize = 64;
 const MAX_REASONING_OPTIONS: usize = 64;
 const MAX_COST_TIERS: usize = 64;
 
+/// A parsed catalog body. The maps are shared with every
+/// [`super::CatalogSnapshot`] taken from it, so a snapshot costs no copy.
 pub(crate) struct ParsedCatalog {
     pub revision: CatalogRevision,
-    pub providers: BTreeMap<ProviderId, CatalogProviderEntry>,
-    pub canonical_models: BTreeMap<CanonicalModelId, CanonicalModelRecord>,
-    pub quarantine: Vec<CatalogQuarantineEntry>,
+    pub providers: Arc<BTreeMap<ProviderId, CatalogProviderEntry>>,
+    pub canonical_models: Arc<BTreeMap<CanonicalModelId, CanonicalModelRecord>>,
+    pub quarantine: Arc<Vec<CatalogQuarantineEntry>>,
     pub byte_length: u64,
 }
 
@@ -81,9 +84,9 @@ pub(crate) fn parse_catalog(bytes: &[u8]) -> Result<ParsedCatalog, CatalogError>
         .map_err(|_| candidate("catalog revision is invalid"))?;
     Ok(ParsedCatalog {
         revision,
-        providers,
-        canonical_models,
-        quarantine,
+        providers: Arc::new(providers),
+        canonical_models: Arc::new(canonical_models),
+        quarantine: Arc::new(quarantine),
         byte_length: bytes.len() as u64,
     })
 }

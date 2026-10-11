@@ -656,9 +656,9 @@ fn snapshot_from_parsed(
         validated_at,
         last_checked_at: checked_at,
         etag,
-        providers: parsed.providers.clone(),
-        canonical_models: parsed.canonical_models.clone(),
-        quarantine: parsed.quarantine.clone(),
+        providers: Arc::clone(&parsed.providers),
+        canonical_models: Arc::clone(&parsed.canonical_models),
+        quarantine: Arc::clone(&parsed.quarantine),
     }
 }
 

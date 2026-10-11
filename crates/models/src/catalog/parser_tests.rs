@@ -121,7 +121,7 @@ fn unknown_fields_are_ignored_at_every_level() {
 
     let parsed = parse(&document);
 
-    assert_eq!(parsed.quarantine, []);
+    assert_eq!(*parsed.quarantine, []);
     assert_eq!(parsed.canonical_models.len(), 1);
     let record = record(&parsed, "test", "forward");
     assert_eq!(record.reasoning_options.len(), 3);
@@ -144,7 +144,7 @@ fn inexact_catalog_prices_round_to_the_nearest_pico_usd() {
     });
     let parsed = parse(&catalog([priced]));
 
-    assert_eq!(parsed.quarantine, []);
+    assert_eq!(*parsed.quarantine, []);
     let cost = record(&parsed, "test", "priced").cost.clone().unwrap();
     assert_eq!(cost.input.value(), 10_400_000_000);
     assert_eq!(cost.output.value(), 187_500_000_000);
@@ -161,7 +161,7 @@ fn padded_display_text_is_trimmed() {
 
     let parsed = parse(&document);
 
-    assert_eq!(parsed.quarantine, []);
+    assert_eq!(*parsed.quarantine, []);
     let record = record(&parsed, "test", "padded");
     assert_eq!(record.name, "Padded Model");
     assert_eq!(record.description, "described");
@@ -178,7 +178,7 @@ fn empty_modality_arrays_are_accepted() {
     empty["modalities"] = json!({"input": [], "output": []});
     let parsed = parse(&catalog([empty]));
 
-    assert_eq!(parsed.quarantine, []);
+    assert_eq!(*parsed.quarantine, []);
     let modalities = &record(&parsed, "test", "empty").modalities;
     assert!(modalities.input.is_empty() && modalities.output.is_empty());
 }
@@ -200,7 +200,7 @@ fn unknown_status_and_reasoning_controls_keep_the_model() {
 
     let parsed = parse(&catalog([retired, future, only_unknown]));
 
-    assert_eq!(parsed.quarantine, []);
+    assert_eq!(*parsed.quarantine, []);
     assert_eq!(
         record(&parsed, "test", "retired").status,
         crate::catalog::CatalogModelStatus::Stable
@@ -294,7 +294,7 @@ fn genuinely_invalid_records_still_quarantine() {
 fn real_catalog_captures_parse_without_quarantine() {
     let sample = include_bytes!("../../tests/fixtures/models-dev-live-sample-2026-09-28.json");
     let parsed = parse_catalog(sample).unwrap();
-    assert_eq!(parsed.quarantine, []);
+    assert_eq!(*parsed.quarantine, []);
     assert_eq!(parsed.providers.len(), 15);
     record(&parsed, "anthropic", "claude-opus-5-5");
     record(&parsed, "openai", "gpt-5");
@@ -319,6 +319,6 @@ fn real_catalog_captures_parse_without_quarantine() {
         crate::catalog::MODELS_DEV_BOOTSTRAP,
         include_bytes!("../../tests/fixtures/models-dev-live-audit-2026-08-05.json"),
     ] {
-        assert_eq!(parse_catalog(capture).unwrap().quarantine, []);
+        assert_eq!(*parse_catalog(capture).unwrap().quarantine, []);
     }
 }

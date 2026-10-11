@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 #[cfg(unix)]
 use std::{fs, os::unix::fs::PermissionsExt as _};
@@ -66,9 +66,9 @@ variants = { fast = { generation_options = { temperature = 0.1 } } }
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::new(),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        providers: Arc::new(BTreeMap::new()),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     };
     let manager = ModelManager::new(
         BTreeMap::from([("custom.test".parse().expect("provider ID"), provider)]),

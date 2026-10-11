@@ -704,9 +704,10 @@ fn catalog(base: &str, specs: &[ManagedSpec]) -> Arc<CatalogSnapshot> {
                     catalog_provider(base, spec),
                 )
             })
-            .collect(),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+            .collect::<BTreeMap<_, _>>()
+            .into(),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     })
 }
 

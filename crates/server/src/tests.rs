@@ -130,9 +130,9 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::new(),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        providers: Arc::new(BTreeMap::new()),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     });
     let manager = Arc::new(
         ModelManager::new(
@@ -286,9 +286,9 @@ fn empty_catalog(label: &str) -> Arc<CatalogSnapshot> {
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::new(),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        providers: Arc::new(BTreeMap::new()),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     })
 }
 
@@ -356,16 +356,16 @@ fn openai_catalog() -> Arc<CatalogSnapshot> {
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::from([(
+        providers: Arc::new(BTreeMap::from([(
             provider_id.clone(),
             CatalogProviderEntry {
                 id: provider_id,
                 record: Some(record),
                 quarantine: None,
             },
-        )]),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        )])),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     })
 }
 
@@ -652,8 +652,7 @@ async fn disconnect_publishes_one_ordered_runtime_changed_notification() {
 #[tokio::test]
 async fn goal_and_producer_inspection_are_reachable_through_rpc() {
     let mut catalog = (*openai_catalog()).clone();
-    catalog
-        .providers
+    Arc::make_mut(&mut catalog.providers)
         .values_mut()
         .next()
         .expect("OpenAI provider")
@@ -891,8 +890,7 @@ async fn unmatched_retained_policy_is_unsupported_and_reconnect_is_blocked() {
 #[tokio::test]
 async fn catalog_shape_is_compiled_without_provider_quarantine() {
     let mut catalog = (*openai_catalog()).clone();
-    let provider = catalog
-        .providers
+    let provider = Arc::make_mut(&mut catalog.providers)
         .get_mut(&ProviderId::new("openai").expect("provider ID"))
         .expect("provider")
         .record

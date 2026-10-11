@@ -105,16 +105,16 @@ fn catalog() -> Arc<CatalogSnapshot> {
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::from([(
+        providers: Arc::new(BTreeMap::from([(
             provider_id.clone(),
             CatalogProviderEntry {
                 id: provider_id,
                 record: Some(record),
                 quarantine: None,
             },
-        )]),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        )])),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     })
 }
 
@@ -359,8 +359,7 @@ capabilities = {{ input = ["text"], output = ["text"], context_tokens = 8192, ou
 async fn managed_openai_responses_effort_is_not_serialized_as_mode() {
     let (endpoint, captured) = capture_http_request().await;
     let mut snapshot = (*catalog()).clone();
-    let provider = snapshot
-        .providers
+    let provider = Arc::make_mut(&mut snapshot.providers)
         .values_mut()
         .next()
         .unwrap()
@@ -427,8 +426,7 @@ async fn endpoint_switch_variants_dispatch_to_selected_endpoint() {
     ] {
         let (endpoint, captured) = capture_http_request().await;
         let mut snapshot = (*catalog()).clone();
-        let record = snapshot
-            .providers
+        let record = Arc::make_mut(&mut snapshot.providers)
             .values_mut()
             .next()
             .unwrap()
@@ -582,16 +580,16 @@ fn cloud_catalog(
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::from([(
+        providers: Arc::new(BTreeMap::from([(
             provider_id.clone(),
             CatalogProviderEntry {
                 id: provider_id,
                 record: Some(record),
                 quarantine: None,
             },
-        )]),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        )])),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     })
 }
 
@@ -611,8 +609,7 @@ fn setup_values(values: &[(&str, &str)]) -> BTreeMap<SetupFieldId, SafeSetupValu
 fn catalog_cost_reaches_the_compiled_runtime_model() {
     let temporary = TempDir::new().unwrap();
     let mut snapshot = (*catalog()).clone();
-    snapshot
-        .providers
+    Arc::make_mut(&mut snapshot.providers)
         .get_mut(&ProviderId::new("openai").unwrap())
         .unwrap()
         .record
@@ -995,7 +992,9 @@ async fn nested_provider_store_rejected_when_catalog_endpoint_drifts() {
         .unwrap();
     let provider_id = ProviderId::new("kimi-for-coding").unwrap();
     let mut drifted = (*catalog).clone();
-    let entry = drifted.providers.get_mut(&provider_id).unwrap();
+    let entry = Arc::make_mut(&mut drifted.providers)
+        .get_mut(&provider_id)
+        .unwrap();
     entry.record.as_mut().unwrap().api = Some("https://example.invalid/v1".to_owned());
     let manager = ModelManager::new(BTreeMap::new(), Arc::new(drifted), store(&temporary)).unwrap();
     let runtime = manager.current();
@@ -1038,7 +1037,9 @@ async fn anthropic_family_catalog_endpoints_connect_and_compile() {
         let source_id = ProviderId::new("kimi-for-coding").unwrap();
         let provider_id = ProviderId::new(provider).unwrap();
         let mut snapshot = (*source).clone();
-        let mut entry = snapshot.providers.remove(&source_id).unwrap();
+        let mut entry = Arc::make_mut(&mut snapshot.providers)
+            .remove(&source_id)
+            .unwrap();
         entry.id = provider_id.clone();
         let record = entry.record.as_mut().unwrap();
         record.id = provider_id.clone();
@@ -1046,7 +1047,7 @@ async fn anthropic_family_catalog_endpoints_connect_and_compile() {
         record.api = Some(api.to_owned());
         let (model_id, model) = record.models.first_key_value().unwrap();
         record.models = BTreeMap::from([(model_id.clone(), model.clone())]);
-        snapshot.providers = BTreeMap::from([(provider_id.clone(), entry)]);
+        snapshot.providers = Arc::new(BTreeMap::from([(provider_id.clone(), entry)]));
         let catalog = Arc::new(snapshot);
         let manager =
             ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
@@ -1121,8 +1122,7 @@ fn runtime_provider_projection_preserves_catalog_drift_code() {
     let temporary = TempDir::new().unwrap();
     let mut snapshot = (*catalog()).clone();
     let provider_id = ProviderId::new("openai").unwrap();
-    let record = snapshot
-        .providers
+    let record = Arc::make_mut(&mut snapshot.providers)
         .get_mut(&provider_id)
         .unwrap()
         .record
@@ -1155,9 +1155,9 @@ fn empty_catalog() -> Arc<CatalogSnapshot> {
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::new(),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        providers: Arc::new(BTreeMap::new()),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     })
 }
 
@@ -1457,8 +1457,7 @@ fn source_record_digest_tracks_exact_catalog_record_independently_of_recipe_iden
     let first_source = first_connection.policy.source_record_digest.clone();
 
     let mut changed_catalog = (*first_catalog).clone();
-    changed_catalog
-        .providers
+    Arc::make_mut(&mut changed_catalog.providers)
         .get_mut(&provider_id)
         .unwrap()
         .record
@@ -1527,8 +1526,7 @@ fn harmless_catalog_refresh_reuses_store_credentials_with_new_source_provenance(
 
     let mut refreshed_catalog = (*initial_catalog).clone();
     refreshed_catalog.revision = revision("harmless-refresh");
-    refreshed_catalog
-        .providers
+    Arc::make_mut(&mut refreshed_catalog.providers)
         .get_mut(&ProviderId::new("openai").unwrap())
         .unwrap()
         .record
@@ -2232,8 +2230,7 @@ fn nested_family_manifest_records_effective_npm_and_resolves_store_auth() {
         None,
     ))
     .clone();
-    let provider = catalog
-        .providers
+    let provider = Arc::make_mut(&mut catalog.providers)
         .values_mut()
         .next()
         .unwrap()
@@ -2310,8 +2307,7 @@ fn bedrock_mantle_bearer_connection_constructs_responses_executable() {
         None,
     ))
     .clone();
-    catalog
-        .providers
+    Arc::make_mut(&mut catalog.providers)
         .values_mut()
         .next()
         .unwrap()
@@ -2755,8 +2751,7 @@ fn mixed_gateway_catalog(
         None,
     ))
     .clone();
-    let record = snapshot
-        .providers
+    let record = Arc::make_mut(&mut snapshot.providers)
         .values_mut()
         .next()
         .unwrap()
@@ -2840,8 +2835,7 @@ async fn anthropic_models_in_bearer_providers_send_x_api_key() {
 /// One-model managed provider catalog for local-server tests.
 fn local_catalog(npm: &str, environment: &[&str], api: Option<&str>) -> Arc<CatalogSnapshot> {
     let mut snapshot = (*cloud_catalog("local", npm, environment, "local-model", None)).clone();
-    snapshot
-        .providers
+    Arc::make_mut(&mut snapshot.providers)
         .values_mut()
         .next()
         .unwrap()

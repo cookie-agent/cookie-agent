@@ -407,7 +407,7 @@ fn parser_quarantine_is_counted_and_changes_the_global_digest() {
     catalog.source = CatalogSource::Network;
     catalog.state.availability = CatalogAvailability::Ready;
     let provider_id = ProviderId::new("broken-provider").expect("provider ID");
-    catalog.providers.insert(
+    Arc::make_mut(&mut catalog.providers).insert(
         provider_id.clone(),
         CatalogProviderEntry {
             id: provider_id.clone(),
@@ -415,7 +415,7 @@ fn parser_quarantine_is_counted_and_changes_the_global_digest() {
             quarantine: Some(CatalogQuarantineReason::InvalidCatalogProviderRecord),
         },
     );
-    catalog.quarantine.push(CatalogQuarantineEntry {
+    Arc::make_mut(&mut catalog.quarantine).push(CatalogQuarantineEntry {
         provider_id: Some(provider_id.to_string()),
         model_id: None,
         canonical_model_id: None,
@@ -451,8 +451,7 @@ fn registry_provider_drift_counts_but_unsupported_provider_does_not() {
     let mut drifted = (*bedrock_catalog()).clone();
     drifted.revision =
         CatalogRevision::new(format!("sha256:{}", "2".repeat(64))).expect("catalog revision");
-    let provider = drifted
-        .providers
+    let provider = Arc::make_mut(&mut drifted.providers)
         .get_mut(&ProviderId::new("amazon-bedrock").expect("provider ID"))
         .expect("Bedrock provider")
         .record
@@ -484,8 +483,7 @@ fn registry_provider_drift_counts_but_unsupported_provider_does_not() {
         CatalogRevision::new(format!("sha256:{}", "3".repeat(64))).expect("catalog revision");
     let old_id = ProviderId::new("amazon-bedrock").expect("provider ID");
     let unknown_id = ProviderId::new("unknown-provider").expect("provider ID");
-    let mut entry = unsupported
-        .providers
+    let mut entry = Arc::make_mut(&mut unsupported.providers)
         .remove(&old_id)
         .expect("provider entry");
     entry.id = unknown_id.clone();
@@ -493,7 +491,7 @@ fn registry_provider_drift_counts_but_unsupported_provider_does_not() {
     record.id = unknown_id.clone();
     record.npm = "@example/unknown-provider".to_owned();
     record.environment.clear();
-    unsupported.providers.insert(unknown_id, entry);
+    Arc::make_mut(&mut unsupported.providers).insert(unknown_id, entry);
     let unsupported = fixture
         .engine
         .refresh_catalog(Arc::new(unsupported))
@@ -513,8 +511,7 @@ fn registry_model_shape_drift_is_counted_with_exact_model_identity() {
     let mut catalog = (*bedrock_catalog()).clone();
     catalog.revision =
         CatalogRevision::new(format!("sha256:{}", "4".repeat(64))).expect("catalog revision");
-    let provider = catalog
-        .providers
+    let provider = Arc::make_mut(&mut catalog.providers)
         .get_mut(&ProviderId::new("amazon-bedrock").expect("provider ID"))
         .expect("provider")
         .record
@@ -543,8 +540,7 @@ fn registry_model_shape_drift_is_counted_with_exact_model_identity() {
 fn nested_endpoint_placeholders_project_setup_and_secret_classification() {
     let fixture = fixture();
     let mut catalog = (*bedrock_catalog()).clone();
-    let provider = catalog
-        .providers
+    let provider = Arc::make_mut(&mut catalog.providers)
         .values_mut()
         .next()
         .unwrap()
@@ -580,8 +576,7 @@ fn combined_quarantine_digest_is_order_independent_and_notifications_are_coheren
     let mut catalog = (*bedrock_catalog()).clone();
     catalog.revision =
         CatalogRevision::new(format!("sha256:{}", "5".repeat(64))).expect("catalog revision");
-    catalog
-        .providers
+    Arc::make_mut(&mut catalog.providers)
         .get_mut(&ProviderId::new("amazon-bedrock").expect("provider ID"))
         .expect("provider")
         .record
@@ -596,7 +591,7 @@ fn combined_quarantine_digest_is_order_independent_and_notifications_are_coheren
         .expect("model record")
         .shape = Some("unexpected".to_owned());
     let parser_provider = ProviderId::new("parser-broken").expect("provider ID");
-    catalog.providers.insert(
+    Arc::make_mut(&mut catalog.providers).insert(
         parser_provider.clone(),
         CatalogProviderEntry {
             id: parser_provider.clone(),
@@ -604,7 +599,7 @@ fn combined_quarantine_digest_is_order_independent_and_notifications_are_coheren
             quarantine: Some(CatalogQuarantineReason::InvalidCatalogProviderRecord),
         },
     );
-    catalog.quarantine = vec![
+    catalog.quarantine = Arc::new(vec![
         CatalogQuarantineEntry {
             provider_id: Some(parser_provider.to_string()),
             model_id: None,
@@ -623,7 +618,7 @@ fn combined_quarantine_digest_is_order_independent_and_notifications_are_coheren
             canonical_model_id: Some("canonical-model".to_owned()),
             reason: CatalogQuarantineReason::InvalidCanonicalModelRecord,
         },
-    ];
+    ]);
     let mut notifications = fixture.engine.subscribe_runtime_changes();
     let first = fixture
         .engine
@@ -637,7 +632,7 @@ fn combined_quarantine_digest_is_order_independent_and_notifications_are_coheren
 
     catalog.revision =
         CatalogRevision::new(format!("sha256:{}", "6".repeat(64))).expect("catalog revision");
-    catalog.quarantine.reverse();
+    Arc::make_mut(&mut catalog.quarantine).reverse();
     let reordered = fixture
         .engine
         .refresh_catalog(Arc::new(catalog.clone()))
@@ -660,7 +655,7 @@ fn combined_quarantine_digest_is_order_independent_and_notifications_are_coheren
 
     catalog.revision =
         CatalogRevision::new(format!("sha256:{}", "7".repeat(64))).expect("catalog revision");
-    catalog.quarantine.pop();
+    Arc::make_mut(&mut catalog.quarantine).pop();
     let changed = fixture
         .engine
         .refresh_catalog(Arc::new(catalog))
@@ -847,8 +842,7 @@ fn bedrock_catalog_with_unusable_models() -> Arc<cookie_agent_models::catalog::C
     let mut catalog = (*bedrock_catalog()).clone();
     catalog.revision =
         CatalogRevision::new(format!("sha256:{}", "7".repeat(64))).expect("catalog revision");
-    let record = catalog
-        .providers
+    let record = Arc::make_mut(&mut catalog.providers)
         .get_mut(&ProviderId::new("amazon-bedrock").expect("provider ID"))
         .and_then(|entry| entry.record.as_mut())
         .expect("Bedrock record");

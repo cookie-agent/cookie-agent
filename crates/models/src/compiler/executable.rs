@@ -1030,9 +1030,9 @@ mod tests {
             validated_at: now,
             last_checked_at: now,
             etag: None,
-            providers: BTreeMap::new(),
-            canonical_models: BTreeMap::new(),
-            quarantine: Vec::new(),
+            providers: Arc::new(BTreeMap::new()),
+            canonical_models: Arc::new(BTreeMap::new()),
+            quarantine: Arc::new(Vec::new()),
         })
     }
 

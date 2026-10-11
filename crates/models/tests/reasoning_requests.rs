@@ -112,16 +112,16 @@ fn snapshot(catalog: &Catalog, api: String) -> Arc<CatalogSnapshot> {
         validated_at: now,
         last_checked_at: now,
         etag: None,
-        providers: BTreeMap::from([(
+        providers: Arc::new(BTreeMap::from([(
             provider_id.clone(),
             CatalogProviderEntry {
                 id: provider_id,
                 record: Some(record),
                 quarantine: None,
             },
-        )]),
-        canonical_models: BTreeMap::new(),
-        quarantine: Vec::new(),
+        )])),
+        canonical_models: Arc::new(BTreeMap::new()),
+        quarantine: Arc::new(Vec::new()),
     })
 }
 

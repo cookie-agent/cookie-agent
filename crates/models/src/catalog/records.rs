@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use cookie_agent_identity::{CanonicalModelId, CatalogRevision, ProviderId, ProviderModelId};
 use jiff::Timestamp;
@@ -467,6 +467,10 @@ pub struct CanonicalModelProvenance {
 }
 
 /// Immutable dynamic catalog snapshot.
+///
+/// The catalog maps are shared: every snapshot of one parsed body (startup,
+/// a `304` revalidation, a stale fallback) points at the same allocation, so
+/// taking or cloning a snapshot copies no catalog rows.
 #[derive(Clone, Debug)]
 pub struct CatalogSnapshot {
     pub revision: CatalogRevision,
@@ -475,9 +479,9 @@ pub struct CatalogSnapshot {
     pub validated_at: Timestamp,
     pub last_checked_at: Timestamp,
     pub etag: Option<String>,
-    pub providers: BTreeMap<ProviderId, CatalogProviderEntry>,
-    pub canonical_models: BTreeMap<CanonicalModelId, CanonicalModelRecord>,
-    pub quarantine: Vec<CatalogQuarantineEntry>,
+    pub providers: Arc<BTreeMap<ProviderId, CatalogProviderEntry>>,
+    pub canonical_models: Arc<BTreeMap<CanonicalModelId, CanonicalModelRecord>>,
+    pub quarantine: Arc<Vec<CatalogQuarantineEntry>>,
 }
 
 impl CatalogSnapshot {
