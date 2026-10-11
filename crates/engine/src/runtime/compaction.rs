@@ -954,103 +954,233 @@ pub(crate) fn serialized_fit_request_bytes(
     history: &[oven_sdk::HistoryTurn],
     tools: &[ToolDefinition],
 ) -> Result<usize, EngineError> {
-    let (history, attachment_surrogate_bytes) = fit_history(history);
+    // Media costs are flat-ish, usually hundreds to low-thousands of tokens per part, and do not
+    // track serialized byte size. Text parts count their raw length, image/PDF/audio files count
+    // nothing, and video alone gets a flat surrogate because frame sampling can be materially
+    // expensive. Everything else counts its serialized size. Overestimation can trigger
+    // unnecessary compaction and discard attachments, while real usage calibrates residual error.
+    let mut part_bytes = 0_usize;
+    let history = history
+        .iter()
+        .map(|turn| fit::FitTurn::new(turn, &mut part_bytes))
+        .collect::<Vec<_>>();
     let mut writer = CountingWriter::default();
     serde_json::to_writer(&mut writer, &(history, tools))
         .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
-    Ok(writer.bytes.saturating_add(attachment_surrogate_bytes))
+    Ok(writer.bytes.saturating_add(part_bytes))
 }
 
-fn fit_history(history: &[oven_sdk::HistoryTurn]) -> (Vec<oven_sdk::HistoryTurn>, usize) {
-    // Media costs are flat-ish, usually hundreds to low-thousands of tokens per part, and do not
-    // track serialized byte size. Exclude image/PDF/audio files; video alone gets a flat surrogate
-    // because frame sampling can be materially expensive. Overestimation can trigger unnecessary
-    // compaction and discard attachments, while real usage calibrates residual error.
-    let mut history = history.to_vec();
-    let mut part_bytes = 0_usize;
-    for turn in &mut history {
-        match turn {
-            oven_sdk::HistoryTurn::System(message) => {
-                message.content.retain(|part| match part {
-                    oven_sdk::SystemPart::Text(text) => {
-                        part_bytes =
-                            part_bytes.saturating_add(fit_part_bytes(FitPart::Text(&text.text)));
-                        false
-                    }
-                    oven_sdk::SystemPart::Custom(_) => true,
-                });
-            }
-            oven_sdk::HistoryTurn::User(message) => {
-                message.content.retain(|part| match part {
-                    oven_sdk::InputPart::Text(text) => {
-                        part_bytes =
-                            part_bytes.saturating_add(fit_part_bytes(FitPart::Text(&text.text)));
-                        false
-                    }
-                    oven_sdk::InputPart::File(file) => {
-                        part_bytes = part_bytes
-                            .saturating_add(fit_part_bytes(FitPart::File(&file.media_type)));
-                        false
-                    }
-                    oven_sdk::InputPart::Custom(_) => true,
-                });
-            }
-            oven_sdk::HistoryTurn::Assistant(turn) => {
-                for part in &mut turn.message.content {
-                    if let oven_sdk::AssistantPart::ToolResult(result) = part {
-                        part_bytes = part_bytes
-                            .saturating_add(remove_tool_content_parts(&mut result.content));
-                    }
+/// Borrowing mirrors of the Oven history types that serialize exactly like the
+/// originals with text and file parts stripped, so fit sizing never clones history.
+/// Every constructor destructures its source exhaustively: a new Oven field fails
+/// to compile here instead of silently drifting out of the count.
+mod fit {
+    use oven_sdk::{
+        AssistantPart, CompletedTurn, ContentValue, HistoryTurn, InputPart, SystemPart,
+        ToolContent, ToolResultPart,
+    };
+    use serde::Serialize;
+
+    use super::{FitPart, fit_part_bytes};
+
+    fn add(total: &mut usize, part: FitPart<'_>) {
+        *total = total.saturating_add(fit_part_bytes(part));
+    }
+
+    #[derive(Serialize)]
+    #[serde(tag = "type", content = "value", rename_all = "snake_case")]
+    pub(super) enum FitTurn<'a> {
+        System(FitMessage<'a, &'a SystemPart>),
+        User(FitMessage<'a, &'a InputPart>),
+        Assistant(FitCompletedTurn<'a>),
+        Tool(FitToolMessage<'a>),
+    }
+
+    #[derive(Serialize)]
+    pub(super) struct FitMessage<'a, P> {
+        content: Vec<P>,
+        provider_options: &'a oven_sdk::ProviderOptions,
+    }
+
+    #[derive(Serialize)]
+    pub(super) struct FitCompletedTurn<'a> {
+        message: FitMessage<'a, FitAssistantPart<'a>>,
+        finish: &'a oven_sdk::Finish,
+        #[serde(skip_serializing_if = "<[String]>::is_empty")]
+        warnings: &'a [String],
+    }
+
+    #[derive(Serialize)]
+    #[serde(untagged)]
+    pub(super) enum FitAssistantPart<'a> {
+        Kept(&'a AssistantPart),
+        Result(FitAssistantResult<'a>),
+    }
+
+    #[derive(Serialize)]
+    #[serde(tag = "type", content = "value", rename_all = "snake_case")]
+    pub(super) enum FitAssistantResult<'a> {
+        ToolResult(FitToolResult<'a>),
+    }
+
+    #[derive(Serialize)]
+    pub(super) struct FitToolMessage<'a> {
+        results: Vec<FitToolResult<'a>>,
+        provider_options: &'a oven_sdk::ProviderOptions,
+    }
+
+    #[derive(Serialize)]
+    pub(super) struct FitToolResult<'a> {
+        tool_call_id: &'a str,
+        content: FitToolContent<'a>,
+        is_error: bool,
+        metadata: &'a oven_sdk::PartMetadata,
+    }
+
+    #[derive(Serialize)]
+    #[serde(tag = "type", content = "value", rename_all = "snake_case")]
+    pub(super) enum FitToolContent<'a> {
+        Text(&'static str),
+        Json(&'a serde_json::Value),
+        Mixed(Vec<&'a ContentValue>),
+        Denied { reason: &'a Option<String> },
+    }
+
+    impl<'a> FitTurn<'a> {
+        pub(super) fn new(turn: &'a HistoryTurn, part_bytes: &mut usize) -> Self {
+            match turn {
+                HistoryTurn::System(oven_sdk::SystemMessage {
+                    content,
+                    provider_options,
+                }) => Self::System(FitMessage {
+                    content: content
+                        .iter()
+                        .filter(|part| match part {
+                            SystemPart::Text(text) => {
+                                add(part_bytes, FitPart::Text(&text.text));
+                                false
+                            }
+                            SystemPart::Custom(_) => true,
+                        })
+                        .collect(),
+                    provider_options,
+                }),
+                HistoryTurn::User(oven_sdk::UserMessage {
+                    content,
+                    provider_options,
+                }) => Self::User(FitMessage {
+                    content: content
+                        .iter()
+                        .filter(|part| match part {
+                            InputPart::Text(text) => {
+                                add(part_bytes, FitPart::Text(&text.text));
+                                false
+                            }
+                            InputPart::File(file) => {
+                                add(part_bytes, FitPart::File(&file.media_type));
+                                false
+                            }
+                            InputPart::Custom(_) => true,
+                        })
+                        .collect(),
+                    provider_options,
+                }),
+                HistoryTurn::Assistant(turn) => {
+                    let CompletedTurn {
+                        message:
+                            oven_sdk::AssistantMessage {
+                                content,
+                                provider_options,
+                            },
+                        finish,
+                        warnings,
+                    } = turn.as_ref();
+                    Self::Assistant(FitCompletedTurn {
+                        message: FitMessage {
+                            content: content
+                                .iter()
+                                .filter_map(|part| match part {
+                                    AssistantPart::Text(text) => {
+                                        add(part_bytes, FitPart::Text(&text.text));
+                                        None
+                                    }
+                                    AssistantPart::File(file) => {
+                                        add(part_bytes, FitPart::File(&file.media_type));
+                                        None
+                                    }
+                                    AssistantPart::ToolResult(result) => Some(
+                                        FitAssistantPart::Result(FitAssistantResult::ToolResult(
+                                            FitToolResult::new(result, part_bytes),
+                                        )),
+                                    ),
+                                    AssistantPart::Reasoning(_)
+                                    | AssistantPart::ToolCall(_)
+                                    | AssistantPart::Source(_)
+                                    | AssistantPart::ToolApproval(_)
+                                    | AssistantPart::Custom(_) => {
+                                        Some(FitAssistantPart::Kept(part))
+                                    }
+                                })
+                                .collect(),
+                            provider_options,
+                        },
+                        finish,
+                        warnings,
+                    })
                 }
-                turn.message.content.retain(|part| match part {
-                    oven_sdk::AssistantPart::Text(text) => {
-                        part_bytes =
-                            part_bytes.saturating_add(fit_part_bytes(FitPart::Text(&text.text)));
-                        false
-                    }
-                    oven_sdk::AssistantPart::File(file) => {
-                        part_bytes = part_bytes
-                            .saturating_add(fit_part_bytes(FitPart::File(&file.media_type)));
-                        false
-                    }
-                    _ => true,
-                });
-            }
-            oven_sdk::HistoryTurn::Tool(message) => {
-                for result in &mut message.results {
-                    part_bytes =
-                        part_bytes.saturating_add(remove_tool_content_parts(&mut result.content));
-                }
+                HistoryTurn::Tool(oven_sdk::ToolMessage {
+                    results,
+                    provider_options,
+                }) => Self::Tool(FitToolMessage {
+                    results: results
+                        .iter()
+                        .map(|result| FitToolResult::new(result, part_bytes))
+                        .collect(),
+                    provider_options,
+                }),
             }
         }
     }
-    (history, part_bytes)
-}
 
-fn remove_tool_content_parts(content: &mut oven_sdk::ToolContent) -> usize {
-    match content {
-        oven_sdk::ToolContent::Text(text) => {
-            let bytes = fit_part_bytes(FitPart::Text(text));
-            text.clear();
-            bytes
-        }
-        oven_sdk::ToolContent::Mixed(values) => {
-            let mut part_bytes = 0_usize;
-            values.retain(|value| match value {
-                oven_sdk::ContentValue::Text(text) => {
-                    part_bytes = part_bytes.saturating_add(fit_part_bytes(FitPart::Text(text)));
-                    false
+    impl<'a> FitToolResult<'a> {
+        fn new(result: &'a ToolResultPart, part_bytes: &mut usize) -> Self {
+            let ToolResultPart {
+                tool_call_id,
+                content,
+                is_error,
+                metadata,
+            } = result;
+            let content = match content {
+                ToolContent::Text(text) => {
+                    add(part_bytes, FitPart::Text(text));
+                    FitToolContent::Text("")
                 }
-                oven_sdk::ContentValue::File(file) => {
-                    part_bytes =
-                        part_bytes.saturating_add(fit_part_bytes(FitPart::File(&file.media_type)));
-                    false
-                }
-                oven_sdk::ContentValue::Json(_) => true,
-            });
-            part_bytes
+                ToolContent::Json(value) => FitToolContent::Json(value),
+                ToolContent::Mixed(values) => FitToolContent::Mixed(
+                    values
+                        .iter()
+                        .filter(|value| match value {
+                            ContentValue::Text(text) => {
+                                add(part_bytes, FitPart::Text(text));
+                                false
+                            }
+                            ContentValue::File(file) => {
+                                add(part_bytes, FitPart::File(&file.media_type));
+                                false
+                            }
+                            ContentValue::Json(_) => true,
+                        })
+                        .collect(),
+                ),
+                ToolContent::Denied { reason } => FitToolContent::Denied { reason },
+            };
+            Self {
+                tool_call_id,
+                content,
+                is_error: *is_error,
+                metadata,
+            }
         }
-        oven_sdk::ToolContent::Json(_) | oven_sdk::ToolContent::Denied { .. } => 0,
     }
 }
 

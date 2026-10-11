@@ -13,6 +13,7 @@ use oven_sdk::{
     ToolMessage, ToolResultPart, UserMessage,
 };
 
+use super::CountingWriter;
 use super::{
     COMPACTION_INSTRUCTION, DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS, FitPart,
     TOOL_OUTPUT_ELISION_MIN_BYTES, VIDEO_FILE_FIT_SURROGATE_BYTES, checkpoint_covers_input,
@@ -614,4 +615,211 @@ fn recent_selection_keeps_only_fitting_complete_suffixes() {
     assert_eq!(select(u64::MAX, 199), None);
     assert_eq!(select(u64::MAX, 300), Some(20));
     assert_eq!(select(u64::MAX, u64::MAX), Some(10));
+}
+
+#[test]
+fn borrowing_fit_count_matches_cloned_count_on_mixed_history() {
+    use oven_sdk::{
+        AssistantMessage, AssistantPart, CompletedTurn, ContentValue, CustomPart, Finish,
+        FinishReason, ReasoningPart, SourcePart, ToolApprovalPart, ToolCallPart, Usage,
+    };
+    let options = std::collections::BTreeMap::from([(
+        "cache".to_owned(),
+        serde_json::json!({"type": "ephemeral"}),
+    )]);
+    let metadata = Some(std::collections::BTreeMap::from([(
+        "id".to_owned(),
+        serde_json::json!("item-\"1\""),
+    )]));
+    let video = || FilePart::video("video/mp4", FileSource::Bytes(b"clip".to_vec().into()));
+    let image = || FilePart::image("image/png", FileSource::Bytes(vec![7_u8; 512].into()));
+    let mut system = SystemMessage::new(vec![
+        SystemPart::Text(TextPart::new("sys \u{1F600} \"quoted\"\n")),
+        SystemPart::Custom(CustomPart::new(
+            "x.marker",
+            serde_json::json!({"a": [1, 2]}),
+        )),
+    ]);
+    system.provider_options.clone_from(&options);
+    let mut user = UserMessage::new(vec![
+        InputPart::Text(TextPart::new("hello\tworld")),
+        InputPart::File(image()),
+        InputPart::File(video()),
+        InputPart::Custom(CustomPart::new("x.user", serde_json::Value::Null)),
+    ]);
+    user.provider_options.clone_from(&options);
+    let mut tool_result = ToolResultPart::new(
+        "call-1",
+        ToolContent::Mixed(vec![
+            ContentValue::Text("mixed text".into()),
+            ContentValue::File(video()),
+            ContentValue::Json(serde_json::json!({"k": "v"})),
+            ContentValue::File(image()),
+        ]),
+    );
+    tool_result.metadata.clone_from(&metadata);
+    tool_result.is_error = true;
+    let mut completed = CompletedTurn::new(
+        AssistantMessage::new(vec![
+            AssistantPart::Text(TextPart::new("answer")),
+            AssistantPart::Reasoning(ReasoningPart::new("thinking \"hard\"")),
+            AssistantPart::ToolCall(ToolCallPart::new(
+                "call-1",
+                "read",
+                serde_json::json!({"path": "src/lib.rs"}),
+            )),
+            AssistantPart::ToolResult(tool_result.clone()),
+            AssistantPart::ToolResult(ToolResultPart::new(
+                "call-2",
+                ToolContent::Text("inline result".into()),
+            )),
+            AssistantPart::File(video()),
+            AssistantPart::File(image()),
+            AssistantPart::Source(SourcePart {
+                id: Some("src".into()),
+                url: None,
+                title: Some("Title".into()),
+                media_type: None,
+                excerpt: Some("excerpt".into()),
+                metadata: None,
+            }),
+            AssistantPart::ToolApproval(ToolApprovalPart::new("call-1")),
+            AssistantPart::Custom(CustomPart::new("x.assistant", serde_json::json!(true))),
+        ]),
+        Finish::new(Usage::default(), FinishReason::Stop),
+    );
+    completed.message.provider_options.clone_from(&options);
+    let mut warned = completed.clone();
+    warned.warnings = vec!["hosted tool result without call".into()];
+    let history = [
+        HistoryTurn::system(system),
+        HistoryTurn::user(user),
+        HistoryTurn::Assistant(Box::new(completed)),
+        HistoryTurn::Assistant(Box::new(warned)),
+        HistoryTurn::tool(ToolMessage::new(vec![
+            tool_result,
+            ToolResultPart::new("call-3", ToolContent::Text("plain".repeat(100))),
+            ToolResultPart::new("call-4", ToolContent::Json(serde_json::json!([1, "two"]))),
+            ToolResultPart::new(
+                "call-5",
+                ToolContent::Denied {
+                    reason: Some("no".into()),
+                },
+            ),
+            ToolResultPart::new("call-6", ToolContent::Denied { reason: None }),
+        ])),
+        HistoryTurn::user(UserMessage::new(Vec::new())),
+    ];
+    let tools = [ToolDefinition::new(
+        "read",
+        "Read a file",
+        JsonSchema::new(serde_json::json!({"type": "object"})).unwrap(),
+    )];
+    for (history, tools) in [
+        (&history[..], &tools[..]),
+        (&history[..], &[][..]),
+        (&[][..], &tools[..]),
+    ] {
+        assert_eq!(
+            serialized_fit_request_bytes(history, tools).unwrap(),
+            cloned_fit_request_bytes(history, tools)
+        );
+    }
+}
+
+/// The original cloning implementation, kept to prove the borrowing count matches it.
+fn cloned_fit_request_bytes(history: &[oven_sdk::HistoryTurn], tools: &[ToolDefinition]) -> usize {
+    let (history, attachment_surrogate_bytes) = fit_history(history);
+    let mut writer = CountingWriter::default();
+    serde_json::to_writer(&mut writer, &(history, tools)).unwrap();
+    writer.bytes.saturating_add(attachment_surrogate_bytes)
+}
+
+fn fit_history(history: &[oven_sdk::HistoryTurn]) -> (Vec<oven_sdk::HistoryTurn>, usize) {
+    let mut history = history.to_vec();
+    let mut part_bytes = 0_usize;
+    for turn in &mut history {
+        match turn {
+            oven_sdk::HistoryTurn::System(message) => {
+                message.content.retain(|part| match part {
+                    oven_sdk::SystemPart::Text(text) => {
+                        part_bytes =
+                            part_bytes.saturating_add(fit_part_bytes(FitPart::Text(&text.text)));
+                        false
+                    }
+                    oven_sdk::SystemPart::Custom(_) => true,
+                });
+            }
+            oven_sdk::HistoryTurn::User(message) => {
+                message.content.retain(|part| match part {
+                    oven_sdk::InputPart::Text(text) => {
+                        part_bytes =
+                            part_bytes.saturating_add(fit_part_bytes(FitPart::Text(&text.text)));
+                        false
+                    }
+                    oven_sdk::InputPart::File(file) => {
+                        part_bytes = part_bytes
+                            .saturating_add(fit_part_bytes(FitPart::File(&file.media_type)));
+                        false
+                    }
+                    oven_sdk::InputPart::Custom(_) => true,
+                });
+            }
+            oven_sdk::HistoryTurn::Assistant(turn) => {
+                for part in &mut turn.message.content {
+                    if let oven_sdk::AssistantPart::ToolResult(result) = part {
+                        part_bytes = part_bytes
+                            .saturating_add(remove_tool_content_parts(&mut result.content));
+                    }
+                }
+                turn.message.content.retain(|part| match part {
+                    oven_sdk::AssistantPart::Text(text) => {
+                        part_bytes =
+                            part_bytes.saturating_add(fit_part_bytes(FitPart::Text(&text.text)));
+                        false
+                    }
+                    oven_sdk::AssistantPart::File(file) => {
+                        part_bytes = part_bytes
+                            .saturating_add(fit_part_bytes(FitPart::File(&file.media_type)));
+                        false
+                    }
+                    _ => true,
+                });
+            }
+            oven_sdk::HistoryTurn::Tool(message) => {
+                for result in &mut message.results {
+                    part_bytes =
+                        part_bytes.saturating_add(remove_tool_content_parts(&mut result.content));
+                }
+            }
+        }
+    }
+    (history, part_bytes)
+}
+
+fn remove_tool_content_parts(content: &mut oven_sdk::ToolContent) -> usize {
+    match content {
+        oven_sdk::ToolContent::Text(text) => {
+            let bytes = fit_part_bytes(FitPart::Text(text));
+            text.clear();
+            bytes
+        }
+        oven_sdk::ToolContent::Mixed(values) => {
+            let mut part_bytes = 0_usize;
+            values.retain(|value| match value {
+                oven_sdk::ContentValue::Text(text) => {
+                    part_bytes = part_bytes.saturating_add(fit_part_bytes(FitPart::Text(text)));
+                    false
+                }
+                oven_sdk::ContentValue::File(file) => {
+                    part_bytes =
+                        part_bytes.saturating_add(fit_part_bytes(FitPart::File(&file.media_type)));
+                    false
+                }
+                oven_sdk::ContentValue::Json(_) => true,
+            });
+            part_bytes
+        }
+        oven_sdk::ToolContent::Json(_) | oven_sdk::ToolContent::Denied { .. } => 0,
+    }
 }

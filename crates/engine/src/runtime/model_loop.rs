@@ -1003,7 +1003,7 @@ impl Engine {
                 fallback_entry = 0;
             }
             let policy = turn_policy.as_ref().unwrap_or(&active.policy);
-            let published_tools = self.published_tool_definitions(active.session, policy)?;
+            let mut published_tools = self.published_tool_definitions(active.session, policy)?;
             let prompt_events = self.prompt_events(active.session, run_id).await?;
             let attempt = match self
                 .stream_attempt(
@@ -1014,7 +1014,7 @@ impl Engine {
                     &mut fallback_entry,
                     &mut replay_base,
                     prompt_events,
-                    published_tools.definitions.clone(),
+                    std::mem::take(&mut published_tools.definitions),
                 )
                 .await
             {
@@ -1485,16 +1485,19 @@ impl Engine {
             }
         };
         let cancelled = active.cancellation.is_cancelled();
-        let (mut result_content, is_error) = match &result {
-            Ok(result) => (result.output.clone(), cancelled),
-            Err(failure) => (failure.message.clone(), true),
+        let after_result_plugins = self.inner.plugins.interception_plugins(
+            cookie_agent_protocol::ExtensionInterceptionHook::ToolAfterResult,
+        );
+        let (mut result_content, is_error) = if after_result_plugins.is_empty() {
+            (String::new(), false)
+        } else {
+            match &result {
+                Ok(result) => (result.output.clone(), cancelled),
+                Err(failure) => (failure.message.clone(), true),
+            }
         };
         let context_id = crate::plugin::plugin_context_id();
-        for plugin in self
-            .inner
-            .plugins
-            .interception_plugins(cookie_agent_protocol::ExtensionInterceptionHook::ToolAfterResult)
-        {
+        for plugin in after_result_plugins {
             let intercepted = self
                 .inner
                 .plugins
@@ -1714,11 +1717,19 @@ impl Engine {
                 let mut request =
                     model.prepare_request_before_cache_strategy(request, cache_strategy.as_ref());
                 let context_id = crate::plugin::plugin_context_id();
+                // Serialized once and refreshed only after a plugin replaces the request.
+                let mut extension_view = None;
                 for plugin in self.inner.plugins.interception_plugins(
                     cookie_agent_protocol::ExtensionInterceptionHook::ModelBeforeRequest,
                 ) {
-                    let messages =
-                        extension_messages(&request.history).map_err(EngineError::Model)?;
+                    let messages = match &extension_view {
+                        Some(messages) => Clone::clone(messages),
+                        None => {
+                            let messages =
+                                extension_messages(&request.history).map_err(EngineError::Model)?;
+                            extension_view.insert(messages).clone()
+                        }
+                    };
                     let result = self.inner.plugins.intercept_named::<_, cookie_agent_protocol::ExtensionModelBeforeRequestResult>(
                         &plugin,
                         cookie_agent_protocol::PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD,
@@ -1734,6 +1745,10 @@ impl Engine {
                         Some(&context_id),
                     ).await;
                     match result {
+                        Ok(result)
+                            if result.action
+                                == cookie_agent_protocol::ExtensionModelBeforeRequestAction::Keep
+                                && result.params_adjustments.is_none() => {}
                         Ok(result) => {
                             let candidate = (|| {
                                 let mut candidate = request.clone();
@@ -1759,7 +1774,10 @@ impl Engine {
                                 Ok::<_, Box<ModelError>>(candidate)
                             })();
                             match candidate {
-                                Ok(candidate) => request = candidate,
+                                Ok(candidate) => {
+                                    request = candidate;
+                                    extension_view = None;
+                                }
                                 Err(error) => self.record_plugin_diagnostic(
                                     session,
                                     plugin,
@@ -1799,12 +1817,19 @@ impl Engine {
                         Err(error) => self.record_interception_error(session, plugin, error),
                     }
                 }
+                let mut provider_payload = None;
                 for plugin in self.inner.plugins.interception_plugins(
                     cookie_agent_protocol::ExtensionInterceptionHook::ProviderBeforeRequest,
                 ) {
-                    let payload = model
-                        .provider_request_payload(&request)
-                        .map_err(EngineError::Model)?;
+                    let payload = match &provider_payload {
+                        Some(payload) => Clone::clone(payload),
+                        None => {
+                            let payload = model
+                                .provider_request_payload(&request)
+                                .map_err(EngineError::Model)?;
+                            provider_payload.insert(payload).clone()
+                        }
+                    };
                     let result = self.inner.plugins.intercept_named::<_, cookie_agent_protocol::ExtensionProviderBeforeRequestResult>(
                         &plugin,
                         cookie_agent_protocol::PLUGIN_INTERCEPT_PROVIDER_BEFORE_REQUEST_METHOD,
@@ -1825,7 +1850,10 @@ impl Engine {
                                 })
                                 .and_then(|payload| model.request_from_provider_payload(payload));
                             match candidate {
-                                Ok(candidate) => request = candidate,
+                                Ok(candidate) => {
+                                    request = candidate;
+                                    provider_payload = None;
+                                }
                                 Err(error) => self.record_plugin_diagnostic(
                                     session,
                                     plugin,
@@ -1842,8 +1870,7 @@ impl Engine {
                 // Re-applied after interception in case a plugin added media; a no-op otherwise.
                 crate::media::elide_excess_media(&mut request.history, &turn_context.capabilities)
                     .map_err(ModelError::invalid_request)?;
-                let authoritative_prompt = serde_json::to_vec(&request)
-                    .map_err(|error| ModelError::invalid_request(error.to_string()))?;
+                let prompt_fingerprint = request_fingerprint(&request)?;
                 self.record_model_tools(session, run, attempt_id, &request.tools)
                     .await?;
                 self.append(
@@ -1852,7 +1879,7 @@ impl Engine {
                     event_origin("engine:model-loop"),
                     Event::ModelRequestPrepared {
                         attempt_id,
-                        prompt_fingerprint: Sha256Digest::of_bytes(&authoritative_prompt),
+                        prompt_fingerprint,
                     },
                 )
                 .await?;
@@ -2558,6 +2585,35 @@ fn exponential_retry_delay(
     std::time::Duration::from_millis(milliseconds)
 }
 
+/// SHA-256 of the request's JSON form, streamed into the hasher without
+/// materializing the serialized bytes.
+fn request_fingerprint(request: &ModelRequest) -> Result<Sha256Digest, EngineError> {
+    use sha2::Digest as _;
+    struct HashWriter(sha2::Sha256);
+    impl std::io::Write for HashWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0.update(buffer);
+            Ok(buffer.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = HashWriter(sha2::Sha256::new());
+    serde_json::to_writer(&mut writer, request)
+        .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
+    let hex = writer
+        .0
+        .finalize()
+        .iter()
+        .fold(String::with_capacity(64), |mut hex, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        });
+    Ok(Sha256Digest::new(hex).expect("SHA-256 hex digest is well-formed"))
+}
+
 fn extension_messages(
     history: &[oven_sdk::HistoryTurn],
 ) -> Result<Vec<cookie_agent_protocol::ExtensionModelMessage>, Box<ModelError>> {
@@ -2792,6 +2848,23 @@ mod tests {
         assert_eq!(
             model_retry_delay(0, Some(Duration::from_secs(600)), 0, ceiling),
             Duration::from_secs(600)
+        );
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use cookie_agent_protocol::Sha256Digest;
+    use oven_sdk::{HistoryTurn, InputPart, Request as ModelRequest, TextPart, UserMessage};
+
+    #[test]
+    fn streamed_request_fingerprint_matches_hash_of_serialized_bytes() {
+        let request = ModelRequest::new(vec![HistoryTurn::user(UserMessage::new(vec![
+            InputPart::Text(TextPart::new("hello \"world\" \u{1F600}".repeat(5_000))),
+        ]))]);
+        assert_eq!(
+            super::request_fingerprint(&request).unwrap(),
+            Sha256Digest::of_bytes(&serde_json::to_vec(&request).unwrap())
         );
     }
 }
