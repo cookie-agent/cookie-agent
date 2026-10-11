@@ -19,7 +19,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
     AssistantToolCallRef, AttemptId, EventOrigin, EventPayload, ModelCallId, OutputDelta,
     OutputGap, OutputSnapshot, OutputStream, ProviderItemId, RunId, SessionId, StoredEvent,
-    StoredEventEnvelope, ToolCallId, ToolCallStart, deserialize_event_payload_best_effort,
+    StoredEventEnvelope, ToolCallId, deserialize_event_payload_best_effort,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -1102,22 +1102,39 @@ struct ValidationState {
     runs: HashMap<RunId, RunAttribution>,
     approval_owners: HashMap<cookie_agent_protocol::ApprovalId, RunId>,
     attempts: HashMap<AttemptId, AttemptAttribution>,
-    turns: HashMap<u64, (RunId, cookie_agent_protocol::PersistedModelTurn)>,
+    turns: HashMap<u64, CommittedTurn>,
     turn_models: HashMap<u64, cookie_agent_protocol::ResolvedModelRef>,
     usage_turns: HashSet<u64>,
     internal_runs: HashMap<cookie_agent_protocol::InternalAgentRunId, InternalRunAttribution>,
     delegations: HashMap<cookie_agent_protocol::InvocationId, DelegationAttribution>,
     model_call_owners: HashMap<(RunId, ModelCallId), AssistantToolCallRef>,
     provider_item_owners: HashMap<(RunId, ProviderItemId), AssistantToolCallRef>,
-    tool_starts: HashMap<ToolCallId, (RunId, ToolCallStart)>,
+    tool_starts: HashMap<ToolCallId, (RunId, AssistantToolCallRef)>,
     terminated_tools: HashSet<ToolCallId>,
     elided_tools: HashSet<ToolCallId>,
-    admissions: HashMap<u64, (RunId, String)>,
+    /// Admitted inputs by sequence, kept as a digest of the text.
+    admissions: HashMap<u64, (RunId, InputDigest)>,
     next_model_turn_seq: u64,
     previous_seq: Option<u64>,
     previous_timestamp: Option<Timestamp>,
     active_run: Option<RunId>,
     record_count: usize,
+}
+
+/// What validation keeps of a committed model turn: its run, and the call
+/// identity of each tool-call part by content index.
+#[derive(Clone, Debug, PartialEq)]
+struct CommittedTurn {
+    run_id: RunId,
+    tool_calls: Vec<Option<(ModelCallId, Option<ProviderItemId>)>>,
+}
+
+/// SHA-256 of an admitted input, which a later submission must match.
+type InputDigest = [u8; 32];
+
+fn input_digest(input: &str) -> InputDigest {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(input.as_bytes()).into()
 }
 
 impl ValidationState {
@@ -1841,12 +1858,12 @@ fn validate_record_incremental(
     if let EventPayload::UserInputAdmitted { input } = &record.payload
         && let Some(run_id) = record.run_id
     {
-        admissions.insert(record.seq, (run_id, input.clone()));
+        admissions.insert(record.seq, (run_id, input_digest(input)));
     }
     let missing_admission = |user_input_seq: u64, run_id: RunId, input: &str| {
         !admissions
             .get(&user_input_seq)
-            .is_some_and(|(owner, admitted)| *owner == run_id && admitted == input)
+            .is_some_and(|(owner, admitted)| *owner == run_id && *admitted == input_digest(input))
     };
     let tainted_prerequisite = if strict {
         false
@@ -2316,8 +2333,20 @@ fn validate_record_incremental(
                     }
                 }
             }
+            let tool_calls = turn
+                .content
+                .iter()
+                .map(|part| match part {
+                    cookie_agent_protocol::PersistedAssistantPart::ToolCall {
+                        id,
+                        provider_item_id,
+                        ..
+                    } => Some((id.clone(), provider_item_id.clone())),
+                    _ => None,
+                })
+                .collect();
             if turns
-                .insert(*model_turn_seq, (run_id, turn.clone()))
+                .insert(*model_turn_seq, CommittedTurn { run_id, tool_calls })
                 .is_some()
             {
                 return corrupt(path, "model turn sequence is duplicated");
@@ -2331,7 +2360,10 @@ fn validate_record_incremental(
             ..
         } => {
             let run_id = require_started_run(path, runs, record.run_id)?;
-            let Some((turn_run, _)) = turns.get(model_turn_seq) else {
+            let Some(CommittedTurn {
+                run_id: turn_run, ..
+            }) = turns.get(model_turn_seq)
+            else {
                 return corrupt(path, "usage references an unknown committed model turn");
             };
             if *turn_run != run_id
@@ -2565,17 +2597,18 @@ fn validate_record_incremental(
                 &start.owner,
             )?;
             if tool_starts
-                .insert(start.tool_call_id, (run_id, start.clone()))
+                .insert(start.tool_call_id, (run_id, start.owner.clone()))
                 .is_some()
             {
                 return corrupt(path, "tool_call_id has more than one start");
             }
         }
         EventPayload::ToolCallTerminated { termination } => {
-            let Some((run_id, start)) = tool_starts.get(&termination.tool_call_id) else {
+            // Keyed by the call id, so the owner is all left to match.
+            let Some((run_id, owner)) = tool_starts.get(&termination.tool_call_id) else {
                 return corrupt(path, "tool termination appeared before its start");
             };
-            if record.run_id != Some(*run_id) || !termination.matches_start(start) {
+            if record.run_id != Some(*run_id) || termination.owner != *owner {
                 return corrupt(path, "tool termination ownership does not match its start");
             }
             if strict && taint.tool_terminal_before(termination.tool_call_id, record.seq) {
@@ -3160,23 +3193,22 @@ fn finish_attempt(
 fn validate_tool_owner(
     path: &Path,
     run_id: RunId,
-    turns: &HashMap<u64, (RunId, cookie_agent_protocol::PersistedModelTurn)>,
+    turns: &HashMap<u64, CommittedTurn>,
     model_call_owners: &HashMap<(RunId, ModelCallId), AssistantToolCallRef>,
     provider_item_owners: &HashMap<(RunId, ProviderItemId), AssistantToolCallRef>,
     owner: &AssistantToolCallRef,
 ) -> Result<(), EventLogError> {
-    let Some((turn_run, turn)) = turns.get(&owner.model_turn_seq) else {
+    let Some(CommittedTurn {
+        run_id: turn_run,
+        tool_calls,
+    }) = turns.get(&owner.model_turn_seq)
+    else {
         return corrupt(
             path,
             "tool owner references an unknown committed model turn",
         );
     };
-    let Some(cookie_agent_protocol::PersistedAssistantPart::ToolCall {
-        id,
-        provider_item_id,
-        ..
-    }) = turn.content.get(owner.content_index as usize)
-    else {
+    let Some(Some((id, provider_item_id))) = tool_calls.get(owner.content_index as usize) else {
         return corrupt(
             path,
             "tool owner content index is not a committed tool call",

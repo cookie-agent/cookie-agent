@@ -293,6 +293,49 @@ fn attribution_records() -> Vec<StoredEvent> {
     records
 }
 
+/// The tool-owner check against whole committed turns, as validation did
+/// before it kept only their call identities.
+fn reference_validate_tool_owner(
+    path: &Path,
+    run_id: RunId,
+    turns: &HashMap<u64, (RunId, cookie_agent_protocol::PersistedModelTurn)>,
+    model_call_owners: &HashMap<(RunId, ModelCallId), AssistantToolCallRef>,
+    provider_item_owners: &HashMap<(RunId, ProviderItemId), AssistantToolCallRef>,
+    owner: &AssistantToolCallRef,
+) -> Result<(), EventLogError> {
+    let Some((turn_run, turn)) = turns.get(&owner.model_turn_seq) else {
+        return corrupt(
+            path,
+            "tool owner references an unknown committed model turn",
+        );
+    };
+    let Some(cookie_agent_protocol::PersistedAssistantPart::ToolCall {
+        id,
+        provider_item_id,
+        ..
+    }) = turn.content.get(owner.content_index as usize)
+    else {
+        return corrupt(
+            path,
+            "tool owner content index is not a committed tool call",
+        );
+    };
+    if *turn_run != run_id
+        || id != &owner.model_call_id
+        || provider_item_id != &owner.provider_item_id
+        || model_call_owners.get(&(run_id, id.clone())) != Some(owner)
+        || provider_item_id.as_ref().is_some_and(|provider_id| {
+            provider_item_owners.get(&(run_id, provider_id.clone())) != Some(owner)
+        })
+    {
+        return corrupt(
+            path,
+            "tool owner does not match the committed model content",
+        );
+    }
+    Ok(())
+}
+
 // Copied from 0384899fe647c26aa54932b1ca92fc42b6d3668e, the parent of a05eedc9;
 // only the function name and rustfmt layout differ from the historical validator.
 fn reference_validate_records(
@@ -1098,7 +1141,7 @@ fn reference_validate_records(
             }
             EventPayload::ToolCallStarted { start } => {
                 let run_id = require_started_run(path, &runs, record.run_id)?;
-                validate_tool_owner(
+                reference_validate_tool_owner(
                     path,
                     run_id,
                     &turns,
