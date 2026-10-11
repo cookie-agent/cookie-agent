@@ -9,7 +9,6 @@ use cookie_agent_protocol::{
     ToolTerminationOutcome, TreeApprovalGrant,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tokio::sync::oneshot;
 
 use super::{
@@ -35,7 +34,7 @@ impl Engine {
         let (permission_mode, decision) = mode_decision;
         let approval_id = request.approval_id();
         let events = self.inner.store.log(session)?.event_snapshot();
-        let Some(record) = approval_records(session, &events).remove(&approval_id) else {
+        let Some(record) = approval_record(session, &events, approval_id) else {
             return Err(EngineError::ApprovalNotPending {
                 session_id: session,
                 approval_id,
@@ -226,8 +225,7 @@ impl Engine {
                 _ => None,
             })
         {
-            let Some(request) =
-                approval_records(params.session_id, &events).remove(&recorded_approval_id)
+            let Some(request) = approval_record(params.session_id, &events, recorded_approval_id)
             else {
                 return Err(approval_response_failure(
                     &params,
@@ -253,8 +251,7 @@ impl Engine {
             });
         }
 
-        let mut records = approval_records(params.session_id, &events);
-        let Some(record) = records.remove(&params.approval_id) else {
+        let Some(record) = approval_record(params.session_id, &events, params.approval_id) else {
             return Err(approval_response_failure(
                 &params,
                 ApprovalRespondErrorCode::ApprovalNotFound,
@@ -280,7 +277,7 @@ impl Engine {
                 params.approval_id,
                 ApprovalTerminal::Expired,
             )?;
-            let current = approval_records(
+            let current = approval_record(
                 params.session_id,
                 &self
                     .inner
@@ -288,8 +285,8 @@ impl Engine {
                     .get(params.session_id)?
                     .log
                     .event_snapshot(),
-            )
-            .remove(&params.approval_id);
+                params.approval_id,
+            );
             return Err(approval_response_failure(
                 &params,
                 ApprovalRespondErrorCode::ApprovalNotPending,
@@ -449,8 +446,7 @@ impl Engine {
             .get(params.session_id)?
             .log
             .event_snapshot();
-        let approval = approval_records(params.session_id, &events)
-            .remove(&params.approval_id)
+        let approval = approval_record(params.session_id, &events, params.approval_id)
             .ok_or(EngineError::ApprovalConflict)?;
         Ok(ApprovalRespondResult {
             client_response_id: params.client_response_id,
@@ -474,8 +470,7 @@ impl Engine {
         }) {
             return self.approval_respond_direct(params);
         }
-        let mut records = approval_records(params.session_id, &events);
-        let Some(record) = records.remove(&params.approval_id) else {
+        let Some(record) = approval_record(params.session_id, &events, params.approval_id) else {
             return Err(approval_response_failure(
                 &params,
                 ApprovalRespondErrorCode::ApprovalNotFound,
@@ -555,7 +550,7 @@ impl Engine {
                 }),
             });
         }
-        let current = approval_records(
+        let current = approval_record(
             params.session_id,
             &self
                 .inner
@@ -563,8 +558,8 @@ impl Engine {
                 .get(params.session_id)?
                 .log
                 .event_snapshot(),
-        )
-        .remove(&params.approval_id);
+            params.approval_id,
+        );
         Err(approval_response_failure(
             &params,
             ApprovalRespondErrorCode::OperationChanged,
@@ -580,7 +575,7 @@ impl Engine {
         terminal: ApprovalTerminal,
     ) -> Result<bool, EngineError> {
         let events = self.inner.store.log(session)?.event_snapshot();
-        let Some(record) = approval_records(session, &events).remove(&approval_id) else {
+        let Some(record) = approval_record(session, &events, approval_id) else {
             return Ok(false);
         };
         if !matches!(
@@ -712,10 +707,7 @@ pub(super) fn approval_response_failure(
 }
 
 pub(super) fn approval_request_revision(request: &ApprovalRequest) -> u64 {
-    serde_json::to_value(request)
-        .ok()
-        .and_then(|value| value.get("revision").and_then(Value::as_u64))
-        .expect("protocol approval request always serializes its revision")
+    request.revision()
 }
 
 pub(crate) fn approval_records(
@@ -724,66 +716,85 @@ pub(crate) fn approval_records(
 ) -> HashMap<ApprovalId, ApprovalRecord> {
     let mut records = HashMap::<ApprovalId, ApprovalRecord>::new();
     for envelope in events {
-        match &envelope.payload {
-            Event::ApprovalRequested { request } => {
-                records.insert(
-                    request.approval_id(),
-                    ApprovalRecord {
-                        session_id,
-                        request: request.clone(),
-                        status: ApprovalStatus::Pending,
-                        internal_decision: None,
-                        user_decision: None,
-                        final_decision: None,
-                    },
-                );
-            }
-            Event::ApprovalEvaluated {
-                approval_id,
-                decision,
-                ..
-            } => {
-                if let Some(record) = records.get_mut(approval_id) {
-                    record.internal_decision = Some(decision.clone());
-                }
-            }
-            Event::ApprovalEscalated { approval_id, .. } => {
-                if let Some(record) = records.get_mut(approval_id) {
-                    record.status = ApprovalStatus::Escalated;
-                }
-            }
-            Event::ApprovalUserDecisionRecorded {
-                approval_id,
-                decision,
-                ..
-            } => {
-                if let Some(record) = records.get_mut(approval_id) {
-                    record.user_decision = Some(*decision);
-                }
-            }
-            Event::ApprovalFinalized {
-                approval_id,
-                decision,
-            } => {
-                if let Some(record) = records.get_mut(approval_id) {
-                    record.status = match decision.outcome {
-                        ApprovalFinalOutcome::Approved => ApprovalStatus::Approved,
-                        ApprovalFinalOutcome::Rejected => ApprovalStatus::Rejected,
-                        ApprovalFinalOutcome::Cancelled => ApprovalStatus::Cancelled,
-                        ApprovalFinalOutcome::Expired => ApprovalStatus::Expired,
-                    };
-                    record.final_decision = Some(decision.clone());
-                }
-            }
-            Event::ApprovalCancelled { approval_id, .. } => {
-                if let Some(record) = records.get_mut(approval_id) {
-                    record.status = ApprovalStatus::Cancelled;
-                }
-            }
-            _ => {}
+        if let Event::ApprovalRequested { request } = &envelope.payload {
+            records.insert(request.approval_id(), pending_record(session_id, request));
+        } else if let Some(approval_id) = approval_event_id(&envelope.payload)
+            && let Some(record) = records.get_mut(&approval_id)
+        {
+            apply_approval_event(record, &envelope.payload);
         }
     }
     records
+}
+
+/// The one record `approval_id` folds to, without materializing the others.
+pub(crate) fn approval_record(
+    session_id: SessionId,
+    events: &[Arc<StoredEvent>],
+    approval_id: ApprovalId,
+) -> Option<ApprovalRecord> {
+    let mut record = None::<ApprovalRecord>;
+    for envelope in events {
+        match &envelope.payload {
+            Event::ApprovalRequested { request } if request.approval_id() == approval_id => {
+                record = Some(pending_record(session_id, request));
+            }
+            payload => {
+                if let Some(record) = record.as_mut()
+                    && approval_event_id(payload) == Some(approval_id)
+                {
+                    apply_approval_event(record, payload);
+                }
+            }
+        }
+    }
+    record
+}
+
+fn pending_record(session_id: SessionId, request: &ApprovalRequest) -> ApprovalRecord {
+    ApprovalRecord {
+        session_id,
+        request: request.clone(),
+        status: ApprovalStatus::Pending,
+        internal_decision: None,
+        user_decision: None,
+        final_decision: None,
+    }
+}
+
+/// The approval a post-request lifecycle event belongs to.
+fn approval_event_id(payload: &Event) -> Option<ApprovalId> {
+    match payload {
+        Event::ApprovalEvaluated { approval_id, .. }
+        | Event::ApprovalEscalated { approval_id, .. }
+        | Event::ApprovalUserDecisionRecorded { approval_id, .. }
+        | Event::ApprovalFinalized { approval_id, .. }
+        | Event::ApprovalCancelled { approval_id, .. } => Some(*approval_id),
+        _ => None,
+    }
+}
+
+fn apply_approval_event(record: &mut ApprovalRecord, payload: &Event) {
+    match payload {
+        Event::ApprovalEvaluated { decision, .. } => {
+            record.internal_decision = Some(decision.clone());
+        }
+        Event::ApprovalEscalated { .. } => record.status = ApprovalStatus::Escalated,
+        Event::ApprovalUserDecisionRecorded { decision, .. } => {
+            record.user_decision = Some(*decision);
+        }
+        Event::ApprovalFinalized { decision, .. } => {
+            record.status = match decision.outcome {
+                ApprovalFinalOutcome::Approved => ApprovalStatus::Approved,
+                ApprovalFinalOutcome::Rejected => ApprovalStatus::Rejected,
+                ApprovalFinalOutcome::Cancelled => ApprovalStatus::Cancelled,
+                ApprovalFinalOutcome::Expired => ApprovalStatus::Expired,
+            };
+            record.final_decision = Some(decision.clone());
+        }
+        Event::ApprovalCancelled { .. } => record.status = ApprovalStatus::Cancelled,
+        _ => {}
+    }
 }
 
 pub(super) fn approval_run_id(
@@ -798,38 +809,66 @@ pub(super) fn approval_run_id(
     })
 }
 
+/// Approval requests for `fingerprint` in `run_id` since the last reset: user
+/// input, or a different operation completing. Scans back from the tip and
+/// stops at the latest reset instead of folding the whole run.
 pub(crate) fn doom_loop_repetitions(
     events: &[Arc<StoredEvent>],
     run_id: RunId,
     fingerprint: &OperationFingerprint,
 ) -> u32 {
-    let mut starts = HashMap::<ToolCallId, OperationFingerprint>::new();
     let mut repetitions = 0_u32;
-    for event in events.iter().filter(|event| event.run_id == Some(run_id)) {
+    // A termination precedes nothing it depends on in reverse: its start, met
+    // later, decides whether it was a reset. Each candidate keeps the count of
+    // requests that followed it.
+    let mut candidates = HashMap::<ToolCallId, u32>::new();
+    let mut reset_at = None::<u32>;
+    for event in events
+        .iter()
+        .rev()
+        .filter(|event| event.run_id == Some(run_id))
+    {
         match &event.payload {
-            Event::UserInputSubmitted { .. } | Event::UserInputApplied { .. } => {
-                repetitions = 0;
+            Event::UserInputSubmitted { .. }
+            | Event::UserInputApplied { .. }
+            | Event::RunStarted { .. } => {
+                if matches!(
+                    event.payload,
+                    Event::UserInputSubmitted { .. } | Event::UserInputApplied { .. }
+                ) {
+                    reset_at = Some(reset_at.map_or(repetitions, |at| at.min(repetitions)));
+                }
+                break;
             }
             Event::ApprovalRequested { request }
                 if request.operation_fingerprint() == fingerprint =>
             {
                 repetitions = repetitions.saturating_add(1);
             }
-            Event::ToolCallStarted { start } => {
-                starts.insert(start.tool_call_id, start.operation_fingerprint.clone());
-            }
             Event::ToolCallTerminated { termination }
-                if termination.outcome == ToolTerminationOutcome::Completed
-                    && starts
-                        .get(&termination.tool_call_id)
-                        .is_some_and(|completed| completed != fingerprint) =>
+                if termination.outcome == ToolTerminationOutcome::Completed =>
             {
-                repetitions = 0;
+                candidates
+                    .entry(termination.tool_call_id)
+                    .or_insert(repetitions);
+            }
+            Event::ToolCallStarted { start } => {
+                if let Some(at) = candidates.remove(&start.tool_call_id)
+                    && &start.operation_fingerprint != fingerprint
+                {
+                    reset_at = Some(reset_at.map_or(at, |reset| reset.min(at)));
+                }
             }
             _ => {}
         }
+        // Older resets can only count more requests than the latest one.
+        if let Some(at) = reset_at
+            && candidates.values().all(|candidate| *candidate >= at)
+        {
+            break;
+        }
     }
-    repetitions
+    reset_at.unwrap_or(repetitions)
 }
 
 #[derive(Deserialize, Serialize)]
@@ -995,5 +1034,162 @@ mod tests {
             expired.feedback.as_deref(),
             Some("approval expired unattended")
         );
+    }
+
+    fn forward_doom_loop_repetitions(
+        events: &[Arc<StoredEvent>],
+        run_id: RunId,
+        fingerprint: &OperationFingerprint,
+    ) -> u32 {
+        let mut starts = HashMap::<ToolCallId, OperationFingerprint>::new();
+        let mut repetitions = 0_u32;
+        for event in events.iter().filter(|event| event.run_id == Some(run_id)) {
+            match &event.payload {
+                Event::UserInputSubmitted { .. } | Event::UserInputApplied { .. } => {
+                    repetitions = 0;
+                }
+                Event::ApprovalRequested { request }
+                    if request.operation_fingerprint() == fingerprint =>
+                {
+                    repetitions = repetitions.saturating_add(1);
+                }
+                Event::ToolCallStarted { start } => {
+                    starts.insert(start.tool_call_id, start.operation_fingerprint.clone());
+                }
+                Event::ToolCallTerminated { termination }
+                    if termination.outcome == ToolTerminationOutcome::Completed
+                        && starts
+                            .get(&termination.tool_call_id)
+                            .is_some_and(|completed| completed != fingerprint) =>
+                {
+                    repetitions = 0;
+                }
+                _ => {}
+            }
+        }
+        repetitions
+    }
+
+    #[test]
+    fn reverse_doom_loop_count_matches_the_forward_fold() {
+        let run = RunId::new_v7();
+        let other_run = RunId::new_v7();
+        let looping = test_record(ApprovalStatus::Pending, None).request;
+        let fingerprint = looping.operation_fingerprint().clone();
+        let other = serde_json::from_value::<OperationFingerprint>(serde_json::json!({
+            "digest": cookie_agent_protocol::Sha256Digest::of_bytes(b"other operation"),
+        }))
+        .expect("fingerprint");
+        let owner = cookie_agent_protocol::AssistantToolCallRef {
+            model_turn_seq: 1,
+            content_index: 0,
+            model_call_id: cookie_agent_protocol::ModelCallId::new("call").unwrap(),
+            provider_item_id: None,
+        };
+        // Steps: R request, S(fp) start, T completed termination of the last
+        // start, F failed termination, U user input, X another run's request.
+        let scripts = [
+            "RRRR",
+            "RRSoTRR",
+            "RRSlTRR",
+            "RRSoFRR",
+            "RRURR",
+            "RSoRSlTRToRR",
+            "RSoSlRTxRTyR",
+            "XXRXR",
+            "RSoRRUSoTRR",
+            "",
+            "SoT",
+        ];
+        for script in scripts {
+            let mut events = Vec::new();
+            let mut starts = Vec::<ToolCallId>::new();
+            let mut push = |run_id: RunId, payload: Event| {
+                let seq = events.len() as u64 + 1;
+                events.push(Arc::new(StoredEvent {
+                    engine_version: None,
+                    origin: None,
+                    session_id: SessionId::new_v7(),
+                    run_id: Some(run_id),
+                    seq,
+                    timestamp: jiff::Timestamp::from_second(i64::try_from(seq).unwrap()).unwrap(),
+                    payload,
+                }));
+            };
+            let mut chars = script.chars().peekable();
+            while let Some(step) = chars.next() {
+                match step {
+                    'R' | 'X' => push(
+                        if step == 'R' { run } else { other_run },
+                        Event::ApprovalRequested {
+                            request: looping.clone(),
+                        },
+                    ),
+                    'U' => push(run, Event::UserInputApplied { user_input_seq: 1 }),
+                    'S' => {
+                        let operation = match chars.next() {
+                            Some('l') => fingerprint.clone(),
+                            _ => other.clone(),
+                        };
+                        let id = ToolCallId::new_v7();
+                        starts.push(id);
+                        push(
+                            run,
+                            Event::ToolCallStarted {
+                                start: cookie_agent_protocol::ToolCallStart {
+                                    tool_call_id: id,
+                                    output: Default::default(),
+                                    owner: owner.clone(),
+                                    presentation: crate::runtime::tool_execution::tool_title_only(
+                                        "bash",
+                                    ),
+                                    operation_fingerprint: operation,
+                                },
+                            },
+                        );
+                    }
+                    'T' | 'F' => {
+                        // `Tx`/`Ty`/`To` pick the first, second, or latest start.
+                        let id = match chars.peek() {
+                            Some('x') => {
+                                chars.next();
+                                starts[0]
+                            }
+                            Some('y') => {
+                                chars.next();
+                                starts[1]
+                            }
+                            Some('o') => {
+                                chars.next();
+                                *starts.last().unwrap()
+                            }
+                            _ => *starts.last().unwrap(),
+                        };
+                        push(
+                            run,
+                            Event::ToolCallTerminated {
+                                termination: cookie_agent_protocol::ToolCallTermination {
+                                    tool_call_id: id,
+                                    owner: owner.clone(),
+                                    outcome: if step == 'T' {
+                                        ToolTerminationOutcome::Completed
+                                    } else {
+                                        ToolTerminationOutcome::Failed
+                                    },
+                                    result: None,
+                                    error: None,
+                                },
+                            },
+                        );
+                    }
+                    _ => unreachable!("unknown step {step}"),
+                }
+            }
+            assert_eq!(
+                doom_loop_repetitions(&events, run, &fingerprint),
+                forward_doom_loop_repetitions(&events, run, &fingerprint),
+                "script {script}"
+            );
+        }
     }
 }

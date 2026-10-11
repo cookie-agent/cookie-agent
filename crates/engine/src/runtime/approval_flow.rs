@@ -659,11 +659,7 @@ pub(super) fn approval_evaluations(request: &ApprovalRequest) -> Vec<ApprovalEva
 }
 
 pub(super) fn approval_constraints(request: &ApprovalRequest) -> ApprovalConstraints {
-    serde_json::to_value(request)
-        .ok()
-        .and_then(|value| value.get("constraints").cloned())
-        .and_then(|value| serde_json::from_value(value).ok())
-        .expect("protocol approval request serializes constraints")
+    request.constraints().clone()
 }
 
 pub(super) fn approval_request_for_operation(

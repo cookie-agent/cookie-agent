@@ -730,6 +730,14 @@ impl ApprovalRequest {
     pub fn evaluations(&self) -> &[ApprovalEvaluation] {
         &self.evaluations
     }
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+    #[must_use]
+    pub const fn constraints(&self) -> &ApprovalConstraints {
+        &self.constraints
+    }
 }
 impl<'de> Deserialize<'de> for ApprovalRequest {
     fn deserialize<D>(d: D) -> Result<Self, D::Error>
