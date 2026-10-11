@@ -88,11 +88,9 @@ fn read_error(error: std::io::Error) -> ToolError {
         std::io::ErrorKind::FileTooLarge => ToolError::resource_limit(error.to_string()),
         // Artifacts are written without fsync, so a crash can lose one a
         // durable event references: say so instead of failing obscurely.
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData => {
-            ToolError::execution(format!(
-                "output unavailable ({error}): the stored artifact is missing or damaged"
-            ))
-        }
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData => ToolError::execution(
+            format!("output unavailable ({error}): the stored artifact is missing or damaged"),
+        ),
         _ => ToolError::execution(error.to_string()),
     }
 }
