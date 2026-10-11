@@ -896,11 +896,19 @@ pub(super) fn ensure_cached_transcript_layout(
         cache.item_offsets.truncate(first_dirty);
     }
 
-    for (index, item) in state.transcript.iter().enumerate().skip(first_dirty) {
+    // Items from the first dirty one on are matched by id, not position: a
+    // row moved to the end (a folded warning) shifts every later item by
+    // one, and each of them is still exactly what it was.
+    let mut previous = cache
+        .items
+        .drain(first_dirty.min(cache.items.len())..)
+        .map(|cached| (cached.key.id, cached))
+        .collect::<HashMap<_, _>>();
+    for item in state.transcript.iter().skip(first_dirty) {
         cache
             .item_offsets
             .push(ItemAssemblyOffset::at_end(&cache.layout));
-        let reusable = cache.items.get(index).is_some_and(|cached| {
+        let reusable = previous.remove(&item.id()).filter(|cached| {
             item_layout_key_matches(
                 &cached.key,
                 state,
@@ -910,7 +918,9 @@ pub(super) fn ensure_cached_transcript_layout(
                 model_names,
             )
         });
-        if !reusable {
+        if let Some(cached) = reusable {
+            cache.items.push(cached);
+        } else {
             let item_key = item_layout_key(state, item, expanded, clock_bucket, model_names);
             let mut assistant_child_lines = Vec::new();
             let mut context = TranscriptRenderContext {
@@ -933,17 +943,14 @@ pub(super) fn ensure_cached_transcript_layout(
                 layout: chunked_item_layout(state, item, &mut context),
                 child_lines: assistant_child_lines,
             };
-            if index < cache.items.len() {
-                cache.items[index] = cached;
-            } else {
-                cache.items.push(cached);
-            }
+            cache.items.push(cached);
             #[cfg(test)]
             {
                 cache.item_layout_passes = cache.item_layout_passes.wrapping_add(1);
             }
         }
-        append_chunked_item(&mut cache.layout, &cache.items[index].layout);
+        let cached = cache.items.last().expect("item pushed");
+        append_chunked_item(&mut cache.layout, &cached.layout);
         #[cfg(test)]
         {
             cache.item_assembly_passes = cache.item_assembly_passes.wrapping_add(1);

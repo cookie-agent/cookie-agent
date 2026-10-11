@@ -1184,3 +1184,61 @@ fn streaming_reply_rewraps_only_its_open_block() {
     assert_eq!(cache.layout.lines.to_vec(), fresh.layout.lines.to_vec());
     assert!(snapshot_lines(&cache.layout.lines.to_vec()).contains("open paragraph"));
 }
+
+#[test]
+fn moving_a_row_to_the_end_relayouts_only_that_row() {
+    let mut state = crate::state::SessionState::default();
+    for id in 1..=5 {
+        let mut item = if id == 2 {
+            TranscriptItem::internal("repeated warning")
+        } else {
+            TranscriptItem::user(format!("message {id}"))
+        };
+        match &mut item {
+            TranscriptItem::User { id: item_id, .. }
+            | TranscriptItem::Event { id: item_id, .. } => *item_id = id,
+            _ => unreachable!("fixture items"),
+        }
+        state.transcript.push(item);
+    }
+    let session = SessionId::new_v7();
+    let theme = Theme::default();
+    let highlighter = crate::markdown::SyntectHighlighter::default();
+    let layout = |cache: &mut LayoutCache, state: &crate::state::SessionState| {
+        ensure_cached_transcript_layout(
+            cache,
+            session,
+            state,
+            None,
+            None,
+            60,
+            &theme,
+            &highlighter,
+            crate::state::EventLevel::Debug,
+            0,
+            &crate::state::ModelDisplayNames::default(),
+        );
+    };
+    let mut cache = LayoutCache::default();
+    layout(&mut cache, &state);
+    let passes = cache.item_layout_passes;
+
+    // Folding a repeat moves the row to the end and bumps it, as the
+    // reducer does.
+    state.transcript[1..].rotate_left(1);
+    if let TranscriptItem::Event {
+        version, repeat, ..
+    } = state.transcript.last_mut().expect("moved row")
+    {
+        *version += 1;
+        *repeat += 1;
+    }
+    layout(&mut cache, &state);
+    assert_eq!(cache.item_layout_passes, passes + 1);
+
+    let mut fresh = LayoutCache::default();
+    layout(&mut fresh, &state);
+    assert_eq!(cache.layout.lines.to_vec(), fresh.layout.lines.to_vec());
+    assert_eq!(cache.layout.regions, fresh.layout.regions);
+    assert_eq!(cache.layout.user_regions, fresh.layout.user_regions);
+}
