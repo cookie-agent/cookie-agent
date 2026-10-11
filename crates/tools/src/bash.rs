@@ -879,7 +879,10 @@ fn signal_termination(status: &std::process::ExitStatus) -> String {
     #[cfg(unix)]
     let signal = std::os::unix::process::ExitStatusExt::signal(status);
     #[cfg(not(unix))]
-    let signal: Option<i32> = None;
+    let signal: Option<i32> = {
+        let _ = status;
+        None
+    };
     signal.map_or_else(
         || "terminated by a signal".to_owned(),
         |signal| format!("terminated by signal {signal}"),
