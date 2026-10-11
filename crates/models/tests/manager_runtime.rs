@@ -8,7 +8,7 @@ use std::{
 };
 
 use cookie_agent_identity::{
-    AuthFieldName, AuthMethodId, CatalogRevision, ProviderId, ProviderModelId,
+    AuthFieldName, AuthMethodId, CatalogRevision, ModelKey, ProviderId, ProviderModelId,
     ProviderSetupRecipeId, RecipeCompilerVersion, SetupFieldId,
 };
 use cookie_agent_models::{
@@ -1350,6 +1350,98 @@ fn same_id_replays_and_secret_rotation_preserves_safe_model_revision_and_snapsho
         &old_handle,
         old_runtime.resolve(&selection).unwrap().model()
     ));
+}
+
+/// `catalog()` plus a second OpenAI-family provider, `second`.
+fn two_provider_catalog() -> Arc<CatalogSnapshot> {
+    let mut snapshot = (*catalog()).clone();
+    let providers = Arc::make_mut(&mut snapshot.providers);
+    let mut entry = providers[&ProviderId::new("openai").unwrap()].clone();
+    let second = ProviderId::new("second").unwrap();
+    entry.id = second.clone();
+    let record = entry.record.as_mut().unwrap();
+    record.id = second.clone();
+    record.name = "Second".to_owned();
+    providers.insert(second, entry);
+    Arc::new(snapshot)
+}
+
+#[test]
+fn recompiles_reuse_only_providers_whose_inputs_are_unchanged() {
+    let temporary = TempDir::new().unwrap();
+    let catalog = two_provider_catalog();
+    let manager =
+        ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
+    let openai: ModelKey = "openai/gpt-5-mini".parse().unwrap();
+    let second: ModelKey = "second/gpt-5-mini".parse().unwrap();
+    let before = manager.current();
+
+    // Connecting openai recompiles openai only.
+    manager
+        .connect(connect_request("connect", "one", &catalog), |_, _| Ok(()))
+        .unwrap();
+    let connected = manager.current();
+    assert!(!Arc::ptr_eq(
+        &before.models()[&openai],
+        &connected.models()[&openai]
+    ));
+    assert!(Arc::ptr_eq(
+        &before.models()[&second],
+        &connected.models()[&second]
+    ));
+    assert_eq!(
+        connected.model(&openai).unwrap().model.status,
+        cookie_agent_models::compiler::CompiledModelStatus::Available
+    );
+    assert_eq!(
+        connected.model(&second).unwrap().model.status,
+        cookie_agent_models::compiler::CompiledModelStatus::CredentialsUnavailable
+    );
+
+    // A fresh but equal authored map and catalog snapshot reuse everything.
+    let (unchanged, ()) = manager
+        .reload_inputs(BTreeMap::new(), two_provider_catalog(), |_| Ok(()))
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        &connected.models()[&openai],
+        &unchanged.models()[&openai]
+    ));
+    assert!(Arc::ptr_eq(
+        &connected.models()[&second],
+        &unchanged.models()[&second]
+    ));
+    assert_eq!(unchanged.model_revision(), connected.model_revision());
+
+    // A changed catalog entry recompiles that provider even under the same
+    // revision label.
+    let mut renamed = (*two_provider_catalog()).clone();
+    let entry = Arc::make_mut(&mut renamed.providers)
+        .get_mut(&ProviderId::new("second").unwrap())
+        .unwrap();
+    entry
+        .record
+        .as_mut()
+        .unwrap()
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .name = "Renamed".to_owned();
+    let (renamed, ()) = manager
+        .reload_inputs(BTreeMap::new(), Arc::new(renamed), |_| Ok(()))
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        &unchanged.models()[&openai],
+        &renamed.models()[&openai]
+    ));
+    assert!(!Arc::ptr_eq(
+        &unchanged.models()[&second],
+        &renamed.models()[&second]
+    ));
+    assert_eq!(renamed.models()[&second].model.display_name, "Renamed");
 }
 
 #[test]

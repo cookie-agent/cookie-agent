@@ -721,7 +721,18 @@ pub struct CompiledModelRuntime {
     model_revision: ModelRevision,
     runtime_revision: RuntimeRevision,
     providers: Arc<Vec<CompiledProviderState>>,
-    models: Arc<BTreeMap<ModelKey, CompiledRuntimeModel>>,
+    models: Arc<BTreeMap<ModelKey, Arc<CompiledRuntimeModel>>>,
+    /// Each catalog-backed provider's compiled output, kept so the next
+    /// compile can reuse a provider whose inputs did not change.
+    managed: Arc<BTreeMap<ProviderId, Arc<CompiledManagedProvider>>>,
+}
+
+/// One catalog-backed provider's compiled row and models. It is a pure
+/// function of the catalog revision and entry, the provider's authored
+/// definition and stored connection, and the global headers.
+struct CompiledManagedProvider {
+    state: CompiledProviderState,
+    models: Vec<Arc<CompiledRuntimeModel>>,
 }
 
 impl CompiledModelRuntime {
@@ -761,13 +772,13 @@ impl CompiledModelRuntime {
     }
 
     #[must_use]
-    pub fn models(&self) -> &BTreeMap<ModelKey, CompiledRuntimeModel> {
+    pub fn models(&self) -> &BTreeMap<ModelKey, Arc<CompiledRuntimeModel>> {
         &self.models
     }
 
     #[must_use]
     pub fn model(&self, key: &ModelKey) -> Option<&CompiledRuntimeModel> {
-        self.models.get(key)
+        self.models.get(key).map(AsRef::as_ref)
     }
 
     pub fn resolve(
@@ -786,7 +797,7 @@ impl CompiledModelRuntime {
             .models
             .values()
             .filter(|model| model.model.status == CompiledModelStatus::Available)
-            .map(CompiledRuntimeModel::blueprint)
+            .map(|model| model.blueprint())
             .collect::<Result<Vec<_>, _>>()?;
         blueprints.sort_by(|left, right| left.selection.model.cmp(&right.selection.model));
         Ok(ModelSnapshotPayloadV1 {
@@ -1076,6 +1087,7 @@ impl ModelManager {
     ) -> Result<Self, ModelManagerError> {
         let store_snapshot = store.load()?;
         let initial = Arc::new(compile_runtime(
+            None,
             Arc::new(authored),
             Arc::new(global_headers),
             catalog,
@@ -1142,6 +1154,7 @@ impl ModelManager {
             }
             ConnectProposal::Proposed(proposal) => {
                 let candidate = Arc::new(compile_runtime(
+                    Some(&current),
                     Arc::clone(&current.authored),
                     Arc::clone(&current.global_headers),
                     Arc::clone(&current.catalog),
@@ -1205,6 +1218,7 @@ impl ModelManager {
             }
             DisconnectProposal::Proposed(proposal) => {
                 let candidate = Arc::new(compile_runtime(
+                    Some(&current),
                     Arc::clone(&current.authored),
                     Arc::clone(&current.global_headers),
                     Arc::clone(&current.catalog),
@@ -1239,6 +1253,7 @@ impl ModelManager {
             return Ok(None);
         };
         let candidate = Arc::new(compile_runtime(
+            Some(&current),
             Arc::clone(&current.authored),
             Arc::clone(&current.global_headers),
             Arc::clone(&current.catalog),
@@ -1262,6 +1277,7 @@ impl ModelManager {
         let current = self.current();
         let store = self.store.load()?;
         let candidate = Arc::new(compile_runtime(
+            Some(&current),
             Arc::new(authored),
             Arc::clone(&current.global_headers),
             catalog,
@@ -1313,7 +1329,11 @@ fn validate_unresolved_managed_cache(
     })
 }
 
+/// Compiles a complete runtime. A catalog-backed provider whose inputs are
+/// unchanged since `previous` reuses that runtime's compiled models (and their
+/// executables) instead of compiling them again.
 fn compile_runtime(
+    previous: Option<&CompiledModelRuntime>,
     authored: Arc<BTreeMap<ProviderId, ProviderDefinition>>,
     global_headers: Arc<BTreeMap<crate::HeaderName, crate::SafeStaticHeaderValue>>,
     catalog: Arc<CatalogSnapshot>,
@@ -1330,8 +1350,14 @@ fn compile_runtime(
     );
     provider_ids.extend(store.providers().keys().cloned());
 
+    let reusable = previous.filter(|previous| {
+        previous.catalog.revision == catalog.revision
+            && (Arc::ptr_eq(&previous.global_headers, &global_headers)
+                || previous.global_headers == global_headers)
+    });
     let mut providers = Vec::new();
     let mut models = BTreeMap::new();
+    let mut managed = BTreeMap::new();
     for provider_id in provider_ids {
         // Authored custom providers take precedence over catalog and
         // provider-store entries for the same ID.
@@ -1341,138 +1367,35 @@ fn compile_runtime(
         ) {
             continue;
         }
-        let authored_managed = match authored.get(&provider_id) {
-            Some(ProviderDefinition::ModelsDev(provider)) => Some(provider),
-            _ => None,
+        let reused = reusable.and_then(|previous| {
+            previous
+                .managed
+                .get(&provider_id)
+                .filter(|_| {
+                    managed_inputs_unchanged(previous, &provider_id, &authored, &catalog, &store)
+                })
+                .cloned()
+        });
+        let compiled = match reused {
+            Some(compiled) => compiled,
+            None => Arc::new(compile_managed_provider(
+                &provider_id,
+                &authored,
+                &global_headers,
+                &catalog,
+                &store,
+            )?),
         };
-        let stored = store.provider(&provider_id);
-        let entry = catalog.provider(&provider_id);
-        if let Some(provider) = authored_managed
-            && provider.cache.is_some()
-        {
-            if let Some(record) = entry.and_then(|entry| entry.record.as_ref()) {
-                let family =
-                    registry
-                        .classify(record)
-                        .ok_or_else(|| ModelManagerError::ProviderCache {
-                            provider: provider_id.clone(),
-                            reason: "cache configuration requires a supported provider family"
-                                .into(),
-                        })?;
-                validate_managed_cache(record, Some(provider), family)?;
-            } else {
-                validate_unresolved_managed_cache(&provider_id, provider, stored)?;
+        for model in &compiled.models {
+            if models
+                .insert(model.key.clone(), Arc::clone(model))
+                .is_some()
+            {
+                return Err(ModelManagerError::DuplicateModel(model.key.clone()));
             }
         }
-        let presence = if entry.is_some() {
-            ProviderPresence::Current
-        } else {
-            ProviderPresence::Removed
-        };
-        let mut state = CompiledProviderState {
-            id: provider_id.clone(),
-            display_name: entry
-                .and_then(|entry| entry.record.as_ref())
-                .map_or_else(|| provider_id.to_string(), |record| record.name.clone()),
-            presence,
-            support_reason: None,
-            retained_family_match: None,
-            authored: authored_managed.is_some(),
-            stored: stored.is_some(),
-            effective_auth: EffectiveCredentialSource::Unavailable,
-            durable_connection: stored.map(StoredManagedConnection::descriptor),
-            unsupported_models: Vec::new(),
-        };
-        let Some(record) = entry.and_then(|entry| entry.record.as_ref()) else {
-            if let Some(reason) = entry.and_then(|entry| entry.quarantine.as_ref()) {
-                state.support_reason = Some(reason.code().to_owned());
-            } else {
-                let retained_match = stored.map_or(
-                    RetainedFamilyMatch::RemovedWithoutRetainedFamilyMatch,
-                    |connection| retained_family_match(&provider_id, connection),
-                );
-                state.retained_family_match = Some(retained_match);
-                state.support_reason = retained_match.reason().map(str::to_owned);
-                if retained_match == RetainedFamilyMatch::SupportedRemoved {
-                    state.effective_auth = EffectiveCredentialSource::ProviderStore;
-                }
-            }
-            providers.push(state);
-            continue;
-        };
-        let Some(family) = registry.classify(record) else {
-            state.support_reason = Some("no_known_protocol_family".to_owned());
-            providers.push(state);
-            continue;
-        };
-        let effective = effective_managed(&provider_id, record, family, authored_managed, stored)?;
-        state.effective_auth = effective.credential_source;
-        let compiled = compiler.compile_managed_with_headers(
-            catalog.revision.as_str(),
-            record,
-            Some(&effective.provider),
-            &global_headers,
-        );
-        let compiled = match compiled {
-            Ok(compiled) => compiled,
-            Err(DynamicCompileError::UnsupportedProvider) => {
-                state.support_reason = Some("no_known_protocol_family".to_owned());
-                providers.push(state);
-                continue;
-            }
-            Err(error) if authored_managed.is_none() && stored.is_none() => {
-                state.support_reason = Some(error.to_string());
-                providers.push(state);
-                continue;
-            }
-            Err(error) => return Err(ModelManagerError::DynamicCompile(error)),
-        };
-        state.unsupported_models = compiled.unsupported_models;
-        for (model_id, model) in compiled.models {
-            let key = ModelKey::new(provider_id.clone(), model_id)
-                .map_err(|_| ModelManagerError::RuntimeCompileFailed)?;
-            let model = with_effective_status(model, effective.credential_source);
-            let model_credentials = if model.status == CompiledModelStatus::Available {
-                mapped_credentials(&effective.credentials, &model.auth)?
-            } else {
-                ExecutableCredentialMaterial {
-                    method: model.auth.method.clone(),
-                    values: BTreeMap::new(),
-                }
-            };
-            let (executable, variant_executables) =
-                compile_behaviors(&provider_id, &model, &model.headers, &model_credentials)?;
-            let model_recipe = family_registry()
-                .by_npm(&model.effective_npm)
-                .ok_or(ModelManagerError::RuntimeCompileFailed)?;
-            let runtime_model = CompiledRuntimeModel {
-                key: key.clone(),
-                source: RuntimeProviderSource::Managed {
-                    family_id: ProviderRecipeId::new(model.family_id.clone())
-                        .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
-                    source_record_digest: effective.source_record_digest.clone(),
-                    recipe_fingerprint: retained_recipe_fingerprint(
-                        model_recipe,
-                        &model.auth.method,
-                    )?,
-                    package_claim: model.effective_npm.clone(),
-                },
-                config_override_fingerprint: effective.config_fingerprint.clone(),
-                setup_values: effective.setup_values.clone(),
-                setup_fingerprint: effective.setup_fingerprint.clone(),
-                setup_recipe: ProviderSetupRecipeId::new("family-derived-setup-v1")
-                    .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
-                credential_source: effective.credential_source,
-                static_headers: model.headers.clone(),
-                model,
-                executable,
-                variant_executables,
-            };
-            if models.insert(key.clone(), runtime_model).is_some() {
-                return Err(ModelManagerError::DuplicateModel(key));
-            }
-        }
-        providers.push(state);
+        providers.push(compiled.state.clone());
+        managed.insert(provider_id, compiled);
     }
 
     for (provider_id, definition) in authored.iter() {
@@ -1524,7 +1447,10 @@ fn compile_runtime(
                 executable,
                 variant_executables,
             };
-            if models.insert(key.clone(), runtime_model).is_some() {
+            if models
+                .insert(key.clone(), Arc::new(runtime_model))
+                .is_some()
+            {
                 return Err(ModelManagerError::DuplicateModel(key));
             }
         }
@@ -1567,7 +1493,168 @@ fn compile_runtime(
         runtime_revision,
         providers: Arc::new(providers),
         models: Arc::new(models),
+        managed: Arc::new(managed),
     })
+}
+
+/// Whether `provider_id`'s compile inputs, other than the catalog revision and
+/// global headers the caller already compared, match `previous`.
+fn managed_inputs_unchanged(
+    previous: &CompiledModelRuntime,
+    provider_id: &ProviderId,
+    authored: &Arc<BTreeMap<ProviderId, ProviderDefinition>>,
+    catalog: &CatalogSnapshot,
+    store: &ProviderStoreSnapshot,
+) -> bool {
+    // Authored definitions have no equality; an unchanged authored map is
+    // the same allocation, and most providers have no definition at all.
+    let authored_unchanged = match (
+        previous.authored.get(provider_id),
+        authored.get(provider_id),
+    ) {
+        (None, None) => true,
+        (Some(_), Some(_)) => Arc::ptr_eq(&previous.authored, authored),
+        _ => false,
+    };
+    authored_unchanged
+        && previous.store.provider(provider_id) == store.provider(provider_id)
+        && (Arc::ptr_eq(&previous.catalog.providers, &catalog.providers)
+            || previous.catalog.provider(provider_id) == catalog.provider(provider_id))
+}
+
+/// Compiles one catalog-backed (or removed, store-only) provider.
+fn compile_managed_provider(
+    provider_id: &ProviderId,
+    authored: &BTreeMap<ProviderId, ProviderDefinition>,
+    global_headers: &BTreeMap<crate::HeaderName, crate::SafeStaticHeaderValue>,
+    catalog: &CatalogSnapshot,
+    store: &ProviderStoreSnapshot,
+) -> Result<CompiledManagedProvider, ModelManagerError> {
+    let registry = family_registry();
+    let compiler = DynamicCompiler::family_registry();
+    let mut models = Vec::new();
+    let authored_managed = match authored.get(provider_id) {
+        Some(ProviderDefinition::ModelsDev(provider)) => Some(provider),
+        _ => None,
+    };
+    let stored = store.provider(provider_id);
+    let entry = catalog.provider(provider_id);
+    if let Some(provider) = authored_managed
+        && provider.cache.is_some()
+    {
+        if let Some(record) = entry.and_then(|entry| entry.record.as_ref()) {
+            let family =
+                registry
+                    .classify(record)
+                    .ok_or_else(|| ModelManagerError::ProviderCache {
+                        provider: provider_id.clone(),
+                        reason: "cache configuration requires a supported provider family".into(),
+                    })?;
+            validate_managed_cache(record, Some(provider), family)?;
+        } else {
+            validate_unresolved_managed_cache(provider_id, provider, stored)?;
+        }
+    }
+    let presence = if entry.is_some() {
+        ProviderPresence::Current
+    } else {
+        ProviderPresence::Removed
+    };
+    let mut state = CompiledProviderState {
+        id: provider_id.clone(),
+        display_name: entry
+            .and_then(|entry| entry.record.as_ref())
+            .map_or_else(|| provider_id.to_string(), |record| record.name.clone()),
+        presence,
+        support_reason: None,
+        retained_family_match: None,
+        authored: authored_managed.is_some(),
+        stored: stored.is_some(),
+        effective_auth: EffectiveCredentialSource::Unavailable,
+        durable_connection: stored.map(StoredManagedConnection::descriptor),
+        unsupported_models: Vec::new(),
+    };
+    let Some(record) = entry.and_then(|entry| entry.record.as_ref()) else {
+        if let Some(reason) = entry.and_then(|entry| entry.quarantine.as_ref()) {
+            state.support_reason = Some(reason.code().to_owned());
+        } else {
+            let retained_match = stored.map_or(
+                RetainedFamilyMatch::RemovedWithoutRetainedFamilyMatch,
+                |connection| retained_family_match(provider_id, connection),
+            );
+            state.retained_family_match = Some(retained_match);
+            state.support_reason = retained_match.reason().map(str::to_owned);
+            if retained_match == RetainedFamilyMatch::SupportedRemoved {
+                state.effective_auth = EffectiveCredentialSource::ProviderStore;
+            }
+        }
+        return Ok(CompiledManagedProvider { state, models });
+    };
+    let Some(family) = registry.classify(record) else {
+        state.support_reason = Some("no_known_protocol_family".to_owned());
+        return Ok(CompiledManagedProvider { state, models });
+    };
+    let effective = effective_managed(provider_id, record, family, authored_managed, stored)?;
+    state.effective_auth = effective.credential_source;
+    let compiled = compiler.compile_managed_with_headers(
+        catalog.revision.as_str(),
+        record,
+        Some(&effective.provider),
+        global_headers,
+    );
+    let compiled = match compiled {
+        Ok(compiled) => compiled,
+        Err(DynamicCompileError::UnsupportedProvider) => {
+            state.support_reason = Some("no_known_protocol_family".to_owned());
+            return Ok(CompiledManagedProvider { state, models });
+        }
+        Err(error) if authored_managed.is_none() && stored.is_none() => {
+            state.support_reason = Some(error.to_string());
+            return Ok(CompiledManagedProvider { state, models });
+        }
+        Err(error) => return Err(ModelManagerError::DynamicCompile(error)),
+    };
+    state.unsupported_models = compiled.unsupported_models;
+    for (model_id, model) in compiled.models {
+        let key = ModelKey::new(provider_id.clone(), model_id)
+            .map_err(|_| ModelManagerError::RuntimeCompileFailed)?;
+        let model = with_effective_status(model, effective.credential_source);
+        let model_credentials = if model.status == CompiledModelStatus::Available {
+            mapped_credentials(&effective.credentials, &model.auth)?
+        } else {
+            ExecutableCredentialMaterial {
+                method: model.auth.method.clone(),
+                values: BTreeMap::new(),
+            }
+        };
+        let (executable, variant_executables) =
+            compile_behaviors(provider_id, &model, &model.headers, &model_credentials)?;
+        let model_recipe = family_registry()
+            .by_npm(&model.effective_npm)
+            .ok_or(ModelManagerError::RuntimeCompileFailed)?;
+        let runtime_model = CompiledRuntimeModel {
+            key: key.clone(),
+            source: RuntimeProviderSource::Managed {
+                family_id: ProviderRecipeId::new(model.family_id.clone())
+                    .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
+                source_record_digest: effective.source_record_digest.clone(),
+                recipe_fingerprint: retained_recipe_fingerprint(model_recipe, &model.auth.method)?,
+                package_claim: model.effective_npm.clone(),
+            },
+            config_override_fingerprint: effective.config_fingerprint.clone(),
+            setup_values: effective.setup_values.clone(),
+            setup_fingerprint: effective.setup_fingerprint.clone(),
+            setup_recipe: ProviderSetupRecipeId::new("family-derived-setup-v1")
+                .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
+            credential_source: effective.credential_source,
+            static_headers: model.headers.clone(),
+            model,
+            executable,
+            variant_executables,
+        };
+        models.push(Arc::new(runtime_model));
+    }
+    Ok(CompiledManagedProvider { state, models })
 }
 
 struct EffectiveManaged {

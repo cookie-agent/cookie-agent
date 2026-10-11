@@ -44,7 +44,7 @@ pub(crate) fn build_runtime_snapshot(
         .models()
         .values()
         .filter(|model| model.model.status == CompiledModelStatus::Available)
-        .map(model_descriptor)
+        .map(|model| model_descriptor(model))
         .collect::<Result<Vec<_>, _>>()?;
     let agent_descriptors = agents
         .descriptors()
