@@ -4,7 +4,7 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    ClientRunId, EventPayload, RunStartParams, SessionStatus, Sha256Digest, ToolTerminationOutcome,
+    ClientRunId, EventPayload, RunStartParams, SessionStatus, ToolTerminationOutcome,
 };
 
 use crate::EngineHistoryView;
@@ -492,23 +492,7 @@ async fn cancellation_after_successful_finalization_is_reconciled_at_terminal_co
     );
     let retained = result.retained_output.as_ref().unwrap();
     assert!(retained.incomplete);
-    assert_eq!(
-        retained.streams[0].sha256,
-        Sha256Digest::of_bytes(b"race completed")
-    );
-    assert_eq!(
-        fixture
-            .engine
-            .read_artifact(
-                session.session_id,
-                &format!("artifact://{}", retained.streams[0].sha256),
-                0,
-                10
-            )
-            .unwrap()
-            .content,
-        "race completed"
-    );
+    assert_eq!(retained.streams[0].sha256, None);
     let policy = frozen_root_policy(&fixture, &selection);
     let context = crate::model_history::assemble_model_context(
         &events,
@@ -664,28 +648,30 @@ async fn plugin_named_output_contract_reaches_capture_manifest_and_model_history
     assert_eq!(retained.streams[2].byte_length, 0);
     let manifest_id = retained
         .reference
+        .as_ref()
+        .unwrap()
         .uri
         .strip_prefix("artifact://sha256/")
         .unwrap();
-    for (name, expected) in [
-        ("results", full.as_str()),
-        ("diagnostics", "warning\n"),
-        ("empty", ""),
-    ] {
-        assert_eq!(
-            fixture
-                .engine
-                .read_artifact(
-                    session.session_id,
-                    &format!("artifact://{manifest_id}/{name}"),
-                    0,
-                    1
-                )
-                .unwrap()
-                .content,
-            expected
-        );
-    }
+    assert_eq!(
+        fixture
+            .engine
+            .read_artifact(
+                session.session_id,
+                &format!("artifact://{manifest_id}/results"),
+                0,
+                1
+            )
+            .unwrap()
+            .content,
+        full
+    );
+    // Streams that fit their preview are in the output, not in artifacts.
+    assert!(
+        retained.streams[1..]
+            .iter()
+            .all(|stream| stream.reference.is_none())
+    );
     let requests = with_watchdog("captured fixture completion", captured)
         .await
         .unwrap();
@@ -1072,6 +1058,8 @@ async fn named_output_streams_publish_readable_manifests_without_display_leaking
         );
         let manifest = retained
             .reference
+            .as_ref()
+            .unwrap()
             .uri
             .strip_prefix("artifact://sha256/")
             .unwrap();
@@ -1088,31 +1076,11 @@ async fn named_output_streams_publish_readable_manifests_without_display_leaking
                 .content,
             "x".repeat(128 * 1024)
         );
-        assert_eq!(
-            fixture
-                .engine
-                .read_artifact(
-                    session.session_id,
-                    &format!("artifact://{manifest}/diagnostics"),
-                    0,
-                    1
-                )
-                .unwrap()
-                .content,
-            "diagnostic\n"
-        );
+        assert!(result.output.contains("[diagnostics]\ndiagnostic\n"));
         assert!(
-            fixture
-                .engine
-                .read_artifact(
-                    session.session_id,
-                    &format!("artifact://{manifest}/empty"),
-                    0,
-                    1
-                )
-                .unwrap()
-                .content
-                .is_empty()
+            retained.streams[1..]
+                .iter()
+                .all(|stream| stream.reference.is_none())
         );
         assert!(
             result

@@ -824,7 +824,7 @@ fn background_job_messages_carry_validated_retained_output() {
     let reference = |digest: char| ArtifactReference {
         uri: format!("artifact://sha256/{}", digest.to_string().repeat(64)),
     };
-    let mut payload = EventPayload::ProducerMessageAccepted {
+    let payload = EventPayload::ProducerMessageAccepted {
         message_id: ProducerMessageId::new_v7(),
         producer_owner: ProducerOwner::Tool { tool_call_id },
         mode: ProducerDeliveryMode::Steer,
@@ -834,11 +834,11 @@ fn background_job_messages_carry_validated_retained_output() {
         reminder: None,
         agent_hop: None,
         retained_output: Some(RetainedToolOutput {
-            reference: reference('a'),
+            reference: Some(reference('a')),
             streams: vec![RetainedToolStream {
                 name: Some("stdout".into()),
-                reference: reference('b'),
-                sha256: Sha256Digest::new("b".repeat(64)).unwrap(),
+                reference: Some(reference('b')),
+                sha256: Some(Sha256Digest::new("b".repeat(64)).unwrap()),
                 byte_length: 5,
                 line_count: 1,
                 truncated: false,
@@ -855,15 +855,32 @@ fn background_job_messages_carry_validated_retained_output() {
         wire["producer_owner"],
         json!({"type": "tool", "tool_call_id": tool_call_id})
     );
-    if let EventPayload::ProducerMessageAccepted {
-        retained_output: Some(retained),
-        ..
-    } = &mut payload
-    {
-        retained.streams.clear();
-    }
+    let retained = |change: fn(&mut RetainedToolOutput)| {
+        let mut payload = payload.clone();
+        if let EventPayload::ProducerMessageAccepted {
+            retained_output: Some(retained),
+            ..
+        } = &mut payload
+        {
+            change(retained);
+        }
+        stored(payload, None).validate()
+    };
+    // Output that fit inline has no artifacts at all.
+    assert!(
+        retained(|retained| {
+            retained.reference = None;
+            retained.streams[0].reference = None;
+            retained.streams[0].sha256 = None;
+        })
+        .is_ok()
+    );
     assert_eq!(
-        stored(payload, None).validate(),
+        retained(|retained| retained.streams[0].sha256 = None),
+        Err(EventSchemaError::InvalidArtifactReference)
+    );
+    assert_eq!(
+        retained(|retained| retained.streams.clear()),
         Err(EventSchemaError::ToolOutputTooLarge)
     );
 }

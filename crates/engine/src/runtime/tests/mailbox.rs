@@ -401,16 +401,14 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
                 let result = termination.result.as_ref().expect("incomplete output");
                 let retained = result.retained_output.as_ref().unwrap();
                 assert!(retained.incomplete);
-                let page = fixture
-                    .engine
-                    .read_artifact(
-                        session.session_id,
-                        &format!("artifact://{}", retained.streams[0].sha256),
-                        0,
-                        10,
-                    )
-                    .unwrap();
-                assert_eq!(page.content, "authoritative start\nauthoritative cleanup\n");
+                assert!(
+                    result
+                        .output
+                        .contains("authoritative start\nauthoritative cleanup\n"),
+                    "{}",
+                    result.output
+                );
+                assert_eq!(retained.streams[0].reference, None);
                 assert!(!result.output.contains("before cancellation"));
                 assert_eq!(
                     termination.error.as_ref().unwrap().message.as_str(),
@@ -563,19 +561,14 @@ async fn cancellation_deadline_bounds_a_wedged_tool_without_hanging() {
         .expect("incomplete output survives display discard");
     let retained = result.retained_output.as_ref().unwrap();
     assert!(retained.incomplete);
-    assert_eq!(
-        fixture
-            .engine
-            .read_artifact(
-                session_id,
-                &format!("artifact://{}", retained.streams[0].sha256),
-                0,
-                10
-            )
-            .unwrap()
-            .content,
-        "authoritative start\nauthoritative cleanup\n"
+    assert!(
+        result
+            .output
+            .contains("authoritative start\nauthoritative cleanup\n"),
+        "{}",
+        result.output
     );
+    assert_eq!(retained.streams[0].reference, None);
     let error_message = termination
         .error
         .expect("termination error")

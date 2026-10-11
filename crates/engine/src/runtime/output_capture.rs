@@ -36,9 +36,12 @@ const FLUSH_BYTES: usize = if cfg!(test) { 1 } else { 1024 * 1024 };
 #[derive(Debug)]
 struct Channel {
     name: Option<String>,
+    /// Name of the spill file, created only once the stream outgrows its
+    /// preview: output the preview holds whole needs no artifact.
     temporary: String,
-    file: File,
-    /// Accepted bytes not yet written to `file`.
+    file: Option<File>,
+    /// Accepted bytes not yet written to `file`; empty while the stream fits
+    /// its preview.
     pending: Vec<u8>,
     /// Bytes written to `file`; `hash` covers exactly these.
     written: u64,
@@ -87,8 +90,10 @@ impl Drop for Capture {
             let Channel {
                 temporary, file, ..
             } = channel;
-            drop(file);
-            self.store.discard_capture(self.session, &temporary);
+            if let Some(file) = file {
+                drop(file);
+                self.store.discard_capture(self.session, &temporary);
+            }
         }
     }
 }
@@ -131,7 +136,7 @@ impl OutputCapture {
         declaration: ToolOutputDeclaration,
         limits: PreviewLimits,
     ) -> Result<Self, ToolError> {
-        blocking_io::run(move || Self::create(store, session, declaration, limits)).await?
+        Self::create(store, session, declaration, limits)
     }
 
     fn create(
@@ -164,16 +169,10 @@ impl OutputCapture {
             let mut state = capture.0.state.lock().unwrap_or_else(|p| p.into_inner());
             let id = uuid::Uuid::now_v7();
             for (index, name) in names.into_iter().enumerate() {
-                let temporary = format!(".capture-{id}-output{index}.tmp");
-                let file = capture
-                    .0
-                    .store
-                    .create_capture_file(session, &temporary)
-                    .map_err(|e| ToolError::execution(e.to_string()))?;
                 state.channels.push(Channel {
                     name,
-                    temporary,
-                    file,
+                    temporary: format!(".capture-{id}-output{index}.tmp"),
+                    file: None,
                     pending: Vec::new(),
                     written: 0,
                     hash: Sha256::new(),
@@ -298,7 +297,9 @@ impl OutputCapture {
     fn append_channel(&self, channel: &mut Channel, text: &str) {
         let limits = self.0.limits;
         let preview_lines = usize::try_from(channel.newlines).unwrap_or(usize::MAX);
-        if channel.preview.len() as u64 == channel.bytes && preview_lines < limits.max_lines {
+        let was_whole = channel.preview.len() as u64 == channel.bytes;
+        let previewed = channel.preview.len();
+        if was_whole && preview_lines < limits.max_lines {
             let mut lines = preview_lines;
             let room = limits.max_bytes.saturating_sub(channel.preview.len());
             let mut end = 0;
@@ -321,13 +322,22 @@ impl OutputCapture {
             }
             channel.tail.drain(..start);
         }
-        channel.pending.extend_from_slice(text.as_bytes());
         channel.bytes = channel.bytes.saturating_add(text.len() as u64);
         channel.newlines = channel
             .newlines
             .saturating_add(text.bytes().filter(|byte| *byte == b'\n').count() as u64);
         if !text.is_empty() {
             channel.ends_with_newline = text.ends_with('\n');
+        }
+        if channel.preview.len() as u64 != channel.bytes {
+            if was_whole {
+                // The first byte past the preview: from here on the stream
+                // needs an artifact holding all of it, from its first byte.
+                channel
+                    .pending
+                    .extend_from_slice(&channel.preview.as_bytes()[..previewed]);
+            }
+            channel.pending.extend_from_slice(text.as_bytes());
         }
     }
 
@@ -358,9 +368,18 @@ impl OutputCapture {
             .io_test_hook()
             .run("capture_write", &channel.temporary)
             .map_err(|e| ToolError::execution(e.to_string()))?;
-        if let Err(error) = channel.file.write_all(&pending) {
-            let _ = channel.file.set_len(channel.written);
-            let _ = channel.file.seek(SeekFrom::Start(channel.written));
+        let file = match &mut channel.file {
+            Some(file) => file,
+            None => channel.file.insert(
+                self.0
+                    .store
+                    .create_capture_file(self.session(), &channel.temporary)
+                    .map_err(|e| ToolError::execution(e.to_string()))?,
+            ),
+        };
+        if let Err(error) = file.write_all(&pending) {
+            let _ = file.set_len(channel.written);
+            let _ = file.seek(SeekFrom::Start(channel.written));
             return Err(ToolError::execution(format!(
                 "tool output capture failed: {error}"
             )));
@@ -466,13 +485,23 @@ impl OutputCapture {
         let mut streams = Vec::new();
         let mut previews = Vec::new();
         for channel in &state.channels {
-            let sha256 = format!("{:x}", channel.hash.clone().finalize());
-            let reference = self
-                .0
-                .store
-                .commit_capture(self.session(), &channel.temporary, &sha256, channel.written)
-                .map_err(|e| ToolError::execution(e.to_string()))?;
             let truncated = channel.preview.len() as u64 != channel.bytes;
+            // Output the preview holds whole is stored nowhere else. A spill
+            // file can be missing only after a failed write of an incomplete
+            // result; the preview is then all that remains.
+            let (reference, sha256) = if truncated && channel.file.is_some() {
+                let sha256 = format!("{:x}", channel.hash.clone().finalize());
+                let reference = self
+                    .0
+                    .store
+                    .commit_capture(self.session(), &channel.temporary, &sha256, channel.written)
+                    .map_err(|e| ToolError::execution(e.to_string()))?;
+                let sha256 =
+                    Sha256Digest::new(sha256).map_err(|e| ToolError::execution(e.to_string()))?;
+                (Some(reference), Some(sha256))
+            } else {
+                (None, None)
+            };
             let preview = if truncated {
                 preview::split(
                     &channel.preview,
@@ -487,8 +516,7 @@ impl OutputCapture {
             streams.push(RetainedToolStream {
                 name: channel.name.clone(),
                 reference,
-                sha256: Sha256Digest::new(sha256)
-                    .map_err(|e| ToolError::execution(e.to_string()))?,
+                sha256,
                 byte_length: channel.bytes,
                 line_count: channel.newlines
                     + u64::from(channel.bytes > 0 && !channel.ends_with_newline),
@@ -498,16 +526,23 @@ impl OutputCapture {
             previews.push(preview);
         }
         let (reference, digest) = if self.0.declaration == ToolOutputDeclaration::Single {
-            (streams[0].reference.clone(), streams[0].sha256.to_string())
-        } else {
+            (
+                streams[0].reference.clone(),
+                streams[0].sha256.as_ref().map(ToString::to_string),
+            )
+        } else if streams.iter().any(|stream| stream.reference.is_some()) {
             let manifest = serde_json::to_vec(&ToolOutputManifest {
                 streams: streams.clone(),
             })
             .map_err(|e| ToolError::execution(e.to_string()))?;
-            self.0
+            let (reference, digest) = self
+                .0
                 .store
                 .retain(self.session(), &manifest)
-                .map_err(|e| ToolError::execution(e.to_string()))?
+                .map_err(|e| ToolError::execution(e.to_string()))?;
+            (Some(reference), Some(digest))
+        } else {
+            (None, None)
         };
         let mut rendered = String::new();
         for ((channel, stream), &(head, tail)) in state.channels.iter().zip(&streams).zip(&previews)
@@ -531,11 +566,17 @@ impl OutputCapture {
                 .name
                 .as_ref()
                 .map_or_else(String::new, |name| format!("/{name}"));
+            let read_more = match (&digest, &stream.reference) {
+                (Some(digest), Some(_)) => {
+                    format!("read(filePath=\"artifact://{digest}{suffix}\", offset={offset})")
+                }
+                _ => "unavailable, the output could not be stored".to_owned(),
+            };
             rendered.push_str(&preview::render(
                 head,
                 &preview::marker(
                     &preview::omitted(channel.newlines, channel.bytes, head, tail),
-                    &format!("read(filePath=\"artifact://{digest}{suffix}\", offset={offset})"),
+                    &read_more,
                 ),
                 tail,
             ));

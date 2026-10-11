@@ -3392,12 +3392,19 @@ pub struct OutputSnapshot {
 
 impl crate::RetainedToolOutput {
     pub fn validate(&self) -> Result<(), EventSchemaError> {
-        self.reference.validate()?;
+        if let Some(reference) = &self.reference {
+            reference.validate()?;
+        }
         if self.streams.is_empty() || self.streams.len() > crate::MAX_TOOL_STREAMS {
             return Err(EventSchemaError::ToolOutputTooLarge);
         }
         for stream in &self.streams {
-            stream.reference.validate()?;
+            if let Some(reference) = &stream.reference {
+                reference.validate()?;
+            }
+            if !stream.artifact_matches() {
+                return Err(EventSchemaError::InvalidArtifactReference);
+            }
             if let Some(name) = &stream.name {
                 crate::validate_tool_stream_name(name)
                     .map_err(|_| EventSchemaError::InvalidArtifactReference)?;

@@ -127,18 +127,39 @@ pub enum ToolCompletionOutput {
 #[serde(deny_unknown_fields)]
 pub struct RetainedToolStream {
     pub name: Option<String>,
-    pub reference: ArtifactReference,
-    pub sha256: Sha256Digest,
+    /// The stream's full content. Absent, with `sha256`, when the stream fit
+    /// its preview and the result output already holds all of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<ArtifactReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<Sha256Digest>,
     pub byte_length: u64,
     pub line_count: u64,
     pub truncated: bool,
     pub next_offset: Option<u64>,
 }
 
+impl RetainedToolStream {
+    /// Whether `reference` and `sha256` name the same artifact, or are both
+    /// absent.
+    pub fn artifact_matches(&self) -> bool {
+        match (&self.reference, &self.sha256) {
+            (Some(reference), Some(sha256)) => {
+                reference.uri == format!("artifact://sha256/{sha256}")
+            }
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetainedToolOutput {
-    pub reference: ArtifactReference,
+    /// The one stream's artifact, or the named-stream manifest. Absent when
+    /// every stream fit inline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<ArtifactReference>,
     pub streams: Vec<RetainedToolStream>,
     pub incomplete: bool,
 }
@@ -163,7 +184,7 @@ impl ToolOutputManifest {
             .collect::<Result<Vec<_>, _>>()?;
         ToolOutputDeclaration::Named { streams: names }.validate()?;
         for stream in &self.streams {
-            if stream.reference.uri != format!("artifact://sha256/{}", stream.sha256) {
+            if !stream.artifact_matches() {
                 return Err("stream reference and digest do not match".into());
             }
         }

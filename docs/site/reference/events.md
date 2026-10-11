@@ -339,9 +339,12 @@ budget is 64 KiB, and final display has an independent 64 KiB bound. TUI state i
 bounded and never reconstructs display by merging authoritative streams.
 
 Authoritative output chunks go to runtime capture before completion, not into
-unbounded event records. Terminal `retained_output` contains full artifact or
-generic manifest references, ordered per-stream byte/line counts, truncation
-offsets, and an incomplete flag. Failed/cancelled calls retain accepted output
+unbounded event records. Terminal `retained_output` contains ordered per-stream
+byte/line counts, truncation offsets, and an incomplete flag. Only a stream
+that outgrew its preview has an artifact (`reference` and `sha256`); a stream
+the result output holds whole has neither, and `retained_output.reference`
+(the single stream's artifact or the generic manifest) is absent when no
+stream needed one. Failed/cancelled calls retain accepted output
 with their terminal status and error. Self-paginating tools omit output retention
 and fail instead when a requested page exceeds the 2 MiB result bound. Historical
 `truncation` and `tool_output_elided` records remain readable.

@@ -53,7 +53,12 @@ pub(crate) fn read_artifact(
             .ok_or_else(|| {
                 ToolError::execution(format!("artifact has no declared stream {name}"))
             })?;
-        (stream.sha256, format!("artifact.{name}"))
+        let digest = stream.sha256.ok_or_else(|| {
+            ToolError::execution(format!(
+                "stream {name} fit its preview: the tool result already holds all of it"
+            ))
+        })?;
+        (digest, format!("artifact.{name}"))
     } else {
         (target.digest, "artifact".into())
     };

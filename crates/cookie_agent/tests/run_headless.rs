@@ -601,7 +601,8 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
         // session tree. The read itself must not publish another artifact.
         fixture.server.enqueue(MockResponse::Sse(tool_response(
             "bash",
-            r#"{"command":"printf 'zero\\none\\ntwo\\n'"}"#,
+            // Past the default 500-line preview, so the output needs an artifact.
+            r#"{"command":"printf 'zero\\none\\ntwo\\n'; seq 3 600"}"#,
         )));
         fixture
             .server
@@ -635,6 +636,8 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             .unwrap();
         let manifest = retained
             .reference
+            .as_ref()
+            .unwrap()
             .uri
             .strip_prefix("artifact://sha256/")
             .unwrap();
@@ -1269,21 +1272,8 @@ async fn background_bash_returns_at_once_and_reports_when_it_exits() {
         ),
         "{body}"
     );
-    let digest = retained
-        .expect("retained output")
-        .reference
-        .uri
-        .strip_prefix("artifact://sha256/")
-        .expect("manifest digest")
-        .to_owned();
-    for (stream, text) in [("stdout", "background-done"), ("stderr", "background-err")] {
-        let path = format!("artifact://{digest}/{stream}");
-        let page = fixture
-            .engine
-            .read_artifact(session_id, &path, 0, 10)
-            .expect("background output");
-        assert_eq!(page.content.trim_end(), text);
-    }
+    // Output that fits its preview lives only in the report.
+    assert_eq!(retained.expect("retained output").reference, None);
 
     // The report wakes the finished session for one more turn.
     let deadline = Instant::now() + Duration::from_secs(30);

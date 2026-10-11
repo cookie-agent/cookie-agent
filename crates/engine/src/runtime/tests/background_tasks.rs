@@ -331,17 +331,10 @@ async fn background_job_reports_after_its_call_commits_and_keeps_its_output() {
         body,
         "<background_job from=\"7\">\nStatus: done\n[stdout]\njob output line\n\n[stderr]\n</background_job>"
     );
+    // Output that fits its preview lives only in the body.
     let retained = retained.expect("retained job output");
-    let digest = retained
-        .reference
-        .uri
-        .strip_prefix("artifact://sha256/")
-        .expect("manifest digest");
-    let page = fixture
-        .engine
-        .read_artifact(session_id, &format!("artifact://{digest}/stdout"), 0, 10)
-        .expect("job stdout");
-    assert!(page.content.contains("job output line"), "{}", page.content);
+    assert_eq!(retained.reference, None);
+    assert_eq!(retained.streams[0].byte_length, 16);
     // The report wakes the idle session and reaches the model once.
     let requests = with_watchdog("woken run", captured)
         .await

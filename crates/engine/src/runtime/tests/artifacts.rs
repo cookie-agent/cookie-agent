@@ -191,7 +191,7 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
     assert!(events.iter().any(|event| matches!(&event.payload,
         EventPayload::ToolCallTerminated { termination }
             if termination.result.as_ref().and_then(|result| result.retained_output.as_ref())
-                .is_some_and(|retained| retained.reference.uri == format!("artifact://sha256/{artifact_id}"))
+                .is_some_and(|retained| retained.reference.as_ref().is_some_and(|reference| reference.uri == format!("artifact://sha256/{artifact_id}")))
     )));
 
     let lines = output.split_inclusive('\n').collect::<Vec<_>>();
@@ -483,8 +483,8 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
         streams: vec![
             cookie_agent_protocol::RetainedToolStream {
                 name: Some("stdout".into()),
-                reference: stdout,
-                sha256: Sha256Digest::new(stdout_digest).unwrap(),
+                reference: Some(stdout),
+                sha256: Some(Sha256Digest::new(stdout_digest).unwrap()),
                 byte_length: 4,
                 line_count: 1,
                 truncated: false,
@@ -492,8 +492,8 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
             },
             cookie_agent_protocol::RetainedToolStream {
                 name: Some("stderr".into()),
-                reference: stderr,
-                sha256: Sha256Digest::new(stderr_digest).unwrap(),
+                reference: Some(stderr),
+                sha256: Some(Sha256Digest::new(stderr_digest).unwrap()),
                 byte_length: 12,
                 line_count: 2,
                 truncated: false,
@@ -807,11 +807,11 @@ async fn a_revert_deletes_artifacts_only_the_reverted_events_referenced() {
                 reminder: None,
                 agent_hop: None,
                 retained_output: Some(cookie_agent_protocol::RetainedToolOutput {
-                    reference: shared_ref.clone(),
+                    reference: Some(shared_ref.clone()),
                     streams: vec![cookie_agent_protocol::RetainedToolStream {
                         name: None,
-                        reference: shared_ref,
-                        sha256: Sha256Digest::new(shared.clone()).unwrap(),
+                        reference: Some(shared_ref),
+                        sha256: Some(Sha256Digest::new(shared.clone()).unwrap()),
                         byte_length: 24,
                         line_count: 1,
                         truncated: true,

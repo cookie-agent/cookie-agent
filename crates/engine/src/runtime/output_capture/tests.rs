@@ -76,6 +76,8 @@ async fn named_streams_capture_in_declaration_order_with_independent_previews() 
         .as_ref()
         .unwrap()
         .reference
+        .as_ref()
+        .unwrap()
         .uri
         .strip_prefix("artifact://sha256/")
         .unwrap()
@@ -99,21 +101,27 @@ async fn named_streams_capture_in_declaration_order_with_independent_previews() 
             .collect::<Vec<_>>(),
         ["results", "diagnostics", "empty"]
     );
-    for (stream, expected) in retained
-        .streams
-        .iter()
-        .zip(["abcdef\nnext", "bad\nextra", ""])
-    {
+    for (stream, expected) in retained.streams.iter().zip(["abcdef\nnext", "bad\nextra"]) {
         assert_eq!(
             store
-                .read_paged(crate::test_session_id(), stream.sha256.as_str(), 0, 10)
+                .read_paged(
+                    crate::test_session_id(),
+                    stream.sha256.as_ref().unwrap().as_str(),
+                    0,
+                    10
+                )
                 .unwrap()
                 .content,
             expected
         );
     }
+    // The empty stream fits its preview: nothing stands behind it.
+    assert_eq!(retained.streams[2].reference, None);
+    assert_eq!(retained.streams[2].sha256, None);
     let manifest_digest = retained
         .reference
+        .as_ref()
+        .unwrap()
         .uri
         .strip_prefix("artifact://sha256/")
         .unwrap();
@@ -184,7 +192,7 @@ async fn streamed_completion_rejects_resupply_and_preserves_incomplete_utf8_outp
         store
             .read_paged(
                 crate::test_session_id(),
-                retained.streams[0].sha256.as_str(),
+                retained.streams[0].sha256.as_ref().unwrap().as_str(),
                 0,
                 1
             )
@@ -262,7 +270,12 @@ async fn terminal_output_uses_capture_and_opt_out_never_publishes_an_artifact() 
     assert_eq!(stream.line_count, 2);
     assert_eq!(
         store
-            .read_paged(crate::test_session_id(), stream.sha256.as_str(), 1, 1)
+            .read_paged(
+                crate::test_session_id(),
+                stream.sha256.as_ref().unwrap().as_str(),
+                1,
+                1
+            )
             .unwrap()
             .content,
         "two\n"
@@ -294,6 +307,8 @@ async fn a_revert_sweep_skips_output_whose_terminal_event_is_not_persisted() {
         .unwrap();
     let digest = result.retained_output.unwrap().streams[0]
         .sha256
+        .as_ref()
+        .unwrap()
         .to_string();
     let sweep = |store: &ArtifactRouter| {
         store
@@ -405,7 +420,12 @@ async fn display_budget_does_not_stop_authoritative_capture() {
     let stream = &result.retained_output.as_ref().unwrap().streams[0];
     assert_eq!(
         store
-            .read_paged(crate::test_session_id(), stream.sha256.as_str(), 0, 200)
+            .read_paged(
+                crate::test_session_id(),
+                stream.sha256.as_ref().unwrap().as_str(),
+                0,
+                200
+            )
             .unwrap()
             .content,
         "data\n".repeat(100)
@@ -456,20 +476,9 @@ async fn progress_backpressure_precedes_acceptance_and_never_drops_output() {
         .finish(completion(ToolCompletionOutput::Streamed), false)
         .await
         .unwrap();
-    assert_eq!(
-        store
-            .read_paged(
-                crate::test_session_id(),
-                result.retained_output.as_ref().unwrap().streams[0]
-                    .sha256
-                    .as_str(),
-                0,
-                10
-            )
-            .unwrap()
-            .content,
-        "first\nsecond\n"
-    );
+    // Both deltas fit the preview, so the result holds them inline.
+    assert_eq!(result.output, "first\nsecond\n");
+    assert_eq!(result.retained_output.unwrap().streams[0].reference, None);
 }
 
 #[cfg(unix)]
@@ -483,7 +492,7 @@ async fn capture_io_errors_latch_and_preserve_previously_accepted_output() {
         crate::test_session_id(),
         Default::default(),
         10,
-        100,
+        4,
     )
     .await
     .unwrap();
@@ -500,7 +509,7 @@ async fn capture_io_errors_latch_and_preserve_previously_accepted_output() {
         let mut state = capture.0.state.lock().unwrap();
         let channel = &mut state.channels[0];
         let readonly = File::open(directory.join(&channel.temporary)).unwrap();
-        channel.file = readonly;
+        channel.file = Some(readonly);
     }
     assert!(
         append(
@@ -529,7 +538,7 @@ async fn capture_io_errors_latch_and_preserve_previously_accepted_output() {
         store
             .read_paged(
                 crate::test_session_id(),
-                retained.streams[0].sha256.as_str(),
+                retained.streams[0].sha256.as_ref().unwrap().as_str(),
                 0,
                 10
             )
@@ -588,8 +597,8 @@ async fn cancelled_append_awaiter_cannot_lose_bytes_or_let_finalization_overtake
         store.clone(),
         crate::test_session_id(),
         Default::default(),
+        1,
         10,
-        100,
     )
     .await
     .unwrap();
@@ -631,7 +640,7 @@ async fn cancelled_append_awaiter_cannot_lose_bytes_or_let_finalization_overtake
         store
             .read_paged(
                 crate::test_session_id(),
-                retained.streams[0].sha256.as_str(),
+                retained.streams[0].sha256.as_ref().unwrap().as_str(),
                 0,
                 10
             )
@@ -650,7 +659,7 @@ async fn capture_finalization_does_not_block_async_workers_or_publication_releas
         crate::test_session_id(),
         Default::default(),
         10,
-        100,
+        4,
     )
     .await
     .unwrap();
@@ -681,7 +690,8 @@ async fn capture_finalization_does_not_block_async_workers_or_publication_releas
     capture.release_publication();
     assert!(store.publication().try_write().is_err());
     release.send(()).unwrap();
-    assert_eq!(finishing.await.unwrap().unwrap().output, "complete\n");
+    let result = finishing.await.unwrap().unwrap();
+    assert_eq!(result.retained_output.unwrap().streams[0].byte_length, 9);
     assert!(store.publication().try_write().is_ok());
 }
 
@@ -720,6 +730,8 @@ async fn truncated_previews_show_the_first_and_last_lines() {
             .as_ref()
             .unwrap()
             .reference
+            .as_ref()
+            .unwrap()
             .uri
             .strip_prefix("artifact://sha256/")
             .unwrap()
@@ -785,9 +797,65 @@ async fn small_chunks_are_written_in_batches() {
     let stream = &result.retained_output.as_ref().unwrap().streams[0];
     assert_eq!(
         store
-            .read_paged(crate::test_session_id(), stream.sha256.as_str(), 0, 20)
+            .read_paged(
+                crate::test_session_id(),
+                stream.sha256.as_ref().unwrap().as_str(),
+                0,
+                20
+            )
             .unwrap()
             .content,
         line.repeat(10)
     );
+}
+
+#[tokio::test]
+async fn output_that_fits_its_preview_is_stored_nowhere_else() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("artifacts");
+    let store = ArtifactRouter::open_flat(directory.clone()).unwrap();
+    for declaration in [
+        ToolOutputDeclaration::Single,
+        ToolOutputDeclaration::Named {
+            streams: vec!["stdout".into(), "stderr".into()],
+        },
+    ] {
+        let named = declaration != ToolOutputDeclaration::Single;
+        let capture = OutputCapture::new(
+            store.clone(),
+            crate::test_session_id(),
+            declaration,
+            10,
+            100,
+        )
+        .await
+        .unwrap();
+        append(
+            &capture,
+            &[ToolOutputChunk {
+                stream: named.then(|| "stdout".into()),
+                text: "Edit applied atomically\n".into(),
+            }],
+        )
+        .await
+        .unwrap();
+        let result = capture
+            .finish(completion(ToolCompletionOutput::Streamed), false)
+            .await
+            .unwrap();
+        let expected = if named {
+            "[stdout]\nEdit applied atomically\n\n[stderr]\n"
+        } else {
+            "Edit applied atomically\n"
+        };
+        assert_eq!(result.output, expected);
+        let retained = result.retained_output.unwrap();
+        assert_eq!(retained.reference, None);
+        assert!(retained.streams.iter().all(|stream| {
+            stream.reference.is_none() && stream.sha256.is_none() && !stream.truncated
+        }));
+        assert_eq!(retained.streams[0].byte_length, 24);
+        assert_eq!(retained.streams[0].line_count, 1);
+    }
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
 }

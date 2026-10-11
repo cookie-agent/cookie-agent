@@ -380,14 +380,14 @@ mod tests {
                 metadata: serde_json::json!({"status":23,"source":"/work/input"}),
                 truncation: None,
                 retained_output: named.then(|| crate::RetainedToolOutput {
-                    reference: reference.clone(),
+                    reference: Some(reference.clone()),
                     incomplete: true,
                     streams: ["results", "trace"]
                         .into_iter()
                         .map(|name| crate::RetainedToolStream {
                             name: Some(name.into()),
-                            reference: reference.clone(),
-                            sha256: digest.clone(),
+                            reference: Some(reference.clone()),
+                            sha256: Some(digest.clone()),
                             byte_length: 6000,
                             line_count: 1,
                             truncated: false,
