@@ -198,6 +198,11 @@ pub(super) fn read_cache(path: &Path, events_path: &Path) -> Result<SessionMeta,
         path: path.to_owned(),
         source,
     })?;
+    // Every cache this build writes decodes straight into its type; only
+    // one written without `last_activity` takes the repairing path below.
+    if let Ok(meta) = serde_json::from_slice::<SessionMeta>(&bytes) {
+        return Ok(meta);
+    }
     let mut value = serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|source| {
         SessionError::Json {
             path: path.to_owned(),

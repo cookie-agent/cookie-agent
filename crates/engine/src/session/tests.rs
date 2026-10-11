@@ -4434,3 +4434,34 @@ fn session_append_timing() {
         total / u32::try_from(last_seq).expect("event count"),
     );
 }
+
+/// A `metadata` cache without `last_activity` still reads, taking the time
+/// from the log's modification time; a complete one reads as written.
+#[test]
+fn metadata_cache_without_last_activity_reads_the_log_mtime() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
+    let session_id = persist_test_session(&store);
+    let dir = store.session_dir(session_id);
+    let written = read_test_meta_cache(&store, session_id);
+    assert_eq!(written, store.get(session_id).unwrap().meta);
+
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&fs::read(meta_path(&dir)).expect("read metadata")).unwrap();
+    value
+        .as_object_mut()
+        .expect("metadata object")
+        .remove("last_activity");
+    fs::write(meta_path(&dir), serde_json::to_vec(&value).unwrap()).expect("write metadata");
+    let modified = fs::metadata(dir.join(EVENTS_FILE))
+        .and_then(|metadata| metadata.modified())
+        .expect("log mtime");
+    let repaired = read_test_meta_cache(&store, session_id);
+    assert_eq!(
+        repaired.last_activity,
+        jiff::Timestamp::try_from(modified).expect("timestamp")
+    );
+    assert_eq!(repaired.session_id, written.session_id);
+}
