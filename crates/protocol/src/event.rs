@@ -601,10 +601,8 @@ impl PersistedToolResult {
         if let Some(retained) = &self.retained_output {
             retained.validate()?;
         }
-        if serde_json::to_vec(&self.metadata)
+        if json_len_exceeds(&self.metadata, Self::MAX_METADATA_BYTES)
             .map_err(|_| EventSchemaError::InvalidJson)?
-            .len()
-            > Self::MAX_METADATA_BYTES
         {
             return Err(EventSchemaError::ToolMetadataTooLarge);
         }
@@ -1058,13 +1056,58 @@ impl<'de> Deserialize<'de> for NativeContextWindow {
     }
 }
 fn validate_payload(payload: &Value, maximum: usize) -> Result<(), NativeArtifactError> {
-    let size = serde_json::to_vec(payload)
-        .map_err(|_| NativeArtifactError::Serialization)?
-        .len();
-    if size > maximum {
-        Err(NativeArtifactError::PayloadTooLarge { size, maximum })
-    } else {
+    if !json_len_exceeds(payload, maximum).map_err(|_| NativeArtifactError::Serialization)? {
+        return Ok(());
+    }
+    let size = json_len(payload).map_err(|_| NativeArtifactError::Serialization)?;
+    Err(NativeArtifactError::PayloadTooLarge { size, maximum })
+}
+
+/// Counts serialized bytes instead of buffering them, optionally failing
+/// once a limit is passed so an oversized value stops serializing early.
+struct ByteCounter {
+    count: usize,
+    limit: usize,
+}
+
+impl std::io::Write for ByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.count = self.count.saturating_add(bytes.len());
+        if self.count > self.limit {
+            return Err(std::io::Error::other("serialized value exceeds its limit"));
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+/// The length of `value` serialized as JSON, without buffering it.
+fn json_len<T: Serialize + ?Sized>(value: &T) -> Result<usize, serde_json::Error> {
+    let mut counter = ByteCounter {
+        count: 0,
+        limit: usize::MAX,
+    };
+    serde_json::to_writer(&mut counter, value)?;
+    Ok(counter.count)
+}
+
+/// Whether `value` serializes to more than `maximum` bytes of JSON. Nothing
+/// is buffered, and serialization stops as soon as the limit is passed.
+pub(crate) fn json_len_exceeds<T: Serialize + ?Sized>(
+    value: &T,
+    maximum: usize,
+) -> Result<bool, serde_json::Error> {
+    let mut counter = ByteCounter {
+        count: 0,
+        limit: maximum,
+    };
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => Ok(false),
+        Err(_) if counter.count > maximum => Ok(true),
+        Err(error) => Err(error),
     }
 }
 
@@ -1254,10 +1297,8 @@ impl PersistedModelTurn {
         if self.content.len() > 4096 {
             return Err(EventSchemaError::TooManyModelParts);
         }
-        if serde_json::to_vec(self)
+        if json_len_exceeds(self, Self::MAX_SERIALIZED_BYTES)
             .map_err(|_| EventSchemaError::InvalidJson)?
-            .len()
-            > Self::MAX_SERIALIZED_BYTES
         {
             return Err(EventSchemaError::ModelTurnTooLarge);
         }
@@ -3496,3 +3537,24 @@ impl fmt::Display for EventSchemaError {
     }
 }
 impl std::error::Error for EventSchemaError {}
+
+#[cfg(test)]
+mod size_limit_tests {
+    use super::*;
+
+    #[test]
+    fn json_size_limits_count_serialized_bytes_at_the_boundary() {
+        // `"abcdefgh"` is ten bytes of JSON.
+        let value = serde_json::json!("abcdefgh");
+        assert!(!json_len_exceeds(&value, 10).unwrap());
+        assert!(json_len_exceeds(&value, 9).unwrap());
+        assert!(validate_payload(&value, 10).is_ok());
+        assert!(matches!(
+            validate_payload(&value, 9),
+            Err(NativeArtifactError::PayloadTooLarge {
+                size: 10,
+                maximum: 9
+            })
+        ));
+    }
+}
