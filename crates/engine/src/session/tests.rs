@@ -2447,6 +2447,76 @@ fn deferred_metadata_tip_is_flushed_on_eviction_and_release() {
     );
 }
 
+/// A fork assembled in memory and written whole reads back from disk as
+/// exactly the log and projection it went resident with.
+#[test]
+fn a_fork_reads_back_as_the_log_it_went_resident_with() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
+    let source = persist_test_session(&store);
+    let attempt = start_test_attempt(&store, source);
+    let through = append_test_in_run_record(&store, source, &attempt).seq;
+    append_test_in_run_record(&store, source, &attempt);
+
+    let fork = store.fork(source, through, test_origin()).expect("fork");
+    let resident = store.get(fork).expect("resident fork");
+    let events = resident.log.event_snapshot();
+    assert_eq!(
+        events.len() as u64,
+        through + 2,
+        "the prefix, the interrupted open run and the fork title"
+    );
+    assert!(matches!(
+        events[through as usize].payload,
+        EventPayload::RunInterrupted { .. }
+    ));
+    assert!(matches!(
+        events[through as usize + 1].payload,
+        EventPayload::SessionTitleCommitted { .. }
+    ));
+    assert!(events.iter().all(|event| event.session_id == fork));
+
+    let on_disk =
+        crate::events::EventLog::open_read_only(store.session_dir(fork).join(EVENTS_FILE), fork)
+            .expect("fork log reads back");
+    assert_eq!(on_disk.events(), resident.log.events());
+    let reference = super::projection_fold(resident.log.clone()).expect("reference fold");
+    super::assert_projection_equivalent(&resident, &reference);
+    assert_eq!(read_test_meta_cache(&store, fork), resident.meta);
+    assert_eq!(
+        resident.meta.status,
+        cookie_agent_protocol::SessionStatus::Interrupted
+    );
+
+    // The fork appends to the file it was published as.
+    let next = append_test_title(&store, fork);
+    let reread =
+        crate::events::EventLog::open_read_only(store.session_dir(fork).join(EVENTS_FILE), fork)
+            .expect("fork log after append");
+    assert_eq!(reread.last_event().expect("tip").seq, next);
+}
+
+fn append_test_title(store: &SessionStore, id: SessionId) -> u64 {
+    store
+        .append(
+            id,
+            None,
+            test_origin(),
+            EventPayload::SessionTitleCommitted {
+                change: SessionTitleChange::UserSet {
+                    title: SessionTitle::new("after fork").expect("title"),
+                    client_rename_id: cookie_agent_protocol::ClientRenameId::new("after-fork")
+                        .expect("rename id"),
+                },
+                input_through_seq: 1,
+            },
+        )
+        .expect("append to fork")
+        .seq
+}
+
 /// A fork closes its source's append handle; the source's next append opens
 /// it again.
 #[test]

@@ -487,6 +487,49 @@ impl EventLog {
         }))
     }
 
+    /// A buffered log holding `records`, validated in memory, for a session
+    /// whose file is written whole once it is assembled (a fork). It writes
+    /// nothing until [`Self::mark_persisted`].
+    pub(crate) fn from_records_buffered(
+        path: PathBuf,
+        session_id: SessionId,
+        records: Vec<Arc<StoredEvent>>,
+        capability: WriteCapability,
+    ) -> Result<Arc<Self>, EventLogError> {
+        if !matches!(
+            records.first().map(|record| &record.payload),
+            Some(EventPayload::SessionCreated { .. })
+        ) {
+            return Err(EventLogError::MissingCreation(path));
+        }
+        let validation = validate_records(
+            &path,
+            session_id,
+            &records,
+            &ValidationTaint::default(),
+            None,
+        )?;
+        let next_seq = records.last().map_or(1, |record| record.seq + 1);
+        Ok(Arc::new(Self {
+            path,
+            session_id,
+            append: Mutex::new(()),
+            events: Mutex::new(EventStorage::new(records)),
+            diagnostics: Vec::new(),
+            initial_validation_taint: Mutex::default(),
+            validation: Mutex::new(validation),
+            next_seq: AtomicU64::new(next_seq),
+            persisted: AtomicBool::new(false),
+            read_only: false,
+            write_capability: Some(capability),
+            #[cfg(test)]
+            _test_authority: None,
+            #[cfg(test)]
+            append_authorization_hook: Mutex::new(None),
+            writer: Mutex::new(None),
+        }))
+    }
+
     pub(crate) fn append_owned(
         &self,
         capability: &WriteCapability,
@@ -3263,11 +3306,36 @@ pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<(), EventLog
     Ok(())
 }
 
-pub(crate) fn append_copied_event_jsonl(
+/// Writes `events` as the content of the new log at `path` through one
+/// buffered writer and syncs the file once. The caller syncs the directory
+/// that holds it.
+pub(crate) fn write_event_jsonl<'a>(
     path: &Path,
-    event: &StoredEvent,
+    events: impl IntoIterator<Item = &'a StoredEvent>,
 ) -> Result<(), EventLogError> {
-    append_jsonl(path, event)
+    let io_error = |source| EventLogError::Io {
+        path: path.to_owned(),
+        source,
+    };
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut writer = io::BufWriter::new(options.open(path).map_err(io_error)?);
+    for event in events {
+        serde_json::to_writer(&mut writer, event).map_err(|source| EventLogError::Json {
+            path: path.to_owned(),
+            source,
+        })?;
+        writer.write_all(b"\n").map_err(io_error)?;
+    }
+    let file = writer
+        .into_inner()
+        .map_err(|error| io_error(error.into_error()))?;
+    file.sync_all().map_err(io_error)
 }
 
 #[cfg(unix)]

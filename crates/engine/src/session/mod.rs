@@ -2057,7 +2057,7 @@ impl SessionStore {
             .collect::<Vec<_>>();
         if through_seq == 0
             || through_seq > source_events.last().map_or(0, |event| event.seq)
-            || !crate::events::visible_events(prefix)
+            || !crate::events::visible_events(prefix.clone())
                 .iter()
                 .any(|event| matches!(event.payload, EventPayload::UserInputSubmitted { .. }))
         {
@@ -2108,34 +2108,33 @@ impl SessionStore {
             }
         })?;
         let result = (|| {
-            let log_path = temporary.join("events.jsonl");
-            #[cfg(windows)]
-            create_windows_session_file(&log_path)?;
-            for event in source_events
+            // The fork is assembled in memory as a buffered log at its final
+            // path, then written whole: one buffered write and one sync
+            // instead of a reopened, reparsed file and a sync per record.
+            let copied = prefix
                 .iter()
-                .filter(|event| event.seq <= through_seq)
-            {
-                let mut copied = event.as_ref().clone();
-                copied.session_id = session_id;
-                crate::events::append_copied_event_jsonl(&log_path, &copied)?;
-            }
-            #[cfg(unix)]
-            fs::set_permissions(&log_path, fs::Permissions::from_mode(0o600)).map_err(
-                |source| SessionError::Io {
-                    path: log_path.clone(),
-                    source,
-                },
+                .map(|event| {
+                    let mut copied = event.as_ref().clone();
+                    copied.session_id = session_id;
+                    Arc::new(copied)
+                })
+                .collect::<Vec<_>>();
+            let log = EventLog::from_records_buffered(
+                final_dir.join(EVENTS_FILE),
+                session_id,
+                copied,
+                capability.clone(),
             )?;
-            let log = EventLog::open_owned(log_path, session_id, capability.clone())?;
+            let mut fork_projection = projection(log.clone())?;
             // A prefix cut inside a run leaves it open; the fork closes it.
-            let open_runs = projection(log.clone())?
+            let open_runs = fork_projection
                 .runs
                 .values()
                 .filter(|run| run.status == SessionStatus::Running)
                 .map(|run| run.id)
                 .collect::<Vec<_>>();
             for run in open_runs {
-                log.append_owned(
+                let event = log.append_owned(
                     &capability,
                     Some(run),
                     origin.clone(),
@@ -2145,10 +2144,10 @@ impl SessionStore {
                         )),
                     },
                 )?;
+                fork_projection.observe_appended(&event)?;
             }
-            let prefix_projection = projection(log.clone())?;
-            let title = fork_title(prefix_projection.meta.title.as_ref())?;
-            log.append_owned(
+            let title = fork_title(fork_projection.meta.title.as_ref())?;
+            let event = log.append_owned(
                 &capability,
                 None,
                 cookie_agent_protocol::EventOrigin::new("user")
@@ -2162,8 +2161,14 @@ impl SessionStore {
                     input_through_seq: through_seq,
                 },
             )?;
-            log.suspend_writer();
-            let fork_projection = projection(log)?;
+            fork_projection.observe_appended(&event)?;
+            let log_path = temporary.join(EVENTS_FILE);
+            #[cfg(windows)]
+            create_windows_session_file(&log_path)?;
+            crate::events::write_event_jsonl(
+                &log_path,
+                log.all_events().iter().map(AsRef::as_ref),
+            )?;
             write_cache(
                 &temporary.join(SESSION_META_FILE),
                 &fork_projection.meta,
@@ -2235,8 +2240,7 @@ impl SessionStore {
                 }
                 ownership.writable.insert(session_id, root);
             }
-            let log = EventLog::open_owned(final_dir.join("events.jsonl"), session_id, capability)?;
-            let fork_projection = projection(log)?;
+            log.mark_persisted();
             let fork_origin = fork_projection.meta.origin.clone();
             self.residency
                 .lock()
@@ -2281,12 +2285,13 @@ impl SessionStore {
         #[cfg(windows)]
         create_windows_session_directory(&temporary)?;
         let result = (|| {
-            let log_path = temporary.join("events.jsonl");
+            let log_path = temporary.join(EVENTS_FILE);
             #[cfg(windows)]
             create_windows_session_file(&log_path)?;
-            for event in projection.log.all_events().iter() {
-                crate::events::append_jsonl(&log_path, event.as_ref())?;
-            }
+            crate::events::write_event_jsonl(
+                &log_path,
+                projection.log.all_events().iter().map(AsRef::as_ref),
+            )?;
             write_cache(
                 &temporary.join(SESSION_META_FILE),
                 &projection.meta,
