@@ -478,6 +478,23 @@ async fn scenario(with_descendants: bool) {
         })
         .collect();
     report("resize + redraw", samples, &app, before);
+
+    // Viewing another session and coming back.
+    let other = SessionId::new_v7();
+    assert!(
+        app.store
+            .rebuild_session(other, 0, vec![at(session_created(other, 1), 0)])
+    );
+    let before = passes(&app);
+    let samples = (0..repeat.min(10))
+        .map(|_| {
+            app.selected = Some(other);
+            draw(&mut terminal, &mut app);
+            app.selected = Some(root);
+            draw(&mut terminal, &mut app)
+        })
+        .collect();
+    report("switch back + redraw", samples, &app, before);
 }
 
 #[tokio::test]
