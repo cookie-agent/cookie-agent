@@ -441,7 +441,7 @@ impl TranscriptItem {
         Self::User {
             id: 1,
             version: 0,
-            markdown: MarkdownDocument::with_hard_breaks(text.into()),
+            markdown: MarkdownDocument::with_hard_breaks(text.into()).finished(),
             // Layout fixtures never target the row; any plausible physical
             // sequence (SessionCreated owns 1) keeps the field inhabited.
             seq: 2,

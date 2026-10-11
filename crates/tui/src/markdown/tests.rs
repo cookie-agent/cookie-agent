@@ -499,6 +499,61 @@ fn highlight_cache_enforces_exact_oversized_and_zero_budget_boundaries() {
 }
 
 #[test]
+fn finished_document_caches_its_last_block_across_renders_and_widths() {
+    let source = "intro\n\n```rust\nfn last() {}\n```\n";
+    let open = MarkdownDocument::new(source.to_owned());
+    let finished = MarkdownDocument::new(source.to_owned()).finished();
+    let open_highlighter = SyntectHighlighter::default();
+    let finished_highlighter = SyntectHighlighter::default();
+    let theme = Theme::default();
+
+    for width in [80, 24, 120, 80] {
+        assert_eq!(
+            super::render_markdown_width(&finished, &theme, &finished_highlighter, width),
+            super::render_markdown_width(&open, &theme, &open_highlighter, width),
+        );
+    }
+    // The open document re-highlights its tail on every render; the
+    // finished one highlights it once.
+    assert_eq!(open_highlighter.highlight_calls(), 4);
+    assert_eq!(finished_highlighter.highlight_calls(), 1);
+}
+
+#[test]
+fn settled_block_highlights_survive_shared_cache_eviction() {
+    let document = MarkdownDocument::new(
+        "```rust\nfn first() {}\n```\n\n```rust\nfn second() {}\n```\n".to_owned(),
+    )
+    .finished();
+    let highlighter = SyntectHighlighter::default();
+    // Nothing fits the shared cache, so every hit comes from the blocks.
+    highlighter.set_cache_budget(0);
+    for width in [80, 40, 120, 80] {
+        super::render_markdown_width(&document, &Theme::default(), &highlighter, width);
+    }
+    assert_eq!(highlighter.highlight_calls(), 2);
+}
+
+#[test]
+fn appending_reopens_a_finished_document() {
+    let mut document = MarkdownDocument::new("```rust\nfn a() {}\n".to_owned()).finished();
+    document.append("fn b() {}\n```\n");
+    let highlighter = SyntectHighlighter::default();
+    let theme = Theme::default();
+    let reopened = super::render_markdown_width(&document, &theme, &highlighter, 80);
+    let fresh = MarkdownDocument::new("```rust\nfn a() {}\nfn b() {}\n```\n".to_owned());
+    assert_eq!(
+        reopened,
+        super::render_markdown_width(&fresh, &theme, &highlighter, 80)
+    );
+    assert!(
+        reopened
+            .iter()
+            .any(|line| line.to_string().contains("fn b()"))
+    );
+}
+
+#[test]
 fn theme_changes_invalidate_stable_highlights() {
     let document = MarkdownDocument::new("```rust\nfn themed() {}\n```\n\ntail".to_owned());
     let highlighter = SyntectHighlighter::default();

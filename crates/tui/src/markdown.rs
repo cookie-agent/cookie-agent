@@ -43,6 +43,9 @@ pub struct MarkdownDocument {
     /// Render every source newline as a line break instead of joining soft
     /// breaks with a space: typed text means its newlines.
     hard_breaks: bool,
+    /// No more text follows: the open tail renders and caches like the
+    /// stable prefix. Cleared by [`Self::append`].
+    finished: bool,
     parse_passes: u64,
     parsed_bytes: u64,
     reference_reparses: u64,
@@ -185,6 +188,18 @@ pub struct MarkdownBlock {
     content_hash: u64,
     content_len: usize,
     rendered: Arc<Mutex<Option<RenderedBlockCacheEntry>>>,
+    /// Width-independent highlighted code of this settled block, by code
+    /// block ordinal, so a re-render at a new width never re-highlights —
+    /// whatever the shared highlight cache has evicted meanwhile.
+    highlights: Arc<Mutex<Vec<BlockHighlight>>>,
+}
+
+#[derive(Clone, Debug)]
+struct BlockHighlight {
+    ordinal: usize,
+    theme: ThemeKey,
+    highlighter: u64,
+    lines: Arc<[Line<'static>]>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -264,7 +279,18 @@ impl MarkdownDocument {
 
     pub fn append(&mut self, delta: &str) {
         self.source.push_str(delta);
+        self.finished = false;
         self.reparse_open_tail();
+    }
+
+    /// Mark the document complete, so its last block — never promoted to
+    /// the stable prefix, since more text could still extend it — renders
+    /// through the stable block and highlight caches instead of being
+    /// re-rendered and re-highlighted on every layout.
+    #[must_use]
+    pub fn finished(mut self) -> Self {
+        self.finished = true;
+        self
     }
 
     pub fn as_str(&self) -> &str {
@@ -461,6 +487,7 @@ fn parse_document(source: &str, hard_breaks: bool) -> ParsedDocument {
                         .hash_one(&source[range.clone()]),
                     content_len: range.len(),
                     rendered: Arc::new(Mutex::new(None)),
+                    highlights: Arc::new(Mutex::new(Vec::new())),
                 },
                 range,
                 reference_dependencies: BTreeSet::new(),
@@ -1261,50 +1288,68 @@ pub(crate) fn render_markdown_lines_width(
 ) -> Vec<MarkdownLine> {
     let mut lines = Vec::new();
     let highlighter_key = highlighter.cache_key();
-    for block in &document.stable_blocks {
-        let key = RenderedBlockCacheKey {
-            content_hash: block.content_hash,
-            code_len: block.content_len,
-            width,
-            theme: theme.key(),
-            quote_depth: 0,
-            highlighter: highlighter_key,
-        };
-        let cached = block
-            .rendered
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .filter(|entry| entry.key == key && entry.source == block.source)
-            .map(|entry| Arc::clone(&entry.lines));
-        let rendered = cached.unwrap_or_else(|| {
-            let rendered: Arc<[MarkdownLine]> =
-                render_block(block, true, theme, highlighter, width).into();
-            *block
-                .rendered
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some(RenderedBlockCacheEntry {
-                    key,
-                    source: Arc::clone(&block.source),
-                    lines: Arc::clone(&rendered),
-                });
-            rendered
-        });
+    let stable_tail = if document.finished {
+        document.tail_blocks.as_slice()
+    } else {
+        &[]
+    };
+    for block in document.stable_blocks.iter().chain(stable_tail) {
+        let rendered = render_stable_block(block, theme, highlighter, highlighter_key, width);
         push_block_lines(&mut lines, rendered.iter().cloned());
     }
     // The streaming tail renders block by block like the stable prefix, so a
     // block looks the same before and after it settles.
-    for block in &document.tail_blocks {
-        push_block_lines(
-            &mut lines,
-            render_block(block, false, theme, highlighter, width),
-        );
+    if !document.finished {
+        for block in &document.tail_blocks {
+            push_block_lines(
+                &mut lines,
+                render_block(block, false, theme, highlighter, width),
+            );
+        }
     }
     if lines.is_empty() {
         lines.push(MarkdownLine::default());
     }
     lines
+}
+
+/// One settled block's rendered lines, from its per-block cache when the
+/// width, theme and highlighter still match.
+fn render_stable_block(
+    block: &MarkdownBlock,
+    theme: &Theme,
+    highlighter: &dyn Highlighter,
+    highlighter_key: u64,
+    width: u16,
+) -> Arc<[MarkdownLine]> {
+    let key = RenderedBlockCacheKey {
+        content_hash: block.content_hash,
+        code_len: block.content_len,
+        width,
+        theme: theme.key(),
+        quote_depth: 0,
+        highlighter: highlighter_key,
+    };
+    let cached = block
+        .rendered
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|entry| entry.key == key && entry.source == block.source)
+        .map(|entry| Arc::clone(&entry.lines));
+    cached.unwrap_or_else(|| {
+        let rendered: Arc<[MarkdownLine]> =
+            render_block(block, true, theme, highlighter, width).into();
+        *block
+            .rendered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(RenderedBlockCacheEntry {
+            key,
+            source: Arc::clone(&block.source),
+            lines: Arc::clone(&rendered),
+        });
+        rendered
+    })
 }
 
 /// Append one top-level block's lines, separated from the previous block by
@@ -1331,6 +1376,9 @@ fn render_block(
     let mut renderer = MarkdownRenderer::new(theme, highlighter);
     renderer.width = usize::from(width);
     renderer.begin_block(stable);
+    if stable {
+        renderer.block_highlights = Some((&block.highlights, highlighter.cache_key()));
+    }
     for event in &block.events {
         renderer.event(event);
     }
@@ -1385,6 +1433,10 @@ struct MarkdownRenderer<'a> {
     image_depth: usize,
     table: Option<TableCapture<'a>>,
     stable_block: bool,
+    /// The settled block's highlight memo, and the ordinal of the next code
+    /// block within it.
+    block_highlights: Option<(&'a Mutex<Vec<BlockHighlight>>, u64)>,
+    code_ordinal: usize,
 }
 
 /// In-progress table capture. Cell inline markup uses a nested renderer so
@@ -1425,6 +1477,8 @@ impl<'a> MarkdownRenderer<'a> {
             image_depth: 0,
             table: None,
             stable_block: false,
+            block_highlights: None,
+            code_ordinal: 0,
         }
     }
 
@@ -1790,9 +1844,10 @@ impl<'a> MarkdownRenderer<'a> {
         let label = code.language.split_whitespace().next().unwrap_or_default();
         // Highlighting is cached before code-band styling and width-dependent
         // wrapping, so stable entries survive terminal resizes.
+        let ordinal = self.code_ordinal;
+        self.code_ordinal += 1;
         let highlighted = if code.stable {
-            self.highlighter
-                .highlight_stable(label, &code.code, self.theme)
+            self.stable_highlight(ordinal, label, &code.code)
         } else {
             self.highlighter.highlight(label, &code.code, self.theme)
         };
@@ -1801,6 +1856,32 @@ impl<'a> MarkdownRenderer<'a> {
             Some(background) => self.finish_banded_code(&highlighted, background),
             None => self.finish_framed_code(&highlighted),
         }
+    }
+
+    /// A settled code block's highlighted lines: from the block's own memo,
+    /// else highlighted (through the shared cache) and memoized.
+    fn stable_highlight(&self, ordinal: usize, label: &str, code: &str) -> Arc<[Line<'static>]> {
+        let Some((memo, highlighter)) = self.block_highlights else {
+            return self.highlighter.highlight_stable(label, code, self.theme);
+        };
+        let theme = self.theme.key();
+        let mut memo = memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = memo.iter().find(|entry| {
+            entry.ordinal == ordinal && entry.theme == theme && entry.highlighter == highlighter
+        }) {
+            return Arc::clone(&entry.lines);
+        }
+        let lines = self.highlighter.highlight_stable(label, code, self.theme);
+        memo.retain(|entry| entry.ordinal != ordinal);
+        memo.push(BlockHighlight {
+            ordinal,
+            theme,
+            highlighter,
+            lines: Arc::clone(&lines),
+        });
+        lines
     }
 
     /// A tinted band is the block's whole frame: each code row padded so the

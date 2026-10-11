@@ -464,7 +464,7 @@ pub(super) fn reduce_event(
             push_item(state, timestamp, |id| TranscriptItem::User {
                 id,
                 version: 0,
-                markdown: MarkdownDocument::with_hard_breaks(input),
+                markdown: MarkdownDocument::with_hard_breaks(input).finished(),
                 seq: sequence,
             });
         }
@@ -2050,7 +2050,7 @@ pub(super) fn rebuild_committed_children(
                 children.push(AssistantChild::Text {
                     id: sequence,
                     version: 0,
-                    markdown: MarkdownDocument::new(text.clone()),
+                    markdown: MarkdownDocument::new(text.clone()).finished(),
                 });
             }
             cookie_agent_protocol::PersistedAssistantPart::Reasoning { text, .. }
