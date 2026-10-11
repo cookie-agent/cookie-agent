@@ -1544,24 +1544,34 @@ pub(super) fn reduce_event(
     }
 }
 
-pub(super) fn reduce_session_events(
+pub(super) fn reduce_session_events<E: std::borrow::Borrow<StoredEvent>>(
     session_id: SessionId,
     generation: u64,
-    physical_events: &[StoredEvent],
+    physical_events: &[E],
 ) -> SessionState {
     let mut state = SessionState {
         generation,
-        last_seq: physical_events.last().map_or(0, |event| event.seq),
+        last_seq: physical_events.last().map_or(0, |event| event.borrow().seq),
         ..SessionState::default()
     };
-    for event in cookie_agent_protocol::visible_events(physical_events) {
+    // `cookie_agent_protocol::visible_events`, by reference: a revert drops
+    // what it cut before anything is copied.
+    let mut visible: Vec<&StoredEvent> = Vec::new();
+    for event in physical_events {
+        let event = event.borrow();
+        if let EventPayload::SessionReverted { through_seq } = &event.payload {
+            visible.retain(|candidate| candidate.seq <= *through_seq);
+        }
+        visible.push(event);
+    }
+    for event in visible {
         reduce_event(
             &mut state,
             session_id,
             event.run_id,
             event.seq,
             event.timestamp,
-            event.payload,
+            event.payload.clone(),
         );
     }
     state

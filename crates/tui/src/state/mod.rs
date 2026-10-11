@@ -18,6 +18,7 @@ pub use runtime::{EMPTY_RUNTIME_GUIDANCE, RuntimePhase, RuntimeState};
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -843,7 +844,9 @@ impl SessionState {
 #[derive(Clone, Debug, Default)]
 pub struct StateStore {
     pub sessions: HashMap<SessionId, SessionState>,
-    physical_events: HashMap<SessionId, Vec<StoredEvent>>,
+    /// Each session's durable log, shared with replay scratch copies: a
+    /// staged replay starts from the visible log without copying it.
+    physical_events: HashMap<SessionId, Vec<Arc<StoredEvent>>>,
     quarantined_sessions: HashSet<SessionId>,
     replays: HashMap<SessionId, ReplayProgress>,
 }
@@ -853,7 +856,7 @@ struct ReplayProgress {
     generation: u64,
     final_seq: u64,
     scratch: SessionState,
-    physical_events: Vec<StoredEvent>,
+    physical_events: Vec<Arc<StoredEvent>>,
     deadline: Instant,
 }
 
@@ -966,7 +969,7 @@ impl StateStore {
                     if event.seq <= replay.scratch.last_seq || event.payload.is_transient() {
                         return true;
                     }
-                    replay.physical_events.push(event.clone());
+                    replay.physical_events.push(Arc::new(event.clone()));
                     if matches!(event.payload, EventPayload::SessionReverted { .. }) {
                         replay.scratch =
                             reduce_session_events(session_id, generation, &replay.physical_events);
@@ -1124,7 +1127,7 @@ impl StateStore {
         self.physical_events
             .entry(event.session_id)
             .or_default()
-            .push(event.clone());
+            .push(Arc::new(event.clone()));
         if matches!(event.payload, EventPayload::SessionReverted { .. }) {
             let previous_version = state.version;
             *state = reduce_session_events(
@@ -1279,6 +1282,7 @@ impl StateStore {
         {
             return false;
         }
+        let events = events.into_iter().map(Arc::new).collect::<Vec<_>>();
         let state = reduce_session_events(session_id, generation, &events);
         self.physical_events.insert(session_id, events);
         self.sessions.insert(session_id, state);
