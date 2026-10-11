@@ -410,14 +410,18 @@ impl OutputCapture {
         let mut streams = Vec::new();
         let mut previews = Vec::new();
         for channel in &state.channels {
-            let (artifact, _) = self
+            let sha256 = format!("{:x}", channel.hash.clone().finalize());
+            let reference = self
                 .0
                 .store
-                .commit_capture(self.session(), &channel.temporary, &channel.file)
+                .commit_capture(
+                    self.session(),
+                    &channel.temporary,
+                    &channel.file,
+                    &sha256,
+                    channel.bytes,
+                )
                 .map_err(|e| ToolError::execution(e.to_string()))?;
-            if artifact.sha256 != format!("{:x}", channel.hash.clone().finalize()) {
-                return Err(ToolError::execution("captured output digest mismatch"));
-            }
             let truncated = channel.preview.len() as u64 != channel.bytes;
             let preview = if truncated {
                 preview::split(
@@ -432,8 +436,8 @@ impl OutputCapture {
             };
             streams.push(RetainedToolStream {
                 name: channel.name.clone(),
-                reference: artifact.reference,
-                sha256: Sha256Digest::new(artifact.sha256)
+                reference,
+                sha256: Sha256Digest::new(sha256)
                     .map_err(|e| ToolError::execution(e.to_string()))?,
                 byte_length: channel.bytes,
                 line_count: channel.newlines

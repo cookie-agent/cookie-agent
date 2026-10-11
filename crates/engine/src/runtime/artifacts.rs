@@ -389,7 +389,6 @@ mod unix {
     use cookie_agent_protocol::{ArtifactReference, ToolAttachment};
     use fs2::FileExt as _;
     use rustix::fs::{AtFlags, Dir, Mode, OFlags, fsync, openat, renameat, unlinkat};
-    use serde::Serialize;
     use sha2::{Digest, Sha256};
     use uuid::Uuid;
 
@@ -448,13 +447,11 @@ mod unix {
                 .writes
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(mut existing) = self.open_existing(&digest)? {
-                if hash_file(&mut existing)?.0 != digest {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "artifact digest collision or corrupt retained artifact",
-                    ));
-                }
+            // Names are content addresses: a blob of the right length is the
+            // content. A torn one is replaced; readers verify digests anyway.
+            if let Some(existing) = self.open_existing(&digest)?
+                && existing.metadata()?.len() == content.len() as u64
+            {
                 existing.set_times(
                     std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()),
                 )?;
@@ -726,31 +723,30 @@ mod unix {
             Ok(file)
         }
 
+        /// Publish a capture under `digest`, which the writer hashed while it
+        /// streamed the `byte_length` bytes in; the file is not read again.
         pub(crate) fn commit_capture(
             &self,
             name: &str,
             capture: &Mutex<fs::File>,
-        ) -> std::io::Result<(CapturedArtifact, u64)> {
+            digest: &str,
+            byte_length: u64,
+        ) -> std::io::Result<ArtifactReference> {
             #[cfg(test)]
             self.io_test_hook.run("capture_finalize", name)?;
             let _write = self
                 .writes
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let mut temporary = capture
+            let temporary = capture
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let (digest, byte_length, newlines) = hash_file(&mut temporary)?;
             let published_at = std::time::SystemTime::now();
             temporary.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
             temporary.sync_all()?;
-            if let Some(mut existing) = self.open_existing(&digest)? {
-                if hash_file(&mut existing)?.0 != digest {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "artifact digest collision or corrupt retained artifact",
-                    ));
-                }
+            if let Some(existing) = self.open_existing(digest)?
+                && existing.metadata()?.len() == byte_length
+            {
                 existing.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
                 existing.sync_all()?;
                 fs2::FileExt::unlock(&*temporary)?;
@@ -763,23 +759,16 @@ mod unix {
                     &*self.directory_handle,
                     name,
                     &*self.directory_handle,
-                    &digest,
+                    digest,
                 )?;
                 fs2::FileExt::unlock(&*temporary)?;
-                self.open_existing(&digest)?
+                self.open_existing(digest)?
                     .ok_or_else(|| std::io::Error::other("capture artifact disappeared"))?;
             }
             fsync(&*self.directory_handle)?;
-            Ok((
-                CapturedArtifact {
-                    reference: ArtifactReference {
-                        uri: format!("artifact://sha256/{digest}"),
-                    },
-                    sha256: digest,
-                    byte_length,
-                },
-                newlines,
-            ))
+            Ok(ArtifactReference {
+                uri: format!("artifact://sha256/{digest}"),
+            })
         }
 
         pub(crate) fn discard_capture(&self, name: &str) {
@@ -874,13 +863,6 @@ mod unix {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         Ok((digest, total, newlines))
-    }
-
-    #[derive(Clone, Debug, Serialize)]
-    pub(crate) struct CapturedArtifact {
-        pub(crate) reference: ArtifactReference,
-        pub(crate) sha256: String,
-        pub(crate) byte_length: u64,
     }
 
     pub(super) fn directory_names(directory: &fs::File) -> std::io::Result<Vec<String>> {
@@ -1064,7 +1046,6 @@ mod windows {
     use bytes::Bytes;
     use cookie_agent_protocol::{ArtifactReference, ToolAttachment};
     use fs2::FileExt as _;
-    use serde::Serialize;
     use sha2::{Digest, Sha256};
     use uuid::Uuid;
 
@@ -1119,12 +1100,11 @@ mod windows {
                 .writes
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(mut existing) = self.open_existing(&digest)? {
-                if hash_file(&mut existing)?.0 != digest {
-                    return Err(invalid(
-                        "artifact digest collision or corrupt retained artifact",
-                    ));
-                }
+            // Names are content addresses: a blob of the right length is the
+            // content. A torn one is replaced; readers verify digests anyway.
+            if let Some(existing) = self.open_existing(&digest)?
+                && existing.metadata()?.len() == content.len() as u64
+            {
                 existing.set_times(
                     std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()),
                 )?;
@@ -1132,7 +1112,7 @@ mod windows {
                 let temporary_name = format!(".{digest}.{}.tmp", Uuid::now_v7());
                 let temporary_path = self.directory.join(&temporary_name);
                 let mut temporary = self.create_file(&temporary_name)?;
-                let result = (|| {
+                let result = (|| -> std::io::Result<()> {
                     temporary.write_all(content)?;
                     temporary.sync_all()?;
                     drop(temporary);
@@ -1140,12 +1120,8 @@ mod windows {
                         &temporary_path,
                         &self.directory.join(&digest),
                     )?;
-                    let mut installed = self
-                        .open_existing(&digest)?
+                    self.open_existing(&digest)?
                         .ok_or_else(|| invalid("retained artifact disappeared"))?;
-                    if hash_file(&mut installed)?.0 != digest {
-                        return Err(invalid("retained artifact failed verification"));
-                    }
                     Ok(())
                 })();
                 if result.is_err() {
@@ -1426,11 +1402,15 @@ mod windows {
             }
         }
 
+        /// Publish a capture under `digest`, which the writer hashed while it
+        /// streamed the `byte_length` bytes in; the file is not read again.
         pub(crate) fn commit_capture(
             &self,
             name: &str,
             capture: &Mutex<fs::File>,
-        ) -> std::io::Result<(CapturedArtifact, u64)> {
+            digest: &str,
+            byte_length: u64,
+        ) -> std::io::Result<ArtifactReference> {
             #[cfg(test)]
             self.io_test_hook.run("capture_finalize", name)?;
             let _write = self
@@ -1438,24 +1418,20 @@ mod windows {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             // LockFileEx locks overlap by handle, including handles in this process.
-            // Hash through the original handle, refresh and sync its mtime while
-            // locked, then unlock only after a final digest exists. This permits
+            // Refresh and sync the mtime through the original handle while locked,
+            // then unlock only once the blob has its final name. This permits
             // immediate verification/preview through a second handle without an
             // old-mtime GC window or a reopened temp-cleanup race.
-            let mut temporary = capture
+            let temporary = capture
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let (digest, byte_length, newlines) = hash_file(&mut temporary)?;
             let published_at = std::time::SystemTime::now();
             temporary.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
             temporary.sync_all()?;
             let temporary_path = self.directory.join(name);
-            if let Some(mut existing) = self.open_existing(&digest)? {
-                if hash_file(&mut existing)?.0 != digest {
-                    return Err(invalid(
-                        "artifact digest collision or corrupt retained artifact",
-                    ));
-                }
+            if let Some(existing) = self.open_existing(digest)?
+                && existing.metadata()?.len() == byte_length
+            {
                 existing.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
                 existing.sync_all()?;
                 fs2::FileExt::unlock(&*temporary)?;
@@ -1467,22 +1443,15 @@ mod windows {
             } else {
                 cookie_agent_models::secure_store::replace_windows_path(
                     &temporary_path,
-                    &self.directory.join(&digest),
+                    &self.directory.join(digest),
                 )?;
                 fs2::FileExt::unlock(&*temporary)?;
-                self.open_existing(&digest)?
+                self.open_existing(digest)?
                     .ok_or_else(|| invalid("capture artifact disappeared"))?;
             }
-            Ok((
-                CapturedArtifact {
-                    reference: ArtifactReference {
-                        uri: format!("artifact://sha256/{digest}"),
-                    },
-                    sha256: digest,
-                    byte_length,
-                },
-                newlines,
-            ))
+            Ok(ArtifactReference {
+                uri: format!("artifact://sha256/{digest}"),
+            })
         }
 
         pub(crate) fn discard_capture(&self, name: &str) {
@@ -1490,13 +1459,6 @@ mod windows {
                 let _ = fs::remove_file(self.directory.join(name));
             }
         }
-    }
-
-    #[derive(Clone, Debug, Serialize)]
-    pub(crate) struct CapturedArtifact {
-        pub(crate) reference: ArtifactReference,
-        pub(crate) sha256: String,
-        pub(crate) byte_length: u64,
     }
 
     fn hash_file(file: &mut fs::File) -> std::io::Result<(String, u64, u64)> {
@@ -1897,8 +1859,11 @@ impl ArtifactRouter {
         session: SessionId,
         name: &str,
         capture: &Mutex<File>,
-    ) -> std::io::Result<(CapturedArtifact, u64)> {
-        self.write_store(session)?.commit_capture(name, capture)
+        digest: &str,
+        byte_length: u64,
+    ) -> std::io::Result<ArtifactReference> {
+        self.write_store(session)?
+            .commit_capture(name, capture, digest, byte_length)
     }
 
     pub(crate) fn discard_capture(&self, session: SessionId, name: &str) {
