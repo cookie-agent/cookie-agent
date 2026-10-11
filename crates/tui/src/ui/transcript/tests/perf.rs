@@ -500,6 +500,15 @@ async fn scenario(with_descendants: bool) {
 #[tokio::test]
 #[ignore = "manual performance measurement; run in release"]
 async fn transcript_perf() {
+    let start = Instant::now();
+    let syntaxes = syntect::parsing::SyntaxSet::load_defaults_newlines();
+    let themes = syntect::highlighting::ThemeSet::load_defaults();
+    eprintln!(
+        "syntax assets load: {:.3} ms ({} syntaxes, {} themes)",
+        start.elapsed().as_secs_f64() * 1000.0,
+        syntaxes.syntaxes().len(),
+        themes.themes.len()
+    );
     scenario(false).await;
     scenario(true).await;
 }
