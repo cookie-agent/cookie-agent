@@ -56,15 +56,20 @@ pub(super) fn assistant_item_layout(
                                 lines,
                                 regions: Vec::new(),
                                 blocks,
+                                thinking_rows: ThinkingRows::default(),
                             }
                         }
                         _ => {
+                            let mut thinking_rows = previous
+                                .map(|previous| previous.thinking_rows)
+                                .unwrap_or_default();
                             let part_layout = assistant_child_layout(
                                 child,
                                 key,
                                 context.width,
                                 context.theme,
                                 context.highlighter,
+                                &mut thinking_rows,
                             );
                             let mut lines = LineChunks::default();
                             lines.push_lines(part_layout.lines);
@@ -73,6 +78,7 @@ pub(super) fn assistant_item_layout(
                                 lines,
                                 regions: part_layout.regions,
                                 blocks: Vec::new(),
+                                thinking_rows,
                             }
                         }
                     };
@@ -278,6 +284,7 @@ pub(super) fn assistant_child_layout(
     width: u16,
     theme: &Theme,
     highlighter: &dyn Highlighter,
+    thinking_rows: &mut ThinkingRows,
 ) -> ItemLayout {
     match child {
         AssistantChild::Text { markdown, .. } => ItemLayout {
@@ -289,8 +296,12 @@ pub(super) fn assistant_child_layout(
         },
         AssistantChild::Thinking { id, text, .. } => {
             let block_id = BlockId::Thinking(*id);
-            let (body, text_rows) = thinking_body_lines(text, width, theme);
-            let hidden_lines = text_rows.max(1);
+            // Collapsed, only the row count shows: count incrementally
+            // instead of wrapping the whole trace on every streamed delta.
+            let body = key
+                .expanded
+                .then(|| thinking_body_lines(text, width, theme).0);
+            let hidden_lines = thinking_rows.count(text, width, theme).max(1);
             // While thinking streams the header animates an ellipsis; once
             // sealed it reads "thought", with the durable elapsed time when
             // the projection recorded one. Exactly one chevron per thinking
@@ -329,7 +340,7 @@ pub(super) fn assistant_child_layout(
                 (assistant_body_line(label, width, theme), None)
             };
             let header_lines = lines.len();
-            if key.expanded {
+            if let Some(body) = body {
                 lines.extend(body);
             }
             ItemLayout {
@@ -520,42 +531,83 @@ pub(super) fn thinking_body_lines(
     width: u16,
     theme: &Theme,
 ) -> (Vec<Line<'static>>, usize) {
-    let style = theme
-        .muted_text()
-        .add_modifier(ratatui::style::Modifier::ITALIC);
-    let text_line = |text: &str| Line::styled(text.to_owned(), style);
+    let text_rows = text
+        .split('\n')
+        .flat_map(|text| thinking_text_rows(text, width, theme))
+        .collect::<Vec<_>>();
+    let rows = text_rows.len();
     if panel_margin(width) {
         let background = theme.terminal_background();
         let blank = || padded_band_rows(Line::default(), width, theme, background);
-        let text_rows = text
-            .split('\n')
-            .flat_map(|text| padded_band_rows(text_line(text), width, theme, background))
-            .collect::<Vec<_>>();
-        let rows = text_rows.len();
         let mut lines = blank();
         lines.extend(text_rows);
         lines.extend(blank());
         lines.extend(assistant_body_line(Line::default(), width, theme));
         return (lines, rows);
     }
-    let lines = text
-        .split('\n')
-        .flat_map(|text| {
-            let prefix = if width >= 5 {
-                vec![
-                    Span::styled("│ ", theme.assistant()),
-                    Span::styled("│ ", style),
-                ]
-            } else if width >= 3 {
-                vec![Span::styled("│ ", style)]
-            } else {
-                Vec::new()
-            };
-            repeated_prefixed_wrapped_line(prefix, text_line(text), width)
-        })
-        .collect::<Vec<_>>();
-    let rows = lines.len();
-    (lines, rows)
+    (text_rows, rows)
+}
+
+/// The rows one source line of thinking wraps to.
+fn thinking_text_rows(text: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    let style = theme
+        .muted_text()
+        .add_modifier(ratatui::style::Modifier::ITALIC);
+    let line = Line::styled(text.to_owned(), style);
+    if panel_margin(width) {
+        return padded_band_rows(line, width, theme, theme.terminal_background());
+    }
+    let prefix = if width >= 5 {
+        vec![
+            Span::styled("│ ", theme.assistant()),
+            Span::styled("│ ", style),
+        ]
+    } else if width >= 3 {
+        vec![Span::styled("│ ", style)]
+    } else {
+        Vec::new()
+    };
+    repeated_prefixed_wrapped_line(prefix, line, width)
+}
+
+/// The wrapped row count of a thinking trace's complete lines, carried
+/// between renders of one part: thinking only grows, so a re-render counts
+/// just the lines that arrived since.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct ThinkingRows {
+    /// Bytes of the trace through its last counted newline.
+    counted: usize,
+    /// The counted bytes' tail, to tell the same trace from another.
+    tail: [u8; 16],
+    rows: usize,
+}
+
+impl ThinkingRows {
+    /// The rows all of `text` wraps to, remembering its complete lines.
+    fn count(&mut self, text: &str, width: u16, theme: &Theme) -> usize {
+        let extends = text.len() >= self.counted && Self::tail(text, self.counted) == self.tail;
+        if !extends {
+            *self = Self::default();
+        }
+        let rest = &text[self.counted..];
+        let (complete, open) = match rest.rfind('\n') {
+            Some(newline) => (&rest[..=newline], &rest[newline + 1..]),
+            None => ("", rest),
+        };
+        for line in complete.split_terminator('\n') {
+            self.rows += thinking_text_rows(line, width, theme).len();
+        }
+        self.counted += complete.len();
+        self.tail = Self::tail(text, self.counted);
+        self.rows + thinking_text_rows(open, width, theme).len()
+    }
+
+    fn tail(text: &str, end: usize) -> [u8; 16] {
+        let bytes = &text.as_bytes()[end.saturating_sub(16)..end];
+        let mut tail = [0; 16];
+        tail[16 - bytes.len()..].copy_from_slice(bytes);
+        tail
+    }
 }
 
 /// One line behind the assistant `│ ` gutter on a padded band: a band column

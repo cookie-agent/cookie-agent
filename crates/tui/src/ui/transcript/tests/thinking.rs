@@ -235,3 +235,71 @@ fn thinking_reads_as_muted_text_collapsed_and_expanded() {
         Some("a thought")
     );
 }
+
+#[test]
+fn collapsed_streaming_thinking_counts_hidden_lines_as_a_fresh_layout_would() {
+    let session = SessionId::new_v7();
+    let run = run_id();
+    let attempt = AttemptId::new_v7();
+    let mut store = StateStore::default();
+    assert!(store.apply_event(attempt_started(session, 1, run, attempt, None)));
+    let long = "a long line of reasoning that wraps across several rows at this width ";
+    let deltas = [
+        "first",
+        " line\nsecond line\n",
+        long,
+        long,
+        "\n\nafter a blank line",
+        "\n",
+        "x",
+    ];
+    // A wide pane pads thinking on a band; a narrow one marks rows instead.
+    let mut caches = [LayoutCache::default(), LayoutCache::default()];
+    let highlighter = crate::markdown::SyntectHighlighter::default();
+    for (index, delta) in deltas.iter().enumerate() {
+        let seq = 2 + index as u64;
+        assert!(store.apply_event(reasoning_delta(session, seq, run, attempt, delta)));
+        let state = &store.sessions[&session];
+        for (cache, width) in caches.iter_mut().zip([40, 12]) {
+            let layout = |cache: &mut LayoutCache| {
+                ensure_cached_transcript_layout(
+                    cache,
+                    session,
+                    state,
+                    None,
+                    None,
+                    width,
+                    &Theme::default(),
+                    &highlighter,
+                    crate::state::EventLevel::Debug,
+                    0,
+                    &crate::state::ModelDisplayNames::default(),
+                );
+                snapshot_lines(&cache.layout.lines.to_vec())
+            };
+            let incremental = layout(cache);
+            let fresh = layout(&mut LayoutCache::default());
+            assert_eq!(incremental, fresh, "delta {index} width {width}");
+            let expected = thinking_body_lines(
+                match &state.transcript[0] {
+                    crate::state::TranscriptItem::Assistant { children, .. } => {
+                        match &children[0] {
+                            AssistantChild::Thinking { text, .. } => text,
+                            _ => unreachable!("thinking part"),
+                        }
+                    }
+                    _ => unreachable!("assistant item"),
+                },
+                width,
+                &Theme::default(),
+            )
+            .1
+            .max(1);
+            let noun = if expected == 1 { "line" } else { "lines" };
+            assert!(
+                width < 40 || incremental.contains(&format!("({expected} {noun} hidden)")),
+                "delta {index} width {width}: {incremental}"
+            );
+        }
+    }
+}

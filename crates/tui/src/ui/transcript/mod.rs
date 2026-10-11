@@ -738,6 +738,8 @@ struct CachedAssistantPartLayout {
     /// A reply's rendered markdown blocks and the rows each wrapped to, so
     /// the next render of this part re-wraps only blocks that changed.
     blocks: Vec<WrappedBlock>,
+    /// A thinking part's counted rows, carried to its next render.
+    thinking_rows: ThinkingRows,
 }
 
 /// One rendered markdown block and the rows it wrapped to.
