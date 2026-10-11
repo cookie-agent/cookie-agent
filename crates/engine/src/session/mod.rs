@@ -455,6 +455,17 @@ impl ReadOnlyLogs {
         Some(log)
     }
 
+    /// Removes `id`'s parsed log, returning it when the file still matches.
+    fn take(
+        &mut self,
+        id: SessionId,
+        fingerprint: ReadOnlyLogFingerprint,
+    ) -> Option<Arc<EventLog>> {
+        let index = self.0.iter().position(|(cached, _, _)| *cached == id)?;
+        let (_, cached, log) = self.0.remove(index)?;
+        (cached == fingerprint).then_some(log)
+    }
+
     fn insert(&mut self, id: SessionId, fingerprint: ReadOnlyLogFingerprint, log: Arc<EventLog>) {
         self.0.retain(|(cached, _, _)| *cached != id);
         self.0.push_front((id, fingerprint, log));
@@ -966,6 +977,30 @@ impl SessionStore {
         Ok(log)
     }
 
+    /// Opens `id`'s log at `path` for writing. A read-only parse of the same
+    /// file — a resume reads the root during its tree load first — is taken
+    /// over instead of parsing the file again when the file has not changed
+    /// since. The caller holds the tree's lock, so nothing else writes it.
+    fn open_owned_log(
+        &self,
+        id: SessionId,
+        path: PathBuf,
+        capability: WriteCapability,
+    ) -> Result<Arc<EventLog>, EventLogError> {
+        let parsed = ReadOnlyLogFingerprint::of(&path)
+            .ok()
+            .and_then(|fingerprint| {
+                self.read_only_logs
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take(id, fingerprint)
+            });
+        if let Some(owned) = parsed.and_then(|log| log.owned_from_read_only(capability.clone())) {
+            return Ok(owned);
+        }
+        EventLog::open_owned(path, id, capability)
+    }
+
     /// Arc clone of the resident log plus its persistence flag, without
     /// cloning the whole projection. Used by the append hot path, which only
     /// needs the log and the `first_user_message` gate.
@@ -1008,7 +1043,7 @@ impl SessionStore {
         }
         let capability = self.write_capability(id, false)?;
         self.note_log_open(id);
-        let log = EventLog::open_owned(session_dir.join(EVENTS_FILE), id, capability)?;
+        let log = self.open_owned_log(id, session_dir.join(EVENTS_FILE), capability)?;
         let reopened = Arc::new(projection(log)?);
         let mut residency = self
             .residency
@@ -1303,11 +1338,8 @@ impl SessionStore {
             }
             let session_dir = self.resolve_dir(id)?;
             let capability = self.write_capability(id, false)?;
-            let reopened = projection(EventLog::open_owned(
-                session_dir.join(EVENTS_FILE),
-                id,
-                capability,
-            )?)?;
+            let reopened =
+                projection(self.open_owned_log(id, session_dir.join(EVENTS_FILE), capability)?)?;
             let mut residency = self
                 .residency
                 .lock()
@@ -1326,7 +1358,7 @@ impl SessionStore {
         // written, through its own adoption.
         let root = self.root_of(id)?;
         let (capability, acquired) = self.hold_tree(root, id)?;
-        let opened = EventLog::open_owned(session_dir.join(EVENTS_FILE), id, capability);
+        let opened = self.open_owned_log(id, session_dir.join(EVENTS_FILE), capability);
         let projection = match opened.and_then(|log| {
             projection(log).map_err(|error| match error {
                 SessionError::Event(error) => error,

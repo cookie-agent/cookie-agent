@@ -477,6 +477,42 @@ fn foreign_get_parses_an_unchanged_log_once() {
     assert_eq!(refreshed.meta.last_event_seq, tip + 1);
 }
 
+/// Resuming a cold root parses its log once: the tree load's read is taken
+/// over by the adoption that follows it.
+#[test]
+fn resuming_a_cold_root_parses_its_log_once() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let owner = SessionStore::open(&data, &cwd).expect("owner store");
+    let session_id = persist_test_session(&owner);
+    let expected = owner.get(session_id).expect("owned").log.events();
+    drop(owner);
+
+    let store = SessionStore::open(&data, &cwd).expect("cold store");
+    let parses = || crate::events::EVENT_LOG_PARSES.with(std::cell::Cell::get);
+    let before = parses();
+    let resumed = store.open_for_write(session_id).expect("resume");
+    assert_eq!(
+        parses() - before,
+        1,
+        "one parse serves the load and the adoption"
+    );
+    assert_eq!(resumed.log.events(), expected);
+    append_title(&store, session_id, "after resume");
+    assert_eq!(
+        crate::events::EventLog::open_read_only(
+            store.session_dir(session_id).join(EVENTS_FILE),
+            session_id
+        )
+        .expect("log reads back")
+        .events()
+        .len(),
+        expected.len() + 1
+    );
+}
+
 #[test]
 fn failed_adoption_is_unobservable_and_retryable() {
     let temporary = private_tempdir();

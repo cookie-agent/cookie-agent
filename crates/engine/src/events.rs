@@ -64,6 +64,9 @@ pub struct EventLog {
     next_seq: AtomicU64,
     persisted: AtomicBool,
     read_only: bool,
+    /// A read-only open found a torn final record and left it in the file;
+    /// an owned open cuts it.
+    torn_tail_ignored: bool,
     write_capability: Option<WriteCapability>,
     #[cfg(test)]
     _test_authority: Option<WriteAuthority>,
@@ -104,7 +107,7 @@ struct AppendAuthorizationHook {
     release: std::sync::mpsc::Receiver<()>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct EventIndex {
     last_run_started: Option<(u64, RunId, cookie_agent_protocol::ModelSelection)>,
     last_checkpoint_seq: u64,
@@ -161,7 +164,7 @@ impl EventIndex {
 /// older view is still alive, and never deep-copies an event.
 pub type EventSnapshot = Arc<Vec<Arc<StoredEvent>>>;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct EventStorage {
     /// Every physical record, including ones hidden by a later revert.
     all: EventSnapshot,
@@ -377,6 +380,7 @@ impl EventLog {
             next_seq: AtomicU64::new(1),
             persisted: AtomicBool::new(persisted),
             read_only: false,
+            torn_tail_ignored: false,
             write_capability: Some(capability),
             #[cfg(test)]
             _test_authority,
@@ -478,6 +482,7 @@ impl EventLog {
             next_seq: AtomicU64::new(loaded.next_seq),
             persisted: AtomicBool::new(true),
             read_only,
+            torn_tail_ignored: loaded.torn_tail,
             write_capability,
             #[cfg(test)]
             _test_authority,
@@ -521,6 +526,42 @@ impl EventLog {
             next_seq: AtomicU64::new(next_seq),
             persisted: AtomicBool::new(false),
             read_only: false,
+            torn_tail_ignored: false,
+            write_capability: Some(capability),
+            #[cfg(test)]
+            _test_authority: None,
+            #[cfg(test)]
+            append_authorization_hook: Mutex::new(None),
+            writer: Mutex::new(None),
+        }))
+    }
+
+    /// An owned log over the records this read-only log parsed, without
+    /// reading the file again. `None` when the parse ignored a torn final
+    /// record, which an owned open has to cut from the file. The caller
+    /// proves the file is unchanged since the parse.
+    pub(crate) fn owned_from_read_only(&self, capability: WriteCapability) -> Option<Arc<Self>> {
+        if !self.read_only || self.torn_tail_ignored {
+            return None;
+        }
+        let storage = self.storage().clone();
+        let validation = self
+            .validation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        Some(Arc::new(Self {
+            path: self.path.clone(),
+            session_id: self.session_id,
+            append: Mutex::new(()),
+            events: Mutex::new(storage),
+            diagnostics: self.diagnostics.clone(),
+            initial_validation_taint: Mutex::new(self.initial_taint()),
+            validation: Mutex::new(validation),
+            next_seq: AtomicU64::new(self.next_seq.load(Ordering::Acquire)),
+            persisted: AtomicBool::new(true),
+            read_only: false,
+            torn_tail_ignored: false,
             write_capability: Some(capability),
             #[cfg(test)]
             _test_authority: None,
@@ -2638,6 +2679,8 @@ fn validate_record_incremental(
 
 struct LoadedEvents {
     records: Vec<StoredEvent>,
+    /// The file ended in a partial record, cut or ignored per [`TornTail`].
+    torn_tail: bool,
     diagnostics: Vec<EventLoadDiagnostic>,
     validation_taint: ValidationTaint,
     next_seq: u64,
@@ -2705,8 +2748,16 @@ fn observe_sequence(
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only: event logs this thread parsed from disk.
+    pub(crate) static EVENT_LOG_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, EventLogError> {
-    let bytes = read_complete_jsonl(path, torn_tail)?;
+    #[cfg(test)]
+    EVENT_LOG_PARSES.with(|parses| parses.set(parses.get() + 1));
+    let (bytes, torn) = read_complete_jsonl(path, torn_tail)?;
     let mut records = Vec::new();
     let mut diagnostics = Vec::new();
     let mut validation_taint = ValidationTaint::default();
@@ -2961,6 +3012,7 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
     );
     Ok(LoadedEvents {
         records,
+        torn_tail: torn,
         diagnostics,
         validation_taint,
         next_seq: observed_tip.saturating_add(1).max(1),
@@ -3198,7 +3250,7 @@ fn load_jsonl_with_policy<T>(path: &Path, torn_tail: TornTail) -> Result<Vec<T>,
 where
     T: for<'de> Deserialize<'de>,
 {
-    let bytes = read_complete_jsonl(path, torn_tail)?;
+    let (bytes, _) = read_complete_jsonl(path, torn_tail)?;
     bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
@@ -3211,10 +3263,12 @@ where
         .collect()
 }
 
-fn read_complete_jsonl(path: &Path, torn_tail: TornTail) -> Result<Vec<u8>, EventLogError> {
+/// The complete records of `path`, and whether a torn final record was cut
+/// from them.
+fn read_complete_jsonl(path: &Path, torn_tail: TornTail) -> Result<(Vec<u8>, bool), EventLogError> {
     let mut bytes = match fs::read(path) {
         Ok(bytes) => bytes,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok((Vec::new(), false)),
         Err(source) => {
             return Err(EventLogError::Io {
                 path: path.to_owned(),
@@ -3222,7 +3276,8 @@ fn read_complete_jsonl(path: &Path, torn_tail: TornTail) -> Result<Vec<u8>, Even
             });
         }
     };
-    if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+    let torn = !bytes.is_empty() && !bytes.ends_with(b"\n");
+    if torn {
         let length = bytes
             .iter()
             .rposition(|byte| *byte == b'\n')
@@ -3244,7 +3299,7 @@ fn read_complete_jsonl(path: &Path, torn_tail: TornTail) -> Result<Vec<u8>, Even
                 })?;
         }
     }
-    Ok(bytes)
+    Ok((bytes, torn))
 }
 
 /// Cuts `path` at the first record whose sequence is past `through_seq` and

@@ -737,7 +737,9 @@ impl SessionStore {
             // A child can publish before its root, so a root that never got a
             // durable log has no records of its own to harvest.
             None if fs::metadata(&root_log).map_or(true, |log| log.len() == 0) => None,
-            None => Some(self.open_snapshot(root, false)?),
+            // Read through the parsed-log cache: a resume that loads this
+            // tree adopts the root next and takes the parse over.
+            None => Some(self.open_snapshot(root, true)?),
         };
         if let Some(projection) = root_projection {
             fold.harvest_records(&projection, &projection.log.event_snapshot());
