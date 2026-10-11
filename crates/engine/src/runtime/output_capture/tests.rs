@@ -859,3 +859,59 @@ async fn output_that_fits_its_preview_is_stored_nowhere_else() {
     }
     assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
 }
+
+#[tokio::test]
+async fn output_past_the_retain_limit_keeps_its_head_and_last_lines() {
+    let root = tempfile::tempdir().unwrap();
+    let store = ArtifactRouter::open_flat(root.path().join("artifacts")).unwrap();
+    let capture = OutputCapture::new(
+        store.clone(),
+        crate::test_session_id(),
+        ToolOutputDeclaration::Single,
+        1,
+        8,
+    )
+    .await
+    .unwrap()
+    .with_retain_limit(64, 20);
+    for line in 0..100 {
+        append(
+            &capture,
+            &[ToolOutputChunk {
+                stream: None,
+                text: format!("line-{line:02}\n"),
+            }],
+        )
+        .await
+        .unwrap();
+    }
+    let result = capture
+        .finish(completion(ToolCompletionOutput::Streamed), false)
+        .await
+        .unwrap();
+    let stream = &result.retained_output.as_ref().unwrap().streams[0];
+    // 800 bytes: the 64-byte head, then the last whole lines of a 20-byte tail.
+    assert_eq!(stream.byte_length, 800);
+    assert_eq!(stream.dropped_bytes, 720);
+    let digest = stream.sha256.as_ref().unwrap();
+    assert_eq!(
+        store
+            .read_paged(crate::test_session_id(), digest.as_str(), 0, 100)
+            .unwrap()
+            .content,
+        format!(
+            "{}[… 720 bytes not retained: the output passed the 64-byte capture limit]\n\
+             line-98\nline-99\n",
+            (0..8)
+                .map(|line| format!("line-{line:02}\n"))
+                .collect::<String>()
+        )
+    );
+    assert!(
+        result
+            .output
+            .contains("offset=1); 720 bytes past the 64-byte capture limit were not retained]"),
+        "{}",
+        result.output
+    );
+}

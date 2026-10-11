@@ -305,8 +305,9 @@ cannot decode the new owner variant, so the version moves.
 Protocol 32 stops storing tool output that fits its preview anywhere but the
 result output. `RetainedToolStream.reference` and `sha256` become optional and
 are absent for such a stream, and `RetainedToolOutput.reference` is absent when
-no stream needed an artifact. Older clients require those fields, so the version
-moves.
+no stream needed an artifact. `RetainedToolStream` also gains `dropped_bytes`,
+present when output past the 128 MiB capture limit was not retained. Older
+clients require the now-optional fields, so the version moves.
 
 Session metadata includes additive `skipped_events` entries with the physical
 sequence (or source line number when no sequence was readable) and a safe reason.

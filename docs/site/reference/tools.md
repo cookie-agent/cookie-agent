@@ -197,7 +197,10 @@ The runtime keeps bounded previews and counts of accepted text chunks in
 memory. A stream that fits its preview is stored nowhere else: the result output
 holds all of it and it has no artifact. Once a stream outgrows its preview, its
 bytes are buffered and written in batches to a temporary file, hashed as they
-are written, and published as a full artifact at completion. A single output has
+are written, and published as a full artifact at completion. An artifact keeps
+at most the first 128 MiB of a stream; past that only the last mebibyte is
+kept, after a marker line counting the dropped bytes, and the stream's
+`dropped_bytes` and the result's read hint report the loss. A single output has
 at most one artifact; named output gets a generic manifest when any stream has
 an artifact, and the manifest lists every declared stream. Declaration
 order determines model rendering. Bash uses the same named-output interface as

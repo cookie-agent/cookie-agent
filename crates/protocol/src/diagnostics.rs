@@ -392,6 +392,7 @@ mod tests {
                             line_count: 1,
                             truncated: false,
                             next_offset: None,
+                            dropped_bytes: 0,
                         })
                         .collect(),
                 }),

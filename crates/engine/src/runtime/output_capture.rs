@@ -33,6 +33,16 @@ pub(crate) struct OutputState {
 /// ask for batching.
 const FLUSH_BYTES: usize = if cfg!(test) { 1 } else { 1024 * 1024 };
 
+/// The most of one stream an artifact keeps from its head. A model reads an
+/// artifact 2,000 lines a page, so 128 MiB — over a million typical lines — is
+/// more than any reader pages through, while a runaway command (`yes`, a
+/// binary dumped to stdout) can no longer fill the disk one call at a time.
+const MAX_RETAINED_BYTES: u64 = 128 * 1024 * 1024;
+
+/// How much of the output past the limit is kept, as the artifact's last
+/// stretch: the end of a long run is where its errors usually are.
+const DROPPED_TAIL_BYTES: usize = 1024 * 1024;
+
 #[derive(Debug)]
 struct Channel {
     name: Option<String>,
@@ -52,6 +62,15 @@ struct Channel {
     preview: String,
     /// The most recent output, at most twice the preview byte limit.
     tail: String,
+    /// Bytes headed for the artifact (written or pending), at most the
+    /// capture's retain limit until the stream is closed.
+    retained: u64,
+    retained_ends_with_newline: bool,
+    /// Bytes past the retain limit, and the most recent of them.
+    overflowed: u64,
+    overflow: String,
+    /// Overflowed bytes the artifact lost for good, known once closed.
+    dropped: u64,
 }
 
 #[derive(Debug)]
@@ -78,6 +97,8 @@ struct Capture {
     operations: Arc<tokio::sync::Semaphore>,
     publication: Mutex<Publication>,
     flush_bytes: usize,
+    retain_limit: u64,
+    dropped_tail: usize,
 }
 
 impl Drop for Capture {
@@ -164,6 +185,8 @@ impl OutputCapture {
             operations: Arc::new(tokio::sync::Semaphore::new(1)),
             publication: Mutex::new(Publication::default()),
             flush_bytes: FLUSH_BYTES,
+            retain_limit: MAX_RETAINED_BYTES,
+            dropped_tail: DROPPED_TAIL_BYTES,
         }));
         {
             let mut state = capture.0.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -181,6 +204,11 @@ impl OutputCapture {
                     ends_with_newline: false,
                     preview: String::new(),
                     tail: String::new(),
+                    retained: 0,
+                    retained_ends_with_newline: false,
+                    overflowed: 0,
+                    overflow: String::new(),
+                    dropped: 0,
                 });
             }
         }
@@ -193,6 +221,16 @@ impl OutputCapture {
         Arc::get_mut(&mut self.0)
             .expect("a new capture is unshared")
             .flush_bytes = bytes;
+        self
+    }
+
+    /// Keep at most `limit` bytes of a stream's head and `tail` bytes past
+    /// it (tests only).
+    #[cfg(test)]
+    pub(crate) fn with_retain_limit(mut self, limit: u64, tail: usize) -> Self {
+        let capture = Arc::get_mut(&mut self.0).expect("a new capture is unshared");
+        capture.retain_limit = limit;
+        capture.dropped_tail = tail;
         self
     }
 
@@ -333,12 +371,82 @@ impl OutputCapture {
             if was_whole {
                 // The first byte past the preview: from here on the stream
                 // needs an artifact holding all of it, from its first byte.
-                channel
-                    .pending
-                    .extend_from_slice(&channel.preview.as_bytes()[..previewed]);
+                let head = channel.preview[..previewed].to_owned();
+                self.spill(channel, &head);
             }
-            channel.pending.extend_from_slice(text.as_bytes());
+            self.spill(channel, text);
         }
+    }
+
+    /// Queues `text` for the artifact up to the retain limit; past it, only
+    /// a rolling tail survives until the stream is closed.
+    fn spill(&self, channel: &mut Channel, text: &str) {
+        let mut keep = if channel.overflowed > 0 {
+            0
+        } else {
+            usize::try_from(self.0.retain_limit.saturating_sub(channel.retained))
+                .unwrap_or(usize::MAX)
+                .min(text.len())
+        };
+        while !text.is_char_boundary(keep) {
+            keep -= 1;
+        }
+        if keep > 0 {
+            channel.pending.extend_from_slice(&text.as_bytes()[..keep]);
+            channel.retained = channel.retained.saturating_add(keep as u64);
+            channel.retained_ends_with_newline = text[..keep].ends_with('\n');
+        }
+        let rest = &text[keep..];
+        if rest.is_empty() {
+            return;
+        }
+        channel.overflowed = channel.overflowed.saturating_add(rest.len() as u64);
+        channel.overflow.push_str(rest);
+        if channel.overflow.len() > 2 * self.0.dropped_tail {
+            let mut start = channel.overflow.len() - self.0.dropped_tail;
+            while !channel.overflow.is_char_boundary(start) {
+                start += 1;
+            }
+            channel.overflow.drain(..start);
+        }
+    }
+
+    /// Ends an overflowed stream's artifact: a marker line saying how much
+    /// was dropped, then the kept tail from its first whole line.
+    fn close_overflow(&self, channel: &mut Channel) {
+        if channel.overflowed == 0 {
+            return;
+        }
+        let mut start = channel.overflow.len().saturating_sub(self.0.dropped_tail);
+        while !channel.overflow.is_char_boundary(start) {
+            start += 1;
+        }
+        let at_line_start = if start == 0 && channel.overflowed == channel.overflow.len() as u64 {
+            channel.retained_ends_with_newline
+        } else {
+            start > 0 && channel.overflow.as_bytes()[start - 1] == b'\n'
+        };
+        if !at_line_start
+            && let Some(newline) = channel.overflow[start..].find('\n')
+            && start + newline + 1 < channel.overflow.len()
+        {
+            start += newline + 1;
+        }
+        let tail = &channel.overflow[start..];
+        channel.dropped = channel.overflowed - tail.len() as u64;
+        let marker = format!(
+            "{}[… {} bytes not retained: the output passed the {} capture limit]\n",
+            if channel.retained_ends_with_newline {
+                ""
+            } else {
+                "\n"
+            },
+            channel.dropped,
+            byte_size(self.0.retain_limit),
+        );
+        channel.pending.extend_from_slice(marker.as_bytes());
+        channel.pending.extend_from_slice(tail.as_bytes());
+        channel.overflow = String::new();
     }
 
     /// Writes out every channel holding at least `threshold` buffered bytes.
@@ -474,6 +582,9 @@ impl OutputCapture {
                 self.append_channel(channel, &chunk.text);
             }
         }
+        for channel in &mut state.channels {
+            self.close_overflow(channel);
+        }
         drop(state);
         if let Err(error) = self.flush_blocking(0)
             && !incomplete
@@ -522,6 +633,7 @@ impl OutputCapture {
                     + u64::from(channel.bytes > 0 && !channel.ends_with_newline),
                 truncated,
                 next_offset: truncated.then(|| preview::newlines(preview.0)),
+                dropped_bytes: channel.dropped,
             });
             previews.push(preview);
         }
@@ -566,12 +678,19 @@ impl OutputCapture {
                 .name
                 .as_ref()
                 .map_or_else(String::new, |name| format!("/{name}"));
-            let read_more = match (&digest, &stream.reference) {
+            let mut read_more = match (&digest, &stream.reference) {
                 (Some(digest), Some(_)) => {
                     format!("read(filePath=\"artifact://{digest}{suffix}\", offset={offset})")
                 }
                 _ => "unavailable, the output could not be stored".to_owned(),
             };
+            if channel.dropped > 0 {
+                read_more.push_str(&format!(
+                    "; {} bytes past the {} capture limit were not retained",
+                    channel.dropped,
+                    byte_size(self.0.retain_limit)
+                ));
+            }
             rendered.push_str(&preview::render(
                 head,
                 &preview::marker(
@@ -597,6 +716,16 @@ impl OutputCapture {
             pending.guard = Some(publication);
         }
         Ok(completion.result)
+    }
+}
+
+/// `bytes` in whole mebibytes when it is one, else in bytes.
+fn byte_size(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    if bytes >= MIB && bytes.is_multiple_of(MIB) {
+        format!("{} MiB", bytes / MIB)
+    } else {
+        format!("{bytes}-byte")
     }
 }
 

@@ -843,6 +843,7 @@ fn background_job_messages_carry_validated_retained_output() {
                 line_count: 1,
                 truncated: false,
                 next_offset: None,
+                dropped_bytes: 0,
             }],
             incomplete: false,
         }),

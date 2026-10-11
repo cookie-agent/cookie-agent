@@ -489,6 +489,7 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
                 line_count: 1,
                 truncated: false,
                 next_offset: None,
+                dropped_bytes: 0,
             },
             cookie_agent_protocol::RetainedToolStream {
                 name: Some("stderr".into()),
@@ -498,6 +499,7 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
                 line_count: 2,
                 truncated: false,
                 next_offset: None,
+                dropped_bytes: 0,
             },
         ],
     })
@@ -816,6 +818,7 @@ async fn a_revert_deletes_artifacts_only_the_reverted_events_referenced() {
                         line_count: 1,
                         truncated: true,
                         next_offset: Some(0),
+                        dropped_bytes: 0,
                     }],
                     incomplete: false,
                 }),

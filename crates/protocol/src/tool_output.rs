@@ -137,6 +137,15 @@ pub struct RetainedToolStream {
     pub line_count: u64,
     pub truncated: bool,
     pub next_offset: Option<u64>,
+    /// Bytes past the capture limit that the artifact does not hold: it keeps
+    /// the stream's head up to the limit and its last stretch, with a marker
+    /// line between them.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dropped_bytes: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl RetainedToolStream {
