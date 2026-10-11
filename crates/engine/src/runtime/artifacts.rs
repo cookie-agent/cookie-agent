@@ -284,1094 +284,490 @@ fn read_verified_file_paged(
     })
 }
 
-#[cfg(unix)]
-mod unix {
-    use std::{
-        fs,
-        io::{Read, Seek, SeekFrom, Write},
-        path::{Path, PathBuf},
-        sync::{Arc, Mutex},
-    };
+mod platform;
 
-    use bytes::Bytes;
-    use cookie_agent_protocol::{ArtifactReference, ToolAttachment};
-    use fs2::FileExt as _;
-    use rustix::fs::{AtFlags, Mode, OFlags, fsync, linkat, openat, renameat, unlinkat};
-    use sha2::{Digest, Sha256};
-    use uuid::Uuid;
+pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 
-    use super::{ArtifactPage, VerifiedBytesCache, VerifiedFileCache, read_verified_file_paged};
+/// One tree's content-addressed blobs. Each is named by the SHA-256 of its
+/// content and never changes once published; readers verify the digest.
+#[derive(Debug)]
+pub(crate) struct ArtifactStore {
+    #[cfg(test)]
+    pub(crate) io_test_hook: ArtifactIoTestHook,
+    directory: platform::Directory,
+    writes: std::sync::Mutex<()>,
+    verified_reads: std::sync::Mutex<VerifiedFileCache>,
+    verified_attachment_bytes: std::sync::Mutex<VerifiedBytesCache>,
+}
 
-    pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
-
-    #[derive(Debug)]
-    pub(crate) struct ArtifactStore {
-        #[cfg(test)]
-        pub(crate) io_test_hook: super::ArtifactIoTestHook,
-        directory_handle: Arc<fs::File>,
-        writes: Mutex<()>,
-        verified_reads: Mutex<VerifiedFileCache>,
-        verified_attachment_bytes: Mutex<VerifiedBytesCache>,
+impl ArtifactStore {
+    pub(crate) fn open(directory: std::path::PathBuf) -> std::io::Result<std::sync::Arc<Self>> {
+        Ok(std::sync::Arc::new(Self {
+            #[cfg(test)]
+            io_test_hook: ArtifactIoTestHook::default(),
+            directory: platform::Directory::at(directory)?,
+            writes: std::sync::Mutex::default(),
+            verified_reads: std::sync::Mutex::default(),
+            verified_attachment_bytes: std::sync::Mutex::default(),
+        }))
     }
 
-    impl ArtifactStore {
-        pub(crate) fn open(directory: PathBuf) -> std::io::Result<Arc<Self>> {
-            prepare_private_directory(&directory)?;
-            let handle = rustix::fs::open(
-                &directory,
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-                Mode::empty(),
-            )?;
-            let handle = fs::File::from(handle);
-            let store = Arc::new(Self {
-                #[cfg(test)]
-                io_test_hook: super::ArtifactIoTestHook::default(),
-                directory_handle: Arc::new(handle),
-                writes: Mutex::new(()),
-                verified_reads: Mutex::new(VerifiedFileCache::default()),
-                verified_attachment_bytes: Mutex::new(VerifiedBytesCache::default()),
-            });
-            Ok(store)
-        }
+    fn lock_writes(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.writes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
-        pub(crate) fn retain(
-            &self,
-            content: &[u8],
-        ) -> std::io::Result<(ArtifactReference, String)> {
-            let digest = sha256_hex(content);
-            let _write = self
-                .writes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            // Names are content addresses: a blob of the right length is the
-            // content. A torn one is replaced; readers verify digests anyway.
-            if let Some(existing) = self.open_existing(&digest)?
-                && existing.metadata()?.len() == content.len() as u64
-            {
-                existing.set_times(
-                    std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()),
-                )?;
-            } else {
-                let temporary_name = format!(".{digest}.{}.tmp", Uuid::now_v7());
-                let result = (|| -> std::io::Result<()> {
-                    let temporary = openat(
-                        &*self.directory_handle,
-                        &temporary_name,
-                        OFlags::WRONLY
-                            | OFlags::CREATE
-                            | OFlags::EXCL
-                            | OFlags::NOFOLLOW
-                            | OFlags::CLOEXEC,
-                        Mode::from_raw_mode(0o600),
-                    )?;
-                    let mut temporary = fs::File::from(temporary);
-                    temporary.lock_exclusive()?;
-                    temporary.write_all(content)?;
-                    temporary.sync_all()?;
-                    drop(temporary);
-                    renameat(
-                        &*self.directory_handle,
-                        &temporary_name,
-                        &*self.directory_handle,
-                        &digest,
-                    )?;
-                    self.open_existing(&digest)?
-                        .ok_or_else(|| std::io::Error::other("retained artifact disappeared"))?;
-                    fsync(&*self.directory_handle)?;
-                    Ok(())
-                })();
-                if result.is_err() {
-                    let _ = unlinkat(&*self.directory_handle, &temporary_name, AtFlags::empty());
-                }
-                result?;
-            }
-            Ok((
-                ArtifactReference {
-                    uri: format!("artifact://sha256/{digest}"),
-                },
-                digest,
-            ))
-        }
+    pub(crate) fn retain(
+        &self,
+        content: &[u8],
+    ) -> std::io::Result<(cookie_agent_protocol::ArtifactReference, String)> {
+        use std::io::Write as _;
 
-        /// Deletes blobs by digest, returning how many existed.
-        pub(crate) fn remove<'a>(
-            &self,
-            digests: impl IntoIterator<Item = &'a String>,
-        ) -> std::io::Result<usize> {
-            let _write = self
-                .writes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let mut deleted = 0;
-            for digest in digests {
-                if !is_digest_name(digest) {
-                    continue;
-                }
-                self.verified_reads
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .evict(digest);
-                self.verified_attachment_bytes
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .evict(digest);
-                match unlinkat(&*self.directory_handle, digest.as_str(), AtFlags::empty()) {
-                    Ok(()) => deleted += 1,
-                    Err(rustix::io::Errno::NOENT) => {}
-                    Err(error) => return Err(error.into()),
-                }
+        let digest = sha256_hex(content);
+        let _write = self.lock_writes();
+        // Names are content addresses: a blob of the right length is the
+        // content. A torn one is replaced; readers verify digests anyway.
+        if let Some(existing) = self.directory.open(&digest)?
+            && existing.metadata()?.len() == content.len() as u64
+        {
+            existing
+                .set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))?;
+        } else {
+            let temporary_name = format!(".{digest}.{}.tmp", uuid::Uuid::now_v7());
+            let result = (|| -> std::io::Result<()> {
+                let mut temporary = self.directory.create(&temporary_name)?;
+                temporary.write_all(content)?;
+                temporary.sync_all()?;
+                drop(temporary);
+                self.directory.rename(&temporary_name, &digest)?;
+                self.directory.sync()
+            })();
+            if result.is_err() {
+                let _ = self.directory.remove(&temporary_name);
             }
-            Ok(deleted)
+            result?;
         }
+        Ok((artifact_reference(&digest), digest))
+    }
 
-        /// Hard-links blob `digest` into `into`; a blob this store lacks is
-        /// skipped and one `into` already has is kept.
-        pub(crate) fn link_to(&self, into: &Self, digest: &str) -> std::io::Result<()> {
-            if !is_digest_name(digest) {
-                return Ok(());
+    /// Deletes blobs by digest, returning how many existed.
+    pub(crate) fn remove<'a>(
+        &self,
+        digests: impl IntoIterator<Item = &'a String>,
+    ) -> std::io::Result<usize> {
+        let _write = self.lock_writes();
+        let mut deleted = 0;
+        for digest in digests {
+            if !is_digest_name_common(digest) {
+                continue;
             }
-            match linkat(
-                &*self.directory_handle,
-                digest,
-                &*into.directory_handle,
-                digest,
-                AtFlags::empty(),
-            ) {
-                Ok(()) | Err(rustix::io::Errno::NOENT | rustix::io::Errno::EXIST) => Ok(()),
-                Err(error) => Err(error.into()),
-            }
-        }
-
-        pub(crate) fn open_existing(&self, name: &str) -> std::io::Result<Option<fs::File>> {
-            match openat(
-                &*self.directory_handle,
-                name,
-                OFlags::RDONLY | OFlags::CLOEXEC,
-                Mode::empty(),
-            ) {
-                Ok(file) => Ok(Some(fs::File::from(file))),
-                Err(error) if error == rustix::io::Errno::NOENT => Ok(None),
-                Err(error) => Err(error.into()),
-            }
-        }
-
-        pub(crate) fn read_paged(
-            &self,
-            digest: &str,
-            offset_lines: u64,
-            limit_lines: u64,
-        ) -> std::io::Result<ArtifactPage> {
-            if !is_digest_name(digest) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "invalid artifact digest",
-                ));
-            }
-            let (cached, generation) = {
-                let mut verified = self
-                    .verified_reads
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                (verified.take(digest), verified.generation)
-            };
-            let mut file = match cached {
-                Some(file) => file,
-                None => self.open_existing(digest)?.ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
-                })?,
-            };
-            #[cfg(test)]
-            self.io_test_hook.run("read", digest)?;
-            let page =
-                read_verified_file_paged(&mut file, digest, offset_lines, limit_lines, || Ok(()))?;
             self.verified_reads
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .restore(digest, file, generation);
-            Ok(page)
-        }
-
-        #[cfg(test)]
-        pub(super) fn read_paged_with_hook(
-            &self,
-            digest: &str,
-            offset_lines: u64,
-            limit_lines: u64,
-            hook: impl FnOnce() -> std::io::Result<()>,
-        ) -> std::io::Result<ArtifactPage> {
-            if !is_digest_name(digest) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "invalid artifact digest",
-                ));
-            }
-            let (cached, generation) = {
-                let mut verified = self
-                    .verified_reads
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                (verified.take(digest), verified.generation)
-            };
-            let mut file = match cached {
-                Some(file) => file,
-                None => self.open_existing(digest)?.ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
-                })?,
-            };
-            let page =
-                read_verified_file_paged(&mut file, digest, offset_lines, limit_lines, hook)?;
-            self.verified_reads
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .restore(digest, file, generation);
-            Ok(page)
-        }
-
-        pub(crate) fn create_capture_file(&self, name: &str) -> std::io::Result<fs::File> {
-            #[cfg(test)]
-            self.io_test_hook.run("capture_create", name)?;
-            if !valid_temporary_artifact_name(name) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "invalid capture artifact name",
-                ));
-            }
-            let file = openat(
-                &*self.directory_handle,
-                name,
-                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::from_raw_mode(0o600),
-            )?;
-            let file = fs::File::from(file);
-            file.lock_exclusive()?;
-            Ok(file)
-        }
-
-        /// Publish a capture under `digest`, which the writer hashed while it
-        /// streamed the `byte_length` bytes in; the file is not read again.
-        pub(crate) fn commit_capture(
-            &self,
-            name: &str,
-            capture: &Mutex<fs::File>,
-            digest: &str,
-            byte_length: u64,
-        ) -> std::io::Result<ArtifactReference> {
-            #[cfg(test)]
-            self.io_test_hook.run("capture_finalize", name)?;
-            let _write = self
-                .writes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let temporary = capture
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let published_at = std::time::SystemTime::now();
-            temporary.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
-            temporary.sync_all()?;
-            if let Some(existing) = self.open_existing(digest)?
-                && existing.metadata()?.len() == byte_length
-            {
-                existing.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
-                existing.sync_all()?;
-                fs2::FileExt::unlock(&*temporary)?;
-                match unlinkat(&*self.directory_handle, name, AtFlags::empty()) {
-                    Ok(()) | Err(rustix::io::Errno::NOENT) => {}
-                    Err(error) => return Err(error.into()),
-                }
-            } else {
-                renameat(
-                    &*self.directory_handle,
-                    name,
-                    &*self.directory_handle,
-                    digest,
-                )?;
-                fs2::FileExt::unlock(&*temporary)?;
-                self.open_existing(digest)?
-                    .ok_or_else(|| std::io::Error::other("capture artifact disappeared"))?;
-            }
-            fsync(&*self.directory_handle)?;
-            Ok(ArtifactReference {
-                uri: format!("artifact://sha256/{digest}"),
-            })
-        }
-
-        pub(crate) fn discard_capture(&self, name: &str) {
-            if valid_temporary_artifact_name(name) {
-                let _ = unlinkat(&*self.directory_handle, name, AtFlags::empty());
-            }
-        }
-
-        pub(crate) fn read_verified_attachment(
-            &self,
-            attachment: &ToolAttachment,
-        ) -> std::io::Result<Bytes> {
-            if !is_digest_name(attachment.sha256.as_str())
-                || attachment.reference.uri != format!("artifact://sha256/{}", attachment.sha256)
-            {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "attachment reference and digest do not match",
-                ));
-            }
-            if let Some(bytes) = self
-                .verified_attachment_bytes
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(attachment.sha256.as_str())
-            {
-                if bytes.len() as u64 != attachment.byte_length {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "attachment artifact digest or length is corrupt",
-                    ));
-                }
-                return Ok(bytes);
-            }
-            let mut file = self
-                .open_existing(attachment.sha256.as_str())?
-                .ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "attachment artifact is missing",
-                    )
-                })?;
-            let (digest, byte_length, _) = hash_file(&mut file)?;
-            if digest != attachment.sha256.as_str() || byte_length != attachment.byte_length {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "attachment artifact digest or length is corrupt",
-                ));
-            }
-            file.seek(SeekFrom::Start(0))?;
-            let capacity = usize::try_from(byte_length).map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "attachment length does not fit in memory",
-                )
-            })?;
-            let mut bytes = Vec::with_capacity(capacity);
-            file.read_to_end(&mut bytes)?;
-            let bytes = Bytes::from(bytes);
+                .evict(digest);
             self.verified_attachment_bytes
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .insert(attachment.sha256.to_string(), bytes.clone());
-            Ok(bytes)
-        }
-    }
-
-    pub(super) fn hash_file(file: &mut fs::File) -> std::io::Result<(String, u64, u64)> {
-        file.seek(SeekFrom::Start(0))?;
-        let mut hash = Sha256::new();
-        let mut total = 0_u64;
-        let mut newlines = 0_u64;
-        let mut buffer = [0_u8; 8192];
-        loop {
-            let count = file.read(&mut buffer)?;
-            if count == 0 {
-                break;
+                .evict(digest);
+            if self.directory.remove(digest)? {
+                deleted += 1;
             }
-            hash.update(&buffer[..count]);
-            total = total.saturating_add(count as u64);
-            newlines = newlines.saturating_add(
-                buffer[..count]
-                    .iter()
-                    .filter(|byte| **byte == b'\n')
-                    .count() as u64,
-            );
         }
-        file.seek(SeekFrom::Start(0))?;
-        let digest = hash
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        Ok((digest, total, newlines))
+        Ok(deleted)
     }
 
-    pub(super) fn valid_temporary_artifact_name(name: &str) -> bool {
-        if let Some(value) = name
-            .strip_prefix(".capture-")
-            .and_then(|value| value.strip_suffix(".tmp"))
-        {
-            let Some((id, stream)) = value.rsplit_once('-') else {
-                return false;
-            };
-            return cookie_agent_protocol::validate_tool_stream_name(stream).is_ok()
-                && Uuid::parse_str(id).is_ok();
+    /// Hard-links blob `digest` into `into`; a blob this store lacks is
+    /// skipped and one `into` already has is kept.
+    pub(crate) fn link_to(&self, into: &Self, digest: &str) -> std::io::Result<()> {
+        if !is_digest_name_common(digest) {
+            return Ok(());
         }
-        let Some(value) = name
-            .strip_prefix('.')
-            .and_then(|value| value.strip_suffix(".tmp"))
-        else {
-            return false;
-        };
-        let Some((digest, id)) = value.split_once('.') else {
-            return false;
-        };
-        is_digest_name(digest) && Uuid::parse_str(id).is_ok()
+        self.directory.link_to(&into.directory, digest)
     }
 
-    pub(super) fn is_digest_name(name: &str) -> bool {
-        name.len() == 64
-            && name
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    pub(crate) fn open_existing(&self, name: &str) -> std::io::Result<Option<File>> {
+        self.directory.open(name)
     }
 
-    pub(super) fn prepare_private_directory(directory: &Path) -> std::io::Result<()> {
-        if !directory.exists() {
-            use std::os::unix::fs::DirBuilderExt as _;
-
-            let mut builder = fs::DirBuilder::new();
-            builder.recursive(true).mode(0o700);
-            builder.create(directory)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn sha256_hex(content: &[u8]) -> String {
-        Sha256::digest(content)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
+    pub(crate) fn read_paged(
+        &self,
+        digest: &str,
+        offset_lines: u64,
+        limit_lines: u64,
+    ) -> std::io::Result<ArtifactPage> {
+        self.read_paged_inner(digest, offset_lines, limit_lines, true, || Ok(()))
     }
 
     #[cfg(test)]
-    mod tests {
-
-        use super::ArtifactStore;
-
-        #[test]
-        fn artifact_store_uses_preexisting_symlinked_directory() {
-            use std::os::unix::fs::symlink;
-
-            let directory = tempfile::tempdir().expect("temporary artifact root");
-            let actual = directory.path().join("actual");
-            std::fs::create_dir(&actual).expect("actual artifact directory");
-            let linked = directory.path().join("linked");
-            symlink(&actual, &linked).expect("artifact directory symlink");
-            let store = ArtifactStore::open(linked).expect("symlinked artifact store");
-            let (_, digest) = store
-                .retain(b"existing-path-policy")
-                .expect("retain artifact");
-            assert!(actual.join(digest).is_file());
-        }
-
-        #[test]
-        fn paged_reads_verify_lazily_and_report_missing_or_corrupt_blobs() {
-            let directory = tempfile::tempdir().expect("temporary artifact root");
-            let artifacts = directory.path().join("artifacts");
-            let store = ArtifactStore::open(artifacts.clone()).expect("open artifact store");
-            let (_, digest) = store
-                .retain(b"zero\none\ntwo\nthree")
-                .expect("retain artifact");
-            assert_eq!(
-                store.read_paged(&digest, 1, 2).expect("paged read"),
-                super::ArtifactPage {
-                    content: "one\ntwo\n".into(),
-                    next_offset_lines: Some(3),
-                }
-            );
-            assert_eq!(
-                store.read_paged(&digest, 3, 2).expect("last page"),
-                super::ArtifactPage {
-                    content: "three".into(),
-                    next_offset_lines: None,
-                }
-            );
-            assert!(store.read_paged(&"a".repeat(64), 0, 1).is_err());
-
-            std::fs::write(artifacts.join(&digest), b"corrupt").expect("corrupt cached artifact");
-            assert_eq!(
-                store.read_paged(&digest, 0, 1).unwrap_err().kind(),
-                std::io::ErrorKind::InvalidData
-            );
-
-            drop(store);
-            let reopened = ArtifactStore::open(artifacts).expect("corruption is lazy");
-            assert_eq!(
-                reopened.read_paged(&digest, 0, 1).unwrap_err().kind(),
-                std::io::ErrorKind::InvalidData
-            );
-        }
-
-        #[test]
-        fn cached_handle_pins_same_length_replacement_with_preserved_mtime() {
-            let directory = tempfile::tempdir().expect("temporary artifact root");
-            let artifacts = directory.path().join("artifacts");
-            let store = ArtifactStore::open(artifacts.clone()).expect("open artifact store");
-            let original = b"verified\ncontent\n";
-            let (_, digest) = store.retain(original).expect("retain artifact");
-            let path = artifacts.join(&digest);
-            let modified = std::fs::metadata(&path)
-                .and_then(|metadata| metadata.modified())
-                .expect("artifact mtime");
-            assert_eq!(
-                store
-                    .read_paged(&digest, 0, 2)
-                    .expect("verify artifact")
-                    .content,
-                String::from_utf8_lossy(original)
-            );
-
-            let replacement = artifacts.join("replacement");
-            std::fs::write(&replacement, vec![b'x'; original.len()]).expect("stage replacement");
-            std::fs::OpenOptions::new()
-                .write(true)
-                .open(&replacement)
-                .expect("open replacement")
-                .set_times(std::fs::FileTimes::new().set_modified(modified))
-                .expect("preserve replacement mtime");
-            std::fs::rename(&replacement, &path).expect("replace artifact path");
-
-            assert_eq!(
-                store
-                    .read_paged(&digest, 0, 2)
-                    .expect("read pinned artifact")
-                    .content,
-                String::from_utf8_lossy(original)
-            );
-        }
+    pub(super) fn read_paged_with_hook(
+        &self,
+        digest: &str,
+        offset_lines: u64,
+        limit_lines: u64,
+        hook: impl FnOnce() -> std::io::Result<()>,
+    ) -> std::io::Result<ArtifactPage> {
+        self.read_paged_inner(digest, offset_lines, limit_lines, false, hook)
     }
-}
 
-#[cfg(unix)]
-pub(crate) use unix::*;
-
-#[cfg(windows)]
-mod windows {
-    use std::{
-        fs,
-        io::{Read, Seek, SeekFrom, Write},
-        path::PathBuf,
-        sync::{Arc, Mutex},
-    };
-
-    use bytes::Bytes;
-    use cookie_agent_protocol::{ArtifactReference, ToolAttachment};
-    use fs2::FileExt as _;
-    use sha2::{Digest, Sha256};
-    use uuid::Uuid;
-
-    use super::{ArtifactPage, VerifiedBytesCache, VerifiedFileCache, read_verified_file_paged};
-
-    pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
-
-    #[derive(Debug)]
-    pub(crate) struct ArtifactStore {
+    fn read_paged_inner(
+        &self,
+        digest: &str,
+        offset_lines: u64,
+        limit_lines: u64,
+        #[cfg_attr(not(test), allow(unused_variables))] run_read_hook: bool,
+        after_first_read: impl FnOnce() -> std::io::Result<()>,
+    ) -> std::io::Result<ArtifactPage> {
+        if !is_digest_name_common(digest) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid artifact digest",
+            ));
+        }
+        let (cached, generation) = {
+            let mut verified = self
+                .verified_reads
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            (verified.take(digest), verified.generation)
+        };
+        let mut file = match cached {
+            Some(file) => file,
+            None => self.directory.open_reader(digest)?.ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
+            })?,
+        };
         #[cfg(test)]
-        pub(crate) io_test_hook: super::ArtifactIoTestHook,
-        directory: PathBuf,
-        writes: Mutex<()>,
-        verified_reads: Mutex<VerifiedFileCache>,
-        verified_attachment_bytes: Mutex<VerifiedBytesCache>,
+        if run_read_hook {
+            self.io_test_hook.run("read", digest)?;
+        }
+        let page = read_verified_file_paged(
+            &mut file,
+            digest,
+            offset_lines,
+            limit_lines,
+            after_first_read,
+        )?;
+        self.verified_reads
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .restore(digest, file, generation);
+        Ok(page)
     }
 
-    impl ArtifactStore {
-        pub(crate) fn open(directory: PathBuf) -> std::io::Result<Arc<Self>> {
-            if !directory.exists() {
-                cookie_agent_models::secure_store::create_windows_private_dir_all(&directory)?;
-            }
-            let store = Arc::new(Self {
-                #[cfg(test)]
-                io_test_hook: super::ArtifactIoTestHook::default(),
-                directory,
-                writes: Mutex::new(()),
-                verified_reads: Mutex::new(VerifiedFileCache::default()),
-                verified_attachment_bytes: Mutex::new(VerifiedBytesCache::default()),
-            });
-            Ok(store)
+    pub(crate) fn create_capture_file(&self, name: &str) -> std::io::Result<File> {
+        #[cfg(test)]
+        self.io_test_hook.run("capture_create", name)?;
+        if !valid_temporary_artifact_name(name) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid capture artifact name",
+            ));
         }
+        self.directory.create(name)
+    }
 
-        pub(crate) fn retain(
-            &self,
-            content: &[u8],
-        ) -> std::io::Result<(ArtifactReference, String)> {
-            let digest = sha256_hex(content);
-            let _write = self
-                .writes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            // Names are content addresses: a blob of the right length is the
-            // content. A torn one is replaced; readers verify digests anyway.
-            if let Some(existing) = self.open_existing(&digest)?
-                && existing.metadata()?.len() == content.len() as u64
-            {
-                existing.set_times(
-                    std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()),
-                )?;
-            } else {
-                let temporary_name = format!(".{digest}.{}.tmp", Uuid::now_v7());
-                let temporary_path = self.directory.join(&temporary_name);
-                let mut temporary = self.create_file(&temporary_name)?;
-                let result = (|| -> std::io::Result<()> {
-                    temporary.write_all(content)?;
-                    temporary.sync_all()?;
-                    drop(temporary);
-                    cookie_agent_models::secure_store::replace_windows_path(
-                        &temporary_path,
-                        &self.directory.join(&digest),
-                    )?;
-                    self.open_existing(&digest)?
-                        .ok_or_else(|| invalid("retained artifact disappeared"))?;
-                    Ok(())
-                })();
-                if result.is_err() {
-                    let _ = fs::remove_file(temporary_path);
-                }
-                result?;
-            }
-            Ok((
-                ArtifactReference {
-                    uri: format!("artifact://sha256/{digest}"),
-                },
-                digest,
-            ))
+    /// Publish a capture under `digest`, which the writer hashed while it
+    /// streamed the `byte_length` bytes in; the file is not read again.
+    pub(crate) fn commit_capture(
+        &self,
+        name: &str,
+        capture: &std::sync::Mutex<File>,
+        digest: &str,
+        byte_length: u64,
+    ) -> std::io::Result<cookie_agent_protocol::ArtifactReference> {
+        #[cfg(test)]
+        self.io_test_hook.run("capture_finalize", name)?;
+        let _write = self.lock_writes();
+        // LockFileEx locks overlap by handle, including handles in this
+        // process: the capture stays locked until the blob has its final name,
+        // and only then can a second handle read it.
+        let temporary = capture
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let published_at = std::time::SystemTime::now();
+        temporary.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
+        temporary.sync_all()?;
+        if let Some(existing) = self.directory.open(digest)?
+            && existing.metadata()?.len() == byte_length
+        {
+            existing.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
+            existing.sync_all()?;
+            fs2::FileExt::unlock(&*temporary)?;
+            self.directory.remove(name)?;
+        } else {
+            self.directory.rename(name, digest)?;
+            fs2::FileExt::unlock(&*temporary)?;
         }
+        self.directory.sync()?;
+        Ok(artifact_reference(digest))
+    }
 
-        /// Deletes blobs by digest, returning how many existed.
-        pub(crate) fn remove<'a>(
-            &self,
-            digests: impl IntoIterator<Item = &'a String>,
-        ) -> std::io::Result<usize> {
-            let _write = self
-                .writes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let mut deleted = 0;
-            for digest in digests {
-                if !is_digest_name(digest) {
-                    continue;
-                }
-                self.verified_reads
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .evict(digest);
-                self.verified_attachment_bytes
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .evict(digest);
-                match fs::remove_file(self.directory.join(digest)) {
-                    Ok(()) => deleted += 1,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error),
-                }
-            }
-            Ok(deleted)
+    pub(crate) fn discard_capture(&self, name: &str) {
+        if valid_temporary_artifact_name(name) {
+            let _ = self.directory.remove(name);
         }
+    }
 
-        pub(crate) fn read_verified_attachment(
-            &self,
-            attachment: &ToolAttachment,
-        ) -> std::io::Result<Bytes> {
-            if !is_digest_name(attachment.sha256.as_str())
-                || attachment.reference.uri != format!("artifact://sha256/{}", attachment.sha256)
-            {
-                return Err(invalid("attachment reference and digest do not match"));
-            }
-            if let Some(bytes) = self
-                .verified_attachment_bytes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(attachment.sha256.as_str())
-            {
-                if bytes.len() as u64 != attachment.byte_length {
-                    return Err(invalid("attachment artifact digest or length is corrupt"));
-                }
-                return Ok(bytes);
-            }
-            let mut file = self
-                .open_existing(attachment.sha256.as_str())?
-                .ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "attachment artifact is missing",
-                    )
-                })?;
-            let (digest, byte_length, _) = hash_file(&mut file)?;
-            if digest != attachment.sha256.as_str() || byte_length != attachment.byte_length {
+    pub(crate) fn read_verified_attachment(
+        &self,
+        attachment: &ToolAttachment,
+    ) -> std::io::Result<Bytes> {
+        use std::io::Read as _;
+
+        if !is_digest_name_common(attachment.sha256.as_str())
+            || attachment.reference.uri != format!("artifact://sha256/{}", attachment.sha256)
+        {
+            return Err(invalid("attachment reference and digest do not match"));
+        }
+        if let Some(bytes) = self
+            .verified_attachment_bytes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(attachment.sha256.as_str())
+        {
+            if bytes.len() as u64 != attachment.byte_length {
                 return Err(invalid("attachment artifact digest or length is corrupt"));
             }
-            file.seek(SeekFrom::Start(0))?;
-            let mut bytes = Vec::with_capacity(
-                usize::try_from(byte_length)
-                    .map_err(|_| invalid("attachment length does not fit in memory"))?,
-            );
-            file.read_to_end(&mut bytes)?;
-            let bytes = Bytes::from(bytes);
-            self.verified_attachment_bytes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .insert(attachment.sha256.to_string(), bytes.clone());
-            Ok(bytes)
+            return Ok(bytes);
         }
-
-        /// Hard-links blob `digest` into `into`; a blob this store lacks is
-        /// skipped and one `into` already has is kept.
-        pub(crate) fn link_to(&self, into: &Self, digest: &str) -> std::io::Result<()> {
-            if !is_digest_name(digest) {
-                return Ok(());
-            }
-            match fs::hard_link(self.directory.join(digest), into.directory.join(digest)) {
-                Ok(()) => Ok(()),
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::NotFound | std::io::ErrorKind::AlreadyExists
-                    ) =>
-                {
-                    Ok(())
-                }
-                Err(error) => Err(error),
-            }
-        }
-
-        pub(crate) fn open_existing(&self, name: &str) -> std::io::Result<Option<fs::File>> {
-            let path = self.directory.join(name);
-            match fs::OpenOptions::new().read(true).write(true).open(&path) {
-                Ok(file) => Ok(Some(file)),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(error) => Err(error),
-            }
-        }
-
-        pub(crate) fn create_capture_file(&self, name: &str) -> std::io::Result<fs::File> {
-            #[cfg(test)]
-            self.io_test_hook.run("capture_create", name)?;
-            self.create_file(name)
-        }
-
-        fn create_file(&self, name: &str) -> std::io::Result<fs::File> {
-            let path = self.directory.join(name);
-            let file = cookie_agent_models::secure_store::create_windows_private_file(&path)?;
-            file.lock_exclusive()?;
-            Ok(file)
-        }
-
-        pub(crate) fn read_paged(
-            &self,
-            digest: &str,
-            offset_lines: u64,
-            limit_lines: u64,
-        ) -> std::io::Result<ArtifactPage> {
-            if !is_digest_name(digest) {
-                return Err(invalid("invalid artifact digest"));
-            }
-            let (cached, generation) = {
-                let mut verified = self
-                    .verified_reads
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                (verified.take(digest), verified.generation)
-            };
-            let mut file = match cached {
-                Some(file) => file,
-                None => self.open_paged(digest)?.ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
-                })?,
-            };
-            #[cfg(test)]
-            self.io_test_hook.run("read", digest)?;
-            let page =
-                read_verified_file_paged(&mut file, digest, offset_lines, limit_lines, || Ok(()))?;
-            self.verified_reads
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .restore(digest, file, generation);
-            Ok(page)
-        }
-
-        #[cfg(test)]
-        pub(super) fn read_paged_with_hook(
-            &self,
-            digest: &str,
-            offset_lines: u64,
-            limit_lines: u64,
-            hook: impl FnOnce() -> std::io::Result<()>,
-        ) -> std::io::Result<ArtifactPage> {
-            if !is_digest_name(digest) {
-                return Err(invalid("invalid artifact digest"));
-            }
-            let (cached, generation) = {
-                let mut verified = self
-                    .verified_reads
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                (verified.take(digest), verified.generation)
-            };
-            let mut file = match cached {
-                Some(file) => file,
-                None => self.open_paged(digest)?.ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
-                })?,
-            };
-            let page =
-                read_verified_file_paged(&mut file, digest, offset_lines, limit_lines, hook)?;
-            self.verified_reads
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .restore(digest, file, generation);
-            Ok(page)
-        }
-
-        fn open_paged(&self, name: &str) -> std::io::Result<Option<fs::File>> {
-            use std::os::windows::fs::OpenOptionsExt as _;
-
-            // FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE. Pin the file, not
-            // its path, so GC can unlink it while a checked-out reader finishes.
-            const PAGED_READ_SHARE_MODE: u32 = 0x1 | 0x2 | 0x4;
-            let path = self.directory.join(name);
-            match fs::OpenOptions::new()
-                .read(true)
-                .share_mode(PAGED_READ_SHARE_MODE)
-                .open(path)
-            {
-                Ok(file) => Ok(Some(file)),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(error) => Err(error),
-            }
-        }
-
-        /// Publish a capture under `digest`, which the writer hashed while it
-        /// streamed the `byte_length` bytes in; the file is not read again.
-        pub(crate) fn commit_capture(
-            &self,
-            name: &str,
-            capture: &Mutex<fs::File>,
-            digest: &str,
-            byte_length: u64,
-        ) -> std::io::Result<ArtifactReference> {
-            #[cfg(test)]
-            self.io_test_hook.run("capture_finalize", name)?;
-            let _write = self
-                .writes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            // LockFileEx locks overlap by handle, including handles in this process.
-            // Refresh and sync the mtime through the original handle while locked,
-            // then unlock only once the blob has its final name. This permits
-            // immediate verification/preview through a second handle without an
-            // old-mtime GC window or a reopened temp-cleanup race.
-            let temporary = capture
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let published_at = std::time::SystemTime::now();
-            temporary.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
-            temporary.sync_all()?;
-            let temporary_path = self.directory.join(name);
-            if let Some(existing) = self.open_existing(digest)?
-                && existing.metadata()?.len() == byte_length
-            {
-                existing.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
-                existing.sync_all()?;
-                fs2::FileExt::unlock(&*temporary)?;
-                match fs::remove_file(temporary_path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error),
-                }
-            } else {
-                cookie_agent_models::secure_store::replace_windows_path(
-                    &temporary_path,
-                    &self.directory.join(digest),
-                )?;
-                fs2::FileExt::unlock(&*temporary)?;
-                self.open_existing(digest)?
-                    .ok_or_else(|| invalid("capture artifact disappeared"))?;
-            }
-            Ok(ArtifactReference {
-                uri: format!("artifact://sha256/{digest}"),
-            })
-        }
-
-        pub(crate) fn discard_capture(&self, name: &str) {
-            if valid_temporary_artifact_name(name) {
-                let _ = fs::remove_file(self.directory.join(name));
-            }
-        }
-    }
-
-    fn hash_file(file: &mut fs::File) -> std::io::Result<(String, u64, u64)> {
-        file.seek(SeekFrom::Start(0))?;
-        let mut hash = Sha256::new();
-        let mut total = 0u64;
-        let mut newlines = 0u64;
-        let mut buffer = [0u8; 8192];
-        loop {
-            let count = file.read(&mut buffer)?;
-            if count == 0 {
-                break;
-            }
-            hash.update(&buffer[..count]);
-            total = total.saturating_add(count as u64);
-            newlines = newlines.saturating_add(
-                buffer[..count]
-                    .iter()
-                    .filter(|byte| **byte == b'\n')
-                    .count() as u64,
-            );
-        }
-        file.seek(SeekFrom::Start(0))?;
-        let digest = hash
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        Ok((digest, total, newlines))
-    }
-
-    fn sha256_hex(content: &[u8]) -> String {
-        Sha256::digest(content)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
-    }
-
-    fn is_digest_name(name: &str) -> bool {
-        name.len() == 64
-            && name
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    }
-
-    fn valid_temporary_artifact_name(name: &str) -> bool {
-        if let Some(value) = name
-            .strip_prefix(".capture-")
-            .and_then(|value| value.strip_suffix(".tmp"))
+        let mut file = self
+            .directory
+            .open(attachment.sha256.as_str())?
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "attachment artifact is missing",
+                )
+            })?;
+        let capacity = usize::try_from(attachment.byte_length)
+            .map_err(|_| invalid("attachment length does not fit in memory"))?;
+        let mut bytes = Vec::with_capacity(capacity);
+        // One byte past the recorded length is enough to see a longer blob.
+        (&mut file)
+            .take(attachment.byte_length.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 != attachment.byte_length
+            || sha256_hex(&bytes) != attachment.sha256.as_str()
         {
-            let Some((id, stream)) = value.rsplit_once('-') else {
-                return false;
-            };
-            return cookie_agent_protocol::validate_tool_stream_name(stream).is_ok()
-                && Uuid::parse_str(id).is_ok();
+            return Err(invalid("attachment artifact digest or length is corrupt"));
         }
-        let Some(value) = name
-            .strip_prefix('.')
-            .and_then(|value| value.strip_suffix(".tmp"))
-        else {
-            return false;
-        };
-        let Some((digest, id)) = value.split_once('.') else {
-            return false;
-        };
-        is_digest_name(digest) && Uuid::parse_str(id).is_ok()
-    }
-
-    fn invalid(message: &'static str) -> std::io::Error {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, message)
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::{ArtifactPage, ArtifactStore};
-
-        #[test]
-        fn uses_preexisting_artifact_directory_without_acl_validation() {
-            let temporary = tempfile::tempdir().expect("temporary root");
-            let artifacts = temporary.path().join("artifacts");
-            std::fs::create_dir(&artifacts).expect("ordinary artifact directory");
-            ArtifactStore::open(artifacts).expect("existing artifact directory");
-        }
-
-        #[test]
-        fn paged_reads_verify_lazily_and_report_missing_or_corrupt_blobs() {
-            let temporary = tempfile::tempdir().expect("temporary root");
-            let artifacts = temporary.path().join("artifacts");
-            let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
-            let (_, digest) = store
-                .retain(b"zero\none\ntwo\nthree")
-                .expect("retain artifact");
-            assert_eq!(
-                store.read_paged(&digest, 1, 2).expect("paged read"),
-                ArtifactPage {
-                    content: "one\ntwo\n".into(),
-                    next_offset_lines: Some(3),
-                }
-            );
-            assert!(store.read_paged(&"a".repeat(64), 0, 1).is_err());
-
-            std::fs::write(artifacts.join(&digest), b"corrupt").expect("corrupt cached artifact");
-            assert_eq!(
-                store.read_paged(&digest, 0, 1).unwrap_err().kind(),
-                std::io::ErrorKind::InvalidData
-            );
-
-            drop(store);
-            let reopened = ArtifactStore::open(artifacts).expect("corruption is lazy");
-            assert_eq!(
-                reopened.read_paged(&digest, 0, 1).unwrap_err().kind(),
-                std::io::ErrorKind::InvalidData
-            );
-        }
-
-        #[test]
-        fn cached_handle_pins_same_length_replacement_with_preserved_mtime() {
-            let temporary = tempfile::tempdir().expect("temporary root");
-            let artifacts = temporary.path().join("artifacts");
-            let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
-            let original = b"verified\ncontent\n";
-            let (_, digest) = store.retain(original).expect("retain artifact");
-            let path = artifacts.join(&digest);
-            let modified = std::fs::metadata(&path)
-                .and_then(|metadata| metadata.modified())
-                .expect("artifact mtime");
-            assert_eq!(
-                store
-                    .read_paged(&digest, 0, 2)
-                    .expect("verify artifact")
-                    .content,
-                String::from_utf8_lossy(original)
-            );
-
-            let replacement = artifacts.join("replacement");
-            std::fs::write(&replacement, vec![b'x'; original.len()]).expect("stage replacement");
-            std::fs::OpenOptions::new()
-                .write(true)
-                .open(&replacement)
-                .expect("open replacement")
-                .set_times(std::fs::FileTimes::new().set_modified(modified))
-                .expect("preserve replacement mtime");
-            // MoveFileExW cannot replace an open destination, even with delete
-            // sharing. Rename the pinned source aside, then occupy its vacant path.
-            // This simulates path substitution without requiring POSIX replacement.
-            cookie_agent_models::secure_store::replace_windows_path(
-                &path,
-                &artifacts.join("displaced"),
-            )
-            .expect("move pinned artifact aside");
-            cookie_agent_models::secure_store::replace_windows_path(&replacement, &path)
-                .expect("replace cached artifact path");
-            assert_eq!(
-                std::fs::read(&path).expect("read substituted path"),
-                vec![b'x'; original.len()]
-            );
-            assert_eq!(
-                std::fs::metadata(&path)
-                    .and_then(|metadata| metadata.modified())
-                    .expect("substituted path mtime"),
-                modified
-            );
-
-            assert_eq!(
-                store
-                    .read_paged(&digest, 0, 2)
-                    .expect("read pinned artifact")
-                    .content,
-                String::from_utf8_lossy(original)
-            );
-            drop(store);
-            let reopened = ArtifactStore::open(artifacts).expect("reopen replaced artifact");
-            assert_eq!(
-                reopened.read_paged(&digest, 0, 2).unwrap_err().kind(),
-                std::io::ErrorKind::InvalidData
-            );
-        }
+        let bytes = Bytes::from(bytes);
+        self.verified_attachment_bytes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(attachment.sha256.to_string(), bytes.clone());
+        Ok(bytes)
     }
 }
 
-#[cfg(windows)]
-pub(crate) use windows::*;
+fn artifact_reference(digest: &str) -> cookie_agent_protocol::ArtifactReference {
+    cookie_agent_protocol::ArtifactReference {
+        uri: format!("artifact://sha256/{digest}"),
+    }
+}
+
+fn valid_temporary_artifact_name(name: &str) -> bool {
+    if let Some(value) = name
+        .strip_prefix(".capture-")
+        .and_then(|value| value.strip_suffix(".tmp"))
+    {
+        let Some((id, stream)) = value.rsplit_once('-') else {
+            return false;
+        };
+        return cookie_agent_protocol::validate_tool_stream_name(stream).is_ok()
+            && uuid::Uuid::parse_str(id).is_ok();
+    }
+    let Some(value) = name
+        .strip_prefix('.')
+        .and_then(|value| value.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let Some((digest, id)) = value.split_once('.') else {
+        return false;
+    };
+    is_digest_name_common(digest) && uuid::Uuid::parse_str(id).is_ok()
+}
+
+fn sha256_hex(content: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(content))
+}
+
+fn invalid(message: &'static str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::{ArtifactPage, ArtifactStore};
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_store_uses_preexisting_symlinked_directory() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("temporary artifact root");
+        let actual = directory.path().join("actual");
+        std::fs::create_dir(&actual).expect("actual artifact directory");
+        let linked = directory.path().join("linked");
+        symlink(&actual, &linked).expect("artifact directory symlink");
+        let store = ArtifactStore::open(linked).expect("symlinked artifact store");
+        let (_, digest) = store
+            .retain(b"existing-path-policy")
+            .expect("retain artifact");
+        assert!(actual.join(digest).is_file());
+    }
+
+    #[test]
+    fn uses_preexisting_artifact_directory() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let artifacts = temporary.path().join("artifacts");
+        std::fs::create_dir(&artifacts).expect("ordinary artifact directory");
+        ArtifactStore::open(artifacts).expect("existing artifact directory");
+    }
+
+    #[test]
+    fn paged_reads_verify_lazily_and_report_missing_or_corrupt_blobs() {
+        let directory = tempfile::tempdir().expect("temporary artifact root");
+        let artifacts = directory.path().join("artifacts");
+        let store = ArtifactStore::open(artifacts.clone()).expect("open artifact store");
+        let (_, digest) = store
+            .retain(b"zero\none\ntwo\nthree")
+            .expect("retain artifact");
+        assert_eq!(
+            store.read_paged(&digest, 1, 2).expect("paged read"),
+            ArtifactPage {
+                content: "one\ntwo\n".into(),
+                next_offset_lines: Some(3),
+            }
+        );
+        assert_eq!(
+            store.read_paged(&digest, 3, 2).expect("last page"),
+            ArtifactPage {
+                content: "three".into(),
+                next_offset_lines: None,
+            }
+        );
+        assert!(store.read_paged(&"a".repeat(64), 0, 1).is_err());
+
+        std::fs::write(artifacts.join(&digest), b"corrupt").expect("corrupt cached artifact");
+        assert_eq!(
+            store.read_paged(&digest, 0, 1).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+
+        drop(store);
+        let reopened = ArtifactStore::open(artifacts).expect("corruption is lazy");
+        assert_eq!(
+            reopened.read_paged(&digest, 0, 1).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_handle_pins_same_length_replacement_with_preserved_mtime() {
+        let directory = tempfile::tempdir().expect("temporary artifact root");
+        let artifacts = directory.path().join("artifacts");
+        let store = ArtifactStore::open(artifacts.clone()).expect("open artifact store");
+        let original = b"verified\ncontent\n";
+        let (_, digest) = store.retain(original).expect("retain artifact");
+        let path = artifacts.join(&digest);
+        let modified = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .expect("artifact mtime");
+        assert_eq!(
+            store
+                .read_paged(&digest, 0, 2)
+                .expect("verify artifact")
+                .content,
+            String::from_utf8_lossy(original)
+        );
+
+        let replacement = artifacts.join("replacement");
+        std::fs::write(&replacement, vec![b'x'; original.len()]).expect("stage replacement");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&replacement)
+            .expect("open replacement")
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .expect("preserve replacement mtime");
+        std::fs::rename(&replacement, &path).expect("replace artifact path");
+
+        assert_eq!(
+            store
+                .read_paged(&digest, 0, 2)
+                .expect("read pinned artifact")
+                .content,
+            String::from_utf8_lossy(original)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cached_handle_pins_same_length_replacement_with_preserved_mtime() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let artifacts = temporary.path().join("artifacts");
+        let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
+        let original = b"verified\ncontent\n";
+        let (_, digest) = store.retain(original).expect("retain artifact");
+        let path = artifacts.join(&digest);
+        let modified = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .expect("artifact mtime");
+        assert_eq!(
+            store
+                .read_paged(&digest, 0, 2)
+                .expect("verify artifact")
+                .content,
+            String::from_utf8_lossy(original)
+        );
+
+        let replacement = artifacts.join("replacement");
+        std::fs::write(&replacement, vec![b'x'; original.len()]).expect("stage replacement");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&replacement)
+            .expect("open replacement")
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .expect("preserve replacement mtime");
+        // MoveFileExW cannot replace an open destination, even with delete
+        // sharing. Rename the pinned source aside, then occupy its vacant path.
+        // This simulates path substitution without requiring POSIX replacement.
+        cookie_agent_models::secure_store::replace_windows_path(
+            &path,
+            &artifacts.join("displaced"),
+        )
+        .expect("move pinned artifact aside");
+        cookie_agent_models::secure_store::replace_windows_path(&replacement, &path)
+            .expect("replace cached artifact path");
+        assert_eq!(
+            std::fs::read(&path).expect("read substituted path"),
+            vec![b'x'; original.len()]
+        );
+        assert_eq!(
+            std::fs::metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .expect("substituted path mtime"),
+            modified
+        );
+
+        assert_eq!(
+            store
+                .read_paged(&digest, 0, 2)
+                .expect("read pinned artifact")
+                .content,
+            String::from_utf8_lossy(original)
+        );
+        drop(store);
+        let reopened = ArtifactStore::open(artifacts).expect("reopen replaced artifact");
+        assert_eq!(
+            reopened.read_paged(&digest, 0, 2).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+    }
+}
 
 use std::{
     collections::HashMap,
@@ -1392,10 +788,10 @@ pub(crate) const ARTIFACTS_DIR: &str = "artifacts";
 ///
 /// A work-dir router keeps every tree's artifacts in that root's `artifacts/`
 /// directory: a session writes to and reads from its own tree only, a fork
-/// copies what it references into its new tree, and a revert deletes from its
-/// tree only what the reverted events alone referenced. A flat router — a standalone tool context
-/// with no sessions around it — keeps everything in the one directory it was
-/// opened on.
+/// links what it references into its new tree, and a revert deletes from its
+/// tree only what the reverted events alone referenced. A flat router — a
+/// standalone tool context with no sessions around it — keeps everything in
+/// the one directory it was opened on.
 pub(crate) struct ArtifactRouter {
     /// Set for a flat router: the one store every session uses.
     flat: Option<Arc<ArtifactStore>>,
