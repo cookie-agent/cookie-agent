@@ -691,6 +691,7 @@ async fn a_forked_tree_keeps_its_artifacts_after_the_source_tree_is_deleted() {
             session.session_id,
             through_seq,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            None,
         )
         .await
         .expect("fork the root")
@@ -847,6 +848,7 @@ async fn a_revert_deletes_artifacts_only_the_reverted_events_referenced() {
             root,
             second_input - 1,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            None,
         )
         .await
         .unwrap();

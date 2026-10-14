@@ -183,7 +183,9 @@ to close, or the `c`, `r`, and `f` accelerators.
 - **Copy** writes the original message text to the clipboard.
 - **Revert** asks for confirmation, removes that message and everything after
   it from the session (including subagents it started), and restores the
-  message text to the composer.
+  message text to the composer. If the session gained events since this view
+  last showed it, for example a turn another client started, the revert is
+  refused so nothing unseen is deleted; review the new turns and revert again.
 - **Fork** creates and selects an independent session whose copied prefix
   includes that message.
 

@@ -465,11 +465,15 @@ impl Engine {
         self.inner.delegation_events.forget_sessions(deleted);
     }
 
+    /// Reverts `session_id` to `through_seq`. With `expected_last_seq`, a
+    /// session whose log has moved past it is refused with
+    /// [`EngineError::StaleRevert`] instead of losing what was added.
     pub async fn revert_session(
         &self,
         session_id: SessionId,
         through_seq: u64,
         _origin: EventOrigin,
+        expected_last_seq: Option<u64>,
     ) -> Result<SessionRevertResult, EngineError> {
         let context_id = crate::plugin::plugin_context_id();
         let mut instructions = self
@@ -558,6 +562,12 @@ impl Engine {
                         return Err(EngineError::SessionRunning(session));
                     }
                     let tip = projection.log.last_event().map_or(0, |event| event.seq);
+                    if expected_last_seq.is_some_and(|expected| expected != tip) {
+                        return Err(EngineError::StaleRevert {
+                            session_id: session,
+                            current_last_seq: tip,
+                        });
+                    }
                     if through_seq == 0 || through_seq > tip {
                         return Err(SessionError::InvalidSequence {
                             session_id: session,
@@ -683,12 +693,32 @@ impl Engine {
         }
         Ok(Some(references))
     }
+    /// Forks `session_id` through `through_seq`. A retry with the same
+    /// `client_fork_id` returns the fork the first request made, for as long
+    /// as this engine runs; reusing the key for another fork is
+    /// [`EngineError::ForkIdempotencyConflict`].
     pub async fn fork_session(
         &self,
         session_id: SessionId,
         through_seq: u64,
         origin: EventOrigin,
+        client_fork_id: Option<cookie_agent_protocol::ClientForkId>,
     ) -> Result<SessionForkResult, EngineError> {
+        if let Some(client_fork_id) = &client_fork_id
+            && let Some(&(forked_through, forked)) = self
+                .inner
+                .sessions
+                .forks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&(session_id, client_fork_id.clone()))
+        {
+            return if forked_through == through_seq {
+                Ok(SessionForkResult { session_id: forked })
+            } else {
+                Err(EngineError::ForkIdempotencyConflict)
+            };
+        }
         let context_id = crate::plugin::plugin_context_id();
         for plugin in self.inner.plugins.interception_plugins(
             cookie_agent_protocol::ExtensionInterceptionHook::SessionBeforeFork,
@@ -759,6 +789,14 @@ impl Engine {
                 .any(|message| !message.consumed && !message.discarded)
         {
             self.reconcile_producers(forked).await?;
+        }
+        if let Some(client_fork_id) = client_fork_id {
+            self.inner
+                .sessions
+                .forks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert((session_id, client_fork_id), (through_seq, forked));
         }
         Ok(SessionForkResult { session_id: forked })
     }

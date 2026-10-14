@@ -2629,7 +2629,7 @@ async fn paused_goal_survives_fork_and_revert_but_not_delegated_session_boundari
         .seq;
     let fork = fixture
         .engine
-        .fork_session(root_id, boundary, client_origin())
+        .fork_session(root_id, boundary, client_origin(), None)
         .await
         .expect("fork paused goal");
     assert_eq!(
@@ -2693,7 +2693,7 @@ async fn paused_goal_survives_fork_and_revert_but_not_delegated_session_boundari
         .expect("temporary branch update");
     fixture
         .engine
-        .revert_session(root_id, boundary, client_origin())
+        .revert_session(root_id, boundary, client_origin(), None)
         .await
         .expect("revert goal branch");
     assert_eq!(

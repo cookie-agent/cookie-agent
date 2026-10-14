@@ -571,6 +571,16 @@ impl Client {
         self.call("run.steer", &params).await
     }
 
+    /// Cancel this session's running manual compaction
+    /// (`session.compact.cancel`).
+    pub async fn cancel_compaction(
+        &self,
+        params: crate::SessionCompactCancelParams,
+    ) -> Result<crate::SessionCompactCancelResult, ClientError> {
+        self.call(crate::SESSION_COMPACT_CANCEL_METHOD, &params)
+            .await
+    }
+
     /// Start a run, steer the running one, or queue behind it, decided
     /// atomically by the daemon (`session.submit_input`).
     pub async fn submit_input(

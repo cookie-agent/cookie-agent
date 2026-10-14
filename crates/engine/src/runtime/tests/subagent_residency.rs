@@ -160,6 +160,7 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
             child.session_id,
             child_tip,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            None,
         )
         .await
         .expect("fork terminal delegated child");

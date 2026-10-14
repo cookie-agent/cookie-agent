@@ -771,7 +771,7 @@ async fn revert_truncates_closes_cut_runs_and_rewinds_live_tails() {
     // revert closes it.
     fixture
         .engine
-        .revert_session(session_id, message.seq, origin())
+        .revert_session(session_id, message.seq, origin(), None)
         .await
         .expect("revert inside the run");
     let tail = log().all_events().last().cloned().expect("tip");
@@ -790,7 +790,7 @@ async fn revert_truncates_closes_cut_runs_and_rewinds_live_tails() {
     // run start the cut would leave empty.
     let reverted = fixture
         .engine
-        .revert_session(session_id, message.seq - 1, origin())
+        .revert_session(session_id, message.seq - 1, origin(), None)
         .await
         .expect("revert before the message");
     let cut = run_start.seq - 1;
@@ -944,7 +944,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
     assert!(matches!(
         fixture
             .engine
-            .revert_session(session.session_id, through_seq, cookie_agent_protocol::EventOrigin::new("client:test").unwrap())
+            .revert_session(session.session_id, through_seq, cookie_agent_protocol::EventOrigin::new("client:test").unwrap(), None)
             .await,
         Err(EngineError::SessionRunning(id)) if id == session.session_id
     ));
@@ -954,6 +954,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
             session.session_id,
             through_seq,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            None,
         )
         .await
         .expect("fork active source");
@@ -1017,6 +1018,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
             session.session_id,
             through_seq,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            None,
         )
         .await
         .expect("revert completed source");
@@ -1056,6 +1058,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
             session.session_id,
             first_revert_tip,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            None,
         )
         .await
         .expect("stacked revert");
@@ -1065,6 +1068,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
             session.session_id,
             through_seq,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            None,
         )
         .await
         .expect("fork reverted source at original boundary");

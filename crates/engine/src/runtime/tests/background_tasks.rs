@@ -393,6 +393,7 @@ async fn reverting_past_the_call_kills_its_running_job() {
             session_id,
             1,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            None,
         )
         .await
         .expect("revert");

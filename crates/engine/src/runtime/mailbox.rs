@@ -44,6 +44,13 @@ pub(crate) struct SessionRuntimeState {
     /// registration sweeps whatever finished without being noticed.
     pub(super) run_tasks: Mutex<HashMap<RunId, tokio::task::JoinHandle<()>>>,
     pub(crate) residency_mutation: tokio::sync::Mutex<()>,
+    /// Forks made with a client fork id, so a retry returns the same fork:
+    /// (source, key) -> (through seq, fork).
+    pub(super) forks:
+        Mutex<HashMap<(SessionId, cookie_agent_protocol::ClientForkId), (u64, SessionId)>>,
+    /// Per-session order for steers, held across plugin input interception
+    /// so two steers are admitted in the order they arrived.
+    pub(super) steer_order: Mutex<HashMap<SessionId, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// Removes a run task's join handle when its task ends, however it ends.
@@ -1123,7 +1130,29 @@ impl Engine {
             for command in deferred {
                 self.handle_actor_command(session, command).await;
             }
+            self.inner.compaction.finished.notify_waiters();
         })
+    }
+
+    /// Returns once `session` holds no compaction or run-start reservation,
+    /// so a submission neither fails nor waits in the one-slot deferral.
+    pub(super) async fn wait_for_compaction(&self, session: SessionId) {
+        loop {
+            let finished = self.inner.compaction.finished.notified();
+            tokio::pin!(finished);
+            finished.as_mut().enable();
+            if !self
+                .inner
+                .compaction
+                .in_progress
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&session)
+            {
+                return;
+            }
+            finished.await;
+        }
     }
 
     pub(super) async fn handle_actor_command(&self, session: SessionId, command: SessionCommand) {

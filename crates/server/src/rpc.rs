@@ -227,6 +227,22 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
             message: "session is owned by another cookie process",
             data: None,
         },
+        EngineError::StaleRevert {
+            session_id,
+            current_last_seq,
+        } => RpcFault {
+            code: -32602,
+            message: "stale revert",
+            data: typed_error_data(cookie_agent_protocol::SessionRevertConflict {
+                session_id,
+                current_last_seq,
+            }),
+        },
+        EngineError::ForkIdempotencyConflict => RpcFault {
+            code: -32602,
+            message: "idempotency conflict",
+            data: Some(json!({ "code": "idempotency_conflict" })),
+        },
         EngineError::Goal(reason) => RpcFault {
             code: -32602,
             message: "goal operation rejected",
@@ -274,6 +290,8 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::DisabledAgent(_) => "disabled_agent",
         EngineError::MissingRun(_) => "missing_run",
         EngineError::SessionRunning(_) => "session_running",
+        EngineError::StaleRevert { .. } => "stale_revert",
+        EngineError::ForkIdempotencyConflict => "fork_idempotency_conflict",
         EngineError::RunIdempotencyConflict => "run_idempotency_conflict",
         EngineError::InputHandled(_) => "input_handled",
         EngineError::ModelSelectionBlocked(_) => "model_selection_blocked",

@@ -826,6 +826,17 @@ impl App {
         let through_seq = menu.seq.saturating_sub(1).max(1);
         let session_id = menu.session_id;
         let text = menu.text;
+        // The revert names the tip this view shows: if another client added
+        // to the session since, the daemon refuses instead of deleting it.
+        let Some(expected_last_seq) = self
+            .store
+            .sessions
+            .get(&session_id)
+            .map(|state| state.last_seq)
+        else {
+            self.status = "session is not loaded".into();
+            return;
+        };
         self.status = "reverting to before the message…".into();
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
@@ -834,6 +845,7 @@ impl App {
                 .revert_session(SessionRevertParams {
                     session_id,
                     through_seq,
+                    expected_last_seq,
                 })
                 .await
             {
@@ -841,6 +853,11 @@ impl App {
                     let text = result.instructions_override.unwrap_or(text);
                     let _ = updates.send(RpcUpdate::Reverted { session_id, text });
                     return;
+                }
+                Err(crate::ClientError::Rpc(error)) if error.message == "stale revert" => {
+                    "revert refused: the session changed since you opened this message; \
+                     review the new turns and revert again"
+                        .to_owned()
                 }
                 Err(error) => format!("revert failed: {error}"),
             };
@@ -860,6 +877,10 @@ impl App {
                 .fork_session(SessionForkParams {
                     session_id,
                     through_seq: menu.seq,
+                    client_fork_id: cookie_agent_protocol::ClientForkId::new(
+                        client_run_id().as_str(),
+                    )
+                    .expect("a client run id is a valid fork id"),
                 })
                 .await
             {

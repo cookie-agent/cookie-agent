@@ -152,6 +152,7 @@ bounded_control_free_type!(
     256,
     "Bounded title mutation idempotency key."
 );
+bounded_control_free_type!(ClientForkId, 256, "Bounded fork idempotency key.");
 bounded_control_free_type!(
     ModelCallId,
     512,

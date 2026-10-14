@@ -31,6 +31,9 @@ impl Engine {
             if attempt > 0 {
                 tokio::time::sleep(SUBMIT_RETRY_BASE * attempt).await;
             }
+            // A manual compaction holds the session; the input waits for it
+            // rather than failing.
+            self.wait_for_compaction(session).await;
             if let Some(run_id) = self.running_run(session)? {
                 match params.delivery {
                     InputDelivery::Steer => {

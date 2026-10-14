@@ -331,6 +331,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         params: SessionCompactParams,
         context: &ServerContext,
     ) -> Result<SessionCompactResult, ServerFault>;
+    async fn cancel_compaction(
+        &self,
+        params: crate::SessionCompactCancelParams,
+        context: &ServerContext,
+    ) -> Result<crate::SessionCompactCancelResult, ServerFault>;
     async fn revert_session(
         &self,
         params: SessionRevertParams,
@@ -650,6 +655,9 @@ async fn dispatch<S: ServerProtocol>(
         "skills.get" => value(server.get_skill(decode(params)?).await?),
         "session.compact" => value(server.compact_session(decode(params)?, context).await?),
         "session.revert" => value(server.revert_session(decode(params)?, context).await?),
+        crate::SESSION_COMPACT_CANCEL_METHOD => {
+            value(server.cancel_compaction(decode(params)?, context).await?)
+        }
         "session.fork" => value(server.fork_session(decode(params)?, context).await?),
         "run.start" => value(server.start_run(decode(params)?, context).await?),
         "run.steer" => value(server.steer_run(decode(params)?, context).await?),

@@ -266,9 +266,20 @@ impl ServerProtocol for Server {
                 params.session_id,
                 params.through_seq,
                 context.client_origin(),
+                Some(params.expected_last_seq),
             )
             .await
             .map_err(protocol_fault)
+    }
+
+    async fn cancel_compaction(
+        &self,
+        params: cookie_agent_protocol::SessionCompactCancelParams,
+        _context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SessionCompactCancelResult> {
+        Ok(cookie_agent_protocol::SessionCompactCancelResult {
+            cancelled: self.engine.cancel_compaction(params.session_id),
+        })
     }
 
     async fn fork_session(
@@ -281,6 +292,7 @@ impl ServerProtocol for Server {
                 params.session_id,
                 params.through_seq,
                 context.client_origin(),
+                Some(params.client_fork_id),
             )
             .await
             .map_err(protocol_fault)

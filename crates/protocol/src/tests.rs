@@ -195,7 +195,8 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 36);
+    assert_eq!(PROTOCOL_VERSION, 37);
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(36)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(35)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(34)).is_err());
     assert_eq!(
@@ -1118,22 +1119,29 @@ fn session_revert_reduces_visible_branch_and_rpc_types_round_trip() {
     let revert = SessionRevertParams {
         session_id,
         through_seq: 1,
+        expected_last_seq: 6,
     };
     assert_eq!(
         serde_json::from_value::<SessionRevertParams>(serde_json::to_value(revert).unwrap())
-            .unwrap()
-            .through_seq,
-        1
+            .unwrap(),
+        revert
+    );
+    // A revert without the tip it expects is refused at the wire.
+    assert!(
+        serde_json::from_value::<SessionRevertParams>(json!({
+            "session_id": session_id,
+            "through_seq": 1,
+        }))
+        .is_err()
     );
     let fork = SessionForkParams {
         session_id,
         through_seq: 1,
+        client_fork_id: ClientForkId::new("fork-1").unwrap(),
     };
     assert_eq!(
-        serde_json::from_value::<SessionForkParams>(serde_json::to_value(fork).unwrap())
-            .unwrap()
-            .session_id,
-        session_id
+        serde_json::from_value::<SessionForkParams>(serde_json::to_value(&fork).unwrap()).unwrap(),
+        fork
     );
 }
 

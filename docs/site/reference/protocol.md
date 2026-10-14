@@ -1,11 +1,11 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 36 is current-only. A client must call `handshake` before any other
+Protocol 37 is current-only. A client must call `handshake` before any other
 method:
 
 ```json
-{ "protocol_version": 36, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+{ "protocol_version": 37, "client": { "kind": "tui", "instance_id": "<uuid>" } }
 ```
 
 `client.kind` names the client program: a lowercase letter followed by up to 15
@@ -14,7 +14,7 @@ lowercase letters, digits, or hyphens (the shipped clients use `tui` and `cli`).
 across reconnects so it can recognize events it caused. Any number of clients
 may connect to one daemon at once.
 
-The response is `{ "protocol_version": 36, "origin": "client:<kind>-<id>" }`,
+The response is `{ "protocol_version": 37, "origin": "client:<kind>-<id>" }`,
 where `<id>` is the instance id as 32 lowercase hex digits. The daemon stamps
 that origin on every event the connection's requests cause, so each client can
 tell its own actions from another client's. A repeated handshake on the same
@@ -22,12 +22,14 @@ connection keeps the first identity. Protocol 34 added the required `client`
 member and the `origin` result. Protocol 35 replaced `run.recall_steer` with
 `session.recall_input` and added `session.submit_input` with queued input (see
 [Submitting from several clients](#submitting-from-several-clients)), and
-protocol 36 added the `resync` runtime change reason. Older clients are
+protocol 36 added the `resync` runtime change reason. Protocol 37 made
+`session.revert` require `expected_last_seq` and `session.fork` require
+`client_fork_id`, and added `session.compact.cancel`. Older clients are
 rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 36.
+members of protocol 37.
 
 ## Error diagnostics
 
@@ -50,7 +52,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 36 alongside independent display and output references. The
+preserved in protocol 37 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -142,8 +144,9 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `skills.list` | Session ID | Discovered skills with source, precedence, visibility, and permission effect |
 | `skills.get` | Session ID, skill name, arguments | Permission-checked rendered preview and descriptor |
 | `session.compact` | Session ID, required nullable focus | Whether a checkpoint was committed |
-| `session.revert` | Session ID, positive `through_seq` | Updated session metadata |
-| `session.fork` | Session ID, positive `through_seq` | New session ID |
+| `session.compact.cancel` | Session ID | Whether a running manual compaction was cancelled |
+| `session.revert` | Session ID, positive `through_seq`, `expected_last_seq` | Updated session metadata |
+| `session.fork` | Session ID, positive `through_seq`, `client_fork_id` | New session ID |
 | `run.start` | Session ID, client run ID, selection, input | Run ID |
 | `run.steer` | Run ID, input | `accepted` boolean, admission `user_input_seq` |
 | `session.submit_input` | Session ID, input, `steer` or `queue` delivery, optional selection, client run ID, optional `reset_fallback` | `started` run ID, `steered` run ID and seq, `queued` seq, or `handled` reason |
@@ -291,7 +294,11 @@ back to `session.submit_input`.
 ## Revert and fork
 
 `session.revert` is idle-only. The target must be a positive existing
-sequence. The engine removes every event after it from the log (a run left with
+sequence, and `expected_last_seq` must be the session's current last event
+sequence: a session that has moved on since the client looked (another client's
+turn, say) is refused with code `-32602`, message `stale revert`, and
+`SessionRevertConflict` data carrying `current_last_seq`, so a revert never
+deletes what the requester has not seen. The engine removes every event after it from the log (a run left with
 nothing but its `run_started` goes too), closes any run, tool call, internal
 agent, or approval the cut left open, and deletes the subagent sessions created
 by removed delegations; a running one refuses the revert. Later appends reuse
@@ -300,6 +307,9 @@ the freed sequence numbers. Subscribers receive a `rewound` notification (see
 still hold `session_reverted` markers, which readers apply as before: each hides
 what followed its target on the branch visible when it was written.
 
+`session.fork` takes a `client_fork_id`: while the daemon runs, a retry with the
+same key and target returns the first fork instead of making another, and the
+same key with a different target is an `idempotency_conflict`.
 `session.fork` may read an active source but requires a persisted prefix that
 contains a submitted user message. The fork copies that prefix exactly under a
 new session ID, closes any copied in-flight run locally, appends ` (fork)` to

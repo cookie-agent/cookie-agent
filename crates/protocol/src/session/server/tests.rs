@@ -188,6 +188,13 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::SessionCompactResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
+    async fn cancel_compaction(
+        &self,
+        _: crate::SessionCompactCancelParams,
+        _context: &ServerContext,
+    ) -> Result<crate::SessionCompactCancelResult, ServerFault> {
+        Err(ServerFault::method_not_found())
+    }
     async fn revert_session(
         &self,
         _: crate::SessionRevertParams,

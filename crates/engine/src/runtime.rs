@@ -181,6 +181,13 @@ pub enum EngineError {
     MissingRun(RunId),
     #[error("session {0} is already running")]
     SessionRunning(SessionId),
+    #[error("session {session_id} changed since it was viewed (now at seq {current_last_seq})")]
+    StaleRevert {
+        session_id: SessionId,
+        current_last_seq: u64,
+    },
+    #[error("client fork id was used for a different fork")]
+    ForkIdempotencyConflict,
     #[error("client run id conflicts with durable run parameters")]
     RunIdempotencyConflict,
     #[error("input was handled by plugin: {0}")]

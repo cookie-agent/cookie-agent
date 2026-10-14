@@ -12,6 +12,7 @@ mod delegation_queue;
 mod delegation_revert;
 mod goal_reminders;
 mod goal_selection;
+mod guards;
 mod interception;
 mod mailbox;
 mod messaging;

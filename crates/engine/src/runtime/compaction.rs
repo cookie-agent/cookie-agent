@@ -66,6 +66,10 @@ impl ContextTokenEstimator {
 #[derive(Default)]
 pub(crate) struct CompactionState {
     pub(crate) in_progress: Mutex<HashSet<SessionId>>,
+    /// Woken whenever a session's reservation is released.
+    pub(crate) finished: tokio::sync::Notify,
+    /// The cancellation of each running manual compaction.
+    pub(crate) manual: Mutex<HashMap<SessionId, CancellationToken>>,
     pub(super) deferred: Mutex<HashMap<SessionId, VecDeque<SessionCommand>>>,
     pub(crate) context_token_estimators: Mutex<HashMap<SessionId, ContextTokenEstimator>>,
 }
@@ -230,11 +234,22 @@ impl Engine {
         )?;
         let tools = self.tool_definitions(session, &policy)?;
         let before = projection.log.latest_checkpoint_seq();
+        let cancellation = CancellationToken::new();
+        self.inner
+            .compaction
+            .manual
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(session, cancellation.clone());
+        let _registered = ManualCompaction {
+            engine: self,
+            session,
+        };
         match self
             .maybe_compact_context(CompactionInput {
                 session,
                 run,
-                cancellation: &CancellationToken::new(),
+                cancellation: &cancellation,
                 binding,
                 owner_policy: &policy,
                 internal_policy: &internal_policy,
@@ -254,12 +269,33 @@ impl Engine {
                     cancellation_reason: Some(reason),
                 });
             }
+            Err(_) if cancellation.is_cancelled() => {
+                return Ok(SessionCompactResult {
+                    compacted: false,
+                    cancellation_reason: Some("compaction cancelled".into()),
+                });
+            }
             Err(error) => return Err(error),
         }
         Ok(SessionCompactResult {
             compacted: projection.log.latest_checkpoint_seq() > before,
-            cancellation_reason: None,
+            cancellation_reason: cancellation
+                .is_cancelled()
+                .then(|| "compaction cancelled".to_owned()),
         })
+    }
+
+    /// Cancels `session`'s running manual compaction. Returns whether one
+    /// was running.
+    pub fn cancel_compaction(&self, session: SessionId) -> bool {
+        self.inner
+            .compaction
+            .manual
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session)
+            .map(CancellationToken::cancel)
+            .is_some()
     }
 
     pub(super) async fn maybe_compact_context(
@@ -910,6 +946,24 @@ impl Engine {
             return Ok(calibrated);
         }
         Ok(estimated_tokens_for_bytes(bytes))
+    }
+}
+
+/// Unregisters a manual compaction's cancellation however it ends.
+struct ManualCompaction<'a> {
+    engine: &'a Engine,
+    session: SessionId,
+}
+
+impl Drop for ManualCompaction<'_> {
+    fn drop(&mut self) {
+        self.engine
+            .inner
+            .compaction
+            .manual
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.session);
     }
 }
 

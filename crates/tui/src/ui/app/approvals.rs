@@ -1160,9 +1160,23 @@ impl App {
             .and_then(|state| state.active_run)
     }
 
+    /// Whether the selected session is compacting outside any run, which
+    /// the same gestures that cancel a run cancel.
+    pub(in crate::ui) fn selected_compacting(&self) -> bool {
+        self.selected
+            .and_then(|session_id| self.store.sessions.get(&session_id))
+            .is_some_and(|state| state.active_run.is_none() && state.is_compacting())
+    }
+
     pub(in crate::ui) fn cancel_active_run(&mut self) {
         let Some(run_id) = self.selected_active_run() else {
-            self.status = "no active run to cancel".into();
+            if self.selected_compacting()
+                && let Some(session_id) = self.selected
+            {
+                self.cancel_compaction(session_id);
+            } else {
+                self.status = "no active run to cancel".into();
+            }
             return;
         };
         let client = self.client.clone();
@@ -1173,6 +1187,24 @@ impl App {
                     RpcUpdate::Notice("run cancellation requested".into())
                 }
                 Ok(_) => RpcUpdate::Notice("run was already complete".into()),
+                Err(error) => RpcUpdate::Status(error.to_string()),
+            };
+            let _ = updates.send(update);
+        });
+    }
+
+    fn cancel_compaction(&mut self, session_id: cookie_agent_protocol::SessionId) {
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let update = match client
+                .cancel_compaction(cookie_agent_protocol::SessionCompactCancelParams { session_id })
+                .await
+            {
+                Ok(result) if result.cancelled => {
+                    RpcUpdate::Notice("compaction cancellation requested".into())
+                }
+                Ok(_) => RpcUpdate::Notice("no compaction to cancel".into()),
                 Err(error) => RpcUpdate::Status(error.to_string()),
             };
             let _ = updates.send(update);

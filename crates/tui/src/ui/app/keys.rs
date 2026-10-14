@@ -755,7 +755,7 @@ impl App {
                     } else {
                         self.copy_to_clipboard(text);
                     }
-                } else if self.selected_active_run().is_some() {
+                } else if self.selected_active_run().is_some() || self.selected_compacting() {
                     self.last_quit_press = None;
                     self.cancel_active_run();
                 } else if self.register_quit_press(Instant::now()) {

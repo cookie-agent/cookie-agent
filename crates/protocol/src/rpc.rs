@@ -729,6 +729,19 @@ pub struct SessionCompactResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancellation_reason: Option<String>,
 }
+pub const SESSION_COMPACT_CANCEL_METHOD: &str = "session.compact.cancel";
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionCompactCancelParams {
+    pub session_id: SessionId,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionCompactCancelResult {
+    /// Whether a manual compaction was running and is now cancelled; its
+    /// `session.compact` returns without a checkpoint.
+    pub cancelled: bool,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -736,6 +749,19 @@ pub struct SessionRevertParams {
     pub session_id: SessionId,
     #[schemars(range(min = 1))]
     pub through_seq: u64,
+    /// The session's last event seq the client saw. A revert of a session
+    /// that has moved on since is refused rather than silently deleting
+    /// what another client added.
+    #[schemars(range(min = 1))]
+    pub expected_last_seq: u64,
+}
+/// `session.revert` was refused: the session's log moved past the
+/// `expected_last_seq` the client sent.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRevertConflict {
+    pub session_id: SessionId,
+    pub current_last_seq: u64,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -745,12 +771,15 @@ pub struct SessionRevertResult {
     pub instructions_override: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionForkParams {
     pub session_id: SessionId,
     #[schemars(range(min = 1))]
     pub through_seq: u64,
+    /// A retry with the same key returns the fork the first request made,
+    /// for as long as the daemon runs.
+    pub client_fork_id: ClientForkId,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

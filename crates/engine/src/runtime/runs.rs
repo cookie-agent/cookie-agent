@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
@@ -44,6 +44,18 @@ impl Engine {
             .get(&run_id)
             .cloned()
             .ok_or(EngineError::MissingRun(run_id))?;
+        // Interception can take a while; holding the session's steer order
+        // across it admits back-to-back steers in the order they arrived.
+        let order = Arc::clone(
+            self.inner
+                .sessions
+                .steer_order
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entry(active.session)
+                .or_default(),
+        );
+        let _in_order = order.lock().await;
         match self.intercept_user_input(active.session, input).await? {
             UserInputInterception::Accepted {
                 input,

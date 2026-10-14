@@ -200,7 +200,13 @@ added to the compaction prompt (appended, or placed where an authored
 `compaction.md` puts `{{focus}}`) so the summary emphasizes the areas you care
 about. Steering remains available while
 compaction runs; admitted pending inputs are promoted only after the checkpoint,
-honoring any recalls made during compaction.
+honoring any recalls made during compaction. A message sent to an idle session
+that is compacting, from this or another client, waits for the compaction to
+finish and then starts its run.
+
+To stop a manual compaction, press Ctrl-C (or Esc twice) while the session shows
+`compacting`, as you would to cancel a run; `session.compact.cancel` does the
+same over the protocol. A cancelled compaction commits no checkpoint.
 
 `session.compact` returns whether a checkpoint was actually committed. Manual
 compaction follows the same recent-history selection, replaced-span trial, and

@@ -183,6 +183,7 @@ async fn revert_refuses_a_running_child_and_deletes_it_once_finished() {
             parent_id,
             reservation.0 - 1,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            None,
         )
         .await;
     assert!(
@@ -214,6 +215,7 @@ async fn revert_refuses_a_running_child_and_deletes_it_once_finished() {
             parent_id,
             reservation.0 - 1,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            None,
         )
         .await
         .expect("revert before delegation reservation");
@@ -289,6 +291,7 @@ async fn surviving_background_reservation_publishes_completion_once() {
             parent_id,
             through_seq,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            None,
         )
         .await
         .expect("revert while retaining delegation reservation");
