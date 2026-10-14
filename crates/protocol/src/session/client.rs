@@ -248,6 +248,9 @@ struct Subscription {
     /// its final page arrives and the whole replay is delivered at once.
     replay_pages: Vec<StoredEvent>,
     replay_pages_attempt: u64,
+    /// The view unsubscribed: live messages still in flight for the session
+    /// are dropped and recovery leaves it alone until it subscribes again.
+    closed: bool,
 }
 
 impl Subscription {
@@ -723,6 +726,24 @@ impl Client {
         .map_err(|_| ClientError::Closed)?
     }
 
+    /// End this connection's live tail for `session_id`
+    /// (`events.unsubscribe`). Messages still in flight for it are dropped,
+    /// and recovery leaves it alone until [`Self::subscribe_events`] is
+    /// called for it again.
+    pub async fn unsubscribe_events(
+        &self,
+        session_id: SessionId,
+    ) -> Result<crate::EventsUnsubscribeResult, ClientError> {
+        if let Some(subscription) = self.subscriptions.lock().await.get_mut(&session_id) {
+            subscription.closed = true;
+        }
+        self.call(
+            crate::EVENTS_UNSUBSCRIBE_METHOD,
+            &crate::EventsUnsubscribeParams { session_id },
+        )
+        .await
+    }
+
     /// Recover one session. `full_replay` is used when its local projection is
     /// no longer trustworthy.
     pub fn recover_session(&self, session_id: SessionId, full_replay: bool) {
@@ -799,6 +820,7 @@ async fn prepare_subscription(
 ) -> Result<ReplayRequest, ClientError> {
     let mut subscriptions = subscriptions.lock().await;
     let subscription = subscriptions.entry(session_id).or_default();
+    subscription.closed = false;
     if subscription.fetching {
         if recovering {
             subscription.recovery_requested =
@@ -1044,7 +1066,7 @@ async fn recover_all(
         subscriptions
             .iter_mut()
             .filter_map(|(session_id, subscription)| {
-                if only_session.is_some_and(|wanted| wanted != *session_id) {
+                if only_session.is_some_and(|wanted| wanted != *session_id) || subscription.closed {
                     return None;
                 }
                 if subscription.fetching {
@@ -1584,6 +1606,9 @@ async fn route_live(
     {
         let mut subscriptions = subscriptions.lock().await;
         let subscription = subscriptions.entry(session_id).or_default();
+        if subscription.closed {
+            return;
+        }
         let generation = subscription.generation;
         if subscription.fetching {
             match message {

@@ -963,6 +963,66 @@ async fn every_connection_hears_of_another_clients_sessions_and_permission_mode(
 }
 
 #[tokio::test]
+async fn an_unsubscribed_session_sends_this_connection_nothing_more() {
+    let (_directory, server) = in_process_server_with_skills(true);
+    let watcher = server.clone().connect_in_process();
+    watcher.handshake().await.expect("watcher handshake");
+    let mut deliveries = watcher.subscribe_deliveries().expect("deliveries");
+    let runner = server.connect_in_process();
+    runner.handshake().await.expect("runner handshake");
+    let session = runner
+        .create_session(SessionCreateParams::new(test_run_selection()))
+        .await
+        .expect("session")
+        .session;
+    watcher
+        .subscribe_events(session.session_id, Some(1))
+        .await
+        .expect("subscribe");
+    assert!(
+        watcher
+            .unsubscribe_events(session.session_id)
+            .await
+            .expect("unsubscribe")
+            .unsubscribed
+    );
+    assert!(
+        !watcher
+            .unsubscribe_events(session.session_id)
+            .await
+            .expect("repeated unsubscribe")
+            .unsubscribed
+    );
+    while deliveries.try_recv().is_ok() {}
+    runner
+        .start_run(cookie_agent_protocol::RunStartParams {
+            reset_fallback: false,
+            session_id: session.session_id,
+            client_run_id: cookie_agent_protocol::ClientRunId::new("unwatched").unwrap(),
+            selection: test_run_selection(),
+            input: "nobody is watching".into(),
+        })
+        .await
+        .expect("start run");
+    // Only daemon-wide notifications arrive; no session event does.
+    let quiet = tokio::time::timeout(std::time::Duration::from_millis(300), async {
+        loop {
+            match deliveries.recv().await.expect("delivery") {
+                crate::ClientDelivery::Live { .. }
+                | crate::ClientDelivery::ReplayStart { .. }
+                | crate::ClientDelivery::ReplayEvent { .. } => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+    assert!(
+        quiet.is_err(),
+        "a session event reached the unsubscribed connection"
+    );
+}
+
+#[tokio::test]
 async fn same_connection_approval_response_and_finalization_run_end_to_end() {
     const STAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 

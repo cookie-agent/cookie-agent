@@ -442,6 +442,22 @@ impl ServerProtocol for Server {
         Ok(result)
     }
 
+    async fn unsubscribe_events(
+        &self,
+        params: cookie_agent_protocol::EventsUnsubscribeParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::EventsUnsubscribeResult> {
+        // The forwarder goes first so nothing more for the session reaches
+        // the connection, then the engine forgets the tail.
+        let forwarded = context.unregister_session_subscription(params.session_id);
+        let tailed = self
+            .engine
+            .unsubscribe(params.session_id, TailOwner(context.connection_id()));
+        Ok(cookie_agent_protocol::EventsUnsubscribeResult {
+            unsubscribed: forwarded || tailed,
+        })
+    }
+
     async fn respond_approval(
         &self,
         params: ApprovalRespondParams,

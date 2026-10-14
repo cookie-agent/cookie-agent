@@ -926,6 +926,19 @@ impl App {
         };
         let linked = event
             .is_some_and(|event| matches!(&event.payload, EventPayload::ToolCallLinked { .. }));
+        // A run that ended in a session outside the view no longer needs its
+        // live tail: releasing it lets the daemon evict the session.
+        let run_ended = event.and_then(|event| {
+            (matches!(&delivery, ClientDelivery::Live { .. })
+                && matches!(
+                    &event.payload,
+                    EventPayload::RunCompleted { .. }
+                        | EventPayload::RunFailed { .. }
+                        | EventPayload::RunCancelled { .. }
+                        | EventPayload::RunInterrupted { .. }
+                ))
+            .then_some(event.session_id)
+        });
         let terminalized = event.is_some_and(|event| {
             matches!(
                 &event.payload,
@@ -1016,6 +1029,12 @@ impl App {
         // projection (a replay could not reproduce that): the transcript
         // splices it in at render time by its durable time instead.
         let outcome = self.store.apply_delivery(delivery);
+        if let Some(session_id) = run_ended
+            && !self.is_recently_viewed(session_id)
+            && self.is_settled(session_id)
+        {
+            self.release_subscription(session_id);
+        }
         if let Some(session_id) = replay_ended_session {
             self.note_replay_end(session_id);
         }

@@ -154,6 +154,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `run.cancel` | Run ID | `cancelled` boolean |
 | `run.tool_stdin` | Run ID, tool call ID, optional data, EOF flag | `accepted` boolean |
 | `events.subscribe` | Session ID, optional cursor and `cursor_timestamp`, optional `limit` | Stored events after the cursor, or `stale_cursor`; starts notifications on the final page (see [Subscriptions](events.md#subscriptions)) |
+| `events.unsubscribe` | Session ID | Whether this connection had a live tail for it |
 | `approval.list` | Root session ID, optional status | Approval records and tree grants |
 | `approval.respond` | Approval identity/revision/fingerprint, client ID, decision, optional rejection feedback | Updated approval record |
 

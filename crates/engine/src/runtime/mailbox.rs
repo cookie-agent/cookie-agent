@@ -134,6 +134,11 @@ impl Engine {
     /// tail registered for an `owner` replaces the one it already holds for
     /// the session: the earlier receiver ends once drained, and nothing
     /// published afterwards reaches it.
+    /// Ends `owner`'s live tail on `session`. Returns whether it had one.
+    pub fn unsubscribe(&self, session: SessionId, owner: crate::session::TailOwner) -> bool {
+        self.inner.store.unsubscribe_events(session, owner)
+    }
+
     pub async fn subscribe_page(
         &self,
         session: SessionId,

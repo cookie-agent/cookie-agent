@@ -186,6 +186,8 @@ macro_rules! protocol_roots {
             RuntimeSnapshotResult,
             RuntimeChangedNotification,
             SessionsChangedNotification,
+            EventsUnsubscribeParams,
+            EventsUnsubscribeResult,
             McpChangedNotification,
             ProviderConnectResult,
             ProviderConnectError,

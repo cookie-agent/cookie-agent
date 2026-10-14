@@ -582,6 +582,10 @@ pub struct App {
     pub(super) reconnector: Option<Reconnector>,
     /// The connection dropped and a reconnect is under way.
     pub(super) reconnecting: bool,
+    /// Roots of the trees viewed most recently, newest first. Their sessions
+    /// stay subscribed so switching back is instant; older trees' settled
+    /// sessions are released so the daemon can evict them.
+    pub(super) recent_trees: std::collections::VecDeque<SessionId>,
     pub(super) stdin_lanes: Arc<
         tokio::sync::Mutex<HashMap<cookie_agent_protocol::ToolCallId, Arc<tokio::sync::Mutex<()>>>>,
     >,
@@ -1126,6 +1130,7 @@ impl App {
             runtime_resync_in_flight: false,
             reconnector: None,
             reconnecting: false,
+            recent_trees: std::collections::VecDeque::new(),
             stdin_lanes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             store: StateStore::default(),
             sessions: Vec::new(),

@@ -230,6 +230,7 @@ impl App {
     /// caller subscribes it.
     pub(in crate::ui) fn reroot_tree(&mut self, session_id: SessionId) {
         let root_changed = self.tree_root != Some(session_id);
+        self.note_viewed_tree(session_id);
         self.set_selected_session(session_id);
         self.selection_generation = self.selection_generation.wrapping_add(1);
         self.tree_root = Some(session_id);

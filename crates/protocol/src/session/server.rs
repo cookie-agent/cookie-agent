@@ -207,6 +207,24 @@ impl ServerContext {
             .insert(session_id);
     }
 
+    /// Stops this connection's live tail for a session: no further
+    /// `events.subscription` or plugin notification for it is sent. Returns
+    /// whether the connection was subscribed.
+    pub fn unregister_session_subscription(&self, session_id: SessionId) -> bool {
+        if let Some(forwarder) = self
+            .session_tails
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&session_id)
+        {
+            forwarder.abort();
+        }
+        self.subscribed_sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&session_id)
+    }
+
     /// Returns whether this connection has successfully subscribed to the session.
     #[must_use]
     pub fn is_session_subscribed(&self, session_id: SessionId) -> bool {
@@ -356,6 +374,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         params: RunSteerParams,
         context: &ServerContext,
     ) -> Result<RunSteerResult, ServerFault>;
+    async fn unsubscribe_events(
+        &self,
+        params: crate::EventsUnsubscribeParams,
+        context: &ServerContext,
+    ) -> Result<crate::EventsUnsubscribeResult, ServerFault>;
     async fn submit_input(
         &self,
         params: crate::SessionSubmitInputParams,
@@ -661,6 +684,9 @@ async fn dispatch<S: ServerProtocol>(
         "session.fork" => value(server.fork_session(decode(params)?, context).await?),
         "run.start" => value(server.start_run(decode(params)?, context).await?),
         "run.steer" => value(server.steer_run(decode(params)?, context).await?),
+        crate::EVENTS_UNSUBSCRIBE_METHOD => {
+            value(server.unsubscribe_events(decode(params)?, context).await?)
+        }
         crate::SESSION_SUBMIT_INPUT_METHOD => {
             value(server.submit_input(decode(params)?, context).await?)
         }

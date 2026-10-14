@@ -223,6 +223,13 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::RunSteerResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
+    async fn unsubscribe_events(
+        &self,
+        _: crate::EventsUnsubscribeParams,
+        _context: &ServerContext,
+    ) -> Result<crate::EventsUnsubscribeResult, ServerFault> {
+        Err(ServerFault::method_not_found())
+    }
     async fn submit_input(
         &self,
         _: crate::SessionSubmitInputParams,

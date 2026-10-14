@@ -2147,6 +2147,18 @@ impl SessionStore {
         Some(event)
     }
 
+    /// Drops `owner`'s live tail on `session_id`, closing its receiver. Returns
+    /// whether it had one. With no tail left the session can be evicted.
+    pub(crate) fn unsubscribe_events(&self, session_id: SessionId, owner: TailOwner) -> bool {
+        let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(tails) = subscribers.get_mut(&session_id) else {
+            return false;
+        };
+        let before = tails.senders.len();
+        tails.senders.retain(|tail| tail.owner != Some(owner));
+        tails.senders.len() != before
+    }
+
     /// Whether a reader still holds a live tail on `session_id`.
     pub(crate) fn has_live_tail(&self, session_id: SessionId) -> bool {
         self.subscribers

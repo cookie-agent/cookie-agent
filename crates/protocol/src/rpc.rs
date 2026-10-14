@@ -890,6 +890,20 @@ pub struct RunSteerResult {
     pub user_input_seq: Option<u64>,
 }
 
+pub const EVENTS_UNSUBSCRIBE_METHOD: &str = "events.unsubscribe";
+/// Ends this connection's live tail for a session.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventsUnsubscribeParams {
+    pub session_id: SessionId,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventsUnsubscribeResult {
+    /// Whether this connection had a live tail for the session.
+    pub unsubscribed: bool,
+}
+
 pub const SESSIONS_CHANGED_METHOD: &str = "sessions.changed";
 pub const MCP_CHANGED_METHOD: &str = "mcp.changed";
 

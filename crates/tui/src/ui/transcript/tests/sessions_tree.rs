@@ -1498,3 +1498,39 @@ async fn daemon_wide_session_changes_update_the_picker_and_permission_mode() {
         app.status
     );
 }
+
+#[tokio::test]
+async fn trees_beyond_the_recent_few_release_settled_subscriptions_but_keep_running_ones() {
+    let (startup_client, _startup) = recording_client();
+    let mut app = App::new(startup_client).await.expect("test app");
+    let (client, recorded, _incoming) = live_recording_client();
+    app.client = client;
+    let (settled, running) = (SessionId::new_v7(), SessionId::new_v7());
+    app.store.sessions.insert(settled, SessionState::default());
+    app.store.sessions.insert(
+        running,
+        SessionState {
+            active_run: Some(run_id()),
+            ..SessionState::default()
+        },
+    );
+    for session in [settled, running] {
+        app.reroot_tree(session);
+        app.subscribe_session(session, SubscribeIntent::Follow);
+    }
+    // Recently viewed trees stay subscribed for instant switching back.
+    for _ in 0..6 {
+        app.reroot_tree(SessionId::new_v7());
+    }
+    assert_eq!(recorded_method_count(&recorded, "events.unsubscribe"), 0);
+    // Two more push both out of the recent set: only the settled one goes.
+    for _ in 0..2 {
+        app.reroot_tree(SessionId::new_v7());
+    }
+    wait_for_recorded_request(&recorded, "events.unsubscribe", 1).await;
+    assert_eq!(
+        last_request_params(&recorded, "events.unsubscribe")["session_id"],
+        serde_json::json!(settled)
+    );
+    assert_eq!(recorded_method_count(&recorded, "events.unsubscribe"), 1);
+}

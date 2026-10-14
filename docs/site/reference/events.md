@@ -466,6 +466,16 @@ missed. Without `limit` the first response is the final page. Paging a session
 this process does not own parses its log once and serves later pages from
 memory while the file is unchanged.
 
+`events.unsubscribe` ends the connection's live tail for a session: no further
+`events.subscription` or `events.plugin` notification for it is sent, and the
+shared client drops messages already in flight and stops recovering it until it
+subscribes again. A session no connection has a tail on can be evicted from the
+daemon's memory, so a long-lived client releases sessions it no longer shows.
+The TUI keeps the sessions of its eight most recently viewed trees subscribed,
+so switching back is instant, and releases the others once they have no run and
+no pending or queued input; it keeps their last state and catches up from it
+when one is reopened.
+
 A connection holds at most one live tail per session. Subscribing a session
 the connection already follows (reopening it, or a recovery replay) replaces
 its tail in the same step as the new snapshot: notifications the old tail had

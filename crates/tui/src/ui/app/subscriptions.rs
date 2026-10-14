@@ -47,6 +47,8 @@ pub(in crate::ui) enum SubscriptionState {
 /// First wait before redialing a dropped daemon; doubles per failure.
 const RECONNECT_FIRST_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 const RECONNECT_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
+/// Trees whose sessions stay subscribed after the view moves on.
+const RECENT_SUBSCRIBED_TREES: usize = 8;
 /// Wait before resubscribing a viewed session whose recovery gave up.
 const SUBSCRIPTION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -266,6 +268,63 @@ impl App {
                 self.subscriptions.remove(&session_id);
             }
             None => self.subscriptions.clear(),
+        }
+    }
+
+    /// Ends this connection's live tail for `session_id`, keeping its
+    /// projection: reopening it later catches up from its cursor. A session
+    /// with a tail cannot be evicted by the daemon, so a TUI that has browsed
+    /// many sessions releases the ones it no longer shows.
+    pub(super) fn release_subscription(&mut self, session_id: SessionId) {
+        if self.subscriptions.remove(&session_id).is_none() {
+            return;
+        }
+        let client = self.client.clone();
+        self.spawn_rpc(async move {
+            // Best effort: a failure leaves a tail the connection's end drops.
+            let _ = client.unsubscribe_events(session_id).await;
+        });
+    }
+
+    /// Whether `session_id` belongs to a recently viewed tree, whose
+    /// sessions keep their subscriptions.
+    pub(super) fn is_recently_viewed(&self, session_id: SessionId) -> bool {
+        self.recent_trees
+            .contains(&self.permission_mode_root(session_id))
+    }
+
+    /// Whether nothing in `session_id` is still owed to this view: no run, and
+    /// no pending or queued input whose start or return it must see.
+    pub(super) fn is_settled(&self, session_id: SessionId) -> bool {
+        self.store.sessions.get(&session_id).is_none_or(|state| {
+            state.active_run.is_none()
+                && state.pending_inputs.is_empty()
+                && state.queued_inputs.is_empty()
+        })
+    }
+
+    /// Records `root` as the most recently viewed tree. The tree this pushes
+    /// out of the recent set has its settled sessions released; ones still
+    /// running are released when their run ends.
+    pub(super) fn note_viewed_tree(&mut self, root: SessionId) {
+        self.recent_trees.retain(|recent| *recent != root);
+        self.recent_trees.push_front(root);
+        while self.recent_trees.len() > RECENT_SUBSCRIBED_TREES {
+            let Some(evicted) = self.recent_trees.pop_back() else {
+                break;
+            };
+            let released = self
+                .subscriptions
+                .keys()
+                .copied()
+                .filter(|session_id| {
+                    self.permission_mode_root(*session_id) == evicted
+                        && self.is_settled(*session_id)
+                })
+                .collect::<Vec<_>>();
+            for session_id in released {
+                self.release_subscription(session_id);
+            }
         }
     }
 
