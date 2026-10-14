@@ -2,6 +2,7 @@
 
 mod cache;
 mod fold;
+mod in_flight;
 mod tree_load;
 mod workdir;
 
@@ -96,6 +97,9 @@ struct SessionSubscribers {
     /// publication and every tail registration.
     last_seq: u64,
     senders: Vec<Tail>,
+    /// Live-only output not yet superseded, replayed to a tail that
+    /// registers mid-stream.
+    in_flight: in_flight::InFlightOutput,
 }
 
 #[derive(Debug)]
@@ -2002,6 +2006,29 @@ impl SessionStore {
         if owner.is_some() {
             tails.senders.retain(|tail| tail.owner != owner);
         }
+        // A reader that replayed from the start of the log first gets the
+        // output streaming now, coalesced, positioned after the durable tip.
+        // A reader resuming from a cursor may already hold part of it, and
+        // a second copy would append to the first.
+        let in_flight = if cursor.is_none_or(|cursor| cursor == 0) {
+            tails.in_flight.replay()
+        } else {
+            Vec::new()
+        };
+        for (run_id, payload) in in_flight {
+            if sender.capacity() <= 1 {
+                break;
+            }
+            let _ = sender.try_send(EventSubscriptionMessage::Transient {
+                event: Arc::new(TransientEvent {
+                    session_id: session,
+                    run_id,
+                    after_seq: tails.last_seq,
+                    timestamp: jiff::Timestamp::now(),
+                    payload,
+                }),
+            });
+        }
         tails.senders.push(Tail { owner, sender });
         Ok((result, Some(receiver)))
     }
@@ -2041,6 +2068,7 @@ impl SessionStore {
         let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
         let tails = subscribers.entry(envelope.session_id).or_default();
         tails.last_seq = envelope.seq;
+        tails.in_flight.settle(envelope.run_id, &envelope.payload);
         tails.senders.retain(|Tail { sender, .. }| {
             // Reserve the final slot for a gap so a slow reader can replay.
             let is_gap = sender.capacity() <= 1;
@@ -2064,6 +2092,7 @@ impl SessionStore {
             return;
         };
         tails.last_seq = through_seq;
+        tails.in_flight.clear();
         tails.senders.retain(|Tail { sender, .. }| {
             // The final slot reserved for a gap fits the rewind as well: it
             // makes the reader replay in full, so a tail that needed that
@@ -2091,7 +2120,12 @@ impl SessionStore {
     ) -> Option<Arc<TransientEvent>> {
         debug_assert!(payload.is_transient());
         let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());
-        let tails = subscribers.get_mut(&session_id)?;
+        let tails = subscribers.entry(session_id).or_default();
+        // Kept even with no tail yet, for the first reader to join.
+        tails.in_flight.record(run_id, &payload);
+        if tails.last_seq == 0 && tails.senders.is_empty() {
+            return None;
+        }
         let event = Arc::new(TransientEvent {
             session_id,
             run_id,

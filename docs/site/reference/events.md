@@ -78,10 +78,22 @@ subscribers and plugins as they stream but never appends them to
 `events.jsonl` or to a session's in-memory log, and a stored record carrying
 one fails validation. Their durable record is the committed turn
 (`model_turn_committed`), the tool termination (`tool_call_terminated`, with its
-retained output), and the internal agent's terminal event. A replay, a reload,
-or a view that attaches while a reply streams therefore sees finished turns
-only; the in-flight reply appears from the first live delta after attach, and
-its commit replaces it.
+retained output), and the internal agent's terminal event. A replay or a reload
+therefore sees finished turns only.
+
+A view that attaches while output streams does not start from a fragment: the
+daemon keeps each session's output still in flight in memory, and a tail
+registered by a subscription without a cursor (one that replayed the whole log)
+first receives it as live-only messages positioned after the durable tip it
+replayed to. A subscription that resumes from a cursor does not, since its
+reader may already hold part of that output; its later deltas continue it. Each open attempt's text and reasoning arrive as
+one `text_delta` or `reasoning_delta` per uninterrupted run of a kind, in
+order; each running tool as one `tool_call_progress` carrying its latest
+`message` and the display so far (capped at 64 KiB); a running provider-native
+compaction as its `native_compaction_started`; and a streaming compaction
+summary as one `internal_agent_text_delta`. Later deltas append as usual, and
+the durable record replaces it all as before. Output a daemon restart cut off
+is not kept.
 
 `internal_agent_text_delta` (`invocation_id`, `text`) streams the compaction
 agent's summary text. Other internal agents do not stream.

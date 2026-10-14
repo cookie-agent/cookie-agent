@@ -1143,3 +1143,74 @@ async fn loop_warning_can_be_disabled() {
     let outputs = repeated_write_outputs(false).await;
     assert_eq!(outputs, ["executed", "executed", "executed"]);
 }
+
+#[tokio::test]
+async fn a_reader_joining_mid_stream_first_receives_the_output_it_missed() {
+    let (endpoint, _server) = scripted_stalled_stream_server("partial answer").await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("late-reader").unwrap(),
+                selection,
+                input: "start a long answer".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    await_event(
+        &fixture.engine,
+        session.session_id,
+        "streamed text started",
+        |event| matches!(event.payload, EventPayload::ModelOutputStarted { .. }),
+    )
+    .await;
+    // The delta follows its durable part marker; let it land.
+    let text = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (_, mut live) = fixture
+                .engine
+                .subscribe(session.session_id, None)
+                .await
+                .expect("late subscription");
+            if let Ok(EventSubscriptionMessage::Transient { event }) = live.try_recv()
+                && let EventPayload::TextDelta { text, .. } = &event.payload
+            {
+                break text.clone();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("in-flight text replayed to a late reader");
+    assert_eq!(text, "partial answer");
+
+    fixture
+        .engine
+        .cancel_run(
+            run.run_id,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("cancel run");
+    await_projection(
+        &fixture.engine,
+        session.session_id,
+        "cancelled",
+        |projection| projection.status == SessionStatus::Cancelled,
+    )
+    .await;
+    // The committed partial turn supersedes the stream: nothing replays.
+    let (_, mut live) = fixture
+        .engine
+        .subscribe(session.session_id, None)
+        .await
+        .expect("subscription after the run");
+    assert!(live.try_recv().is_err());
+    fixture.engine.shutdown().await;
+}

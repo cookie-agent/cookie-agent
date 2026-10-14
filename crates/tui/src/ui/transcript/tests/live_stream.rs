@@ -411,8 +411,8 @@ async fn attaching_mid_reply_streams_each_later_delta_once() {
     let (_directory, server) = streaming_app(&model).await;
     let (_runner, session, _run) = start_reply_elsewhere(&server, "hello").await;
     model.wait_for_call(1).await;
-    // Output streamed before the view attached is not replayable; the
-    // committed turn brings it back.
+    // Output streamed before the view attached is replayed to it, coalesced,
+    // when it subscribes; later deltas continue it.
     let observer = Arc::clone(&server).connect_in_process();
     observer.handshake().await.expect("observer handshake");
     let mut observed = observer
@@ -438,7 +438,7 @@ async fn attaching_mid_reply_streams_each_later_delta_once() {
     let (mut app, mut deliveries, subscribes) = attached_app(&server).await;
     assert_eq!(app.selected, Some(session));
     settle(&mut app, &mut deliveries).await;
-    assert_eq!(shown(&app, session), (String::new(), String::new()));
+    assert_eq!(shown(&app, session), (String::new(), "before ".to_owned()));
     assert_eq!(subscribes.count(session), 1, "attaching subscribes once");
 
     stream_step(
@@ -447,7 +447,7 @@ async fn attaching_mid_reply_streams_each_later_delta_once() {
         &model,
         session,
         Chunk::Text("after"),
-        ("", "after"),
+        ("", "before after"),
     )
     .await;
     stream_step(
@@ -456,7 +456,7 @@ async fn attaching_mid_reply_streams_each_later_delta_once() {
         &model,
         session,
         Chunk::Text(" attach"),
-        ("", "after attach"),
+        ("", "before after attach"),
     )
     .await;
     finish_reply(
