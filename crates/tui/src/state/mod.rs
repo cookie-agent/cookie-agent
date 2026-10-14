@@ -1014,6 +1014,9 @@ impl StateStore {
                 match replay {
                     Some(mut replay) if valid => {
                         self.quarantined_sessions.remove(&session_id);
+                        // A replay is durable history, not a live run
+                        // termination, so it never restores unsent input.
+                        replay.scratch.voided_inputs.clear();
                         replay.scratch.version = self
                             .sessions
                             .get(&session_id)

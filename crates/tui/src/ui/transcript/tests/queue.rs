@@ -955,6 +955,48 @@ async fn run_end_voids_pending_and_restores_the_composer() {
 }
 
 #[tokio::test]
+async fn replayed_run_end_never_restores_the_composer() {
+    let (mut app, session, run) = app_with_active_run().await;
+    for rebuild in [false, true] {
+        let final_seq = 3;
+        app.handle_delivery(ClientDelivery::ReplayStart {
+            session_id: session,
+            generation: 0,
+            final_seq,
+            rebuild,
+        })
+        .await;
+        for replayed in [
+            admitted(session, 1, run, "historical"),
+            admitted(session, 2, run, "unsent"),
+            event(
+                session,
+                3,
+                run,
+                EventPayload::RunCompleted { final_text: None },
+            ),
+        ] {
+            app.handle_delivery(ClientDelivery::ReplayEvent {
+                session_id: session,
+                generation: 0,
+                final_seq,
+                event: Box::new(replayed),
+            })
+            .await;
+        }
+        app.handle_delivery(ClientDelivery::ReplayEnd {
+            session_id: session,
+            generation: 0,
+            final_seq,
+        })
+        .await;
+        assert!(pending_texts(&app, session).is_empty(), "rebuild={rebuild}");
+        assert!(app.input.as_str().is_empty(), "rebuild={rebuild}");
+        assert!(app.store.sessions[&session].voided_inputs.is_empty());
+    }
+}
+
+#[tokio::test]
 async fn run_end_in_a_background_session_restores_on_select() {
     let (mut app, session_a, _run_a) = app_with_active_run().await;
     let session_b = SessionId::new_v7();

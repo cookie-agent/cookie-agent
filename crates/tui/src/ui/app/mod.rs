@@ -559,6 +559,9 @@ pub struct App {
     pub(super) deliveries: Option<tokio::sync::mpsc::UnboundedReceiver<ClientDelivery>>,
     pub(super) rpc_updates_tx: tokio::sync::mpsc::UnboundedSender<RpcUpdate>,
     pub(super) rpc_updates_rx: tokio::sync::mpsc::UnboundedReceiver<RpcUpdate>,
+    /// A `runtime.snapshot` refetch is in flight after a notification fell
+    /// outside the revision chain.
+    pub(super) runtime_resync_in_flight: bool,
     pub(super) stdin_lanes: Arc<
         tokio::sync::Mutex<HashMap<cookie_agent_protocol::ToolCallId, Arc<tokio::sync::Mutex<()>>>>,
     >,
@@ -777,6 +780,11 @@ pub(super) enum RpcUpdate {
         session_id: SessionId,
         input: String,
         error: String,
+    },
+    /// The current runtime snapshot, fetched after a `runtime.changed`
+    /// notification fell outside the revision chain.
+    RuntimeResynced {
+        result: Result<Box<cookie_agent_protocol::RuntimeSnapshotV1>, String>,
     },
     /// A recall RPC returned the withdrawn pending input's text.
     SteerRecalled {
@@ -1081,6 +1089,7 @@ impl App {
             deliveries: Some(deliveries),
             rpc_updates_tx,
             rpc_updates_rx,
+            runtime_resync_in_flight: false,
             stdin_lanes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             store: StateStore::default(),
             sessions: Vec::new(),

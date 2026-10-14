@@ -141,6 +141,23 @@ impl App {
         true
     }
 
+    pub(in crate::ui) fn request_runtime_resync(&mut self) {
+        if self.runtime_resync_in_flight {
+            return;
+        }
+        self.runtime_resync_in_flight = true;
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .runtime_snapshot()
+                .await
+                .map(|result| Box::new(result.snapshot))
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::RuntimeResynced { result });
+        });
+    }
+
     pub(in crate::ui) fn install_runtime_notification(
         &mut self,
         changed: cookie_agent_protocol::RuntimeChangedNotification,
@@ -239,6 +256,17 @@ impl App {
                 self.status = status;
             }
             RpcUpdate::Notice(status) => self.status = status,
+            RpcUpdate::RuntimeResynced { result } => {
+                self.runtime_resync_in_flight = false;
+                match result {
+                    Ok(snapshot) => {
+                        if self.runtime.install_current((*snapshot).clone()) {
+                            self.install_runtime_projection(*snapshot);
+                        }
+                    }
+                    Err(error) => self.status = format!("runtime refresh failed: {error}"),
+                }
+            }
             RpcUpdate::RunStartFinished {
                 session_id,
                 client_run_id,
@@ -736,7 +764,14 @@ impl App {
             self.reset_subscriptions();
         }
         if let ClientDelivery::RuntimeChanged(changed) = &delivery {
-            self.install_runtime_notification((**changed).clone());
+            let duplicate = self.runtime.revision() == Some(&changed.snapshot.runtime_revision);
+            if !self.install_runtime_notification((**changed).clone()) && !duplicate {
+                // Outside the predecessor chain: this client missed a
+                // notification (the daemon drops them for a lagging
+                // connection) or got an older one. Every later notification
+                // would be rejected too, so fetch the current snapshot.
+                self.request_runtime_resync();
+            }
             return;
         }
         if let ClientDelivery::RecoveryFailed { session_id, error } = &delivery {

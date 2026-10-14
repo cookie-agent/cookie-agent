@@ -87,6 +87,17 @@ impl RuntimeState {
         true
     }
 
+    /// Install a snapshot fetched from `runtime.snapshot`. It is the daemon's
+    /// current runtime, so it replaces whatever the notification chain
+    /// installed; only an identical revision is skipped.
+    pub fn install_current(&mut self, snapshot: RuntimeSnapshotV1) -> bool {
+        if self.revision() == Some(&snapshot.runtime_revision) {
+            return false;
+        }
+        self.install(snapshot);
+        true
+    }
+
     /// Runtime notifications form a predecessor-linked monotonic stream.
     /// Duplicate and stale/out-of-order notifications never replace the
     /// currently installed coherent snapshot.

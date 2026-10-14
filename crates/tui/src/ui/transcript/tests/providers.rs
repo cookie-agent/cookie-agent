@@ -1147,6 +1147,81 @@ async fn runtime_notifications_are_predecessor_monotonic_and_keep_active_runs_fr
 }
 
 #[tokio::test]
+async fn out_of_chain_runtime_notification_refetches_the_current_snapshot() {
+    let mut app = test_app().await;
+    let (client, recorded, incoming) = live_recording_client();
+    app.client = client;
+    let initial = app.runtime.revision().cloned().expect("initial runtime");
+
+    // A duplicate of the installed revision is ignored without a refetch.
+    let duplicate = app.runtime.snapshot().cloned().expect("installed snapshot");
+    app.handle_delivery(cookie_agent_protocol::ClientDelivery::RuntimeChanged(
+        Box::new(cookie_agent_protocol::RuntimeChangedNotification {
+            previous_revision: None,
+            snapshot: duplicate,
+            reasons: vec![cookie_agent_protocol::RuntimeChangeReason::Startup],
+        }),
+    ))
+    .await;
+    assert_eq!(
+        recorded_method_count(
+            &recorded,
+            cookie_agent_protocol::RUNTIME_SNAPSHOT_GET_METHOD
+        ),
+        0
+    );
+
+    // A missed notification breaks the chain: this one links to a revision
+    // the client never saw, so it is rejected and the client refetches.
+    let skipped = runtime_snapshot("3", Vec::new(), Vec::new(), Vec::new());
+    let unseen = runtime_snapshot("2", Vec::new(), Vec::new(), Vec::new()).runtime_revision;
+    app.handle_delivery(cookie_agent_protocol::ClientDelivery::RuntimeChanged(
+        Box::new(cookie_agent_protocol::RuntimeChangedNotification {
+            previous_revision: Some(unseen),
+            snapshot: skipped,
+            reasons: vec![cookie_agent_protocol::RuntimeChangeReason::ConfigReloaded],
+        }),
+    ))
+    .await;
+    assert_eq!(app.runtime.revision(), Some(&initial));
+    let request = wait_for_recorded_request(
+        &recorded,
+        cookie_agent_protocol::RUNTIME_SNAPSHOT_GET_METHOD,
+        1,
+    )
+    .await;
+    let current = runtime_snapshot(
+        "4",
+        Vec::new(),
+        vec![model_descriptor()],
+        vec![descriptor("reviewer", true)],
+    );
+    incoming
+        .send(cookie_agent_protocol::MessageFrame::Value(
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request,
+                "result": cookie_agent_protocol::RuntimeSnapshotResult {
+                    snapshot: current.clone(),
+                },
+            }),
+        ))
+        .expect("runtime snapshot response");
+    let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
+        .await
+        .expect("runtime resync timeout")
+        .expect("runtime resync update");
+    app.handle_rpc_update(update);
+    assert_eq!(app.runtime.revision(), Some(&current.runtime_revision));
+    assert!(
+        app.agents
+            .iter()
+            .any(|agent| agent.id.as_str() == "reviewer")
+    );
+    assert!(!app.runtime_resync_in_flight);
+}
+
+#[tokio::test]
 async fn catalog_refresh_and_fallback_notifications_update_durable_state_monotonically() {
     let mut app = test_app().await;
     let ready_revision = app.runtime.revision().cloned().expect("ready runtime");

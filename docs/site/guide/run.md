@@ -139,8 +139,10 @@ The `Pending` strip means exactly that the model has not seen those messages.
 It shows up to three rows and folds additional entries into `+N more`. To recall
 the newest pending input into the composer, press Up while the composer is empty
 or click any row in the strip. Recall is LIFO even when another row is clicked.
-If a run terminates with pending text, the TUI restores that text to the
-composer when the session is viewed.
+If a run terminates with pending text while the TUI is connected, the TUI
+restores that text to the composer when the session is viewed. Replayed
+history never restores text, so opening or reattaching to an old session
+leaves the composer alone.
 
 ## Selection and clipboard
 

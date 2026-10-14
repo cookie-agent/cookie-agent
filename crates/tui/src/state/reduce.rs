@@ -1574,6 +1574,10 @@ pub(super) fn reduce_session_events<E: std::borrow::Borrow<StoredEvent>>(
             event.payload.clone(),
         );
     }
+    // Rebuilding re-reduces durable history: a run that ended long ago must
+    // not paste its unsent text into the composer again. Only a live run
+    // termination restores unsent input.
+    state.voided_inputs.clear();
     state
 }
 
