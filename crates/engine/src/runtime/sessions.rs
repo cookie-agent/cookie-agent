@@ -98,7 +98,9 @@ impl Engine {
             .await?;
         }
         if let Some(mode) = mode {
-            self.set_permission_mode(session_id, mode)?;
+            // A new tree has no other client to tell: its mode arrives with
+            // the session through `session.permission.get`.
+            self.store_permission_mode(session_id, mode)?;
         }
         Ok(meta)
     }
@@ -760,11 +762,30 @@ impl Engine {
         }
         Ok(SessionForkResult { session_id: forked })
     }
+    /// Sets the tree's permission mode and tells every connection,
+    /// naming `origin` as who changed it.
     pub fn set_permission_mode(
         &self,
         session_id: SessionId,
         mode: PermissionMode,
+        origin: EventOrigin,
     ) -> Result<(), EngineError> {
+        let root = self.store_permission_mode(session_id, mode)?;
+        self.inner.store.notify_index_change(
+            cookie_agent_protocol::SessionsChangedNotification::PermissionModeChanged {
+                root_session_id: root,
+                mode,
+                changed_by: origin,
+            },
+        );
+        Ok(())
+    }
+
+    fn store_permission_mode(
+        &self,
+        session_id: SessionId,
+        mode: PermissionMode,
+    ) -> Result<SessionId, EngineError> {
         self.ensure_session_owned(session_id)?;
         let session = self.inner.store.get(session_id)?;
         let root = root_id(&session.meta.origin, session_id);
@@ -774,7 +795,7 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(root, mode);
-        Ok(())
+        Ok(root)
     }
     pub(crate) fn permission_mode(&self, session_id: SessionId) -> PermissionMode {
         let root = self

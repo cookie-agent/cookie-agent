@@ -181,6 +181,15 @@ struct RegistryInner {
     connects_idle: Notify,
     eager_pending: AtomicUsize,
     eager_ready: Notify,
+    /// Bumped on every server configuration or status change.
+    changes: tokio::sync::watch::Sender<u64>,
+}
+
+impl RegistryInner {
+    fn changed(&self) {
+        self.changes
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
 }
 
 type PluginCollisionHandler = Arc<dyn Fn(&str, &str, Option<&str>) + Send + Sync>;
@@ -1376,6 +1385,7 @@ impl McpRegistry {
             connects_idle: Notify::new(),
             eager_pending: AtomicUsize::new(0),
             eager_ready: Notify::new(),
+            changes: tokio::sync::watch::channel(0).0,
         });
         let mut sanitized_servers = HashMap::new();
         let mut runtimes = BTreeMap::new();
@@ -1531,6 +1541,12 @@ impl McpRegistry {
         }
     }
 
+    /// A counter bumped on every server configuration or status change.
+    #[must_use]
+    pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.changes.subscribe()
+    }
+
     #[must_use]
     pub fn statuses(&self) -> Vec<McpServerStatus> {
         self.servers()
@@ -1642,6 +1658,7 @@ impl McpRegistry {
                 .map_err(|_| ToolError::execution("MCP runtime is unavailable"))?;
             self.spawn_connection(runtime, &handle, None)?;
         }
+        self.inner.changed();
         Ok(())
     }
 
@@ -1676,6 +1693,7 @@ impl McpRegistry {
         {
             flow.cancellation.cancel();
         }
+        self.inner.changed();
         Ok(())
     }
 
@@ -1831,16 +1849,19 @@ impl ServerRuntime {
     }
 
     fn set_status(&self, state: McpServerState, message: Option<String>) {
-        let mut status = self.status.lock().unwrap_or_else(|p| p.into_inner());
-        status.state = state;
-        status.message = message;
-        status.tools = self
-            .tools
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .iter()
-            .map(|tool| tool.spec.name.clone())
-            .collect();
+        {
+            let mut status = self.status.lock().unwrap_or_else(|p| p.into_inner());
+            status.state = state;
+            status.message = message;
+            status.tools = self
+                .tools
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .map(|tool| tool.spec.name.clone())
+                .collect();
+        }
+        self.notify_changed();
     }
 
     fn set_auth_in_progress(&self, active: bool) {
@@ -1848,6 +1869,13 @@ impl ServerRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .auth_in_progress = active;
+        self.notify_changed();
+    }
+
+    fn notify_changed(&self) {
+        if let Some(registry) = self.registry.upgrade() {
+            registry.changed();
+        }
     }
 
     fn fail(&self, message: String) {

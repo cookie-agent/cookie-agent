@@ -40,6 +40,62 @@ impl Server {
         });
     }
 
+    /// Forwards every session index change to this connection. A connection
+    /// too slow to keep up is told to resync instead of silently missing
+    /// changes.
+    pub(super) fn start_session_change_notifications(&self, context: ServerContext) {
+        let mut receiver = self.engine.subscribe_session_changes();
+        tokio::spawn(async move {
+            let shutdown = context.shutdown();
+            loop {
+                let change = tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    change = receiver.recv() => match change {
+                        Ok(change) => change,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            cookie_agent_protocol::SessionsChangedNotification::Resync
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    },
+                };
+                if context
+                    .notify(cookie_agent_protocol::SESSIONS_CHANGED_METHOD, &change)
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Signals MCP server changes to this connection; bursts coalesce.
+    pub(super) fn start_mcp_change_notifications(&self, context: ServerContext) {
+        let mut receiver = self.engine.subscribe_mcp_changes();
+        receiver.mark_unchanged();
+        tokio::spawn(async move {
+            let shutdown = context.shutdown();
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    changed = receiver.changed() => if changed.is_err() {
+                        return;
+                    },
+                }
+                if context
+                    .notify(
+                        cookie_agent_protocol::MCP_CHANGED_METHOD,
+                        &cookie_agent_protocol::McpChangedNotification {},
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+
     pub(crate) fn start_engine_event_notifications(&self, context: ServerContext) {
         let mut receiver = self.engine.subscribe_engine_events();
         tokio::spawn(async move {

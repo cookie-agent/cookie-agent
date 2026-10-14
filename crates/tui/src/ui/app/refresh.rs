@@ -141,6 +141,81 @@ impl App {
         true
     }
 
+    /// Applies a daemon-wide session index change, which also covers
+    /// sessions this client does not watch: another client's new sessions,
+    /// status and title changes, approvals anywhere in the viewed tree, and
+    /// permission-mode changes.
+    pub(in crate::ui) async fn apply_sessions_change(
+        &mut self,
+        change: cookie_agent_protocol::SessionsChangedNotification,
+    ) {
+        use cookie_agent_protocol::SessionsChangedNotification as Change;
+        match change {
+            Change::Upserted { session } => {
+                let session = self.merge_session_meta(*session);
+                if let Some(existing) = self
+                    .sessions
+                    .iter_mut()
+                    .find(|existing| existing.session_id == session.session_id)
+                {
+                    *existing = session;
+                } else if matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root) {
+                    // A root another client created; children join the cache
+                    // when the Agents tree loads them.
+                    self.sessions.push(session);
+                } else {
+                    return;
+                }
+                self.note_sessions_changed();
+            }
+            Change::Removed { session_id } => {
+                let before = self.sessions.len();
+                self.sessions
+                    .retain(|session| session.session_id != session_id);
+                if self.sessions.len() != before {
+                    self.note_sessions_changed();
+                }
+            }
+            Change::ApprovalsChanged {
+                root_session_id, ..
+            } => {
+                if let Some(selected) = self.selected
+                    && self.permission_mode_root(selected) == root_session_id
+                {
+                    self.refresh_approvals(selected);
+                }
+            }
+            Change::PermissionModeChanged {
+                root_session_id,
+                mode,
+                changed_by,
+            } => {
+                // Supersede any in-flight load, which may predate this change.
+                self.next_permission_mode_generation(root_session_id);
+                self.permission_modes.insert(root_session_id, mode);
+                if self.client.origin().as_ref() != Some(&changed_by)
+                    && self.selected.is_some_and(|selected| {
+                        self.permission_mode_root(selected) == root_session_id
+                    })
+                {
+                    self.status = format!(
+                        "Permission mode: {} — changed by another client",
+                        permission_mode_label(mode)
+                    );
+                }
+            }
+            Change::Resync => {
+                // Changes were dropped for this connection: reload what they
+                // would have updated.
+                self.refresh_lists().await;
+                if let Some(selected) = self.selected {
+                    self.refresh_approvals(selected);
+                    self.refresh_permission_mode_for_session(selected);
+                }
+            }
+        }
+    }
+
     pub(in crate::ui) fn request_runtime_resync(&mut self) {
         if self.runtime_resync_in_flight {
             return;
@@ -771,6 +846,15 @@ impl App {
         if let ClientDelivery::Disconnected { error } = &delivery {
             self.status = format!("connection failed: {error}");
             self.reset_subscriptions();
+        }
+        if let ClientDelivery::SessionsChanged(change) = &delivery {
+            self.apply_sessions_change((**change).clone()).await;
+            return;
+        }
+        if matches!(delivery, ClientDelivery::McpChanged) {
+            // An open MCP panel refreshes now instead of at its next poll.
+            self.poll_mcp();
+            return;
         }
         if let ClientDelivery::RuntimeChanged(changed) = &delivery {
             let duplicate = self.runtime.revision() == Some(&changed.snapshot.runtime_revision);

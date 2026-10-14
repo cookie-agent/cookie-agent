@@ -89,6 +89,8 @@ pub enum ClientDelivery {
         error: String,
     },
     RuntimeChanged(Box<crate::RuntimeChangedNotification>),
+    SessionsChanged(Box<crate::SessionsChangedNotification>),
+    McpChanged,
 }
 
 type Deliveries = mpsc::UnboundedSender<ClientDelivery>;
@@ -1408,6 +1410,14 @@ async fn handle_frame(
         Some(crate::RUNTIME_CHANGED_METHOD) => {
             let changed = serde_json::from_str(params.get())?;
             let _ = deliveries.send(ClientDelivery::RuntimeChanged(Box::new(changed)));
+        }
+        Some(crate::SESSIONS_CHANGED_METHOD) => {
+            let changed = serde_json::from_str(params.get())?;
+            let _ = deliveries.send(ClientDelivery::SessionsChanged(Box::new(changed)));
+        }
+        Some(crate::MCP_CHANGED_METHOD) => {
+            let _: crate::McpChangedNotification = serde_json::from_str(params.get())?;
+            let _ = deliveries.send(ClientDelivery::McpChanged);
         }
         _ => {}
     }

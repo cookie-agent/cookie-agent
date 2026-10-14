@@ -482,7 +482,11 @@ async fn prepare_run(
     };
     let root_session_id = session_root_id(&session);
     engine
-        .set_permission_mode(session.session_id, args.permission_mode.into())
+        .set_permission_mode(
+            session.session_id,
+            args.permission_mode.into(),
+            headless_origin(),
+        )
         .map_err(|error| {
             PrepareError::setup(anyhow!(error).context("set headless permission mode"))
         })?;

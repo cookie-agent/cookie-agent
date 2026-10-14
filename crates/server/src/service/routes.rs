@@ -35,6 +35,8 @@ type Result<T> = std::result::Result<T, ServerFault>;
 impl ServerProtocol for Server {
     async fn connected(&self, context: ServerContext) {
         self.start_runtime_notifications(context.clone());
+        self.start_session_change_notifications(context.clone());
+        self.start_mcp_change_notifications(context.clone());
         self.start_engine_event_notifications(context);
     }
 
@@ -167,10 +169,10 @@ impl ServerProtocol for Server {
     async fn set_permission_mode(
         &self,
         params: SessionSetPermissionModeParams,
-        _context: &ServerContext,
+        context: &ServerContext,
     ) -> Result<SessionSetPermissionModeResult> {
         self.engine
-            .set_permission_mode(params.session_id, params.mode)
+            .set_permission_mode(params.session_id, params.mode, context.client_origin())
             .map_err(protocol_fault)?;
         Ok(SessionSetPermissionModeResult {})
     }

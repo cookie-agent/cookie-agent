@@ -311,6 +311,29 @@ the title, and continues with new physical sequences.
 | `runtime.changed` | Previous revision, complete snapshot, sorted change reasons |
 | `events.subscription` | One stored event, live-only stream output, a session sequence gap, or a rewind |
 | `events.plugin` | Session-scoped non-durable plugin event |
+| `sessions.changed` | One session index change: `upserted`, `removed`, `approvals_changed`, `permission_mode_changed`, or `resync` |
+| `mcp.changed` | Empty object: MCP server configuration or status changed |
+
+### Daemon-wide changes
+
+`runtime.changed`, `sessions.changed`, and `mcp.changed` reach every connection
+from its handshake on, whether or not it subscribed to any session, so each
+client sharing a daemon stays current with what the others do. Clients ignore
+notification methods they do not know.
+
+`sessions.changed` carries one change, tagged by `change`:
+
+| `change` | Fields | Sent when |
+|---|---|---|
+| `upserted` | `session` (`SessionMeta`) | A session, root or delegated, is created, first persisted, or reverted, or its status or title changes |
+| `removed` | `session_id` | A revert deleted a delegated session |
+| `approvals_changed` | `root_session_id`, `session_id` | An approval in any session of the tree was requested, escalated, decided, or cancelled; `approval.list` for the root shows the result |
+| `permission_mode_changed` | `root_session_id`, `mode`, `changed_by` | `session.set_permission_mode` changed the tree's mode; `changed_by` is the caller's origin |
+| `resync` | none | This connection fell more than 256 changes behind and missed some; refetch `session.list`, approvals, and permission modes |
+
+The permission mode is runtime-only and has no event, so `permission_mode_changed`
+is the only way other clients learn of a change. `mcp.changed` carries nothing;
+bursts coalesce into one notification, and a client refetches `mcp.server.list`.
 
 The shared client maps these to `ClientDelivery` variants (`Live`, replay
 deliveries, `PluginEvent`, `RuntimeChanged`, `RecoveryFailed`), so a UI

@@ -663,6 +663,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             .set_permission_mode(
                 session.session_id,
                 cookie_agent_protocol::PermissionMode::Yolo,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
             .unwrap();
         let run = fixture

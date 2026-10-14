@@ -1443,3 +1443,58 @@ async fn a_parent_delegation_lifecycle_event_refreshes_the_tree() {
     .await
     .expect("a woken child's parent event re-reads the tree");
 }
+
+#[tokio::test]
+async fn daemon_wide_session_changes_update_the_picker_and_permission_mode() {
+    use cookie_agent_protocol::{PermissionMode, SessionsChangedNotification as Change};
+
+    let mut app = test_app().await;
+    let viewed = SessionId::new_v7();
+    app.sessions = vec![session_meta(viewed)];
+    app.selected = Some(viewed);
+
+    // Another client's new root shows up in the picker without a refetch.
+    let created = SessionId::new_v7();
+    app.apply_sessions_change(Change::Upserted {
+        session: Box::new(session_meta(created)),
+    })
+    .await;
+    assert!(
+        app.picker_sessions()
+            .any(|session| session.session_id == created)
+    );
+
+    // A status change replaces the cached entry instead of adding one.
+    let mut running = session_meta(created);
+    running.status = cookie_agent_protocol::SessionStatus::Running;
+    running.last_event_seq += 1;
+    app.apply_sessions_change(Change::Upserted {
+        session: Box::new(running),
+    })
+    .await;
+    assert_eq!(
+        app.sessions
+            .iter()
+            .filter(|session| session.session_id == created)
+            .map(|session| session.status)
+            .collect::<Vec<_>>(),
+        [cookie_agent_protocol::SessionStatus::Running]
+    );
+
+    // Another client switching the viewed tree to yolo is shown, with who.
+    app.apply_sessions_change(Change::PermissionModeChanged {
+        root_session_id: viewed,
+        mode: PermissionMode::Yolo,
+        changed_by: cookie_agent_protocol::EventOrigin::new("client:tui-other").unwrap(),
+    })
+    .await;
+    assert_eq!(
+        app.permission_modes.get(&viewed),
+        Some(&PermissionMode::Yolo)
+    );
+    assert!(
+        app.status.contains("changed by another client"),
+        "{}",
+        app.status
+    );
+}

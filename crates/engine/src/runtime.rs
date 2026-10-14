@@ -845,6 +845,21 @@ impl Engine {
         self.inner.engine_events.subscribe()
     }
 
+    /// Session index changes for every session, including permission-mode
+    /// changes. A receiver that lags has missed changes and must refetch.
+    #[must_use]
+    pub fn subscribe_session_changes(
+        &self,
+    ) -> broadcast::Receiver<cookie_agent_protocol::SessionsChangedNotification> {
+        self.inner.store.subscribe_index_changes()
+    }
+
+    /// A counter bumped on every MCP server configuration or status change.
+    #[must_use]
+    pub fn subscribe_mcp_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.mcp.subscribe_changes()
+    }
+
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn publish_engine_event_for_test(&self, event: crate::EngineEvent) {

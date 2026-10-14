@@ -480,7 +480,11 @@ async fn responses_message_transport_fields_allow_approval_and_summary_checkpoin
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::AutoApprove)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::AutoApprove,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .unwrap();
     fixture
         .engine

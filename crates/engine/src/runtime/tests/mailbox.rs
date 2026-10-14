@@ -309,7 +309,11 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
         .expect("streaming session");
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::Yolo)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::Yolo,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("yolo mode");
     let live = record_live_messages(&fixture.engine, session.session_id).await;
     let run = fixture

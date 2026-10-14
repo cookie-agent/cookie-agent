@@ -30,7 +30,11 @@ async fn permission_query_reports_the_current_session_mode() {
 
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::AutoApproveY)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::AutoApproveY,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("set permission mode");
     assert_eq!(
         fixture

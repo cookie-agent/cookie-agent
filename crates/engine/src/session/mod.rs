@@ -386,6 +386,9 @@ pub struct SessionStore {
     /// older rebuild never replaces a newer one.
     index_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     subscribers: Mutex<HashMap<SessionId, SessionSubscribers>>,
+    /// Daemon-wide session index changes, see [`Self::subscribe_index_changes`].
+    index_changes:
+        tokio::sync::broadcast::Sender<cookie_agent_protocol::SessionsChangedNotification>,
     /// Logs parsed for readers that do not own them, see [`Self::snapshot_events`].
     read_only_logs: Mutex<ReadOnlyLogs>,
     closed: AtomicBool,
@@ -473,7 +476,35 @@ impl ReadOnlyLogs {
     }
 }
 
+/// Index changes a connection may fall behind by before it is told to resync.
+const INDEX_CHANGE_CAPACITY: usize = 256;
+
 impl SessionStore {
+    /// Every session's index changes as they happen: creation, status and
+    /// title changes, reverts, deletions, and approval changes. A receiver
+    /// that lags misses changes and must refetch.
+    pub(crate) fn subscribe_index_changes(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<cookie_agent_protocol::SessionsChangedNotification> {
+        self.index_changes.subscribe()
+    }
+
+    pub(crate) fn notify_index_change(
+        &self,
+        change: cookie_agent_protocol::SessionsChangedNotification,
+    ) {
+        // No receiver just means no connection is listening.
+        let _ = self.index_changes.send(change);
+    }
+
+    fn notify_upserted(&self, meta: &SessionMeta) {
+        self.notify_index_change(
+            cookie_agent_protocol::SessionsChangedNotification::Upserted {
+                session: Box::new(meta.clone()),
+            },
+        );
+    }
+
     /// The `<16-hex-hash>` component of the v2 work-dir key.
     fn project_hash(cwd: &Path) -> String {
         let canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned());
@@ -543,6 +574,7 @@ impl SessionStore {
             tree_publish_locks: Mutex::new(HashMap::new()),
             index_locks: Mutex::new(HashMap::new()),
             subscribers: Mutex::new(HashMap::new()),
+            index_changes: tokio::sync::broadcast::channel(INDEX_CHANGE_CAPACITY).0,
             read_only_logs: Mutex::new(ReadOnlyLogs::default()),
             closed: AtomicBool::new(false),
             #[cfg(test)]
@@ -835,6 +867,7 @@ impl SessionStore {
             capability,
         )?;
         let result = Arc::new(projection(log.clone())?);
+        let created_meta = result.meta.clone();
         {
             let mut ownership = self
                 .ownership
@@ -856,6 +889,7 @@ impl SessionStore {
             residency.evicted.remove(&session_id);
         }
         self.note_placed_child(&location, &creation_origin, session_id);
+        self.notify_upserted(&created_meta);
         Ok((log, true))
     }
 
@@ -1692,6 +1726,9 @@ impl SessionStore {
         // rewrites it, and eviction and store release flush a tip that is
         // still pending. A title or status change, and anything outside a run
         // (where nothing is guaranteed to follow), is written through.
+        // Whether the session's listed metadata (status, title, or its first
+        // persistence) changed; a refold is assumed to have changed it.
+        let mut index_changed = true;
         let applied = {
             let mut residency = self
                 .residency
@@ -1708,6 +1745,7 @@ impl SessionStore {
                             resident.meta.last_event_seq = envelope.seq;
                             resident.meta.last_activity = envelope.timestamp;
                             residency.evicted.remove(&id);
+                            index_changed = durable_meta || first_user_message;
                             Some(if first_user_message || !log.is_persisted() {
                                 None
                             } else if !durable_meta
@@ -1764,6 +1802,24 @@ impl SessionStore {
             assert_projection_equivalent(&resident, &reference);
         }
         self.publish_stored_event(&envelope);
+        if index_changed && let Some(resident) = self.get_resident(id) {
+            self.notify_upserted(&resident.meta);
+        }
+        if matches!(
+            envelope.payload,
+            EventPayload::ApprovalRequested { .. }
+                | EventPayload::ApprovalEscalated { .. }
+                | EventPayload::ApprovalFinalized { .. }
+                | EventPayload::ApprovalCancelled { .. }
+                | EventPayload::TreeApprovalGrantCommitted { .. }
+        ) {
+            self.notify_index_change(
+                cookie_agent_protocol::SessionsChangedNotification::ApprovalsChanged {
+                    root_session_id: self.parent_root_of(id).unwrap_or(id),
+                    session_id: id,
+                },
+            );
+        }
         Ok(envelope)
     }
 
@@ -1780,6 +1836,7 @@ impl SessionStore {
         if log.is_persisted() {
             self.refresh_meta_cache(id, &rebuilt.meta)?;
         }
+        let reverted_meta = rebuilt.meta.clone();
         let runs = rebuilt
             .runs
             .keys()
@@ -1808,6 +1865,7 @@ impl SessionStore {
             self.persist_subagent_index(root)?;
         }
         self.publish_rewound(id, through_seq);
+        self.notify_upserted(&reverted_meta);
         Ok(())
     }
 
@@ -1872,6 +1930,9 @@ impl SessionStore {
                 Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
                 Err(source) => return Err(SessionError::Io { path: dir, source }),
             }
+            self.notify_index_change(
+                cookie_agent_protocol::SessionsChangedNotification::Removed { session_id: id },
+            );
             roots.insert(root);
         }
         for root in roots {

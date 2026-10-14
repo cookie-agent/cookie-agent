@@ -806,7 +806,11 @@ async fn background_delegate_permission_approval_gates_child_admission() {
         .expect("approval-gated parent");
     fixture
         .engine
-        .set_permission_mode(parent.session_id, PermissionMode::Ask)
+        .set_permission_mode(
+            parent.session_id,
+            PermissionMode::Ask,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("ask mode");
     fixture
         .engine
@@ -920,7 +924,11 @@ async fn tree_permission_mode_gates_child_and_survives_child_eviction() {
         .expect("tree-mode parent");
     fixture
         .engine
-        .set_permission_mode(parent.session_id, PermissionMode::Ask)
+        .set_permission_mode(
+            parent.session_id,
+            PermissionMode::Ask,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("tree ask mode");
     fixture
         .engine
@@ -974,7 +982,11 @@ async fn tree_permission_mode_gates_child_and_survives_child_eviction() {
 
     fixture
         .engine
-        .set_permission_mode(child.session_id, PermissionMode::Yolo)
+        .set_permission_mode(
+            child.session_id,
+            PermissionMode::Yolo,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("child-addressed tree mode update");
     for session_id in [parent.session_id, child.session_id] {
         assert_eq!(

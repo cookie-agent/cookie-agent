@@ -67,7 +67,11 @@ async fn approval_batch_blocks_auto_allowed_tools_and_serializes_asks() {
         .expect("approval batch session");
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::Ask)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::Ask,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("ask mode");
     let run = fixture
         .engine
@@ -188,7 +192,11 @@ async fn cancellation_during_approval_terminates_batch_without_execution() {
         .expect("approval cancellation session");
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::Ask)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::Ask,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("ask mode");
     let run = fixture
         .engine
@@ -599,7 +607,11 @@ async fn ask_permission_mode_escalates_without_starting_internal_approval_agent(
         .expect("session");
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::Ask)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::Ask,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("ask mode");
     fixture
         .engine
@@ -725,7 +737,11 @@ async fn yolo_permission_mode_durably_approves_and_executes_without_escalation()
         .expect("session");
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::Yolo)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::Yolo,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("yolo mode");
     fixture
         .engine
@@ -809,7 +825,11 @@ async fn auto_approve_n_rejects_classifier_escalation_with_feedback_without_prom
         .expect("session");
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::AutoApproveN)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::AutoApproveN,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("auto-n mode");
     fixture
         .engine
@@ -898,7 +918,11 @@ async fn auto_approve_y_approves_classifier_escalation_once_without_prompting() 
         .expect("session");
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::AutoApproveY)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::AutoApproveY,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("auto-y mode");
     fixture
         .engine
@@ -974,7 +998,11 @@ async fn auto_approve_y_rechecks_identical_calls_without_creating_a_tree_grant()
         .expect("session");
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::AutoApproveY)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::AutoApproveY,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("auto-y mode");
     fixture
         .engine
@@ -1078,7 +1106,11 @@ async fn auto_approve_n_and_y_preserve_classifier_allow_and_deny() {
             .expect("session");
         fixture
             .engine
-            .set_permission_mode(session.session_id, mode)
+            .set_permission_mode(
+                session.session_id,
+                mode,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
             .expect("permission mode");
         fixture
             .engine
@@ -1147,7 +1179,11 @@ async fn yolo_permission_mode_does_not_override_hard_deny_rules() {
         .expect("session");
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::Yolo)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::Yolo,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("yolo mode");
     fixture
         .engine
@@ -1207,7 +1243,11 @@ async fn yolo_permission_mode_still_triggers_the_doom_loop_guard() {
         .expect("session");
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::Yolo)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::Yolo,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("yolo mode");
     fixture
         .engine
@@ -1272,7 +1312,11 @@ async fn permission_mode_change_applies_to_the_next_operation_only() {
         .expect("session");
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::Ask)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::Ask,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("ask mode");
     fixture
         .engine
@@ -1293,7 +1337,11 @@ async fn permission_mode_change_applies_to_the_next_operation_only() {
     let first = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::Yolo)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::Yolo,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("yolo mode");
     assert_eq!(
         fixture

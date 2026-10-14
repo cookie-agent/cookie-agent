@@ -902,6 +902,67 @@ async fn events_carry_the_origin_of_the_connection_that_caused_them() {
 }
 
 #[tokio::test]
+async fn every_connection_hears_of_another_clients_sessions_and_permission_mode() {
+    let (_directory, server) = in_process_server_with_skills(true);
+    let observer = server.clone().connect_in_process();
+    observer.handshake().await.expect("observer handshake");
+    let mut deliveries = observer
+        .subscribe_deliveries()
+        .expect("observer deliveries");
+    let other = server.connect_in_process();
+    let other_hello = other.handshake().await.expect("other handshake");
+
+    let session = other
+        .create_session(SessionCreateParams::new(test_run_selection()))
+        .await
+        .expect("session")
+        .session;
+    other
+        .set_permission_mode(cookie_agent_protocol::SessionSetPermissionModeParams {
+            session_id: session.session_id,
+            mode: cookie_agent_protocol::PermissionMode::Yolo,
+        })
+        .await
+        .expect("set mode");
+
+    // The observer never subscribed to the session, yet learns of both.
+    let (mut created, mut mode_change) = (false, None);
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !created || mode_change.is_none() {
+            let crate::ClientDelivery::SessionsChanged(change) =
+                deliveries.recv().await.expect("observer delivery")
+            else {
+                continue;
+            };
+            match *change {
+                cookie_agent_protocol::SessionsChangedNotification::Upserted { session: meta }
+                    if meta.session_id == session.session_id =>
+                {
+                    created = true;
+                }
+                cookie_agent_protocol::SessionsChangedNotification::PermissionModeChanged {
+                    root_session_id,
+                    mode,
+                    changed_by,
+                } if root_session_id == session.session_id => {
+                    mode_change = Some((mode, changed_by));
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("session index notifications");
+    assert_eq!(
+        mode_change,
+        Some((
+            cookie_agent_protocol::PermissionMode::Yolo,
+            other_hello.origin
+        ))
+    );
+}
+
+#[tokio::test]
 async fn same_connection_approval_response_and_finalization_run_end_to_end() {
     const STAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 

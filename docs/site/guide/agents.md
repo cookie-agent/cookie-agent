@@ -673,7 +673,8 @@ for the output format, HTML rendering, the download cap, and result paging.
 
 Each session tree starts in `auto_approve` unless changed. The mode is runtime
 only, is keyed by the tree root, and can be changed through any session in the
-tree:
+tree. Every client connected to the daemon is told when it changes; the TUI
+updates its bottom bar and names a change made by another client:
 
 - `auto_approve` runs the stateless approval classifier and asks the user when
   it escalates or fails safely.

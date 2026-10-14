@@ -462,7 +462,11 @@ fn empty_session_is_live_only_and_disappears_on_restart_without_artifacts() {
     );
     fixture
         .engine
-        .set_permission_mode(session.session_id, PermissionMode::Ask)
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::Ask,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .expect("set memory-only permission mode");
     fixture
         .engine

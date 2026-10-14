@@ -861,6 +861,44 @@ pub struct RunSteerResult {
     pub user_input_seq: Option<u64>,
 }
 
+pub const SESSIONS_CHANGED_METHOD: &str = "sessions.changed";
+pub const MCP_CHANGED_METHOD: &str = "mcp.changed";
+
+/// A daemon-wide change to the session index, sent to every connection
+/// whether or not it subscribed to the session. Clients keep a session list,
+/// approval prompts, and permission modes current from it.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "change", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SessionsChangedNotification {
+    /// A session was created, persisted, or reverted, or its status or
+    /// title changed. Delegated sessions are included; `session.list` shows
+    /// only roots.
+    Upserted { session: Box<SessionMeta> },
+    /// A delegated session was deleted with the revert that removed it.
+    Removed { session_id: SessionId },
+    /// An approval in `session_id` was requested, escalated, decided, or
+    /// cancelled; `approval.list` for the root shows the result.
+    ApprovalsChanged {
+        root_session_id: SessionId,
+        session_id: SessionId,
+    },
+    /// The tree's permission mode changed. It is runtime-only state, so
+    /// this is the only way other clients learn of it.
+    PermissionModeChanged {
+        root_session_id: SessionId,
+        mode: PermissionMode,
+        changed_by: EventOrigin,
+    },
+    /// The daemon dropped changes this connection was too slow to take;
+    /// refetch `session.list`, approvals, and permission modes.
+    Resync,
+}
+
+/// MCP server configuration or status changed; refetch `mcp.server.list`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpChangedNotification {}
+
 pub const SESSION_SUBMIT_INPUT_METHOD: &str = "session.submit_input";
 pub const SESSION_RECALL_INPUT_METHOD: &str = "session.recall_input";
 
