@@ -585,13 +585,15 @@ async fn responses_message_transport_fields_allow_generated_titles() {
             EventPayload::SessionTitleCommitted { change: cookie_agent_protocol::SessionTitleChange::InternalAgentSet { title, .. }, .. }
             if title.as_str() == "Transport title"))
     }).await;
-    assert_eq!(
-        with_watchdog("captured fixture completion", captured)
-            .await
-            .unwrap()
-            .len(),
-        2
-    );
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
+    assert_eq!(requests.len(), 2);
+    // The built-in body expands `{{default_prompt}}` into the title agent's
+    // system prompt; the request keeps the output contract.
+    assert!(requests[1].contains("You name coding-agent sessions."));
+    assert!(!requests[1].contains("{{default_prompt}}"));
+    assert!(requests[1].contains("Return only a short plain-text session title"));
     fixture.engine.shutdown().await;
 }
 

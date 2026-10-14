@@ -364,6 +364,7 @@ fn config_debug_code(error: &cookie_agent_config::ConfigError) -> &'static str {
         ConfigError::AgentPermissionExpression(_) => "config_agent_permission_expression",
         ConfigError::AgentYamlLimit => "config_agent_yaml_limit",
         ConfigError::EmptyPrompt(_) => "config_empty_prompt",
+        ConfigError::UnknownPromptPlaceholder { .. } => "config_unknown_prompt_placeholder",
         ConfigError::AgentField { .. } => "config_agent_field",
         ConfigError::AgentLimit(_) => "config_agent_limit",
         ConfigError::PrimaryFallback(_) => "config_primary_fallback",

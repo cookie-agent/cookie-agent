@@ -191,7 +191,7 @@ fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, Eng
         (
             BUILT_IN_APPROVAL_AGENT_ID,
             "Built-in approval evaluator",
-            "Evaluate the supplied approval request conservatively. Return only the requested structured decision.\n",
+            "{{default_prompt}}\n",
             AgentLimits {
                 timeout_ms: 30_000,
                 max_output_tokens: 0,
@@ -200,7 +200,7 @@ fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, Eng
         (
             BUILT_IN_COMPACTION_AGENT_ID,
             "Built-in context compaction agent",
-            "Summarize conversation context faithfully within the supplied bounds. Return summary text only.\n",
+            "{{default_prompt}}\n",
             AgentLimits {
                 timeout_ms: 180_000,
                 max_output_tokens: 0,
@@ -209,7 +209,7 @@ fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, Eng
         (
             BUILT_IN_TITLE_AGENT_ID,
             "Built-in session title agent",
-            "Generate a concise plain-text title from the supplied first user message. Return title text only.\n",
+            "{{default_prompt}}\n",
             AgentLimits {
                 timeout_ms: 30_000,
                 max_output_tokens: 0,

@@ -81,6 +81,8 @@ pub enum ConfigError {
     AgentYamlLimit,
     #[error("agent `{0}` has an empty system prompt")]
     EmptyPrompt(AgentId),
+    #[error("agent `{agent}` uses unknown prompt placeholder `{{{{{placeholder}}}}}`")]
+    UnknownPromptPlaceholder { agent: AgentId, placeholder: String },
     #[error("agent `{agent}` has invalid `{field}`")]
     AgentField { agent: AgentId, field: &'static str },
     #[error("agent `{0}` exceeds a list limit")]

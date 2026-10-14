@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use cookie_agent_config::ContextCompactionTrigger;
+use cookie_agent_config::{ContextCompactionTrigger, InternalPromptValues, render_internal_prompt};
 use cookie_agent_models::adapters::with_native_compaction_instructions;
 use cookie_agent_protocol::{
     ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
@@ -70,7 +70,42 @@ pub(crate) struct CompactionState {
     pub(crate) context_token_estimators: Mutex<HashMap<SessionId, ContextTokenEstimator>>,
 }
 
-pub(crate) const COMPACTION_INSTRUCTION: &str = "Create a detailed technical summary of the conversation so work can continue without the earlier context. Include: the goal/objective; decisions and their rationale; files changed and current code state; commands run and their outcomes; errors encountered and fixes applied; and the pending next step. Preserve exact identifiers, paths, constraints, and unresolved questions. Return summary text only and do not call tools.";
+pub(crate) const COMPACTION_PROMPT_INTRO: &str = "Summarize the conversation above into a checkpoint that another agent will use to continue the work. The checkpoint replaces everything above except the system prompt and pinned context; any later messages stay verbatim after it.";
+pub(crate) const COMPACTION_UPDATE_PROMPT_INTRO: &str = "The conversation above begins with an earlier checkpoint inside <summary> tags. Write one updated checkpoint that merges it with everything after it; the new checkpoint replaces both, so carry forward whatever still matters from the earlier one. Newer information wins. Drop items that are resolved or no longer relevant, but keep user requirements that still apply.";
+const COMPACTION_PROMPT_TEMPLATE: &str = r#"Use exactly these Markdown sections, in this order. Write "None." under a section with nothing to record.
+
+## Objective
+The user's overall goal and the current task, in their terms.
+
+## Requirements and Constraints
+Explicit user instructions, preferences, and corrections, including what not to do. Quote short instructions verbatim.
+
+## Decisions
+Choices made and why, including approaches tried and rejected.
+
+## Work State
+- Completed: what is done and how it was verified.
+- In progress: what was underway when the conversation was cut.
+- Blocked: open problems and unanswered questions.
+
+## Files and Code
+Files read, created, or changed: what changed and why. Key functions, types, and signatures.
+
+## Commands and Errors
+Commands that matter and their outcomes; errors hit and how they were fixed.
+
+## Next Step
+The immediate next action, specific enough to act on without rereading anything.
+
+## Important Context
+Anything else needed to continue: environment facts, identifiers, URLs, numbers.
+
+Rules:
+- Be terse; prefer bullets to prose.
+- Preserve exact paths, identifiers, commands, error messages, and numbers.
+- Omit pinned context such as AGENTS.md and loaded skills; it stays available separately.
+- Do not mention this checkpoint or the summarization.
+- Do not continue the task, ask questions, or call tools. Return the checkpoint text only."#;
 pub(super) const TOOL_OUTPUT_ELISION_MIN_BYTES: usize = 8 * 1024;
 // Frozen policies normally provide this value. Keep substantial headroom when replaying an
 // unavailable or legacy policy whose output limit is zero.
@@ -630,10 +665,12 @@ impl Engine {
         if prefix.len() <= checkpoint_prefix.len().saturating_add(prior_summary_count) {
             return Ok(events);
         }
-        let (history, instruction) = compaction_history(
-            context.history,
-            compaction_focus.as_deref(),
+        // The summarizer sees only the span the checkpoint replaces; the
+        // retained recent suffix follows the summary verbatim.
+        let instruction = compaction_instruction(
             &input.internal_policy.agent.composed_prompt,
+            compaction_focus.as_deref(),
+            prior_summary_count > 0,
         );
         let mut summary = self
             .run_internal_history_agent(
@@ -642,11 +679,11 @@ impl Engine {
                 InternalAgentKind::ContextCompaction,
                 input.internal_policy,
                 InternalAgentHistoryInput {
-                    history,
-                    summary_source: instruction,
+                    history: compaction_history(prefix, &instruction),
+                    summary_source: instruction.clone(),
                     // First trial keeps the session tool definitions so the
-                    // request stays a cache-friendly extension of the latest
-                    // conversation turn; a tool-call answer is rejected by
+                    // request stays a cache-friendly prefix of the latest
+                    // conversation request; a tool-call answer is rejected by
                     // reject_non_text and counted as a compaction failure.
                     tools: input.tools.to_vec(),
                     reject_non_text: true,
@@ -667,12 +704,8 @@ impl Engine {
                 input.session,
                 input.binding,
                 &composed_prompt,
+                recent_from_seq,
             )?;
-            let (history, instruction) = compaction_history(
-                history,
-                compaction_focus.as_deref(),
-                &input.internal_policy.agent.composed_prompt,
-            );
             summary = self
                 .run_internal_history_agent(
                     input.session,
@@ -680,7 +713,7 @@ impl Engine {
                     InternalAgentKind::ContextCompaction,
                     input.internal_policy,
                     InternalAgentHistoryInput {
-                        history,
+                        history: compaction_history(history, &instruction),
                         summary_source: instruction,
                         // The pruned retry already rewrites tool outputs, so it
                         // drops the tool definitions too: cache affinity is
@@ -1294,10 +1327,26 @@ fn native_compaction_input_budget(
         .max(1)
 }
 
-fn compaction_instruction(focus: Option<&str>) -> String {
-    focus.map_or_else(
-        || COMPACTION_INSTRUCTION.to_owned(),
-        |focus| format!("{COMPACTION_INSTRUCTION}\n\nUser-requested focus: {focus}"),
+/// The built-in summarizer prompt; `updates_summary` selects the variant that
+/// merges an earlier internal summary instead of starting fresh.
+pub(crate) fn default_compaction_prompt(updates_summary: bool) -> String {
+    let intro = if updates_summary {
+        COMPACTION_UPDATE_PROMPT_INTRO
+    } else {
+        COMPACTION_PROMPT_INTRO
+    };
+    format!("{intro}\n\n{COMPACTION_PROMPT_TEMPLATE}")
+}
+
+/// Expands the compaction agent's document body, whose `{{default_prompt}}`
+/// and `{{focus}}` placeholders the config loader has already validated.
+fn compaction_instruction(template: &str, focus: Option<&str>, updates_summary: bool) -> String {
+    render_internal_prompt(
+        template,
+        InternalPromptValues {
+            default_prompt: &default_compaction_prompt(updates_summary),
+            focus,
+        },
     )
 }
 
@@ -1307,6 +1356,7 @@ fn pruned_compaction_history(
     session: SessionId,
     binding: &cookie_agent_protocol::FrozenModelBinding,
     composed_prompt: &str,
+    recent_from_seq: Option<u64>,
 ) -> Result<Vec<oven_sdk::HistoryTurn>, EngineError> {
     // Emitted messages lose their tool ownership after assembly. Remove them in a private
     // snapshot first, then prune only results in the active checkpoint-aware history.
@@ -1325,7 +1375,13 @@ fn pruned_compaction_history(
             result.attachments.clear();
         }
     }
-    let mut history = assemble_model_context(&events, store, binding, composed_prompt)?.history;
+    let mut history = model_history::compaction_prefix_history(
+        &events,
+        store,
+        binding,
+        composed_prompt,
+        recent_from_seq,
+    )?;
     let mut retrieval_calls = HashSet::new();
     for turn in &mut history {
         match turn {
@@ -1402,25 +1458,19 @@ fn prune_compaction_result(
 
 fn compaction_history(
     mut history: Vec<oven_sdk::HistoryTurn>,
-    focus: Option<&str>,
-    system_prompt: &str,
-) -> (Vec<oven_sdk::HistoryTurn>, String) {
-    // Keep the history (including its system prompt) intact so the summarizer
-    // request is a cache-friendly extension of the latest conversation turn;
-    // the compaction agent's own prompt rides along in the trailing
-    // instruction instead of replacing the session system prompt.
-    let base = compaction_instruction(focus);
-    let instruction = if system_prompt.trim().is_empty() {
-        base
-    } else {
-        format!("{}\n\n{base}", system_prompt.trim())
-    };
+    instruction: &str,
+) -> Vec<oven_sdk::HistoryTurn> {
+    // `history` is the span the checkpoint replaces. It starts with the
+    // session's own system prompt and pinned context, so the summarizer
+    // request is a cache-friendly prefix of the latest conversation request;
+    // the compaction agent's prompt rides along in the trailing instruction
+    // instead of replacing the session system prompt.
     history.push(oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(
         vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
-            instruction.clone(),
+            instruction.to_owned(),
         ))],
     )));
-    (history, instruction)
+    history
 }
 
 fn should_elide_tool_output(

@@ -15,9 +15,10 @@ use oven_sdk::{
 
 use super::CountingWriter;
 use super::{
-    COMPACTION_INSTRUCTION, DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS, FitPart,
-    TOOL_OUTPUT_ELISION_MIN_BYTES, VIDEO_FILE_FIT_SURROGATE_BYTES, checkpoint_covers_input,
-    compaction_gate, compaction_history, compaction_input_fits, compaction_instruction,
+    COMPACTION_PROMPT_INTRO, COMPACTION_UPDATE_PROMPT_INTRO,
+    DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS, FitPart, TOOL_OUTPUT_ELISION_MIN_BYTES,
+    VIDEO_FILE_FIT_SURROGATE_BYTES, checkpoint_covers_input, compaction_gate, compaction_history,
+    compaction_input_fits, compaction_instruction, default_compaction_prompt,
     effective_recent_budget, elidable_bytes, estimated_request_tokens, fit_part_bytes,
     native_compaction_input_budget, raw_fit_from_real_usage, resolve_compaction_trigger,
     select_recent_tail, serialized_fit_request_bytes, should_elide_tool_output,
@@ -412,11 +413,33 @@ fn checkpoint_dedup_includes_the_exact_snapshot_boundary() {
 }
 
 #[test]
-fn focus_is_appended_without_changing_the_fixed_instruction() {
-    assert_eq!(compaction_instruction(None), COMPACTION_INSTRUCTION);
+fn default_prompt_placeholder_selects_the_fresh_or_update_template() {
+    let fresh = compaction_instruction("{{default_prompt}}", None, false);
+    let update = compaction_instruction("{{default_prompt}}", None, true);
+    assert_eq!(fresh, default_compaction_prompt(false));
+    assert_eq!(update, default_compaction_prompt(true));
+    assert!(fresh.starts_with(COMPACTION_PROMPT_INTRO));
+    assert!(update.starts_with(COMPACTION_UPDATE_PROMPT_INTRO));
     assert_eq!(
-        compaction_instruction(Some("preserve parser work")),
-        format!("{COMPACTION_INSTRUCTION}\n\nUser-requested focus: preserve parser work")
+        fresh.split_once("\n\n").map(|(_, sections)| sections),
+        update.split_once("\n\n").map(|(_, sections)| sections)
+    );
+}
+
+#[test]
+fn authored_template_wraps_the_default_prompt_and_places_focus() {
+    let default = default_compaction_prompt(false);
+    assert_eq!(
+        compaction_instruction(
+            "Keep test names.\n{{default_prompt}}",
+            Some("preserve parser work"),
+            false
+        ),
+        format!("Keep test names.\n{default}\n\nUser-requested focus: preserve parser work")
+    );
+    assert_eq!(
+        compaction_instruction("Own rules only. Focus: {{focus}}", Some("parser"), false),
+        "Own rules only. Focus: parser"
     );
 }
 
@@ -454,7 +477,7 @@ fn compact_provider_request_is_the_assembled_normal_prefix_plus_one_instruction(
     let model = runtime.resolve(&binding.selection).expect("resolved model");
     let normal_request =
         model.prepare_request(ModelRequest::new(context.history.clone()).with_tools(tools.clone()));
-    let (compact_history, _) = compaction_history(context.history, None, "system");
+    let compact_history = compaction_history(context.history, "summarize");
     let compact_request =
         model.prepare_request(ModelRequest::new(compact_history).with_tools(tools));
     let normal = serde_json::to_value(normal_request).expect("normal provider request");

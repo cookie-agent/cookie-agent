@@ -451,7 +451,8 @@ does not run for unchanged selections, draft UI changes before run start, skill-
 overrides, or internal-agent model choices. A blocked model selection retains the current selection.
 Revert may also chain an instruction override. `session_before_compact` may append instructions,
 replace the current instructions, or cancel compaction with a reason; cancellation leaves the engine
-and session usable and the RPC returns that reason.
+and session usable and the RPC returns that reason. Appended and replacement instructions become the
+compaction prompt's `{{focus}}` value; they do not replace the `compaction` agent's prompt template.
 
 All mutation chains pass only validated current state to the next plugin. Invalid modifications are
 diagnosed and skipped. Timeout, crash, malformed response, or queue failure is fail-open per plugin,

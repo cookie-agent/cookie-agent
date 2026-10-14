@@ -174,8 +174,9 @@ Tool-call IDs remain for correlation, not artifact retrieval.
 Preserve these existing behaviors while recognizing artifact retrieval by the
 combination of tool name `read` and its structured `filePath` argument:
 
-1. The first summarizer trial includes the entire active history, including prior
-   summary and recent turns retained afterward. Do not resurrect discarded logs.
+1. The first summarizer trial includes the active history the checkpoint
+   replaces, including any prior summary but not the recent turns retained
+   afterward. Do not resurrect discarded logs.
 2. Only an actual summarizer-input local fit rejection or provider context-length
    failure permits one pruned retry. Parent overflow alone and unrelated errors
    do not trigger pruning.

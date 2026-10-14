@@ -177,6 +177,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
     const SMALL_MARKER: &str = "SMALL_RECENT_TOOL_OUTPUT";
     const RETRIEVED_MARKER: &str = "SMALL_RECENT_RETRIEVED_OUTPUT";
     const EMITTED_MARKER: &str = "TOOL_EMITTED_CONTENT_TO_REMOVE";
+    const TAIL_MARKER: &str = "RETAINED_TAIL_TOOL_OUTPUT";
     let root_body = "data: {\"choices\":[{\"delta\":{\"content\":\"initial complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
     let summary_body = "data: {\"choices\":[{\"delta\":{\"content\":\"compacted summary\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
 
@@ -325,13 +326,6 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             (
                 (
                     "read",
-                    serde_json::json!({"filePath": format!("artifact://{}", "a".repeat(64))}),
-                ),
-                format!("LARGE_RETRIEVED_OUTPUT{}", "r".repeat(9 * 1024)),
-            ),
-            (
-                (
-                    "read",
                     serde_json::json!({"filePath": "/tmp/ordinary-file.txt"}),
                 ),
                 SMALL_MARKER.to_owned(),
@@ -342,6 +336,22 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                     serde_json::json!({"filePath": format!("artifact://{}/results", "b".repeat(64))}),
                 ),
                 RETRIEVED_MARKER.to_owned(),
+            ),
+            (
+                (
+                    "read",
+                    serde_json::json!({"filePath": format!("artifact://{}", "a".repeat(64))}),
+                ),
+                format!("LARGE_RETRIEVED_OUTPUT{}", "r".repeat(9 * 1024)),
+            ),
+            // The large group above stops the recent tail, so only this
+            // group is retained verbatim when the test keeps a tail.
+            (
+                (
+                    "read",
+                    serde_json::json!({"filePath": "/tmp/recent-file.txt"}),
+                ),
+                TAIL_MARKER.to_owned(),
             ),
         ] {
             append_named_compaction_tool_history(
@@ -440,6 +450,11 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             }
             assert!(!requests[1].contains("[tool output elided; retained at "));
         }
+        // A retained tail follows the summary verbatim, so the summarizer
+        // only ever sees the span the checkpoint replaces.
+        for request in &requests[1..] {
+            assert_eq!(request.contains(TAIL_MARKER), !provider_retry);
+        }
         let summary_request = requests.last().expect("summarizer request");
         // The first summarizer trial extends the conversation as-is, tools
         // included, for prefix-cache affinity; only the pruned retry drops
@@ -503,7 +518,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                     .sum::<usize>(),
                 4
             );
-            for (result, marker) in [(results[0], RAW_MARKER), (results[2], SMALL_MARKER)] {
+            for (result, marker) in [(results[0], RAW_MARKER), (results[1], SMALL_MARKER)] {
                 let text = result["content"].as_str().unwrap();
                 // Read the retry artifact using only the marker, without a session or UUID.
                 let hint: serde_json::Value =
@@ -545,7 +560,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                     assert_ne!(original_path, artifact_path);
                 }
             }
-            for result in [results[1], results[3]] {
+            for result in [results[2], results[3]] {
                 assert_eq!(
                     result["content"],
                     "[artifact read output omitted for compaction]"
@@ -585,7 +600,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                 .await
                 .unwrap();
             let retained = serde_json::to_string(&retained).unwrap();
-            assert!(retained.contains(RETRIEVED_MARKER));
+            assert!(retained.contains(TAIL_MARKER));
             assert!(retained.contains(EMITTED_MARKER));
             assert!(!retained.contains("[artifact read output omitted for compaction]"));
         }
@@ -1166,8 +1181,8 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
     let first_summary_request = &requests[2];
     assert!(first_summary_request.contains(OLD_USER));
     assert!(first_summary_request.contains(OLD_ASSISTANT));
-    assert!(first_summary_request.contains(RECENT_USER));
-    assert!(first_summary_request.contains(RECENT_ASSISTANT));
+    assert!(!first_summary_request.contains(RECENT_USER));
+    assert!(!first_summary_request.contains(RECENT_ASSISTANT));
     let owner_replay_request = &requests[3];
     assert!(owner_replay_request.contains("first checkpoint summary"));
     assert!(owner_replay_request.contains(RECENT_USER));
@@ -1178,8 +1193,8 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
     assert!(second_summary_request.contains("first checkpoint summary"));
     assert!(second_summary_request.contains(RECENT_USER));
     assert!(second_summary_request.contains(RECENT_ASSISTANT));
-    assert!(second_summary_request.contains(NEW_USER));
-    assert!(second_summary_request.contains(NEW_ASSISTANT));
+    assert!(!second_summary_request.contains(NEW_USER));
+    assert!(!second_summary_request.contains(NEW_ASSISTANT));
     assert!(!second_summary_request.contains(OLD_USER));
     assert!(!second_summary_request.contains(OLD_ASSISTANT));
     fixture.engine.shutdown().await;
@@ -1386,7 +1401,10 @@ async fn compaction_full_history_preserves_eligible_reasoning_and_recent_tail() 
         "internal summary request lost eligible native reasoning"
     );
     assert!(summary_request.contains(OLD_PREFIX));
-    assert!(summary_request.contains(RECENT_TAIL));
+    assert!(
+        !summary_request.contains(RECENT_TAIL),
+        "the retained recent tail must not be sent to the summarizer"
+    );
     assert!(anthropic_request_has_unsigned_thinking(summary_request));
     fixture.engine.shutdown().await;
 }

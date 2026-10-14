@@ -401,8 +401,8 @@ continues to recall the newest pending input.
 
 `context_checkpoint_committed` carries a `commit` containing the text summary or
 opaque native checkpoint, `boundaries`, and `budgets`. Internal summaries cover
-the entire active pre-compaction history, including recent messages retained
-unchanged after the summary. Active history is the currently assembled context,
+the active pre-compaction history before the recent messages retained unchanged
+after the summary; the two do not overlap. Active history is the currently assembled context,
 not a reload of events replaced by earlier checkpoints. The original saved log
 is preserved; retained recent messages are replayed from it. System and tool
 context comes first, followed by pinned `AGENTS.md`, loaded skills, the summary,
@@ -417,7 +417,7 @@ The additive retention fields are optional in saved events:
 | `budgets.keep_recent_tokens` | `u64` | `0` | Effective recent-history token budget for this checkpoint, not the raw configured request or a count of retained tokens. |
 
 The effective budget is at most `min(configured keep_recent_tokens,
-context_limit / 4)` and is further limited by actual post-checkpoint available
+input_budget / 4)` and is further limited by actual post-checkpoint available
 space. Complete tool-call/result groups can leave the retained suffix smaller
 than that budget; an oversized newest indivisible group yields no tail rather
 than exceeding the budget. An absent legacy retention boundary does not cause

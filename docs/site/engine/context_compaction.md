@@ -23,13 +23,14 @@ The built-in compaction agent has a flat 3-minute timeout. An authored
 zero or omission uses the 30-second internal-agent default. The timeout does
 not scale with serialized history size.
 
-The internal summarizer first receives the entire active, unpruned history,
-including recent messages that will be retained unchanged after the summary.
-This is the currently assembled history, not a reload of events replaced by
-earlier checkpoints. The request keeps the session's own system prompt and
-tool definitions so it stays a cache-friendly extension of the latest
-conversation turn; the compaction agent's prompt is folded into the trailing
-instruction message instead of replacing the session system prompt. A tool-call
+The internal summarizer receives only the span the checkpoint replaces: the
+active, unpruned history up to the recent messages retained unchanged after the
+summary, which are never sent to it. This is the currently assembled history,
+not a reload of events replaced by earlier checkpoints. The request keeps the
+session's own system prompt and tool definitions so it stays a cache-friendly
+prefix of the latest conversation request; the compaction agent's prompt is
+folded into the trailing instruction message instead of replacing the session
+system prompt. A tool-call
 answer is rejected as non-text output and counts as a compaction failure.
 Internal agents have no local byte-based admission gate.
 A provider context-length failure permits at most one pruned retry; other failures
@@ -57,4 +58,4 @@ alongside pinned context.
 | `trigger` | inline table | `{ percent = 70 }` | Trigger threshold selection. `{ percent = N }` uses `N%` of the model's input budget, where `N` must be from 1 through 99. `{ buffer_tokens = N }` subtracts positive `N` from the input budget, saturating at zero. The input budget is the model's input limit when it declares one, otherwise its context limit less `min(output cap, 32000, context / 2)` (see [compaction](../guide/compaction.md#the-trigger-threshold)). |
 | `buffer_tokens` | integer | unset | Legacy alias for `trigger = { buffer_tokens = N }`. Must be greater than zero and cannot be set together with `trigger`. |
 | `max_summary_bytes` | integer | `262144` (`256 * 1024`) | Hard byte limit for a compaction summary produced by the internal `compaction` agent. Must be greater than zero and at most `2 * 1024 * 1024` (2 MiB). |
-| `keep_recent_tokens` | integer (`u64`) | `16384` | Nonnegative token budget for recent original messages retained unchanged after an internal summary of the entire active history. These messages are also included in the summarizer's input. `0` disables retention, not summary coverage. The effective target is at most `min(keep_recent_tokens, input_budget / 4)`, further limited by actual post-checkpoint available space. Complete tool-call/result groups are never split; an oversized newest indivisible group leaves no recent messages retained. Configuration does not clamp the requested value. Native windows receive no independent recent messages. |
+| `keep_recent_tokens` | integer (`u64`) | `16384` | Nonnegative token budget for recent original messages retained unchanged after an internal summary. The summarizer receives only the messages before them. `0` disables retention, so the summary covers the whole active history. The effective target is at most `min(keep_recent_tokens, input_budget / 4)`, further limited by actual post-checkpoint available space. Complete tool-call/result groups are never split; an oversized newest indivisible group leaves no recent messages retained. Configuration does not clamp the requested value. Native windows receive no independent recent messages. |

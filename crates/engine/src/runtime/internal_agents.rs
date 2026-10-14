@@ -83,41 +83,6 @@ pub(crate) struct InternalAgentExecution<'a> {
 const DEFAULT_INTERNAL_TIMEOUT_MS: u64 = 30_000;
 
 impl Engine {
-    pub(super) async fn run_internal_text_agent(
-        &self,
-        session: SessionId,
-        parent_run: Option<RunId>,
-        kind: InternalAgentKind,
-        policy: &FrozenInternalAgentPolicy,
-        input: String,
-        execution: InternalAgentExecution<'_>,
-    ) -> Result<InternalAgentTextResult, EngineError> {
-        let history = vec![
-            oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
-                oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(
-                    policy.agent.composed_prompt.clone(),
-                )),
-            ])),
-            oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(vec![
-                oven_sdk::InputPart::Text(oven_sdk::TextPart::new(input.clone())),
-            ])),
-        ];
-        self.run_internal_history_agent(
-            session,
-            parent_run,
-            kind,
-            policy,
-            InternalAgentHistoryInput {
-                history,
-                summary_source: input,
-                tools: Vec::new(),
-                reject_non_text: false,
-            },
-            execution,
-        )
-        .await
-    }
-
     pub(super) async fn run_internal_history_agent(
         &self,
         session: SessionId,
@@ -887,6 +852,36 @@ fn valid_openai_responses_transport_part(part: &oven_sdk::CustomPart, adapter_id
                     .bytes()
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         })
+}
+
+/// Expands an internal agent's frozen document body, substituting
+/// `default_prompt` for `{{default_prompt}}`.
+pub(super) fn expand_internal_prompt(
+    policy: &FrozenInternalAgentPolicy,
+    default_prompt: &str,
+) -> String {
+    cookie_agent_config::render_internal_prompt(
+        &policy.agent.composed_prompt,
+        cookie_agent_config::InternalPromptValues {
+            default_prompt,
+            focus: None,
+        },
+    )
+}
+
+/// A stateless internal request: one system turn, then one user turn.
+pub(super) fn internal_text_history(
+    system_prompt: String,
+    input: String,
+) -> Vec<oven_sdk::HistoryTurn> {
+    vec![
+        oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
+            oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(system_prompt)),
+        ])),
+        oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(vec![oven_sdk::InputPart::Text(
+            oven_sdk::TextPart::new(input),
+        )])),
+    ]
 }
 
 pub(super) fn parse_internal_approval(value: &str) -> Option<ApprovalInternalDecisionKind> {

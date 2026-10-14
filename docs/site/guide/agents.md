@@ -368,8 +368,95 @@ limits:
   max_output_tokens: 4096
 permissions: {}
 ---
-Summarize conversation context faithfully within the supplied bounds. Return summary text only.
+{{default_prompt}}
 ```
+
+### Internal agent prompt placeholders
+
+The bodies of `approval.md`, `compaction.md`, and `title.md` are templates. Each
+built-in body is exactly `{{default_prompt}}`, which expands to that agent's
+built-in prompt:
+
+| Agent | `{{default_prompt}}` expands to | Where it is sent | Other placeholders |
+|---|---|---|---|
+| `approval` | The approval reviewer prompt: when to choose `allow`, `ask`, or `deny`, which kinds of calls need the user, and how to weigh prior decisions. | System prompt | none |
+| `compaction` | The structured checkpoint prompt. When the span being compacted starts with an earlier summary, this is the variant that merges it into one updated checkpoint. | Final user message after the history being summarized | `{{focus}}` |
+| `title` | The session title prompt: what makes a good title, its length, language, and casing. | System prompt | none |
+
+The output format each agent must follow is not part of `{{default_prompt}}`.
+It stays in the request the engine builds, so a custom body cannot break
+parsing: approval still asks for `{"decision":"allow"|"deny"|"ask"}` and title
+still asks for plain text only.
+
+To keep a default prompt and add your own rules, wrap it:
+
+```markdown
+{{default_prompt}}
+
+Network access to github.com for this project is routine; allow read-only requests to it.
+```
+
+A body without `{{default_prompt}}` replaces the default prompt entirely.
+
+#### Compaction focus
+
+`{{focus}}` is available only in `compaction.md`.
+
+**How the focus reaches the summarizer.** The focus is the text typed after
+`/compact`, plus any instructions added by `session_before_compact` plugins.
+Automatic compactions and `/compact` with an empty prompt have no focus.
+
+- If the body contains `{{focus}}`, the focus is inserted there, and only there.
+  With no focus, `{{focus}}` becomes empty.
+- If the body does not contain `{{focus}}`, the focus is appended after the
+  whole expanded body as `User-requested focus: …`. With no focus, nothing is
+  appended.
+
+`{{default_prompt}}` itself does not contain `{{focus}}`, and expansion is a
+single pass: text inserted by a placeholder is never scanned for more
+placeholders. So the built-in body, and any body that uses only
+`{{default_prompt}}`, gets the focus appended at the end.
+
+For example, with this body:
+
+```markdown
+{{default_prompt}}
+
+Also record the exact name of every failing test and the command that ran it.
+```
+
+after `/compact preserve the parser decisions`, the summarizer receives:
+
+```text
+<default prompt>
+
+Also record the exact name of every failing test and the command that ran it.
+
+User-requested focus: preserve the parser decisions
+```
+
+To choose where the focus goes, place it yourself:
+
+```markdown
+{{default_prompt}}
+
+Give extra detail to: {{focus}}
+```
+
+#### Syntax and scope
+
+Spaces inside the braces are allowed (`{{ default_prompt }}`). A placeholder
+the agent does not accept, such as `{{defaults}}` anywhere or `{{focus}}` in
+`approval.md`, is a hard configuration error. Any other `{{`, such as
+`{{a b}}`, is literal text. Placeholders are expanded only in the three internal
+agent documents. In every other agent document, `{{default_prompt}}` and
+`{{focus}}` are neither expanded nor rejected; the model receives them as
+literal text.
+
+A session keeps the internal agent prompts frozen when each of its runs
+started. A manual `/compact` on a session whose last run started under an
+older version uses that run's frozen compaction body as written; the next run
+picks up the current documents.
 
 ## Selecting an agent
 

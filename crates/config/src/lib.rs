@@ -6,6 +6,7 @@ mod cache;
 mod error;
 mod loader;
 mod mcp_store;
+mod prompt_template;
 mod runtime;
 mod secure_fs;
 mod skills;
@@ -27,6 +28,9 @@ pub use error::ConfigError;
 pub use loader::{ConfigLayerPaths, LoadedConfiguration, load, load_from_roots};
 pub use loader::{LoadedMcpServer, McpServerSource};
 pub use mcp_store::write_mcp_server;
+pub use prompt_template::{
+    DEFAULT_PROMPT_PLACEHOLDER, FOCUS_PLACEHOLDER, InternalPromptValues, render_internal_prompt,
+};
 pub use runtime::{
     AgentMdConfig, ApprovalConfig, ContextCompactionConfig, ContextCompactionTrigger,
     DelegationConfig, EngineConfig, LoopWarningConfig, McpConfig, McpOAuthConfig, McpOAuthSettings,

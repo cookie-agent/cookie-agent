@@ -30,7 +30,7 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
             scripted_text_body("parent accepted child report"),
         ),
         MatchedScriptedResponse::last_message_contains(
-            crate::runtime::compaction::COMPACTION_INSTRUCTION,
+            crate::runtime::compaction::COMPACTION_PROMPT_INTRO,
             scripted_text_body("Compacted child report"),
         ),
     ] {

@@ -1,10 +1,10 @@
 # Compaction
 
 Compaction reduces a long session history to a checkpoint. Internal compaction
-summarizes the entire active history, including recent messages that will also be
-retained unchanged after the summary. Older messages are replaced by the summary
-in model context; the original saved log is preserved. Provider-native compaction
-instead stores an opaque provider window.
+keeps a budgeted tail of recent messages unchanged and summarizes everything
+before it; the summary replaces those older messages in model context, and the
+original saved log is preserved. Provider-native compaction instead stores an
+opaque provider window.
 
 Active history means the currently assembled context before compaction, including
 any existing summary and the messages after it. It does not reload historical
@@ -99,20 +99,31 @@ retries.
    bound model's context limit minus the effective compaction output allowance.
    If that allowance is unknown, the engine reserves 20,000 tokens as conservative
    summary-output headroom.
-2. **Full-history trial.** Internal summarization first uses the entire active,
-   unpruned history, including the recent messages selected for retention.
-   The request keeps the session's own system prompt and tool definitions, so
-   it stays a cache-friendly extension of the latest conversation turn; the
-   compaction agent's prompt rides along in the trailing instruction message
-   instead of replacing the session system prompt. A tool-call answer is
-   rejected as non-text output and counts as a compaction failure.
-    The provider is authoritative for internal-agent input size; there is no
-    byte-based pre-flight admission gate. The session's calibrated estimator still
-    sizes the retained recent history and the post-checkpoint budget.
-3. **Context-fit retry.** A provider context-length failure permits one pruned
+2. **Recent-history selection.** For internal summarization, the engine first
+   selects a contiguous suffix of original messages to keep unchanged. Its
+   effective token target is at most `min(keep_recent_tokens, input_budget / 4)`,
+   using integer division, and is further limited by actual available space in
+   the post-checkpoint request. System and tool context, pinned context, the
+   summary, and the output reserve must still fit. Tool calls and their results
+   are retained as complete groups, never split at the suffix boundary. If the
+   newest indivisible group exceeds the target, no tail is retained; the engine
+   does not exceed the target or substitute an older, noncontiguous group.
+   `keep_recent_tokens = 0` disables the tail.
+3. **Replaced-span trial.** The summarizer receives only the span the checkpoint
+   replaces: the active, unpruned history up to the selected suffix, including
+   any earlier summary. The suffix itself is never sent. The request keeps the
+   session's own system prompt, pinned context, and tool definitions, so it is
+   a cache-friendly prefix of the latest conversation request; the compaction
+   agent's prompt rides along in a trailing instruction message instead of
+   replacing the session system prompt. A tool-call answer is rejected as
+   non-text output and counts as a compaction failure.
+   The provider is authoritative for internal-agent input size; there is no
+   byte-based pre-flight admission gate. The session's calibrated estimator still
+   sizes the retained recent history and the post-checkpoint budget.
+4. **Context-fit retry.** A provider context-length failure permits one pruned
    retry. Other failures do not trigger pruning. Internal model bindings are
    tried in order, advancing after provider failures. The retry uses an in-memory
-   copy of the summarizer input and drops the session tool definitions (cache
+   copy of the same replaced span and drops the session tool definitions (cache
    affinity is already lost once tool outputs are rewritten):
    tool results are retained with `ArtifactStore::retain` and replaced by reference
    markers with a structured `read` hint using `filePath="artifact://<digest>"`.
@@ -124,24 +135,18 @@ retries.
    with `[artifact read output omitted for compaction]` in the private retry input,
    including named-stream reads. Detection uses the structured `filePath` argument;
    ordinary filesystem `read` results follow normal tool-output pruning.
-   Both older and recent messages remain in the retry input. This does
-   not emit durable `tool_output_elided` (`ToolOutputElided`) events or change the
-   original saved log or recent retained message contents, even if the retry fails.
-4. **Recent-history selection.** For internal summarization, the engine selects
-   a contiguous suffix of original messages. Its effective token target is at
-   most `min(keep_recent_tokens, context_limit / 4)`, using integer division,
-   and is further limited by actual available space in the post-checkpoint
-   request. System and tool context, pinned context, the summary, and the output
-   reserve must still fit. Tool calls and their results are retained as complete
-   groups, never split at the suffix boundary. If the newest indivisible group
-   exceeds the target, no tail is retained; the engine does not exceed the
-   target or substitute an older, noncontiguous group. `keep_recent_tokens = 0`
-   disables the tail.
-5. **Full-history summary.** The internal `compaction` agent (see
-   [Internal agents](agents.md#internal-agents)) summarizes both older and recent
-   messages; retaining recent messages does not exclude them from its input.
-   Its fixed instruction may be extended with the user's focus text. It must
-   return summary text only, at most
+   This does not emit durable `tool_output_elided` (`ToolOutputElided`) events or
+   change the original saved log or the retained recent messages, even if the
+   retry fails.
+5. **Summary.** The internal `compaction` agent (see
+   [Internal agents](agents.md#internal-agents)) writes a structured checkpoint
+   with fixed sections (objective, requirements, decisions, work state, files,
+   commands and errors, next step, important context). When the replaced span
+   starts with an earlier internal summary, the prompt asks it to merge that
+   summary into one updated checkpoint instead of starting fresh. An authored
+   `compaction.md` can extend or replace this prompt with
+   [placeholders](agents.md#internal-agent-prompt-placeholders), and the user's
+   focus text is added to it. It must return summary text only, at most
    `max_summary_bytes` (256 KiB by default); non-text output is rejected. The
    built-in compaction document sets no output cap of its own, so it inherits the
    owner run's `max_output_tokens`, bounded by the model's own output limit; the
@@ -165,13 +170,13 @@ The next request assembles context in this order:
 1. System prompt and tool definitions.
 2. Pinned `AGENTS.md` context.
 3. Pinned loaded skill bodies.
-4. Summary of the entire active pre-compaction history.
+4. Summary of everything before the retained suffix.
 5. Recent original messages retained unchanged, followed by any new messages.
 
 Pinned context is preserved separately from the suffix. With retention disabled,
 or when the newest complete group cannot fit, the recent suffix is absent and
-only the summary remains alongside pinned context. The summary may cover recent
-messages even though those messages also remain unchanged after it. Native
+only the summary remains alongside pinned context. The summary and the retained
+suffix do not overlap. Native
 checkpoints continue to use their opaque provider windows rather than this
 summary-and-tail layout.
 
@@ -191,15 +196,15 @@ preserve the parser decisions and failing test evidence
 ```
 
 Press Enter with the prompt empty to compact without a focus. The focus text is
-appended to the fixed compaction instruction so the
-summary emphasizes the areas you care about. Steering remains available while
+added to the compaction prompt (appended, or placed where an authored
+`compaction.md` puts `{{focus}}`) so the summary emphasizes the areas you care
+about. Steering remains available while
 compaction runs; admitted pending inputs are promoted only after the checkpoint,
 honoring any recalls made during compaction.
 
 `session.compact` returns whether a checkpoint was actually committed. Manual
-compaction follows the same full-history trial and context-fit retry rules.
-The internal summarizer receives both older and recent messages, including those
-retained unchanged after the summary.
+compaction follows the same recent-history selection, replaced-span trial, and
+context-fit retry rules.
 
 ## Events
 

@@ -311,6 +311,16 @@ fn validate_agent_document(
             field: "mode",
         });
     }
+    if let Some(allowed) =
+        crate::prompt_template::internal_prompt_placeholders(document.id.as_str())
+        && let Some(placeholder) =
+            crate::prompt_template::unknown_placeholder(&document.body, allowed)
+    {
+        return Err(ConfigError::UnknownPromptPlaceholder {
+            agent: document.id.clone(),
+            placeholder,
+        });
+    }
     if frontmatter.description.is_empty()
         || frontmatter.description.len() > 512
         || frontmatter.description.chars().any(char::is_control)

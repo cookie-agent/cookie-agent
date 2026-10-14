@@ -787,8 +787,7 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
         requests[4]
     );
     assert!(
-        !requests[4]
-            .contains("Summarize conversation context faithfully within the supplied bounds"),
+        !requests[4].contains(crate::runtime::compaction::COMPACTION_PROMPT_INTRO),
         "{}",
         requests[4]
     );

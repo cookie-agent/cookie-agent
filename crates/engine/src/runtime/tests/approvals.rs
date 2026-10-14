@@ -1450,7 +1450,24 @@ async fn internal_agent_ask_escalates_to_user_approval_then_executes_tool() {
         EventPayload::ToolCallTerminated { termination }
             if termination.outcome == ToolTerminationOutcome::Completed
     )));
-    captured.abort();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("captured approval requests");
+    // The built-in body expands `{{default_prompt}}` into the reviewer's
+    // system prompt; the request keeps the output contract.
+    let reviewer = request_body(&requests[1]);
+    let system = reviewer["messages"][0]["content"].to_string();
+    assert!(
+        system.contains("You review tool calls that an AI coding agent wants to run"),
+        "{system}"
+    );
+    assert!(!system.contains("{{default_prompt}}"));
+    assert!(
+        reviewer["messages"][1]["content"]
+            .to_string()
+            .contains("Return strict JSON only")
+    );
     fixture.engine.shutdown().await;
 }
 
