@@ -1207,7 +1207,9 @@ impl Engine {
                 None,
             ));
         };
-        let _ = self.cancel_run(child_run_id).await;
+        let _ = self
+            .cancel_run(child_run_id, super::event_origin("engine:delegation"))
+            .await;
         self.await_delegate(handle).await
     }
 

@@ -207,7 +207,14 @@ async fn cancellation_during_approval_terminates_batch_without_execution() {
         .run_id;
     let _approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
     assert_eq!(state.started.load(Ordering::SeqCst), 0);
-    fixture.engine.cancel_run(run).await.expect("cancel run");
+    fixture
+        .engine
+        .cancel_run(
+            run,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("cancel run");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
 
     assert_eq!(state.started.load(Ordering::SeqCst), 0);
@@ -1939,7 +1946,14 @@ async fn escalated_approval_finalized_externally_still_wakes_the_waiter() {
 
     // Cancelling the run drives the already-terminal approval through the
     // racing terminal path; without the responder drain the tool would hang.
-    fixture.engine.cancel_run(run.run_id).await.expect("cancel");
+    fixture
+        .engine
+        .cancel_run(
+            run.run_id,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("cancel");
     tokio::time::timeout(
         test_timeout(60),
         await_event(

@@ -14,7 +14,11 @@ Legacy
 `plugin`, or `client` and `slug` matches
 `[a-z0-9][a-z0-9-]{0,63}`. It identifies the author of that individual event,
 not the component described by its payload. For example, a diagnostic about a
-plugin can have origin `engine:plugin-host`.
+plugin can have origin `engine:plugin-host`. Events caused by a client request
+carry that connection's handshake origin, `client:<kind>-<instance id>` (see
+[the handshake](protocol.md)); the headless CLI's in-process runs use
+`client:headless`. A run cancelled through `run.cancel` records the caller's
+origin on its `run_cancelled`, and the engine's origin when it cancels on its own.
 
 Readers handle each JSONL line independently. Fully readable events load
 normally. If a known event has an absent or type-mismatched optional field, that

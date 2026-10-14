@@ -71,7 +71,13 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
     let cwd = fixture._directory.path().to_owned();
     let config = fixture.config.clone();
     let manager = Arc::clone(&fixture.manager);
-    let _ = fixture.engine.cancel_run(parent_run.run_id).await;
+    let _ = fixture
+        .engine
+        .cancel_run(
+            parent_run.run_id,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await;
     release.notify_one();
     fixture.engine.shutdown().await;
     drop(fixture.engine);

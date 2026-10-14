@@ -2201,7 +2201,10 @@ async fn accepted_pause_control_survives_cancelled_run_and_wakes_without_registr
         .expect("remove final ordinary registration");
     fixture
         .engine
-        .cancel_run(old_run)
+        .cancel_run(
+            old_run,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("cancel old run before control promotion");
     release_first.notify_one();

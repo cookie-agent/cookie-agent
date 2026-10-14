@@ -297,11 +297,26 @@ struct ActiveRun {
     policy: Arc<FrozenRunPolicy>,
     cancellation: CancellationToken,
     cancelled_committed: Mutex<bool>,
+    /// Who cancelled the run through [`Engine::cancel_run`]; the engine
+    /// itself when unset.
+    cancelled_by: Mutex<Option<cookie_agent_protocol::EventOrigin>>,
     stdin: Mutex<HashMap<ToolCallId, mpsc::Sender<StdinWrite>>>,
     fallback_index: AtomicU64,
     auto_compaction_failures: AtomicU8,
     auto_compaction_diagnostic_emitted: AtomicBool,
     loop_guard_digests: loop_guard::OutputDigests,
+}
+
+impl ActiveRun {
+    /// The origin recorded on this run's `RunCancelled`: whoever called
+    /// [`Engine::cancel_run`], or the engine when it cancelled on its own.
+    fn cancel_origin(&self) -> cookie_agent_protocol::EventOrigin {
+        self.cancelled_by
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .unwrap_or_else(|| event_origin("engine:model-loop"))
+    }
 }
 
 struct AttemptTurn {

@@ -190,15 +190,108 @@ impl fmt::Debug for Notification {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+/// The kind of client on a connection, such as `tui` or `cli`: a lowercase
+/// ASCII letter followed by up to 15 lowercase letters, digits, or hyphens.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ClientKind(String);
+impl ClientKind {
+    pub const MAX_LEN: usize = 16;
+
+    pub fn new(value: impl Into<String>) -> Result<Self, WireStringError> {
+        let value = value.into();
+        let valid = value.len() <= Self::MAX_LEN
+            && value.bytes().enumerate().all(|(index, byte)| {
+                byte.is_ascii_lowercase() || (index > 0 && (byte.is_ascii_digit() || byte == b'-'))
+            })
+            && !value.is_empty();
+        if valid {
+            Ok(Self(value))
+        } else {
+            Err(WireStringError::Invalid("client kind"))
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl Serialize for ClientKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+impl<'de> Deserialize<'de> for ClientKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+impl JsonSchema for ClientKind {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("ClientKind")
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type":"string",
+            "pattern":"^[a-z][a-z0-9-]{0,15}$",
+            "description":"Client kind, such as `tui` or `cli`."
+        })
+    }
+}
+
+/// Who is on a connection. The kind names the client program; the instance
+/// identifies one running client and stays the same across its reconnects,
+/// so it can recognize events it caused.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientIdentity {
+    pub kind: ClientKind,
+    pub instance_id: ClientInstanceId,
+}
+impl ClientIdentity {
+    /// A new identity with a fresh instance id.
+    #[must_use]
+    pub fn generate(kind: ClientKind) -> Self {
+        Self {
+            kind,
+            instance_id: ClientInstanceId::new_v7(),
+        }
+    }
+
+    /// The origin stamped on events this client causes:
+    /// `client:<kind>-<instance id as 32 hex digits>`.
+    #[must_use]
+    pub fn origin(&self) -> EventOrigin {
+        EventOrigin::new(format!(
+            "client:{}-{}",
+            self.kind.as_str(),
+            self.instance_id.0.simple()
+        ))
+        .expect("a client kind and a hex instance id form a valid origin")
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientHello {
     pub protocol_version: ProtocolVersion,
+    pub client: ClientIdentity,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerHello {
     pub protocol_version: ProtocolVersion,
+    /// The origin the daemon stamps on events this connection causes.
+    pub origin: EventOrigin,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

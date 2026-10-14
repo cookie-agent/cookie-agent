@@ -458,7 +458,14 @@ async fn cancellation_after_successful_finalization_is_reconciled_at_terminal_co
     .expect("after-result hook reached");
     assert_eq!(hook["params"]["result_content"], "race completed");
     assert_eq!(hook["params"]["is_error"], false);
-    fixture.engine.cancel_run(run).await.unwrap();
+    fixture
+        .engine
+        .cancel_run(
+            run,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
     fs::write(&release, b"release").unwrap();
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
     wait_for_run_inactive(&fixture.engine, run).await;
@@ -740,7 +747,14 @@ async fn cancelling_parallel_tools_terminates_every_started_call_once() {
     tokio::time::timeout(test_timeout(2), barrier.wait())
         .await
         .expect("all cancellable executors started");
-    fixture.engine.cancel_run(run).await.expect("cancel run");
+    fixture
+        .engine
+        .cancel_run(
+            run,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("cancel run");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
     wait_for_run_inactive(&fixture.engine, run).await;
 

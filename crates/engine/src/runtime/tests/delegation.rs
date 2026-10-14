@@ -422,7 +422,14 @@ async fn cancelling_foreground_delegates_preserves_child_sessions_in_results_and
         .await
         .expect("child requests started")
         .expect("child request signal");
-    fixture.engine.cancel_run(run).await.expect("cancel parent");
+    fixture
+        .engine
+        .cancel_run(
+            run,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("cancel parent");
     // Tool results precede RunCancelled. Do not shut down before the parent
     // commits its terminal event, or adoption correctly treats it as interrupted.
     let parent = await_projection(

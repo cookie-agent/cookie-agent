@@ -144,7 +144,10 @@ async fn infinite_overload_retry_is_cancelled_during_backoff_without_fallback() 
         .await;
     fixture
         .engine
-        .cancel_run(run.run_id)
+        .cancel_run(
+            run.run_id,
+            cookie_agent_protocol::EventOrigin::new("client:tui-canceller").unwrap(),
+        )
         .await
         .expect("cancel run");
     let projection = await_projection(
@@ -154,6 +157,12 @@ async fn infinite_overload_retry_is_cancelled_during_backoff_without_fallback() 
         |projection| projection.status == SessionStatus::Cancelled,
     )
     .await;
+    // The terminal event names who cancelled, not the engine loop that
+    // observed the cancellation.
+    assert!(projection.log.events().iter().any(|event| {
+        matches!(event.payload, EventPayload::RunCancelled { .. })
+            && event.origin.as_ref().map(|origin| origin.as_str()) == Some("client:tui-canceller")
+    }));
     assert_eq!(
         with_watchdog("captured fixture completion", captured)
             .await
@@ -210,7 +219,10 @@ async fn interrupted_stream_commits_its_partial_turn_before_the_abandonment() {
     .await;
     fixture
         .engine
-        .cancel_run(run.run_id)
+        .cancel_run(
+            run.run_id,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("cancel run");
     let projection = await_projection(

@@ -14,22 +14,23 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
-    ClientHello, ClientRenameId, ErrorResponse, EventSubscriptionMessage, EventsSubscribeParams,
-    EventsSubscribeResult, JsonRpcError, JsonRpcId, JsonRpcVersion, McpAuthBeginParams,
-    McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult, McpAuthCompleteParams,
-    McpAuthCompleteResult, McpServerAddParams, McpServerEditParams, McpServerListParams,
-    McpServerListResult, McpServerMutationResult, McpServerNameParams, McpServerPersistParams,
-    McpServerSetEnabledParams, MessageFrame, Notification, NotificationRef, ProviderConnectParams,
-    ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, Request, Response,
-    RunCancelParams, RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams,
-    RunStartResult, RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
-    RuntimeSnapshotGetParams, RuntimeSnapshotResult, ServerHello, SessionChildrenParams,
-    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
-    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
-    SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
-    SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionId,
-    SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
+    ClientHello, ClientRenameId, ErrorResponse, EventOrigin, EventSubscriptionMessage,
+    EventsSubscribeParams, EventsSubscribeResult, JsonRpcError, JsonRpcId, JsonRpcVersion,
+    McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult,
+    McpAuthCompleteParams, McpAuthCompleteResult, McpServerAddParams, McpServerEditParams,
+    McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
+    McpServerPersistParams, McpServerSetEnabledParams, MessageFrame, Notification, NotificationRef,
+    ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
+    ProviderDisconnectResult, Request, Response, RunCancelParams, RunCancelResult,
+    RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerParams,
+    RunSteerResult, RunToolStdinParams, RunToolStdinResult, RuntimeSnapshotGetParams,
+    RuntimeSnapshotResult, ServerHello, SessionChildrenParams, SessionChildrenResult,
+    SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
+    SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
+    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
+    SessionGoalSetParams, SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
+    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
+    SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
     SessionProducersResult, SessionRenameChange, SessionRenameError, SessionRenameErrorCode,
     SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
@@ -53,6 +54,8 @@ static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone)]
 pub struct ServerContext {
     connection_id: u64,
+    /// The origin derived from the handshake's client identity.
+    client_origin: Arc<std::sync::OnceLock<EventOrigin>>,
     /// Serialized frames, written to the transport in queue order.
     notifications: mpsc::Sender<String>,
     shutdown: CancellationToken,
@@ -68,6 +71,7 @@ impl ServerContext {
     fn new(notifications: mpsc::Sender<String>, shutdown: CancellationToken) -> Self {
         Self {
             connection_id: NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed),
+            client_origin: Arc::new(std::sync::OnceLock::new()),
             notifications,
             shutdown,
             subscribed_sessions: Arc::new(Mutex::new(HashSet::new())),
@@ -82,6 +86,29 @@ impl ServerContext {
     #[must_use]
     pub fn connection_id(&self) -> u64 {
         self.connection_id
+    }
+
+    /// The origin stamped on events this connection's requests cause,
+    /// derived from the client identity sent in the handshake. Requests run
+    /// only after the handshake, so it is always set when a request sees it.
+    #[must_use]
+    pub fn client_origin(&self) -> EventOrigin {
+        self.client_origin
+            .get()
+            .cloned()
+            .expect("requests run only after the handshake set the client origin")
+    }
+
+    /// Records the handshake identity. A repeated handshake keeps the first.
+    fn hello(&self, hello: &ClientHello) -> ServerHello {
+        let origin = self
+            .client_origin
+            .get_or_init(|| hello.client.origin())
+            .clone();
+        ServerHello {
+            protocol_version: crate::ProtocolVersion::current(),
+            origin,
+        }
     }
 
     /// Forward a session's live tail to this connection as
@@ -233,6 +260,7 @@ pub trait ServerProtocol: Send + Sync + 'static {
     async fn set_session_goal(
         &self,
         params: SessionGoalSetParams,
+        context: &ServerContext,
     ) -> Result<SessionGoalSetResult, ServerFault>;
     /// Applies a user-owned lifecycle transition to a root session goal.
     ///
@@ -242,6 +270,7 @@ pub trait ServerProtocol: Send + Sync + 'static {
     async fn change_session_goal_lifecycle(
         &self,
         params: SessionGoalLifecycleParams,
+        context: &ServerContext,
     ) -> Result<SessionGoalLifecycleResult, ServerFault>;
     /// Returns the runtime-only producer registry for the requested session.
     async fn session_producers(
@@ -271,10 +300,12 @@ pub trait ServerProtocol: Send + Sync + 'static {
     async fn rename_session(
         &self,
         params: SessionRenameParams,
+        context: &ServerContext,
     ) -> Result<SessionRenameResult, ServerFault>;
     async fn set_permission_mode(
         &self,
         params: SessionSetPermissionModeParams,
+        context: &ServerContext,
     ) -> Result<SessionSetPermissionModeResult, ServerFault>;
     async fn get_session_permissions(
         &self,
@@ -283,10 +314,12 @@ pub trait ServerProtocol: Send + Sync + 'static {
     async fn set_session_permission(
         &self,
         params: SessionPermissionSetParams,
+        context: &ServerContext,
     ) -> Result<SessionPermissionMutationResult, ServerFault>;
     async fn clear_session_permission(
         &self,
         params: SessionPermissionClearParams,
+        context: &ServerContext,
     ) -> Result<SessionPermissionMutationResult, ServerFault>;
     async fn preview_session_permissions(
         &self,
@@ -297,25 +330,42 @@ pub trait ServerProtocol: Send + Sync + 'static {
     async fn compact_session(
         &self,
         params: SessionCompactParams,
+        context: &ServerContext,
     ) -> Result<SessionCompactResult, ServerFault>;
     async fn revert_session(
         &self,
         params: SessionRevertParams,
+        context: &ServerContext,
     ) -> Result<SessionRevertResult, ServerFault>;
     async fn fork_session(
         &self,
         params: SessionForkParams,
+        context: &ServerContext,
     ) -> Result<SessionForkResult, ServerFault>;
-    async fn start_run(&self, params: RunStartParams) -> Result<RunStartResult, ServerFault>;
-    async fn steer_run(&self, params: RunSteerParams) -> Result<RunSteerResult, ServerFault>;
+    async fn start_run(
+        &self,
+        params: RunStartParams,
+        context: &ServerContext,
+    ) -> Result<RunStartResult, ServerFault>;
+    async fn steer_run(
+        &self,
+        params: RunSteerParams,
+        context: &ServerContext,
+    ) -> Result<RunSteerResult, ServerFault>;
     async fn recall_steer(
         &self,
         params: RunRecallSteerParams,
+        context: &ServerContext,
     ) -> Result<RunRecallSteerResult, ServerFault>;
-    async fn cancel_run(&self, params: RunCancelParams) -> Result<RunCancelResult, ServerFault>;
+    async fn cancel_run(
+        &self,
+        params: RunCancelParams,
+        context: &ServerContext,
+    ) -> Result<RunCancelResult, ServerFault>;
     async fn tool_stdin(
         &self,
         params: RunToolStdinParams,
+        context: &ServerContext,
     ) -> Result<RunToolStdinResult, ServerFault>;
     async fn subscribe_events(
         &self,
@@ -325,6 +375,7 @@ pub trait ServerProtocol: Send + Sync + 'static {
     async fn respond_approval(
         &self,
         params: ApprovalRespondParams,
+        context: &ServerContext,
     ) -> Result<ApprovalRespondResult, ServerFault>;
     async fn list_approvals(
         &self,
@@ -469,9 +520,9 @@ where
                         error_response(Some(id), handshake_required())?
                     } else {
                         match decode_handshake(params) {
-                            Ok(()) => {
+                            Ok(hello) => {
                                 handshaken = true;
-                                success_response(&id, &server_hello())?
+                                success_response(&id, &server_hello(&context, &hello))?
                             }
                             Err(fault) => error_response(Some(id), fault)?,
                         }
@@ -515,7 +566,7 @@ async fn handle<S: ServerProtocol>(
     match incoming {
         Incoming::Request { id, method, params } => {
             let result = if method == "handshake" {
-                decode_handshake(params).map(|()| server_hello())
+                decode_handshake(params).map(|hello| server_hello(context, &hello))
             } else {
                 dispatch(server, &method, params, context, true).await
             };
@@ -539,11 +590,8 @@ async fn handle<S: ServerProtocol>(
     }
 }
 
-fn server_hello() -> Box<RawValue> {
-    serde_json::value::to_raw_value(&ServerHello {
-        protocol_version: crate::ProtocolVersion::current(),
-    })
-    .expect("server hello serializes")
+fn server_hello(context: &ServerContext, hello: &ClientHello) -> Box<RawValue> {
+    serde_json::value::to_raw_value(&context.hello(hello)).expect("server hello serializes")
 }
 
 async fn dispatch<S: ServerProtocol>(
@@ -558,10 +606,12 @@ async fn dispatch<S: ServerProtocol>(
         "session.list" => value(server.list_sessions(decode_default(params)?).await?),
         "session.get" => value(server.get_session(decode(params)?).await?),
         crate::SESSION_GOAL_GET_METHOD => value(server.get_session_goal(decode(params)?).await?),
-        crate::SESSION_GOAL_SET_METHOD => value(server.set_session_goal(decode(params)?).await?),
+        crate::SESSION_GOAL_SET_METHOD => {
+            value(server.set_session_goal(decode(params)?, context).await?)
+        }
         crate::SESSION_GOAL_LIFECYCLE_METHOD => value(
             server
-                .change_session_goal_lifecycle(decode(params)?)
+                .change_session_goal_lifecycle(decode(params)?, context)
                 .await?,
         ),
         crate::SESSION_PRODUCERS_METHOD => value(server.session_producers(decode(params)?).await?),
@@ -570,28 +620,40 @@ async fn dispatch<S: ServerProtocol>(
         "session.children" => value(server.session_children(decode(params)?).await?),
         "session.tree" => value(server.session_tree(decode(params)?).await?),
         "session.resume" => value(server.resume_session(decode(params)?).await?),
-        "session.rename" => value(server.rename_session(decode_rename(params)?).await?),
-        "session.set_permission_mode" => value(server.set_permission_mode(decode(params)?).await?),
-        "session.permission.get" => value(server.get_session_permissions(decode(params)?).await?),
-        "session.permission.set" => value(server.set_session_permission(decode(params)?).await?),
-        "session.permission.clear" => {
-            value(server.clear_session_permission(decode(params)?).await?)
+        "session.rename" => value(
+            server
+                .rename_session(decode_rename(params)?, context)
+                .await?,
+        ),
+        "session.set_permission_mode" => {
+            value(server.set_permission_mode(decode(params)?, context).await?)
         }
+        "session.permission.get" => value(server.get_session_permissions(decode(params)?).await?),
+        "session.permission.set" => value(
+            server
+                .set_session_permission(decode(params)?, context)
+                .await?,
+        ),
+        "session.permission.clear" => value(
+            server
+                .clear_session_permission(decode(params)?, context)
+                .await?,
+        ),
         "session.permission.preview" => {
             value(server.preview_session_permissions(decode(params)?).await?)
         }
         "skills.list" => value(server.list_skills(decode(params)?).await?),
         "skills.get" => value(server.get_skill(decode(params)?).await?),
-        "session.compact" => value(server.compact_session(decode(params)?).await?),
-        "session.revert" => value(server.revert_session(decode(params)?).await?),
-        "session.fork" => value(server.fork_session(decode(params)?).await?),
-        "run.start" => value(server.start_run(decode(params)?).await?),
-        "run.steer" => value(server.steer_run(decode(params)?).await?),
-        "run.recall_steer" => value(server.recall_steer(decode(params)?).await?),
-        "run.cancel" => value(server.cancel_run(decode(params)?).await?),
-        "run.tool_stdin" => value(server.tool_stdin(decode(params)?).await?),
+        "session.compact" => value(server.compact_session(decode(params)?, context).await?),
+        "session.revert" => value(server.revert_session(decode(params)?, context).await?),
+        "session.fork" => value(server.fork_session(decode(params)?, context).await?),
+        "run.start" => value(server.start_run(decode(params)?, context).await?),
+        "run.steer" => value(server.steer_run(decode(params)?, context).await?),
+        "run.recall_steer" => value(server.recall_steer(decode(params)?, context).await?),
+        "run.cancel" => value(server.cancel_run(decode(params)?, context).await?),
+        "run.tool_stdin" => value(server.tool_stdin(decode(params)?, context).await?),
         "events.subscribe" => value(server.subscribe_events(decode(params)?, context).await?),
-        "approval.respond" => value(server.respond_approval(decode(params)?).await?),
+        "approval.respond" => value(server.respond_approval(decode(params)?, context).await?),
         "approval.list" => value(server.list_approvals(decode(params)?).await?),
         "mcp.auth.begin" => value(server.begin_mcp_auth(decode(params)?).await?),
         "mcp.auth.complete" => value(server.complete_mcp_auth(decode(params)?).await?),
@@ -769,9 +831,8 @@ fn classify_incoming(value: Value) -> Result<Incoming, ServerFault> {
     }
 }
 
-fn decode_handshake(params: Option<Value>) -> Result<(), ServerFault> {
+fn decode_handshake(params: Option<Value>) -> Result<ClientHello, ServerFault> {
     serde_json::from_value::<ClientHello>(params.unwrap_or(Value::Null))
-        .map(|_| ())
         .map_err(|_| ServerFault::invalid_params())
 }
 

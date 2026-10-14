@@ -305,6 +305,7 @@ uuid_id!(DurableProviderReceiptId);
 uuid_id!(GoalId);
 uuid_id!(ProducerId);
 uuid_id!(ProducerMessageId);
+uuid_id!(ClientInstanceId);
 
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub struct Sha256Digest(String);

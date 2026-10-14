@@ -460,10 +460,22 @@ async fn connect(server: Arc<Server>) -> InProcessStream {
         &mut client,
         1,
         "handshake",
-        json!({ "protocol_version": PROTOCOL_VERSION }),
+        json!({
+            "protocol_version": PROTOCOL_VERSION,
+            "client": {
+                "kind": "test",
+                "instance_id": "0192f3a4-5b6c-7d8e-9f00-112233445566",
+            },
+        }),
     )
     .await;
     assert_eq!(hello["result"]["protocol_version"], PROTOCOL_VERSION);
+    // The daemon stamps this connection's events with an origin derived
+    // from the handshake identity.
+    assert_eq!(
+        hello["result"]["origin"],
+        "client:test-0192f3a45b6c7d8e9f00112233445566"
+    );
     client
 }
 

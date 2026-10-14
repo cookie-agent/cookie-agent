@@ -82,12 +82,14 @@ impl ServerProtocol for StubServer {
     async fn set_session_goal(
         &self,
         _: crate::SessionGoalSetParams,
+        _context: &ServerContext,
     ) -> Result<crate::SessionGoalSetResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
     async fn change_session_goal_lifecycle(
         &self,
         _: crate::SessionGoalLifecycleParams,
+        _context: &ServerContext,
     ) -> Result<crate::SessionGoalLifecycleResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
@@ -130,12 +132,14 @@ impl ServerProtocol for StubServer {
     async fn rename_session(
         &self,
         _: crate::SessionRenameParams,
+        _context: &ServerContext,
     ) -> Result<crate::SessionRenameResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
     async fn set_permission_mode(
         &self,
         _: crate::SessionSetPermissionModeParams,
+        _context: &ServerContext,
     ) -> Result<crate::SessionSetPermissionModeResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
@@ -148,12 +152,14 @@ impl ServerProtocol for StubServer {
     async fn set_session_permission(
         &self,
         _: crate::SessionPermissionSetParams,
+        _context: &ServerContext,
     ) -> Result<crate::SessionPermissionMutationResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
     async fn clear_session_permission(
         &self,
         _: crate::SessionPermissionClearParams,
+        _context: &ServerContext,
     ) -> Result<crate::SessionPermissionMutationResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
@@ -178,54 +184,63 @@ impl ServerProtocol for StubServer {
     async fn compact_session(
         &self,
         _: crate::SessionCompactParams,
+        _context: &ServerContext,
     ) -> Result<crate::SessionCompactResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
     async fn revert_session(
         &self,
         _: crate::SessionRevertParams,
+        _context: &ServerContext,
     ) -> Result<crate::SessionRevertResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
     async fn fork_session(
         &self,
         _: crate::SessionForkParams,
+        _context: &ServerContext,
     ) -> Result<crate::SessionForkResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
     async fn start_run(
         &self,
         _: crate::RunStartParams,
+        _context: &ServerContext,
     ) -> Result<crate::RunStartResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
     async fn steer_run(
         &self,
         _: crate::RunSteerParams,
+        _context: &ServerContext,
     ) -> Result<crate::RunSteerResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
     async fn recall_steer(
         &self,
         _: crate::RunRecallSteerParams,
+        _context: &ServerContext,
     ) -> Result<crate::RunRecallSteerResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
     async fn cancel_run(
         &self,
         _: crate::RunCancelParams,
+        _context: &ServerContext,
     ) -> Result<crate::RunCancelResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
     async fn tool_stdin(
         &self,
         _: crate::RunToolStdinParams,
+        _context: &ServerContext,
     ) -> Result<crate::RunToolStdinResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
     async fn respond_approval(
         &self,
         _: crate::ApprovalRespondParams,
+        _context: &ServerContext,
     ) -> Result<crate::ApprovalRespondResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
@@ -333,7 +348,10 @@ impl Connection {
         connection.send(
             0,
             "handshake",
-            json!({ "protocol_version": crate::PROTOCOL_VERSION }),
+            json!({
+                "protocol_version": crate::PROTOCOL_VERSION,
+                "client": {"kind": "test", "instance_id": crate::ClientInstanceId::new_v7()},
+            }),
         );
         assert_eq!(connection.next().await["id"], 0);
         connection

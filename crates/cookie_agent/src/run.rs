@@ -1035,7 +1035,7 @@ async fn request_cancel(
     state: &mut DriverState,
 ) -> anyhow::Result<()> {
     state.cancellation_requested = true;
-    match engine.cancel_run(run_id).await {
+    match engine.cancel_run(run_id, headless_origin()).await {
         Ok(result) => {
             if result.cancelled {
                 state.cancellation = Some(cause);

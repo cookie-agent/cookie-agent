@@ -1,12 +1,29 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 33 is current-only. A client must call `handshake` with
-`{ "protocol_version": 33 }` before any other method.
+Protocol 34 is current-only. A client must call `handshake` before any other
+method:
+
+```json
+{ "protocol_version": 34, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+```
+
+`client.kind` names the client program: a lowercase letter followed by up to 15
+lowercase letters, digits, or hyphens (the shipped clients use `tui` and `cli`).
+`client.instance_id` is a UUID identifying one running client; a client keeps it
+across reconnects so it can recognize events it caused. Any number of clients
+may connect to one daemon at once.
+
+The response is `{ "protocol_version": 34, "origin": "client:<kind>-<id>" }`,
+where `<id>` is the instance id as 32 lowercase hex digits. The daemon stamps
+that origin on every event the connection's requests cause, so each client can
+tell its own actions from another client's. A repeated handshake on the same
+connection keeps the first identity. Protocol 34 added the required `client`
+member and the `origin` result; older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 33.
+members of protocol 34.
 
 ## Error diagnostics
 
@@ -29,7 +46,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 33 alongside independent display and output references. The
+preserved in protocol 34 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -97,7 +114,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 
 | Method | Parameters | Result summary |
 |---|---|---|
-| `handshake` | `protocol_version` | Server protocol version |
+| `handshake` | `protocol_version`, `client` identity | Server protocol version, the connection's event `origin` |
 | `runtime.snapshot.get` | Empty object | One coherent runtime snapshot |
 | `provider.connect` | Provider, expected catalog revision, setup/auth values, client ID | Durable connection, effective auth, snapshot, replay state |
 | `provider.disconnect` | Provider, expected revisions/generation, client ID | Disconnect receipt, effective auth, snapshot, replay state |

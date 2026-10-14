@@ -840,6 +840,68 @@ async fn fresh_session_selection_discovers_skill_slash_commands() {
 }
 
 #[tokio::test]
+async fn events_carry_the_origin_of_the_connection_that_caused_them() {
+    let (_directory, server) = in_process_server_with_skills(true);
+    let observer = server.clone().connect_in_process();
+    let observer_hello = observer.handshake().await.expect("observer handshake");
+    let runner = server.connect_in_process();
+    let runner_hello = runner
+        .handshake_as(cookie_agent_protocol::ClientIdentity::generate(
+            cookie_agent_protocol::ClientKind::new("tui").expect("client kind"),
+        ))
+        .await
+        .expect("runner handshake");
+    assert_ne!(observer_hello.origin, runner_hello.origin);
+    assert!(runner_hello.origin.as_str().starts_with("client:tui-"));
+    assert_eq!(runner.origin(), Some(runner_hello.origin.clone()));
+
+    let session = runner
+        .create_session(SessionCreateParams::new(test_run_selection()))
+        .await
+        .expect("session")
+        .session;
+    let mut deliveries = observer
+        .subscribe_deliveries()
+        .expect("observer deliveries");
+    observer
+        .subscribe_events(session.session_id, Some(1))
+        .await
+        .expect("subscribe events");
+    runner
+        .start_run(cookie_agent_protocol::RunStartParams {
+            reset_fallback: false,
+            session_id: session.session_id,
+            client_run_id: cookie_agent_protocol::ClientRunId::new("origin-run")
+                .expect("client run ID"),
+            selection: test_run_selection(),
+            input: "hello from the runner".into(),
+        })
+        .await
+        .expect("start run");
+
+    let submitted = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let event = match deliveries.recv().await.expect("observer delivery") {
+                crate::ClientDelivery::Live { message, .. } => match *message {
+                    cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
+                        (*event).clone()
+                    }
+                    _ => continue,
+                },
+                crate::ClientDelivery::ReplayEvent { event, .. } => *event,
+                _ => continue,
+            };
+            if matches!(event.payload, EventPayload::UserInputSubmitted { .. }) {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("submitted input timeout");
+    assert_eq!(submitted.origin, Some(runner_hello.origin));
+}
+
+#[tokio::test]
 async fn same_connection_approval_response_and_finalization_run_end_to_end() {
     const STAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 

@@ -353,7 +353,14 @@ async fn background_job_reports_after_its_call_commits_and_keeps_its_output() {
 async fn background_job_dies_with_a_call_that_never_commits() {
     let (fixture, session_id, run_id, control, _captured) =
         start_job_run("hold", Vec::new(), 1).await;
-    fixture.engine.cancel_run(run_id).await.expect("cancel run");
+    fixture
+        .engine
+        .cancel_run(
+            run_id,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("cancel run");
     with_watchdog("job killed", control.killed.notified()).await;
     wait_for_run_inactive(&fixture.engine, run_id).await;
     settle_session_actor(&fixture.engine, session_id).await;

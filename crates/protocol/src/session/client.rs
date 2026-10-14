@@ -14,20 +14,21 @@ use std::{
 
 use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
-    ClientHello, EventSubscriptionMessage, EventsSubscribeParams, EventsSubscribeResult,
-    JsonRpcError, JsonRpcId, JsonRpcVersion, McpAuthBeginParams, McpAuthBeginResult,
-    McpAuthCancelParams, McpAuthCancelResult, McpAuthCompleteParams, McpAuthCompleteResult,
-    McpServerAddParams, McpServerEditParams, McpServerListParams, McpServerListResult,
-    McpServerMutationResult, McpServerNameParams, McpServerPersistParams,
-    McpServerSetEnabledParams, MessageFrame, ProtocolVersion, RunCancelParams, RunCancelResult,
-    RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerParams,
-    RunSteerResult, RunToolStdinParams, RunToolStdinResult, ServerHello, SessionChildrenParams,
-    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
-    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
-    SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
-    SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionId,
-    SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
+    ClientHello, ClientIdentity, ClientKind, EventOrigin, EventSubscriptionMessage,
+    EventsSubscribeParams, EventsSubscribeResult, JsonRpcError, JsonRpcId, JsonRpcVersion,
+    McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult,
+    McpAuthCompleteParams, McpAuthCompleteResult, McpServerAddParams, McpServerEditParams,
+    McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
+    McpServerPersistParams, McpServerSetEnabledParams, MessageFrame, ProtocolVersion,
+    RunCancelParams, RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams,
+    RunStartResult, RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
+    ServerHello, SessionChildrenParams, SessionChildrenResult, SessionCompactParams,
+    SessionCompactResult, SessionCreateParams, SessionCreateResult, SessionForkParams,
+    SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
+    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
+    SessionGoalSetParams, SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
+    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
+    SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
     SessionProducersResult, SessionRenameParams, SessionRenameResult, SessionResumeParams,
     SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
@@ -286,6 +287,9 @@ pub struct Client {
     subscriptions: Arc<Mutex<HashMap<SessionId, Subscription>>>,
     recovery: Arc<RecoveryQueue>,
     shutdown: Arc<ClientShutdown>,
+    /// The origin the daemon stamps on this connection's events, from the
+    /// handshake response.
+    origin: Arc<StdMutex<Option<EventOrigin>>>,
     #[cfg(test)]
     pending_command_count: Arc<AtomicUsize>,
 }
@@ -337,6 +341,7 @@ impl Client {
             subscriptions,
             recovery: recovery.clone(),
             shutdown,
+            origin: Arc::new(StdMutex::new(None)),
             #[cfg(test)]
             pending_command_count,
         };
@@ -351,17 +356,36 @@ impl Client {
         client
     }
 
-    /// Complete the versioned protocol handshake.
+    /// Complete the versioned protocol handshake as a generic `client` with
+    /// a fresh instance id. Long-lived clients that must recognize their own
+    /// events across reconnects use [`Self::handshake_as`].
     pub async fn handshake(&self) -> Result<ServerHello, ClientError> {
+        self.handshake_as(ClientIdentity::generate(
+            ClientKind::new("client").expect("static client kind is valid"),
+        ))
+        .await
+    }
+
+    /// Complete the versioned protocol handshake as `client`.
+    pub async fn handshake_as(&self, client: ClientIdentity) -> Result<ServerHello, ClientError> {
         let hello: ServerHello = self
             .call(
                 "handshake",
                 &ClientHello {
                     protocol_version: ProtocolVersion::current(),
+                    client,
                 },
             )
             .await?;
+        *self.origin.lock().expect("client origin lock") = Some(hello.origin.clone());
         Ok(hello)
+    }
+
+    /// The origin the daemon stamps on events this connection causes, once
+    /// the handshake has completed.
+    #[must_use]
+    pub fn origin(&self) -> Option<EventOrigin> {
+        self.origin.lock().expect("client origin lock").clone()
     }
 
     /// Take the sole live and replay delivery receiver. It never

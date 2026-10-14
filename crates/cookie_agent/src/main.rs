@@ -98,7 +98,7 @@ enum Command {
         #[command(flatten)]
         args: Box<run::RunArgs>,
     },
-    /// Serve the exact cookie-agent protocol 33 JSON-RPC WebSocket daemon on localhost.
+    /// Serve the exact cookie-agent protocol 34 JSON-RPC WebSocket daemon on localhost.
     Daemon {
         /// Localhost port to bind. `0` selects an ephemeral port; the ready line
         /// reports the real one.
@@ -536,6 +536,13 @@ fn catalog_publication_changed(
     current.revision != catalog.revision || current.state.availability != catalog.state.availability
 }
 
+/// A fresh identity for one client process connecting to the daemon.
+fn client_identity(kind: &'static str) -> cookie_agent_protocol::ClientIdentity {
+    cookie_agent_protocol::ClientIdentity::generate(
+        cookie_agent_protocol::ClientKind::new(kind).expect("static client kind is valid"),
+    )
+}
+
 fn data_dir() -> anyhow::Result<PathBuf> {
     paths::user_data_root().context("determine home directory for cookie agent data")
 }
@@ -546,7 +553,10 @@ async fn run_local_frontend(mut runtime: Runtime) -> anyhow::Result<()> {
     let server_task = tokio::spawn(runtime.server.clone().serve_stream(server_stream));
     let result = async {
         let client = Client::connect_stream(client_stream);
-        client.handshake().await.context("handshake with daemon")?;
+        client
+            .handshake_as(client_identity("tui"))
+            .await
+            .context("handshake with daemon")?;
         cookie_agent_tui::run_with_new_session(client).await
     }
     .await;
@@ -576,7 +586,10 @@ async fn run_attached_tui(url: &str, token: &str) -> anyhow::Result<()> {
     let client = Client::connect_websocket_with_token(url, token)
         .await
         .context("connect to daemon WebSocket")?;
-    client.handshake().await.context("handshake with daemon")?;
+    client
+        .handshake_as(client_identity("tui"))
+        .await
+        .context("handshake with daemon")?;
     cookie_agent_tui::run_with_client(client).await
 }
 
@@ -610,7 +623,10 @@ async fn run_connect_with<I: ConnectIo>(
     provider_id: Option<String>,
     io: &mut I,
 ) -> anyhow::Result<()> {
-    client.handshake().await.context("handshake with daemon")?;
+    client
+        .handshake_as(client_identity("cli"))
+        .await
+        .context("handshake with daemon")?;
     let runtime = runtime_snapshot(client).await?;
     let provider = choose_provider(&runtime.snapshot.providers, provider_id, io)?;
     print_provider_details(provider, runtime.snapshot.catalog_revision.as_str(), io)?;
@@ -661,7 +677,10 @@ async fn run_disconnect(url: &str, token: &str, provider_id: Option<String>) -> 
     )?;
     let client = Client::connect_websocket_with_token(url, token).await?;
     let mut io = StdioConnectIo;
-    client.handshake().await.context("handshake with daemon")?;
+    client
+        .handshake_as(client_identity("cli"))
+        .await
+        .context("handshake with daemon")?;
     let runtime = runtime_snapshot(&client).await?;
     let provider = choose_provider(&runtime.snapshot.providers, provider_id, &mut io)?;
     print_provider_details(
@@ -698,7 +717,10 @@ async fn run_disconnect(url: &str, token: &str, provider_id: Option<String>) -> 
 
 async fn run_mcp(url: &str, token: &str, command: McpCommand) -> anyhow::Result<()> {
     let client = Client::connect_websocket_with_token(url, token).await?;
-    client.handshake().await.context("handshake with daemon")?;
+    client
+        .handshake_as(client_identity("cli"))
+        .await
+        .context("handshake with daemon")?;
     match command {
         McpCommand::List => {
             let servers = client

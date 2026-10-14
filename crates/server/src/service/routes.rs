@@ -30,10 +30,6 @@ use crate::rpc::{RpcFault, engine_fault, run_start_fault};
 
 type Result<T> = std::result::Result<T, ServerFault>;
 
-fn rpc_origin() -> cookie_agent_protocol::EventOrigin {
-    cookie_agent_protocol::EventOrigin::new("client:rpc").expect("static event origin is valid")
-}
-
 #[async_trait]
 impl ServerProtocol for Server {
     async fn connected(&self, context: ServerContext) {
@@ -82,9 +78,13 @@ impl ServerProtocol for Server {
             .map_err(protocol_fault)
     }
 
-    async fn set_session_goal(&self, params: SessionGoalSetParams) -> Result<SessionGoalSetResult> {
+    async fn set_session_goal(
+        &self,
+        params: SessionGoalSetParams,
+        context: &ServerContext,
+    ) -> Result<SessionGoalSetResult> {
         self.engine
-            .set_session_goal(params, rpc_origin())
+            .set_session_goal(params, context.client_origin())
             .await
             .map_err(protocol_fault)
     }
@@ -92,9 +92,10 @@ impl ServerProtocol for Server {
     async fn change_session_goal_lifecycle(
         &self,
         params: SessionGoalLifecycleParams,
+        context: &ServerContext,
     ) -> Result<SessionGoalLifecycleResult> {
         self.engine
-            .change_session_goal_lifecycle(params, rpc_origin())
+            .change_session_goal_lifecycle(params, context.client_origin())
             .await
             .map_err(protocol_fault)
     }
@@ -151,9 +152,13 @@ impl ServerProtocol for Server {
             .map_err(protocol_fault)
     }
 
-    async fn rename_session(&self, params: SessionRenameParams) -> Result<SessionRenameResult> {
+    async fn rename_session(
+        &self,
+        params: SessionRenameParams,
+        context: &ServerContext,
+    ) -> Result<SessionRenameResult> {
         self.engine
-            .rename_session(params.clone(), rpc_origin())
+            .rename_session(params.clone(), context.client_origin())
             .await
             .map_err(|error| rename_fault(&params, error).into())
     }
@@ -161,6 +166,7 @@ impl ServerProtocol for Server {
     async fn set_permission_mode(
         &self,
         params: SessionSetPermissionModeParams,
+        _context: &ServerContext,
     ) -> Result<SessionSetPermissionModeResult> {
         self.engine
             .set_permission_mode(params.session_id, params.mode)
@@ -180,6 +186,7 @@ impl ServerProtocol for Server {
     async fn set_session_permission(
         &self,
         params: SessionPermissionSetParams,
+        context: &ServerContext,
     ) -> Result<SessionPermissionMutationResult> {
         self.engine
             .set_session_permission(
@@ -187,7 +194,7 @@ impl ServerProtocol for Server {
                 params.action,
                 params.resource,
                 params.effect,
-                rpc_origin(),
+                context.client_origin(),
             )
             .await
             .map_err(protocol_fault)
@@ -196,13 +203,14 @@ impl ServerProtocol for Server {
     async fn clear_session_permission(
         &self,
         params: SessionPermissionClearParams,
+        context: &ServerContext,
     ) -> Result<SessionPermissionMutationResult> {
         self.engine
             .clear_session_permission(
                 params.session_id,
                 params.action,
                 &params.resource,
-                rpc_origin(),
+                context.client_origin(),
             )
             .await
             .map_err(protocol_fault)
@@ -230,33 +238,61 @@ impl ServerProtocol for Server {
             .map_err(protocol_fault)
     }
 
-    async fn compact_session(&self, params: SessionCompactParams) -> Result<SessionCompactResult> {
+    async fn compact_session(
+        &self,
+        params: SessionCompactParams,
+        context: &ServerContext,
+    ) -> Result<SessionCompactResult> {
         self.engine
             .compact_session_result(
                 params.session_id,
                 params.focus.as_ref().map(|focus| focus.as_str()),
-                rpc_origin(),
+                context.client_origin(),
             )
             .await
             .map_err(protocol_fault)
     }
 
-    async fn revert_session(&self, params: SessionRevertParams) -> Result<SessionRevertResult> {
+    async fn revert_session(
+        &self,
+        params: SessionRevertParams,
+        context: &ServerContext,
+    ) -> Result<SessionRevertResult> {
         self.engine
-            .revert_session(params.session_id, params.through_seq, rpc_origin())
+            .revert_session(
+                params.session_id,
+                params.through_seq,
+                context.client_origin(),
+            )
             .await
             .map_err(protocol_fault)
     }
 
-    async fn fork_session(&self, params: SessionForkParams) -> Result<SessionForkResult> {
+    async fn fork_session(
+        &self,
+        params: SessionForkParams,
+        context: &ServerContext,
+    ) -> Result<SessionForkResult> {
         self.engine
-            .fork_session(params.session_id, params.through_seq, rpc_origin())
+            .fork_session(
+                params.session_id,
+                params.through_seq,
+                context.client_origin(),
+            )
             .await
             .map_err(protocol_fault)
     }
 
-    async fn start_run(&self, params: RunStartParams) -> Result<RunStartResult> {
-        match self.engine.start_run(params.clone(), rpc_origin()).await {
+    async fn start_run(
+        &self,
+        params: RunStartParams,
+        context: &ServerContext,
+    ) -> Result<RunStartResult> {
+        match self
+            .engine
+            .start_run(params.clone(), context.client_origin())
+            .await
+        {
             Ok(result) => Ok(result),
             Err(EngineError::RunIdempotencyConflict) => {
                 Err(RpcFault::run_start_conflict(&params).into())
@@ -265,29 +301,48 @@ impl ServerProtocol for Server {
         }
     }
 
-    async fn steer_run(&self, params: RunSteerParams) -> Result<RunSteerResult> {
+    async fn steer_run(
+        &self,
+        params: RunSteerParams,
+        context: &ServerContext,
+    ) -> Result<RunSteerResult> {
         self.engine
-            .steer(params.run_id, params.input, rpc_origin())
+            .steer(params.run_id, params.input, context.client_origin())
             .await
             .map_err(protocol_fault)
     }
 
-    async fn recall_steer(&self, params: RunRecallSteerParams) -> Result<RunRecallSteerResult> {
+    async fn recall_steer(
+        &self,
+        params: RunRecallSteerParams,
+        context: &ServerContext,
+    ) -> Result<RunRecallSteerResult> {
         self.engine
-            .recall_steer(params.run_id)
+            .recall_steer(params.run_id, context.client_origin())
             .await
             .map_err(protocol_fault)
     }
 
-    async fn cancel_run(&self, params: RunCancelParams) -> Result<RunCancelResult> {
+    async fn cancel_run(
+        &self,
+        params: RunCancelParams,
+        context: &ServerContext,
+    ) -> Result<RunCancelResult> {
         self.engine
-            .cancel_run(params.run_id)
+            .cancel_run(params.run_id, context.client_origin())
             .await
             .map_err(protocol_fault)
     }
 
-    async fn tool_stdin(&self, params: RunToolStdinParams) -> Result<RunToolStdinResult> {
-        self.engine.tool_stdin(params).await.map_err(protocol_fault)
+    async fn tool_stdin(
+        &self,
+        params: RunToolStdinParams,
+        context: &ServerContext,
+    ) -> Result<RunToolStdinResult> {
+        self.engine
+            .tool_stdin(params, context.client_origin())
+            .await
+            .map_err(protocol_fault)
     }
 
     async fn subscribe_events(
@@ -337,9 +392,10 @@ impl ServerProtocol for Server {
     async fn respond_approval(
         &self,
         params: ApprovalRespondParams,
+        context: &ServerContext,
     ) -> Result<ApprovalRespondResult> {
         self.engine
-            .approval_respond(params.clone(), rpc_origin())
+            .approval_respond(params.clone(), context.client_origin())
             .await
             .map_err(|error| approval_fault(&params, error).into())
     }

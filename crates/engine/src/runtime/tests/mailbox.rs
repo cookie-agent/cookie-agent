@@ -73,7 +73,10 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     assert_eq!(
         fixture
             .engine
-            .recall_steer(run.run_id)
+            .recall_steer(
+                run.run_id,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+            )
             .await
             .expect("recall pending input")
             .recalled
@@ -83,7 +86,10 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     assert_eq!(
         fixture
             .engine
-            .recall_steer(run.run_id)
+            .recall_steer(
+                run.run_id,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+            )
             .await
             .expect("empty recall")
             .recalled,
@@ -107,7 +113,10 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     assert_eq!(
         fixture
             .engine
-            .recall_steer(run.run_id)
+            .recall_steer(
+                run.run_id,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+            )
             .await
             .expect("LIFO recall")
             .recalled
@@ -357,18 +366,28 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
         .expect("started tool call");
     fixture
         .engine
-        .tool_stdin(RunToolStdinParams {
-            run_id: run,
-            call_id,
-            data: Some(STANDARD.encode(b"input\n")),
-            eof: false,
-        })
+        .tool_stdin(
+            RunToolStdinParams {
+                run_id: run,
+                call_id,
+                data: Some(STANDARD.encode(b"input\n")),
+                eof: false,
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("interactive stdin accepted");
     tokio::time::timeout(test_timeout(2), stdin_received.notified())
         .await
         .expect("executor received stdin");
-    fixture.engine.cancel_run(run).await.expect("cancel run");
+    fixture
+        .engine
+        .cancel_run(
+            run,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("cancel run");
 
     await_event(
         &fixture.engine,
@@ -449,12 +468,15 @@ async fn cancelling_non_delegate_with_session_shaped_metadata_stays_generic() {
             start_streaming_bash_test_run(command, true).await;
         fixture
             .engine
-            .tool_stdin(RunToolStdinParams {
-                run_id,
-                call_id,
-                data: Some(STANDARD.encode(b"input\n")),
-                eof: false,
-            })
+            .tool_stdin(
+                RunToolStdinParams {
+                    run_id,
+                    call_id,
+                    data: Some(STANDARD.encode(b"input\n")),
+                    eof: false,
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
             .await
             .expect("stdin accepted");
         tokio::time::timeout(test_timeout(2), stdin_received.notified())
@@ -462,7 +484,10 @@ async fn cancelling_non_delegate_with_session_shaped_metadata_stays_generic() {
             .expect("executor received stdin");
         fixture
             .engine
-            .cancel_run(run_id)
+            .cancel_run(
+                run_id,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
             .await
             .expect("cancel external tool");
         let terminal = await_event(
@@ -506,12 +531,15 @@ async fn cancellation_deadline_bounds_a_wedged_tool_without_hanging() {
         start_streaming_bash_test_run("wedge", true).await;
     fixture
         .engine
-        .tool_stdin(RunToolStdinParams {
-            run_id,
-            call_id,
-            data: Some(STANDARD.encode(b"input\n")),
-            eof: false,
-        })
+        .tool_stdin(
+            RunToolStdinParams {
+                run_id,
+                call_id,
+                data: Some(STANDARD.encode(b"input\n")),
+                eof: false,
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("interactive stdin accepted");
     tokio::time::timeout(test_timeout(2), stdin_received.notified())
@@ -527,7 +555,10 @@ async fn cancellation_deadline_bounds_a_wedged_tool_without_hanging() {
     let cancelled_at = std::time::Instant::now();
     fixture
         .engine
-        .cancel_run(run_id)
+        .cancel_run(
+            run_id,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("cancel wedged run");
     tokio::time::timeout(test_timeout(1), delivery_enqueued)

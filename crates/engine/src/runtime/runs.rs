@@ -92,7 +92,11 @@ impl Engine {
         }
     }
 
-    pub async fn recall_steer(&self, run_id: RunId) -> Result<RunRecallSteerResult, EngineError> {
+    pub async fn recall_steer(
+        &self,
+        run_id: RunId,
+        origin: EventOrigin,
+    ) -> Result<RunRecallSteerResult, EngineError> {
         let active = self
             .inner
             .sessions
@@ -116,7 +120,7 @@ impl Engine {
                 engine.append_direct(
                     session,
                     Some(run_id),
-                    super::event_origin("user"),
+                    origin,
                     Event::UserInputRecalled {
                         input: input.clone(),
                     },
@@ -127,7 +131,13 @@ impl Engine {
         .await
     }
 
-    pub async fn cancel_run(&self, run_id: RunId) -> Result<RunCancelResult, EngineError> {
+    /// Cancels `run_id` and the delegated runs below it. `origin` is who
+    /// asked: it is recorded on the `RunCancelled` events this causes.
+    pub async fn cancel_run(
+        &self,
+        run_id: RunId,
+        origin: EventOrigin,
+    ) -> Result<RunCancelResult, EngineError> {
         let active = self
             .inner
             .sessions
@@ -137,7 +147,9 @@ impl Engine {
             .get(&run_id)
             .cloned()
             .ok_or(EngineError::MissingRun(run_id))?;
-        let result = self.cancel_on_actor(active.session, run_id).await?;
+        let result = self
+            .cancel_on_actor(active.session, run_id, origin.clone())
+            .await?;
         let inflight_runs: Vec<_> = {
             let mut inflight = self
                 .inner
@@ -205,7 +217,7 @@ impl Engine {
                 if let Some(child_active) = child_active {
                     child_active.cancellation.cancel();
                     let _ = self
-                        .cancel_on_actor(child_active.session, child_run_id)
+                        .cancel_on_actor(child_active.session, child_run_id, origin.clone())
                         .await;
                 }
             }
@@ -242,6 +254,7 @@ impl Engine {
                 session.meta.session_id,
                 run_id,
                 reason,
+                super::event_origin("engine:model-loop"),
                 &mut committed,
             );
         };
@@ -251,11 +264,12 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        let origin = active.cancel_origin();
         let mut committed = active
             .cancelled_committed
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.commit_run_cancelled_with_retry(active.session, run_id, reason, &mut committed)
+        self.commit_run_cancelled_with_retry(active.session, run_id, reason, origin, &mut committed)
     }
 
     pub(super) fn append_run_cancelled_once(
@@ -264,11 +278,12 @@ impl Engine {
         run_id: RunId,
         reason: Option<String>,
     ) -> Result<bool, EngineError> {
+        let origin = active.cancel_origin();
         let mut committed = active
             .cancelled_committed
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.commit_run_cancelled_with_retry(active.session, run_id, reason, &mut committed)
+        self.commit_run_cancelled_with_retry(active.session, run_id, reason, origin, &mut committed)
     }
 
     pub(super) fn commit_run_cancelled_with_retry(
@@ -276,11 +291,18 @@ impl Engine {
         session: SessionId,
         run_id: RunId,
         reason: Option<String>,
+        origin: EventOrigin,
         committed: &mut bool,
     ) -> Result<bool, EngineError> {
         let mut last_error = None;
         for _ in 0..3 {
-            match self.commit_run_cancelled_once(session, run_id, reason.clone(), committed) {
+            match self.commit_run_cancelled_once(
+                session,
+                run_id,
+                reason.clone(),
+                origin.clone(),
+                committed,
+            ) {
                 Ok(result) => return Ok(result),
                 Err(error) => last_error = Some(error),
             }
@@ -293,6 +315,7 @@ impl Engine {
         session: SessionId,
         run_id: RunId,
         reason: Option<String>,
+        origin: EventOrigin,
         committed: &mut bool,
     ) -> Result<bool, EngineError> {
         if *committed {
@@ -317,7 +340,7 @@ impl Engine {
         match self.append_direct(
             session,
             Some(run_id),
-            super::event_origin("engine:model-loop"),
+            origin,
             Event::RunCancelled {
                 reason: reason.as_deref().map(safe_error),
             },
@@ -357,6 +380,7 @@ impl Engine {
     pub async fn tool_stdin(
         &self,
         params: RunToolStdinParams,
+        origin: EventOrigin,
     ) -> Result<RunToolStdinResult, EngineError> {
         let active = self
             .inner
@@ -400,7 +424,7 @@ impl Engine {
             engine.append_direct(
                 session,
                 Some(params.run_id),
-                super::event_origin("engine:tool-execution"),
+                origin,
                 Event::ToolStdinSubmitted {
                     tool_call_id: params.call_id,
                     byte_count: data.len() as u64,
@@ -449,9 +473,15 @@ impl Engine {
         &self,
         session: SessionId,
         run: RunId,
+        origin: EventOrigin,
     ) -> Result<RunCancelResult, EngineError> {
         self.on_actor(session, move |engine| {
             let active = engine.active_run_in(session, run)?;
+            active
+                .cancelled_by
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get_or_insert(origin);
             active.cancellation.cancel();
             active
                 .stdin

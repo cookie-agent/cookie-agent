@@ -525,7 +525,10 @@ async fn cancelling_a_claimed_request_releases_only_that_request_lease() {
         .unwrap();
     fixture
         .engine
-        .cancel_run(claim.run_id.unwrap())
+        .cancel_run(
+            claim.run_id.unwrap(),
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .unwrap();
     await_event(&fixture.engine, session_id, "cancelled request claim released", |event| {
@@ -612,7 +615,14 @@ async fn failed_request_releases_claim_so_owner_can_discard_before_retry() {
         .discard_producer_message(session_id, owner, message_id)
         .await
         .unwrap();
-    fixture.engine.cancel_run(run).await.unwrap();
+    fixture
+        .engine
+        .cancel_run(
+            run,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
     wait_for_run_inactive(&fixture.engine, run).await;
     let projection = discard_projection(&fixture.engine, session_id);
     let message = projection

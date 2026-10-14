@@ -702,7 +702,14 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
         } else {
             assert!(page.contains("2: one\n"));
         }
-        fixture.engine.cancel_run(run).await.unwrap();
+        fixture
+            .engine
+            .cancel_run(
+                run,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .unwrap();
         fs::write(&release, b"release").unwrap();
         tokio::time::timeout(
             Duration::from_secs(10),
@@ -2563,7 +2570,13 @@ async fn start_run_admission_failures_map_to_one() {
         "{}",
         result.stderr
     );
-    let _ = fixture.engine.cancel_run(running.run_id).await;
+    let _ = fixture
+        .engine
+        .cancel_run(
+            running.run_id,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await;
     fixture.shutdown().await;
 }
 
