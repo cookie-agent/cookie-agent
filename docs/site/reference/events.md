@@ -337,6 +337,10 @@ writers use `display`.
 Each live message/display field is bounded at 1 KiB, their cumulative per-call
 budget is 64 KiB, and final display has an independent 64 KiB bound. TUI state is
 bounded and never reconstructs display by merging authoritative streams.
+When the final display occurs verbatim in the result `output` (a single-output
+tool's whole output, or a shell's only stream), the result carries
+`display_span`, a `[start, end)` byte range of `output`, instead of a second
+copy in `display`; decoding restores `display` from it.
 
 Authoritative output chunks go to runtime capture before completion, not into
 unbounded event records. Terminal `retained_output` contains ordered per-stream

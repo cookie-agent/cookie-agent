@@ -195,11 +195,12 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 32);
+    assert_eq!(PROTOCOL_VERSION, 33);
     assert_eq!(
         serde_json::to_value(ProtocolVersion::current()).unwrap(),
         json!(PROTOCOL_VERSION)
     );
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(32)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(31)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(30)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(28)).is_err());
@@ -575,6 +576,70 @@ fn tool_result_with_additional_messages(additional_messages: Value) -> Value {
         "attachments": [],
         "additional_messages": additional_messages,
     })
+}
+
+fn display_result(output: &str, display: Option<&str>) -> PersistedToolResult {
+    PersistedToolResult {
+        title: SafeDisplayText::new("Bash").unwrap(),
+        output: output.into(),
+        display: display.map(Into::into),
+        retained_output: None,
+        metadata: Value::Null,
+        truncation: None,
+        attachments: Vec::new(),
+        additional_messages: Vec::new(),
+    }
+}
+
+#[test]
+fn tool_result_display_found_in_output_is_stored_as_a_span() {
+    let cases = [
+        // A single-output tool shows its whole output.
+        (
+            "same text",
+            Some("same text"),
+            json!({"display_span": [0, 9]}),
+        ),
+        // A shell shows its only stream, past the stream heading.
+        (
+            "[stdout]\né ok\n\n[stderr]\n",
+            Some("é ok\n"),
+            json!({"display_span": [9, 15]}),
+        ),
+        (
+            "[stdout]\nab\n",
+            Some("merged"),
+            json!({"display": "merged"}),
+        ),
+        ("output", Some(""), json!({"display": ""})),
+        ("output", None, json!({})),
+    ];
+    for (output, display, expected) in cases {
+        let result = display_result(output, display);
+        let value = serde_json::to_value(&result).unwrap();
+        for field in ["display", "display_span"] {
+            assert_eq!(value.get(field), expected.get(field), "{output:?} {field}");
+        }
+        assert_eq!(
+            serde_json::from_value::<PersistedToolResult>(value).unwrap(),
+            result
+        );
+    }
+}
+
+#[test]
+fn tool_result_display_span_must_be_a_range_of_output() {
+    let mut value = serde_json::to_value(display_result("é ok", None)).unwrap();
+    for span in [json!([0, 9]), json!([1, 3]), json!([3, 2])] {
+        value["display_span"] = span.clone();
+        assert!(
+            serde_json::from_value::<PersistedToolResult>(value.clone()).is_err(),
+            "{span}"
+        );
+    }
+    value["display_span"] = json!([0, 2]);
+    value["display"] = json!("é");
+    assert!(serde_json::from_value::<PersistedToolResult>(value).is_err());
 }
 
 #[test]

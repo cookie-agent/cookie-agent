@@ -2508,6 +2508,10 @@ impl SessionStore {
     /// processes created or changed since (B4).
     #[must_use]
     pub fn list_roots(&self) -> Vec<SessionMeta> {
+        crate::blocking::off_worker(|| self.list_roots_in_place())
+    }
+
+    fn list_roots_in_place(&self) -> Vec<SessionMeta> {
         // Roots created here can be in memory before their directory is
         // published, so the resident ones are listed first, from memory.
         let mut roots = self

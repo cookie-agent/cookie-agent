@@ -546,12 +546,17 @@ pub struct ToolOutputTruncation {
     pub retained: ArtifactReference,
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
+/// A tool result as sessions store it and clients receive it. When `display`
+/// occurs verbatim in `output`, which is the common case (a single-output tool
+/// shows its output, a shell its only stream), it is written as the byte range
+/// `display_span` into `output` instead of a second copy.
+#[derive(Clone, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
+#[schemars(transform = display_span_schema)]
 pub struct PersistedToolResult {
     pub title: SafeDisplayText,
     pub output: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub display: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_output: Option<crate::RetainedToolOutput>,
@@ -635,6 +640,67 @@ impl PersistedToolResult {
         Ok(())
     }
 }
+/// Documents the `display_span` field the serializer writes in place of
+/// `display`.
+fn display_span_schema(schema: &mut Schema) {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.insert(
+            "display_span".into(),
+            serde_json::json!({
+                "description": "Byte range [start, end) of `output` that is the display text. Present instead of `display` when the display occurs verbatim in `output`.",
+                "type": "array",
+                "items": {"type": "integer", "format": "uint64", "minimum": 0},
+                "minItems": 2,
+                "maxItems": 2,
+            }),
+        );
+    }
+}
+
+impl Serialize for PersistedToolResult {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            title: &'a SafeDisplayText,
+            output: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            display: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            display_span: Option<[usize; 2]>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            retained_output: Option<&'a crate::RetainedToolOutput>,
+            metadata: &'a Value,
+            truncation: Option<&'a ToolOutputTruncation>,
+            attachments: &'a [ToolAttachment],
+            #[serde(skip_serializing_if = "<[_]>::is_empty")]
+            additional_messages: &'a [ToolEmittedMessage],
+        }
+        let display = self.display.as_deref();
+        let display_span = display
+            .filter(|display| !display.is_empty())
+            .and_then(|display| {
+                self.output
+                    .find(display)
+                    .map(|start| [start, start + display.len()])
+            });
+        Wire {
+            title: &self.title,
+            output: &self.output,
+            display: display.filter(|_| display_span.is_none()),
+            display_span,
+            retained_output: self.retained_output.as_ref(),
+            metadata: &self.metadata,
+            truncation: self.truncation.as_ref(),
+            attachments: &self.attachments,
+            additional_messages: &self.additional_messages,
+        }
+        .serialize(serializer)
+    }
+}
+
 impl<'de> Deserialize<'de> for PersistedToolResult {
     fn deserialize<D>(d: D) -> Result<Self, D::Error>
     where
@@ -648,6 +714,8 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
             #[serde(default)]
             display: Option<String>,
             #[serde(default)]
+            display_span: Option<[usize; 2]>,
+            #[serde(default)]
             retained_output: Option<crate::RetainedToolOutput>,
             metadata: Value,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -657,10 +725,26 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
             additional_messages: Vec<ToolEmittedMessage>,
         }
         let w = Wire::deserialize(d)?;
+        let display = match (w.display, w.display_span) {
+            (display, None) => display,
+            (None, Some([start, end])) => Some(
+                w.output
+                    .get(start..end)
+                    .ok_or_else(|| {
+                        serde::de::Error::custom("display_span is not a range of output")
+                    })?
+                    .to_owned(),
+            ),
+            (Some(_), Some(_)) => {
+                return Err(serde::de::Error::custom(
+                    "display and display_span are mutually exclusive",
+                ));
+            }
+        };
         let value = Self {
             title: w.title,
             output: w.output,
-            display: w.display,
+            display,
             retained_output: w.retained_output,
             metadata: w.metadata,
             truncation: w.truncation,

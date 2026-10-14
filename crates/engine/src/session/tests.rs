@@ -349,8 +349,21 @@ fn a_blocked_sync_holds_up_its_own_session_and_structural_changes_only() {
     let log = store.get(blocked).expect("blocked projection").log.clone();
     let (syncing, release_sync) = log.install_sync_hook_for_test();
     let append_store = Arc::clone(&store);
-    let appending =
-        thread::spawn(move || append_test_in_run_record(&append_store, blocked, &attempt).seq);
+    // Per-attempt bookkeeping skips its sync, so the blocked append is one
+    // that syncs.
+    let appending = thread::spawn(move || {
+        append_store
+            .append(
+                blocked,
+                Some(attempt.run_id),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::UserInputAdmitted {
+                    input: "steer".into(),
+                },
+            )
+            .expect("append synced record")
+            .seq
+    });
     syncing.recv().expect("append reached its sync");
 
     // Another session appends while the first sync is still held.

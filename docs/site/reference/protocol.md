@@ -1,12 +1,12 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 32 is current-only. A client must call `handshake` with
-`{ "protocol_version": 32 }` before any other method.
+Protocol 33 is current-only. A client must call `handshake` with
+`{ "protocol_version": 33 }` before any other method.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 32.
+members of protocol 33.
 
 ## Error diagnostics
 
@@ -29,7 +29,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 32 alongside independent display and output references. The
+preserved in protocol 33 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -308,6 +308,11 @@ are absent for such a stream, and `RetainedToolOutput.reference` is absent when
 no stream needed an artifact. `RetainedToolStream` also gains `dropped_bytes`,
 present when output past the 128 MiB capture limit was not retained. Older
 clients require the now-optional fields, so the version moves.
+
+Protocol 33 stops sending a tool result's display twice. When `display` occurs
+verbatim in `output`, `PersistedToolResult` carries `display_span`, the
+`[start, end)` byte range of `output`, in its place. Older clients reject the
+unknown field, so the version moves.
 
 Session metadata includes additive `skipped_events` entries with the physical
 sequence (or source line number when no sequence was readable) and a safe reason.

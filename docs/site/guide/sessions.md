@@ -28,8 +28,12 @@ they reach attached views but are never written to `events.jsonl`, whose
 history holds finished turns and tool results. Reattaching to a session while
 a reply streams shows its finished turns, then the reply from the next live
 output on; a daemon that dies mid-reply leaves no partial reply on disk, and
-the run reopens as interrupted. Every stored event is synced before it is
-published. While a run is in flight, fold-ignored records do not rewrite the
+the run reopens as interrupted. Every stored event is written before it is
+published, and every event recovery depends on is also synced first. Per-attempt
+bookkeeping (`model_attempt_started`, `model_tools_published`,
+`model_request_prepared`, `model_replay_evaluated`, `model_output_started`,
+`model_usage_recorded`) is synced by the next event that is, so a system crash
+can drop only such records at the end of the log. While a run is in flight, fold-ignored records do not rewrite the
 metadata tip (`last_event_seq`, `last_activity`); it catches up at the run's
 next projection change or terminal event, on eviction, and on shutdown.
 

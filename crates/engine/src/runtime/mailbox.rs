@@ -18,23 +18,9 @@ use super::{
     Engine, EngineError, Event, MAX_COMPACTION_DEFERRED_COMMANDS, PendingInput,
     SESSION_MAILBOX_CAPACITY, SessionCommand, ToolFailure, helpers::safe_error,
 };
-use crate::{actor::SessionActor, events, session::SessionError};
+use crate::{actor::SessionActor, blocking::off_worker, events, session::SessionError};
 
 use super::{ActiveRun, producers};
-
-/// Runs a synchronous actor step, which may write and sync the session log,
-/// without stalling the other tasks of a multi-thread runtime's worker. A
-/// current-thread runtime has no other worker to hand them to, so the step
-/// runs in place there.
-fn off_worker<T>(step: impl FnOnce() -> T) -> T {
-    if tokio::runtime::Handle::try_current()
-        .is_ok_and(|runtime| runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
-    {
-        tokio::task::block_in_place(step)
-    } else {
-        step()
-    }
-}
 
 /// A producer/goal fold and the log tip it was folded through.
 pub(super) type CachedProducerProjection = (

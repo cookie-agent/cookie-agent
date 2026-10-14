@@ -1789,6 +1789,61 @@ fn truncation_cuts_the_file_and_later_appends_reuse_its_sequences() {
     assert!(log.truncate_after(&capability, 0).is_err());
 }
 
+/// Per-attempt bookkeeping reaches the file at once but is synced by the
+/// next record that syncs, or when the writer closes.
+#[test]
+fn bookkeeping_records_are_written_at_once_and_synced_with_the_next_record() {
+    let syncs = || super::EVENT_LOG_SYNCS.with(std::cell::Cell::get);
+    let records = attribution_records();
+    let creation = records[0].clone();
+    let origin = || EventOrigin::new("engine:test").expect("origin");
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let log = EventLog::create(
+        path.clone(),
+        creation.session_id,
+        origin(),
+        creation.payload.clone(),
+    )
+    .expect("create log");
+    // Stop at the last bookkeeping record, so one is pending at the end.
+    let last = records
+        .iter()
+        .rposition(|record| !super::syncs_on_append(&record.payload))
+        .expect("the corpus has bookkeeping");
+    let mut deferred = 0;
+    for record in &records[1..=last] {
+        let before = syncs();
+        log.append(record.run_id, origin(), record.payload.clone())
+            .expect("append record");
+        let synced = super::syncs_on_append(&record.payload);
+        assert_eq!(
+            syncs() - before,
+            usize::from(synced),
+            "{:?}",
+            record.payload
+        );
+        deferred += usize::from(!synced);
+        let on_disk = load_jsonl::<StoredEvent>(&path).expect("read log");
+        assert_eq!(
+            on_disk.last().map(|event| event.seq),
+            Some(log.physical_tip_seq())
+        );
+    }
+    assert!(deferred < last, "the corpus also has records that sync");
+
+    let before = syncs();
+    log.suspend_writer();
+    assert_eq!(
+        syncs() - before,
+        1,
+        "closing the writer syncs what is pending"
+    );
+    let before = syncs();
+    log.suspend_writer();
+    assert_eq!(syncs(), before, "nothing is pending after that");
+}
+
 fn current_delegation_records() -> Vec<StoredEvent> {
     let mut records = attribution_records();
     records.truncate(2);
@@ -1996,7 +2051,7 @@ fn torn_tail_recovery_can_write_while_retained_writer_is_open() {
     let path = directory.path().join("events.jsonl");
     let mut writer = EventLogWriter::open(&path).expect("open retained writer");
     writer
-        .append(b"{\"record\":1}\n")
+        .append(b"{\"record\":1}\n", true)
         .expect("append durable record");
     OpenOptions::new()
         .append(true)
@@ -2010,7 +2065,7 @@ fn torn_tail_recovery_can_write_while_retained_writer_is_open() {
         vec![serde_json::json!({"record": 1})]
     );
     writer
-        .append(b"{\"record\":2}\n")
+        .append(b"{\"record\":2}\n", true)
         .expect("resume retained writer");
     assert_eq!(
         load_jsonl::<Value>(&path).expect("load resumed log"),

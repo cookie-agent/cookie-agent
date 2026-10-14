@@ -81,14 +81,18 @@ enum TornTail {
     Ignore,
 }
 
-/// The open append handle of a persisted log. Every append is synced before
-/// it is published, so nothing is ever buffered here: no flush, no deferred
-/// sync, no background failure to report later.
+/// The open append handle of a persisted log. Every record is written before
+/// it is published, so nothing is buffered here. Records that matter for
+/// recovery are also synced before they are published; per-attempt
+/// bookkeeping ([`syncs_on_append`]) is synced by the next record that is, or
+/// when the handle closes.
 #[derive(Debug)]
 struct EventLogWriter {
     path: PathBuf,
     file: fs::File,
     directory_sync_pending: bool,
+    /// Records written since the last sync.
+    unsynced: bool,
     #[cfg(test)]
     before_sync: Option<SyncHook>,
 }
@@ -344,25 +348,35 @@ impl EventLogWriter {
             path: path.to_owned(),
             file,
             directory_sync_pending: created,
+            unsynced: false,
             #[cfg(test)]
             before_sync: None,
         })
     }
 
-    /// Writes one newline-terminated record and syncs it (and, after the
-    /// file was created, its directory entry).
-    fn append(&mut self, record: &[u8]) -> Result<(), EventLogError> {
+    /// Writes one newline-terminated record and, when `sync` asks for it or
+    /// the file is new, syncs it with every record written before it (and,
+    /// after the file was created, its directory entry).
+    fn append(&mut self, record: &[u8], sync: bool) -> Result<(), EventLogError> {
+        let sync = sync || self.directory_sync_pending;
         #[cfg(test)]
-        if let Some(hook) = self.before_sync.take() {
+        if sync && let Some(hook) = self.before_sync.take() {
             let _ = hook.reached.send(());
             let _ = hook.release.recv();
         }
         self.file
             .write_all(record)
             .map_err(|source| self.io_error(source))?;
+        if !sync {
+            self.unsynced = true;
+            return Ok(());
+        }
+        #[cfg(test)]
+        EVENT_LOG_SYNCS.with(|syncs| syncs.set(syncs.get() + 1));
         self.file
             .sync_data()
             .map_err(|source| self.io_error(source))?;
+        self.unsynced = false;
         if self.directory_sync_pending
             && let Some(parent) = self.path.parent()
         {
@@ -378,6 +392,35 @@ impl EventLogWriter {
             source,
         }
     }
+}
+
+impl Drop for EventLogWriter {
+    /// Syncs bookkeeping no later record synced. A failure has no caller to
+    /// reach; those records are what a crash may drop anyway.
+    fn drop(&mut self) {
+        if self.unsynced {
+            #[cfg(test)]
+            EVENT_LOG_SYNCS.with(|syncs| syncs.set(syncs.get() + 1));
+            let _ = self.file.sync_data();
+        }
+    }
+}
+
+/// Whether a record is synced before it is published. Per-attempt bookkeeping
+/// is not: the model loop writes several such records per attempt, each
+/// followed soon by a turn, tool or run record that is, and that sync covers
+/// them. A system crash can therefore drop only bookkeeping at the end of the
+/// log, after the last record recovery depends on.
+fn syncs_on_append(payload: &EventPayload) -> bool {
+    !matches!(
+        payload,
+        EventPayload::ModelAttemptStarted { .. }
+            | EventPayload::ModelToolsPublished { .. }
+            | EventPayload::ModelRequestPrepared { .. }
+            | EventPayload::ModelReplayEvaluated { .. }
+            | EventPayload::ModelOutputStarted { .. }
+            | EventPayload::ModelUsageRecorded { .. }
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -725,7 +768,7 @@ impl EventLog {
         drop(events);
         let written = self.persisted.load(Ordering::Acquire);
         let write_result = if written {
-            self.write_record(&record)
+            self.write_record(&record, syncs_on_append(&event.payload))
         } else {
             Ok(())
         };
@@ -1046,14 +1089,14 @@ impl EventLog {
         Ok(())
     }
 
-    /// Appends one record and syncs it before returning. The caller holds
-    /// `append`.
-    fn write_record(&self, record: &[u8]) -> Result<(), EventLogError> {
+    /// Appends one record, synced before returning when `sync` asks for it.
+    /// The caller holds `append`.
+    fn write_record(&self, record: &[u8], sync: bool) -> Result<(), EventLogError> {
         let mut writer = self.open_writer()?;
         writer
             .as_mut()
             .expect("event log writer initialized")
-            .append(record)
+            .append(record, sync)
     }
 
     fn open_writer(
@@ -2883,9 +2926,20 @@ fn observe_sequence(
 thread_local! {
     /// Test-only: event logs this thread parsed from disk.
     pub(crate) static EVENT_LOG_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Test-only: appends this thread synced.
+    pub(crate) static EVENT_LOG_SYNCS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// Reads and decodes the whole log at `path`. A large log takes a while, so
+/// the work leaves the async worker.
 fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, EventLogError> {
+    crate::blocking::off_worker(|| load_event_jsonl_in_place(path, torn_tail))
+}
+
+fn load_event_jsonl_in_place(
+    path: &Path,
+    torn_tail: TornTail,
+) -> Result<LoadedEvents, EventLogError> {
     #[cfg(test)]
     EVENT_LOG_PARSES.with(|parses| parses.set(parses.get() + 1));
     let (bytes, torn) = read_complete_jsonl(path, torn_tail)?;
@@ -3445,11 +3499,13 @@ fn read_complete_jsonl(path: &Path, torn_tail: TornTail) -> Result<(Vec<u8>, boo
 /// syncs it. Records keep their bytes; lines without a sequence before the cut
 /// stay too, as the loader already tolerated them.
 fn truncate_event_file(path: &Path, through_seq: u64) -> Result<(), EventLogError> {
-    let bytes = fs::read(path).map_err(|source| EventLogError::Io {
-        path: path.to_owned(),
-        source,
-    })?;
-    cut_event_file(path, scanned_cut_length(&bytes, through_seq))
+    crate::blocking::off_worker(|| {
+        let bytes = fs::read(path).map_err(|source| EventLogError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        cut_event_file(path, scanned_cut_length(&bytes, through_seq))
+    })
 }
 
 /// The length [`truncate_event_file`] keeps of `bytes`, found by reading the
@@ -3518,6 +3574,13 @@ pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<(), EventLog
 /// buffered writer and syncs the file once. The caller syncs the directory
 /// that holds it.
 pub(crate) fn write_event_jsonl<'a>(
+    path: &Path,
+    events: impl IntoIterator<Item = &'a StoredEvent>,
+) -> Result<LineIndex, EventLogError> {
+    crate::blocking::off_worker(|| write_event_jsonl_in_place(path, events))
+}
+
+fn write_event_jsonl_in_place<'a>(
     path: &Path,
     events: impl IntoIterator<Item = &'a StoredEvent>,
 ) -> Result<LineIndex, EventLogError> {
