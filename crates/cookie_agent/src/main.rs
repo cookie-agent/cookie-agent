@@ -98,7 +98,7 @@ enum Command {
         #[command(flatten)]
         args: Box<run::RunArgs>,
     },
-    /// Serve the exact cookie-agent protocol 35 JSON-RPC WebSocket daemon on localhost.
+    /// Serve the exact cookie-agent protocol 36 JSON-RPC WebSocket daemon on localhost.
     Daemon {
         /// Localhost port to bind. `0` selects an ephemeral port; the ready line
         /// reports the real one.
@@ -583,14 +583,31 @@ async fn run_local_frontend(mut runtime: Runtime) -> anyhow::Result<()> {
 #[cfg(feature = "tui")]
 async fn run_attached_tui(url: &str, token: &str) -> anyhow::Result<()> {
     validate_websocket_url(url)?;
+    // One identity for the whole session: after a reconnect the daemon keeps
+    // stamping the same origin, so this TUI still recognizes its own inputs.
+    let identity = client_identity("tui");
     let client = Client::connect_websocket_with_token(url, token)
         .await
         .context("connect to daemon WebSocket")?;
     client
-        .handshake_as(client_identity("tui"))
+        .handshake_as(identity.clone())
         .await
         .context("handshake with daemon")?;
-    cookie_agent_tui::run_with_client(client).await
+    let (url, token) = (url.to_owned(), token.to_owned());
+    let reconnector: cookie_agent_tui::Reconnector = std::sync::Arc::new(move || {
+        let (url, token, identity) = (url.clone(), token.clone(), identity.clone());
+        Box::pin(async move {
+            let client = Client::connect_websocket_with_token(&url, &token)
+                .await
+                .map_err(|error| error.to_string())?;
+            client
+                .handshake_as(identity)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(client)
+        })
+    });
+    cookie_agent_tui::run_attached(client, reconnector).await
 }
 
 #[cfg(not(feature = "tui"))]

@@ -9,7 +9,7 @@ mod provider;
 mod slash;
 mod transcript;
 
-pub use app::{App, run_with_client, run_with_new_session};
+pub use app::{App, Reconnector, run_attached, run_with_client, run_with_new_session};
 
 use ratatui::{
     layout::Rect,

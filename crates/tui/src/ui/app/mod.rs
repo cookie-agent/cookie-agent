@@ -577,6 +577,11 @@ pub struct App {
     /// A `runtime.snapshot` refetch is in flight after a notification fell
     /// outside the revision chain.
     pub(super) runtime_resync_in_flight: bool,
+    /// Redials the daemon when its connection drops (`cookie attach`);
+    /// `None` when the daemon lives and dies with this process.
+    pub(super) reconnector: Option<Reconnector>,
+    /// The connection dropped and a reconnect is under way.
+    pub(super) reconnecting: bool,
     pub(super) stdin_lanes: Arc<
         tokio::sync::Mutex<HashMap<cookie_agent_protocol::ToolCallId, Arc<tokio::sync::Mutex<()>>>>,
     >,
@@ -764,7 +769,15 @@ const USER_MENU_ITEMS: &[(&str, &str)] = &[
     ("fork", "branch a new session from this message"),
 ];
 
-pub(super) enum RpcUpdate {
+pub(in crate::ui) enum RpcUpdate {
+    /// The daemon was redialed after the connection dropped.
+    Reconnected {
+        client: Client,
+    },
+    /// Subscribe a session afresh once its recovery gave up.
+    RetrySubscription {
+        session_id: SessionId,
+    },
     Status(String),
     Notice(String),
     RunStartFinished {
@@ -1111,6 +1124,8 @@ impl App {
             rpc_updates_tx,
             rpc_updates_rx,
             runtime_resync_in_flight: false,
+            reconnector: None,
+            reconnecting: false,
             stdin_lanes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             store: StateStore::default(),
             sessions: Vec::new(),
@@ -1514,17 +1529,36 @@ impl Drop for App {
     }
 }
 
+/// Redials the daemon after a dropped connection and handshakes as the same
+/// client identity, so the new connection's events keep this client's
+/// origin.
+pub type Reconnector = std::sync::Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Client, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Run the terminal UI against a connected client.
 pub async fn run_with_client(client: Client) -> anyhow::Result<()> {
-    run_terminal(client, false).await
+    run_terminal(client, false, None).await
+}
+
+/// Run the terminal UI against a daemon it reconnects to with
+/// `reconnector` whenever the connection drops.
+pub async fn run_attached(client: Client, reconnector: Reconnector) -> anyhow::Result<()> {
+    run_terminal(client, false, Some(reconnector)).await
 }
 
 /// Run the terminal UI with a newly created root session.
 pub async fn run_with_new_session(client: Client) -> anyhow::Result<()> {
-    run_terminal(client, true).await
+    run_terminal(client, true, None).await
 }
 
-async fn run_terminal(client: Client, create_new_session: bool) -> anyhow::Result<()> {
+async fn run_terminal(
+    client: Client,
+    create_new_session: bool,
+    reconnector: Option<Reconnector>,
+) -> anyhow::Result<()> {
     crate::markdown::warm_up_syntax_assets();
     install_terminal_panic_hook();
     let tui_config = crate::config::load(None).context("load TUI configuration")?;
@@ -1539,6 +1573,7 @@ async fn run_terminal(client: Client, create_new_session: bool) -> anyhow::Resul
     let mut app = App::new_with_config(client, create_new_session, tui_config, theme)
         .await
         .context("initialize TUI")?;
+    app.reconnector = reconnector;
     let mut restore = TerminalRestore;
     enable_raw_mode().context("enable terminal raw mode")?;
     restore.raw_mode_enabled();
@@ -1596,6 +1631,10 @@ async fn event_loop(
     let mut render = RenderScheduler::default();
     let mut drawn_wall_clock_view = app.wall_clock_view();
     loop {
+        // A reconnect hands over the new connection's delivery stream.
+        if let Some(reconnected) = app.deliveries.take() {
+            deliveries = reconnected;
+        }
         if render.should_draw(Instant::now()) {
             drawn_wall_clock_view = app.wall_clock_view();
             if let Err(error) = terminal
@@ -1661,7 +1700,7 @@ async fn event_loop(
                     render.mark_immediate();
                 }
             },
-            delivery = deliveries.recv() => match delivery {
+            delivery = deliveries.recv(), if !app.reconnecting => match delivery {
                 Some(delivery) => {
                     app.handle_delivery(delivery).await;
                     render.mark_stream();
@@ -1672,13 +1711,19 @@ async fn event_loop(
                     }
                     app.clear_connect_secrets();
                     app.abort_connect_work();
-                    app.status = "daemon disconnected".into();
-                    app.session_errors.record(&app.status);
-                    return (Ok(()), app.session_errors.clone());
+                    if !app.begin_reconnect() {
+                        app.status = "daemon disconnected".into();
+                        app.session_errors.record(&app.status);
+                        return (Ok(()), app.session_errors.clone());
+                    }
+                    render.mark_immediate();
                 }
             },
             Some(update) = app.rpc_updates_rx.recv() => {
-                app.handle_rpc_update(update);
+                match update {
+                    RpcUpdate::Reconnected { client } => app.finish_reconnect(client).await,
+                    update => app.handle_rpc_update(update),
+                }
                 render.mark_immediate();
             },
             _ = replay_watchdog.tick() => {

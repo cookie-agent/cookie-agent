@@ -164,6 +164,9 @@ pub enum RuntimeChangeReason {
     ProviderStoreChanged,
     ProviderStoreReloaded,
     AgentReloaded,
+    /// The daemon dropped notifications this connection was too slow to
+    /// take; the snapshot is current and `previous_revision` is null.
+    Resync,
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]

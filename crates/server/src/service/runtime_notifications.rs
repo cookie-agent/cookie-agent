@@ -6,6 +6,7 @@ impl Server {
     pub(super) fn start_runtime_notifications(&self, context: ServerContext) {
         let mut receiver = self.engine.subscribe_runtime_changes();
         let startup = self.engine.current_runtime().result.snapshot.clone();
+        let engine = self.engine.clone();
         tokio::spawn(async move {
             let shutdown = context.shutdown();
             let startup = cookie_agent_protocol::RuntimeChangedNotification {
@@ -25,7 +26,15 @@ impl Server {
                     _ = shutdown.cancelled() => return,
                     changed = receiver.recv() => match changed {
                         Ok(changed) => changed,
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        // The skipped changes broke this connection's revision
+                        // chain: hand it the current runtime to start over from.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            cookie_agent_protocol::RuntimeChangedNotification {
+                                previous_revision: None,
+                                snapshot: engine.current_runtime().result.snapshot.clone(),
+                                reasons: vec![cookie_agent_protocol::RuntimeChangeReason::Resync],
+                            }
+                        }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                     },
                 };

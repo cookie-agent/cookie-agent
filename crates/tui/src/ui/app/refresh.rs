@@ -331,6 +331,17 @@ impl App {
                 self.status = status;
             }
             RpcUpdate::Notice(status) => self.status = status,
+            RpcUpdate::Reconnected { .. } => {
+                // The event loop adopts the client, which needs async work.
+            }
+            RpcUpdate::RetrySubscription { session_id } => {
+                if self.selected == Some(session_id)
+                    && !self.subscriptions.contains_key(&session_id)
+                    && !self.reconnecting
+                {
+                    self.resubscribe_from_scratch(session_id);
+                }
+            }
             RpcUpdate::RuntimeResynced { result } => {
                 self.runtime_resync_in_flight = false;
                 match result {
@@ -869,6 +880,7 @@ impl App {
         }
         if let ClientDelivery::RecoveryFailed { session_id, error } = &delivery {
             self.note_recovery_failed(*session_id);
+            self.schedule_subscription_retry(*session_id);
             self.status = match session_id {
                 Some(session_id) => format!("recovery for {session_id} failed: {error}"),
                 None => format!("recovery failed: {error}"),

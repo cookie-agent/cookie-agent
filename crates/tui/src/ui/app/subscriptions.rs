@@ -44,6 +44,12 @@ pub(in crate::ui) enum SubscriptionState {
     Recovering { owned: bool, resubscribe: bool },
 }
 
+/// First wait before redialing a dropped daemon; doubles per failure.
+const RECONNECT_FIRST_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+const RECONNECT_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
+/// Wait before resubscribing a viewed session whose recovery gave up.
+const SUBSCRIPTION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Why the view asks for a session's subscription.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::ui) enum SubscribeIntent {
@@ -92,17 +98,29 @@ impl App {
                 if owned || intent == SubscribeIntent::Open => {}
             Some(_) => return,
         }
-        self.start_subscription(session_id, owned);
+        self.start_subscription(session_id, owned, false);
     }
 
-    fn start_subscription(&mut self, session_id: SessionId, owned: bool) {
+    /// Subscribe `session_id` with a full replay rather than from the view's
+    /// cursor. The rebuilt projection replaces the current one when the
+    /// replay ends, and output streaming now arrives whole: the view may
+    /// have missed deltas while it had no subscription.
+    pub(in crate::ui) fn resubscribe_from_scratch(&mut self, session_id: SessionId) {
+        let owned = self.owned_sessions.contains(&session_id);
+        self.start_subscription(session_id, owned, true);
+    }
+
+    fn start_subscription(&mut self, session_id: SessionId, owned: bool, from_scratch: bool) {
         self.next_subscription_attempt = self.next_subscription_attempt.wrapping_add(1);
         let attempt = self.next_subscription_attempt;
-        let cursor = self
-            .store
-            .sessions
-            .get(&session_id)
-            .map(|state| state.last_seq);
+        let cursor = if from_scratch {
+            None
+        } else {
+            self.store
+                .sessions
+                .get(&session_id)
+                .map(|state| state.last_seq)
+        };
         let (finished, done) = tokio::sync::watch::channel(false);
         self.subscriptions.insert(
             session_id,
@@ -154,7 +172,7 @@ impl App {
         }
         match outcome {
             SubscriptionOutcome::Established if resubscribe => {
-                self.start_subscription(session_id, true);
+                self.start_subscription(session_id, true, false);
             }
             SubscriptionOutcome::Established => {
                 self.subscriptions
@@ -167,7 +185,11 @@ impl App {
                 // follows it once it ends.
                 let resubscribe = resubscribe || owned;
                 if resubscribe && replay_ended {
-                    self.start_subscription(session_id, self.owned_sessions.contains(&session_id));
+                    self.start_subscription(
+                        session_id,
+                        self.owned_sessions.contains(&session_id),
+                        false,
+                    );
                 } else {
                     self.subscriptions.insert(
                         session_id,
@@ -195,7 +217,11 @@ impl App {
             Some(SubscriptionState::Subscribing { replay_ended, .. }) => *replay_ended = true,
             Some(&mut SubscriptionState::Recovering { owned, resubscribe }) => {
                 if resubscribe {
-                    self.start_subscription(session_id, self.owned_sessions.contains(&session_id));
+                    self.start_subscription(
+                        session_id,
+                        self.owned_sessions.contains(&session_id),
+                        false,
+                    );
                 } else {
                     self.subscriptions
                         .insert(session_id, SubscriptionState::Live { owned });
@@ -246,6 +272,79 @@ impl App {
     /// The connection closed; nothing is subscribed on it any more.
     pub(super) fn reset_subscriptions(&mut self) {
         self.subscriptions.clear();
+    }
+
+    /// Starts redialing the daemon after the connection dropped, when this
+    /// TUI has a reconnector. Returns whether a reconnect is under way.
+    pub(in crate::ui) fn begin_reconnect(&mut self) -> bool {
+        let Some(reconnector) = self.reconnector.clone() else {
+            return false;
+        };
+        self.reconnecting = true;
+        self.reset_subscriptions();
+        self.status = "daemon disconnected — reconnecting…".into();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let mut delay = RECONNECT_FIRST_DELAY;
+            loop {
+                tokio::time::sleep(delay).await;
+                if updates.is_closed() {
+                    return;
+                }
+                match reconnector().await {
+                    Ok(client) => {
+                        let _ = updates.send(RpcUpdate::Reconnected { client });
+                        return;
+                    }
+                    Err(error) => {
+                        let _ = updates.send(RpcUpdate::Notice(format!(
+                            "daemon disconnected — reconnecting ({error})"
+                        )));
+                        delay = (delay * 2).min(RECONNECT_MAX_DELAY);
+                    }
+                }
+            }
+        });
+        true
+    }
+
+    /// Adopts the redialed connection and rebuilds what the old one fed:
+    /// the viewed session from a full replay (which also brings back output
+    /// streaming now), the session list, the runtime, approvals, the
+    /// permission mode, and the Agents tree's subscriptions.
+    pub(in crate::ui) async fn finish_reconnect(&mut self, client: crate::Client) {
+        self.deliveries = client.subscribe_deliveries();
+        self.client = client;
+        self.reconnecting = false;
+        self.reset_subscriptions();
+        self.status = "reconnected to the daemon".into();
+        self.request_runtime_resync();
+        self.refresh_lists().await;
+        if let Some(selected) = self.selected {
+            self.resubscribe_from_scratch(selected);
+            self.refresh_approvals(selected);
+            self.refresh_permission_mode_for_session(selected);
+        }
+        self.refresh_tree_background();
+    }
+
+    /// After the client gave up recovering a session, tries the viewed one
+    /// again with a fresh subscription once the connection had time to
+    /// settle. Other sessions resubscribe when next opened.
+    pub(super) fn schedule_subscription_retry(&mut self, session_id: Option<SessionId>) {
+        let Some(selected) = self.selected else {
+            return;
+        };
+        if session_id.is_some_and(|session_id| session_id != selected) {
+            return;
+        }
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            tokio::time::sleep(SUBSCRIPTION_RETRY_DELAY).await;
+            let _ = updates.send(RpcUpdate::RetrySubscription {
+                session_id: selected,
+            });
+        });
     }
 
     /// Wait (bounded) for an in-flight subscribe of `session_id` to deliver

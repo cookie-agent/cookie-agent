@@ -626,3 +626,96 @@ async fn durable_input_mid_reply_keeps_each_delta_once() {
     .await;
     finish_reply(&mut app, &mut deliveries, &model, session, ("", "one two")).await;
 }
+
+#[tokio::test]
+async fn a_reconnected_view_rebuilds_the_reply_it_missed_without_duplicating_it() {
+    let model = GatedModel::start().await;
+    let (_directory, server) = streaming_app(&model).await;
+    let (_runner, session, _run) = start_reply_elsewhere(&server, "hello").await;
+    model.wait_for_call(1).await;
+    let identity = cookie_agent_protocol::ClientIdentity::generate(
+        cookie_agent_protocol::ClientKind::new("tui").expect("client kind"),
+    );
+    let (client, _log, sever) = crate::tests::connect_counting(&server);
+    let hello = client
+        .handshake_as(identity.clone())
+        .await
+        .expect("handshake");
+    let mut app = App::new(client).await.expect("app");
+    let mut deliveries = app.take_deliveries();
+    let redial = Arc::clone(&server);
+    app.reconnector = Some(Arc::new(move || {
+        let (server, identity) = (Arc::clone(&redial), identity.clone());
+        Box::pin(async move {
+            let client = server.connect_in_process();
+            client
+                .handshake_as(identity)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(client)
+        })
+    }));
+    settle(&mut app, &mut deliveries).await;
+    stream_step(
+        &mut app,
+        &mut deliveries,
+        &model,
+        session,
+        Chunk::Text("one"),
+        ("", "one"),
+    )
+    .await;
+
+    // The connection drops, and the reply streams on while this view is away.
+    sever.sever();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(delivery) = deliveries.recv().await {
+            app.handle_delivery(delivery).await;
+        }
+    })
+    .await
+    .expect("the dropped connection closes its delivery stream");
+    model.send(Chunk::Text(" two"));
+    assert!(app.begin_reconnect());
+    assert!(app.reconnecting);
+    let client = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match app.rpc_updates_rx.recv().await.expect("reconnect update") {
+                crate::ui::app::RpcUpdate::Reconnected { client } => break client,
+                update => app.handle_rpc_update(update),
+            }
+        }
+    })
+    .await
+    .expect("reconnected");
+    // The same identity keeps the same origin across connections.
+    assert_eq!(client.origin(), Some(hello.origin));
+    app.finish_reconnect(client).await;
+    assert!(!app.reconnecting);
+    let mut deliveries = app.take_deliveries();
+
+    // The rebuild brings back what streamed while away, exactly once.
+    pump_until(&mut app, &mut deliveries, session, "rebuilt reply", |app| {
+        shown(app, session).1 == "one two"
+    })
+    .await;
+    settle(&mut app, &mut deliveries).await;
+    assert_eq!(shown(&app, session), (String::new(), "one two".to_owned()));
+    stream_step(
+        &mut app,
+        &mut deliveries,
+        &model,
+        session,
+        Chunk::Text(" three"),
+        ("", "one two three"),
+    )
+    .await;
+    finish_reply(
+        &mut app,
+        &mut deliveries,
+        &model,
+        session,
+        ("", "one two three"),
+    )
+    .await;
+}

@@ -1,11 +1,11 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 35 is current-only. A client must call `handshake` before any other
+Protocol 36 is current-only. A client must call `handshake` before any other
 method:
 
 ```json
-{ "protocol_version": 35, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+{ "protocol_version": 36, "client": { "kind": "tui", "instance_id": "<uuid>" } }
 ```
 
 `client.kind` names the client program: a lowercase letter followed by up to 15
@@ -14,19 +14,20 @@ lowercase letters, digits, or hyphens (the shipped clients use `tui` and `cli`).
 across reconnects so it can recognize events it caused. Any number of clients
 may connect to one daemon at once.
 
-The response is `{ "protocol_version": 35, "origin": "client:<kind>-<id>" }`,
+The response is `{ "protocol_version": 36, "origin": "client:<kind>-<id>" }`,
 where `<id>` is the instance id as 32 lowercase hex digits. The daemon stamps
 that origin on every event the connection's requests cause, so each client can
 tell its own actions from another client's. A repeated handshake on the same
 connection keeps the first identity. Protocol 34 added the required `client`
 member and the `origin` result. Protocol 35 replaced `run.recall_steer` with
 `session.recall_input` and added `session.submit_input` with queued input (see
-[Submitting from several clients](#submitting-from-several-clients)). Older
-clients are rejected.
+[Submitting from several clients](#submitting-from-several-clients)), and
+protocol 36 added the `resync` runtime change reason. Older clients are
+rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 35.
+members of protocol 36.
 
 ## Error diagnostics
 
@@ -49,7 +50,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 35 alongside independent display and output references. The
+preserved in protocol 36 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -332,7 +333,13 @@ notification methods they do not know.
 | `resync` | none | This connection fell more than 256 changes behind and missed some; refetch `session.list`, approvals, and permission modes |
 
 The permission mode is runtime-only and has no event, so `permission_mode_changed`
-is the only way other clients learn of a change. `mcp.changed` carries nothing;
+is the only way other clients learn of a change.
+
+`runtime.changed` notifications form a chain through `previous_revision`. A
+connection that falls more than 64 notifications behind receives one with a
+null `previous_revision`, the current snapshot, and the reason `resync`; a
+client that holds a different revision refetches `runtime.snapshot.get` rather
+than trusting either. `mcp.changed` carries nothing;
 bursts coalesce into one notification, and a client refetches `mcp.server.list`.
 
 The shared client maps these to `ClientDelivery` variants (`Live`, replay
