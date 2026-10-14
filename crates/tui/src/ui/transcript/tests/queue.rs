@@ -820,7 +820,7 @@ async fn producer_queue_rows_are_passive_with_a_real_user_entry_present() {
     app.handle_click(producer_hit.rect.x, producer_hit.rect.y)
         .await;
     settle_recording().await;
-    assert_eq!(recorded_method_count(&recorded, "run.recall_steer"), 0);
+    assert_eq!(recorded_method_count(&recorded, "session.recall_input"), 0);
     assert_eq!(app.input.as_str(), "draft stays");
     assert_eq!(pending_texts(&app, session), ["recallable user"]);
 }
@@ -1072,13 +1072,17 @@ async fn clicking_a_strip_entry_recalls_and_restores_the_returned_text() {
     rendered_frame(&mut app, 80, 24);
     let hit = app.hit_map.queue_entries[0];
     app.handle_click(hit.rect.x, hit.rect.y).await;
-    // Any row click recalls the newest pending input.
-    let id = wait_for_recorded_request(&recorded, "run.recall_steer", 1).await;
+    // A row click recalls exactly that row's input.
+    let id = wait_for_recorded_request(&recorded, "session.recall_input", 1).await;
+    assert_eq!(
+        last_request_params(&recorded, "session.recall_input"),
+        serde_json::json!({ "session_id": session, "seq": 1 })
+    );
     incoming
         .send(MessageFrame::Value(serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
-            "result": { "recalled": "second" }
+            "result": { "outcome": "recalled", "input": "first" }
         })))
         .expect("script recall response");
     let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
@@ -1086,12 +1090,20 @@ async fn clicking_a_strip_entry_recalls_and_restores_the_returned_text() {
         .expect("recall update timeout")
         .expect("recall update");
     app.handle_rpc_update(update);
-    assert_eq!(app.input.as_str(), "second");
+    assert_eq!(app.input.as_str(), "first");
     assert!(app.status.contains("recalled message restored"));
     // The recalled event removes the entry from the strip itself.
-    app.handle_delivery(live_event(recalled(session, 3, run, "second")))
-        .await;
-    assert_eq!(pending_texts(&app, session), ["first"]);
+    app.handle_delivery(live_event(event(
+        session,
+        3,
+        run,
+        EventPayload::UserInputRecalledV2 {
+            user_input_seq: 1,
+            input: "first".into(),
+        },
+    )))
+    .await;
+    assert_eq!(pending_texts(&app, session), ["second"]);
 }
 
 #[tokio::test]
@@ -1119,13 +1131,13 @@ async fn recall_reports_when_the_engine_lane_is_already_empty() {
     );
     assert!(app.store.apply_event(admitted(session, 1, run, "raced")));
     app.recall_newest_pending();
-    let id = wait_for_recorded_request(&recorded, "run.recall_steer", 1).await;
+    let id = wait_for_recorded_request(&recorded, "session.recall_input", 1).await;
     // A promotion raced the recall: the engine has nothing to withdraw.
     incoming
         .send(MessageFrame::Value(serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
-            "result": { "recalled": null }
+            "result": { "outcome": "gone" }
         })))
         .expect("script empty recall response");
     let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
@@ -1134,7 +1146,7 @@ async fn recall_reports_when_the_engine_lane_is_already_empty() {
         .expect("recall update");
     app.handle_rpc_update(update);
     assert!(app.input.as_str().is_empty());
-    assert!(app.status.contains("nothing pending to recall"));
+    assert!(app.status.contains("no longer pending"));
 }
 
 #[tokio::test]
@@ -1210,12 +1222,153 @@ async fn up_in_an_empty_composer_recalls_instead_of_moving_the_cursor() {
     assert!(app.store.apply_event(admitted(session, 1, run, "pending")));
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
         .await;
-    wait_for_recorded_request(&recorded, "run.recall_steer", 1).await;
+    wait_for_recorded_request(&recorded, "session.recall_input", 1).await;
     // With text in the composer, Up keeps its plain cursor semantics.
     app.input.set_buffer("draft".into());
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
         .await;
-    assert_eq!(recorded_method_count(&recorded, "run.recall_steer"), 1);
+    assert_eq!(recorded_method_count(&recorded, "session.recall_input"), 1);
+}
+
+fn from_client(
+    mut event: cookie_agent_protocol::StoredEvent,
+    origin: &str,
+) -> cookie_agent_protocol::StoredEvent {
+    event.origin = Some(cookie_agent_protocol::EventOrigin::new(origin).unwrap());
+    event
+}
+
+fn queued(session: SessionId, seq: u64, input: &str) -> cookie_agent_protocol::StoredEvent {
+    cookie_agent_protocol::StoredEvent {
+        run_id: None,
+        ..event(
+            session,
+            seq,
+            run_id(),
+            EventPayload::UserInputQueued {
+                input: input.into(),
+                selection: cookie_agent_protocol::RunSelection {
+                    agent: agent_id(),
+                    model: cookie_agent_protocol::ModelSelection {
+                        model: model_key(),
+                        variant: None,
+                    },
+                    preset: None,
+                },
+                client_run_id: cookie_agent_protocol::ClientRunId::new(format!("queued-{seq}"))
+                    .unwrap(),
+            },
+        )
+    }
+}
+
+#[tokio::test]
+async fn another_clients_inputs_show_their_author_and_never_recall_or_restore_here() {
+    let (mut app, session, run) = app_with_active_run().await;
+    let other = "client:tui-0192f3a45b6c7d8e9f00112233445566";
+    assert!(app.store.apply_event(admitted(session, 1, run, "mine")));
+    assert!(
+        app.store
+            .apply_event(from_client(admitted(session, 2, run, "theirs"), other))
+    );
+    let rendered = rendered_frame(&mut app, 80, 24);
+    assert!(rendered.contains("theirs · tui-0192f3"), "{rendered}");
+    // The foreign row is passive; Up skips it for this client's own input.
+    assert_eq!(app.hit_map.queue_entries[1].recall_seq, None);
+    assert_eq!(app.newest_own_input_seq(), Some(1));
+    let foreign = app.hit_map.queue_entries[1].rect;
+    app.handle_click(foreign.x, foreign.y).await;
+    assert!(app.status.contains("only the client that sent"));
+    // At run end each client gets back only what it wrote.
+    app.handle_delivery(live_event(event(
+        session,
+        3,
+        run,
+        EventPayload::RunCancelled { reason: None },
+    )))
+    .await;
+    assert_eq!(app.input.as_str(), "mine");
+}
+
+#[tokio::test]
+async fn queued_inputs_show_after_steers_and_a_failed_run_restores_only_its_authors() {
+    let (mut app, session, run) = app_with_active_run().await;
+    assert!(app.store.apply_event(queued(session, 1, "queued mine")));
+    assert!(app.store.apply_event(from_client(
+        queued(session, 2, "queued theirs"),
+        "client:tui-0192f3a45b6c7d8e9f00112233445566",
+    )));
+    assert!(app.store.apply_event(admitted(session, 3, run, "steered")));
+    let entries = app.selected_queue_entries();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (entry.kind, entry.preview.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (QueueEntryKind::User, "steered"),
+            (QueueEntryKind::Queued, "queued mine"),
+            (QueueEntryKind::Queued, "queued theirs"),
+        ]
+    );
+    let rendered = rendered_frame(&mut app, 80, 24);
+    assert!(rendered.contains("⏭ 2 queued mine"), "{rendered}");
+    app.handle_delivery(live_event(event(
+        session,
+        4,
+        run,
+        EventPayload::RunFailed {
+            error: cookie_agent_protocol::SafeErrorMessage::new("boom").unwrap(),
+            model_error: None,
+            resolved_model: None,
+        },
+    )))
+    .await;
+    assert!(app.store.sessions[&session].queued_inputs.is_empty());
+    // Restored text keeps submission order across both lanes.
+    assert_eq!(app.input.as_str(), "queued mine\nsteered");
+}
+
+#[tokio::test]
+async fn alt_enter_queues_while_enter_steers_and_ctrl_enter_adds_a_line() {
+    let (startup_client, _startup) = recording_client();
+    let mut app = App::new(startup_client).await.expect("test app");
+    let (client, recorded, _incoming) = live_recording_client();
+    app.client = client;
+    app.install_initial_runtime(runtime_snapshot(
+        "1",
+        Vec::new(),
+        vec![model_descriptor()],
+        vec![descriptor("primary", true)],
+    ));
+    let session = SessionId::new_v7();
+    app.selected = Some(session);
+    app.store.sessions.insert(
+        session,
+        SessionState {
+            active_run: Some(run_id()),
+            run_agent: Some(agent_id()),
+            ..SessionState::default()
+        },
+    );
+    app.input.set_buffer("line".into());
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL))
+        .await;
+    assert_eq!(app.input.as_str(), "line\n");
+    app.input.set_buffer("later".into());
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT))
+        .await;
+    wait_for_recorded_request(&recorded, "session.submit_input", 1).await;
+    let params = last_request_params(&recorded, "session.submit_input");
+    assert_eq!(params["delivery"], "queue");
+    assert_eq!(params["input"], "later");
+    app.input.set_buffer("now".into());
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await;
+    wait_for_recorded_request(&recorded, "session.submit_input", 2).await;
+    let params = last_request_params(&recorded, "session.submit_input");
+    assert_eq!(params["delivery"], "steer");
+    assert_eq!(params["input"], "now");
 }
 
 #[tokio::test]

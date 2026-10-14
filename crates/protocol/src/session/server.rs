@@ -21,16 +21,15 @@ use crate::{
     McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
     McpServerPersistParams, McpServerSetEnabledParams, MessageFrame, Notification, NotificationRef,
     ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
-    ProviderDisconnectResult, Request, Response, RunCancelParams, RunCancelResult,
-    RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerParams,
-    RunSteerResult, RunToolStdinParams, RunToolStdinResult, RuntimeSnapshotGetParams,
-    RuntimeSnapshotResult, ServerHello, SessionChildrenParams, SessionChildrenResult,
-    SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
-    SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
-    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
-    SessionGoalSetParams, SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
-    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
-    SessionPermissionMutationResult, SessionPermissionPreviewParams,
+    ProviderDisconnectResult, Request, Response, RunCancelParams, RunCancelResult, RunStartParams,
+    RunStartResult, RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
+    RuntimeSnapshotGetParams, RuntimeSnapshotResult, ServerHello, SessionChildrenParams,
+    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
+    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
+    SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
+    SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionId,
+    SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
+    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
     SessionProducersResult, SessionRenameChange, SessionRenameError, SessionRenameErrorCode,
     SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
@@ -352,11 +351,16 @@ pub trait ServerProtocol: Send + Sync + 'static {
         params: RunSteerParams,
         context: &ServerContext,
     ) -> Result<RunSteerResult, ServerFault>;
-    async fn recall_steer(
+    async fn submit_input(
         &self,
-        params: RunRecallSteerParams,
+        params: crate::SessionSubmitInputParams,
         context: &ServerContext,
-    ) -> Result<RunRecallSteerResult, ServerFault>;
+    ) -> Result<crate::SessionSubmitInputResult, ServerFault>;
+    async fn recall_input(
+        &self,
+        params: crate::SessionRecallInputParams,
+        context: &ServerContext,
+    ) -> Result<crate::SessionRecallInputResult, ServerFault>;
     async fn cancel_run(
         &self,
         params: RunCancelParams,
@@ -649,7 +653,12 @@ async fn dispatch<S: ServerProtocol>(
         "session.fork" => value(server.fork_session(decode(params)?, context).await?),
         "run.start" => value(server.start_run(decode(params)?, context).await?),
         "run.steer" => value(server.steer_run(decode(params)?, context).await?),
-        "run.recall_steer" => value(server.recall_steer(decode(params)?, context).await?),
+        crate::SESSION_SUBMIT_INPUT_METHOD => {
+            value(server.submit_input(decode(params)?, context).await?)
+        }
+        crate::SESSION_RECALL_INPUT_METHOD => {
+            value(server.recall_input(decode(params)?, context).await?)
+        }
         "run.cancel" => value(server.cancel_run(decode(params)?, context).await?),
         "run.tool_stdin" => value(server.tool_stdin(decode(params)?, context).await?),
         "events.subscribe" => value(server.subscribe_events(decode(params)?, context).await?),

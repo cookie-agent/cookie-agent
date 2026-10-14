@@ -195,11 +195,13 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 33);
+    assert_eq!(PROTOCOL_VERSION, 35);
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(34)).is_err());
     assert_eq!(
         serde_json::to_value(ProtocolVersion::current()).unwrap(),
         json!(PROTOCOL_VERSION)
     );
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(33)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(32)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(31)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(30)).is_err());
@@ -500,26 +502,64 @@ fn pending_input_events_and_recall_rpc_round_trip() {
         },
     };
     assert!(runless_admission.validate().is_ok());
-    let params = RunRecallSteerParams { run_id };
+    let _ = run_id;
+    let session_id = SessionId::new_v7();
+    let recall = SessionRecallInputParams { session_id, seq: 4 };
     assert_eq!(
-        serde_json::from_value::<RunRecallSteerParams>(
-            serde_json::to_value(params).expect("serialize recall params")
+        serde_json::from_value::<SessionRecallInputParams>(
+            serde_json::to_value(recall).expect("serialize recall params")
         )
-        .expect("deserialize recall params")
-        .run_id,
-        run_id
+        .expect("deserialize recall params"),
+        recall
     );
-    for recalled in [Some("pending".to_owned()), None] {
-        let result = RunRecallSteerResult {
-            recalled: recalled.clone(),
-        };
+    for (result, wire) in [
+        (
+            SessionRecallInputResult::Recalled {
+                input: "pending".into(),
+            },
+            json!({"outcome": "recalled", "input": "pending"}),
+        ),
+        (SessionRecallInputResult::Gone, json!({"outcome": "gone"})),
+        (
+            SessionRecallInputResult::NotOwner,
+            json!({"outcome": "not_owner"}),
+        ),
+    ] {
+        assert_eq!(serde_json::to_value(&result).unwrap(), wire);
         assert_eq!(
-            serde_json::from_value::<RunRecallSteerResult>(
-                serde_json::to_value(result).expect("serialize recall result")
-            )
-            .expect("deserialize recall result")
-            .recalled,
-            recalled
+            serde_json::from_value::<SessionRecallInputResult>(wire).unwrap(),
+            result
+        );
+    }
+    let submit = json!({
+        "session_id": session_id,
+        "input": "after this",
+        "delivery": "queue",
+        "client_run_id": "queued-1",
+    });
+    let decoded = serde_json::from_value::<SessionSubmitInputParams>(submit.clone())
+        .expect("selection and reset_fallback are optional");
+    assert_eq!(decoded.delivery, InputDelivery::Queue);
+    assert_eq!(decoded.selection, None);
+    assert!(!decoded.reset_fallback);
+    assert_eq!(serde_json::to_value(&decoded).unwrap(), submit);
+    for (result, wire) in [
+        (
+            SessionSubmitInputResult::Queued { queued_seq: 9 },
+            json!({"outcome": "queued", "queued_seq": 9}),
+        ),
+        (
+            SessionSubmitInputResult::Steered {
+                run_id,
+                user_input_seq: 3,
+            },
+            json!({"outcome": "steered", "run_id": run_id, "user_input_seq": 3}),
+        ),
+    ] {
+        assert_eq!(serde_json::to_value(&result).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<SessionSubmitInputResult>(wire).unwrap(),
+            result
         );
     }
 }

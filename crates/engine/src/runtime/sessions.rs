@@ -375,6 +375,7 @@ impl Engine {
                 "session {id} delegation recovery still settling after {DELEGATION_RECOVERY_SETTLE_BOUND:?}"
             );
         }
+        self.drain_queued_input(id).await;
         Ok(meta)
     }
     /// Delegated sessions a revert to `cut` deletes: children whose

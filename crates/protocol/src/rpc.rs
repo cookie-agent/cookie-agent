@@ -828,6 +828,9 @@ fn is_false(value: &bool) -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum RunStartConflictCode {
     IdempotencyConflict,
+    /// Another run is active; `session.submit_input` steers or queues
+    /// instead.
+    SessionRunning,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -853,18 +856,74 @@ pub struct RunSteerResult {
     pub accepted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handled_reason: Option<String>,
+    /// The seq of the `user_input_admitted` event when accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_input_seq: Option<u64>,
 }
+
+pub const SESSION_SUBMIT_INPUT_METHOD: &str = "session.submit_input";
+pub const SESSION_RECALL_INPUT_METHOD: &str = "session.recall_input";
+
+/// How `session.submit_input` delivers input to a session that is running.
+/// An idle session starts a run either way.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunRecallSteerParams {
-    pub run_id: RunId,
+#[serde(rename_all = "snake_case")]
+pub enum InputDelivery {
+    /// Admit into the running run's pending lane; the model sees it at the
+    /// next tool or completion boundary.
+    Steer,
+    /// Wait for the running run to complete, then start a new run with it.
+    Queue,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct RunRecallSteerResult {
-    #[serde(deserialize_with = "deserialize_required_option")]
-    #[schemars(with = "crate::NullableSchema<String>", required)]
-    pub recalled: Option<String>,
+pub struct SessionSubmitInputParams {
+    pub session_id: SessionId,
+    pub input: String,
+    pub delivery: InputDelivery,
+    /// The selection for a run this input starts, now or after the queue
+    /// drains. Omitted means the session's current selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<RunSelection>,
+    /// The run idempotency key of a run this input starts. A queued input
+    /// keeps it, and the run it later starts carries it.
+    pub client_run_id: ClientRunId,
+    /// As in `run.start`, for a run this input starts immediately.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reset_fallback: bool,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SessionSubmitInputResult {
+    /// The session was idle; the input started this run.
+    Started { run_id: RunId },
+    /// Admitted into the running run's pending lane.
+    Steered { run_id: RunId, user_input_seq: u64 },
+    /// Queued behind the running run as the `user_input_queued` event at
+    /// `queued_seq`.
+    Queued { queued_seq: u64 },
+    /// A plugin handled the input; nothing was submitted.
+    Handled { reason: String },
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRecallInputParams {
+    pub session_id: SessionId,
+    /// The seq of the pending `user_input_admitted` or the queued
+    /// `user_input_queued` event to take back.
+    #[schemars(range(min = 1))]
+    pub seq: u64,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SessionRecallInputResult {
+    /// The input was withdrawn; its text is returned for editing.
+    Recalled { input: String },
+    /// The input is no longer pending or queued: the model already saw it,
+    /// a run started with it, or it was voided.
+    Gone,
+    /// Another client submitted the input; only its author can recall it.
+    NotOwner,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

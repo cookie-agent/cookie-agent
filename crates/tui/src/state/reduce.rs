@@ -84,6 +84,8 @@ pub(super) fn reduce_transient(
     true
 }
 
+/// [`reduce_event_from`] for an event without an origin.
+#[cfg(test)]
 pub(super) fn reduce_event(
     state: &mut SessionState,
     session_id: SessionId,
@@ -92,6 +94,33 @@ pub(super) fn reduce_event(
     timestamp: jiff::Timestamp,
     payload: EventPayload,
 ) {
+    reduce_event_from(
+        state, session_id, run_id, sequence, timestamp, None, payload,
+    );
+}
+
+pub(super) fn reduce_event_from(
+    state: &mut SessionState,
+    session_id: SessionId,
+    run_id: Option<RunId>,
+    sequence: u64,
+    timestamp: jiff::Timestamp,
+    origin: Option<cookie_agent_protocol::EventOrigin>,
+    payload: EventPayload,
+) {
+    // The queued lane is the protocol's own reduction, shared with the
+    // engine; what it voids goes back to its authors.
+    let voided = state
+        .queued_inputs
+        .apply_payload(sequence, timestamp, origin.as_ref(), &payload);
+    state
+        .voided_inputs
+        .extend(voided.into_iter().map(|entry| VoidedInput {
+            seq: entry.queued_seq,
+            origin: entry.origin,
+            parked: false,
+            text: entry.input,
+        }));
     // Every durable timestamp is indexed by sequence so a committed turn
     // can measure its generation wall time from the exact event that closed
     // its input window — replay-exact, never render-time wall clock.
@@ -451,6 +480,7 @@ pub(super) fn reduce_event(
                 text: input,
                 admission_seq: sequence,
                 admitted_at: timestamp,
+                origin,
             });
         }
         EventPayload::UserInputSubmitted { input } => {
@@ -475,6 +505,12 @@ pub(super) fn reduce_event(
             // its text comes back through the recall RPC result and is
             // never consulted here.
             state.pending_inputs.pop_back();
+        }
+        // The queued lane was folded above, before the payload moved.
+        EventPayload::UserInputQueued { .. }
+        | EventPayload::UserInputQueueRecalled { .. }
+        | EventPayload::UserInputQueueVoided {} => {
+            state.last_agent_activity = Some(timestamp);
         }
         EventPayload::UserInputRecalledV2 { user_input_seq, .. } => {
             close_open_assistant(state, timestamp);
@@ -1565,12 +1601,13 @@ pub(super) fn reduce_session_events<E: std::borrow::Borrow<StoredEvent>>(
         visible.push(event);
     }
     for event in visible {
-        reduce_event(
+        reduce_event_from(
             &mut state,
             session_id,
             event.run_id,
             event.seq,
             event.timestamp,
+            event.origin.clone(),
             event.payload.clone(),
         );
     }
@@ -2424,8 +2461,17 @@ pub(super) fn link_tool_child(
 /// events: move their text aside so the UI can restore it into the composer
 /// rather than ever losing it.
 pub(super) fn void_pending_inputs(state: &mut SessionState) {
-    let drained = state.pending_inputs.drain(..).map(|pending| pending.text);
-    state.voided_inputs.extend(drained.collect::<Vec<_>>());
+    let drained = state
+        .pending_inputs
+        .drain(..)
+        .map(|pending| VoidedInput {
+            seq: pending.admission_seq,
+            origin: pending.origin,
+            parked: false,
+            text: pending.text,
+        })
+        .collect::<Vec<_>>();
+    state.voided_inputs.extend(drained);
 }
 
 pub(super) fn close_open_assistant(state: &mut SessionState, sealed_at: jiff::Timestamp) {

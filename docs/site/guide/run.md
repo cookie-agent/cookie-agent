@@ -72,7 +72,9 @@ Allowed shell commands run without a filesystem sandbox; see the
 
 ## Composer
 
-Enter submits the composer. Use Ctrl-J or modified Enter to insert a newline.
+Enter submits the composer, and Alt-Enter queues it (see
+[Steering, queueing, and the pending strip](#steering-queueing-and-the-pending-strip)).
+Use Shift-Enter, Ctrl-Enter, or Ctrl-J to insert a newline.
 Arrow keys move by character or visual line; Ctrl-Left and Ctrl-Right move by
 word. Ctrl-Backspace and Ctrl-Delete remove a word. Home and End move within a
 line, while Ctrl-Home and Ctrl-End move to the start or end of the whole draft.
@@ -129,20 +131,37 @@ prompt like any other. To start a message with `/`, open the palette and type
 `/` in its empty search; the palette closes and a literal `/` lands in the
 composer. A `/` typed after other text, as in a path, is always literal.
 
-## Steering and the pending strip
+## Steering, queueing, and the pending strip
 
-Submitting while a run is active calls `run.steer`. The input enters a durable
-pending lane and is not model-visible yet. At tool or completion boundaries,
-pending inputs are promoted in admission order as separate user messages.
+While a run is active, a message can reach it two ways:
 
-The `Pending` strip means exactly that the model has not seen those messages.
-It shows up to three rows and folds additional entries into `+N more`. To recall
-the newest pending input into the composer, press Up while the composer is empty
-or click any row in the strip. Recall is LIFO even when another row is clicked.
-If a run terminates with pending text while the TUI is connected, the TUI
-restores that text to the composer when the session is viewed. Replayed
-history never restores text, so opening or reattaching to an old session
-leaves the composer alone.
+- **Enter steers.** The message enters a durable pending lane the model has not
+  seen yet. At the next tool or completion boundary, pending messages join the
+  running conversation in submission order as separate user messages.
+- **Alt-Enter queues.** The message waits for the run to finish, then starts a
+  new run of its own with the selection current when it was queued. Queued
+  messages run one at a time, oldest first.
+
+On an idle session both keys simply start a run. The daemon decides between
+starting, steering, and queueing atomically, so a run that another client starts
+or that ends while you type only changes which of those happens.
+
+The `Pending` strip shows both lanes: `⏳` rows are steered messages and `⏭`
+rows are queued ones. It shows up to three rows and folds additional entries
+into `+N more`. Several clients can share one daemon (see
+[Architecture](../architecture.md)); a message another client sent is labelled
+with that client, such as `· tui-0192f3`. Click one of your own rows to take
+that message back into the composer for editing, or press Up in an empty
+composer to take back your newest one. Only the client that sent a message can
+take it back.
+
+Queued messages run only after the current run completes normally. If the run
+fails or is cancelled, or the daemon restarts mid-run, the queue is cleared, and
+each client gets its own unsent messages, steered or queued, back in its
+composer, as it does with steered messages a run never reached. This happens
+only for a run that ends while the TUI is connected; replayed history never
+restores text, so opening or reattaching to an old session leaves the composer
+alone.
 
 ## Selection and clipboard
 

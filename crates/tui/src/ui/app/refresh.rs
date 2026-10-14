@@ -267,6 +267,15 @@ impl App {
                     Err(error) => self.status = format!("runtime refresh failed: {error}"),
                 }
             }
+            RpcUpdate::InputNotStarted {
+                client_run_id,
+                notice,
+            } => {
+                self.pending_fallback_resets.remove(&client_run_id);
+                if let Some(notice) = notice {
+                    self.status = notice;
+                }
+            }
             RpcUpdate::RunStartFinished {
                 session_id,
                 client_run_id,

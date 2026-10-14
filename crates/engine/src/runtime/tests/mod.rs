@@ -33,5 +33,6 @@ mod subagent_control;
 mod subagent_residency;
 mod subagent_resume;
 mod subagents;
+mod submit;
 mod tool_execution;
 mod usage;

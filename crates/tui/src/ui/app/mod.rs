@@ -46,19 +46,20 @@ use cookie_agent_protocol::{
     AgentDescriptor, AgentId, ApprovalListParams, ApprovalListResult, ApprovalRespondError,
     ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision,
     AvailableModelDescriptor, ClientConnectId, ClientRequestId, ClientResponseId, ClientRunId,
-    EffectivePermissionAction, EventPayload, McpAuthBeginParams, McpAuthBeginResult,
+    EffectivePermissionAction, EventPayload, InputDelivery, McpAuthBeginParams, McpAuthBeginResult,
     McpAuthCancelParams, McpAuthCompleteParams, McpServerAddParams, McpServerEditParams,
     McpServerInfo, McpServerNameParams, McpServerPersistParams, McpServerSetEnabledParams,
     McpServerState, ModelKey, ModelSelection, PermissionAction, PermissionEffect, PermissionMode,
     PermissionRule, PermissionRuleSource, ProviderConnectParams, ProviderDescriptor,
-    ProviderDisconnectParams, RunCancelParams, RunRecallSteerParams, RunSelection, RunStartParams,
-    RunSteerParams, RunToolStdinParams, SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE,
-    SafeDisplayText, SessionCompactParams, SessionCreateParams, SessionForkParams, SessionId,
-    SessionListParams, SessionMeta, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionPreviewParams, SessionPermissionSetParams,
-    SessionResumeParams, SessionRevertParams, SessionSetPermissionModeParams, SessionStatus,
-    SessionTitle, SessionTitleChange, SessionTree, SessionTreeParams, SessionTreeUsageResult,
-    SessionUsageParams, SessionUsageResult, StoredEvent, VariantId,
+    ProviderDisconnectParams, RunCancelParams, RunSelection, RunToolStdinParams,
+    SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE, SafeDisplayText, SessionCompactParams,
+    SessionCreateParams, SessionForkParams, SessionId, SessionListParams, SessionMeta,
+    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
+    SessionPermissionPreviewParams, SessionPermissionSetParams, SessionRecallInputParams,
+    SessionRecallInputResult, SessionResumeParams, SessionRevertParams,
+    SessionSetPermissionModeParams, SessionStatus, SessionSubmitInputParams,
+    SessionSubmitInputResult, SessionTitle, SessionTitleChange, SessionTree, SessionTreeParams,
+    SessionTreeUsageResult, SessionUsageParams, SessionUsageResult, StoredEvent, VariantId,
 };
 use crossterm::{
     event::{
@@ -88,9 +89,8 @@ use crate::{
     config::TuiConfig,
     markdown::{Highlighter, SyntectHighlighter},
     state::{
-        ApprovalState, DeliveryOutcome, EMPTY_RUNTIME_GUIDANCE, EventLevel, PendingInput,
-        RuntimePhase, RuntimeState, StateStore, ToolStatus, TranscriptItem,
-        approval_state_from_record,
+        ApprovalState, DeliveryOutcome, EMPTY_RUNTIME_GUIDANCE, EventLevel, RuntimePhase,
+        RuntimeState, StateStore, ToolStatus, TranscriptItem, approval_state_from_record,
     },
     theme::{DecisionTone, Theme},
 };
@@ -323,7 +323,10 @@ pub(super) struct TitleSegmentHit {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum QueueEntryKind {
+    /// A steered input waiting for the next model boundary.
     User,
+    /// An input queued for a new run once the current one completes.
+    Queued,
     Producer(cookie_agent_protocol::ProducerMessageId),
     Overflow,
 }
@@ -333,6 +336,15 @@ pub(super) struct PendingQueueEntry {
     pub(super) seq: u64,
     pub(super) accepted_at: jiff::Timestamp,
     pub(super) preview: String,
+    /// Another client's input: shown with its author, never recallable here.
+    pub(super) author: Option<String>,
+}
+
+impl PendingQueueEntry {
+    /// Whether clicking the row takes this input back into the composer.
+    pub(super) fn recallable(&self) -> bool {
+        matches!(self.kind, QueueEntryKind::User | QueueEntryKind::Queued) && self.author.is_none()
+    }
 }
 
 /// Permission settings held by a new-session draft until `session.create`.
@@ -378,6 +390,9 @@ pub(super) struct QueueEntryHit {
     pub(super) rect: Rect,
     pub(super) index: usize,
     pub(super) kind: QueueEntryKind,
+    /// The input a click recalls: this client's own entry, or for the
+    /// overflow row its newest own entry. `None` when the row recalls nothing.
+    pub(super) recall_seq: Option<u64>,
 }
 
 /// The visible rows of one past user message: a click opens the
@@ -786,6 +801,12 @@ pub(super) enum RpcUpdate {
     RuntimeResynced {
         result: Result<Box<cookie_agent_protocol::RuntimeSnapshotV1>, String>,
     },
+    /// A submission steered, queued, or was handled by a plugin instead of
+    /// starting the run it was tracked as.
+    InputNotStarted {
+        client_run_id: ClientRunId,
+        notice: Option<String>,
+    },
     /// A recall RPC returned the withdrawn pending input's text.
     SteerRecalled {
         session_id: SessionId,
@@ -1040,7 +1061,7 @@ impl App {
     #[cfg(test)]
     pub(crate) async fn submit_text_for_test(&mut self, text: &str) {
         self.input.set_buffer(text.to_owned());
-        self.submit_input().await;
+        self.submit_input(InputDelivery::Steer).await;
     }
 
     #[cfg(test)]

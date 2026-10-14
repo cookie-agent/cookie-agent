@@ -2,16 +2,14 @@ use std::collections::HashSet;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
-    ApprovalStatus, EventOrigin, RunCancelResult, RunId, RunRecallSteerResult, RunStartParams,
-    RunStartResult, RunSteerResult, RunToolStdinParams, RunToolStdinResult, SessionId,
-    SessionStatus,
+    ApprovalStatus, EventOrigin, RunCancelResult, RunId, RunStartParams, RunStartResult,
+    RunSteerResult, RunToolStdinParams, RunToolStdinResult, SessionId, SessionStatus,
 };
 
 use super::{
     ActiveRun, ApprovalTerminal, Engine, EngineError, Event, SessionCommand, UserInputInterception,
     approval_projection::{approval_records, approval_run_id},
     helpers::safe_error,
-    mailbox::pending_inputs,
 };
 use crate::tool_api::StdinWrite;
 
@@ -58,6 +56,7 @@ impl Engine {
                         return Ok(RunSteerResult {
                             accepted: false,
                             handled_reason: None,
+                            user_input_seq: None,
                         });
                     }
                     if let Some(original_input) = original_input {
@@ -77,10 +76,12 @@ impl Engine {
                         origin,
                         Event::UserInputAdmitted { input },
                     )?;
+                    let user_input_seq = engine.inner.store.get(session)?.meta.last_event_seq;
                     engine.clear_skill_turn_state(session);
                     Ok(RunSteerResult {
                         accepted: true,
                         handled_reason: None,
+                        user_input_seq: Some(user_input_seq),
                     })
                 })
                 .await
@@ -88,47 +89,9 @@ impl Engine {
             UserInputInterception::Handled { reason } => Ok(RunSteerResult {
                 accepted: false,
                 handled_reason: Some(reason),
+                user_input_seq: None,
             }),
         }
-    }
-
-    pub async fn recall_steer(
-        &self,
-        run_id: RunId,
-        origin: EventOrigin,
-    ) -> Result<RunRecallSteerResult, EngineError> {
-        let active = self
-            .inner
-            .sessions
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&run_id)
-            .cloned()
-            .ok_or(EngineError::MissingRun(run_id))?;
-        let session = active.session;
-        self.on_actor(session, move |engine| {
-            engine.active_run_in(session, run_id)?;
-            if !engine.run_is_running(session, run_id)? {
-                return Ok(RunRecallSteerResult { recalled: None });
-            }
-            let recalled =
-                pending_inputs(&engine.inner.store.log(session)?.event_snapshot(), run_id)
-                    .pop()
-                    .map(|pending| pending.input);
-            if let Some(input) = &recalled {
-                engine.append_direct(
-                    session,
-                    Some(run_id),
-                    origin,
-                    Event::UserInputRecalled {
-                        input: input.clone(),
-                    },
-                )?;
-            }
-            Ok(RunRecallSteerResult { recalled })
-        })
-        .await
     }
 
     /// Cancels `run_id` and the delegated runs below it. `origin` is who

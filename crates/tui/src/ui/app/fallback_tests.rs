@@ -81,7 +81,7 @@ impl Harness {
                     MessageFrame::Text(text) => serde_json::from_str(&text).unwrap(),
                     MessageFrame::Bytes(bytes) => serde_json::from_slice(&bytes).unwrap(),
                 };
-                if request["method"] == "run.start" {
+                if request["method"] == cookie_agent_protocol::SESSION_SUBMIT_INPUT_METHOD {
                     let _ = runs.send(request);
                 } else {
                     let _ = replies.send(MessageFrame::Value(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"fixture method unavailable"}})));
@@ -183,7 +183,7 @@ impl Harness {
             .await;
     }
 
-    async fn submit(&mut self) -> (Value, RunStartParams) {
+    async fn submit(&mut self) -> (Value, SessionSubmitInputParams) {
         self.app.submit_prompt("continue".into()).await;
         let request = tokio::time::timeout(Duration::from_secs(3), self.requests.recv())
             .await
@@ -195,7 +195,7 @@ impl Harness {
 
     async fn reply(&mut self, request: &Value, accepted: bool) {
         let frame = if accepted {
-            json!({"jsonrpc":"2.0","id":request["id"],"result":{"run_id":cookie_agent_protocol::RunId::new_v7()}})
+            json!({"jsonrpc":"2.0","id":request["id"],"result":{"outcome":"started","run_id":cookie_agent_protocol::RunId::new_v7()}})
         } else {
             json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32000,"message":"run rejected"}})
         };
@@ -271,7 +271,10 @@ async fn replay_only_admission_consumes_reset_and_next_submission_uses_successfu
     assert_eq!(h.app.draft.as_ref().unwrap().model, h.b.selection);
     h.reply(&request, true).await; // The late RPC acknowledgement is idempotent.
     let (_, next) = h.submit().await;
-    assert_eq!(next.selection.model, h.b.selection);
+    assert_eq!(
+        next.selection.expect("draft selection").model,
+        h.b.selection
+    );
     assert!(!next.reset_fallback);
 }
 
@@ -289,7 +292,10 @@ async fn rpc_admission_consumes_reset_without_syncing_the_previous_run() {
     h.live(h.committed(5, run)).await;
     h.live(h.completed(6, run)).await;
     let (_, next) = h.submit().await;
-    assert_eq!(next.selection.model, h.b.selection);
+    assert_eq!(
+        next.selection.expect("draft selection").model,
+        h.b.selection
+    );
     assert!(!next.reset_fallback);
 }
 
@@ -334,5 +340,8 @@ async fn old_acknowledgements_cannot_consume_newer_choices_or_another_sessions_i
     );
     let (_, retry) = h.submit().await;
     assert!(retry.reset_fallback);
-    assert_eq!(retry.selection.model, h.a.selection);
+    assert_eq!(
+        retry.selection.expect("draft selection").model,
+        h.a.selection
+    );
 }

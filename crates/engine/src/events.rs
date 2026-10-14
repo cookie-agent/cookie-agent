@@ -2823,6 +2823,15 @@ fn validate_record_incremental(
                 return corrupt(path, "plugin events must be runless");
             }
         }
+        // The queue belongs to the session: entries outlive the run they
+        // wait behind and start their own.
+        EventPayload::UserInputQueued { .. }
+        | EventPayload::UserInputQueueRecalled { .. }
+        | EventPayload::UserInputQueueVoided {} => {
+            if record.run_id.is_some() {
+                return corrupt(path, "queued-input events must be runless");
+            }
+        }
         EventPayload::GoalActivated { .. }
         | EventPayload::GoalChecklistRevised { .. }
         | EventPayload::GoalLifecycleChanged { .. }

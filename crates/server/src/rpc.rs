@@ -4,10 +4,10 @@ use cookie_agent_engine::{
 };
 use cookie_agent_protocol::{
     ApprovalRespondError, ApprovalRespondErrorCode, ApprovalRespondParams, ClientResponseId,
-    ProviderConnectError, ProviderConnectErrorCode, ProviderConnectParams, ProviderDisconnectError,
-    ProviderDisconnectErrorCode, ProviderDisconnectParams, RunStartConflict, RunStartConflictCode,
-    RunStartParams, SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE,
-    SESSION_TREE_USAGE_MISSING_SESSION_CODE, SessionRenameError, SessionRenameErrorCode,
+    ClientRunId, ProviderConnectError, ProviderConnectErrorCode, ProviderConnectParams,
+    ProviderDisconnectError, ProviderDisconnectErrorCode, ProviderDisconnectParams,
+    RunStartConflict, RunStartConflictCode, SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE,
+    SESSION_TREE_USAGE_MISSING_SESSION_CODE, SessionId, SessionRenameError, SessionRenameErrorCode,
     SessionRenameParams,
 };
 use serde::Serialize;
@@ -21,14 +21,21 @@ pub(crate) struct RpcFault {
 }
 
 impl RpcFault {
-    pub(crate) fn run_start_conflict(params: &RunStartParams) -> Self {
+    pub(crate) fn run_start_conflict(
+        session_id: SessionId,
+        client_run_id: &ClientRunId,
+        code: RunStartConflictCode,
+    ) -> Self {
         Self {
             code: -32602,
-            message: "idempotency conflict",
+            message: match code {
+                RunStartConflictCode::IdempotencyConflict => "idempotency conflict",
+                RunStartConflictCode::SessionRunning => "session running",
+            },
             data: typed_error_data(RunStartConflict {
-                code: RunStartConflictCode::IdempotencyConflict,
-                session_id: params.session_id,
-                client_run_id: params.client_run_id.clone(),
+                code,
+                session_id,
+                client_run_id: client_run_id.clone(),
             }),
         }
     }
@@ -385,6 +392,25 @@ mod tests {
     use cookie_agent_protocol::{InvocationId, SessionId};
 
     use super::*;
+
+    #[test]
+    fn a_start_on_a_running_session_is_a_typed_conflict() {
+        let session_id = SessionId::new_v7();
+        let client_run_id = ClientRunId::new("second").unwrap();
+        let fault: cookie_agent_protocol::ServerFault = RpcFault::run_start_conflict(
+            session_id,
+            &client_run_id,
+            RunStartConflictCode::SessionRunning,
+        )
+        .into();
+        assert_eq!(fault.code, -32602);
+        assert_eq!(fault.message, "session running");
+        let conflict: RunStartConflict =
+            serde_json::from_value(fault.data.expect("typed data")).expect("conflict data");
+        assert_eq!(conflict.code, RunStartConflictCode::SessionRunning);
+        assert_eq!(conflict.session_id, session_id);
+        assert_eq!(conflict.client_run_id, client_run_id);
+    }
 
     #[test]
     fn generic_rpc_fault_preserves_config_path_and_cause_for_client_display() {

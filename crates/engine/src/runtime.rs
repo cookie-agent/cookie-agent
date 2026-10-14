@@ -75,6 +75,7 @@ mod residency;
 mod runs;
 mod sessions;
 mod skills;
+mod submit;
 /// Test-only hooks; the module body is `#![cfg(test)]`.
 pub(crate) mod test_hooks;
 #[cfg(test)]

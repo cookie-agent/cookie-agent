@@ -216,11 +216,18 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::RunSteerResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
-    async fn recall_steer(
+    async fn submit_input(
         &self,
-        _: crate::RunRecallSteerParams,
+        _: crate::SessionSubmitInputParams,
         _context: &ServerContext,
-    ) -> Result<crate::RunRecallSteerResult, ServerFault> {
+    ) -> Result<crate::SessionSubmitInputResult, ServerFault> {
+        Err(ServerFault::method_not_found())
+    }
+    async fn recall_input(
+        &self,
+        _: crate::SessionRecallInputParams,
+        _context: &ServerContext,
+    ) -> Result<crate::SessionRecallInputResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
     async fn cancel_run(

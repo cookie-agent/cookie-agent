@@ -39,10 +39,8 @@ pub(super) fn edit_plain_input(input: &mut InputState, key: KeyEvent) {
 pub(super) fn is_newline_key(key: KeyEvent) -> bool {
     matches!(
         (key.code, key.modifiers),
-        (
-            KeyCode::Enter,
-            KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT
-        ) | (KeyCode::Char('j'), KeyModifiers::CONTROL)
+        (KeyCode::Enter, KeyModifiers::SHIFT | KeyModifiers::CONTROL)
+            | (KeyCode::Char('j'), KeyModifiers::CONTROL)
     )
 }
 
@@ -1096,7 +1094,7 @@ impl App {
             .hit_map
             .queue_entries
             .iter()
-            .find(|hit| hit.kind == QueueEntryKind::User && over(hit.rect))
+            .find(|hit| hit.recall_seq.is_some() && over(hit.rect))
         {
             return Some(HoverTarget::QueueEntry(hit.index));
         }
@@ -1351,7 +1349,7 @@ impl App {
                     .hit_map
                     .queue_entries
                     .iter()
-                    .find(|hit| hit.index == index && hit.kind == QueueEntryKind::User)
+                    .find(|hit| hit.index == index && hit.recall_seq.is_some())
                 {
                     patch(frame, hit.rect, text_style);
                 }
@@ -1669,14 +1667,17 @@ impl App {
             );
             return;
         }
-        if let Some(hit) = self
+        if let Some((kind, recall_seq)) = self
             .hit_map
             .queue_entries
             .iter()
             .find(|hit| contains(hit.rect, column, row))
+            .map(|hit| (hit.kind, hit.recall_seq))
         {
-            if hit.kind == QueueEntryKind::User {
-                self.recall_newest_pending();
+            if let Some(seq) = recall_seq {
+                self.recall_input(seq);
+            } else if matches!(kind, QueueEntryKind::User | QueueEntryKind::Queued) {
+                self.status = "only the client that sent a message can recall it".into();
             }
             return;
         }

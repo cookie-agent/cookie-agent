@@ -58,70 +58,66 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         .await
         .expect("started steering run");
     let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
-    assert!(
+    let origin = || cookie_agent_protocol::EventOrigin::new("client:test").unwrap();
+    let steered = fixture
+        .engine
+        .steer(run.run_id, "recall me".into(), origin())
+        .await
+        .expect("first admission");
+    assert!(steered.accepted);
+    let recall_me = steered.user_input_seq.expect("admission seq");
+    // Only the client that sent an input can take it back.
+    assert_eq!(
         fixture
             .engine
-            .steer(
-                run.run_id,
-                "recall me".into(),
-                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+            .recall_input(
+                session.session_id,
+                recall_me,
+                cookie_agent_protocol::EventOrigin::new("client:tui-other").unwrap(),
             )
             .await
-            .expect("first admission")
-            .accepted
+            .expect("foreign recall"),
+        cookie_agent_protocol::SessionRecallInputResult::NotOwner
     );
     assert_eq!(
         fixture
             .engine
-            .recall_steer(
-                run.run_id,
-                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
-            )
+            .recall_input(session.session_id, recall_me, origin())
             .await
-            .expect("recall pending input")
-            .recalled
-            .as_deref(),
-        Some("recall me")
+            .expect("recall pending input"),
+        cookie_agent_protocol::SessionRecallInputResult::Recalled {
+            input: "recall me".into()
+        }
     );
     assert_eq!(
         fixture
             .engine
-            .recall_steer(
-                run.run_id,
-                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
-            )
+            .recall_input(session.session_id, recall_me, origin())
             .await
-            .expect("empty recall")
-            .recalled,
-        None
+            .expect("repeated recall"),
+        cookie_agent_protocol::SessionRecallInputResult::Gone
     );
     let first_pending = "first pending input";
+    let mut admitted = Vec::new();
     for input in [first_pending, "second pending", "third pending"] {
-        assert!(
-            fixture
-                .engine
-                .steer(
-                    run.run_id,
-                    input.into(),
-                    cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
-                )
-                .await
-                .expect("admission")
-                .accepted
-        );
+        let steered = fixture
+            .engine
+            .steer(run.run_id, input.into(), origin())
+            .await
+            .expect("admission");
+        assert!(steered.accepted);
+        admitted.push(steered.user_input_seq.expect("admission seq"));
     }
+    // Recall targets one input by seq, not the newest.
     assert_eq!(
         fixture
             .engine
-            .recall_steer(
-                run.run_id,
-                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
-            )
+            .recall_input(session.session_id, admitted[2], origin())
             .await
-            .expect("LIFO recall")
-            .recalled
-            .as_deref(),
-        Some("third pending")
+            .expect("targeted recall"),
+        cookie_agent_protocol::SessionRecallInputResult::Recalled {
+            input: "third pending".into()
+        }
     );
     assert!(
         fixture

@@ -1,11 +1,11 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 34 is current-only. A client must call `handshake` before any other
+Protocol 35 is current-only. A client must call `handshake` before any other
 method:
 
 ```json
-{ "protocol_version": 34, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+{ "protocol_version": 35, "client": { "kind": "tui", "instance_id": "<uuid>" } }
 ```
 
 `client.kind` names the client program: a lowercase letter followed by up to 15
@@ -14,16 +14,19 @@ lowercase letters, digits, or hyphens (the shipped clients use `tui` and `cli`).
 across reconnects so it can recognize events it caused. Any number of clients
 may connect to one daemon at once.
 
-The response is `{ "protocol_version": 34, "origin": "client:<kind>-<id>" }`,
+The response is `{ "protocol_version": 35, "origin": "client:<kind>-<id>" }`,
 where `<id>` is the instance id as 32 lowercase hex digits. The daemon stamps
 that origin on every event the connection's requests cause, so each client can
 tell its own actions from another client's. A repeated handshake on the same
 connection keeps the first identity. Protocol 34 added the required `client`
-member and the `origin` result; older clients are rejected.
+member and the `origin` result. Protocol 35 replaced `run.recall_steer` with
+`session.recall_input` and added `session.submit_input` with queued input (see
+[Submitting from several clients](#submitting-from-several-clients)). Older
+clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 34.
+members of protocol 35.
 
 ## Error diagnostics
 
@@ -46,7 +49,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 34 alongside independent display and output references. The
+preserved in protocol 35 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -141,8 +144,9 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.revert` | Session ID, positive `through_seq` | Updated session metadata |
 | `session.fork` | Session ID, positive `through_seq` | New session ID |
 | `run.start` | Session ID, client run ID, selection, input | Run ID |
-| `run.steer` | Run ID, input | `accepted` boolean |
-| `run.recall_steer` | Run ID | Required nullable recalled text |
+| `run.steer` | Run ID, input | `accepted` boolean, admission `user_input_seq` |
+| `session.submit_input` | Session ID, input, `steer` or `queue` delivery, optional selection, client run ID, optional `reset_fallback` | `started` run ID, `steered` run ID and seq, `queued` seq, or `handled` reason |
+| `session.recall_input` | Session ID, seq of a pending or queued input | `recalled` text, `gone`, or `not_owner` |
 | `run.cancel` | Run ID | `cancelled` boolean |
 | `run.tool_stdin` | Run ID, tool call ID, optional data, EOF flag | `accepted` boolean |
 | `events.subscribe` | Session ID, optional cursor and `cursor_timestamp`, optional `limit` | Stored events after the cursor, or `stale_cursor`; starts notifications on the final page (see [Subscriptions](events.md#subscriptions)) |
@@ -243,10 +247,45 @@ boundary, all pending inputs are promoted FIFO as separate
 `user_input_submitted` events before the next request. A no-tool boundary with
 no pending input completes the run.
 
-`run.recall_steer` removes the newest pending input (LIFO), appends
-`user_input_recalled`, and returns its text. It returns `{ "recalled": null }`
-without an event if the lane is empty. Terminal run events void anything still
-pending.
+`run.steer` also returns the admission's `user_input_seq`. Terminal run events
+void anything still pending.
+
+### Submitting from several clients
+
+`session.submit_input` is how clients send a message without first finding out
+whether the session is running. On the session's actor it either starts a run
+(`{ "outcome": "started", "run_id" }`), or, while a run is active, follows
+`delivery`:
+
+- `steer` admits the input as `run.steer` does:
+  `{ "outcome": "steered", "run_id", "user_input_seq" }`.
+- `queue` appends a runless `user_input_queued` event holding the input, its
+  selection, and `client_run_id`: `{ "outcome": "queued", "queued_seq" }`.
+
+A run that starts or ends while the request is in flight only changes which
+outcome happens; the daemon retries a few times before answering with a
+`session_running` conflict. An omitted `selection` means the session's current
+selection. A plugin that handles the input yields `{ "outcome": "handled",
+"reason" }`. Retrying the same `client_run_id` with the same input returns the
+original run or queue entry; different input is an `idempotency_conflict`.
+
+When a run completes normally, the daemon starts a run with the oldest queued
+input under the origin of the client that queued it; that run's `run_started`
+carries the entry's `client_run_id`, which removes it from the queue. A failed,
+cancelled, or interrupted run voids every queued input, and the daemon appends
+`user_input_queue_voided` when a queued input cannot start at all. Clients
+reduce the queue with `cookie_agent_protocol::QueuedInputs`, as the daemon does.
+
+`session.recall_input` takes back one pending steered input or one queued input
+by its seq. Only the client whose origin admitted it may do so: another client
+gets `{ "outcome": "not_owner" }`. A pending input is withdrawn with
+`user_input_recalled_v2` and a queued one with `user_input_queue_recalled`; both
+return `{ "outcome": "recalled", "input" }`. An input that was already promoted,
+started, or voided returns `{ "outcome": "gone" }`.
+
+`run.start` on a session whose run is active fails with code `-32602` and
+`RunStartConflict` data whose `code` is `session_running`, so a client can fall
+back to `session.submit_input`.
 
 ## Revert and fork
 

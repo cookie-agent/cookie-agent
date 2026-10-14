@@ -102,7 +102,10 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Enter => self.submit_input().await,
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.submit_input(InputDelivery::Queue).await;
+            }
+            KeyCode::Enter => self.submit_input(InputDelivery::Steer).await,
             KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.mutate_input(|input| input.delete_word_left());
             }
@@ -128,7 +131,7 @@ impl App {
                 // pending lane, Up withdraws the newest pending message back
                 // for editing instead of moving a cursor that has nothing
                 // to move through.
-                if self.input.as_str().is_empty() && self.selected_pending_inputs().is_some() {
+                if self.input.as_str().is_empty() && self.newest_own_input_seq().is_some() {
                     self.recall_newest_pending();
                 } else {
                     self.navigate_input(|input| input.move_up());
@@ -288,7 +291,11 @@ impl App {
     /// Send the composer draft as a prompt. Commands never come from the
     /// composer: they run from the palette only, so every draft, including
     /// one that begins with `/`, is sent verbatim.
-    pub(in crate::ui) async fn submit_input(&mut self) {
+    ///
+    /// While a run is active, `delivery` decides what happens: Enter steers
+    /// the run, Alt+Enter queues a new run behind it. An idle session starts
+    /// a run either way.
+    pub(in crate::ui) async fn submit_input(&mut self, delivery: InputDelivery) {
         if !self.session_writable() {
             self.status = "Session is owned by another cookie process; input is disabled.".into();
             return;
@@ -297,10 +304,14 @@ impl App {
             return;
         }
         let prompt = self.input.as_str().to_owned();
-        self.submit_prompt(prompt).await;
+        self.submit_prompt_as(prompt, delivery).await;
     }
 
     pub(in crate::ui) async fn submit_prompt(&mut self, input: String) {
+        self.submit_prompt_as(input, InputDelivery::Steer).await;
+    }
+
+    async fn submit_prompt_as(&mut self, input: String, delivery: InputDelivery) {
         if self.runtime.phase() == RuntimePhase::Loading {
             self.status = "loading runtime snapshot".into();
             return;
@@ -337,12 +348,10 @@ impl App {
             .sessions
             .get(&session_id)
             .and_then(|state| state.active_run);
-        let selection = if active_run.is_none() {
-            self.validated_draft_selection()
-        } else {
-            None
-        };
-        let reset_fallback = self.draft_reset_fallback;
+        // A running session uses the draft only for a run this input ends up
+        // starting; without one the daemon keeps the session's selection.
+        let selection = self.validated_draft_selection();
+        let reset_fallback = active_run.is_none() && self.draft_reset_fallback;
         if active_run.is_none() && selection.is_none() {
             self.status = "select a draft agent/model before submitting".into();
             return;
@@ -356,74 +365,73 @@ impl App {
             self.track_fallback_reset(session_id, &submitted_id);
         }
         self.spawn_rpc(async move {
-            if let Some(run_id) = active_run {
-                // The engine admits steered inputs even across compaction
-                // reservations now and reports the pending lane through
-                // events; only a transport failure can strand the text, and
-                // that is owed back to the composer.
-                match client
-                    .steer_run(RunSteerParams {
-                        run_id,
-                        input: input.clone(),
-                    })
-                    .await
-                {
-                    Ok(result) if !result.accepted => {
-                        let error = result
-                            .handled_reason
-                            .unwrap_or_else(|| "steer request was rejected".into());
-                        let _ = updates.send(RpcUpdate::SteerFailed {
-                            session_id,
-                            input,
-                            error,
-                        });
-                    }
-                    Ok(result) if result.handled_reason.is_some() => {
-                        let _ = updates.send(RpcUpdate::Notice(
-                            result.handled_reason.expect("reason is present"),
-                        ));
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        let _ = updates.send(RpcUpdate::SteerFailed {
-                            session_id,
-                            input,
-                            error: error.to_string(),
-                        });
-                    }
-                }
-            } else {
-                let result = client
-                    .start_run(RunStartParams {
-                        reset_fallback,
-                        session_id,
-                        client_run_id: submitted_id.clone(),
-                        selection: selection.expect("draft selection checked"),
-                        input: input.clone(),
-                    })
-                    .await
-                    .map(|_| ())
-                    .map_err(|error| error.to_string());
-                let _ = updates.send(RpcUpdate::RunStartFinished {
+            // The daemon decides start, steer, or queue atomically; the strip
+            // and transcript follow from events, so only the outcome's
+            // bookkeeping and a failure's owed text come back here.
+            let result = client
+                .submit_input(SessionSubmitInputParams {
+                    session_id,
+                    input: input.clone(),
+                    delivery,
+                    selection,
+                    client_run_id: submitted_id.clone(),
+                    reset_fallback,
+                })
+                .await;
+            let update = match result {
+                Ok(SessionSubmitInputResult::Started { .. }) => RpcUpdate::RunStartFinished {
                     session_id,
                     client_run_id: submitted_id,
                     draft_generation,
                     reset_fallback,
                     input,
-                    result,
-                });
-            }
+                    result: Ok(()),
+                },
+                Ok(SessionSubmitInputResult::Steered { .. })
+                | Ok(SessionSubmitInputResult::Queued { .. }) => RpcUpdate::InputNotStarted {
+                    client_run_id: submitted_id,
+                    notice: None,
+                },
+                Ok(SessionSubmitInputResult::Handled { reason }) => RpcUpdate::InputNotStarted {
+                    client_run_id: submitted_id,
+                    notice: Some(reason),
+                },
+                Err(error) if active_run.is_none() => RpcUpdate::RunStartFinished {
+                    session_id,
+                    client_run_id: submitted_id,
+                    draft_generation,
+                    reset_fallback,
+                    input,
+                    result: Err(error.to_string()),
+                },
+                Err(error) => RpcUpdate::SteerFailed {
+                    session_id,
+                    input,
+                    error: error.to_string(),
+                },
+            };
+            let _ = updates.send(update);
         });
     }
 
-    /// The viewed session's pending steered inputs, when the lane is
-    /// non-empty. The lane itself is a pure event reduction inside
-    /// `SessionState`; the strip is only a projection of it.
-    pub(super) fn selected_pending_inputs(&self) -> Option<&VecDeque<PendingInput>> {
-        self.selected
-            .and_then(|session_id| self.store.sessions.get(&session_id))
-            .map(|state| &state.pending_inputs)
-            .filter(|pending| !pending.is_empty())
+    /// The seq of this client's newest pending or queued input in the
+    /// viewed session: what Up in an empty composer recalls. The lanes are
+    /// pure event reductions inside `SessionState`.
+    pub(in crate::ui) fn newest_own_input_seq(&self) -> Option<u64> {
+        self.selected_queue_entries()
+            .into_iter()
+            .filter(PendingQueueEntry::recallable)
+            .map(|entry| entry.seq)
+            .max()
+    }
+
+    /// `None` for this client's own input, else a short label for the
+    /// client that submitted it.
+    fn input_author(&self, origin: Option<&cookie_agent_protocol::EventOrigin>) -> Option<String> {
+        if origin == self.client.origin().as_ref() {
+            return None;
+        }
+        Some(origin.map_or_else(|| "unknown client".to_owned(), short_client_label))
     }
 
     pub(in crate::ui) fn selected_queue_entries(&self) -> Vec<PendingQueueEntry> {
@@ -440,8 +448,22 @@ impl App {
                 seq: input.admission_seq,
                 accepted_at: input.admitted_at,
                 preview: input.text.clone(),
+                author: self.input_author(input.origin.as_ref()),
             })
             .collect::<Vec<_>>();
+        entries.extend(
+            state
+                .queued_inputs
+                .entries()
+                .iter()
+                .map(|queued| PendingQueueEntry {
+                    kind: QueueEntryKind::Queued,
+                    seq: queued.queued_seq,
+                    accepted_at: queued.queued_at,
+                    preview: queued.input.clone(),
+                    author: self.input_author(queued.origin.as_ref()),
+                }),
+        );
         for item in &state.transcript {
             let TranscriptItem::ProducerMessage {
                 seq,
@@ -471,9 +493,12 @@ impl App {
                     *mode,
                     summary.as_deref(),
                 ),
+                author: None,
             });
         }
-        entries.sort_by_key(|entry| entry.seq);
+        // Steered inputs reach the model before any queued run starts, so
+        // they lead; each group keeps submission order.
+        entries.sort_by_key(|entry| (entry.kind == QueueEntryKind::Queued, entry.seq));
         entries
     }
 
@@ -534,10 +559,24 @@ impl App {
         let overflow = pending.len() - shown;
         let mut lines = Vec::new();
         for (index, entry) in pending.iter().enumerate().take(shown) {
-            let prefix =
-                truncate_with_ellipsis(&format!("⏳ {} ", index + 1), usize::from(inner.width));
-            let available =
-                usize::from(inner.width).saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
+            // ⏳ waits for the next model boundary; ⏭ waits for the run to end.
+            let marker = if entry.kind == QueueEntryKind::Queued {
+                "⏭"
+            } else {
+                "⏳"
+            };
+            let prefix = truncate_with_ellipsis(
+                &format!("{marker} {} ", index + 1),
+                usize::from(inner.width),
+            );
+            let author = entry
+                .author
+                .as_ref()
+                .map(|author| format!(" · {author}"))
+                .unwrap_or_default();
+            let available = usize::from(inner.width)
+                .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
+                .saturating_sub(UnicodeWidthStr::width(author.as_str()));
             lines.push(Line::from(vec![
                 Span::styled(prefix, self.theme.muted()),
                 Span::styled(
@@ -548,6 +587,7 @@ impl App {
                     },
                     self.theme.muted(),
                 ),
+                Span::styled(author, self.theme.muted()),
             ]));
         }
         if overflow > 0 {
@@ -558,25 +598,28 @@ impl App {
         }
         let line_count = lines.len();
         frame.render_widget(Paragraph::new(lines), inner);
+        let newest_own = pending
+            .iter()
+            .filter(|entry| entry.recallable())
+            .map(|entry| entry.seq)
+            .max();
         self.hit_map.queue_entries = (0..line_count)
-            .map(|index| QueueEntryHit {
-                rect: Rect::new(
-                    inner.x,
-                    inner.y.saturating_add(index as u16),
-                    inner.width,
-                    1,
-                ),
-                index,
-                kind: if index < shown {
-                    pending[index].kind
-                } else if pending
-                    .iter()
-                    .all(|entry| entry.kind == QueueEntryKind::User)
-                {
-                    QueueEntryKind::User
-                } else {
-                    QueueEntryKind::Overflow
-                },
+            .map(|index| {
+                let (kind, recall_seq) = match pending.get(index).filter(|_| index < shown) {
+                    Some(entry) => (entry.kind, entry.recallable().then_some(entry.seq)),
+                    None => (QueueEntryKind::Overflow, newest_own),
+                };
+                QueueEntryHit {
+                    rect: Rect::new(
+                        inner.x,
+                        inner.y.saturating_add(index as u16),
+                        inner.width,
+                        1,
+                    ),
+                    index,
+                    kind,
+                    recall_seq,
+                }
             })
             .collect();
     }
@@ -624,7 +667,9 @@ impl App {
         let Some(session_id) = self.selected else {
             return;
         };
-        let texts = self.store.take_voided_inputs(session_id);
+        let texts = self
+            .store
+            .take_voided_inputs(session_id, self.client.origin().as_ref());
         if texts.is_empty() {
             return;
         }
@@ -632,38 +677,41 @@ impl App {
         self.status = "unsent message restored to the composer".into();
     }
 
-    /// Recall the engine's newest pending steered input so its text returns
-    /// to the composer for editing (`run.recall_steer`). Triggered by
-    /// clicking a strip entry or pressing Up in an empty composer; the
-    /// `UserInputRecalled` event removes the entry from the strip itself.
+    /// Take back this client's newest pending or queued input into the
+    /// composer (Up in an empty composer, or the strip's overflow row).
     pub(in crate::ui) fn recall_newest_pending(&mut self) {
+        match self.newest_own_input_seq() {
+            Some(seq) => self.recall_input(seq),
+            None => self.status = "no pending message of yours to recall".into(),
+        }
+    }
+
+    /// Take back this client's pending or queued input `seq` so its text
+    /// returns to the composer for editing (`session.recall_input`). The
+    /// recall event removes the entry from the strip itself.
+    pub(in crate::ui) fn recall_input(&mut self, seq: u64) {
         let Some(session_id) = self.selected else {
             return;
         };
-        let Some(state) = self.store.sessions.get(&session_id) else {
-            return;
-        };
-        let Some(run_id) = state.active_run else {
-            self.status = "no active run to recall from".into();
-            return;
-        };
-        if state.pending_inputs.is_empty() {
-            self.status = "no pending message to recall".into();
-            return;
-        }
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
-            let update = match client.recall_steer(RunRecallSteerParams { run_id }).await {
-                Ok(result) => match result.recalled {
-                    Some(text) => {
-                        let _ = updates.send(RpcUpdate::SteerRecalled { session_id, text });
-                        return;
-                    }
-                    // The lane raced ahead (a promotion landed first):
-                    // nothing is owed; the strip is already catching up.
-                    None => RpcUpdate::Notice("nothing pending to recall".to_owned()),
+            let update = match client
+                .recall_input(SessionRecallInputParams { session_id, seq })
+                .await
+            {
+                Ok(SessionRecallInputResult::Recalled { input }) => RpcUpdate::SteerRecalled {
+                    session_id,
+                    text: input,
                 },
+                // The lane raced ahead (a promotion or run start landed
+                // first): nothing is owed; the strip is already catching up.
+                Ok(SessionRecallInputResult::Gone) => {
+                    RpcUpdate::Notice("that message is no longer pending".to_owned())
+                }
+                Ok(SessionRecallInputResult::NotOwner) => RpcUpdate::Notice(
+                    "only the client that sent a message can recall it".to_owned(),
+                ),
                 Err(error) => RpcUpdate::Status(error.to_string()),
             };
             let _ = updates.send(update);
@@ -1102,4 +1150,17 @@ fn quoted_user_message(text: &str, width: u16, theme: &Theme) -> Vec<Line<'stati
             line
         })
         .collect()
+}
+
+/// A short label for another client's origin: `client:tui-0192f3a4…` shows
+/// as `tui-0192f3`.
+fn short_client_label(origin: &cookie_agent_protocol::EventOrigin) -> String {
+    let slug = origin
+        .as_str()
+        .strip_prefix("client:")
+        .unwrap_or(origin.as_str());
+    match slug.rsplit_once('-') {
+        Some((kind, instance)) if instance.len() > 6 => format!("{kind}-{}", &instance[..6]),
+        _ => slug.to_owned(),
+    }
 }

@@ -20,15 +20,14 @@ use crate::{
     McpAuthCompleteParams, McpAuthCompleteResult, McpServerAddParams, McpServerEditParams,
     McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
     McpServerPersistParams, McpServerSetEnabledParams, MessageFrame, ProtocolVersion,
-    RunCancelParams, RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams,
-    RunStartResult, RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
-    ServerHello, SessionChildrenParams, SessionChildrenResult, SessionCompactParams,
-    SessionCompactResult, SessionCreateParams, SessionCreateResult, SessionForkParams,
-    SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
-    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
-    SessionGoalSetParams, SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
-    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
-    SessionPermissionMutationResult, SessionPermissionPreviewParams,
+    RunCancelParams, RunCancelResult, RunStartParams, RunStartResult, RunSteerParams,
+    RunSteerResult, RunToolStdinParams, RunToolStdinResult, ServerHello, SessionChildrenParams,
+    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
+    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
+    SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
+    SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionId,
+    SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
+    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
     SessionProducersResult, SessionRenameParams, SessionRenameResult, SessionResumeParams,
     SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
@@ -570,11 +569,22 @@ impl Client {
         self.call("run.steer", &params).await
     }
 
-    pub async fn recall_steer(
+    /// Start a run, steer the running one, or queue behind it, decided
+    /// atomically by the daemon (`session.submit_input`).
+    pub async fn submit_input(
         &self,
-        params: RunRecallSteerParams,
-    ) -> Result<RunRecallSteerResult, ClientError> {
-        self.call("run.recall_steer", &params).await
+        params: crate::SessionSubmitInputParams,
+    ) -> Result<crate::SessionSubmitInputResult, ClientError> {
+        self.call(crate::SESSION_SUBMIT_INPUT_METHOD, &params).await
+    }
+
+    /// Take back one of this client's pending or queued inputs
+    /// (`session.recall_input`).
+    pub async fn recall_input(
+        &self,
+        params: crate::SessionRecallInputParams,
+    ) -> Result<crate::SessionRecallInputResult, ClientError> {
+        self.call(crate::SESSION_RECALL_INPUT_METHOD, &params).await
     }
 
     pub async fn cancel_run(

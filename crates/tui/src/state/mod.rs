@@ -201,6 +201,22 @@ pub struct PendingInput {
     pub admission_seq: u64,
     /// Durable admission timestamp from the admitting event.
     pub admitted_at: jiff::Timestamp,
+    /// The client that admitted it; absent on records without an origin.
+    pub origin: Option<cookie_agent_protocol::EventOrigin>,
+}
+
+/// Unsent input a run end (or a failed request) left without a destination.
+/// The UI restores it into the composer of the client that wrote it.
+#[derive(Clone, Debug)]
+pub struct VoidedInput {
+    /// The seq of the event that admitted or queued it; restores keep
+    /// submission order.
+    pub seq: u64,
+    pub origin: Option<cookie_agent_protocol::EventOrigin>,
+    /// This client's own text handed back by a failed request: restored
+    /// whatever the origin.
+    pub parked: bool,
+    pub text: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -654,7 +670,9 @@ pub struct SessionState {
     /// Pending inputs the engine voided at run end (no per-entry events),
     /// parked here until the UI restores their text into the composer —
     /// user text is never silently lost. Drained by the UI on sight.
-    pub voided_inputs: Vec<String>,
+    pub voided_inputs: Vec<VoidedInput>,
+    /// Inputs queued behind the running run, from every client.
+    pub queued_inputs: cookie_agent_protocol::QueuedInputs,
     pub(crate) next_transcript_id: u64,
     /// Ids handed to parts opened by live-only output, which has no durable
     /// sequence to derive one from. See [`LIVE_PART_ID_BASE`].
@@ -981,12 +999,13 @@ impl StateStore {
                             reduce_session_events(session_id, generation, &replay.physical_events);
                     } else {
                         replay.scratch.last_seq = event.seq;
-                        reduce_event(
+                        reduce_event_from(
                             &mut replay.scratch,
                             event.session_id,
                             event.run_id,
                             event.seq,
                             event.timestamp,
+                            event.origin,
                             event.payload,
                         );
                     }
@@ -1081,20 +1100,38 @@ impl StateStore {
         self.replays.remove(&session_id);
     }
 
-    /// Drain a session's voided inputs for restoration into the composer.
-    /// Returns them in admission (FIFO) order; empty when nothing is owed.
-    pub fn take_voided_inputs(&mut self, session_id: SessionId) -> Vec<String> {
-        self.sessions
-            .get_mut(&session_id)
-            .map(|state| std::mem::take(&mut state.voided_inputs))
-            .unwrap_or_default()
+    /// Drain a session's voided inputs for restoration into the composer of
+    /// the client whose origin is `own`. Another client's inputs are dropped:
+    /// that client restores them. Returns texts in submission order; empty
+    /// when nothing is owed.
+    pub fn take_voided_inputs(
+        &mut self,
+        session_id: SessionId,
+        own: Option<&cookie_agent_protocol::EventOrigin>,
+    ) -> Vec<String> {
+        let Some(state) = self.sessions.get_mut(&session_id) else {
+            return Vec::new();
+        };
+        let mut voided = std::mem::take(&mut state.voided_inputs);
+        voided.sort_by_key(|input| input.seq);
+        voided
+            .into_iter()
+            .filter(|input| input.parked || input.origin.as_ref() == own)
+            .map(|input| input.text)
+            .collect()
     }
 
-    /// Park text as voided for a session (e.g. a recall resolved while a
-    /// different session was being viewed); the UI restores it on sight.
+    /// Park this client's text as voided for a session (e.g. a recall
+    /// resolved while a different session was being viewed); the UI
+    /// restores it on sight.
     pub fn park_voided_input(&mut self, session_id: SessionId, text: String) {
         if let Some(state) = self.sessions.get_mut(&session_id) {
-            state.voided_inputs.push(text);
+            state.voided_inputs.push(VoidedInput {
+                seq: u64::MAX,
+                origin: None,
+                parked: true,
+                text,
+            });
         }
     }
 
@@ -1149,12 +1186,13 @@ impl StateStore {
             state.version = previous_version.max(state.version).wrapping_add(1);
         } else {
             state.last_seq = event.seq;
-            reduce_event(
+            reduce_event_from(
                 state,
                 event.session_id,
                 event.run_id,
                 event.seq,
                 event.timestamp,
+                event.origin,
                 event.payload,
             );
             state.version = state.version.wrapping_add(1);

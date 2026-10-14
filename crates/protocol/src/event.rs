@@ -2134,6 +2134,21 @@ pub enum EventPayload {
     UserInputApplied {
         user_input_seq: u64,
     },
+    /// Input waiting for the running run to complete. The run the engine
+    /// then starts with it carries `client_run_id`; a failed, cancelled, or
+    /// interrupted run voids every queued input instead.
+    UserInputQueued {
+        input: String,
+        selection: RunSelection,
+        client_run_id: ClientRunId,
+    },
+    /// Its author withdrew the queued input at `queued_seq`.
+    UserInputQueueRecalled {
+        queued_seq: u64,
+    },
+    /// The engine voided every queued input without starting a run, for
+    /// example because the queued run could not start.
+    UserInputQueueVoided {},
     DelegatedContextSeeded {
         invocation_id: InvocationId,
         #[schemars(length(max = 65536))]
@@ -2514,6 +2529,9 @@ impl EventPayload {
                 | Self::SessionTitleCommitted { .. }
                 | Self::UserInputAdmitted { .. }
                 | Self::UserInputRecalled { .. }
+                | Self::UserInputQueued { .. }
+                | Self::UserInputQueueRecalled { .. }
+                | Self::UserInputQueueVoided { .. }
                 | Self::DelegatedContextSeeded { .. }
                 | Self::DelegateChildTerminated { .. }
         )

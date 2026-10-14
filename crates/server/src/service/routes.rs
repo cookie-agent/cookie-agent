@@ -8,21 +8,22 @@ use cookie_agent_protocol::{
     McpServerListResult, McpServerMutationResult, McpServerNameParams, McpServerPersistParams,
     McpServerSetEnabledParams, ProviderConnectParams, ProviderConnectResult,
     ProviderDisconnectParams, ProviderDisconnectResult, RunCancelParams, RunCancelResult,
-    RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerParams,
-    RunSteerResult, RunToolStdinParams, RunToolStdinResult, RuntimeSnapshotGetParams,
-    RuntimeSnapshotResult, ServerContext, ServerFault, ServerProtocol, SessionChildrenParams,
-    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
-    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
-    SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
-    SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionListParams,
-    SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
+    RunStartConflictCode, RunStartParams, RunStartResult, RunSteerParams, RunSteerResult,
+    RunToolStdinParams, RunToolStdinResult, RuntimeSnapshotGetParams, RuntimeSnapshotResult,
+    ServerContext, ServerFault, ServerProtocol, SessionChildrenParams, SessionChildrenResult,
+    SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
+    SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
+    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
+    SessionGoalSetParams, SessionGoalSetResult, SessionListParams, SessionListResult,
+    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
+    SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
-    SessionProducersResult, SessionRenameErrorCode, SessionRenameParams, SessionRenameResult,
-    SessionResumeParams, SessionResumeResult, SessionRevertParams, SessionRevertResult,
-    SessionSetPermissionModeParams, SessionSetPermissionModeResult, SessionTreeParams,
-    SessionTreeResult, SessionTreeUsageResult, SessionUsageParams, SessionUsageResult,
-    SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult,
+    SessionProducersResult, SessionRecallInputParams, SessionRecallInputResult,
+    SessionRenameErrorCode, SessionRenameParams, SessionRenameResult, SessionResumeParams,
+    SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
+    SessionSetPermissionModeResult, SessionSubmitInputParams, SessionSubmitInputResult,
+    SessionTreeParams, SessionTreeResult, SessionTreeUsageResult, SessionUsageParams,
+    SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult,
 };
 
 use super::Server;
@@ -294,9 +295,18 @@ impl ServerProtocol for Server {
             .await
         {
             Ok(result) => Ok(result),
-            Err(EngineError::RunIdempotencyConflict) => {
-                Err(RpcFault::run_start_conflict(&params).into())
-            }
+            Err(EngineError::RunIdempotencyConflict) => Err(RpcFault::run_start_conflict(
+                params.session_id,
+                &params.client_run_id,
+                RunStartConflictCode::IdempotencyConflict,
+            )
+            .into()),
+            Err(EngineError::SessionRunning(_)) => Err(RpcFault::run_start_conflict(
+                params.session_id,
+                &params.client_run_id,
+                RunStartConflictCode::SessionRunning,
+            )
+            .into()),
             Err(error) => Err(run_start_fault(error).into()),
         }
     }
@@ -312,13 +322,42 @@ impl ServerProtocol for Server {
             .map_err(protocol_fault)
     }
 
-    async fn recall_steer(
+    async fn submit_input(
         &self,
-        params: RunRecallSteerParams,
+        params: SessionSubmitInputParams,
         context: &ServerContext,
-    ) -> Result<RunRecallSteerResult> {
+    ) -> Result<SessionSubmitInputResult> {
+        let session_id = params.session_id;
+        let client_run_id = params.client_run_id.clone();
+        match self
+            .engine
+            .submit_input(params, context.client_origin())
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(EngineError::RunIdempotencyConflict) => Err(RpcFault::run_start_conflict(
+                session_id,
+                &client_run_id,
+                RunStartConflictCode::IdempotencyConflict,
+            )
+            .into()),
+            Err(EngineError::SessionRunning(_)) => Err(RpcFault::run_start_conflict(
+                session_id,
+                &client_run_id,
+                RunStartConflictCode::SessionRunning,
+            )
+            .into()),
+            Err(error) => Err(run_start_fault(error).into()),
+        }
+    }
+
+    async fn recall_input(
+        &self,
+        params: SessionRecallInputParams,
+        context: &ServerContext,
+    ) -> Result<SessionRecallInputResult> {
         self.engine
-            .recall_steer(params.run_id, context.client_origin())
+            .recall_input(params.session_id, params.seq, context.client_origin())
             .await
             .map_err(protocol_fault)
     }
