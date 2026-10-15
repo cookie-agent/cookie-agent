@@ -144,7 +144,7 @@ impl Engine {
             let Some(instance) = self.inner.runtimes.instance(&attachment) else {
                 continue;
             };
-            let registry = Arc::clone(instance.skills());
+            let registry = instance.skills();
             match attachment.kind {
                 cookie_agent_protocol::RuntimeKind::Global => user.push(registry),
                 cookie_agent_protocol::RuntimeKind::Coding => {

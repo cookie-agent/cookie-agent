@@ -100,6 +100,11 @@ impl TestConnector {
         Self::new(ServeOptions::default().tools)
     }
 
+    fn set_refuse(&self, refuse: bool) {
+        self.refuse
+            .store(refuse, std::sync::atomic::Ordering::SeqCst);
+    }
+
     fn connects(&self) -> usize {
         self.connects.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -677,58 +682,186 @@ async fn transport_loss_fails_calls_and_jobs_in_flight() {
     );
 }
 
+fn instance_status(
+    registry: &crate::runtimes::RuntimeRegistry,
+    runtime_id: &str,
+) -> crate::RuntimeInstanceStatus {
+    registry
+        .instances()
+        .into_iter()
+        .find(|instance| instance.runtime_id == runtime_id)
+        .expect("instance listed")
+        .status
+}
+
+async fn wait_for_status(
+    registry: &crate::runtimes::RuntimeRegistry,
+    runtime_id: &str,
+    status: crate::RuntimeInstanceStatus,
+) {
+    tokio::time::timeout(WAIT, async {
+        while instance_status(registry, runtime_id) != status {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("`{runtime_id}` never became {status:?}"));
+}
+
 #[tokio::test]
-async fn a_lost_instance_fails_and_restarts_under_a_new_generation() {
+async fn a_dropped_instance_reconnects_with_its_tools_published_meanwhile() {
     let (fixture, _) = custom_fixture();
     let workspace = private_tempdir();
     let connector = TestConnector::builtin();
+    register_remote(&fixture, &connector);
     let registry = &fixture.engine.inner.runtimes;
-    registry
-        .register_template(Arc::new(ProtocolTemplate::new(
-            "remote",
-            true,
-            connector.clone(),
-            runtime_settings(&fixture.config, "remote"),
-            WAIT,
-            Duration::from_secs(1),
-        )))
-        .unwrap();
+    // A first attempt late enough to watch the instance reconnect.
+    registry.set_reconnect_policy(crate::runtimes::ReconnectPolicy::with_delays(vec![
+        Duration::from_millis(400),
+    ]));
     let mut failures = registry.subscribe_failures();
-    let first = registry
+    let instance = registry
         .ensure("remote", Some(workspace.path()))
         .await
         .unwrap();
-    assert_eq!(
-        first.info().kind(),
-        cookie_agent_protocol::RuntimeKind::Coding
-    );
-    assert!(!first.providers().is_empty());
+    let first_generation = instance.generation();
+    let first_connection = instance.connection().unwrap();
+    let attachment = instance
+        .attachment(cookie_agent_protocol::AttachmentName::new("remote_ws").unwrap())
+        .unwrap();
 
+    connector.cut();
+    wait_for_status(
+        registry,
+        "remote",
+        crate::RuntimeInstanceStatus::Reconnecting,
+    )
+    .await;
+    // The tools stay published; calls fail fast with `runtime_unavailable`.
+    let reconnecting = registry.instance(&attachment).expect("still published");
+    assert!(Arc::ptr_eq(&reconnecting, &instance));
+    let (generation, providers) = instance.sources();
+    assert_eq!(generation, first_generation);
+    let error = providers[0]
+        .prepare(
+            ToolPreparationContext {
+                session: SessionId::new_v7(),
+                run: RunId::new_v7(),
+                origin: instance.origin(),
+                turn_context: turn_context(),
+            },
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: "bash".into(),
+                arguments: serde_json::json!({"command": "true"}),
+            },
+        )
+        .await
+        .err()
+        .expect("unavailable");
+    assert!(
+        matches!(error, ToolError::RuntimeUnavailable(_)),
+        "{error:?}"
+    );
+
+    wait_for_status(registry, "remote", crate::RuntimeInstanceStatus::Ready).await;
+    // The same instance under a new generation and connection.
+    let restored = registry.instance(&attachment).expect("restored");
+    assert!(Arc::ptr_eq(&restored, &instance));
+    assert!(instance.generation() > first_generation);
+    assert!(first_connection.is_closed());
+    assert!(!instance.connection().unwrap().is_closed());
+    assert_eq!(connector.connects(), 2);
+    assert!(failures.try_recv().is_err(), "a reconnect is no failure");
+
+    // It reconnects again after a second drop.
+    connector.cut();
+    wait_for_status(
+        registry,
+        "remote",
+        crate::RuntimeInstanceStatus::Reconnecting,
+    )
+    .await;
+    wait_for_status(registry, "remote", crate::RuntimeInstanceStatus::Ready).await;
+    assert_eq!(connector.connects(), 3);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_instance_that_cannot_reconnect_fails_and_is_revived_on_demand() {
+    let (fixture, _) = custom_fixture();
+    let workspace = private_tempdir();
+    let connector = TestConnector::builtin();
+    register_remote(&fixture, &connector);
+    let registry = &fixture.engine.inner.runtimes;
+    registry.set_reconnect_policy(crate::runtimes::ReconnectPolicy::with_delays(vec![
+        Duration::from_millis(10);
+        3
+    ]));
+    let mut failures = registry.subscribe_failures();
+    let instance = registry
+        .ensure("remote", Some(workspace.path()))
+        .await
+        .unwrap();
+    let first_generation = instance.generation();
+    let attachment = instance
+        .attachment(cookie_agent_protocol::AttachmentName::new("remote_ws").unwrap())
+        .unwrap();
+
+    connector.set_refuse(true);
     connector.cut();
     let failure = tokio::time::timeout(WAIT, failures.recv())
         .await
-        .expect("the loss is reported")
+        .expect("the failure is reported")
         .unwrap();
     assert_eq!(failure.runtime_id, "remote");
+    assert_eq!(
+        failure.workspace.as_deref(),
+        Some(
+            workspace
+                .path()
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
     assert!(failure.reason.contains("exited"), "{}", failure.reason);
-    let status = registry
-        .instances()
-        .into_iter()
-        .find(|instance| instance.runtime_id == "remote")
-        .unwrap()
-        .status;
-    assert_eq!(status, crate::RuntimeInstanceStatus::Failed);
-    assert!(first.providers().is_empty());
+    assert!(
+        failure
+            .reason
+            .contains("reconnecting failed 3 times, last: connection refused"),
+        "{}",
+        failure.reason
+    );
+    assert_eq!(
+        instance_status(registry, "remote"),
+        crate::RuntimeInstanceStatus::Failed
+    );
+    // Its tools are dropped.
+    assert!(registry.instance(&attachment).is_none());
+    assert!(instance.providers().is_empty());
 
-    let second = registry
+    // A retry fails while the runtime is unreachable, then revives it.
+    let error = registry
+        .ensure("remote", Some(workspace.path()))
+        .await
+        .err()
+        .expect("still unreachable");
+    assert!(error.to_string().contains("connection refused"), "{error}");
+    connector.set_refuse(false);
+    let revived = registry
         .ensure("remote", Some(workspace.path()))
         .await
         .unwrap();
-    assert_ne!(second.generation(), first.generation());
+    assert!(Arc::ptr_eq(&revived, &instance));
+    assert!(instance.generation() > first_generation);
+    assert!(!instance.providers().is_empty());
     assert_eq!(
-        second.info().attachment_name(),
-        first.info().attachment_name()
+        instance_status(registry, "remote"),
+        crate::RuntimeInstanceStatus::Ready
     );
+    assert!(registry.instance(&attachment).is_some());
     fixture.engine.shutdown().await;
 }
 

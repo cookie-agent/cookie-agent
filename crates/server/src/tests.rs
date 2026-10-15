@@ -1095,6 +1095,33 @@ async fn runtime_attachments_are_reachable_through_rpc() {
         names(&fetched["result"]["runtimes"]).is_empty(),
         "{fetched}"
     );
+
+    // Retrying a ready instance leaves it as it is.
+    let (reconnected, _) = request(
+        &mut client,
+        11,
+        "runtimes.reconnect",
+        json!({ "runtime_id": "local" }),
+    )
+    .await;
+    assert_eq!(
+        reconnected["result"]["instance"]["status"], "ready",
+        "{reconnected}"
+    );
+    assert_eq!(reconnected["result"]["instance"]["runtime_id"], "local");
+    let (rejected, _) = request(
+        &mut client,
+        12,
+        "runtimes.reconnect",
+        json!({ "runtime_id": "labpc", "workspace": "~/api" }),
+    )
+    .await;
+    assert!(
+        rejected["error"]["data"]["detail"]
+            .as_str()
+            .is_some_and(|message| message.contains("unknown runtime `labpc`")),
+        "{rejected}"
+    );
 }
 
 /// Reads frames until a `method` notification that `accept` takes.

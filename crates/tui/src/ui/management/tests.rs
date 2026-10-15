@@ -729,6 +729,38 @@ fn runtime_attach_requires_a_workspace_exactly_when_the_template_takes_one() {
 }
 
 #[test]
+fn runtime_retry_sends_the_workspace_exactly_when_the_template_takes_one() {
+    use cookie_agent_protocol::{AttachmentName, RuntimeAttachment, RuntimeId, RuntimeKind};
+    let attached = [
+        RuntimeAttachment {
+            name: AttachmentName::new("global").unwrap(),
+            runtime_id: RuntimeId::new("global").unwrap(),
+            kind: RuntimeKind::Global,
+            workspace: None,
+        },
+        RuntimeAttachment {
+            name: AttachmentName::new("labpc_api").unwrap(),
+            runtime_id: RuntimeId::new("labpc").unwrap(),
+            kind: RuntimeKind::Coding,
+            workspace: Some("/srv/api".into()),
+        },
+    ];
+    let rows = super::runtime_rows(Some(&attached), Some(&runtime_listing()));
+    let mut panel = super::RuntimePanel::default();
+    assert!(
+        panel.reconnect_request(&rows[1]).is_err(),
+        "no templates yet"
+    );
+    panel.install(runtime_listing());
+    let (runtime_id, workspace) = panel.reconnect_request(&rows[1]).expect("labpc");
+    assert_eq!(runtime_id.as_str(), "labpc");
+    assert_eq!(workspace.as_deref(), Some("/srv/api"));
+    let (runtime_id, workspace) = panel.reconnect_request(&rows[0]).expect("global");
+    assert_eq!(runtime_id.as_str(), "global");
+    assert_eq!(workspace, None);
+}
+
+#[test]
 fn runtime_panel_renders_attachments_with_status_and_failure_reason() {
     use cookie_agent_protocol::{AttachmentName, RuntimeAttachment, RuntimeId, RuntimeKind};
     let listing = runtime_listing();

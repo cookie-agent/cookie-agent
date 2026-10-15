@@ -364,6 +364,7 @@ pub const SESSION_RUNTIME_ATTACH_METHOD: &str = "session.runtime.attach";
 pub const SESSION_RUNTIME_DETACH_METHOD: &str = "session.runtime.detach";
 pub const RUNTIMES_LIST_METHOD: &str = "runtimes.list";
 pub const RUNTIMES_CHANGED_METHOD: &str = "runtimes.changed";
+pub const RUNTIMES_RECONNECT_METHOD: &str = "runtimes.reconnect";
 
 /// Attach a runtime to a session that has no active run. The instance is
 /// started first when it is not running; a failure records nothing.
@@ -412,6 +413,26 @@ pub struct RuntimesListParams {}
 pub struct RuntimesListResult {
     pub templates: Vec<RuntimeTemplateInfo>,
     pub instances: Vec<RuntimeInstanceInfo>,
+}
+
+/// Retry a runtime instance now: a failed instance is started again, under a
+/// new generation; a ready or reconnecting one is left as it is, and one
+/// that is not running is started.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimesReconnectParams {
+    pub runtime_id: RuntimeId,
+    /// Required exactly when the runtime's template takes a workspace: the
+    /// instance's workspace as `runtimes.list` reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimesReconnectResult {
+    /// The instance afterwards.
+    pub instance: RuntimeInstanceInfo,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

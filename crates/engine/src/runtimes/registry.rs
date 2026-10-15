@@ -29,6 +29,9 @@ use cookie_agent_config::SkillRegistry;
 use cookie_agent_protocol::{RuntimeAttachment, RuntimeKind};
 use cookie_agent_runtime_api::{RuntimeInfo, ToolOrigin, ToolProvider};
 
+use tokio_util::sync::CancellationToken;
+
+use super::{ReconnectOutcome, ReconnectPolicy};
 use crate::EngineError;
 
 /// A way to start runtime instances: the built-in `global` and `local`
@@ -74,41 +77,74 @@ pub enum RuntimeInstanceStatus {
     Stopped,
 }
 
-/// A running runtime, shared by every session attached to it.
+/// A running runtime, shared by every session attached to it. A restart
+/// after its connection dropped keeps the instance (and its identity) and
+/// replaces what the runtime declared under a new generation.
 pub(crate) struct RuntimeInstance {
     info: Arc<RuntimeInfo>,
+    current: Mutex<CurrentStart>,
+    /// Providers added in-process after the instance started; they survive
+    /// restarts.
+    added: Mutex<Vec<Arc<dyn ToolProvider>>>,
+}
+
+/// What the runtime declared at its current start.
+struct CurrentStart {
     /// Distinguishes this start of the instance from any earlier one, so a
     /// tool published before a restart fails as changed.
     generation: u64,
-    providers: Mutex<Vec<Arc<dyn ToolProvider>>>,
+    providers: Vec<Arc<dyn ToolProvider>>,
     skills: Arc<SkillRegistry>,
-    connection: Mutex<Option<super::remote::RuntimeClient>>,
+    connection: Option<super::remote::RuntimeClient>,
+}
+
+impl CurrentStart {
+    fn new(started: StartedRuntime, generation: u64) -> Self {
+        Self {
+            generation,
+            providers: started.providers,
+            skills: Arc::new(started.skills),
+            connection: started.connection,
+        }
+    }
 }
 
 impl RuntimeInstance {
     fn new(started: StartedRuntime, generation: u64) -> Self {
+        let StartedRuntime {
+            info,
+            providers,
+            skills,
+            connection,
+        } = started;
         Self {
-            info: Arc::new(started.info),
-            generation,
-            providers: Mutex::new(started.providers),
-            skills: Arc::new(started.skills),
-            connection: Mutex::new(started.connection),
+            info: Arc::new(info),
+            current: Mutex::new(CurrentStart {
+                generation,
+                providers,
+                skills: Arc::new(skills),
+                connection,
+            }),
+            added: Mutex::default(),
         }
     }
 
-    pub(crate) fn connection(&self) -> Option<super::remote::RuntimeClient> {
-        self.connection
+    fn current(&self) -> std::sync::MutexGuard<'_, CurrentStart> {
+        self.current
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+    }
+
+    pub(crate) fn connection(&self) -> Option<super::remote::RuntimeClient> {
+        self.current().connection.clone()
     }
 
     pub(crate) fn info(&self) -> &Arc<RuntimeInfo> {
         &self.info
     }
 
-    pub(crate) const fn generation(&self) -> u64 {
-        self.generation
+    pub(crate) fn generation(&self) -> u64 {
+        self.current().generation
     }
 
     pub(crate) fn origin(&self) -> ToolOrigin {
@@ -116,22 +152,52 @@ impl RuntimeInstance {
     }
 
     /// The instance's providers in composition order.
+    #[cfg(test)]
     pub(crate) fn providers(&self) -> Vec<Arc<dyn ToolProvider>> {
-        self.providers
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+        self.sources().1
+    }
+
+    /// The current generation together with the providers of that start, in
+    /// composition order.
+    pub(crate) fn sources(&self) -> (u64, Vec<Arc<dyn ToolProvider>>) {
+        let current = self.current();
+        let mut providers = current.providers.clone();
+        let generation = current.generation;
+        drop(current);
+        providers.extend(
+            self.added
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .cloned(),
+        );
+        (generation, providers)
     }
 
     pub(crate) fn push_provider(&self, provider: Arc<dyn ToolProvider>) {
-        self.providers
+        self.added
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(provider);
     }
 
-    pub(crate) fn skills(&self) -> &Arc<SkillRegistry> {
-        &self.skills
+    pub(crate) fn skills(&self) -> Arc<SkillRegistry> {
+        Arc::clone(&self.current().skills)
+    }
+
+    /// Whether `info` describes this instance: a restart must come back as
+    /// the same runtime, kind, attachment name, and workspace.
+    fn same_identity(&self, info: &RuntimeInfo) -> bool {
+        self.info.id() == info.id()
+            && self.info.kind() == info.kind()
+            && self.info.attachment_name() == info.attachment_name()
+            && self.info.workspace().map(|workspace| workspace.root())
+                == info.workspace().map(|workspace| workspace.root())
+    }
+
+    /// Takes over what a restart declared, under `generation`.
+    fn restart(&self, started: StartedRuntime, generation: u64) {
+        *self.current() = CurrentStart::new(started, generation);
     }
 
     /// The `AGENTS.md` context of a coding runtime for a run of `preset`;
@@ -179,16 +245,22 @@ impl RuntimeInstance {
             .map(|workspace| workspace.root().to_string_lossy().into_owned())
     }
 
-    /// Drops the providers and the protocol connection, which closes it.
+    /// Drops what the runtime declared and its protocol connection, which
+    /// closes it, as when it failed for good.
+    fn drop_runtime(&self) -> Option<super::remote::RuntimeClient> {
+        let mut current = self.current();
+        current.providers.clear();
+        current.connection.take()
+    }
+
+    /// Drops every provider (they may hold the engine) and the protocol
+    /// connection.
     fn clear(&self) -> Option<super::remote::RuntimeClient> {
-        self.providers
+        self.added
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
-        self.connection
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
+        self.drop_runtime()
     }
 }
 
@@ -212,8 +284,26 @@ impl InstanceKey {
 enum InstanceSlot {
     Starting,
     Ready(Arc<RuntimeInstance>),
-    Failed(String),
+    /// The connection dropped and the daemon is restarting the runtime; its
+    /// tools stay published and calls fail fast.
+    Reconnecting(Arc<RuntimeInstance>),
+    /// Failed to start, or dropped and did not reconnect. `instance` is the
+    /// instance that ran before, which a later start revives.
+    Failed {
+        reason: String,
+        instance: Option<Arc<RuntimeInstance>>,
+    },
     Stopped(Arc<RuntimeInstance>),
+}
+
+impl InstanceSlot {
+    /// The instance whose tools sessions see: ready or reconnecting.
+    fn published(&self) -> Option<&Arc<RuntimeInstance>> {
+        match self {
+            Self::Ready(instance) | Self::Reconnecting(instance) => Some(instance),
+            Self::Starting | Self::Failed { .. } | Self::Stopped(_) => None,
+        }
+    }
 }
 
 /// A runtime instance that failed to start, or dropped and did not
@@ -265,6 +355,10 @@ pub(crate) struct RuntimeRegistry {
     changes: tokio::sync::watch::Sender<u64>,
     /// Instance failures, for clients viewing attached sessions.
     failures: tokio::sync::broadcast::Sender<RuntimeFailure>,
+    /// How a dropped instance is reconnected.
+    reconnect: Mutex<ReconnectPolicy>,
+    /// Cancelled when the registry is cleared, which ends reconnect loops.
+    shutdown: CancellationToken,
     /// Composition diagnostics already reported, so each is reported once.
     reported: Mutex<std::collections::HashSet<String>>,
 }
@@ -302,6 +396,8 @@ impl RuntimeRegistry {
             local,
             changes: tokio::sync::watch::channel(0).0,
             failures: tokio::sync::broadcast::channel(64).0,
+            reconnect: Mutex::new(ReconnectPolicy::default()),
+            shutdown: CancellationToken::new(),
             reported: Mutex::default(),
         }
     }
@@ -395,10 +491,10 @@ impl RuntimeRegistry {
             .slots
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match slots.get(&key) {
-            Some(InstanceSlot::Ready(instance)) => Some(Arc::clone(instance)),
-            _ => None,
-        }
+        slots
+            .get(&key)
+            .and_then(InstanceSlot::published)
+            .map(Arc::clone)
     }
 
     /// The running instance a request for `runtime_id` at `requested`
@@ -411,14 +507,13 @@ impl RuntimeRegistry {
             .slots
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        slots.iter().find_map(|(candidate, slot)| match slot {
-            InstanceSlot::Ready(instance)
-                if candidate.runtime_id == key.runtime_id
-                    && (key.workspace.is_none() || candidate.workspace == key.workspace) =>
-            {
-                Some(Arc::clone(instance))
-            }
-            _ => None,
+        slots.iter().find_map(|(candidate, slot)| {
+            slot.published()
+                .filter(|_| {
+                    candidate.runtime_id == key.runtime_id
+                        && (key.workspace.is_none() || candidate.workspace == key.workspace)
+                })
+                .map(Arc::clone)
         })
     }
 
@@ -485,34 +580,53 @@ impl RuntimeRegistry {
             return Ok(instance);
         }
         let pending = self.resolve(&requested);
-        self.set_slot(pending.clone(), InstanceSlot::Starting);
+        let previous = self.begin_start(&pending);
         match template.start(workspace).await {
             Ok(started) if started.info.id() == runtime_id => {
-                Ok(self.install(&requested, &pending, started))
+                Ok(self.install(&requested, &pending, started, previous))
             }
             Ok(started) => {
                 let message = format!(
                     "runtime `{runtime_id}` reported runtime ID `{}`",
                     started.info.id()
                 );
-                self.fail_start(pending, message.clone());
+                self.fail_start(pending, message.clone(), previous);
                 Err(EngineError::Runtime(message))
             }
             Err(reason) => {
                 let message = format!("runtime `{runtime_id}` failed to start: {reason}");
-                self.fail_start(pending, message.clone());
+                self.fail_start(pending, message.clone(), previous);
                 Err(EngineError::Runtime(message))
             }
         }
     }
 
+    /// Marks `key` starting and returns the instance that ran there before
+    /// it failed, if any, for the start to revive.
+    fn begin_start(&self, key: &InstanceKey) -> Option<Arc<RuntimeInstance>> {
+        let previous = {
+            let mut slots = self
+                .slots
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match slots.insert(key.clone(), InstanceSlot::Starting) {
+                Some(InstanceSlot::Failed { instance, .. }) => instance,
+                _ => None,
+            }
+        };
+        self.notify();
+        previous
+    }
+
     /// Records a started instance under the canonical workspace it reported,
-    /// or returns the running instance already there.
+    /// or returns the running instance already there. An instance that ran
+    /// there before and failed is revived under a new generation.
     fn install(
         self: &Arc<Self>,
         requested: &InstanceKey,
         pending: &InstanceKey,
         started: StartedRuntime,
+        previous: Option<Arc<RuntimeInstance>>,
     ) -> Arc<RuntimeInstance> {
         let key = InstanceKey::of(&started.info);
         if let (Some(_), Some(canonical)) = (&requested.workspace, &key.workspace)
@@ -527,8 +641,31 @@ impl RuntimeRegistry {
             .slots
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        slots.remove(pending);
-        if let Some(InstanceSlot::Ready(existing)) = slots.get(&key) {
+        let mut revive = None;
+        if let Some(InstanceSlot::Starting) = slots.get(pending) {
+            match previous {
+                Some(instance) if pending != &key => {
+                    // The workspace now resolves elsewhere; the instance that
+                    // ran for the old one stays failed there.
+                    let reason = format!(
+                        "runtime `{}` now resolves to another workspace",
+                        key.runtime_id
+                    );
+                    slots.insert(
+                        pending.clone(),
+                        InstanceSlot::Failed {
+                            reason,
+                            instance: Some(instance),
+                        },
+                    );
+                }
+                previous => {
+                    revive = previous;
+                    slots.remove(pending);
+                }
+            }
+        }
+        if let Some(existing) = slots.get(&key).and_then(InstanceSlot::published) {
             // Another spelling of a workspace that already has an instance.
             let existing = Arc::clone(existing);
             drop(slots);
@@ -538,8 +675,21 @@ impl RuntimeRegistry {
             self.notify();
             return existing;
         }
+        let failed = revive.or_else(|| match slots.get(&key) {
+            Some(InstanceSlot::Failed {
+                instance: Some(instance),
+                ..
+            }) => Some(Arc::clone(instance)),
+            _ => None,
+        });
         let generation = self.generations.fetch_add(1, Ordering::Relaxed);
-        let instance = Arc::new(RuntimeInstance::new(started, generation));
+        let instance = match failed.filter(|instance| instance.same_identity(&started.info)) {
+            Some(instance) => {
+                instance.restart(started, generation);
+                instance
+            }
+            None => Arc::new(RuntimeInstance::new(started, generation)),
+        };
         slots.insert(key, InstanceSlot::Ready(Arc::clone(&instance)));
         drop(slots);
         self.watch(&instance);
@@ -571,12 +721,13 @@ impl RuntimeRegistry {
         self.watch(&self.local);
     }
 
-    /// Marks `instance` failed and reports it to clients when its runtime
-    /// protocol connection ends while it is ready. Its tools leave the
-    /// session's tool list; the next session that needs it starts it again
-    /// with a new generation.
+    /// Reconnects `instance` when its current runtime protocol connection
+    /// ends while it is ready (see [`Self::reconnect_lost`]).
     fn watch(self: &Arc<Self>, instance: &Arc<RuntimeInstance>) {
-        let Some(connection) = instance.connection() else {
+        let (generation, Some(connection)) = ({
+            let current = instance.current();
+            (current.generation, current.connection.clone())
+        }) else {
             return;
         };
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
@@ -589,39 +740,161 @@ impl RuntimeRegistry {
         handle.spawn(async move {
             let reason = closed.await;
             if let (Some(registry), Some(instance)) = (registry.upgrade(), instance.upgrade()) {
-                registry.lost(&instance, &reason);
+                registry.reconnect_lost(instance, generation, reason).await;
             }
         });
     }
 
-    fn lost(&self, instance: &Arc<RuntimeInstance>, reason: &str) {
+    /// The connection of `instance` at `generation` ended. The instance
+    /// becomes `reconnecting`: its tools stay published and calls fail fast
+    /// with `runtime_unavailable` while the template restarts it with the
+    /// reconnect policy. A restart revives the instance under a new
+    /// generation, so its tools are listed again; when every attempt fails,
+    /// its tools are dropped, it becomes `failed`, and clients are told.
+    async fn reconnect_lost(
+        self: Arc<Self>,
+        instance: Arc<RuntimeInstance>,
+        generation: u64,
+        reason: String,
+    ) {
         let key = InstanceKey::of(&instance.info);
-        let message = format!("runtime `{}` exited: {reason}", key.runtime_id);
         {
             let mut slots = self
                 .slots
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             match slots.get(&key) {
-                Some(InstanceSlot::Ready(current)) if Arc::ptr_eq(current, instance) => {}
+                Some(InstanceSlot::Ready(current))
+                    if Arc::ptr_eq(current, &instance) && instance.generation() == generation => {}
                 _ => return,
             }
-            slots.insert(key.clone(), InstanceSlot::Failed(message.clone()));
+            slots.insert(
+                key.clone(),
+                InstanceSlot::Reconnecting(Arc::clone(&instance)),
+            );
         }
-        drop(instance.clear());
+        self.notify();
+        let message = format!("runtime `{}` exited: {reason}", key.runtime_id);
+        let Some(template) = self.template(&key.runtime_id) else {
+            self.fail_lost(&key, &instance, message);
+            return;
+        };
+        let workspace = key.workspace.clone().filter(|_| template.takes_workspace());
+        let policy = self
+            .reconnect
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let outcome = policy
+            .run(&self.shutdown, |_| {
+                let template = Arc::clone(&template);
+                let workspace = workspace.clone();
+                let instance = Arc::clone(&instance);
+                async move {
+                    let started = template.start(workspace.as_deref()).await?;
+                    if instance.same_identity(&started.info) {
+                        return Ok(started);
+                    }
+                    let restarted = format!(
+                        "the runtime restarted as `{}`",
+                        started.info.attachment_name()
+                    );
+                    if let Some(connection) = started.connection {
+                        connection.shutdown().await;
+                    }
+                    Err(restarted)
+                }
+            })
+            .await;
+        match outcome {
+            ReconnectOutcome::Reconnected(started) => {
+                let restarted = {
+                    let mut slots = self
+                        .slots
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    match slots.get(&key) {
+                        Some(InstanceSlot::Reconnecting(current))
+                            if Arc::ptr_eq(current, &instance) =>
+                        {
+                            let generation = self.generations.fetch_add(1, Ordering::Relaxed);
+                            instance.restart(started, generation);
+                            slots.insert(key, InstanceSlot::Ready(Arc::clone(&instance)));
+                            None
+                        }
+                        _ => Some(started),
+                    }
+                };
+                match restarted {
+                    // Stopped meanwhile: the new connection is not needed.
+                    Some(started) => {
+                        if let Some(connection) = started.connection {
+                            connection.shutdown().await;
+                        }
+                    }
+                    None => {
+                        self.watch(&instance);
+                        self.notify();
+                    }
+                }
+            }
+            ReconnectOutcome::Exhausted {
+                attempts,
+                last_error,
+            } => {
+                let message =
+                    format!("{message}; reconnecting failed {attempts} times, last: {last_error}");
+                self.fail_lost(&key, &instance, message);
+            }
+            ReconnectOutcome::Cancelled => {}
+        }
+    }
+
+    /// Records that a reconnecting instance failed for good: its tools are
+    /// dropped and clients are told.
+    fn fail_lost(&self, key: &InstanceKey, instance: &Arc<RuntimeInstance>, reason: String) {
+        {
+            let mut slots = self
+                .slots
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match slots.get(key) {
+                Some(InstanceSlot::Reconnecting(current)) if Arc::ptr_eq(current, instance) => {}
+                _ => return,
+            }
+            slots.insert(
+                key.clone(),
+                InstanceSlot::Failed {
+                    reason: reason.clone(),
+                    instance: Some(Arc::clone(instance)),
+                },
+            );
+        }
+        drop(instance.drop_runtime());
         let _ = self.failures.send(RuntimeFailure {
-            runtime_id: key.runtime_id,
+            runtime_id: key.runtime_id.clone(),
             workspace: key
                 .workspace
                 .as_ref()
                 .map(|workspace| workspace.to_string_lossy().into_owned()),
-            reason: message,
+            reason,
         });
         self.notify();
     }
 
-    /// Records a failed start and reports it to clients.
-    fn fail_start(&self, key: InstanceKey, reason: String) {
+    /// Replaces the reconnect policy, for tests that cannot wait for the
+    /// production backoff.
+    #[cfg(test)]
+    pub(crate) fn set_reconnect_policy(&self, policy: ReconnectPolicy) {
+        *self
+            .reconnect
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = policy;
+    }
+
+    /// Records a failed start and reports it to clients. `previous` is the
+    /// instance that ran there before, which a later start still revives.
+    fn fail_start(&self, key: InstanceKey, reason: String, previous: Option<Arc<RuntimeInstance>>) {
         let failure = RuntimeFailure {
             runtime_id: key.runtime_id.clone(),
             workspace: key
@@ -630,7 +903,13 @@ impl RuntimeRegistry {
                 .map(|workspace| workspace.to_string_lossy().into_owned()),
             reason: reason.clone(),
         };
-        self.set_slot(key, InstanceSlot::Failed(reason));
+        self.set_slot(
+            key,
+            InstanceSlot::Failed {
+                reason,
+                instance: previous,
+            },
+        );
         let _ = self.failures.send(failure);
     }
 
@@ -668,6 +947,18 @@ impl RuntimeRegistry {
             .collect()
     }
 
+    /// How `runtimes.list` reports `instance`.
+    pub(crate) fn summary(&self, instance: &RuntimeInstance) -> Option<RuntimeInstanceSummary> {
+        let key = InstanceKey::of(&instance.info);
+        let workspace = key
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.to_string_lossy().into_owned());
+        self.instances()
+            .into_iter()
+            .find(|summary| summary.runtime_id == key.runtime_id && summary.workspace == workspace)
+    }
+
     pub(crate) fn instances(&self) -> Vec<RuntimeInstanceSummary> {
         self.slots
             .lock()
@@ -679,9 +970,14 @@ impl RuntimeRegistry {
                     InstanceSlot::Ready(instance) => {
                         (Some(instance), RuntimeInstanceStatus::Ready, None)
                     }
-                    InstanceSlot::Failed(message) => {
-                        (None, RuntimeInstanceStatus::Failed, Some(message.clone()))
+                    InstanceSlot::Reconnecting(instance) => {
+                        (Some(instance), RuntimeInstanceStatus::Reconnecting, None)
                     }
+                    InstanceSlot::Failed { reason, instance } => (
+                        instance.as_ref(),
+                        RuntimeInstanceStatus::Failed,
+                        Some(reason.clone()),
+                    ),
                     InstanceSlot::Stopped(instance) => {
                         (Some(instance), RuntimeInstanceStatus::Stopped, None)
                     }
@@ -712,6 +1008,7 @@ impl RuntimeRegistry {
     /// instances stopped. Returns the runtime protocol connections, for the
     /// caller to shut down; dropping them closes them.
     pub(crate) fn clear(&self) -> Vec<super::remote::RuntimeClient> {
+        self.shutdown.cancel();
         self.base
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -722,9 +1019,18 @@ impl RuntimeRegistry {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         for slot in slots.values_mut() {
-            if let InstanceSlot::Ready(instance) = slot {
-                connections.extend(instance.clear());
-                *slot = InstanceSlot::Stopped(Arc::clone(instance));
+            match slot {
+                InstanceSlot::Ready(instance) | InstanceSlot::Reconnecting(instance) => {
+                    connections.extend(instance.clear());
+                    *slot = InstanceSlot::Stopped(Arc::clone(instance));
+                }
+                InstanceSlot::Failed {
+                    instance: Some(instance),
+                    ..
+                } => connections.extend(instance.clear()),
+                InstanceSlot::Starting
+                | InstanceSlot::Failed { instance: None, .. }
+                | InstanceSlot::Stopped(_) => {}
             }
         }
         drop(slots);

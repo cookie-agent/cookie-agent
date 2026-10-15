@@ -316,6 +316,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::RuntimesListResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
+    async fn reconnect_runtime(
+        &self,
+        _: crate::RuntimesReconnectParams,
+    ) -> Result<crate::RuntimesReconnectResult, ServerFault> {
+        Err(ServerFault::method_not_found())
+    }
     async fn list_mcp_servers(
         &self,
         _: crate::McpServerListParams,

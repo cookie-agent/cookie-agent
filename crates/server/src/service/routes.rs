@@ -602,6 +602,26 @@ impl ServerProtocol for Server {
         Ok(crate::runtimes::runtimes_list(&self.engine))
     }
 
+    async fn reconnect_runtime(
+        &self,
+        params: cookie_agent_protocol::RuntimesReconnectParams,
+    ) -> Result<cookie_agent_protocol::RuntimesReconnectResult> {
+        let instance = self
+            .engine
+            .reconnect_runtime(
+                params.runtime_id.as_str(),
+                params.workspace.map(std::path::PathBuf::from),
+            )
+            .await
+            .map_err(protocol_fault)?;
+        let instance = crate::runtimes::instance_info(instance).ok_or_else(|| {
+            protocol_fault(cookie_agent_engine::EngineError::Runtime(
+                "the runtime instance reported an invalid identity".into(),
+            ))
+        })?;
+        Ok(cookie_agent_protocol::RuntimesReconnectResult { instance })
+    }
+
     async fn list_mcp_servers(&self, _: McpServerListParams) -> Result<McpServerListResult> {
         Ok(McpServerListResult {
             servers: self.engine.list_mcp_servers(),

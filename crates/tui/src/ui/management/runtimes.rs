@@ -1,5 +1,6 @@
 //! The `/runtime` panel: the selected session's runtime attachments with
-//! their instance status, attaching a template, and detaching.
+//! their instance status, attaching a template, detaching, and retrying a
+//! failed instance.
 
 use cookie_agent_protocol::{
     RuntimeAttachment, RuntimeId, RuntimeInstanceInfo, RuntimeInstanceStatus, RuntimeKind,
@@ -140,6 +141,32 @@ impl RuntimePanel {
         Ok((template.runtime_id.clone(), workspace))
     }
 
+    /// The `runtimes.reconnect` request that retries `row`'s instance: its
+    /// workspace goes along exactly when its template takes one.
+    pub(in crate::ui) fn reconnect_request(
+        &self,
+        row: &RuntimeRow,
+    ) -> Result<(RuntimeId, Option<String>), String> {
+        let template = self
+            .templates()
+            .iter()
+            .find(|template| template.runtime_id == row.attachment.runtime_id)
+            .ok_or_else(|| {
+                format!(
+                    "runtime `{}` is not a known template",
+                    row.attachment.runtime_id
+                )
+            })?;
+        let workspace = if template.takes_workspace {
+            Some(row.attachment.workspace.clone().ok_or_else(|| {
+                format!("attachment `{}` records no workspace", row.attachment.name)
+            })?)
+        } else {
+            None
+        };
+        Ok((row.attachment.runtime_id.clone(), workspace))
+    }
+
     pub(in crate::ui) fn clamp(&mut self, rows: usize) {
         self.selection
             .select((rows > 0).then(|| self.selection.selected().unwrap_or(0).min(rows - 1)));
@@ -262,7 +289,7 @@ pub(in crate::ui) fn render_runtimes(
                     .title(crate::ui::panel_title("Session runtimes"))
                     .title_bottom(crate::ui::panel_title(
                         Line::from(Span::styled(
-                            "a attach | d detach | esc close",
+                            "a attach | d detach | r retry | esc close",
                             theme.internal(),
                         ))
                         .right_aligned(),

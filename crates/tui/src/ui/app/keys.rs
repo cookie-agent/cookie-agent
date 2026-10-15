@@ -177,8 +177,55 @@ impl App {
                     self.dispatch_runtime_detach(row.attachment.name.clone());
                 }
             }
+            KeyCode::Char('r') => {
+                if let Some(row) = self
+                    .runtime_panel
+                    .selection
+                    .selected()
+                    .and_then(|index| rows.get(index))
+                {
+                    match self.runtime_panel.reconnect_request(row) {
+                        Ok((runtime_id, workspace)) => {
+                            self.dispatch_runtime_reconnect(runtime_id, workspace);
+                        }
+                        Err(error) => self.status = error,
+                    }
+                }
+            }
             _ => {}
         }
+    }
+
+    fn dispatch_runtime_reconnect(
+        &mut self,
+        runtime_id: cookie_agent_protocol::RuntimeId,
+        workspace: Option<String>,
+    ) {
+        self.status = format!("retrying runtime `{runtime_id}`...");
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .reconnect_runtime(cookie_agent_protocol::RuntimesReconnectParams {
+                    runtime_id: runtime_id.clone(),
+                    workspace,
+                })
+                .await
+                .map(|result| {
+                    let status = match result.instance.status {
+                        cookie_agent_protocol::RuntimeInstanceStatus::Starting => "starting",
+                        cookie_agent_protocol::RuntimeInstanceStatus::Ready => "ready",
+                        cookie_agent_protocol::RuntimeInstanceStatus::Reconnecting => {
+                            "reconnecting"
+                        }
+                        cookie_agent_protocol::RuntimeInstanceStatus::Failed => "failed",
+                        cookie_agent_protocol::RuntimeInstanceStatus::Stopped => "stopped",
+                    };
+                    format!("runtime `{runtime_id}` is {status}")
+                })
+                .map_err(|error| format!("retry failed: {error}"));
+            let _ = updates.send(RpcUpdate::RuntimeAttachmentChanged { result });
+        });
     }
 
     fn submit_runtime_attach(&mut self) {

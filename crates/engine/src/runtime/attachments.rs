@@ -171,17 +171,13 @@ impl Engine {
                 continue;
             };
             let origin = instance.origin();
-            sources.extend(
-                instance
-                    .providers()
-                    .into_iter()
-                    .map(|provider| SourcedProvider {
-                        attachment: Some(attachment.name.clone()),
-                        generation: instance.generation(),
-                        origin: origin.clone(),
-                        provider,
-                    }),
-            );
+            let (generation, providers) = instance.sources();
+            sources.extend(providers.into_iter().map(|provider| SourcedProvider {
+                attachment: Some(attachment.name.clone()),
+                generation,
+                origin: origin.clone(),
+                provider,
+            }));
         }
         sources
     }
@@ -424,6 +420,31 @@ impl Engine {
     #[must_use]
     pub fn runtime_instances(&self) -> Vec<RuntimeInstanceSummary> {
         self.inner.runtimes.instances()
+    }
+
+    /// Retries the instance of `runtime_id` (at `workspace`, when its
+    /// template takes one) now, as `runtimes.reconnect` and the `/runtime`
+    /// panel do: a failed instance starts again under a new generation, one
+    /// that is not running starts, and a ready or reconnecting one is left as
+    /// it is. Retrying `global` retries its failed MCP servers. Returns the
+    /// instance afterwards.
+    pub async fn reconnect_runtime(
+        &self,
+        runtime_id: &str,
+        workspace: Option<PathBuf>,
+    ) -> Result<RuntimeInstanceSummary, EngineError> {
+        let instance = self
+            .inner
+            .runtimes
+            .ensure(runtime_id, workspace.as_deref())
+            .await?;
+        if runtime_id == RuntimeId::GLOBAL {
+            self.retry_global_mcp();
+        }
+        self.inner
+            .runtimes
+            .summary(&instance)
+            .ok_or_else(|| EngineError::Runtime(format!("runtime `{runtime_id}` stopped")))
     }
 
     /// Runtime instances that failed to start, as they happen.

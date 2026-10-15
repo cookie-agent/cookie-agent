@@ -690,6 +690,14 @@ impl Client {
             .await
     }
 
+    /// Retries a runtime instance now, such as one that failed.
+    pub async fn reconnect_runtime(
+        &self,
+        params: crate::RuntimesReconnectParams,
+    ) -> Result<crate::RuntimesReconnectResult, ClientError> {
+        self.call(crate::RUNTIMES_RECONNECT_METHOD, &params).await
+    }
+
     pub async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError> {
         self.call("mcp.server.list", &McpServerListParams {}).await
     }

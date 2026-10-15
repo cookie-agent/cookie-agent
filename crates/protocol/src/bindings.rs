@@ -197,6 +197,8 @@ macro_rules! protocol_roots {
             SessionRuntimeDetachResult,
             RuntimesListParams,
             RuntimesListResult,
+            RuntimesReconnectParams,
+            RuntimesReconnectResult,
             RuntimesChangedNotification,
             ProviderConnectResult,
             ProviderConnectError,
