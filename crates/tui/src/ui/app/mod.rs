@@ -1397,9 +1397,9 @@ impl App {
         match self
             .client
             .create_session(SessionCreateParams {
-                selection,
                 permission_mode: self.draft_permissions.mode,
                 permission_rules: self.draft_permissions.rules.clone(),
+                ..SessionCreateParams::new(selection)
             })
             .await
         {

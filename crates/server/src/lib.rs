@@ -1,7 +1,8 @@
-//! Exact cookie-agent protocol 39 transport-neutral JSON-RPC service.
+//! Exact cookie-agent protocol 40 transport-neutral JSON-RPC service.
 
 mod providers;
 mod rpc;
+mod runtimes;
 mod service;
 mod token;
 

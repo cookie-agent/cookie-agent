@@ -430,6 +430,23 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: McpAuthCancelParams,
     ) -> Result<McpAuthCancelResult, ServerFault>;
+    /// Attaches a runtime to a session with no active run.
+    async fn attach_runtime(
+        &self,
+        params: crate::SessionRuntimeAttachParams,
+        context: &ServerContext,
+    ) -> Result<crate::SessionRuntimeAttachResult, ServerFault>;
+    /// Detaches a runtime from a session with no active run.
+    async fn detach_runtime(
+        &self,
+        params: crate::SessionRuntimeDetachParams,
+        context: &ServerContext,
+    ) -> Result<crate::SessionRuntimeDetachResult, ServerFault>;
+    /// Lists runtime templates and instances.
+    async fn list_runtimes(
+        &self,
+        params: crate::RuntimesListParams,
+    ) -> Result<crate::RuntimesListResult, ServerFault>;
     async fn list_mcp_servers(
         &self,
         params: McpServerListParams,
@@ -709,6 +726,13 @@ async fn dispatch<S: ServerProtocol>(
         "mcp.auth.begin" => value(server.begin_mcp_auth(decode(params)?).await?),
         "mcp.auth.complete" => value(server.complete_mcp_auth(decode(params)?).await?),
         "mcp.auth.cancel" => value(server.cancel_mcp_auth(decode(params)?).await?),
+        crate::SESSION_RUNTIME_ATTACH_METHOD => {
+            value(server.attach_runtime(decode(params)?, context).await?)
+        }
+        crate::SESSION_RUNTIME_DETACH_METHOD => {
+            value(server.detach_runtime(decode(params)?, context).await?)
+        }
+        crate::RUNTIMES_LIST_METHOD => value(server.list_runtimes(decode_default(params)?).await?),
         "mcp.server.list" => value(server.list_mcp_servers(decode_default(params)?).await?),
         "mcp.server.add" => value(server.add_mcp_server(decode(params)?).await?),
         "mcp.server.edit" => value(server.edit_mcp_server(decode(params)?).await?),

@@ -301,11 +301,9 @@ impl Engine {
         };
         // The child inherits the parent's attachments, narrowed by the
         // request, and records them itself so its log is self-describing.
-        let attachments = self
-            .delegated_attachments(&parent, entry.request.runtimes.as_deref())
-            .iter()
-            .map(super::attachments::attached_event)
-            .collect();
+        let attachments = super::attachments::initial_attachment_events(
+            &self.delegated_attachments(&parent, entry.request.runtimes.as_deref()),
+        );
         let store = self.inner.store.clone();
         self.spawn_admission_blocking(move || {
             store.create_with_initial(

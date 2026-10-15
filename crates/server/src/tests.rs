@@ -942,3 +942,145 @@ async fn protocol_eight_and_unknown_params_are_rejected() {
     .await;
     assert_eq!(response["error"]["code"], -32602);
 }
+
+#[tokio::test]
+async fn runtime_attachments_are_reachable_through_rpc() {
+    let mut catalog = (*openai_catalog()).clone();
+    Arc::make_mut(&mut catalog.providers)
+        .values_mut()
+        .next()
+        .expect("OpenAI provider")
+        .record
+        .as_mut()
+        .expect("OpenAI provider record")
+        .api = Some("http://127.0.0.1:9/v1".into());
+    let catalog = Arc::new(catalog);
+    let harness = harness_with_catalog(Arc::clone(&catalog), |_| {});
+    let mut client = connect(Arc::clone(&harness.server)).await;
+    let (connected, _) = request(
+        &mut client,
+        2,
+        "provider.connect",
+        json!({
+            "provider_id":"openai",
+            "expected_catalog_revision":catalog.revision,
+            "setup_values":{},
+            "auth_method":"bearer-api-key-v1",
+            "auth_values":{"api_key":"test-secret"},
+            "client_connect_id":"runtime-rpc-test"
+        }),
+    )
+    .await;
+    assert!(connected.get("result").is_some(), "{connected}");
+    let selection = json!({
+        "agent": "default",
+        "model": { "model": "openai/gpt-5-mini", "variant": null }
+    });
+
+    let (listed, _) = request(&mut client, 3, "runtimes.list", json!({})).await;
+    let templates = listed["result"]["templates"].as_array().expect("templates");
+    assert_eq!(
+        templates
+            .iter()
+            .map(|template| (
+                template["runtime_id"].as_str().unwrap(),
+                template["takes_workspace"].as_bool().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        [("global", false), ("local", false)]
+    );
+    assert!(
+        listed["result"]["instances"]
+            .as_array()
+            .expect("instances")
+            .iter()
+            .all(|instance| instance["status"] == "ready")
+    );
+
+    // The default: `global`, then `local`.
+    let (created, _) = request(
+        &mut client,
+        4,
+        "session.create",
+        json!({ "selection": selection.clone() }),
+    )
+    .await;
+    let names = |runtimes: &serde_json::Value| {
+        runtimes
+            .as_array()
+            .expect("runtimes")
+            .iter()
+            .map(|runtime| runtime["name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let defaults = names(&created["result"]["runtimes"]);
+    assert_eq!(defaults.len(), 2);
+    assert_eq!(defaults[0], "global");
+    assert!(defaults[1].starts_with("local"));
+
+    // No runtimes at all.
+    let (bare, _) = request(
+        &mut client,
+        5,
+        "session.create",
+        json!({ "selection": selection.clone(), "runtimes": [], "global": false }),
+    )
+    .await;
+    assert!(names(&bare["result"]["runtimes"]).is_empty(), "{bare}");
+    let session_id = bare["result"]["session"]["session_id"].clone();
+
+    let (attached, _) = request(
+        &mut client,
+        6,
+        "session.runtime.attach",
+        json!({ "session_id": session_id, "runtime_id": "global" }),
+    )
+    .await;
+    assert_eq!(
+        attached["result"]["attachment"]["name"], "global",
+        "{attached}"
+    );
+    assert_eq!(names(&attached["result"]["runtimes"]), ["global"]);
+    for (id, params, detail) in [
+        (
+            7,
+            json!({ "session_id": session_id, "runtime_id": "labpc" }),
+            "unknown runtime `labpc`",
+        ),
+        (
+            8,
+            json!({ "session_id": session_id, "runtime_id": "local", "workspace": "/tmp" }),
+            "runtime `local` takes no workspace",
+        ),
+    ] {
+        let (rejected, _) = request(&mut client, id, "session.runtime.attach", params).await;
+        assert!(
+            rejected["error"]["data"]["detail"]
+                .as_str()
+                .is_some_and(|message| message.contains(detail)),
+            "{rejected}"
+        );
+    }
+    let (detached, _) = request(
+        &mut client,
+        9,
+        "session.runtime.detach",
+        json!({ "session_id": session_id, "name": "global" }),
+    )
+    .await;
+    assert!(
+        names(&detached["result"]["runtimes"]).is_empty(),
+        "{detached}"
+    );
+    let (fetched, _) = request(
+        &mut client,
+        10,
+        "session.get",
+        json!({ "session_id": session_id }),
+    )
+    .await;
+    assert!(
+        names(&fetched["result"]["runtimes"]).is_empty(),
+        "{fetched}"
+    );
+}

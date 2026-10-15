@@ -1,11 +1,11 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 39 is current-only. A client must call `handshake` before any other
+Protocol 40 is current-only. A client must call `handshake` before any other
 method:
 
 ```json
-{ "protocol_version": 39, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+{ "protocol_version": 40, "client": { "kind": "tui", "instance_id": "<uuid>" } }
 ```
 
 `client.kind` names the client program: a lowercase letter followed by up to 15
@@ -14,7 +14,7 @@ lowercase letters, digits, or hyphens (the shipped clients use `tui` and `cli`).
 across reconnects so it can recognize events it caused. Any number of clients
 may connect to one daemon at once.
 
-The response is `{ "protocol_version": 39, "origin": "client:<kind>-<id>" }`,
+The response is `{ "protocol_version": 40, "origin": "client:<kind>-<id>" }`,
 where `<id>` is the instance id as 32 lowercase hex digits. The daemon stamps
 that origin on every event the connection's requests cause, so each client can
 tell its own actions from another client's. A repeated handshake on the same
@@ -29,11 +29,17 @@ protocol 36 added the `resync` runtime change reason. Protocol 37 made
 removed the workspace configuration layer: the `workspace` agent document source
 and the `workspace_file` MCP configuration source and target are gone (session
 logs that recorded a `workspace` document source still read it as `user`).
-Older clients are rejected.
+Protocol 40 added runtime attachments (see [Runtimes](#runtimes)):
+`session.create` takes `runtimes` and `global`, the session create, get, and
+resume results carry the session's `runtimes`, `session.runtime.attach`,
+`session.runtime.detach`, and `runtimes.list` are new, `runtimes.changed` is a
+new notification, permission rules, overlay mutations, approval requests, and
+tree grants carry a runtime selector or runtime ID, and `delegate_subagent`
+accepts `runtimes`. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 39.
+members of protocol 40.
 
 ## Error diagnostics
 
@@ -56,7 +62,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 39 alongside independent display and output references. The
+preserved in protocol 40 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -128,9 +134,9 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `runtime.snapshot.get` | Empty object | One coherent runtime snapshot |
 | `provider.connect` | Provider, expected catalog revision, setup/auth values, client ID | Durable connection, effective auth, snapshot, replay state |
 | `provider.disconnect` | Provider, expected revisions/generation, client ID | Disconnect receipt, effective auth, snapshot, replay state |
-| `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules) | Session metadata with skipped-event diagnostics |
+| `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, workspace? }]`), optional `global` (default `true`) | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
 | `session.list` | Optional cwd identity | Root session metadata list with skipped-event diagnostics |
-| `session.get` | Session ID | Session metadata with skipped-event diagnostics |
+| `session.get` | Session ID | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
 | `session.goal.get` | Session ID | Required nullable `goal: GoalState` |
 | `session.goal.set` | Session ID, objective, optional `selection: RunSelection` | Activated `goal: GoalState` |
 | `session.goal.lifecycle` | Session ID, goal ID, expected revision, pause/resume/cancel action, optional `selection` for resume only | Updated `goal: GoalState` |
@@ -138,12 +144,15 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.usage` | Session ID | Token/request rollup, cache hit rate, optional estimated cost, and per-model breakdown |
 | `session.children` | Session ID | Direct child summaries |
 | `session.tree` | Session ID | Recursive session tree |
-| `session.resume` | Session ID | Resumed session metadata with skipped-event diagnostics |
+| `session.resume` | Session ID | Resumed session metadata with skipped-event diagnostics, and the session's `runtimes` |
 | `session.rename` | Session ID, client rename ID, set/clear/reset change | Session metadata and client ID |
 | `session.permission.get` | Session ID | Effective permissions per action and the tree's current mode |
-| `session.permission.set` | Session ID, action, wildcard pattern, effect | Effective permissions after the overlay change |
-| `session.permission.clear` | Session ID, action, wildcard pattern | Effective permissions after the overlay change |
+| `session.permission.set` | Session ID, action, optional `runtime` selector, wildcard pattern, effect | Effective permissions after the overlay change |
+| `session.permission.clear` | Session ID, action, optional `runtime` selector, wildcard pattern | Effective permissions after the overlay change |
 | `session.permission.preview` | Run selection, optional overlay `rules` | Effective permissions a session created with them would have; creates nothing |
+| `session.runtime.attach` | Session ID, `runtime_id`, `workspace` when the template takes one | The new `attachment` and the session's `runtimes` |
+| `session.runtime.detach` | Session ID, attachment `name` | The session's `runtimes` |
+| `runtimes.list` | Empty object | Runtime `templates` and live `instances` with status |
 | `session.set_permission_mode` | Any session ID in the target tree, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo`; updates the runtime-only tree mode | Empty object |
 | `skills.list` | Session ID | Discovered skills with source, precedence, visibility, and permission effect |
 | `skills.get` | Session ID, skill name, arguments | Permission-checked rendered preview and descriptor |
@@ -169,6 +178,40 @@ on the governing run policy and session overlay. `session.list` returns root
 sessions only: a delegated child is selected as part of its root's tree, not as
 a top-level entry, and stays reachable via `session.tree`, `session.children`,
 `session.get`, and `session.resume`.
+
+### Runtimes
+
+A session uses the tools and workspace context of the
+[runtimes](../specs/runtimes.md) it is attached to. A `RuntimeAttachment` is
+`{ name, runtime_id, kind, workspace? }`: the session-unique attachment `name`
+(also the tool prefix on name collisions), the template's `runtime_id`, the
+runtime's `kind` (`global` or `coding`), and the canonical `workspace` the
+runtime reported, if any. The session create, get, and resume results carry the
+session's attachments in attach order; clients follow later changes through the
+`runtime_attached` and `runtime_detached` events of the session.
+
+`session.create` attaches `global` unless `global` is `false`, then each entry
+of `runtimes` in order; without `runtimes` it attaches `local`, the coding
+runtime for the daemon's working directory. An empty `runtimes` list creates a
+session with no coding runtime. Instances that are not running are started
+first, and a failure creates no session.
+
+`session.runtime.attach` and `session.runtime.detach` are rejected while the
+session has an active run (`session running`). Attach starts the instance when
+needed and records nothing when that fails. The attachment's name is the name
+the instance reports (`global`, or `<runtime ID>_<workspace basename>` for a
+coding runtime), suffixed `_2`, `_3`, ... when the session already has an
+attachment of that name; attaching an instance a session already has is an
+error. A template whose definition takes a workspace requires `workspace`;
+for any other template, including `global` and `local`, supplying one is an
+error. Attaching a runtime ID without a template is an `unknown runtime`
+error; this protocol version has only the `global` and `local` templates.
+
+`runtimes.list` returns each template's `runtime_id` and whether it
+`takes_workspace`, and each instance's `runtime_id`, reported
+`attachment_name`, `kind`, `workspace`, and `platform` once started, its
+`status` (`starting`, `ready`, `reconnecting`, `failed`, or `stopped`), and a
+failure `message`.
 
 ### Model availability
 
@@ -345,10 +388,11 @@ the title, and continues with new physical sequences.
 | `events.plugin` | Session-scoped non-durable plugin event |
 | `sessions.changed` | One session index change: `upserted`, `removed`, `approvals_changed`, `permission_mode_changed`, or `resync` |
 | `mcp.changed` | Empty object: MCP server configuration or status changed |
+| `runtimes.changed` | Empty object: a runtime template was registered or an instance's status changed |
 
 ### Daemon-wide changes
 
-`runtime.changed`, `sessions.changed`, and `mcp.changed` reach every connection
+`runtime.changed`, `sessions.changed`, `mcp.changed`, and `runtimes.changed` reach every connection
 from its handshake on, whether or not it subscribed to any session, so each
 client sharing a daemon stays current with what the others do. Clients ignore
 notification methods they do not know.
@@ -372,6 +416,7 @@ null `previous_revision`, the current snapshot, and the reason `resync`; a
 client that holds a different revision refetches `runtime.snapshot.get` rather
 than trusting either. `mcp.changed` carries nothing;
 bursts coalesce into one notification, and a client refetches `mcp.server.list`.
+`runtimes.changed` works the same way for `runtimes.list`.
 
 The shared client maps these to `ClientDelivery` variants (`Live`, replay
 deliveries, `PluginEvent`, `RuntimeChanged`, `RecoveryFailed`), so a UI

@@ -105,6 +105,34 @@ impl Server {
         });
     }
 
+    /// Signals runtime template and instance status changes to this
+    /// connection; bursts coalesce.
+    pub(super) fn start_runtime_instance_notifications(&self, context: ServerContext) {
+        let mut receiver = self.engine.subscribe_runtime_instance_changes();
+        receiver.mark_unchanged();
+        tokio::spawn(async move {
+            let shutdown = context.shutdown();
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    changed = receiver.changed() => if changed.is_err() {
+                        return;
+                    },
+                }
+                if context
+                    .notify(
+                        cookie_agent_protocol::RUNTIMES_CHANGED_METHOD,
+                        &cookie_agent_protocol::RuntimesChangedNotification {},
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+
     pub(crate) fn start_engine_event_notifications(&self, context: ServerContext) {
         let mut receiver = self.engine.subscribe_engine_events();
         tokio::spawn(async move {

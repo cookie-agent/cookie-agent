@@ -91,6 +91,9 @@ pub enum ClientDelivery {
     RuntimeChanged(Box<crate::RuntimeChangedNotification>),
     SessionsChanged(Box<crate::SessionsChangedNotification>),
     McpChanged,
+    /// A runtime template or instance status changed; refetch
+    /// `runtimes.list`.
+    RuntimesChanged,
 }
 
 type Deliveries = mpsc::UnboundedSender<ClientDelivery>;
@@ -658,6 +661,30 @@ impl Client {
         params: McpAuthCancelParams,
     ) -> Result<McpAuthCancelResult, ClientError> {
         self.call("mcp.auth.cancel", &params).await
+    }
+
+    /// Attaches a runtime to a session with no active run.
+    pub async fn attach_runtime(
+        &self,
+        params: crate::SessionRuntimeAttachParams,
+    ) -> Result<crate::SessionRuntimeAttachResult, ClientError> {
+        self.call(crate::SESSION_RUNTIME_ATTACH_METHOD, &params)
+            .await
+    }
+
+    /// Detaches a runtime from a session with no active run.
+    pub async fn detach_runtime(
+        &self,
+        params: crate::SessionRuntimeDetachParams,
+    ) -> Result<crate::SessionRuntimeDetachResult, ClientError> {
+        self.call(crate::SESSION_RUNTIME_DETACH_METHOD, &params)
+            .await
+    }
+
+    /// Lists runtime templates and the instances the daemon started.
+    pub async fn list_runtimes(&self) -> Result<crate::RuntimesListResult, ClientError> {
+        self.call(crate::RUNTIMES_LIST_METHOD, &crate::RuntimesListParams {})
+            .await
     }
 
     pub async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError> {
@@ -1459,6 +1486,10 @@ async fn handle_frame(
         Some(crate::MCP_CHANGED_METHOD) => {
             let _: crate::McpChangedNotification = serde_json::from_str(params.get())?;
             let _ = deliveries.send(ClientDelivery::McpChanged);
+        }
+        Some(crate::RUNTIMES_CHANGED_METHOD) => {
+            let _: crate::RuntimesChangedNotification = serde_json::from_str(params.get())?;
+            let _ = deliveries.send(ClientDelivery::RuntimesChanged);
         }
         _ => {}
     }

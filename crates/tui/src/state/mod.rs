@@ -1072,7 +1072,8 @@ impl StateStore {
             ClientDelivery::PluginEvent(_) => DeliveryOutcome::Applied,
             ClientDelivery::RuntimeChanged(_)
             | ClientDelivery::SessionsChanged(_)
-            | ClientDelivery::McpChanged => DeliveryOutcome::Applied,
+            | ClientDelivery::McpChanged
+            | ClientDelivery::RuntimesChanged => DeliveryOutcome::Applied,
         }
     }
 

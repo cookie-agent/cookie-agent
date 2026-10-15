@@ -150,10 +150,7 @@ impl Engine {
             id,
             EventOrigin::new("user").expect("static event origin is valid"),
             creation,
-            attachments
-                .iter()
-                .map(super::attachments::attached_event)
-                .collect(),
+            super::attachments::initial_attachment_events(attachments),
         )?;
         self.spawn_actor(id)?;
         Ok(self.inner.store.get(id)?.metadata())

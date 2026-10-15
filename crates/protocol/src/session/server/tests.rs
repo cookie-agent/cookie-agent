@@ -296,6 +296,26 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::McpAuthCancelResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
+    async fn attach_runtime(
+        &self,
+        _: crate::SessionRuntimeAttachParams,
+        _: &ServerContext,
+    ) -> Result<crate::SessionRuntimeAttachResult, ServerFault> {
+        Err(ServerFault::method_not_found())
+    }
+    async fn detach_runtime(
+        &self,
+        _: crate::SessionRuntimeDetachParams,
+        _: &ServerContext,
+    ) -> Result<crate::SessionRuntimeDetachResult, ServerFault> {
+        Err(ServerFault::method_not_found())
+    }
+    async fn list_runtimes(
+        &self,
+        _: crate::RuntimesListParams,
+    ) -> Result<crate::RuntimesListResult, ServerFault> {
+        Err(ServerFault::method_not_found())
+    }
     async fn list_mcp_servers(
         &self,
         _: crate::McpServerListParams,

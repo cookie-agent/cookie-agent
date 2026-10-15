@@ -37,20 +37,38 @@ impl ServerProtocol for Server {
         self.start_runtime_notifications(context.clone());
         self.start_session_change_notifications(context.clone());
         self.start_mcp_change_notifications(context.clone());
+        self.start_runtime_instance_notifications(context.clone());
         self.start_engine_event_notifications(context);
     }
 
     async fn create_session(&self, params: SessionCreateParams) -> Result<SessionCreateResult> {
-        self.engine
+        let runtimes = cookie_agent_engine::SessionRuntimes {
+            runtimes: params.runtimes.map(|requests| {
+                requests
+                    .into_iter()
+                    .map(|request| cookie_agent_engine::SessionRuntimeRequest {
+                        runtime_id: request.runtime_id.into_string(),
+                        workspace: request.workspace.map(std::path::PathBuf::from),
+                    })
+                    .collect()
+            }),
+            global: params.global,
+        };
+        let session = self
+            .engine
             .create_session_with_permissions(
                 params.selection,
                 params.permission_mode,
                 params.permission_rules,
-                cookie_agent_engine::SessionRuntimes::default(),
+                runtimes,
             )
             .await
-            .map(|session| SessionCreateResult { session })
-            .map_err(protocol_fault)
+            .map_err(protocol_fault)?;
+        let runtimes = self
+            .engine
+            .session_runtimes(session.session_id)
+            .map_err(protocol_fault)?;
+        Ok(SessionCreateResult { session, runtimes })
     }
 
     async fn list_sessions(&self, params: SessionListParams) -> Result<SessionListResult> {
@@ -69,10 +87,15 @@ impl ServerProtocol for Server {
     }
 
     async fn get_session(&self, params: SessionGetParams) -> Result<SessionGetResult> {
-        self.engine
+        let session = self
+            .engine
             .get_session(params.session_id)
-            .map(|session| SessionGetResult { session })
-            .map_err(protocol_fault)
+            .map_err(protocol_fault)?;
+        let runtimes = self
+            .engine
+            .session_runtimes(params.session_id)
+            .map_err(protocol_fault)?;
+        Ok(SessionGetResult { session, runtimes })
     }
 
     async fn get_session_goal(&self, params: SessionGoalGetParams) -> Result<SessionGoalGetResult> {
@@ -149,11 +172,16 @@ impl ServerProtocol for Server {
     }
 
     async fn resume_session(&self, params: SessionResumeParams) -> Result<SessionResumeResult> {
-        self.engine
+        let session = self
+            .engine
             .resume(params.session_id)
             .await
-            .map(|session| SessionResumeResult { session })
-            .map_err(protocol_fault)
+            .map_err(protocol_fault)?;
+        let runtimes = self
+            .engine
+            .session_runtimes(params.session_id)
+            .map_err(protocol_fault)?;
+        Ok(SessionResumeResult { session, runtimes })
     }
 
     async fn rename_session(
@@ -523,6 +551,54 @@ impl ServerProtocol for Server {
         Ok(McpAuthCancelResult {
             server: params.server,
         })
+    }
+
+    async fn attach_runtime(
+        &self,
+        params: cookie_agent_protocol::SessionRuntimeAttachParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SessionRuntimeAttachResult> {
+        let attachment = self
+            .engine
+            .attach_runtime(
+                params.session_id,
+                params.runtime_id.as_str(),
+                params.workspace.map(std::path::PathBuf::from),
+                context.client_origin(),
+            )
+            .await
+            .map_err(protocol_fault)?;
+        let runtimes = self
+            .engine
+            .session_runtimes(params.session_id)
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::SessionRuntimeAttachResult {
+            attachment,
+            runtimes,
+        })
+    }
+
+    async fn detach_runtime(
+        &self,
+        params: cookie_agent_protocol::SessionRuntimeDetachParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SessionRuntimeDetachResult> {
+        self.engine
+            .detach_runtime(params.session_id, params.name, context.client_origin())
+            .await
+            .map_err(protocol_fault)?;
+        let runtimes = self
+            .engine
+            .session_runtimes(params.session_id)
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::SessionRuntimeDetachResult { runtimes })
+    }
+
+    async fn list_runtimes(
+        &self,
+        _params: cookie_agent_protocol::RuntimesListParams,
+    ) -> Result<cookie_agent_protocol::RuntimesListResult> {
+        Ok(crate::runtimes::runtimes_list(&self.engine))
     }
 
     async fn list_mcp_servers(&self, _: McpServerListParams) -> Result<McpServerListResult> {

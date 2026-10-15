@@ -323,7 +323,8 @@ when the runtime has one, the canonical `workspace` it reported.
 `runtime_detached` carries the `name` it removes. The attachment set is the fold
 of these events in log order; a session's creation writes one
 `runtime_attached` per initial attachment together with `session_created`, so
-both reach disk with the session's first persistence. A log that holds neither
+both reach disk with the session's first persistence; a session created with no
+attachment records a single `runtime_detached` of `global` instead. A log that holds neither
 event was written before runtimes existed and reads as attached to `global`
 and `local`; the engine writes those two attachments out before such a
 session's first attach or detach. Delegated children record their own

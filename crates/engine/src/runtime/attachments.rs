@@ -97,6 +97,20 @@ fn push_instance(
     Ok(attachment)
 }
 
+/// The events a new session's creation writes for `attachments`. A log
+/// without any attach or detach event reads as attached to `global` and
+/// `local`, so a session created with no attachment records the detach of
+/// `global` instead.
+pub(crate) fn initial_attachment_events(attachments: &[RuntimeAttachment]) -> Vec<Event> {
+    if attachments.is_empty() {
+        return vec![Event::RuntimeDetached {
+            name: AttachmentName::new(cookie_agent_protocol::RuntimeId::GLOBAL)
+                .expect("`global` is a valid attachment name"),
+        }];
+    }
+    attachments.iter().map(attached_event).collect()
+}
+
 pub(crate) fn attached_event(attachment: &RuntimeAttachment) -> Event {
     Event::RuntimeAttached {
         name: attachment.name.clone(),

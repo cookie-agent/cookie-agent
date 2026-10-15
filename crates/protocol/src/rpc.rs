@@ -306,24 +306,157 @@ pub struct SessionCreateParams {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 256))]
     pub permission_rules: Vec<PermissionRule>,
+    /// The runtimes the session attaches besides `global`, in order. When
+    /// omitted, the session attaches `local` (the daemon's working
+    /// directory). Instances that are not running are started first; a
+    /// failure creates no session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 256))]
+    pub runtimes: Option<Vec<RuntimeAttachRequest>>,
+    /// Whether the session attaches the global runtime; `true` when omitted.
+    #[serde(default = "attach_global", skip_serializing_if = "attaches_global")]
+    pub global: bool,
+}
+
+const fn attach_global() -> bool {
+    true
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn attaches_global(global: &bool) -> bool {
+    *global
 }
 
 impl SessionCreateParams {
-    /// Create a session with the default mode and no overlay rules.
+    /// Create a session with the default mode, no overlay rules, and the
+    /// default `global` and `local` runtimes.
     #[must_use]
     pub const fn new(selection: RunSelection) -> Self {
         Self {
             selection,
             permission_mode: None,
             permission_rules: Vec::new(),
+            runtimes: None,
+            global: true,
         }
     }
 }
+
+/// One runtime a session attaches.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeAttachRequest {
+    pub runtime_id: RuntimeId,
+    /// Required exactly when the runtime's template takes a workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCreateResult {
     pub session: SessionMeta,
+    /// The session's runtime attachments, in attach order.
+    pub runtimes: Vec<RuntimeAttachment>,
 }
+
+pub const SESSION_RUNTIME_ATTACH_METHOD: &str = "session.runtime.attach";
+pub const SESSION_RUNTIME_DETACH_METHOD: &str = "session.runtime.detach";
+pub const RUNTIMES_LIST_METHOD: &str = "runtimes.list";
+pub const RUNTIMES_CHANGED_METHOD: &str = "runtimes.changed";
+
+/// Attach a runtime to a session that has no active run. The instance is
+/// started first when it is not running; a failure records nothing.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRuntimeAttachParams {
+    pub session_id: SessionId,
+    pub runtime_id: RuntimeId,
+    /// Required exactly when the runtime's template takes a workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRuntimeAttachResult {
+    /// The new attachment, under the name the session gave it.
+    pub attachment: RuntimeAttachment,
+    /// Every attachment of the session afterwards, in attach order.
+    pub runtimes: Vec<RuntimeAttachment>,
+}
+
+/// Remove an attachment from a session that has no active run.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRuntimeDetachParams {
+    pub session_id: SessionId,
+    pub name: AttachmentName,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRuntimeDetachResult {
+    /// Every attachment of the session afterwards, in attach order.
+    pub runtimes: Vec<RuntimeAttachment>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimesListParams {}
+
+/// The runtime templates sessions can attach and the instances this daemon
+/// has started.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimesListResult {
+    pub templates: Vec<RuntimeTemplateInfo>,
+    pub instances: Vec<RuntimeInstanceInfo>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeTemplateInfo {
+    pub runtime_id: RuntimeId,
+    /// Whether attaching the template requires a workspace.
+    pub takes_workspace: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeInstanceInfo {
+    pub runtime_id: RuntimeId,
+    /// The name the instance reports; absent until it has started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_name: Option<AttachmentName>,
+    /// The kind the instance reports; absent until it has started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<RuntimeKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    pub status: RuntimeInstanceStatus,
+    /// Why the instance failed, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeInstanceStatus {
+    Starting,
+    Ready,
+    Reconnecting,
+    Failed,
+    Stopped,
+}
+
+/// A runtime template was registered or an instance's status changed;
+/// refetch `runtimes.list`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimesChangedNotification {}
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionListParams {
@@ -344,6 +477,8 @@ pub struct SessionGetParams {
 #[serde(deny_unknown_fields)]
 pub struct SessionGetResult {
     pub session: SessionMeta,
+    /// The session's runtime attachments, in attach order.
+    pub runtimes: Vec<RuntimeAttachment>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -540,6 +675,8 @@ pub struct SessionResumeParams {
 #[serde(deny_unknown_fields)]
 pub struct SessionResumeResult {
     pub session: SessionMeta,
+    /// The session's runtime attachments, in attach order.
+    pub runtimes: Vec<RuntimeAttachment>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
