@@ -24,6 +24,7 @@ pub mod media;
 mod prepared;
 pub mod protocol;
 mod provider;
+pub mod reconnect;
 pub mod rpc;
 mod runtime;
 

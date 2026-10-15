@@ -1,10 +1,10 @@
-//! How the daemon bridges a dropped connection (`docs/site/specs/runtimes.md`
+//! How a dropped connection is bridged (`docs/site/specs/runtimes.md`
 //! section 6.4).
 //!
-//! The same policy applies to MCP servers and to runtime instances: when a
-//! connected one drops, the daemon reconnects it (restarting the process for
-//! stdio servers and runtimes) a bounded number of times with growing
-//! backoff. While it reconnects its tools stay published and calls fail fast
+//! The same policy applies to MCP servers (in the daemon's global runtime and
+//! in coding runtimes) and to runtime instances: when a connected one drops,
+//! its host reconnects it (restarting the process for stdio servers and
+//! runtimes) a bounded number of times with growing backoff. While it reconnects its tools stay published and calls fail fast
 //! with `runtime_unavailable`, so a brief drop never changes the tool list.
 //! When every attempt fails, the caller drops the tools and reports the
 //! failure to clients.
@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 /// The waits before each reconnect attempt; their count is the number of
 /// attempts.
 #[derive(Clone, Debug)]
-pub(crate) struct ReconnectPolicy {
+pub struct ReconnectPolicy {
     delays: Arc<[Duration]>,
 }
 
@@ -32,7 +32,7 @@ impl Default for ReconnectPolicy {
 
 /// How a reconnect loop ended.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) enum ReconnectOutcome<T> {
+pub enum ReconnectOutcome<T> {
     /// An attempt succeeded.
     Reconnected(T),
     /// Every attempt failed; `last_error` is the final attempt's reason.
@@ -43,7 +43,7 @@ pub(crate) enum ReconnectOutcome<T> {
 
 impl ReconnectPolicy {
     /// A policy that waits `delays[i]` before attempt `i + 1`.
-    pub(crate) fn with_delays(delays: impl Into<Arc<[Duration]>>) -> Self {
+    pub fn with_delays(delays: impl Into<Arc<[Duration]>>) -> Self {
         Self {
             delays: delays.into(),
         }
@@ -52,7 +52,7 @@ impl ReconnectPolicy {
     /// Runs up to one attempt per delay, waiting that delay before each.
     /// `attempt` receives the 1-based attempt number and returns the
     /// connection or a human-readable reason.
-    pub(crate) async fn run<T, F, Fut>(
+    pub async fn run<T, F, Fut>(
         &self,
         cancel: &CancellationToken,
         mut attempt: F,
