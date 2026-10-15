@@ -291,7 +291,7 @@ impl Fixture {
             model_manager,
             runtimes: cookie_agent_coding_runtime::runtime_options(&workspace),
         };
-        let engine = Engine::open(options.clone()).expect("engine");
+        let engine = Engine::open_async(options.clone()).await.expect("engine");
         Self {
             _root: root,
             workspace,
@@ -1718,7 +1718,7 @@ async fn successful_fallback_suffix_survives_runs_restart_and_explicit_resets() 
     );
 
     fixture.shutdown().await;
-    fixture.engine = Engine::open(fixture.options.clone()).unwrap();
+    fixture.engine = Engine::open_async(fixture.options.clone()).await.unwrap();
     assert_eq!(
         fixture
             .engine

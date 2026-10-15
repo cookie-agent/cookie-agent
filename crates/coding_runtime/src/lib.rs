@@ -285,14 +285,15 @@ impl BuiltinTools {
 }
 
 /// Runtime options for the daemon: the global runtime's fallback `webfetch`
-/// and a local coding runtime at `workspace` offering [`BuiltinTools`].
+/// and a local coding runtime at `workspace` offering [`BuiltinTools`],
+/// served in this process through the runtime protocol. Open the engine with
+/// `Engine::open_async`.
 #[must_use]
 pub fn runtime_options(workspace: impl Into<PathBuf>) -> RuntimeOptions {
     let mut options = RuntimeOptions::new(workspace);
     options.global_tools = vec![Arc::new(webfetch::WebfetchTool::global_fallback())];
-    options.local = cookie_agent_runtime_api::LocalRuntime::InProcess(Arc::new(|workspace| {
-        vec![Arc::new(BuiltinTools::new(workspace))]
-    }));
+    options.local =
+        cookie_agent_runtime_api::LocalRuntime::Protocol(server::in_process_connector());
     options
 }
 
