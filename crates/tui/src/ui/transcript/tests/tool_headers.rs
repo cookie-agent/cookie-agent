@@ -17,6 +17,7 @@ fn tool_icons_map_core_tools_and_keep_hammer_for_plugins() {
     for (name, icon) in [
         ("bash", "💻"),
         ("read", "📖"),
+        ("read_artifact", "📖"),
         ("write", "📝"),
         ("edit", "📝"),
         ("delegate_subagent", "🤖"),

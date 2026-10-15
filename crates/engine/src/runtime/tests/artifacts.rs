@@ -54,7 +54,7 @@ fn delegated_child_artifacts_are_placed_inside_the_root_tree() {
     assert_eq!(
         fixture
             .engine
-            .read_artifact(child, &format!("artifact://{digest}"), 0, 1)
+            .read_artifact(child, &digest, None, 0, 1)
             .expect("read back")
             .content,
         "child tool output"
@@ -178,16 +178,14 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
     };
     assert_eq!(details["metadata"], metadata);
     assert!(details["truncation"].is_null());
-    let uri = preview
-        .split_once("read(filePath=\"")
+    let artifact_id = preview
+        .split_once("read_artifact(artifact=\"")
         .unwrap()
         .1
         .split('"')
         .next()
         .unwrap();
-    let artifact_id = cookie_agent_protocol::ArtifactReadPath::parse(uri)
-        .unwrap()
-        .digest;
+    assert!(cookie_agent_protocol::ArtifactReadTarget::parse(artifact_id, None).is_ok());
     assert!(events.iter().any(|event| matches!(&event.payload,
         EventPayload::ToolCallTerminated { termination }
             if termination.result.as_ref().and_then(|result| result.retained_output.as_ref())
@@ -199,7 +197,7 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
     for offset in (0..lines.len()).step_by(2_000) {
         let page = fixture
             .engine
-            .read_artifact(session.session_id, uri, offset as u64, 2_000)
+            .read_artifact(session.session_id, artifact_id, None, offset as u64, 2_000)
             .unwrap();
         assert_eq!(page.source, "artifact");
         assert!(!page.content.is_empty());
@@ -224,7 +222,7 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
     for offset in [lines.len(), lines.len() + 2_000] {
         let page = fixture
             .engine
-            .read_artifact(session.session_id, uri, offset as u64, 2_000)
+            .read_artifact(session.session_id, artifact_id, None, offset as u64, 2_000)
             .unwrap();
         assert!(page.content.is_empty());
         assert_eq!(page.next_offset_lines, None);
@@ -300,12 +298,7 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
     );
     let page = fixture
         .engine
-        .read_artifact(
-            session.session_id,
-            &format!("artifact://{retained_id}"),
-            1,
-            2,
-        )
+        .read_artifact(session.session_id, &retained_id, None, 1, 2)
         .unwrap();
     assert_eq!(page.content, "one\ntwo\n");
     assert_eq!(page.next_offset_lines, Some(3));
@@ -327,24 +320,14 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
         .unwrap();
     let page = fixture
         .engine
-        .read_artifact(
-            session.session_id,
-            &format!("artifact://{retained_id}"),
-            2,
-            2,
-        )
+        .read_artifact(session.session_id, &retained_id, None, 2, 2)
         .unwrap();
     assert_eq!(page.content, "two\nthree");
     assert_eq!(page.source, "artifact");
     assert_ne!(retained.uri, elided_preview.uri);
     let page = fixture
         .engine
-        .read_artifact(
-            session.session_id,
-            &format!("artifact://{preview_id}"),
-            0,
-            1,
-        )
+        .read_artifact(session.session_id, &preview_id, None, 0, 1)
         .unwrap();
     assert_eq!(page.content, "zero\n");
     assert_eq!(page.next_offset_lines, None);
@@ -391,12 +374,7 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
     for (artifact_id, expected) in [(&retained_id, full), (&preview_id, "zero\n")] {
         let page = fixture
             .engine
-            .read_artifact(
-                session.session_id,
-                &format!("artifact://{artifact_id}"),
-                0,
-                10,
-            )
+            .read_artifact(session.session_id, artifact_id, None, 0, 10)
             .unwrap();
         assert_eq!(page.content, expected);
         assert_eq!(page.next_offset_lines, None);
@@ -427,27 +405,27 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
     // There is no session or tool event referencing this artifact.
     let page = fixture
         .engine
-        .read_artifact(writer, &format!("artifact://{artifact_id}"), 0, u64::MAX)
+        .read_artifact(writer, &artifact_id, None, 0, u64::MAX)
         .unwrap();
     assert_eq!(page.content, "line\n".repeat(2_000));
     assert_eq!(page.next_offset_lines, Some(2_000));
     assert_eq!(page.source, "artifact");
     let page = fixture
         .engine
-        .read_artifact(writer, &format!("artifact://{artifact_id}"), 2_000, 2)
+        .read_artifact(writer, &artifact_id, None, 2_000, 2)
         .unwrap();
     assert_eq!(page.content, "line\nline\n");
     assert_eq!(page.next_offset_lines, None);
     let page = fixture
         .engine
-        .read_artifact(writer, &format!("artifact://{artifact_id}"), u64::MAX, 1)
+        .read_artifact(writer, &artifact_id, None, u64::MAX, 1)
         .unwrap();
     assert!(page.content.is_empty());
     assert_eq!(page.next_offset_lines, None);
     assert!(
         fixture
             .engine
-            .read_artifact(writer, &format!("artifact://{artifact_id}"), 0, 0)
+            .read_artifact(writer, &artifact_id, None, 0, 0)
             .is_err()
     );
 
@@ -461,9 +439,7 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
         )
         .unwrap();
     assert!(matches!(
-        fixture
-            .engine
-            .read_artifact(writer, &format!("artifact://{large_id}"), 0, 1),
+        fixture.engine.read_artifact(writer, &large_id, None, 0, 1),
         Err(ToolError::ResourceLimit(_))
     ));
 
@@ -512,19 +488,19 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
         .unwrap();
     let page = fixture
         .engine
-        .read_artifact(writer, &format!("artifact://{manifest_id}/stderr"), 1, 1)
+        .read_artifact(writer, &manifest_id, Some("stderr"), 1, 1)
         .unwrap();
     assert_eq!(page.content, "err-1\n");
     assert_eq!(page.source, "artifact.stderr");
     assert!(
         fixture
             .engine
-            .read_artifact(writer, &format!("artifact://{manifest_id}/unknown"), 0, 1)
+            .read_artifact(writer, &manifest_id, Some("unknown"), 0, 1)
             .is_err()
     );
     let raw_manifest = fixture
         .engine
-        .read_artifact(writer, &format!("artifact://{manifest_id}"), 0, 1)
+        .read_artifact(writer, &manifest_id, None, 0, 1)
         .unwrap();
     assert_eq!(raw_manifest.content.as_bytes(), manifest);
     let serialized = serde_json::to_vec(&oven_sdk::ToolContent::Text(
@@ -539,14 +515,14 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
         .unwrap();
     let raw_serialized = fixture
         .engine
-        .read_artifact(writer, &format!("artifact://{serialized_id}"), 0, 1)
+        .read_artifact(writer, &serialized_id, None, 0, 1)
         .unwrap();
     assert_eq!(raw_serialized.content.as_bytes(), serialized);
     for id in [&artifact_id, &serialized_id] {
         for stream in ["stdout", "stderr"] {
             let error = fixture
                 .engine
-                .read_artifact(writer, &format!("artifact://{id}/{stream}"), 0, 1)
+                .read_artifact(writer, id, Some(stream), 0, 1)
                 .unwrap_err();
             assert!(
                 error
@@ -583,7 +559,7 @@ async fn artifact_read_rejects_invalid_missing_and_corrupt_artifacts() {
     ] {
         let error = fixture
             .engine
-            .read_artifact(reader, &format!("artifact://{id}"), 0, 1)
+            .read_artifact(reader, &id, None, 0, 1)
             .unwrap_err();
         assert!(
             error
@@ -596,7 +572,7 @@ async fn artifact_read_rejects_invalid_missing_and_corrupt_artifacts() {
     assert!(
         fixture
             .engine
-            .read_artifact(reader, &format!("artifact://{missing}"), 0, 1)
+            .read_artifact(reader, &missing, None, 0, 1)
             .unwrap_err()
             .to_string()
             .contains("artifact missing")
@@ -614,7 +590,7 @@ async fn artifact_read_rejects_invalid_missing_and_corrupt_artifacts() {
     assert!(
         fixture
             .engine
-            .read_artifact(reader, &format!("artifact://{digest}"), 0, 1)
+            .read_artifact(reader, &digest, None, 0, 1)
             .unwrap_err()
             .to_string()
             .contains("does not match its digest")
@@ -707,7 +683,7 @@ async fn a_forked_tree_keeps_its_artifacts_after_the_source_tree_is_deleted() {
 
     let reopened = reopen_engine(&fixture);
     let page = reopened
-        .read_artifact(fork, &format!("artifact://{digest}"), 1, 2)
+        .read_artifact(fork, &digest, None, 1, 2)
         .expect("the fork's own copy");
     assert_eq!(page.content, "one\ntwo\n");
     reopened.shutdown().await;

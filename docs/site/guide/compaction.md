@@ -126,14 +126,13 @@ retries.
    copy of the same replaced span and drops the session tool definitions (cache
    affinity is already lost once tool outputs are rewritten):
    tool results are retained with `ArtifactStore::retain` and replaced by reference
-   markers with a structured `read` hint using `filePath="artifact://<digest>"`.
-   Saved `ArtifactReference` URIs remain unchanged. Possession of an
-   artifact ID grants read access in the
-   configured artifact store, without a session-ownership check. Structured tool
+   markers with a structured `read_artifact` hint carrying `artifact="<digest>"`.
+   Saved `ArtifactReference` URIs remain unchanged. The session tree can read
+   the retained artifact back with `read_artifact`. Structured tool
    content is retained as serialized JSON, not flattened into original output;
-   the marker labels this format. All outputs of artifact `read` calls are replaced
+   the marker labels this format. All outputs of `read_artifact` calls are replaced
    with `[artifact read output omitted for compaction]` in the private retry input,
-   including named-stream reads. Detection uses the structured `filePath` argument;
+   including named-stream reads. Detection uses the tool name;
    ordinary filesystem `read` results follow normal tool-output pruning.
    This does not emit durable `tool_output_elided` (`ToolOutputElided`) events or
    change the original saved log or the retained recent messages, even if the

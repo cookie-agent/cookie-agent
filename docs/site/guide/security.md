@@ -147,12 +147,11 @@ files, and use restrictive tool permissions. See
 
 Tool-output truncation is a presentation bound, not redaction. The preview shown
 to a model or user can omit bytes that remain in the content-addressed artifact
-store, and those retained bytes may contain secrets. Possession of an artifact
-digest grants access through `read(filePath="artifact://<digest>[/<stream>]")`
-within the configured store, without session-ownership, visibility, or revert
-checks. The normal `Read` permission applies to the artifact URI resource label,
-separately from filesystem path rules. Digests are content-derived, not random
-access tokens. Display clipping does not redact stored content. See the
+store, and those retained bytes may contain secrets. A session reads them with
+`read_artifact(artifact="<digest>", stream=…)`, which needs no permission rule
+and is always allowed: it resolves only artifacts stored in the session's own
+tree, without visibility or revert checks. Digests are content-derived, not
+random access tokens. Display clipping does not redact stored content. See the
 [tool artifact lifecycle](../reference/tools.md#retained-tool-output).
 
 ### Media attachments

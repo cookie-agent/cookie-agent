@@ -6,8 +6,9 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    MAX_TOOL_DELTA_BYTES, PersistedToolResult, RetainedToolOutput, RetainedToolStream, SessionId,
-    Sha256Digest, ToolCompletionOutput, ToolOutputChunk, ToolOutputDeclaration, ToolOutputManifest,
+    ArtifactReadTarget, MAX_TOOL_DELTA_BYTES, PersistedToolResult, RetainedToolOutput,
+    RetainedToolStream, SessionId, Sha256Digest, ToolCompletionOutput, ToolOutputChunk,
+    ToolOutputDeclaration, ToolOutputManifest,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -674,13 +675,11 @@ impl OutputCapture {
                 rendered.push_str(head);
                 continue;
             };
-            let suffix = stream
-                .name
-                .as_ref()
-                .map_or_else(String::new, |name| format!("/{name}"));
             let mut read_more = match (&digest, &stream.reference) {
                 (Some(digest), Some(_)) => {
-                    format!("read(filePath=\"artifact://{digest}{suffix}\", offset={offset})")
+                    ArtifactReadTarget::parse(digest, stream.name.as_deref())
+                        .map_err(ToolError::execution)?
+                        .read_hint(Some(offset))
                 }
                 _ => "unavailable, the output could not be stored".to_owned(),
             };

@@ -919,6 +919,55 @@ impl PreparedExecutor for TestWriteExecutor {
     }
 }
 
+/// [`TestWriteProvider`]'s `write` tool published under the unconditional
+/// permission name, which no rule can hide or deny.
+pub(crate) struct TestUnconditionalProvider(pub(crate) TestWriteProvider);
+
+#[async_trait]
+impl ToolProvider for TestUnconditionalProvider {
+    fn provider_id(&self) -> &'static str {
+        "test.unconditional"
+    }
+
+    fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        let mut tools = self.0.tools_for_session(ctx)?;
+        for tool in &mut tools {
+            tool.permission_name = crate::permissions::UNCONDITIONAL_PERMISSION_NAME.into();
+        }
+        Ok(tools)
+    }
+
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        TestWriteProvider::get_permission_name(tool_name)
+            .map(|_| crate::permissions::UNCONDITIONAL_PERMISSION_NAME)
+    }
+
+    fn get_permission_resource(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        let (_, resource) = self.0.get_permission_resource(name, arguments)?;
+        Ok((Self::get_permission_name(name)?, resource))
+    }
+
+    fn get_display_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        self.0.get_display_argument(name, arguments)
+    }
+
+    async fn prepare(
+        &self,
+        ctx: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        self.0.prepare(ctx, call).await
+    }
+}
+
 pub(crate) struct TestAliasProvider {
     pub(crate) executed: Arc<TestFlag>,
 }

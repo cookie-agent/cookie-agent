@@ -663,12 +663,7 @@ async fn plugin_named_output_contract_reaches_capture_manifest_and_model_history
     assert_eq!(
         fixture
             .engine
-            .read_artifact(
-                session.session_id,
-                &format!("artifact://{manifest_id}/results"),
-                0,
-                1
-            )
+            .read_artifact(session.session_id, manifest_id, Some("results"), 0, 1)
             .unwrap()
             .content,
         full
@@ -682,7 +677,10 @@ async fn plugin_named_output_contract_reaches_capture_manifest_and_model_history
     let requests = with_watchdog("captured fixture completion", captured)
         .await
         .unwrap();
-    assert!(requests[1].contains(&format!("artifact://{manifest_id}/results")));
+    // The hint sits in tool content that the request JSON-encodes twice.
+    assert!(requests[1].contains(&format!(
+        r#"read_artifact(artifact=\\\"{manifest_id}\\\", stream=\\\"results\\\""#
+    )));
     assert!(requests[1].contains("[diagnostics]"));
     assert!(!requests[1].contains("PLUGIN_UI_ONLY"));
     fixture.engine.shutdown().await;
@@ -1080,12 +1078,7 @@ async fn named_output_streams_publish_readable_manifests_without_display_leaking
         assert_eq!(
             fixture
                 .engine
-                .read_artifact(
-                    session.session_id,
-                    &format!("artifact://{manifest}/results"),
-                    0,
-                    1
-                )
+                .read_artifact(session.session_id, manifest, Some("results"), 0, 1)
                 .unwrap()
                 .content,
             "x".repeat(128 * 1024)
@@ -1099,13 +1092,9 @@ async fn named_output_streams_publish_readable_manifests_without_display_leaking
         assert!(
             result
                 .output
-                .contains(&format!("artifact://{manifest}/results"))
+                .contains(&format!("artifact=\"{manifest}\", stream=\"results\""))
         );
-        assert!(
-            !result
-                .output
-                .contains(&format!("artifact://{manifest}/diagnostics"))
-        );
+        assert!(!result.output.contains("stream=\"diagnostics\""));
         assert_eq!(
             fixture
                 .engine
@@ -1431,5 +1420,70 @@ async fn registered_external_tool_must_declare_resource_and_cannot_bypass_deny()
             .len(),
         2
     );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn unconditional_tools_are_published_and_run_under_a_denying_agent() {
+    let (endpoint, captured) = scripted_zero_resource_tool_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Denying test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: deny\n---\nDeny every rule-governed tool.\n",
+    );
+    let executed = Arc::new(TestFlag::default());
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestUnconditionalProvider(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        })));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("unconditional session");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("unconditional-run").expect("run ID"),
+                selection,
+                input: "call the unconditional tool".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("accepted run");
+    await_projection(
+        &fixture.engine,
+        session.session_id,
+        "unconditional run completion",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
+
+    assert!(executed.is_set());
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("completed projection")
+        .log
+        .events();
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolCallTerminated { termination }
+            if termination.outcome == ToolTerminationOutcome::Completed
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(&event.payload, EventPayload::ApprovalRequested { .. }))
+    );
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("unconditional server");
+    assert!(requests[0].contains("\"name\":\"write\""));
     fixture.engine.shutdown().await;
 }

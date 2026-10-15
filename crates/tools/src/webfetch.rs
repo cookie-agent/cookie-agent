@@ -64,7 +64,7 @@ impl ToolProvider for WebfetchTool {
 output: Default::default(),
             name: "webfetch".into(),
             permission_name: "webfetch".into(),
-            description: "Fetch an HTTP or HTTPS URL. Output has final_url, status_code, content_type, and truncated header lines, a blank line, then the text body. Returns HTML as plaintext unless raw is true; other text passes through. Use read with the artifact URI in a truncation hint to page retained output, including the body.".into(),
+            description: "Fetch an HTTP or HTTPS URL. Output has final_url, status_code, content_type, and truncated header lines, a blank line, then the text body. Returns HTML as plaintext unless raw is true; other text passes through. Use read_artifact with the artifact a truncation hint names to page retained output, including the body.".into(),
             parameters: schema::<WebfetchArgs>(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: Default::default(),

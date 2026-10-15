@@ -13,7 +13,7 @@ declaration.
 
 | Tools | Eligibility | Coordination |
 |---|---|---|
-| `read`, `bash`, `webfetch` | Parallel | Each call owns its execution and streaming state. |
+| `read`, `read_artifact`, `bash`, `webfetch` | Parallel | Each call owns its execution and streaming state. |
 | `write`, `edit` | Parallel | Matching prepared serialization keys serialize mutations to the same target. |
 | `delegate_subagent` | Parallel | Delegate admission serializes durable child reservation and session creation internally. |
 | `send_message` | Parallel | Message acceptance serializes guard checks and the durable append inside the recipient actor. |
@@ -56,10 +56,10 @@ converted to text. Over-cap responses return the fetched prefix with
 `truncated: true`, not an error. The caps have no input or configuration
 parameter. Full results use the standard event log and result
 store. The standard Bounded policy retains oversized output and sends a preview
-to the model. `read` with an artifact URI pages the retained header and body by physical
+to the model. `read_artifact` pages the retained header and body by physical
 line; its zero-based offset 5 starts at the body. Follow `next_offset` for
-successive pages. Metadata is separate and is not paged. Grant
-`read: {"artifact://*": allow}` for result paging.
+successive pages. Metadata is separate and is not paged. `read_artifact` needs
+no permission rule.
 
 Errors distinguish `invalid_url`, `redirect_error`, `timeout`,
 `transport_error`, and `unsupported_content_type` (which names the content type).
@@ -180,7 +180,7 @@ cleanup. When it exits, the engine accepts one producer message owned by
 session: a `<background_bash from="PID">` block with the command, the exit
 status and duration, and the job's standard output and standard error previewed
 exactly like a tool result: the first and last lines of each stream, with a
-`read` path into the retained artifact for anything omitted. The job reports only after its
+`read_artifact` hint into the retained artifact for anything omitted. The job reports only after its
 starting call is committed as completed. It is killed without a report if that
 call is cancelled before it commits, if a revert removes the call, if its
 session is deleted, or when the daemon stops. `background` cannot be combined
@@ -191,7 +191,7 @@ with `interactive`.
 Tools declare `ToolOutputDeclaration::Single` or an ordered list of 1 to 8 named
 streams. Names are unique, case-sensitive ASCII path segments, 1 to 64 bytes,
 using letters, digits, `_`, `-`, and `.`; `.` and `..` alone are forbidden. The
-same validator governs declarations and artifact stream suffixes.
+same validator governs declarations and the `stream` argument of `read_artifact`.
 
 The runtime keeps bounded previews and counts of accepted text chunks in
 memory. A stream that fits its preview is stored nowhere else: the result output
@@ -207,9 +207,9 @@ order determines model rendering. Bash uses the same named-output interface as
 other tools; it does not build its own retained-output manifest.
 
 Each stream receives its own configured `[tool_output]` line/byte preview limits.
-Only truncated streams receive a `read(filePath="artifact://<digest>/<stream>",
-offset=...)` hint, where the digest identifies the manifest. Single-output hints
-omit the stream suffix and heading. A partial-line byte cut points back to that
+Only truncated streams receive a `read_artifact(artifact="<digest>",
+stream="<stream>", offset=...)` hint, where the digest identifies the manifest.
+Single-output hints omit `stream` and the heading. A partial-line byte cut points back to that
 line, so readback does not skip unseen text. Aggregate preview construction also
 reserves 16 KiB for headings/hints inside the existing 2 MiB output bound; when
 necessary, previews are reduced with truthful read hints.
@@ -229,7 +229,7 @@ accepted output as incomplete, retain the correct terminal status, and expose th
 error alongside output previews to the model. Terminal events carry
 `retained_output` references and final `display`; replay does not recapture chunks.
 
-The self-paginating `read` and `get_subagent_result` tools
+The self-paginating `read`, `read_artifact`, and `get_subagent_result` tools
 declare an absolute truncation opt-out. Their requested page is returned in full
 without artifact retention or truncation metadata, regardless of
 `[tool_output]`. Callers bound these results with each tool's offset/limit
@@ -258,26 +258,23 @@ session of the tree runs or a capture is still publishing its terminal
 references. Artifacts orphaned any other way, such as by a crash or a cancelled
 capture, stay in the tree's `artifacts/` directory until the tree is deleted.
 
-Artifact lookup uses the existing `read` tool:
+Artifact lookup uses the `read_artifact` tool:
 
 | Argument | Meaning |
 |---|---|
-| `filePath` | `artifact://<64 lowercase hex digest>` or `artifact://<digest>/<stream>` |
+| `artifact` | The 64-character lowercase SHA-256 digest a hint names |
+| `stream` | Optional declared stream name of a named-output manifest |
 | `offset` | Optional zero-based line offset; default `0` |
 | `limit` | Optional line count; default and maximum `2000` |
 
-**Artifact IDs grant access by possession.** The tool reads the
-named artifact in the configured project store without checking session ownership,
-tool-call visibility, or whether the reference survived a revert. An ID learned
-from another session is usable. IDs remain content-addressed SHA-256 references,
-not random secrets; anyone who can compute an artifact's digest can address it.
-Ordinary `read` approval/preparation rules still apply. Artifact resources use the
-public URI as their permission label and an artifact resource identity, never a
-filesystem-path permission. Dispatch occurs before filesystem normalization or
-existence checks. Malformed artifact URIs do not fall back to filesystem reads.
-Bare hashes, internal `artifact://sha256/` URIs, extra path segments, traversal,
-queries, fragments, and uppercase digests are rejected. Ordinary filesystem read
-formatting, media handling, and permissions are unchanged.
+`read_artifact` is a base-layer tool. It needs no permission rule: it is always
+sent to the model and every call is allowed, whatever the agent's rules, because
+it can reach only artifacts stored in the calling session's own tree. A digest
+that names content another tree stored does not resolve. Digests are
+content-addressed SHA-256 references, not random secrets. Malformed digests
+(bare `artifact://` URIs, the internal `sha256/` form, uppercase or short
+digests) and invalid stream names are rejected. `read` reads only the
+filesystem.
 
 Artifact reads return the stored content without unwrapping JSON. Normal
 single-output artifacts contain the original full text. Named-stream artifacts
@@ -287,12 +284,12 @@ truncation artifacts. Their markers identify this format and expose usable IDs
 without requiring durable elision events. Follow any nested truncation reference
 to retrieve the original full output rather than its serialized preview.
 
-Without a suffix, an artifact URI reads stored text as-is, including manifest
-JSON; it does not merge streams. A suffix selects a declared name from the generic
+Without `stream`, `read_artifact` reads stored text as-is, including manifest
+JSON; it does not merge streams. `stream` selects a declared name from the generic
 manifest. This is content-based and works for `results`, `diagnostics`, or any
 other valid declared name, not just Bash streams. Unknown names and selection on
-non-manifests are errors. There is no separate `stream` argument. Stored
-`ArtifactReference` values retain the internal `artifact://sha256/<digest>` form.
+non-manifests are errors. Stored `ArtifactReference` values keep the internal
+`artifact://sha256/<digest>` form, which is not a `read_artifact` argument.
 
 Returned pages include `next_offset` metadata when more lines remain. A zero
 limit fails; larger limits are capped at 2000 lines. Pages over the 2 MiB
@@ -300,7 +297,7 @@ terminal-result limit fail and must be requested with a smaller limit. Missing
 and corrupt artifacts produce tool errors.
 
 ```json
-{"filePath":"artifact://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/results","offset":0,"limit":200}
+{"artifact":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","stream":"results","offset":0,"limit":200}
 ```
 
 ## Goal checklist tools

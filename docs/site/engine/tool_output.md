@@ -19,14 +19,14 @@ Controls each output stream's inline preview. A stream within both `max_lines`
 and `max_bytes` is shown whole. A longer one shows its first `head_lines` and
 last `tail_lines` lines, splitting `max_bytes` between the two ends in the same
 ratio, around a marker such as
-`[… 1340 lines omitted. Read more: read(filePath="artifact://<digest>/stdout", offset=100)]`.
+`[… 1340 lines omitted. Read more: read_artifact(artifact="<digest>", stream="stdout", offset=100)]`.
 The marker counts bytes instead when no line break falls in the omitted part, and
 its offset is the first line not fully shown. Full single output and every named
 stream are retained by the runtime, with generic manifests for named streams.
 Declaration order determines rendering order; only truncated streams get read
 hints. Aggregate event bounds may further reduce previews with truthful hints.
 The limits apply only to tools using the normal bounded policy. The
-self-paginating `read` and `get_subagent_result` tools opt
+self-paginating `read`, `read_artifact`, and `get_subagent_result` tools opt
 out absolutely; configuration cannot re-enable truncation for them. The
 `delegate_subagent` terminal result also opts out because its teaser preview
 follows [`[subagent_output]`](subagent_output.md) instead.

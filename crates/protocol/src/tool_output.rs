@@ -34,7 +34,7 @@ pub(crate) fn deserialize_delta_display<'de, D: serde::Deserializer<'de>>(
     Ok(display)
 }
 
-/// The same name grammar is used for declarations, output chunks, and artifact URI suffixes.
+/// The same name grammar is used for declarations, output chunks, and `read_artifact` streams.
 pub fn validate_tool_stream_name(name: &str) -> Result<(), String> {
     if name.is_empty()
         || name.len() > MAX_TOOL_STREAM_NAME_BYTES
@@ -201,24 +201,19 @@ impl ToolOutputManifest {
     }
 }
 
-/// Public artifact routes are deliberately distinct from stored ArtifactReference URIs.
+/// What `read_artifact` reads: a retained artifact's digest and, for a
+/// named-stream manifest, one of its streams. Deliberately distinct from the
+/// stored `artifact://sha256/<digest>` [`ArtifactReference`] URIs.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArtifactReadPath {
+pub struct ArtifactReadTarget {
     pub digest: Sha256Digest,
     pub stream: Option<String>,
 }
 
-impl ArtifactReadPath {
-    pub fn parse(path: &str) -> Result<Self, String> {
-        let path = path
-            .strip_prefix("artifact://")
-            .ok_or_else(|| "expected artifact:// URI".to_owned())?;
-        let (digest, stream) = path
-            .split_once('/')
-            .map_or((path, None), |(digest, stream)| (digest, Some(stream)));
-        let digest = Sha256Digest::new(digest).map_err(|_| {
-            "artifact URI requires a 64-character lowercase SHA-256 digest".to_owned()
-        })?;
+impl ArtifactReadTarget {
+    pub fn parse(artifact: &str, stream: Option<&str>) -> Result<Self, String> {
+        let digest = Sha256Digest::new(artifact)
+            .map_err(|_| "artifact must be a 64-character lowercase SHA-256 digest".to_owned())?;
         if let Some(stream) = stream {
             validate_tool_stream_name(stream)?;
         }
@@ -226,6 +221,21 @@ impl ArtifactReadPath {
             digest,
             stream: stream.map(str::to_owned),
         })
+    }
+
+    /// The `read_artifact` call that continues this target at `offset`, as
+    /// truncation hints show it to the model.
+    #[must_use]
+    pub fn read_hint(&self, offset: Option<u64>) -> String {
+        let mut hint = format!("read_artifact(artifact=\"{}\"", self.digest);
+        if let Some(stream) = &self.stream {
+            hint.push_str(&format!(", stream=\"{stream}\""));
+        }
+        if let Some(offset) = offset {
+            hint.push_str(&format!(", offset={offset}"));
+        }
+        hint.push(')');
+        hint
     }
 }
 
@@ -273,30 +283,46 @@ mod tests {
     }
 
     #[test]
-    fn public_artifact_uri_parser_is_exact() {
+    fn artifact_read_target_parser_is_exact() {
         let digest = "a".repeat(64);
-        for path in [
-            format!("artifact://{digest}"),
-            format!("artifact://{digest}/diagnostics.v2"),
-        ] {
-            let parsed = ArtifactReadPath::parse(&path).unwrap();
+        for stream in [None, Some("diagnostics.v2")] {
+            let parsed = ArtifactReadTarget::parse(&digest, stream).unwrap();
             assert_eq!(parsed.digest.as_str(), digest);
+            assert_eq!(parsed.stream.as_deref(), stream);
         }
-        for path in [
-            digest.clone(),
-            format!("artifact://sha256/{digest}"),
-            format!("artifact://{}", "A".repeat(64)),
-            format!("artifact://{}", "a".repeat(63)),
-            format!("artifact://{digest}/"),
-            format!("artifact://{digest}/../file"),
-            format!("artifact://{digest}/.."),
-            format!("artifact://{digest}/out/more"),
-            format!("artifact://{digest}?query"),
-            format!("artifact://{digest}/out#fragment"),
-            format!("artifact://{digest}/%2e%2e"),
-            format!("artifact://{digest}/bad\\stream"),
+        for (artifact, stream) in [
+            (format!("artifact://{digest}"), None),
+            (format!("sha256/{digest}"), None),
+            ("A".repeat(64), None),
+            ("a".repeat(63), None),
+            (format!("{digest}/out"), None),
+            (digest.clone(), Some("")),
+            (digest.clone(), Some("..")),
+            (digest.clone(), Some("../file")),
+            (digest.clone(), Some("out/more")),
+            (digest.clone(), Some("out?query")),
+            (digest.clone(), Some("%2e%2e")),
+            (digest.clone(), Some("bad\\stream")),
         ] {
-            assert!(ArtifactReadPath::parse(&path).is_err(), "{path}");
+            assert!(
+                ArtifactReadTarget::parse(&artifact, stream).is_err(),
+                "{artifact} {stream:?}"
+            );
         }
+    }
+
+    #[test]
+    fn artifact_read_hints_name_the_read_artifact_call() {
+        let digest = "b".repeat(64);
+        let target = ArtifactReadTarget::parse(&digest, Some("stdout")).unwrap();
+        assert_eq!(
+            target.read_hint(Some(40)),
+            format!("read_artifact(artifact=\"{digest}\", stream=\"stdout\", offset=40)")
+        );
+        let target = ArtifactReadTarget::parse(&digest, None).unwrap();
+        assert_eq!(
+            target.read_hint(None),
+            format!("read_artifact(artifact=\"{digest}\")")
+        );
     }
 }

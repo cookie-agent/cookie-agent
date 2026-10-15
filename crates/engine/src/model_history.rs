@@ -90,7 +90,7 @@ pub(crate) fn tool_output_elision_marker(
     additional_message_count: usize,
 ) -> String {
     let mut marker = format!(
-        "[tool output elided; retained at artifact://{artifact_id}; {original_bytes} bytes]"
+        "[tool output elided; {original_bytes} bytes retained; read it with read_artifact(artifact=\"{artifact_id}\")]"
     );
     if additional_message_count > 0 {
         marker.push_str(&format!(
@@ -1462,8 +1462,8 @@ fn tool_result_part(
             "original_lines":truncation.original_lines,
             "artifact_id":artifact_id,
             "read_more":{
-                "tool":"read",
-                "arguments":{"filePath":format!("artifact://{artifact_id}")}
+                "tool":"read_artifact",
+                "arguments":{"artifact":artifact_id}
             }
         }))
     } else {

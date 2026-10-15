@@ -38,14 +38,14 @@ do not trigger pruning. Bindings are tried in order. Automatic compaction stops
 after three consecutive failures in a run and emits one diagnostic; a successful
 checkpoint resets the counter. The retry changes only an in-memory copy of the
 summarizer input, using `ArtifactStore::retain` and artifact-ID reference markers
-for tool results and replacing output from artifact `read` calls with
+for tool results and replacing output from `read_artifact` calls with
 `[artifact read output omitted for compaction]`, detected by
-the tool name plus its structured `filePath` URI. Ordinary filesystem reads are
+the tool name. Ordinary filesystem reads are
 pruned normally. The pruned retry also drops the session tool definitions:
 cache affinity is already lost once tool outputs are rewritten, so fewer tools
-means less to send. Markers include a `read` hint with `filePath="artifact://<digest>"`;
-internal stored references retain their URI format. Possession of that ID grants
-read access without a session-ownership lookup. Non-text tool content is retained
+means less to send. Markers include a `read_artifact` hint with `artifact="<digest>"`;
+internal stored references retain their URI format. The session tree reads that
+artifact back with `read_artifact`. Non-text tool content is retained
 as serialized tool-content JSON and the marker identifies this format. It emits no
 durable `tool_output_elided` events and preserves the original saved log and
 recent retained message contents even if the retry fails.

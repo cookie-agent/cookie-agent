@@ -840,7 +840,7 @@ pub(in crate::ui) fn sample_permissions() -> SessionPermissionGetResult {
                 AgentDocument,
                 vec![
                     rule("*.env", Deny, AgentDocument),
-                    rule("artifact://*", Allow, AgentDocument),
+                    rule("docs/**", Allow, AgentDocument),
                 ],
             ),
             action(

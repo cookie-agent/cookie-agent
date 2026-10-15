@@ -371,16 +371,17 @@ impl ToolExecutionContext {
         crate::runtime::background_tasks::BackgroundJob::reserve(capability, self.session).await
     }
 
+    /// Reads a page of an artifact in this call's session tree.
     pub async fn read_artifact(
         &self,
-        path: &str,
+        target: cookie_agent_protocol::ArtifactReadTarget,
         offset: u64,
         limit: u64,
     ) -> Result<crate::ArtifactReadPage, ToolError> {
         crate::runtime::read_artifact_async(
             self.artifacts.clone(),
             self.session,
-            path,
+            target,
             offset,
             limit,
         )

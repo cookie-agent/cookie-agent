@@ -60,6 +60,13 @@ impl Engine {
         prepared_call: &PreparedToolCall,
     ) -> Result<PermissionDecision, ToolFailure> {
         let prepared = prepared_call.prepared.as_ref().map_err(Clone::clone)?;
+        if prepared_call
+            .permission_name
+            .as_deref()
+            .is_some_and(PermissionPipeline::is_unconditional)
+        {
+            return Ok(PermissionDecision::unconditional());
+        }
         let permission_overlay = self
             .inner
             .store
@@ -1020,6 +1027,14 @@ pub(crate) fn apply_permission_resource(
         return Err(ToolError::execution(
             "tool permission metadata changed between discovery and preparation",
         ));
+    }
+    if PermissionPipeline::is_unconditional(permission_name) {
+        // No rule is evaluated, so the prepared capability is not checked
+        // against an action.
+        return match resource {
+            Some(resource) => prepared.with_permission_resource(Some(resource)),
+            None => Ok(prepared),
+        };
     }
     let action = PermissionPipeline::action_for_permission_name(permission_name)
         .map_err(|error| ToolError::execution(error.to_string()))?;

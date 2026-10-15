@@ -19,6 +19,14 @@ use thiserror::Error;
 
 use crate::tool_api::UNSCOPED_PERMISSION_RESOURCE_DISPLAY;
 
+/// Permission name of base-layer tools that need no rule: they are always
+/// published and every call is allowed without evaluating rules or asking,
+/// because they can only reach state the session tree already owns (for
+/// example `read_artifact`). It maps to no [`PermissionAction`], so no rule,
+/// grant, or overlay can name it. Their prepared operations still carry a
+/// capability for approval identity; it is never evaluated.
+pub const UNCONDITIONAL_PERMISSION_NAME: &str = "unconditional";
+
 /// Visibility is action-level opt-in, not a resource authorization decision.
 #[must_use]
 pub fn tool_visible(
@@ -126,12 +134,31 @@ pub struct PermissionDecision {
     pub evaluations: Vec<ApprovalEvaluation>,
 }
 
+impl PermissionDecision {
+    /// The decision for a tool with [`UNCONDITIONAL_PERMISSION_NAME`]: allowed,
+    /// with no rule evaluated.
+    #[must_use]
+    pub fn unconditional() -> Self {
+        Self {
+            effect: PermissionEffect::Allow,
+            evaluations: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct PermissionPipeline {
     _private: (),
 }
 
 impl PermissionPipeline {
+    /// Whether `permission_name` marks a tool that is always visible and
+    /// always allowed ([`UNCONDITIONAL_PERMISSION_NAME`]).
+    #[must_use]
+    pub fn is_unconditional(permission_name: &str) -> bool {
+        permission_name == UNCONDITIONAL_PERMISSION_NAME
+    }
+
     pub fn action_for_permission_name(
         permission_name: &str,
     ) -> Result<PermissionAction, PermissionError> {
@@ -291,6 +318,9 @@ impl PermissionPipeline {
         overlay: Option<&SessionPermissionOverlay>,
         permission_name: &str,
     ) -> bool {
+        if Self::is_unconditional(permission_name) {
+            return true;
+        }
         let Ok(action) = Self::action_for_permission_name(permission_name) else {
             return false;
         };
@@ -510,9 +540,6 @@ fn expand_workspace_pattern(pattern: &str, workspace: &Path) -> String {
 }
 
 fn absolute_resource(workspace: &Path, resource: &str) -> String {
-    if resource.starts_with("artifact://") {
-        return resource.to_owned();
-    }
     let resource_path = Path::new(resource);
     if resource_path.is_absolute() {
         normalized_path(resource_path)

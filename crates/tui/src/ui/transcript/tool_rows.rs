@@ -6,7 +6,7 @@ use ratatui::style::Color;
 pub(super) fn tool_icon(title: &str) -> &'static str {
     match title {
         "bash" => "💻",
-        "read" => "📖",
+        "read" | "read_artifact" => "📖",
         "write" | "edit" => "📝",
         "webfetch" => "🌐",
         "send_message" => "📨",

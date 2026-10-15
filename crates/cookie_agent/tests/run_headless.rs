@@ -33,7 +33,9 @@ use cookie_agent_protocol::{
     ClientRunId, EventPayload, EventSubscriptionMessage, PermissionAction, PermissionEffect,
     RunSelection, RunStartParams, SessionId, StoredEvent,
 };
-use cookie_agent_tools::{BuiltinTools, delegate::DelegateToolProvider, skill::SkillTool};
+use cookie_agent_tools::{
+    BuiltinTools, delegate::DelegateToolProvider, read_artifact::ReadArtifactTool, skill::SkillTool,
+};
 use tempfile::TempDir;
 
 #[path = "../../../test-support/config_harness.rs"]
@@ -294,6 +296,9 @@ impl Fixture {
         engine
             .try_register_tool_provider(Arc::new(SkillTool::new(engine.clone())))
             .expect("skill tool");
+        engine
+            .try_register_tool_provider(Arc::new(ReadArtifactTool))
+            .expect("read_artifact tool");
         Self {
             _root: root,
             workspace,
@@ -562,6 +567,11 @@ fn artifact_blobs(data_root: &Path) -> Vec<String> {
 #[tokio::test]
 async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
     for artifact_read in [true, false] {
+        let tool = if artifact_read {
+            "read_artifact"
+        } else {
+            "read"
+        };
         let markers = tempfile::tempdir().unwrap();
         let reached = markers.path().join("after-result.jsonl");
         let release = markers.path().join("release");
@@ -578,7 +588,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
                     }).to_string(),
                     "FIXTURE_INTERCEPT_FILE":reached.to_str().unwrap(),
                     "FIXTURE_INTERCEPT_RELEASE_FILE":release.to_str().unwrap(),
-                    "FIXTURE_INTERCEPT_GATE_TOOL":"read"
+                    "FIXTURE_INTERCEPT_GATE_TOOL":tool
                 }
             }))
             .unwrap();
@@ -641,18 +651,18 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             .uri
             .strip_prefix("artifact://sha256/")
             .unwrap();
-        let path = if artifact_read {
-            format!("artifact://{manifest}/stdout")
+        let arguments = if artifact_read {
+            serde_json::json!({"artifact":manifest,"stream":"stdout","offset":1,"limit":1})
         } else {
             let path = fixture.workspace.join("page.txt");
             fs::write(&path, "zero\none\ntwo\n").unwrap();
-            path.to_str().unwrap().to_owned()
+            serde_json::json!({"filePath":path.to_str().unwrap(),"offset":1,"limit":1})
         };
         let data_root = fixture._root.path().join("data");
         let before = artifact_blobs(&data_root);
         fixture.server.enqueue(MockResponse::Sse(tool_response(
-            "read",
-            &serde_json::json!({"filePath":path,"offset":1,"limit":1}).to_string(),
+            tool,
+            &arguments.to_string(),
         )));
         let session = fixture
             .engine
@@ -687,7 +697,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
                     && let Some(hook) = text
                         .lines()
                         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                        .find(|hook| hook["params"]["tool"] == "read")
+                        .find(|hook| hook["params"]["tool"] == tool)
                 {
                     break hook;
                 }
@@ -762,7 +772,8 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
         assert_eq!(result.metadata["limit"], 1);
         if artifact_read {
             assert_eq!(result.metadata["next_offset"], 2);
-            assert_eq!(result.metadata["filePath"], path);
+            assert_eq!(result.metadata["artifact"], manifest);
+            assert_eq!(result.metadata["stream"], "stdout");
         } else {
             assert_eq!(result.metadata["kind"], "text");
             assert_eq!(result.metadata["total_lines"], 3);

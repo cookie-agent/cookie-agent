@@ -461,8 +461,8 @@ fn truncated_tool_result_names_the_readback_tool() {
     assert_eq!(
         metadata["truncation"]["read_more"],
         serde_json::json!({
-            "tool": "read",
-            "arguments": {"filePath": format!("artifact://{}", "a".repeat(64))}
+            "tool": "read_artifact",
+            "arguments": {"artifact": "a".repeat(64)}
         })
     );
     assert_eq!(metadata["truncation"]["artifact_id"], "a".repeat(64));
@@ -619,11 +619,11 @@ fn tool_elision_marker_is_stable_and_contains_the_bare_artifact_id() {
     let artifact_id = "a".repeat(64);
     assert_eq!(
         tool_output_elision_marker(&artifact_id, 12_345, 0),
-        "[tool output elided; retained at artifact://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; 12345 bytes]"
+        "[tool output elided; 12345 bytes retained; read it with read_artifact(artifact=\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\")]"
     );
     assert_eq!(
         tool_output_elision_marker(&artifact_id, 12_345, 2),
-        "[tool output elided; retained at artifact://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; 12345 bytes] 2 tool-emitted message(s) were elided with this result and are not recoverable."
+        "[tool output elided; 12345 bytes retained; read it with read_artifact(artifact=\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\")] 2 tool-emitted message(s) were elided with this result and are not recoverable."
     );
 }
 use crate::test_support::{model_binding as binding, model_binding_named, variant_model_binding};

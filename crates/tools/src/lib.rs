@@ -23,6 +23,7 @@ pub mod goal;
 pub mod message;
 mod path_args;
 pub mod read;
+pub mod read_artifact;
 pub mod skill;
 pub mod webfetch;
 pub mod write;

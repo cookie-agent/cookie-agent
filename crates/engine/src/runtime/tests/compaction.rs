@@ -332,15 +332,15 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             ),
             (
                 (
-                    "read",
-                    serde_json::json!({"filePath": format!("artifact://{}/results", "b".repeat(64))}),
+                    "read_artifact",
+                    serde_json::json!({"artifact": "b".repeat(64), "stream": "results"}),
                 ),
                 RETRIEVED_MARKER.to_owned(),
             ),
             (
                 (
-                    "read",
-                    serde_json::json!({"filePath": format!("artifact://{}", "a".repeat(64))}),
+                    "read_artifact",
+                    serde_json::json!({"artifact": "a".repeat(64)}),
                 ),
                 format!("LARGE_RETRIEVED_OUTPUT{}", "r".repeat(9 * 1024)),
             ),
@@ -448,7 +448,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                     "raw first trial lost {marker}"
                 );
             }
-            assert!(!requests[1].contains("[tool output elided; retained at "));
+            assert!(!requests[1].contains("[tool output elided; "));
         }
         // A retained tail follows the summary verbatim, so the summarizer
         // only ever sees the span the checkpoint replaces.
@@ -492,7 +492,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             expect_elision
         );
         assert_eq!(
-            summary_request.contains("[tool output elided; retained at "),
+            summary_request.contains("[tool output elided; "),
             expect_elision
         );
         assert_eq!(
@@ -524,14 +524,16 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                 let hint: serde_json::Value =
                     serde_json::from_str(text.split_once('\n').unwrap().1)
                         .expect("structured retrieval hint");
-                assert_eq!(hint["read_more"]["tool"], "read");
+                assert_eq!(hint["read_more"]["tool"], "read_artifact");
                 assert!(hint["read_more"]["arguments"].get("tool_call_id").is_none());
-                let artifact_path = hint["read_more"]["arguments"]["filePath"].as_str().unwrap();
-                assert!(cookie_agent_protocol::ArtifactReadPath::parse(artifact_path).is_ok());
-                assert!(text.contains(&format!("retained at {artifact_path};")));
+                let artifact_path = hint["read_more"]["arguments"]["artifact"].as_str().unwrap();
+                assert!(
+                    cookie_agent_protocol::ArtifactReadTarget::parse(artifact_path, None).is_ok()
+                );
+                assert!(text.contains(&format!("read_artifact(artifact=\"{artifact_path}\")")));
                 let page = fixture
                     .engine
-                    .read_artifact(session.session_id, artifact_path, 0, 10)
+                    .read_artifact(session.session_id, artifact_path, None, 0, 10)
                     .expect("public readback using only the marker hint");
                 assert_eq!(page.source, "artifact");
                 assert!(text.contains("serialized tool content (JSON)"));
@@ -548,13 +550,13 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                         panic!("serialized result metadata");
                     };
                     let original_path =
-                        metadata["truncation"]["read_more"]["arguments"]["filePath"]
+                        metadata["truncation"]["read_more"]["arguments"]["artifact"]
                             .as_str()
                             .unwrap();
-                    assert!(cookie_agent_protocol::ArtifactReadPath::parse(original_path).is_ok());
+                    assert_eq!(metadata["truncation"]["read_more"]["tool"], "read_artifact");
                     let full_page = fixture
                         .engine
-                        .read_artifact(session.session_id, original_path, 0, 10)
+                        .read_artifact(session.session_id, original_path, None, 0, 10)
                         .unwrap();
                     assert_eq!(full_page.content, full_output);
                     assert_ne!(original_path, artifact_path);

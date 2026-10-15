@@ -86,9 +86,9 @@ async fn named_streams_capture_in_declaration_order_with_independent_previews() 
         result.output,
         format!(
             "[results]\nabcde\n[… 1 line omitted. Read more: \
-             read(filePath=\"artifact://{digest}/results\", offset=0)]\n\n\
+             read_artifact(artifact=\"{digest}\", stream=\"results\", offset=0)]\n\n\
              [diagnostics]\nbad\n[… 5 bytes omitted. Read more: \
-             read(filePath=\"artifact://{digest}/diagnostics\", offset=1)]\n\n\
+             read_artifact(artifact=\"{digest}\", stream=\"diagnostics\", offset=1)]\n\n\
              [empty]\n"
         )
     );
@@ -739,7 +739,7 @@ async fn truncated_previews_show_the_first_and_last_lines() {
         assert_eq!(
             result.output,
             format!(
-                "line0\nline1\n[… {} lines omitted. Read more: read(filePath=\"artifact://{digest}\", \
+                "line0\nline1\n[… {} lines omitted. Read more: read_artifact(artifact=\"{digest}\", \
                  offset=2)]\nline{}\nline{}\n",
                 lines - 4,
                 lines - 2,

@@ -71,7 +71,7 @@ The TUI's own tests still drive a real `server` through a dev-dependency.
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
 | `config` | Strict runtime configuration and Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports `AgentMode`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |
 | `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence. |
-| `tools` | Built-in `read` (filesystem and artifact URIs), `write`, `edit`, `bash`, and `webfetch` tools plus the delegation (`delegate_subagent`, `get_subagent_result`, `cancel_subagent`), messaging (`send_message`), `skill`, and goal providers. |
+| `tools` | Built-in `read`, `write`, `edit`, `bash`, and `webfetch` tools plus the delegation (`delegate_subagent`, `get_subagent_result`, `cancel_subagent`), messaging (`send_message`), `skill`, goal, and `read_artifact` providers. |
 | `server` | The `ServerProtocol` implementation over `Engine`, the axum WebSocket accept path, `Server::connect_in_process`, and the per-run token / ready-line APIs. Server side only. |
 | `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow. Depends only on `protocol` and runs over a `protocol::Client` it is handed. |
 | `cookie_agent` | CLI and composition root wiring every crate together. The only binary. |
@@ -380,7 +380,10 @@ write path and later evicts like any other session.
 Tool output is content-addressed under a digest-named file, and every artifact
 belongs to exactly one tree: output written by a root or one of its descendants
 lands in that root's `artifacts/`. A session reads only its own tree's
-artifacts, so a URI naming content another tree stored does not resolve there.
+artifacts, so a `read_artifact` digest naming content another tree stored does not
+resolve there. `read_artifact` therefore needs no permission rule: it is a
+base-layer tool with the unconditional permission name, always published and
+always allowed.
 A fork of a root hard-links every artifact its history references — and the
 streams a named-stream manifest lists — into the new tree before the fork is
 published, so it never depends on its source; a link that fails fails the fork. Collection is therefore per tree

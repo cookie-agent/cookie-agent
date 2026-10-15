@@ -10,8 +10,8 @@ use cookie_agent_engine::{
     attachment_gate_error, gate_attachment, sniff_media_type,
 };
 use cookie_agent_protocol::{
-    ArtifactReadPath, PermissionAction, PersistedToolResult as ToolResult, ToolEmittedContent,
-    ToolEmittedMessage, ToolEmittedMessageRole,
+    PermissionAction, PersistedToolResult as ToolResult, ToolEmittedContent, ToolEmittedMessage,
+    ToolEmittedMessageRole,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -76,13 +76,13 @@ impl ToolProvider for ReadTool {
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
-output: Default::default(),
+            output: Default::default(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
             name: "read".into(),
             permission_name: Self::get_permission_name("read")?.into(),
             description:
-                "Read a text/image/video file, a directory snapshot, or an artifact using a zero-based offset."
+                "Read a text/image/video file or a directory snapshot using a zero-based offset."
                     .into(),
             parameters: schema::<ReadArgs>(),
         }])
@@ -102,10 +102,6 @@ output: Default::default(),
     ) -> Result<(&'static str, Option<String>), ToolError> {
         let permission_name = Self::get_permission_name(name)?;
         let args: ReadArgs = parse_args("read", arguments.clone())?;
-        if args.file_path.starts_with("artifact://") {
-            ArtifactReadPath::parse(&args.file_path).map_err(ToolError::execution)?;
-            return Ok((permission_name, Some(args.file_path)));
-        }
         if args.file_path.is_empty() {
             return Err(ToolError::execution("filePath must not be empty"));
         }
@@ -127,10 +123,6 @@ output: Default::default(),
             return Err(ToolError::execution("read provider received another tool"));
         }
         let args: ReadArgs = parse_args("read", arguments.clone())?;
-        if args.file_path.starts_with("artifact://") {
-            ArtifactReadPath::parse(&args.file_path).map_err(ToolError::execution)?;
-            return Ok(args.file_path);
-        }
         if args.file_path.is_empty() {
             return Err(ToolError::execution("filePath must not be empty"));
         }
@@ -166,40 +158,6 @@ output: Default::default(),
         }
         args.offset = Some(offset);
         args.limit = Some(limit);
-        if args.file_path.starts_with("artifact://") {
-            ArtifactReadPath::parse(&args.file_path).map_err(ToolError::execution)?;
-            args.limit = Some(limit.min(DEFAULT_LIMIT));
-            let binding =
-                serde_json::to_vec(&args).map_err(|e| ToolError::execution(e.to_string()))?;
-            let resource = crate::prepared_resource(
-                PermissionAction::Read,
-                "artifact",
-                args.file_path.as_bytes(),
-                &binding,
-                cookie_agent_protocol::PreparedBindingLifetime::RestartStable,
-                cookie_agent_protocol::ApprovalResourceSource::PrimaryOperation,
-            )?;
-            let operation = prepared_operation(
-                "read",
-                &args,
-                vec![(PermissionAction::Read, "read")],
-                vec![resource],
-                &fs_cap::cwd_context_bytes(&ctx.cwd)?,
-            )?;
-            let normalized =
-                serde_json::to_value(&args).map_err(|e| ToolError::execution(e.to_string()))?;
-            let label = args.file_path.clone();
-            return PreparedTool::new(
-                operation,
-                normalized,
-                None,
-                Box::new(ArtifactReadExecutor {
-                    args,
-                    session: ctx.session,
-                }),
-            )?
-            .with_policy_labels(vec![label]);
-        }
         let workspace = self.workspace.clone();
         crate::blocking(move || {
             let target = fs_cap::prepare_existing(&ctx.cwd, std::path::Path::new(&args.file_path))?;
@@ -240,41 +198,6 @@ output: Default::default(),
             .with_policy_labels(policy_labels)
         })
         .await
-    }
-}
-
-struct ArtifactReadExecutor {
-    args: ReadArgs,
-    session: cookie_agent_protocol::SessionId,
-}
-
-#[async_trait]
-impl PreparedExecutor for ArtifactReadExecutor {
-    async fn execute(
-        self: Box<Self>,
-        context: ToolExecutionContext,
-    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
-        if context.session != self.session {
-            return Err(ToolError::operation_changed("session changed"));
-        }
-        if context.cancellation.is_cancelled() {
-            return Err(ToolError::execution("artifact read cancelled"));
-        }
-        let offset = self.args.offset.expect("normalized offset") as u64;
-        let limit = self.args.limit.expect("normalized limit") as u64;
-        let page = context
-            .read_artifact(&self.args.file_path, offset, limit)
-            .await?;
-        Ok(cookie_agent_engine::ToolCompletion::single(ToolResult {
-            title: crate::safe_title("Artifact page"),
-            output: page.content,
-            display: None,
-            retained_output: None,
-            metadata: serde_json::json!({"filePath": self.args.file_path, "offset": offset, "limit": limit, "next_offset": page.next_offset_lines, "source": page.source}),
-            truncation: None,
-            attachments: Vec::new(),
-            additional_messages: Vec::new(),
-        }))
     }
 }
 
@@ -562,75 +485,3 @@ fn directory_page<T>(entries: &[T], offset: usize, limit: usize) -> impl Iterato
 
 #[cfg(test)]
 mod tests;
-#[tokio::test]
-async fn artifact_reads_use_the_public_uri_without_filesystem_preparation_or_retention() {
-    use cookie_agent_protocol::{RunId, SessionId, ToolCallId};
-    let context = |root: &std::path::Path| ToolPreparationContext {
-        session: SessionId::new_v7(),
-        run: RunId::new_v7(),
-        cwd: root.into(),
-        workspace_root: root.into(),
-        turn_context: crate::test_turn_context(),
-    };
-    let root = tempfile::tempdir().unwrap();
-    let producer =
-        ToolExecutionContext::for_test(root.path().join("artifacts"), crate::test_turn_context())
-            .unwrap();
-    let artifact = producer
-        .retain_validated_attachment("text/plain", None, b"zero\none\ntwo\n")
-        .unwrap();
-    let path = format!("artifact://{}", artifact.sha256);
-    let reader =
-        ToolExecutionContext::for_test(root.path().join("artifacts"), crate::test_turn_context())
-            .unwrap();
-    assert_ne!(producer.session, reader.session);
-    let tool = ReadTool::new(root.path());
-    let args = serde_json::json!({"filePath": path, "offset": 1, "limit": 1});
-    assert_eq!(
-        tool.get_permission_resource("read", &args).unwrap(),
-        ("read", Some(path.clone()))
-    );
-    let prepared = tool
-        .prepare(
-            ToolPreparationContext {
-                session: reader.session,
-                run: reader.run,
-                cwd: root.path().into(),
-                workspace_root: root.path().into(),
-                turn_context: reader.turn_context.clone(),
-            },
-            ToolCall {
-                id: ToolCallId::new_v7(),
-                name: "read".into(),
-                arguments: args,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(prepared.policy_labels(), [Some(path.clone())]);
-    let result = prepared.execute_for_test(reader).await.unwrap();
-    assert_eq!(result.output, "one\n");
-    assert_eq!(result.metadata["next_offset"], 2);
-    assert_eq!(result.metadata["filePath"], path);
-    assert!(result.retained_output.is_none());
-    assert!(result.truncation.is_none());
-    assert!(!result.output.contains("<path>"));
-    for path in [
-        "artifact://bad".to_owned(),
-        format!("artifact://{}/../bad", artifact.sha256),
-        format!("artifact://sha256/{}", artifact.sha256),
-    ] {
-        assert!(
-            tool.prepare(
-                context(root.path()),
-                ToolCall {
-                    id: ToolCallId::new_v7(),
-                    name: "read".into(),
-                    arguments: serde_json::json!({"filePath": path})
-                }
-            )
-            .await
-            .is_err()
-        );
-    }
-}

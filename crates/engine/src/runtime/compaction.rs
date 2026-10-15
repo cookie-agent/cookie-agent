@@ -1442,15 +1442,7 @@ fn pruned_compaction_history(
             oven_sdk::HistoryTurn::Assistant(turn) => {
                 for part in &turn.message.content {
                     if let oven_sdk::AssistantPart::ToolCall(call) = part {
-                        if call.name == "read"
-                            && call
-                                .input
-                                .get("filePath")
-                                .and_then(serde_json::Value::as_str)
-                                .is_some_and(|path| {
-                                    cookie_agent_protocol::ArtifactReadPath::parse(path).is_ok()
-                                })
-                        {
+                        if call.name == "read_artifact" {
                             retrieval_calls.insert(call.id.clone());
                         } else {
                             retrieval_calls.remove(&call.id);
@@ -1497,8 +1489,8 @@ fn prune_compaction_result(
         }
         let read_more = serde_json::json!({
             "read_more": {
-                "tool": "read",
-                "arguments": {"filePath": format!("artifact://{artifact_id}")}
+                "tool": "read_artifact",
+                "arguments": {"artifact": artifact_id}
             }
         });
         marker.push('\n');

@@ -1,4 +1,6 @@
-use cookie_agent_protocol::{ArtifactReadPath, PersistedToolResult, SessionId, ToolOutputManifest};
+use cookie_agent_protocol::{
+    ArtifactReadTarget, PersistedToolResult, SessionId, ToolOutputManifest,
+};
 
 use std::sync::Arc;
 
@@ -13,33 +15,35 @@ pub struct ArtifactReadPage {
 }
 
 impl Engine {
-    /// Read an artifact URI as `session` sees it: only content stored in that
-    /// session's own tree resolves (tree-local D1). No ownership lookup is made.
-    /// This synchronous API blocks; async tool executors use
+    /// Read an artifact, or one stream of a named-stream manifest, as
+    /// `session` sees it: only content stored in that session's own tree
+    /// resolves (tree-local D1). No ownership lookup is made. This synchronous
+    /// API blocks; async tool executors use
     /// `ToolExecutionContext::read_artifact`.
     pub fn read_artifact(
         &self,
         session: SessionId,
-        path: &str,
+        artifact: &str,
+        stream: Option<&str>,
         offset: u64,
         limit: u64,
     ) -> Result<ArtifactReadPage, ToolError> {
-        read_artifact(&self.inner.artifacts, session, path, offset, limit)
+        let target = ArtifactReadTarget::parse(artifact, stream).map_err(ToolError::execution)?;
+        read_artifact(&self.inner.artifacts, session, &target, offset, limit)
     }
 }
 
 pub(crate) fn read_artifact(
     store: &ArtifactRouter,
     session: SessionId,
-    path: &str,
+    target: &ArtifactReadTarget,
     offset: u64,
     limit: u64,
 ) -> Result<ArtifactReadPage, ToolError> {
-    let target = ArtifactReadPath::parse(path).map_err(ToolError::execution)?;
     if limit == 0 {
         return Err(ToolError::execution("artifact page limit must be positive"));
     }
-    let (digest, source) = if let Some(name) = target.stream {
+    let (digest, source) = if let Some(name) = &target.stream {
         let page = store
             .read_paged(session, target.digest.as_str(), 0, 1)
             .map_err(read_error)?;
@@ -49,7 +53,7 @@ pub(crate) fn read_artifact(
         let stream = manifest
             .streams
             .into_iter()
-            .find(|stream| stream.name.as_deref() == Some(&name))
+            .find(|stream| stream.name.as_ref() == Some(name))
             .ok_or_else(|| {
                 ToolError::execution(format!("artifact has no declared stream {name}"))
             })?;
@@ -60,7 +64,7 @@ pub(crate) fn read_artifact(
         })?;
         (digest, format!("artifact.{name}"))
     } else {
-        (target.digest, "artifact".into())
+        (target.digest.clone(), "artifact".into())
     };
     let page = store
         .read_paged(session, digest.as_str(), offset, limit.min(2_000))
@@ -80,12 +84,11 @@ pub(crate) fn read_artifact(
 pub(crate) async fn read_artifact_async(
     store: Arc<ArtifactRouter>,
     session: SessionId,
-    path: &str,
+    target: ArtifactReadTarget,
     offset: u64,
     limit: u64,
 ) -> Result<ArtifactReadPage, ToolError> {
-    let path = path.to_owned();
-    blocking_io::run(move || read_artifact(&store, session, &path, offset, limit)).await?
+    blocking_io::run(move || read_artifact(&store, session, &target, offset, limit)).await?
 }
 
 fn read_error(error: std::io::Error) -> ToolError {
@@ -104,6 +107,10 @@ fn read_error(error: std::io::Error) -> ToolError {
 mod tests {
     use super::*;
 
+    fn target(digest: &str) -> ArtifactReadTarget {
+        ArtifactReadTarget::parse(digest, None).unwrap()
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn blocked_artifact_verification_leaves_async_tasks_and_other_readers_responsive() {
         let directory = tempfile::tempdir().unwrap();
@@ -114,14 +121,7 @@ mod tests {
             blocking_io::gate(store.io_test_hook(), "read", Some(first.clone()));
         let reader = store.clone();
         let blocked = tokio::spawn(async move {
-            read_artifact_async(
-                reader,
-                crate::test_session_id(),
-                &format!("artifact://{first}"),
-                0,
-                1,
-            )
-            .await
+            read_artifact_async(reader, crate::test_session_id(), target(&first), 0, 1).await
         });
         tokio::time::timeout(std::time::Duration::from_secs(10), entered)
             .await
@@ -131,13 +131,7 @@ mod tests {
         assert_eq!(tokio::spawn(async { 7 }).await.unwrap(), 7);
         let other = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            read_artifact_async(
-                store,
-                crate::test_session_id(),
-                &format!("artifact://{second}"),
-                0,
-                1,
-            ),
+            read_artifact_async(store, crate::test_session_id(), target(&second), 0, 1),
         )
         .await
         .unwrap()
@@ -158,8 +152,8 @@ mod tests {
         let (_, digest) = store
             .retain(crate::test_session_id(), b"verified\n")
             .unwrap();
-        let path = format!("artifact://{digest}");
-        read_artifact_async(store.clone(), crate::test_session_id(), &path, 0, 1)
+        let path = target(&digest);
+        read_artifact_async(store.clone(), crate::test_session_id(), path.clone(), 0, 1)
             .await
             .unwrap();
         let (entered, release) =
@@ -167,7 +161,7 @@ mod tests {
         let reader = store.clone();
         let reading_path = path.clone();
         let reading = tokio::spawn(async move {
-            read_artifact_async(reader, crate::test_session_id(), &reading_path, 0, 1).await
+            read_artifact_async(reader, crate::test_session_id(), reading_path, 0, 1).await
         });
         tokio::time::timeout(std::time::Duration::from_secs(10), entered)
             .await
@@ -186,7 +180,7 @@ mod tests {
         release.send(()).unwrap();
         assert_eq!(reading.await.unwrap().unwrap().content, "verified\n");
         assert!(
-            read_artifact_async(store, crate::test_session_id(), &path, 0, 1)
+            read_artifact_async(store, crate::test_session_id(), path, 0, 1)
                 .await
                 .unwrap_err()
                 .to_string()

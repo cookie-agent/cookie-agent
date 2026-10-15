@@ -8,7 +8,9 @@ its name, its description, and the JSON Schema of its parameters. Provider adapt
 place these three fields in their own request format but do not rewrite them.
 
 A tool is sent only when the active agent has an `allow` or `ask` rule for the
-tool's permission. Some tools have further conditions, noted under each tool.
+tool's permission. A tool whose permission is *none* needs no rule: it is always
+sent and every call is allowed. Some tools have further conditions, noted under
+each tool.
 MCP and plugin tools are described by their servers and plugins, not here.
 
 To see which tools a real session sent with its latest request, expand the tools
@@ -28,6 +30,7 @@ block under the system prompt in the TUI transcript.
 | [`send_message`](#send_message) | `message` |
 | [`goal_get`](#goal_get) | `read` |
 | [`goal_update`](#goal_update) | `write` |
+| [`read_artifact`](#read_artifact) | *none* |
 
 ## `read`
 
@@ -38,7 +41,7 @@ read(filePath: string, limit?: integer, offset?: integer)
 Description sent to the model:
 
 ```text
-Read a text/image/video file, a directory snapshot, or an artifact using a zero-based offset.
+Read a text/image/video file or a directory snapshot using a zero-based offset.
 ```
 
 | Parameter | Type | Required | Description |
@@ -243,7 +246,7 @@ webfetch(raw?: boolean, url: string)
 Description sent to the model:
 
 ```text
-Fetch an HTTP or HTTPS URL. Output has final_url, status_code, content_type, and truncated header lines, a blank line, then the text body. Returns HTML as plaintext unless raw is true; other text passes through. Use read with the artifact URI in a truncation hint to page retained output, including the body.
+Fetch an HTTP or HTTPS URL. Output has final_url, status_code, content_type, and truncated header lines, a blank line, then the text body. Returns HTML as plaintext unless raw is true; other text passes through. Use read_artifact with the artifact a truncation hint names to page retained output, including the body.
 ```
 
 | Parameter | Type | Required | Description |
@@ -599,6 +602,72 @@ Only in a root session whose goal is active or paused when the run starts.
         "items"
       ],
       "title": "GoalUpdateParams",
+      "type": "object"
+    }
+    ```
+
+## `read_artifact`
+
+```text
+read_artifact(artifact: string, limit?: integer, offset?: integer, stream?: string)
+```
+
+Description sent to the model:
+
+```text
+Read retained tool output by line, using a zero-based offset. Truncated results and elided history name the artifact (and stream) to read in a read_artifact hint; continue from the offset it gives.
+```
+
+Always, whatever the agent's permission rules: it reads only output retained by the session's own tree.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `artifact` | `string` | yes | The artifact's 64-character lowercase SHA-256 digest, as a truncation hint names it. |
+| `limit` | `integer` | no | Maximum number of lines to return, at most 2000. Defaults to 2000. |
+| `offset` | `integer` | no | Zero-based line offset. Defaults to 0. |
+| `stream` | `string` | no | Named stream of a multi-stream output, such as `stdout`, as a truncation hint names it. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "description": "The artifact's 64-character lowercase SHA-256 digest, as a truncation hint names it.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum number of lines to return, at most 2000. Defaults to 2000.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "Zero-based line offset. Defaults to 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stream": {
+          "description": "Named stream of a multi-stream output, such as `stdout`, as a truncation hint names it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "artifact"
+      ],
+      "title": "ReadArtifactArgs",
       "type": "object"
     }
     ```

@@ -179,38 +179,30 @@ fn later_run_agent_governs_permission_mutation_classification() {
 }
 
 #[test]
-fn artifact_uris_are_not_workspace_files_for_permission_patterns() {
-    let workspace = std::path::Path::new("/workspace");
-    let uri = format!("artifact://{}/results", "a".repeat(64));
-    let files = policy(vec![rule(
-        "files",
+fn unconditional_tools_are_visible_without_rules_and_cannot_be_ruled() {
+    let deny_all = policy(vec![rule(
+        "deny",
         PermissionAction::Read,
-        "${workspace_dir}/*",
-        PermissionEffect::Allow,
+        "*",
+        PermissionEffect::Deny,
     )]);
-    assert_eq!(super::absolute_resource(workspace, &uri), uri);
-    assert_eq!(
-        super::effective_permission(&files, PermissionAction::Read, &uri, workspace).0,
-        PermissionEffect::Deny
+    for agent in [policy(Vec::new()), deny_all] {
+        assert!(PermissionPipeline::tool_visible_with_overlay(
+            &agent,
+            None,
+            super::UNCONDITIONAL_PERMISSION_NAME
+        ));
+        assert!(!PermissionPipeline::tool_visible_with_overlay(
+            &agent, None, "read"
+        ));
+    }
+    assert!(
+        PermissionPipeline::action_for_permission_name(super::UNCONDITIONAL_PERMISSION_NAME)
+            .is_err()
     );
-    assert_eq!(
-        super::effective_permission(&files, PermissionAction::Read, "src/main.rs", workspace).0,
-        PermissionEffect::Allow
-    );
-    let artifacts = policy(vec![rule(
-        "artifacts",
-        PermissionAction::Read,
-        "artifact://*",
-        PermissionEffect::Allow,
-    )]);
-    assert_eq!(
-        super::effective_permission(&artifacts, PermissionAction::Read, &uri, workspace).0,
-        PermissionEffect::Allow
-    );
-    assert_eq!(
-        super::effective_permission(&artifacts, PermissionAction::Read, "src/main.rs", workspace).0,
-        PermissionEffect::Deny
-    );
+    let decision = super::PermissionDecision::unconditional();
+    assert_eq!(decision.effect, PermissionEffect::Allow);
+    assert!(decision.evaluations.is_empty());
 }
 
 #[test]

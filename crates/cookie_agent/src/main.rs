@@ -468,6 +468,15 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
         return Err(error);
     }
     if let Err(error) = engine
+        .try_register_tool_provider(Arc::new(
+            cookie_agent_tools::read_artifact::ReadArtifactTool,
+        ))
+        .context("register read_artifact tool")
+    {
+        engine.shutdown().await;
+        return Err(error);
+    }
+    if let Err(error) = engine
         .try_register_tool_provider(Arc::new(cookie_agent_tools::goal::GoalTools::new(
             engine.clone(),
         )))

@@ -6,13 +6,15 @@
 
 use std::fmt::Write as _;
 
-use cookie_agent_engine::{SessionToolContext, ToolProvider, ToolSpec};
+use cookie_agent_engine::{
+    SessionToolContext, ToolProvider, ToolSpec, permissions::UNCONDITIONAL_PERMISSION_NAME,
+};
 use cookie_agent_protocol::SessionId;
 use serde_json::Value;
 
 use crate::{
     BuiltinTools, bash::bash_tool_description_for, delegate::DelegateToolProvider, goal::GoalTools,
-    message::MessageToolProvider, skill::SkillTool,
+    message::MessageToolProvider, read_artifact::ReadArtifactTool, skill::SkillTool,
 };
 
 const DOC_PATH: &str = concat!(
@@ -33,6 +35,7 @@ fn documented_specs() -> Vec<ToolSpec> {
     specs.push(MessageToolProvider::spec());
     specs.push(GoalTools::get_spec());
     specs.push(GoalTools::update_spec());
+    specs.push(ReadArtifactTool::spec());
     specs
 }
 
@@ -50,6 +53,10 @@ fn availability(name: &str) -> Option<&'static str> {
         "goal_get" | "goal_update" => {
             "Only in a root session whose goal is active or paused when the run starts."
         }
+        "read_artifact" => {
+            "Always, whatever the agent's permission rules: it reads only output retained by \
+             the session's own tree."
+        }
         _ => return None,
     })
 }
@@ -63,19 +70,21 @@ fn render(specs: &[ToolSpec]) -> String {
          its name, its description, and the JSON Schema of its parameters. Provider adapters\n\
          place these three fields in their own request format but do not rewrite them.\n\n\
          A tool is sent only when the active agent has an `allow` or `ask` rule for the\n\
-         tool's permission. Some tools have further conditions, noted under each tool.\n\
+         tool's permission. A tool whose permission is *none* needs no rule: it is always\n\
+         sent and every call is allowed. Some tools have further conditions, noted under\n\
+         each tool.\n\
          MCP and plugin tools are described by their servers and plugins, not here.\n\n\
          To see which tools a real session sent with its latest request, expand the tools\n\
          block under the system prompt in the TUI transcript.\n\n\
          | Tool | Permission |\n|---|---|\n",
     );
     for spec in specs {
-        writeln!(
-            page,
-            "| [`{0}`](#{0}) | `{1}` |",
-            spec.name, spec.permission_name
-        )
-        .unwrap();
+        let permission = if spec.permission_name == UNCONDITIONAL_PERMISSION_NAME {
+            "*none*".to_owned()
+        } else {
+            format!("`{}`", spec.permission_name)
+        };
+        writeln!(page, "| [`{0}`](#{0}) | {permission} |", spec.name).unwrap();
     }
     for spec in specs {
         render_tool(&mut page, spec);
