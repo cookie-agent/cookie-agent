@@ -40,6 +40,7 @@ impl GlobalTemplate {
             info: RuntimeInfo::global(),
             providers,
             skills,
+            connection: None,
         }
     }
 }
@@ -64,6 +65,7 @@ impl LocalTemplate {
             info: RuntimeInfo::coding(LOCAL_RUNTIME_ID, self.workspace.clone()),
             providers: (self.tools)(&self.workspace),
             skills,
+            connection: None,
         })
     }
 }

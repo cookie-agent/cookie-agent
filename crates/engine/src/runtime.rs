@@ -79,7 +79,7 @@ mod submit;
 /// Test-only hooks; the module body is `#![cfg(test)]`.
 pub(crate) mod test_hooks;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod titles;
 pub(crate) mod tool_execution;
 mod tool_prompts;
@@ -719,7 +719,7 @@ pub(crate) struct Inner {
     plugin_diagnostics: PluginDiagnosticsState,
     runtime_revision_index: Mutex<RuntimeRevisionIndex>,
     /// The base layer, runtime templates, and running runtime instances.
-    pub(crate) runtimes: crate::runtimes::RuntimeRegistry,
+    pub(crate) runtimes: Arc<crate::runtimes::RuntimeRegistry>,
     provider_ids: Mutex<HashSet<&'static str>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
     pub(crate) plugins: Arc<crate::PluginRegistry>,
@@ -746,17 +746,19 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Opens an engine whose local coding runtime is called in-process
+    /// ([`cookie_agent_runtime_api::LocalRuntime::InProcess`]). A local
+    /// runtime behind the runtime protocol starts asynchronously; open it
+    /// with [`Self::open_async`].
     pub fn open(options: EngineOptions) -> Result<Self, EngineError> {
-        let local_workspace = crate::WorkspaceContext::new(&options.runtimes.local_workspace)
-            .map_err(|source| EngineError::Workspace {
-                path: options.runtimes.local_workspace.clone(),
-                source,
-            })?;
+        let local_workspace = local_workspace(&options)?;
         let local_tools = match &options.runtimes.local {
             cookie_agent_runtime_api::LocalRuntime::InProcess(tools) => Arc::clone(tools),
             cookie_agent_runtime_api::LocalRuntime::Protocol(_) => {
                 return Err(EngineError::Runtime(
-                    "a local runtime behind the runtime protocol is not supported yet".into(),
+                    "the local runtime runs behind the runtime protocol; open the engine with \
+                     Engine::open_async"
+                        .into(),
                 ));
             }
         };
@@ -765,6 +767,35 @@ impl Engine {
             local_tools,
         ));
         let local = local_template.start_now().map_err(EngineError::Runtime)?;
+        Self::open_started(options, local_template, local)
+    }
+
+    /// Opens an engine, first starting its local coding runtime and
+    /// initializing it over the runtime protocol when it runs behind it.
+    pub async fn open_async(options: EngineOptions) -> Result<Self, EngineError> {
+        let cookie_agent_runtime_api::LocalRuntime::Protocol(connector) = &options.runtimes.local
+        else {
+            return Self::open(options);
+        };
+        let local_workspace = local_workspace(&options)?;
+        let local_template = Arc::new(crate::runtimes::ProtocolTemplate::local(
+            Arc::clone(connector),
+            local_workspace.root(),
+            crate::runtimes::runtime_settings(&options.config),
+        ));
+        let local = crate::RuntimeTemplate::start(local_template.as_ref(), None)
+            .await
+            .map_err(|reason| {
+                EngineError::Runtime(format!("runtime `local` failed to start: {reason}"))
+            })?;
+        Self::open_started(options, local_template, local)
+    }
+
+    fn open_started(
+        options: EngineOptions,
+        local_template: Arc<dyn crate::RuntimeTemplate>,
+        local: crate::StartedRuntime,
+    ) -> Result<Self, EngineError> {
         let mut provider_ids = HashSet::new();
         for provider in options.runtimes.global_tools.iter().chain(&local.providers) {
             reserve_provider_id(&mut provider_ids, provider.as_ref())?;
@@ -809,7 +840,7 @@ impl Engine {
         reserve_provider_id(&mut provider_ids, plugins.as_ref())?;
         let mut global_providers: Vec<Arc<dyn ToolProvider>> = vec![mcp.clone(), plugins.clone()];
         global_providers.extend(options.runtimes.global_tools.iter().cloned());
-        let runtimes = crate::runtimes::RuntimeRegistry::new(
+        let runtimes = Arc::new(crate::runtimes::RuntimeRegistry::new(
             Arc::new(crate::runtimes::GlobalTemplate),
             crate::runtimes::GlobalTemplate::started(
                 global_providers,
@@ -817,7 +848,8 @@ impl Engine {
             ),
             local_template,
             local,
-        );
+        ));
+        runtimes.watch_builtin();
         let delegation_events = DelegationEventStore::new(Arc::clone(&store));
         let grant_journals = GrantJournals::new(store.workdir_dir_path());
         let (runtime_notifications, _) = broadcast::channel(64);
@@ -873,7 +905,7 @@ impl Engine {
         #[cfg(not(test))]
         if let Err(error) = engine.register_base_layer() {
             // Base providers hold the engine; dropping them frees it.
-            engine.inner.runtimes.clear();
+            drop(engine.inner.runtimes.clear());
             return Err(error);
         }
         let weak = Arc::downgrade(&engine.inner);
@@ -1515,9 +1547,23 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
-        self.inner.runtimes.clear();
+        for connection in self.inner.runtimes.clear() {
+            connection.shutdown(RUNTIME_SHUTDOWN_GRACE).await;
+        }
         self.inner.store.release_ownership();
     }
+}
+
+/// How long shutdown waits for a runtime to acknowledge `runtime/shutdown`.
+const RUNTIME_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn local_workspace(options: &EngineOptions) -> Result<crate::WorkspaceContext, EngineError> {
+    crate::WorkspaceContext::new(&options.runtimes.local_workspace).map_err(|source| {
+        EngineError::Workspace {
+            path: options.runtimes.local_workspace.clone(),
+            source,
+        }
+    })
 }
 
 fn reserve_provider_id(

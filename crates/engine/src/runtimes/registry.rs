@@ -6,10 +6,12 @@
 //! to it. The `global` and `local` instances start with the engine; any other
 //! instance starts when a session first needs it.
 //!
-//! Production registers only the built-in `global` and `local` templates.
-//! Configured templates (`[runtimes.<id>]`, phase 4) and the runtime protocol
-//! client (phase 3) plug in here as further [`RuntimeTemplate`]
-//! implementations.
+//! Production registers only the built-in `global` and `local` templates;
+//! `local` runs behind the runtime protocol. An instance whose protocol
+//! connection ends is marked failed, and the next session that needs it
+//! starts it again under a new generation. Configured templates
+//! (`[runtimes.<id>]`) plug in here as further protocol templates with their
+//! own connector.
 
 use std::{
     collections::BTreeMap,
@@ -54,6 +56,9 @@ pub struct StartedRuntime {
     /// project skills found for its workspace for a coding runtime. Read once
     /// at start.
     pub skills: SkillRegistry,
+    /// The runtime protocol connection of an instance that runs behind it;
+    /// `None` for an in-process runtime.
+    pub(crate) connection: Option<super::remote::RuntimeClient>,
 }
 
 /// Lifecycle state of a runtime instance as clients see it.
@@ -74,6 +79,7 @@ pub(crate) struct RuntimeInstance {
     generation: u64,
     providers: Mutex<Vec<Arc<dyn ToolProvider>>>,
     skills: Arc<SkillRegistry>,
+    connection: Mutex<Option<super::remote::RuntimeClient>>,
 }
 
 impl RuntimeInstance {
@@ -83,7 +89,15 @@ impl RuntimeInstance {
             generation,
             providers: Mutex::new(started.providers),
             skills: Arc::new(started.skills),
+            connection: Mutex::new(started.connection),
         }
+    }
+
+    pub(crate) fn connection(&self) -> Option<super::remote::RuntimeClient> {
+        self.connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     pub(crate) fn info(&self) -> &Arc<RuntimeInfo> {
@@ -123,6 +137,9 @@ impl RuntimeInstance {
         &self,
         preset: Option<&str>,
     ) -> Result<Option<cookie_agent_runtime_api::context::AgentMdContext>, EngineError> {
+        if let Some(connection) = self.connection() {
+            return connection.agent_md(preset).await;
+        }
         let Some(workspace) = self.info.workspace() else {
             return Ok(None);
         };
@@ -159,11 +176,16 @@ impl RuntimeInstance {
             .map(|workspace| workspace.root().to_string_lossy().into_owned())
     }
 
-    fn clear(&self) {
+    /// Drops the providers and the protocol connection, which closes it.
+    fn clear(&self) -> Option<super::remote::RuntimeClient> {
         self.providers
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        self.connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 }
 
@@ -394,7 +416,7 @@ impl RuntimeRegistry {
     /// running. `workspace` must be given exactly when the template takes
     /// one; an unknown runtime ID is an error.
     pub(crate) async fn ensure(
-        &self,
+        self: &Arc<Self>,
         runtime_id: &str,
         workspace: Option<&Path>,
     ) -> Result<Arc<RuntimeInstance>, EngineError> {
@@ -445,6 +467,7 @@ impl RuntimeRegistry {
                     slots.remove(&pending);
                     slots.insert(key, InstanceSlot::Ready(Arc::clone(&instance)));
                 }
+                self.watch(&instance);
                 self.notify();
                 Ok(instance)
             }
@@ -467,7 +490,7 @@ impl RuntimeRegistry {
     /// The instance a recorded attachment refers to, started when it is not
     /// running, with the same rules as attaching it.
     pub(crate) async fn ensure_attachment(
-        &self,
+        self: &Arc<Self>,
         attachment: &RuntimeAttachment,
     ) -> Result<Arc<RuntimeInstance>, EngineError> {
         if let Some(instance) = self.instance(attachment) {
@@ -480,6 +503,61 @@ impl RuntimeRegistry {
             .then(|| attachment.workspace.as_deref().map(Path::new))
             .flatten();
         self.ensure(attachment.runtime_id.as_str(), workspace).await
+    }
+
+    /// Watches the built-in instances' connections; see [`Self::watch`].
+    pub(crate) fn watch_builtin(self: &Arc<Self>) {
+        self.watch(&self.global);
+        self.watch(&self.local);
+    }
+
+    /// Marks `instance` failed and reports it to clients when its runtime
+    /// protocol connection ends while it is ready. Its tools leave the
+    /// session's tool list; the next session that needs it starts it again
+    /// with a new generation.
+    fn watch(self: &Arc<Self>, instance: &Arc<RuntimeInstance>) {
+        let Some(connection) = instance.connection() else {
+            return;
+        };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let closed = connection.closed();
+        drop(connection);
+        let registry = Arc::downgrade(self);
+        let instance = Arc::downgrade(instance);
+        handle.spawn(async move {
+            let reason = closed.await;
+            if let (Some(registry), Some(instance)) = (registry.upgrade(), instance.upgrade()) {
+                registry.lost(&instance, &reason);
+            }
+        });
+    }
+
+    fn lost(&self, instance: &Arc<RuntimeInstance>, reason: &str) {
+        let key = InstanceKey::of(&instance.info);
+        let message = format!("runtime `{}` exited: {reason}", key.runtime_id);
+        {
+            let mut slots = self
+                .slots
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match slots.get(&key) {
+                Some(InstanceSlot::Ready(current)) if Arc::ptr_eq(current, instance) => {}
+                _ => return,
+            }
+            slots.insert(key.clone(), InstanceSlot::Failed(message.clone()));
+        }
+        drop(instance.clear());
+        let _ = self.failures.send(RuntimeFailure {
+            runtime_id: key.runtime_id,
+            workspace: key
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.to_string_lossy().into_owned()),
+            reason: message,
+        });
+        self.notify();
     }
 
     /// Records a failed start and reports it to clients.
@@ -571,25 +649,28 @@ impl RuntimeRegistry {
     }
 
     /// Drops every provider (they may hold the engine) and marks the
-    /// instances stopped.
-    pub(crate) fn clear(&self) {
+    /// instances stopped. Returns the runtime protocol connections, for the
+    /// caller to shut down; dropping them closes them.
+    pub(crate) fn clear(&self) -> Vec<super::remote::RuntimeClient> {
         self.base
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        let mut connections = Vec::new();
         let mut slots = self
             .slots
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         for slot in slots.values_mut() {
             if let InstanceSlot::Ready(instance) = slot {
-                instance.clear();
+                connections.extend(instance.clear());
                 *slot = InstanceSlot::Stopped(Arc::clone(instance));
             }
         }
         drop(slots);
-        self.global.clear();
-        self.local.clear();
+        connections.extend(self.global.clear());
+        connections.extend(self.local.clear());
         self.notify();
+        connections
     }
 }

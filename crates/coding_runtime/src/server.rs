@@ -130,8 +130,11 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
             message = incoming.recv() => match message {
                 None => break,
                 Some(Incoming::Request(request)) => {
+                    // An execution is registered in arrival order, so a
+                    // `tool/stdin` or `tool/cancel` sent after it finds it.
+                    let admitted = server.admit_execution(&request);
                     let server = Arc::clone(&server);
-                    tokio::spawn(async move { server.handle_request(request).await });
+                    tokio::spawn(async move { server.handle_request(request, admitted).await });
                 }
                 Some(Incoming::Notification(notification)) => {
                     server.handle_notification(&notification);
@@ -181,18 +184,59 @@ struct Execution {
     stdin: Option<mpsc::Sender<StdinWrite>>,
 }
 
+/// An execute request registered before its handler runs.
+struct AdmittedExecution {
+    params: ExecuteParams,
+    cancel: CancellationToken,
+    stdin: Option<ToolStdin>,
+}
+
 fn unknown_handle(what: &str, id: u64) -> RpcError {
     RpcError::remote(error_code::UNKNOWN_HANDLE, format!("unknown {what} {id}"))
 }
 
 impl Server {
-    async fn handle_request(self: Arc<Self>, request: IncomingRequest) {
+    /// Registers the execution an execute request starts.
+    fn admit_execution(&self, request: &IncomingRequest) -> Option<AdmittedExecution> {
+        if request.method != method::TOOL_EXECUTE {
+            return None;
+        }
+        let params: ExecuteParams = request.params().ok()?;
+        let cancel = self.stop.child_token();
+        let (stdin_sender, stdin) = if params.stdin {
+            let (sender, stdin) = ToolStdin::channel(64);
+            (Some(sender), Some(stdin))
+        } else {
+            (None, None)
+        };
+        lock(&self.executions).insert(
+            params.prepared_id,
+            Execution {
+                cancel: cancel.clone(),
+                stdin: stdin_sender,
+            },
+        );
+        Some(AdmittedExecution {
+            params,
+            cancel,
+            stdin,
+        })
+    }
+
+    async fn handle_request(
+        self: Arc<Self>,
+        request: IncomingRequest,
+        admitted: Option<AdmittedExecution>,
+    ) {
         let method = request.method.clone();
         if method == method::INITIALIZE {
             let result = self.initialize(&request);
             return reply(request, result).await;
         }
         let Some(state) = self.state.get().cloned() else {
+            if let Some(admitted) = admitted {
+                lock(&self.executions).remove(&admitted.params.prepared_id);
+            }
             let _ = request
                 .fail(RpcError::remote(
                     error_code::NOT_INITIALIZED,
@@ -223,7 +267,19 @@ impl Server {
                 reply(request, result).await;
             }
             method::TOOL_EXECUTE => {
-                let result = self.execute(&request).await;
+                let result = match admitted {
+                    Some(admitted) => {
+                        let prepared_id = admitted.params.prepared_id;
+                        let result = self.execute(admitted).await;
+                        lock(&self.executions).remove(&prepared_id);
+                        result
+                    }
+                    // Only a request whose params do not parse is not
+                    // admitted.
+                    None => Err(request.params::<ExecuteParams>().err().unwrap_or_else(|| {
+                        RpcError::remote(-32603, "the execution was not admitted")
+                    })),
+                };
                 reply(request, result).await;
             }
             method::TOOL_STDIN => {
@@ -517,9 +573,13 @@ impl Server {
 
     async fn execute(
         self: &Arc<Self>,
-        request: &IncomingRequest,
+        admitted: AdmittedExecution,
     ) -> Result<ExecuteResult, RpcError> {
-        let params: ExecuteParams = request.params()?;
+        let AdmittedExecution {
+            params,
+            cancel,
+            stdin,
+        } = admitted;
         let prepared_id = params.prepared_id;
         let prepared = lock(&self.prepared)
             .remove(&prepared_id)
@@ -535,20 +595,6 @@ impl Server {
                 launched_jobs: Vec::new(),
             });
         };
-        let cancel = self.stop.child_token();
-        let (stdin_sender, stdin) = if params.stdin {
-            let (sender, stdin) = ToolStdin::channel(64);
-            (Some(sender), Some(stdin))
-        } else {
-            (None, None)
-        };
-        lock(&self.executions).insert(
-            prepared_id,
-            Execution {
-                cancel: cancel.clone(),
-                stdin: stdin_sender,
-            },
-        );
         let artifacts = Arc::new(InlineArtifacts::default());
         let launched = Arc::new(Mutex::new(Vec::new()));
         let context = ToolExecutionContext {
@@ -571,7 +617,6 @@ impl Server {
             .catch_unwind()
             .await
             .unwrap_or_else(|_| Err(ToolError::execution("tool execution panicked")));
-        lock(&self.executions).remove(&prepared_id);
         let outcome = match result {
             Ok(completion) => ExecuteOutcome::Completed {
                 output: completion.output,

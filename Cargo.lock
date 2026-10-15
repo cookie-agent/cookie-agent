@@ -590,6 +590,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
+ "cookie_agent_coding_runtime",
  "cookie_agent_config",
  "cookie_agent_identity",
  "cookie_agent_models",

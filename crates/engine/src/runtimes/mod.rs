@@ -38,6 +38,7 @@ mod builtin;
 mod composition;
 mod reconnect;
 mod registry;
+mod remote;
 
 pub(crate) use builtin::{GlobalTemplate, LocalTemplate};
 pub(crate) use composition::{ComposedTool, Composition, compose};
@@ -47,6 +48,7 @@ pub use registry::{
     RuntimeTemplateSummary, StartedRuntime,
 };
 pub(crate) use registry::{RuntimeInstance, RuntimeRegistry};
+pub(crate) use remote::{ProtocolTemplate, runtime_settings};
 
 /// One-line description of where a tool runs, for the approval reviewer.
 pub(crate) fn describe_origin(origin: &ToolOrigin) -> String {

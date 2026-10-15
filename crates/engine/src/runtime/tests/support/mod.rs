@@ -121,6 +121,7 @@ impl crate::RuntimeTemplate for FakeRuntimeTemplate {
             providers: (self.tools)(&workspace),
             skills: cookie_agent_config::load_project_skills(workspace.root())
                 .map_err(|error| error.to_string())?,
+            connection: None,
         })
     }
 }
