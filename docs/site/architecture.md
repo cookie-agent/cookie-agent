@@ -177,8 +177,9 @@ user layer:
 ```
 
 There is no workspace configuration layer: `<cwd>/.cookie-agent/config.toml`
-and `<cwd>/.cookie-agent/agents/` are never opened. The working directory only
-contributes context, `AGENTS.md` files and project skills. Unknown keys, leftover schema/version fields, wrong
+and `<cwd>/.cookie-agent/agents/` are never opened. The working directory is
+the local coding runtime's workspace and only contributes context, `AGENTS.md`
+files and project skills. Unknown keys, leftover schema/version fields, wrong
 types, and malformed values are rejected without migration or silent ignores.
 The TUI additionally reads an independent `~/.cookie-agent/tui.toml`.
 
@@ -277,9 +278,32 @@ session and drive the run loop:
   to the user, reject automatically, or approve once automatically according to
   the mode. Each evaluation is one fresh model call that sees the latest user
   request, up to five recent user, tree-grant, or classifier decisions for the
-  same permission action from the tree's resident sessions, and the tool call's
-  normalized parameters. `ask` skips the classifier, and `yolo` approves
-  immediately. A doom-loop guard rejects repeated identical approvals.
+  same permission action from the tree's resident sessions, the runtime the
+  call runs on with its workspace, and the tool call's normalized parameters.
+  `ask` skips the classifier, and `yolo` approves immediately. A doom-loop
+  guard rejects repeated identical approvals.
+- **Tool layers and runtimes.** The engine composes the model's tool list
+  from three sources, in this order (`crates/engine/src/runtimes.rs`; see the
+  [runtimes specification](specs/runtimes.md)):
+  - the *base layer*: the daemon's own orchestration tools (delegation,
+    `send_message`, `skill`, goals, `read_artifact`), registered after the
+    engine opens. It has no workspace.
+  - the *global runtime* (`global`): top-level MCP servers, plugins, and a
+    `webfetch` that is only a fallback. It has no workspace.
+  - the *local coding runtime* (`local`, kind `coding`): `read`, `write`,
+    `edit`, `bash`, and `webfetch`, whose workspace is the daemon's working
+    directory. Its attachment name is `local_<workspace basename>`, sanitized
+    to `[a-z0-9_]` and capped at 32 bytes.
+
+  Every published tool records which layer or runtime offers it. Preparation,
+  permission decisions, and visibility use that runtime's workspace: a tool
+  without one never matches a `${workspace_dir}` rule or a rule for a relative
+  path, and its operations digest the runtime ID instead of a path. Each tool
+  declares a collision mode: a `fallback` tool is hidden whenever a regular
+  tool with the same name is published, so the global `webfetch` only appears
+  without a coding runtime; any other duplicate name fails composition. The
+  daemon's working directory itself only locates the session store and stamps
+  each session's `cwd_identity`.
 - **Tool dispatch.** Calls from one committed model turn are prepared and
   started in model order, then all permission decisions and serialized approval
   prompts resolve before execution begins. Tools explicitly marked parallel are

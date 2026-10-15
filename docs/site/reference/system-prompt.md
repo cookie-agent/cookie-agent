@@ -10,8 +10,9 @@ agent but is not copied into prompt text.
 For a root or delegated run, the engine composes the model request in this order:
 
 1. The selected agent document body becomes `AgentSnapshot.composed_prompt`.
-2. The session working directory is appended as a single
-   `<working_directory>` block so the model knows where relative paths resolve.
+2. The workspace of the local coding runtime (today the daemon's working
+   directory) is appended as a single `<working_directory>` block so the model
+   knows where relative paths resolve.
    The prompt and document fingerprints are updated.
 3. Trusted in-process tool providers may append bounded behavioral-policy
    sections. Sections retain provider provenance and update both prompt and
@@ -65,8 +66,9 @@ Available subagents:
 </tool_instructions>
 ```
 
-Provider registration order determines block order; declaration order determines
-section order within a provider. Bodies are limited to 8 KiB per section,
+Providers contribute in composition order: the base layer, then the global
+runtime, then the local coding runtime, each in registration order.
+Declaration order determines section order within a provider. Bodies are limited to 8 KiB per section,
 16 KiB per provider, and 32 KiB across all providers. Any invalid content or
 overflow rejects run admission instead of truncating or omitting policy. The
 existing 128 KiB composed-prompt limit still applies.
