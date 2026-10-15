@@ -11,6 +11,10 @@
 //! (background jobs). The runtime identity types ([`ToolOrigin`],
 //! [`RuntimeInfo`], [`WorkspaceContext`]) say which runtime a tool belongs to,
 //! as specified in `docs/site/specs/runtimes.md`.
+//!
+//! [`protocol`] holds the wire types of the runtime protocol that connects
+//! the daemon to a runtime in another task or process, and [`rpc`] the
+//! JSON-RPC peer both ends run.
 
 pub mod authoring;
 pub mod context;
@@ -18,7 +22,9 @@ mod error;
 mod execution;
 pub mod media;
 mod prepared;
+pub mod protocol;
 mod provider;
+pub mod rpc;
 mod runtime;
 
 pub use error::ToolError;

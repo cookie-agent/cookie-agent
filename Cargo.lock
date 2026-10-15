@@ -708,8 +708,10 @@ name = "cookie_agent_runtime_api"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "cookie_agent_protocol",
  "crc32fast",
+ "futures-util",
  "schemars",
  "serde",
  "serde_json",
