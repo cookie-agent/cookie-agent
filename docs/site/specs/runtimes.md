@@ -3,8 +3,7 @@
 Status: **draft; product decisions approved 2026-10-15**. This document is the
 governing specification for splitting tool execution and workspace context out
 of the engine into attachable *runtimes*. Section
-[Choices made in this spec](#14-choices-made-in-this-spec) lists the details
-this document decided on its own and that still need the author's review.
+[Open questions](#14-open-questions) lists anything still undecided.
 
 ## 1. Goal and scope
 
@@ -53,6 +52,7 @@ only notification path, and they stay a daemon-side plugin feature.
 | **Runtime template** | A configured way to start runtimes: `[runtimes.<id>]`. The `<id>` is the *runtime ID*. |
 | **Runtime instance** | A running runtime: one per (runtime ID, canonical workspace). Shared by every session attached to it. |
 | **Attachment** | A durable session fact binding a session to a runtime instance under a session-unique *attachment name*. |
+| **Attachment name** | The name the runtime instance reports for itself in `runtime/initialize`; used as the tool prefix on collisions. |
 
 ## 3. Layers
 
@@ -75,9 +75,17 @@ Rules:
 - New sessions attach `global` and `local` (the daemon's working directory) by
   default. A session may detach either. A session with no coding runtime is
   valid: it has the base layer and whatever the global runtime offers.
-- The `read` tool loses its `artifact://` branch. Artifact reads move to the
-  base layer's `read_artifact`, so a session with no coding runtime can still
-  page through retained output. Truncation notices name `read_artifact`.
+- Artifact reads move from `read` to the base layer's
+  `read_artifact { artifact, stream?, offset, limit }`, so a session with no
+  coding runtime can still page through retained output. `artifact` is the
+  64-hex digest and `stream` an optional stream name; the model-facing
+  `artifact://<digest>[/<stream>]` URI form is removed. Truncation hints read
+  `read_artifact(artifact="<digest>", stream="stdout", offset=…)`. `read`
+  becomes filesystem-only. The persisted `artifact://sha256/<digest>` form in
+  `ArtifactReference` is internal and unchanged.
+- `read_artifact` needs no permission rule: it can only reach the session
+  tree's own artifacts. The `read: {"artifact://*": allow}` pattern and the
+  `artifact://` pass-through in permission resource resolution go away.
 
 ## 4. Configuration
 
@@ -154,8 +162,16 @@ in the same append.
 - Creating a session or attaching a runtime connects it eagerly (section
   6.4). Attach waits for the instance to start and for `runtime/initialize`;
   failure rejects the attach and records nothing.
-- The attachment name defaults to the runtime ID. Attaching a second instance
-  of a template the session already uses requires an explicit name.
+- The runtime chooses its attachment name and returns it from
+  `runtime/initialize`; clients do not supply one. The global runtime returns
+  `global`. A coding runtime returns `<runtime ID>_<workspace basename>`, with
+  the basename lowercased, every character outside `[a-z0-9_]` replaced by
+  `_`, repeats collapsed, and the result capped at 32 bytes: labpc in
+  `~/cookie-agent` is `labpc_cookie_agent`. Because the name is fixed per
+  instance, it is the same in every session that attaches that instance.
+- If a session already has an attachment with the returned name (two
+  workspaces with the same basename), the daemon appends `_2`, `_3`, and so on
+  for that session.
 - Delegated children inherit the parent's attachments. `delegate_subagent`
   accepts an optional `runtimes` list of the parent's attachment names that
   narrows the child's set. The child's log records its own `RuntimeAttached`
@@ -180,8 +196,7 @@ list only changes when something really appeared or went away:
   session is created or opened (section 6.4);
 - short disconnects are bridged by reconnecting before any tool is dropped
   (section 6.4);
-- published names are sticky, so attaching a runtime never renames tools the
-  model already has (section 6.3).
+- only real collisions rename tools (section 6.3).
 
 What remains is the user attaching or detaching a runtime, an MCP server or
 runtime that cannot be reached at all, and an MCP server changing its own
@@ -198,29 +213,23 @@ Every runtime tool declares `collision: prefix | fallback` (default `prefix`).
 Base layer names are reserved: a runtime tool with a base name is always
 treated as colliding.
 
-### 6.3 Sticky names
+### 6.3 Collisions
 
-Names are assigned per session and never change while their attachment stays:
+Names are computed from the current tool set every time it is composed:
 
-- The first tool to claim a name keeps it bare. A later tool that collides is
-  prefixed (`prefix`) or hidden (`fallback`). Attaching labpc to a session that
-  already has `local` therefore publishes `labpc_bash` and leaves `bash` alone.
-- The exception is a `fallback` holder: when a non-fallback tool with the same
-  name arrives, it takes over the bare name and the fallback is hidden. When
-  both declare the same parameters schema, as both `webfetch` tools do, the
-  model sees no change at all.
-- Assignments are durable. The first time a tool is published, the session
-  appends
-  `ToolNamesAssigned { attachment, names: { runtime name → published name } }`; the fold of these events is the
-  session's name map. Detaching an attachment releases its names, but nothing
-  already prefixed is renamed to the freed bare name.
-- When several tools first claim one name in the same composition (for
-  example at session creation), attachment order decides: `local` and other coding
-  runtimes in attach order, then `global`.
-- A published name longer than 64 bytes is dropped with a diagnostic and a
-  one-line prompt notice.
-- Delegated children start from the parent's name map, so a subagent sees the
-  same names as its parent.
+- A name offered by exactly one source is published bare.
+- When several `prefix` tools offer one name, the bare name is removed and
+  each of them is published as `<attachment>_<name>`. Attaching labpc at
+  `~/api` to a session whose `local` runtime is at `~/web` therefore turns
+  `bash` into `local_web_bash` and `labpc_api_bash`; detaching labpc turns
+  `local_web_bash` back into `bash`.
+- A runtime tool that collides with a base layer name is published as
+  `<attachment>_<name>`; the base tool keeps its name.
+- `fallback` tools are hidden whenever a non-fallback tool offers the same
+  name. When both declare the same parameters schema, as both `webfetch`
+  tools do, the model sees no change.
+- A published name longer than 64 bytes is dropped with a diagnostic.
+- Delegated children compose the same way from their own attachments.
 
 Inside one runtime, names are unique; that runtime enforces it with today's
 MCP claim rules. MCP tools inside a runtime keep the `<server>_<tool>` form, so
@@ -246,8 +255,6 @@ runtimes) and to runtime instances.
   published and calls fail fast with `runtime_unavailable`, so a brief drop
   never changes the tool list. If every attempt fails, its tools are dropped
   and clients get an error message.
-- A tool that drops keeps its sticky name; if it comes back, it returns under
-  the same name.
 
 ### 6.5 Routing
 
@@ -260,8 +267,9 @@ the existing `OperationChanged` path.
 ## 7. Permissions and approvals
 
 - Rules gain an optional runtime selector written as an action suffix in agent
-  documents and session overlays: `bash@labpc`, `read@local`. An unqualified
-  rule applies to every runtime and to the base layer. A qualified rule is more
+  documents and session overlays: `bash@labpc`, `read@local`. A plain
+  `action` with no selector applies on every runtime and to the base layer,
+  so existing agent documents keep working unchanged. A qualified rule is more
   specific than an unqualified one at the same resource specificity.
 - The selector matches the runtime ID, not the attachment name, so it is
   stable across sessions.
@@ -315,7 +323,7 @@ does not; it is called in-process through the same Rust trait.
 
 | Method | Direction | Purpose |
 |---|---|---|
-| `runtime/initialize` | daemon → runtime | Version, runtime ID, kind, requested workspace, and a kind-specific settings object (for `coding`: `tool_output` and `agent_md` limits and the template's MCP servers). Reply: version, canonical workspace, platform, shell, tool declarations, skills. |
+| `runtime/initialize` | daemon → runtime | Version, runtime ID, kind, requested workspace, and a kind-specific settings object (for `coding`: `tool_output` and `agent_md` limits and the template's MCP servers). Reply: version, attachment name, canonical workspace, platform, shell, tool declarations, skills. |
 | `runtime/tools_changed` | runtime → daemon | Tool list changed; the daemon re-lists before the next model turn (section 6.1). |
 | `runtime/context` | daemon → runtime | Per-admission context for the run's preset: `AGENTS.md`. |
 | `tool/prepare` | daemon → runtime | Name, arguments, session, run, turn context. Reply: prepared ID, operation identity, permission resource, policy labels, presentation, display argument, serialization key, concurrency. |
@@ -350,10 +358,10 @@ that needs general producer messages adds them to this protocol then.
 
 Protocol 38 → 39 (one bump per phase that changes the wire).
 
-- `session.create` gains `runtimes: [{ runtime_id, workspace?, name? }]` and
+- `session.create` gains `runtimes: [{ runtime_id, workspace? }]` and
   `global: bool`. Omitted means `local` at the daemon's directory plus
   `global`.
-- New `session.runtime.attach { session_id, runtime_id, workspace, name? }` and
+- New `session.runtime.attach { session_id, runtime_id, workspace }` and
   `session.runtime.detach { session_id, name }`.
 - New `runtimes.list`: templates and live instances with status. New
   `runtimes.changed` notification on instance status changes. `mcp.changed`
@@ -404,7 +412,7 @@ changes (`architecture.md`, configuration, protocol, tools, system prompt).
    **Done when** the only `store.cwd()` reads left are the store location and
    `cwd_identity`.
 2. **Attachments and composition (protocol 39).** Events, RPCs, defaults,
-   sticky names and `ToolNamesAssigned`, eager MCP connection with reconnect
+   collision prefixing, eager MCP connection with reconnect
    and drop notices (removing `lazy`), runtime-qualified permissions and
    grants, per-attachment `AGENTS.md` and skills, delegation narrowing, TUI
    panel. Tests attach two fake in-process coding runtimes with colliding
@@ -419,23 +427,6 @@ changes (`architecture.md`, configuration, protocol, tools, system prompt).
    process, then manually against labpc (installing on labpc needs the
    author's go-ahead).
 
-## 14. Choices made in this spec
+## 14. Open questions
 
-These were not discussed explicitly and need review:
-
-1. `read_artifact` as a new base tool, with `read` becoming filesystem-only.
-2. MCP OAuth stays global-runtime-only; template MCP servers may use static
-   headers but not OAuth.
-3. A second instance of the same template in one session needs an explicit
-   attachment name.
-4. Permission selector syntax `action@runtime_id`, matching runtime ID rather
-   than attachment name.
-5. Grants carry a runtime ID; old grants read as `local`.
-6. Names are sticky per session and recorded in `ToolNamesAssigned`; a
-   fallback holder yields its bare name to a non-fallback newcomer.
-7. Reconnect policy: 3 attempts at 1 s, 2 s, 4 s, with tools kept published
-   while reconnecting.
-8. A server or runtime that failed to connect is retried at the next session
-   creation or open that uses it, and manually from the panels.
-9. Published names over 64 bytes are dropped.
-10. Remote instances stay up until the daemon exits (no idle timeout).
+None. Every choice this draft made was reviewed on 2026-10-15.
