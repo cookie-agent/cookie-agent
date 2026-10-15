@@ -520,6 +520,7 @@ dependencies = [
  "cookie_agent_engine",
  "cookie_agent_models",
  "cookie_agent_protocol",
+ "cookie_agent_runtime_api",
  "cookie_agent_server",
  "cookie_agent_tools",
  "cookie_agent_tui",
@@ -582,6 +583,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "rustix",
+ "schemars",
  "serde",
  "serde_json",
  "sha2",
@@ -723,7 +725,6 @@ name = "cookie_agent_tools"
 version = "0.3.0"
 dependencies = [
  "async-trait",
- "cookie_agent_config",
  "cookie_agent_engine",
  "cookie_agent_protocol",
  "cookie_agent_runtime_api",

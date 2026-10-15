@@ -4,8 +4,8 @@
 //! own tree, so it needs no permission rule. It is always published and every
 //! call is allowed ([`UNCONDITIONAL_PERMISSION_NAME`]).
 
+use crate::permissions::UNCONDITIONAL_PERMISSION_NAME;
 use async_trait::async_trait;
-use cookie_agent_engine::permissions::UNCONDITIONAL_PERMISSION_NAME;
 use cookie_agent_protocol::{
     ApprovalResourceSource, ArtifactReadTarget, PermissionAction,
     PersistedToolResult as ToolResult, PreparedBindingLifetime, SessionId,
@@ -17,7 +17,7 @@ use cookie_agent_runtime_api::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{parse_args, prepared_operation, prepared_resource, safe_title, schema, tool_error};
+use super::{parse_args, prepared_operation, prepared_resource, safe_title, schema, tool_error};
 
 const TOOL_NAME: &str = "read_artifact";
 /// Most lines one page returns; larger requests are clamped to it.
@@ -233,7 +233,7 @@ mod tests {
             session,
             run,
             origin: cookie_agent_runtime_api::ToolOrigin::Base,
-            turn_context: crate::test_turn_context(),
+            turn_context: crate::base_tools::test_turn_context(),
         }
     }
 
@@ -249,13 +249,11 @@ mod tests {
     fn read_artifact_is_unconditional() {
         let spec = ReadArtifactTool::spec();
         assert_eq!(spec.permission_name, UNCONDITIONAL_PERMISSION_NAME);
+        assert!(crate::permissions::PermissionPipeline::is_unconditional(
+            &spec.permission_name
+        ));
         assert!(
-            cookie_agent_engine::permissions::PermissionPipeline::is_unconditional(
-                &spec.permission_name
-            )
-        );
-        assert!(
-            cookie_agent_engine::permissions::PermissionPipeline::action_for_permission_name(
+            crate::permissions::PermissionPipeline::action_for_permission_name(
                 &spec.permission_name
             )
             .is_err(),
@@ -266,17 +264,17 @@ mod tests {
     #[tokio::test]
     async fn read_artifact_pages_the_session_trees_artifact_without_retaining_output() {
         let root = tempfile::tempdir().unwrap();
-        let producer = cookie_agent_engine::testing::tool_execution_context(
+        let producer = crate::testing::tool_execution_context(
             root.path().join("artifacts"),
-            crate::test_turn_context(),
+            crate::base_tools::test_turn_context(),
         )
         .unwrap();
         let artifact = producer
             .retain_validated_attachment("text/plain", None, b"zero\none\ntwo\n")
             .unwrap();
-        let reader = cookie_agent_engine::testing::tool_execution_context(
+        let reader = crate::testing::tool_execution_context(
             root.path().join("artifacts"),
-            crate::test_turn_context(),
+            crate::base_tools::test_turn_context(),
         )
         .unwrap();
         let digest = artifact.sha256.to_string();

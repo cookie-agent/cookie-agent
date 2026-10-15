@@ -474,7 +474,7 @@ fn bash_tool_description() -> &'static str {
 }
 
 /// The description sent on Windows, where commands run in Git Bash, or on Unix.
-pub(crate) fn bash_tool_description_for(windows: bool) -> &'static str {
+pub fn bash_tool_description_for(windows: bool) -> &'static str {
     if windows {
         "Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\\Users\\name\\file') or use C:/ paths. Set background for long-running commands: the call returns at once with the process ID, and a <background_bash from=\"PID\"> notification with the exit status and output arrives when the command exits."
     } else {

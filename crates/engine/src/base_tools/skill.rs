@@ -1,5 +1,5 @@
+use crate::Engine;
 use async_trait::async_trait;
-use cookie_agent_engine::Engine;
 use cookie_agent_protocol::{
     ApprovalResourceSource, PermissionAction, PersistedToolResult as ToolResult,
     PreparedBindingLifetime,
@@ -10,7 +10,7 @@ use cookie_agent_runtime_api::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{parse_args, prepared_operation, prepared_resource, safe_title, schema, tool_error};
+use super::{parse_args, prepared_operation, prepared_resource, safe_title, schema, tool_error};
 
 pub struct SkillTool {
     engine: Engine,

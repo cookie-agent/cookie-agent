@@ -216,3 +216,30 @@ async fn two_regular_tools_with_one_name_stay_a_composition_error() {
     );
     fixture.engine.shutdown().await;
 }
+
+#[tokio::test]
+async fn the_base_layer_is_registered_once_and_has_no_workspace() {
+    let (fixture, selection) = custom_fixture();
+    let policy = frozen_root_policy(&fixture, &selection);
+    let session = fixture
+        .engine
+        .create_session(selection)
+        .expect("session")
+        .session_id;
+    fixture
+        .engine
+        .register_base_layer()
+        .expect("register the base layer");
+    let published = fixture
+        .engine
+        .published_tool_definitions(session, &policy)
+        .expect("base layer tools");
+    let read_artifact = &published.tools["read_artifact"];
+    assert!(matches!(read_artifact.origin, ToolOrigin::Base));
+    assert!(read_artifact.origin.workspace().is_none());
+    assert!(
+        fixture.engine.register_base_layer().is_err(),
+        "base provider IDs are reserved once"
+    );
+    fixture.engine.shutdown().await;
+}

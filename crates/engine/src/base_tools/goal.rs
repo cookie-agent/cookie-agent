@@ -1,5 +1,5 @@
+use crate::Engine;
 use async_trait::async_trait;
-use cookie_agent_engine::Engine;
 use cookie_agent_protocol::{
     ApprovalResourceSource, GoalGetParams, GoalUpdateParams, PermissionAction,
     PersistedToolResult as ToolResult, PreparedBindingLifetime, PreparedOperationIdentity,
@@ -10,7 +10,7 @@ use cookie_agent_runtime_api::{
     ToolPreparationContext, ToolProvider, ToolSpec,
 };
 
-use crate::{parse_args, prepared_operation, prepared_resource, safe_title, schema, tool_error};
+use super::{parse_args, prepared_operation, prepared_resource, safe_title, schema, tool_error};
 
 pub struct GoalTools {
     engine: Engine,
@@ -316,7 +316,8 @@ mod tests {
     fn strict_goal_arguments_reject_unknown_fields() {
         let get = serde_json::json!({"unexpected":true});
         assert!(
-            crate::parse_args::<cookie_agent_protocol::GoalGetParams>("goal_get", get).is_err()
+            crate::base_tools::parse_args::<cookie_agent_protocol::GoalGetParams>("goal_get", get)
+                .is_err()
         );
         assert!(
             GoalTools::get_permission_name("goal_lifecycle").is_err(),
@@ -330,7 +331,7 @@ mod tests {
             serde_json::json!({"items":[{"id":"old-item","description":"Verify","finished":false}]}),
         ] {
             assert!(
-                crate::parse_args::<cookie_agent_protocol::GoalUpdateParams>(
+                crate::base_tools::parse_args::<cookie_agent_protocol::GoalUpdateParams>(
                     "goal_update",
                     arguments
                 )
@@ -338,7 +339,7 @@ mod tests {
             );
         }
         let arguments = serde_json::json!({"items":[{"description":"Verify","finished":false},{"description":"Verify","finished":false}]});
-        let parsed = crate::parse_args::<cookie_agent_protocol::GoalUpdateParams>(
+        let parsed = crate::base_tools::parse_args::<cookie_agent_protocol::GoalUpdateParams>(
             "goal_update",
             arguments.clone(),
         )

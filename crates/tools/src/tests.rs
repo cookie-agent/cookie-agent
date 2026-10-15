@@ -8,13 +8,10 @@ use cookie_agent_runtime_api::{
     SessionToolContext, ToolCall, ToolError, ToolPreparationContext, ToolProvider,
 };
 
-use super::{
-    BuiltinTools, bash::BashTool, delegate::DelegateToolProvider, edit::EditTool, goal::GoalTools,
-    read::ReadTool, write::WriteTool,
-};
+use super::{BuiltinTools, bash::BashTool, edit::EditTool, read::ReadTool, write::WriteTool};
 
 #[test]
-fn static_permission_names_cover_every_builtin_and_delegate_tool() {
+fn static_permission_names_cover_every_builtin_tool() {
     assert_eq!(ReadTool::get_permission_name("read").unwrap(), "read");
     assert_eq!(WriteTool::get_permission_name("write").unwrap(), "write");
     assert_eq!(EditTool::get_permission_name("edit").unwrap(), "write");
@@ -23,26 +20,7 @@ fn static_permission_names_cover_every_builtin_and_delegate_tool() {
         BuiltinTools::get_permission_name("webfetch").unwrap(),
         "webfetch"
     );
-    assert_eq!(
-        super::skill::SkillTool::get_permission_name("skill").unwrap(),
-        "skill"
-    );
-    assert_eq!(GoalTools::get_permission_name("goal_get").unwrap(), "read");
-    assert_eq!(
-        GoalTools::get_permission_name("goal_update").unwrap(),
-        "write"
-    );
     assert!(BuiltinTools::get_permission_name("read_tool_result").is_err());
-    for name in [
-        "delegate_subagent",
-        "get_subagent_result",
-        "cancel_subagent",
-    ] {
-        assert_eq!(
-            DelegateToolProvider::get_permission_name(name).unwrap(),
-            "delegate"
-        );
-    }
     assert!(BuiltinTools::get_permission_name("grep").is_err());
 }
 
@@ -54,10 +32,6 @@ fn self_paginating_tools_declare_truncation_opt_out() {
         .remove(0);
     assert_eq!(
         read.result_truncation,
-        cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut
-    );
-    assert_eq!(
-        super::delegate::result_truncation_policy("get_subagent_result"),
         cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut
     );
 }

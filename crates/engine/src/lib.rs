@@ -1,6 +1,7 @@
 //! The transport-free single-conversation cookie agent runtime.
 
 pub mod actor;
+mod base_tools;
 mod blocking;
 mod config_store;
 mod delegation_api;
@@ -25,10 +26,11 @@ mod runtimes;
 pub mod session;
 #[cfg(test)]
 mod test_support;
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 mod usage;
 
+pub use base_tools::base_layer_tool_specs;
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
 pub use mcp::{McpRegistry, McpServerState, McpServerStatus};

@@ -33,9 +33,6 @@ use cookie_agent_protocol::{
     ClientRunId, EventPayload, EventSubscriptionMessage, PermissionAction, PermissionEffect,
     RunSelection, RunStartParams, SessionId, StoredEvent,
 };
-use cookie_agent_tools::{
-    delegate::DelegateToolProvider, read_artifact::ReadArtifactTool, skill::SkillTool,
-};
 use tempfile::TempDir;
 
 #[path = "../../../test-support/config_harness.rs"]
@@ -295,24 +292,6 @@ impl Fixture {
             runtimes: cookie_agent_tools::runtime_options(&workspace),
         };
         let engine = Engine::open(options.clone()).expect("engine");
-        engine
-            .try_register_tool_provider(
-                cookie_agent_engine::ToolLayer::Base,
-                Arc::new(DelegateToolProvider::new(engine.clone())),
-            )
-            .expect("delegate tools");
-        engine
-            .try_register_tool_provider(
-                cookie_agent_engine::ToolLayer::Base,
-                Arc::new(SkillTool::new(engine.clone())),
-            )
-            .expect("skill tool");
-        engine
-            .try_register_tool_provider(
-                cookie_agent_engine::ToolLayer::Base,
-                Arc::new(ReadArtifactTool),
-            )
-            .expect("read_artifact tool");
         Self {
             _root: root,
             workspace,

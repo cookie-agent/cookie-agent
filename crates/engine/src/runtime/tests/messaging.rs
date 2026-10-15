@@ -489,7 +489,9 @@ async fn ac6_body_limits_are_enforced_before_acceptance() {
 #[test]
 fn ac7_delegate_tool_surface_has_no_steer_subagent() {
     assert!(
-        !include_str!("../../../../tools/src/delegate.rs").contains("name: \"steer_subagent\"")
+        !crate::base_layer_tool_specs("reviewer")
+            .iter()
+            .any(|spec| spec.name == "steer_subagent")
     );
 }
 

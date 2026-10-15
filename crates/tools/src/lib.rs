@@ -18,20 +18,12 @@ use cookie_agent_runtime_api::{
 };
 
 pub mod bash;
-pub mod delegate;
 pub mod edit;
 pub mod fs_cap;
-pub mod goal;
-pub mod message;
 mod path_args;
 pub mod read;
-pub mod read_artifact;
-pub mod skill;
 pub mod webfetch;
 pub mod write;
-
-#[cfg(test)]
-mod tool_reference;
 
 /// Workspace of a coding runtime at `path`, for tests.
 #[cfg(test)]

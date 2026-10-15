@@ -72,8 +72,8 @@ The TUI's own tests still drive a real `server` through a dev-dependency.
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
 | `config` | Strict runtime configuration and Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports `AgentMode`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |
 | `runtime_api` | The contract between the engine and the tools it runs: `ToolProvider`, `ToolSpec`, prepared calls, preparation and execution contexts, progress and stdin, the traits through which the engine provides output capture, artifact retention, and background jobs, runtime identity (`ToolOrigin`, `RuntimeInfo`, `WorkspaceContext`), and tool attachment validation. Depends on `protocol` only. |
-| `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence. |
-| `tools` | Built-in `read`, `write`, `edit`, `bash`, and `webfetch` tools plus the delegation (`delegate_subagent`, `get_subagent_result`, `cancel_subagent`), messaging (`send_message`), `skill`, goal, and `read_artifact` providers. |
+| `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence, and the base layer tools: delegation (`delegate_subagent`, `get_subagent_result`, `cancel_subagent`), messaging (`send_message`), `skill`, goals, and `read_artifact`. |
+| `tools` | The local coding runtime's built-in `read`, `write`, `edit`, `bash`, and `webfetch` tools, and the global runtime's fallback `webfetch`. |
 | `server` | The `ServerProtocol` implementation over `Engine`, the axum WebSocket accept path, `Server::connect_in_process`, and the per-run token / ready-line APIs. Server side only. |
 | `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow. Depends only on `protocol` and runs over a `protocol::Client` it is handed. |
 | `cookie_agent` | CLI and composition root wiring every crate together. The only binary. |
@@ -288,8 +288,9 @@ session and drive the run loop:
   from three sources, in this order (`crates/engine/src/runtimes.rs`; see the
   [runtimes specification](specs/runtimes.md)):
   - the *base layer*: the daemon's own orchestration tools (delegation,
-    `send_message`, `skill`, goals, `read_artifact`), registered after the
-    engine opens. It has no workspace.
+    `send_message`, `skill`, goals, `read_artifact`), which the engine
+    implements and registers itself when it opens
+    (`crates/engine/src/base_tools`). It has no workspace.
   - the *global runtime* (`global`): top-level MCP servers, plugins, and a
     `webfetch` that is only a fallback. It has no workspace.
   - the *local coding runtime* (`local`, kind `coding`): `read`, `write`,

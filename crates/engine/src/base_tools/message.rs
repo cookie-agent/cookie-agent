@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use cookie_agent_engine::{
+use crate::{
     AgentMessageInvocation, Engine, MESSAGE_INVALID_ARGUMENTS, MESSAGE_INVALID_BODY, SubagentScope,
 };
+use async_trait::async_trait;
 use cookie_agent_protocol::{
     PermissionAction, PersistedToolResult as ToolResult, ProducerDeliveryMode, SessionId,
 };
@@ -11,7 +11,7 @@ use cookie_agent_runtime_api::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{prepared_operation, prepared_resource, safe_title};
+use super::{prepared_operation, prepared_resource, safe_title};
 
 fn default_mode() -> ProducerDeliveryMode {
     ProducerDeliveryMode::Steer
@@ -293,7 +293,7 @@ mod tests {
         ] {
             assert_eq!(
                 rejection(arguments),
-                cookie_agent_engine::MESSAGE_INVALID_ARGUMENTS,
+                crate::MESSAGE_INVALID_ARGUMENTS,
                 "unstable parse error for {arguments}"
             );
         }
@@ -302,10 +302,7 @@ mod tests {
     #[test]
     fn blank_bodies_keep_their_own_stable_code() {
         for body in ["", "   ", "\n\t"] {
-            assert_eq!(
-                rejection(&arguments(body)),
-                cookie_agent_engine::MESSAGE_INVALID_BODY
-            );
+            assert_eq!(rejection(&arguments(body)), crate::MESSAGE_INVALID_BODY);
         }
     }
 

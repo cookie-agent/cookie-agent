@@ -847,6 +847,13 @@ impl Engine {
                 test_hooks: test_hooks::TestHooks::default(),
             }),
         };
+        // Engine unit tests compose their own base-layer stand-ins.
+        #[cfg(not(test))]
+        if let Err(error) = engine.register_base_layer() {
+            // Base providers hold the engine; dropping them frees it.
+            engine.inner.runtimes.clear();
+            return Err(error);
+        }
         let weak = Arc::downgrade(&engine.inner);
         engine
             .inner
@@ -1315,16 +1322,15 @@ impl Engine {
             .clone()
     }
 
-    /// Registers a tool provider after engine open, allowing providers that
-    /// require an Engine (notably delegate) to break the construction cycle.
+    /// Registers a tool provider after engine open; panics on a collision.
     pub fn register_tool_provider(&self, layer: crate::ToolLayer, provider: Arc<dyn ToolProvider>) {
         self.try_register_tool_provider(layer, provider)
             .expect("tool provider collision");
     }
 
-    /// Adds `provider` to `layer`. The base layer's providers are registered
-    /// this way; the runtimes get theirs from [`EngineOptions::runtimes`],
-    /// and tests may add more.
+    /// Adds `provider` to `layer`. The engine registers the base layer itself
+    /// when it opens and the runtimes get their providers from
+    /// [`EngineOptions::runtimes`]; tests may add more.
     pub fn try_register_tool_provider(
         &self,
         layer: crate::ToolLayer,

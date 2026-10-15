@@ -1,5 +1,5 @@
+use crate::{DelegateInvocation, Engine};
 use async_trait::async_trait;
-use cookie_agent_engine::{DelegateInvocation, Engine};
 use cookie_agent_protocol::{
     AgentId, ApprovalResourceSource, PermissionAction, PersistedToolResult as ToolResult,
     PreparedBindingLifetime,
@@ -10,7 +10,7 @@ use cookie_agent_runtime_api::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{prepared_operation, prepared_resource, safe_title};
+use super::{prepared_operation, prepared_resource, safe_title};
 
 const DEFAULT_RESULT_LIMIT: u32 = 2_000;
 
@@ -314,7 +314,7 @@ impl ToolProvider for DelegateToolProvider {
                     .resolve_subagent_target(
                         ctx.session,
                         &args.session_id,
-                        cookie_agent_engine::SubagentScope::DirectChildren,
+                        crate::SubagentScope::DirectChildren,
                     )
                     .map_err(|error| ToolError::execution(error.to_string()))?;
                 let agent_type = self
@@ -338,7 +338,7 @@ impl ToolProvider for DelegateToolProvider {
                     .resolve_subagent_target(
                         ctx.session,
                         &args.session_id,
-                        cookie_agent_engine::SubagentScope::DirectChildren,
+                        crate::SubagentScope::DirectChildren,
                     )
                     .map_err(|error| ToolError::execution(error.to_string()))?;
                 let agent_type = self
@@ -504,7 +504,7 @@ fn parse_cancel(arguments: &serde_json::Value) -> Result<CancelArgs, ToolError> 
 
 #[cfg(test)]
 mod tests {
-    use cookie_agent_engine::permissions::ApprovalStore;
+    use crate::permissions::ApprovalStore;
     use cookie_agent_protocol::{
         AgentId, ApprovalId, ApprovalResourceSource, OperationFingerprint, PermissionAction,
         PreparedBindingLifetime, RunId, SessionId, TreeApprovalGrant, TreeApprovalGrantId,
@@ -528,14 +528,14 @@ mod tests {
             session: SessionId::new_v7(),
             run: RunId::new_v7(),
             origin: cookie_agent_runtime_api::ToolOrigin::Base,
-            turn_context: crate::test_turn_context(),
+            turn_context: crate::base_tools::test_turn_context(),
         };
         let agent_type = AgentId::new("reviewer").expect("agent type");
         let current =
             DelegateToolProvider::operation(&context, name, args, operation_name, &agent_type)
                 .expect("current agent-scoped operation")
                 .operation;
-        let old_resource = crate::prepared_resource(
+        let old_resource = crate::base_tools::prepared_resource(
             PermissionAction::Delegate,
             old_resource_kind,
             old_binding,
@@ -545,7 +545,7 @@ mod tests {
         )
         .expect("legacy scoped resource");
         let cwd = context.context_bytes();
-        let old = crate::prepared_operation(
+        let old = crate::base_tools::prepared_operation(
             name,
             args,
             vec![(PermissionAction::Delegate, operation_name)],

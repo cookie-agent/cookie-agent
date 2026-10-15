@@ -211,8 +211,8 @@ pub type CodingToolsFactory =
     Arc<dyn Fn(&WorkspaceContext) -> Vec<Arc<dyn ToolProvider>> + Send + Sync>;
 
 /// What the engine needs to build the global and local runtimes. MCP servers
-/// and plugins come from the configuration; the base layer is registered
-/// after open because its providers need the engine.
+/// and plugins come from the configuration, and the engine provides the base
+/// layer itself.
 #[derive(Clone)]
 pub struct RuntimeOptions {
     /// Global-runtime providers besides MCP servers and plugins.

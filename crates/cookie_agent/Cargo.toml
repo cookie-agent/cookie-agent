@@ -46,5 +46,6 @@ libc.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Console"] }
 
 [dev-dependencies]
+cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api" }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
