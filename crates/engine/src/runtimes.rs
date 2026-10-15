@@ -221,6 +221,26 @@ impl ToolOrigin {
             ),
         }
     }
+
+    /// One-line description for the approval reviewer.
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            Self::Base => "the daemon's base layer (no workspace)".to_owned(),
+            Self::Runtime(runtime) => match runtime.workspace() {
+                Some(workspace) => format!(
+                    "the `{}` {} runtime with workspace {}",
+                    runtime.id(),
+                    runtime.kind().as_str(),
+                    workspace.root().display()
+                ),
+                None => format!(
+                    "the `{}` {} runtime (no workspace)",
+                    runtime.id(),
+                    runtime.kind().as_str()
+                ),
+            },
+        }
+    }
 }
 
 /// Where [`crate::Engine::try_register_tool_provider`] adds a provider.

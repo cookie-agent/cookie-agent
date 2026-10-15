@@ -1277,6 +1277,7 @@ impl Engine {
                                 message: Some(message),
                                 tool: ApprovalToolInput {
                                     name: &prepared.call.name,
+                                    origin: prepared.origin(),
                                     normalized_parameters: prepared
                                         .prepared
                                         .as_ref()
