@@ -34,7 +34,7 @@ use cookie_agent_protocol::{
     RunSelection, RunStartParams, SessionId, StoredEvent,
 };
 use cookie_agent_tools::{
-    BuiltinTools, delegate::DelegateToolProvider, read_artifact::ReadArtifactTool, skill::SkillTool,
+    delegate::DelegateToolProvider, read_artifact::ReadArtifactTool, skill::SkillTool,
 };
 use tempfile::TempDir;
 
@@ -292,17 +292,26 @@ impl Fixture {
             cwd: workspace.clone(),
             config: configuration,
             model_manager,
-            tools: vec![Arc::new(BuiltinTools::new(&workspace))],
+            runtimes: cookie_agent_tools::runtime_options(&workspace),
         };
         let engine = Engine::open(options.clone()).expect("engine");
         engine
-            .try_register_tool_provider(Arc::new(DelegateToolProvider::new(engine.clone())))
+            .try_register_tool_provider(
+                cookie_agent_engine::ToolLayer::Base,
+                Arc::new(DelegateToolProvider::new(engine.clone())),
+            )
             .expect("delegate tools");
         engine
-            .try_register_tool_provider(Arc::new(SkillTool::new(engine.clone())))
+            .try_register_tool_provider(
+                cookie_agent_engine::ToolLayer::Base,
+                Arc::new(SkillTool::new(engine.clone())),
+            )
             .expect("skill tool");
         engine
-            .try_register_tool_provider(Arc::new(ReadArtifactTool))
+            .try_register_tool_provider(
+                cookie_agent_engine::ToolLayer::Base,
+                Arc::new(ReadArtifactTool),
+            )
             .expect("read_artifact tool");
         Self {
             _root: root,

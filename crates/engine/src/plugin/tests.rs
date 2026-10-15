@@ -306,8 +306,9 @@ async fn prepared(harness: &Harness) -> crate::PreparedTool {
             ToolPreparationContext {
                 session: SessionId::new_v7(),
                 run: RunId::new_v7(),
-                cwd: harness.directory.path().into(),
-                workspace_root: harness.directory.path().into(),
+                origin: crate::ToolOrigin::Runtime(std::sync::Arc::new(
+                    crate::RuntimeInfo::global(),
+                )),
                 turn_context: turn_context(),
             },
             ToolCall {

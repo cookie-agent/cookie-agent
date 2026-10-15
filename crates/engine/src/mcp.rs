@@ -2883,7 +2883,7 @@ impl ToolProvider for McpRegistry {
                     .map_err(|error| ToolError::execution(error.to_string()))?,
             }],
             vec![resource],
-            Sha256Digest::of_bytes(ctx.workspace_root.to_string_lossy().as_bytes()),
+            Sha256Digest::of_bytes(&ctx.context_bytes()),
         )
         .map_err(|error| ToolError::execution(error.to_string()))?;
         PreparedTool::new(
@@ -2981,6 +2981,7 @@ fn convert_tool(server: &str, sanitized_server: &str, tool: Tool) -> Result<Cach
     Ok(CachedTool {
         raw_name: tool.name.into_owned(),
         spec: ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: ToolConcurrency::Parallel,
             // External opt-out requires a future extension-protocol capability.

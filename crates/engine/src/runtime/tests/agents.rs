@@ -45,9 +45,10 @@ fn user_internal_agent_replaces_builtin_document_and_limits() {
 #[test]
 fn available_models_synthesize_default_agent_and_admit_sessions() {
     let fixture = synthetic_default_fixture(None);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestToolDefinitionProvider));
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestToolDefinitionProvider),
+    );
     let snapshot = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
     assert_eq!(snapshot.models.len(), 2);
     assert_eq!(snapshot.agents.len(), 4);
@@ -183,7 +184,7 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
                 &frozen,
                 action,
                 resource,
-                fixture.engine.inner.store.cwd(),
+                Some(fixture.engine.inner.runtimes.local_workspace_root()),
             )
             .0,
             expected,
@@ -196,9 +197,10 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
 fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
     let sparse_agent = "---\ndescription: Sparse tool test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/a-model\", variant: null }]\npermissions:\n  read: allow\n---\nTest sparse tool visibility.\n";
     let mut fixture = synthetic_default_fixture(Some(sparse_agent));
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestToolDefinitionProvider));
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestToolDefinitionProvider),
+    );
     let snapshot = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
     let agent = snapshot
         .agents
@@ -235,9 +237,10 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
 
     let worker = "---\ndescription: Worker tool target\nmode: subagent\nenabled: true\nmodels: []\npermissions: {}\n---\nTest worker.\n";
     fixture = synthetic_default_fixture(Some(worker));
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestToolDefinitionProvider));
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestToolDefinitionProvider),
+    );
     let snapshot = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
     let default = snapshot
         .agents
@@ -301,7 +304,9 @@ async fn published_tool_order_is_stable_across_registration_and_overlay_order() 
             ]
         };
         for provider in providers {
-            fixture.engine.register_tool_provider(provider);
+            fixture
+                .engine
+                .register_tool_provider(crate::ToolLayer::Local, provider);
         }
         let snapshot = fixture.engine.runtime_snapshot().unwrap().snapshot;
         let selected = snapshot
@@ -573,11 +578,12 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
         .agent_presets
         .insert("python".into(), python_agents);
     fixture.engine = reopen_engine(&fixture);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
 
     let parent = fixture
         .engine

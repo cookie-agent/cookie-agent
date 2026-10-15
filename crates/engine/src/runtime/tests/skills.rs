@@ -12,11 +12,12 @@ use super::support::*;
 async fn staged_skill_child_recovers_after_reservation_before_install_restart() {
     let (endpoint, responses, server) = scripted_staged_recovery_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let (reserved, release) = fixture.engine.install_skill_fork_reservation_hook();
     let parent = fixture
         .engine
@@ -90,10 +91,10 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
         .expect("child response");
     let reopened = Engine::open(EngineOptions {
         data_dir: snapshot.path().join("data"),
+        runtimes: crate::RuntimeOptions::new(&cwd),
         cwd,
         config,
         model_manager: manager,
-        tools: Vec::new(),
     })
     .expect("reopen at staged reservation window");
     reopened

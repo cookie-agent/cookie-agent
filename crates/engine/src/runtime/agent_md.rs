@@ -10,7 +10,8 @@ pub(crate) const AGENT_MD_MAX_BYTES: u64 = AgentMdEntry::MAX_CONTENT_BYTES as u6
 
 impl Engine {
     /// `agent_override` is the run agent's `agent_md` frontmatter; when present
-    /// it replaces the global `[agent_md] enabled` switch.
+    /// it replaces the global `[agent_md] enabled` switch. Files are looked up
+    /// in the local coding runtime's workspace.
     pub(crate) fn load_agent_md(
         &self,
         preset: Option<&str>,
@@ -19,7 +20,7 @@ impl Engine {
         if !agent_override.unwrap_or(self.inner.config.runtime.agent_md.enabled) {
             return Ok((Vec::new(), Vec::new()));
         }
-        let cwd = self.inner.store.cwd();
+        let cwd = self.inner.runtimes.local_workspace_root();
         let agents_dir = cwd.join(".cookie-agent").join("agents");
         let mut entries = Vec::with_capacity(2);
         let mut skipped = Vec::new();
@@ -95,8 +96,11 @@ impl Engine {
             }
         };
         Ok(Some(AgentMdEntry {
-            source: SafeDisplayText::new(relative_display_path(path, self.inner.store.cwd()))
-                .expect("AGENTS.md relative path is bounded"),
+            source: SafeDisplayText::new(relative_display_path(
+                path,
+                self.inner.runtimes.local_workspace_root(),
+            ))
+            .expect("AGENTS.md relative path is bounded"),
             byte_length: observed_bytes,
             content,
         }))

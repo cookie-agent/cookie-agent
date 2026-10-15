@@ -235,8 +235,9 @@ async fn execute(
             ToolPreparationContext {
                 session: SessionId::new_v7(),
                 run: RunId::new_v7(),
-                cwd: directory.path().into(),
-                workspace_root: directory.path().into(),
+                origin: crate::ToolOrigin::Runtime(std::sync::Arc::new(
+                    crate::RuntimeInfo::global(),
+                )),
                 turn_context: turn_context(),
             },
             ToolCall {

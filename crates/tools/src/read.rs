@@ -16,6 +16,8 @@ use cookie_agent_protocol::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use cookie_agent_engine::WorkspaceContext;
+
 use crate::{fs_cap, parse_args, prepared_operation, prepared_path_resources, schema};
 
 const DEFAULT_LIMIT: usize = 2_000;
@@ -54,17 +56,13 @@ struct ReadExecutor {
 }
 
 impl ReadTool {
+    /// A tool working in `workspace`, the workspace of the coding runtime
+    /// that offers it.
     #[must_use]
-    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+    pub fn new(workspace: &WorkspaceContext) -> Self {
         Self {
-            workspace: workspace.into(),
+            workspace: workspace.root().to_owned(),
         }
-    }
-}
-
-impl Default for ReadTool {
-    fn default() -> Self {
-        Self::new(std::env::current_dir().expect("current directory"))
     }
 }
 
@@ -76,6 +74,7 @@ impl ToolProvider for ReadTool {
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
@@ -144,7 +143,7 @@ impl ToolProvider for ReadTool {
 
     async fn prepare(
         &self,
-        ctx: ToolPreparationContext,
+        _ctx: ToolPreparationContext,
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
         if call.name != "read" {
@@ -160,7 +159,8 @@ impl ToolProvider for ReadTool {
         args.limit = Some(limit);
         let workspace = self.workspace.clone();
         crate::blocking(move || {
-            let target = fs_cap::prepare_existing(&ctx.cwd, std::path::Path::new(&args.file_path))?;
+            let target =
+                fs_cap::prepare_existing(&workspace, std::path::Path::new(&args.file_path))?;
             let (resources, policy_labels) = prepared_path_resources(
                 PermissionAction::Read,
                 if target.directory {
@@ -172,7 +172,7 @@ impl ToolProvider for ReadTool {
                 &workspace,
                 &target.binding_bytes(),
             )?;
-            let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
+            let context = crate::workspace_context_bytes(&workspace);
             let operation = prepared_operation(
                 "read",
                 &args,

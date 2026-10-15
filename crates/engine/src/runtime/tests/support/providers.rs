@@ -50,6 +50,7 @@ impl ToolProvider for TestStreamingBashProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),
@@ -361,6 +362,7 @@ impl ToolProvider for TestParallelToolProvider {
         ]
         .into_iter()
         .map(|(name, permission_name)| ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: ToolConcurrency::Parallel,
             result_truncation: Default::default(),
@@ -609,6 +611,7 @@ impl ToolProvider for TestDelegateProvider {
             .map_err(|error| ToolError::execution(error.to_string()))?;
         Ok((!targets.is_empty())
             .then(|| ToolSpec {
+                collision: Default::default(),
                 output: Default::default(),
                 concurrency: crate::ToolConcurrency::Parallel,
                 result_truncation: Default::default(),
@@ -811,6 +814,7 @@ impl ToolProvider for TestWriteProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),
@@ -984,6 +988,7 @@ impl ToolProvider for TestAliasProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),
@@ -1100,6 +1105,7 @@ impl ToolProvider for TestMediaReadProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),
@@ -1154,7 +1160,11 @@ impl ToolProvider for TestMediaReadProvider {
             .get("filePath")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| ToolError::execution("missing filePath"))?;
-        let path = ctx.cwd.join(display);
+        let path = ctx
+            .workspace()
+            .expect("media read fixtures run on a coding runtime")
+            .root()
+            .join(display);
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(display.as_bytes()),
             vec![ApprovalCapability {
@@ -1316,6 +1326,7 @@ impl ToolProvider for OrderedToolDefinitionProvider {
             .tools
             .iter()
             .map(|(name, permission_name)| ToolSpec {
+                collision: Default::default(),
                 output: Default::default(),
                 concurrency: Default::default(),
                 result_truncation: Default::default(),
@@ -1385,6 +1396,7 @@ impl ToolProvider for TestToolDefinitionProvider {
         ]
         .into_iter()
         .map(|(name, permission_name)| ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),
@@ -1451,6 +1463,7 @@ impl ToolProvider for NamedOutputProvider {
     }
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            collision: Default::default(),
             name: "named_output".into(),
             permission_name: "read".into(),
             description: "Produce named output".into(),
@@ -1580,6 +1593,7 @@ impl ToolProvider for DivergentReadProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),

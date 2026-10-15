@@ -26,9 +26,7 @@ use cookie_agent_protocol::{
     validate_websocket_url,
 };
 use cookie_agent_server::{Server, generate_token, ready_line};
-use cookie_agent_tools::{
-    BuiltinTools, delegate::DelegateToolProvider, message::MessageToolProvider,
-};
+use cookie_agent_tools::{delegate::DelegateToolProvider, message::MessageToolProvider};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -441,45 +439,54 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
         cwd: workspace.to_owned(),
         config: configuration,
         model_manager,
-        tools: vec![Arc::new(BuiltinTools::new(workspace))],
+        runtimes: cookie_agent_tools::runtime_options(workspace),
     })
     .context("open manifests, rehydrate project state, and reconcile engine")?;
     if let Err(error) = engine
-        .try_register_tool_provider(Arc::new(DelegateToolProvider::new(engine.clone())))
+        .try_register_tool_provider(
+            cookie_agent_engine::ToolLayer::Base,
+            Arc::new(DelegateToolProvider::new(engine.clone())),
+        )
         .context("register delegate tools")
     {
         engine.shutdown().await;
         return Err(error);
     }
     if let Err(error) = engine
-        .try_register_tool_provider(Arc::new(MessageToolProvider::new(engine.clone())))
+        .try_register_tool_provider(
+            cookie_agent_engine::ToolLayer::Base,
+            Arc::new(MessageToolProvider::new(engine.clone())),
+        )
         .context("register message tools")
     {
         engine.shutdown().await;
         return Err(error);
     }
     if let Err(error) = engine
-        .try_register_tool_provider(Arc::new(cookie_agent_tools::skill::SkillTool::new(
-            engine.clone(),
-        )))
+        .try_register_tool_provider(
+            cookie_agent_engine::ToolLayer::Base,
+            Arc::new(cookie_agent_tools::skill::SkillTool::new(engine.clone())),
+        )
         .context("register skill tool")
     {
         engine.shutdown().await;
         return Err(error);
     }
     if let Err(error) = engine
-        .try_register_tool_provider(Arc::new(
-            cookie_agent_tools::read_artifact::ReadArtifactTool,
-        ))
+        .try_register_tool_provider(
+            cookie_agent_engine::ToolLayer::Base,
+            Arc::new(cookie_agent_tools::read_artifact::ReadArtifactTool),
+        )
         .context("register read_artifact tool")
     {
         engine.shutdown().await;
         return Err(error);
     }
     if let Err(error) = engine
-        .try_register_tool_provider(Arc::new(cookie_agent_tools::goal::GoalTools::new(
-            engine.clone(),
-        )))
+        .try_register_tool_provider(
+            cookie_agent_engine::ToolLayer::Base,
+            Arc::new(cookie_agent_tools::goal::GoalTools::new(engine.clone())),
+        )
         .context("register goal tools")
     {
         engine.shutdown().await;

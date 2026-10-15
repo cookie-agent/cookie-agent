@@ -288,11 +288,12 @@ async fn model_less_delegated_child_first_request_inherits_parent_cache_strategy
             Some(worker),
             "openai-chat",
         );
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
         .engine
@@ -692,11 +693,12 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
         ],
     )
     .await;
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::new(TestFlag::default()),
-        }));
+        }),
+    );
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
         .engine

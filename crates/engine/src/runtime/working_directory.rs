@@ -7,8 +7,15 @@ use crate::{
 };
 
 impl Engine {
+    /// The `<working_directory>` block names the local coding runtime's
+    /// workspace, where the file tools and bash resolve relative paths.
     pub(crate) fn compose_working_directory_section(&self, policy: &mut FrozenRunPolicy) {
-        let cwd = self.inner.store.cwd().display().to_string();
+        let cwd = self
+            .inner
+            .runtimes
+            .local_workspace_root()
+            .display()
+            .to_string();
         let block = format!(
             concat!(
                 "<working_directory>{}</working_directory>\n",

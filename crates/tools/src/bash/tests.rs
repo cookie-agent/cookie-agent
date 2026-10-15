@@ -17,7 +17,7 @@ use super::{
 
 #[test]
 fn permission_resource_is_the_command() {
-    let tool = BashTool::new("/tmp");
+    let tool = BashTool::new(&crate::test_workspace(std::env::temp_dir()));
     assert_eq!(
         tool.get_permission_resource("bash", &serde_json::json!({"command":"git status"}))
             .expect("permission resource"),
@@ -31,7 +31,7 @@ fn permission_resource_is_the_command() {
 
 #[test]
 fn display_argument_is_a_one_line_command_that_keeps_and_segments() {
-    let tool = BashTool::new("/tmp");
+    let tool = BashTool::new(&crate::test_workspace(std::env::temp_dir()));
     assert_eq!(
         tool.get_display_argument(
             "bash",
@@ -55,13 +55,12 @@ fn display_argument_is_a_one_line_command_that_keeps_and_segments() {
 }
 
 async fn prepare(root: &Path, command: &str) -> cookie_agent_engine::PreparedTool {
-    BashTool::new(root)
+    BashTool::new(&crate::test_workspace(root))
         .prepare(
             ToolPreparationContext {
                 session: SessionId::new_v7(),
                 run: RunId::new_v7(),
-                cwd: root.to_owned(),
-                workspace_root: root.to_owned(),
+                origin: crate::test_coding_origin(root),
                 turn_context: crate::test_turn_context(),
             },
             ToolCall {
@@ -142,7 +141,7 @@ async fn bash_never_produces_read_or_write_resources() {
         ]),
         env.operation(),
         env.policy_labels(),
-        root.path(),
+        Some(root.path()),
     );
     assert_eq!(decision.effect, PermissionEffect::Deny);
 }
@@ -173,7 +172,7 @@ async fn git_star_matches_a_compound_command_by_wildcard_rules() {
         )]),
         prepared.operation(),
         prepared.policy_labels(),
-        root.path(),
+        Some(root.path()),
     );
     assert_eq!(decision.effect, PermissionEffect::Allow);
 }
@@ -189,7 +188,7 @@ async fn prefix_rm_star_does_not_match_a_compound_git_command() {
         ]),
         prepared.operation(),
         prepared.policy_labels(),
-        root.path(),
+        Some(root.path()),
     );
     assert_eq!(decision.effect, PermissionEffect::Allow);
 }
@@ -205,7 +204,7 @@ async fn containment_rm_denies_a_compound_command() {
         ]),
         prepared.operation(),
         prepared.policy_labels(),
-        root.path(),
+        Some(root.path()),
     );
     assert_eq!(decision.effect, PermissionEffect::Deny);
 }
@@ -223,7 +222,7 @@ async fn simple_command_is_matched_as_itself() {
         )]),
         prepared.operation(),
         prepared.policy_labels(),
-        root.path(),
+        Some(root.path()),
     );
     assert_eq!(decision.effect, PermissionEffect::Allow);
 }
@@ -263,14 +262,13 @@ fn fake_path_swap_cannot_change_prepared_executable() {
 #[tokio::test]
 async fn interactive_is_prepared_for_runtime_stdin() {
     let root = tempfile::tempdir().expect("root");
-    let tool = BashTool::new(root.path());
+    let tool = BashTool::new(&crate::test_workspace(root.path()));
     let result = tool
         .prepare(
             cookie_agent_engine::ToolPreparationContext {
                 session: SessionId::new_v7(),
                 run: RunId::new_v7(),
-                cwd: root.path().to_owned(),
-                workspace_root: root.path().to_owned(),
+                origin: crate::test_coding_origin(root.path()),
                 turn_context: crate::test_turn_context(),
             },
             cookie_agent_engine::ToolCall {
@@ -615,13 +613,12 @@ async fn prepare_arguments(
     root: &Path,
     arguments: serde_json::Value,
 ) -> Result<cookie_agent_engine::PreparedTool, ToolError> {
-    BashTool::new(root)
+    BashTool::new(&crate::test_workspace(root))
         .prepare(
             ToolPreparationContext {
                 session: SessionId::new_v7(),
                 run: RunId::new_v7(),
-                cwd: root.to_owned(),
-                workspace_root: root.to_owned(),
+                origin: crate::test_coding_origin(root),
                 turn_context: crate::test_turn_context(),
             },
             ToolCall {

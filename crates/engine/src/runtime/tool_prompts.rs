@@ -32,16 +32,11 @@ impl Engine {
             })
             .collect();
         let context = SessionToolContext::for_prompt_composition(session, delegate_targets);
-        let providers = self
-            .inner
-            .tools
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
+        let providers = self.inner.runtimes.providers();
         let mut rendered = Vec::new();
         let mut total_body_bytes = 0usize;
 
-        for provider in providers {
+        for crate::runtimes::SourcedProvider { provider, .. } in providers {
             let provider_id = provider.provider_id();
             validate_provider_id(provider_id)?;
             let sections = provider.prompt_sections(&context).map_err(|error| {

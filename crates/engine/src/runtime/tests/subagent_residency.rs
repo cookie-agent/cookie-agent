@@ -37,11 +37,12 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
         responses.send(response).expect("scripted response");
     }
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -218,11 +219,12 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
 async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
     let (endpoint, responses, server) = scripted_channel_server(12).await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -1011,11 +1013,12 @@ async fn delegate_idle_child(
 async fn the_residency_cap_is_enforced_per_tree() {
     let (endpoint, responses, _server) = scripted_channel_server(9).await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let tree_a = fixture.engine.create_session(selection.clone()).unwrap();
     let tree_b = fixture.engine.create_session(selection.clone()).unwrap();
     let first = delegate_idle_child(
@@ -1091,11 +1094,12 @@ async fn idle_root_trees_page_out_when_unwatched_and_reload_on_view() {
         responses.send(response).expect("scripted response");
     }
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let root = fixture
         .engine
         .create_session(selection.clone())

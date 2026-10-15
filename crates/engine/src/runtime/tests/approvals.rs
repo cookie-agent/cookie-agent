@@ -55,12 +55,13 @@ async fn approval_batch_blocks_auto_allowed_tools_and_serializes_asks() {
         "---\ndescription: Approval batch test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  bash: ask\n  write:\n    allowed: allow\n    \"*\": deny\n---\nResolve all asks before tools run.\n",
     );
     let state = Arc::new(ParallelToolState::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestParallelToolProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestParallelToolProvider {
             state: Arc::clone(&state),
             barrier: None,
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -180,12 +181,13 @@ async fn cancellation_during_approval_terminates_batch_without_execution() {
         "---\ndescription: Approval cancellation test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  bash: ask\n---\nCancel while approval is pending.\n",
     );
     let state = Arc::new(ParallelToolState::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestParallelToolProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestParallelToolProvider {
             state: Arc::clone(&state),
             barrier: None,
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -264,11 +266,12 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -370,11 +373,12 @@ async fn tool_output_is_subscribable_while_the_call_awaits_approval() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -428,11 +432,12 @@ async fn tool_output_is_subscribable_while_the_call_awaits_approval() {
 async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::new(TestFlag::default()),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -530,11 +535,12 @@ async fn repeated_approvals_feed_prior_decisions_to_the_reviewer() {
         false,
     );
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -596,11 +602,12 @@ async fn ask_permission_mode_escalates_without_starting_internal_approval_agent(
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"allow"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -662,11 +669,12 @@ async fn approval_request_window_uses_the_configured_timeout() {
     fixture.engine.shutdown().await;
     fixture.config.runtime.approval.timeout_ms = 120_000;
     fixture.engine = reopen_engine(&fixture);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::new(TestFlag::default()),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -726,11 +734,12 @@ async fn yolo_permission_mode_durably_approves_and_executes_without_escalation()
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"deny"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -814,11 +823,12 @@ async fn auto_approve_n_rejects_classifier_escalation_with_feedback_without_prom
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -907,11 +917,12 @@ async fn auto_approve_y_approves_classifier_escalation_once_without_prompting() 
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -987,11 +998,12 @@ async fn auto_approve_y_rechecks_identical_calls_without_creating_a_tree_grant()
     let (endpoint, captured) = scripted_two_evaluated_writes_server(r#"{"decision":"ask"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -1095,11 +1107,12 @@ async fn auto_approve_n_and_y_preserve_classifier_allow_and_deny() {
         let (endpoint, captured) = scripted_approval_server(internal_output).await;
         let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
         let executed = Arc::new(TestFlag::default());
-        fixture
-            .engine
-            .register_tool_provider(Arc::new(TestWriteProvider {
+        fixture.engine.register_tool_provider(
+            crate::ToolLayer::Local,
+            Arc::new(TestWriteProvider {
                 executed: Arc::clone(&executed),
-            }));
+            }),
+        );
         let session = fixture
             .engine
             .create_session(selection.clone())
@@ -1168,11 +1181,12 @@ async fn yolo_permission_mode_does_not_override_hard_deny_rules() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"allow"}"#).await;
     let (fixture, selection) = denied_approval_fixture_with_endpoint(&endpoint);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -1232,11 +1246,12 @@ async fn yolo_permission_mode_does_not_override_hard_deny_rules() {
 async fn yolo_permission_mode_still_triggers_the_doom_loop_guard() {
     let (endpoint, captured) = scripted_repeated_write_server(4).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::new(TestFlag::default()),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -1301,11 +1316,12 @@ async fn permission_mode_change_applies_to_the_next_operation_only() {
     let (endpoint, captured) = scripted_repeated_write_server(2).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -1390,11 +1406,12 @@ async fn malformed_internal_approval_output_falls_back_to_escalation_transaction
     let (endpoint, captured) = scripted_approval_server("not-json").await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -1448,11 +1465,12 @@ async fn internal_agent_ask_escalates_to_user_approval_then_executes_tool() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -1536,11 +1554,12 @@ async fn session_resume_does_not_sweep_approvals_of_a_live_running_run() {
             .await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -1770,11 +1789,12 @@ async fn finalized_approval_during_internal_evaluation_yields_clean_denial() {
             .await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -1912,11 +1932,12 @@ async fn finalized_approval_during_internal_evaluation_yields_clean_denial() {
 async fn escalated_approval_finalized_externally_still_wakes_the_waiter() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::new(TestFlag::default()),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -2034,11 +2055,12 @@ async fn built_in_approval_agent_request_inherits_the_parent_run_output_cap() {
         "---\ndescription: Output-capped approval primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\nlimits: { max_output_tokens: 128 }\npermissions:\n  write: ask\n---\nTest approval flow.\n",
     );
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())

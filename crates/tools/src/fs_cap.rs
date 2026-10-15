@@ -1372,11 +1372,6 @@ mod windows {
 pub use windows::*;
 
 /// Identifies the session working directory for operation fingerprints.
-pub fn cwd_context_bytes(cwd: &std::path::Path) -> Result<Vec<u8>, cookie_agent_engine::ToolError> {
-    let resolved = std::fs::canonicalize(cwd).map_err(io_error)?;
-    Ok(resolved.as_os_str().as_encoded_bytes().to_vec())
-}
-
 fn io_error(error: impl std::fmt::Display) -> cookie_agent_engine::ToolError {
     cookie_agent_engine::ToolError::execution(error.to_string())
 }

@@ -27,7 +27,7 @@ const DELEGATE_TARGET_PLACEHOLDER: &str = "<subagent id>";
 
 /// Every built-in tool, in the order the reference lists them.
 fn documented_specs() -> Vec<ToolSpec> {
-    let mut specs = BuiltinTools::new(std::env::temp_dir())
+    let mut specs = BuiltinTools::new(&crate::test_workspace(std::env::temp_dir()))
         .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
         .expect("built-in tool specs");
     specs.push(SkillTool::spec());

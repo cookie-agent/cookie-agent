@@ -38,11 +38,13 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+use cookie_agent_engine::WorkspaceContext;
+
 use crate::{fs_cap, parse_args, prepared_operation, prepared_resource, schema};
 
 #[derive(Debug)]
 pub struct BashTool {
-    _workspace: PathBuf,
+    workspace: PathBuf,
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
@@ -333,19 +335,15 @@ impl Drop for JobChild {
 }
 
 impl BashTool {
+    /// A tool working in `workspace`, the workspace of the coding runtime
+    /// that offers it.
     #[must_use]
-    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+    pub fn new(workspace: &WorkspaceContext) -> Self {
         Self {
-            _workspace: workspace.into(),
+            workspace: workspace.root().to_owned(),
         }
     }
 }
-impl Default for BashTool {
-    fn default() -> Self {
-        Self::new(std::env::current_dir().expect("current directory"))
-    }
-}
-
 #[async_trait]
 impl ToolProvider for BashTool {
     fn provider_id(&self) -> &'static str {
@@ -354,6 +352,7 @@ impl ToolProvider for BashTool {
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            collision: Default::default(),
             output: cookie_agent_protocol::ToolOutputDeclaration::Named {
                 streams: vec!["stdout".into(), "stderr".into()],
             },
@@ -399,7 +398,7 @@ impl ToolProvider for BashTool {
 
     async fn prepare(
         &self,
-        ctx: ToolPreparationContext,
+        _ctx: ToolPreparationContext,
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
         let args: BashArgs = parse_args("bash", call.arguments)?;
@@ -411,7 +410,7 @@ impl ToolProvider for BashTool {
                 "interactive and background cannot be combined",
             ));
         }
-        let cwd_path = ctx.cwd.clone();
+        let cwd_path = self.workspace.clone();
         let (executable_path, executable, cwd) = crate::blocking(move || {
             let executable_path = resolve_executable("bash")?;
             let executable = fs_cap::prepare_existing(Path::new("/"), &executable_path)?;

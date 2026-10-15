@@ -81,11 +81,12 @@ async fn wildcard_delegation_pattern_spawns_matching_subagent() {
         None,
         "sub-worker",
     );
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
         .engine
@@ -136,11 +137,12 @@ async fn wildcard_delegation_pattern_spawns_matching_subagent() {
 async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
     let (endpoint, children_reached, release_children, server) = parallel_delegate_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -277,11 +279,12 @@ async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
 async fn rebuilding_registry_strips_foreground_delegation_producer() {
     let (endpoint, children_reached, release_children, server) = parallel_delegate_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -394,11 +397,12 @@ async fn rebuilding_registry_strips_foreground_delegation_producer() {
 async fn cancelling_foreground_delegates_preserves_child_sessions_in_results_and_history() {
     let (endpoint, children_reached, _release_children, server) = parallel_delegate_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -574,11 +578,12 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
         ))
         .expect("parent delegation response");
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let (reserved, release) = fixture.engine.install_delegation_reservation_hook();
     let parent = fixture
         .engine
@@ -635,10 +640,10 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
 
     let reopened = Engine::open(EngineOptions {
         data_dir: snapshot.path().join("data"),
+        runtimes: crate::RuntimeOptions::new(&cwd),
         cwd,
         config,
         model_manager: manager,
-        tools: Vec::new(),
     })
     .expect("reopen missing-child reservation window");
     reopened

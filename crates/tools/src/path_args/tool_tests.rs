@@ -37,8 +37,7 @@ fn context(workspace: &Path) -> ToolPreparationContext {
     ToolPreparationContext {
         session: SessionId::new_v7(),
         run: RunId::new_v7(),
-        cwd: workspace.to_owned(),
-        workspace_root: workspace.to_owned(),
+        origin: crate::test_coding_origin(workspace),
         turn_context: crate::test_turn_context(),
     }
 }
@@ -96,7 +95,7 @@ fn assert_permission(
         &policy,
         prepared.operation(),
         prepared.policy_labels(),
-        workspace,
+        Some(workspace),
     );
     assert_eq!(decision.effect, effect);
 }
@@ -115,9 +114,18 @@ async fn home_path_subprocess_helper() {
     let workspace = home.join("workspace");
     fs::create_dir(&workspace).unwrap();
     let providers: [(&str, Box<dyn ToolProvider>); 3] = [
-        ("write", Box::new(WriteTool::new(&workspace))),
-        ("read", Box::new(ReadTool::new(&workspace))),
-        ("edit", Box::new(EditTool::new(&workspace))),
+        (
+            "write",
+            Box::new(WriteTool::new(&crate::test_workspace(&workspace))),
+        ),
+        (
+            "read",
+            Box::new(ReadTool::new(&crate::test_workspace(&workspace))),
+        ),
+        (
+            "edit",
+            Box::new(EditTool::new(&crate::test_workspace(&workspace))),
+        ),
     ];
 
     for path in [
@@ -207,7 +215,7 @@ async fn home_path_subprocess_helper() {
         "original"
     );
 
-    let prepared = ReadTool::new(&workspace)
+    let prepared = ReadTool::new(&crate::test_workspace(&workspace))
         .prepare(context(&workspace), call("read", "~"))
         .await
         .unwrap();

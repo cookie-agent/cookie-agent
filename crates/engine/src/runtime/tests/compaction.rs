@@ -239,12 +239,13 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
         // Publish at least one tool so the summarizer tool-carrying behavior
         // (first trial keeps definitions, pruned retry drops them) is
         // observable in the captured requests.
-        fixture
-            .engine
-            .register_tool_provider(Arc::new(TestParallelToolProvider {
+        fixture.engine.register_tool_provider(
+            crate::ToolLayer::Local,
+            Arc::new(TestParallelToolProvider {
                 state: Arc::new(ParallelToolState::default()),
                 barrier: None,
-            }));
+            }),
+        );
         let session = fixture
             .engine
             .create_session(selection.clone())
@@ -681,11 +682,12 @@ async fn automatic_compaction_failure_limit_suppresses_after_three_and_resets() 
             8_192,
             None,
         );
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::new(TestFlag::default()),
-        }));
+        }),
+    );
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     for index in 0..2 {
         fixture
@@ -781,11 +783,12 @@ async fn auto_compaction_commits_checkpoint_before_the_attempt_that_uses_it() {
             None,
         );
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
         .engine
@@ -908,11 +911,12 @@ async fn auto_compaction_triggers_on_the_model_input_limit_not_the_context_windo
             "openai-compatible",
             Some(&capabilities),
         );
-        fixture
-            .engine
-            .register_tool_provider(Arc::new(TestWriteProvider {
+        fixture.engine.register_tool_provider(
+            crate::ToolLayer::Local,
+            Arc::new(TestWriteProvider {
                 executed: Arc::new(TestFlag::default()),
-            }));
+            }),
+        );
         let session = fixture.engine.create_session(selection.clone()).unwrap();
         fixture
             .engine

@@ -136,10 +136,13 @@ use crate::tool_api::{
 #[derive(Clone)]
 pub struct EngineOptions {
     pub data_dir: PathBuf,
+    /// The daemon's working directory. It only locates the session store and
+    /// stamps `cwd_identity`; tools see their runtime's workspace instead.
     pub cwd: PathBuf,
     pub config: LoadedConfiguration,
     pub model_manager: Arc<ModelManager>,
-    pub tools: Vec<Arc<dyn ToolProvider>>,
+    /// The global runtime's extra tools and the local coding runtime.
+    pub runtimes: crate::RuntimeOptions,
 }
 
 #[derive(Debug, Error)]
@@ -157,6 +160,12 @@ pub enum EngineError {
     GrantJournal(#[from] GrantJournalError),
     #[error("tool output storage error: {0}")]
     ToolOutput(#[from] std::io::Error),
+    #[error("workspace {path} is unavailable: {source}")]
+    Workspace {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("AGENTS.md context read failed at {path}: {source}")]
     AgentMdIo {
         path: PathBuf,
@@ -377,6 +386,13 @@ impl PreparedToolCall {
             })
     }
 
+    /// Layer or runtime that owns the prepared tool.
+    fn origin(&self) -> Option<&crate::ToolOrigin> {
+        self.interception
+            .as_ref()
+            .map(|context| &context.preparation.origin)
+    }
+
     /// Calls sharing a serialization key must execute in model call order:
     /// chained preparations build on each other's output.
     fn serialization_key(&self) -> Option<crate::PreparedSerializationKey> {
@@ -396,6 +412,8 @@ struct ToolInterceptionContext {
 }
 
 struct PublishedTool {
+    /// Layer or runtime that offers the tool.
+    origin: crate::ToolOrigin,
     provider: Arc<dyn ToolProvider>,
     spec: ToolSpec,
 }
@@ -666,7 +684,8 @@ pub(crate) struct Inner {
     engine_events: broadcast::Sender<crate::EngineEvent>,
     plugin_diagnostics: PluginDiagnosticsState,
     runtime_revision_index: Mutex<RuntimeRevisionIndex>,
-    tools: Mutex<Vec<Arc<dyn ToolProvider>>>,
+    /// Tool providers by layer and runtime.
+    pub(crate) runtimes: crate::runtimes::RuntimeSet,
     provider_ids: Mutex<HashSet<&'static str>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
     pub(crate) plugins: Arc<crate::PluginRegistry>,
@@ -695,8 +714,25 @@ pub struct Engine {
 
 impl Engine {
     pub fn open(options: EngineOptions) -> Result<Self, EngineError> {
+        let local_workspace = crate::WorkspaceContext::new(&options.runtimes.local_workspace)
+            .map_err(|source| EngineError::Workspace {
+                path: options.runtimes.local_workspace.clone(),
+                source,
+            })?;
+        let runtimes = crate::runtimes::RuntimeSet::new(local_workspace.clone());
+        let mut layered = options
+            .runtimes
+            .global_tools
+            .iter()
+            .map(|provider| (crate::ToolLayer::Global, Arc::clone(provider)))
+            .collect::<Vec<_>>();
+        layered.extend(
+            (options.runtimes.local_tools)(&local_workspace)
+                .into_iter()
+                .map(|provider| (crate::ToolLayer::Local, provider)),
+        );
         let mut provider_ids = HashSet::new();
-        for provider in &options.tools {
+        for (_, provider) in &layered {
             reserve_provider_id(&mut provider_ids, provider.as_ref())?;
         }
         let skills = Arc::new(options.config.skills.clone());
@@ -727,7 +763,7 @@ impl Engine {
             .map_err(|error| EngineError::ToolFailed(error.to_string()))?,
         );
         reserve_provider_id(&mut provider_ids, mcp.as_ref())?;
-        for provider in &options.tools {
+        for (_, provider) in &layered {
             mcp.reserve_provider(provider.as_ref())
                 .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
         }
@@ -736,9 +772,11 @@ impl Engine {
             Arc::clone(&mcp),
         ));
         reserve_provider_id(&mut provider_ids, plugins.as_ref())?;
-        let mut tools = options.tools;
-        tools.push(mcp.clone());
-        tools.push(plugins.clone());
+        runtimes.push(crate::ToolLayer::Global, mcp.clone());
+        runtimes.push(crate::ToolLayer::Global, plugins.clone());
+        for (layer, provider) in layered {
+            runtimes.push(layer, provider);
+        }
         let delegation_events = DelegationEventStore::new(Arc::clone(&store));
         let grant_journals = GrantJournals::new(store.workdir_dir_path());
         let (runtime_notifications, _) = broadcast::channel(64);
@@ -771,7 +809,7 @@ impl Engine {
                     task: Mutex::new(None),
                 },
                 runtime_revision_index: Mutex::new(runtime_revision_index),
-                tools: Mutex::new(tools),
+                runtimes,
                 provider_ids: Mutex::new(provider_ids),
                 mcp,
                 plugins,
@@ -1261,13 +1299,17 @@ impl Engine {
 
     /// Registers a tool provider after engine open, allowing providers that
     /// require an Engine (notably delegate) to break the construction cycle.
-    pub fn register_tool_provider(&self, provider: Arc<dyn ToolProvider>) {
-        self.try_register_tool_provider(provider)
+    pub fn register_tool_provider(&self, layer: crate::ToolLayer, provider: Arc<dyn ToolProvider>) {
+        self.try_register_tool_provider(layer, provider)
             .expect("tool provider collision");
     }
 
+    /// Adds `provider` to `layer`. The base layer's providers are registered
+    /// this way; the runtimes get theirs from [`EngineOptions::runtimes`],
+    /// and tests may add more.
     pub fn try_register_tool_provider(
         &self,
+        layer: crate::ToolLayer,
         provider: Arc<dyn ToolProvider>,
     ) -> Result<(), EngineError> {
         let mut provider_ids = self
@@ -1280,11 +1322,7 @@ impl Engine {
             provider_ids.remove(provider.provider_id());
             return Err(EngineError::ToolFailed(error.to_string()));
         }
-        self.inner
-            .tools
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(provider);
+        self.inner.runtimes.push(layer, provider);
         Ok(())
     }
 
@@ -1424,11 +1462,7 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
-        self.inner
-            .tools
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
+        self.inner.runtimes.clear();
         self.inner.store.release_ownership();
     }
 }

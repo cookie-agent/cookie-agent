@@ -32,11 +32,12 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         false,
     );
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -296,13 +297,14 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
     let output_started = Arc::new(tokio::sync::Notify::new());
     let stdin_received = Arc::new(tokio::sync::Notify::new());
     let cleanup_progress_sent = Arc::new(tokio::sync::Notify::new());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestStreamingBashProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestStreamingBashProvider {
             output_started: Arc::clone(&output_started),
             stdin_received: Arc::clone(&stdin_received),
             cleanup_progress_sent,
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())

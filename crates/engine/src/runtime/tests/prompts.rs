@@ -36,10 +36,10 @@ async fn tool_prompt_sections_are_ordered_fingerprinted_and_frozen() {
     );
     fixture
         .engine
-        .register_tool_provider(Arc::new(first_provider.clone()));
+        .register_tool_provider(crate::ToolLayer::Local, Arc::new(first_provider.clone()));
     fixture
         .engine
-        .register_tool_provider(Arc::new(second_provider.clone()));
+        .register_tool_provider(crate::ToolLayer::Local, Arc::new(second_provider.clone()));
     let session = fixture.engine.create_session(selection.clone()).unwrap();
 
     for (index, input) in ["first prompt run", "same prompt run", "changed prompt run"]
@@ -178,15 +178,16 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
         )],
     )
     .await;
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestPromptProvider::new(
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestPromptProvider::new(
             "test.order",
             vec![PromptSection {
                 title: "Order".into(),
                 body: "Provider section.".into(),
             }],
-        )));
+        )),
+    );
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
         .engine
@@ -212,7 +213,13 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
         .agent
         .composed_prompt;
     let agent = prompt.find("Test prompt.").unwrap();
-    let cwd = fixture.engine.inner.store.cwd().display().to_string();
+    let cwd = fixture
+        .engine
+        .inner
+        .runtimes
+        .local_workspace_root()
+        .display()
+        .to_string();
     let working_directory = prompt.find("<working_directory>").unwrap();
     assert!(prompt.contains(&format!("<working_directory>{cwd}</working_directory>")));
     let provider = prompt.find("Provider section.").unwrap();
@@ -282,7 +289,13 @@ async fn working_directory_section_reports_session_cwd() {
         .values()
         .find(|run| run.client_run_id.as_str() == "working-directory")
         .expect("working-directory run");
-    let cwd = fixture.engine.inner.store.cwd().display().to_string();
+    let cwd = fixture
+        .engine
+        .inner
+        .runtimes
+        .local_workspace_root()
+        .display()
+        .to_string();
     assert!(
         run.agent
             .composed_prompt
@@ -357,7 +370,9 @@ async fn invalid_tool_prompt_sections_fail_run_admission() {
     for (name, providers, expected) in cases {
         let (fixture, selection) = custom_fixture_with_endpoint("http://127.0.0.1:9/v1");
         for provider in providers {
-            fixture.engine.register_tool_provider(Arc::new(provider));
+            fixture
+                .engine
+                .register_tool_provider(crate::ToolLayer::Local, Arc::new(provider));
         }
         let session = fixture.engine.create_session(selection.clone()).unwrap();
         let error = fixture
@@ -398,12 +413,13 @@ async fn invalid_tool_prompt_sections_fail_run_admission() {
     );
     let (fixture, selection) =
         custom_fixture_with_endpoint_and_primary_agent("http://127.0.0.1:9/v1", &primary);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestPromptProvider::new(
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestPromptProvider::new(
             "test.composed_limit",
             vec![section("maximum section", "x".repeat(8 * 1024))],
-        )));
+        )),
+    );
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     let error = fixture
         .engine
@@ -450,7 +466,12 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     // temp dir spelling on Windows (`\\?\` prefix, expanded 8.3 names).
     // Model-facing sources are workspace-relative to reinforce relative path
     // style; skipped warnings keep absolute paths for UI display.
-    let engine_root = fixture.engine.inner.store.cwd().to_path_buf();
+    let engine_root = fixture
+        .engine
+        .inner
+        .runtimes
+        .local_workspace_root()
+        .to_path_buf();
     // Relative sources use the platform separator (`\\` on Windows).
     let relative = |parts: &[&str]| -> String {
         parts

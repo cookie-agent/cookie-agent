@@ -26,11 +26,12 @@ async fn delegated_child_uses_description_title_without_title_agent() {
         None,
         true,
     );
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -247,11 +248,12 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
         &fixture._directory.path().join("AGENTS.md"),
         "root-only AGENTS.md context",
     );
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -395,11 +397,12 @@ async fn delegation_completion_triggers_configured_subagent_eviction_after_tease
     let (endpoint, captured) = scripted_background_delegation_server().await;
     let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     reopen_fixture_with_residency(&mut fixture, 0, std::time::Duration::ZERO).await;
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -496,11 +499,12 @@ async fn delegated_restart_after_agent_removal_falls_back_to_the_default_agent()
                 "---\ndescription: Capped worker\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\nlimits: { max_output_tokens: 128 }\npermissions: {}\n---\nKeep delegated responses bounded.\n",
             ),
         );
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -629,16 +633,18 @@ async fn inherited_context_is_event_backed_and_deterministic_after_restart() {
         &endpoint,
         "---\ndescription: Context delegation parent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n  delegate:\n    worker: allow\n---\nTest inherited context.\n",
     );
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+        }),
+    );
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::new(TestFlag::default()),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -795,11 +801,12 @@ async fn background_delegate_permission_approval_gates_child_admission() {
         &endpoint,
         "---\ndescription: Approval-gated delegation agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: ask\n---\nTest approval-gated delegation.\n",
     );
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -908,16 +915,18 @@ async fn tree_permission_mode_gates_child_and_survives_child_eviction() {
             Some(worker),
         );
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+        }),
+    );
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())

@@ -48,7 +48,7 @@ fn static_permission_names_cover_every_builtin_and_delegate_tool() {
 
 #[test]
 fn self_paginating_tools_declare_truncation_opt_out() {
-    let read = ReadTool::new("/tmp")
+    let read = ReadTool::new(&crate::test_workspace(std::env::temp_dir()))
         .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
         .unwrap()
         .remove(0);
@@ -64,7 +64,7 @@ fn self_paginating_tools_declare_truncation_opt_out() {
 
 #[test]
 fn builtin_tools_do_not_expose_grep_or_glob() {
-    let tools = BuiltinTools::new("/tmp");
+    let tools = BuiltinTools::new(&crate::test_workspace(std::env::temp_dir()));
     let names = tools
         .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
         .expect("built-in tools")
@@ -93,12 +93,11 @@ fn builtin_tools_do_not_expose_grep_or_glob() {
 
 #[tokio::test]
 async fn unknown_grep_and_glob_calls_fail_closed() {
-    let tools = super::BuiltinTools::new("/tmp");
+    let tools = super::BuiltinTools::new(&crate::test_workspace(std::env::temp_dir()));
     let context = ToolPreparationContext {
         session: SessionId::new_v7(),
         run: RunId::new_v7(),
-        cwd: "/tmp".into(),
-        workspace_root: "/tmp".into(),
+        origin: crate::test_coding_origin(std::env::temp_dir()),
         turn_context: crate::test_turn_context(),
     };
     for name in ["grep", "glob"] {
@@ -136,11 +135,11 @@ async fn builtin_relative_paths_stay_on_the_prepared_cwd_route() {
     let context = ToolPreparationContext {
         session: SessionId::new_v7(),
         run: RunId::new_v7(),
-        cwd: cwd.clone(),
-        workspace_root: root.path().to_owned(),
+        origin: crate::test_coding_origin(&cwd),
         turn_context: crate::test_turn_context(),
     };
-    let tools = BuiltinTools::new(root.path());
+    // The runtime resolves its workspace route when it starts.
+    let tools = BuiltinTools::new(&crate::test_workspace(&cwd));
     let mut prepared = Vec::new();
     for (name, arguments) in [
         ("read", serde_json::json!({"filePath":"value.txt"})),
@@ -214,11 +213,10 @@ async fn builtin_parallel_edits_to_the_same_file_chain() {
     let context = ToolPreparationContext {
         session: SessionId::new_v7(),
         run: RunId::new_v7(),
-        cwd: root.path().to_owned(),
-        workspace_root: root.path().to_owned(),
+        origin: crate::test_coding_origin(root.path()),
         turn_context: crate::test_turn_context(),
     };
-    let tools = BuiltinTools::new(root.path());
+    let tools = BuiltinTools::new(&crate::test_workspace(root.path()));
     let call = |old: &str, new: &str| ToolCall {
         id: ToolCallId::new_v7(),
         name: "edit".into(),
@@ -382,8 +380,7 @@ async fn windows_short_workspace_spelling_roundtrips_prepared_resources() {
             ToolPreparationContext {
                 session: SessionId::new_v7(),
                 run: RunId::new_v7(),
-                cwd: short.clone(),
-                workspace_root: long.clone(),
+                origin: crate::test_coding_origin(short),
                 turn_context: crate::test_turn_context(),
             },
             ToolCall {

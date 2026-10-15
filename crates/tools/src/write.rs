@@ -9,6 +9,8 @@ use cookie_agent_protocol::{PermissionAction, PersistedToolResult as ToolResult}
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use cookie_agent_engine::WorkspaceContext;
+
 use crate::{fs_cap, parse_args, prepared_operation, prepared_path_resources, schema};
 
 #[derive(Clone, Debug)]
@@ -33,17 +35,13 @@ struct WriteExecutor {
 }
 
 impl WriteTool {
+    /// A tool working in `workspace`, the workspace of the coding runtime
+    /// that offers it.
     #[must_use]
-    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+    pub fn new(workspace: &WorkspaceContext) -> Self {
         Self {
-            workspace: workspace.into(),
+            workspace: workspace.root().to_owned(),
         }
-    }
-}
-
-impl Default for WriteTool {
-    fn default() -> Self {
-        Self::new(std::env::current_dir().expect("current directory"))
     }
 }
 
@@ -55,6 +53,7 @@ impl ToolProvider for WriteTool {
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
@@ -105,21 +104,17 @@ impl ToolProvider for WriteTool {
 
     async fn prepare(
         &self,
-        ctx: ToolPreparationContext,
+        _ctx: ToolPreparationContext,
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
         let args: WriteArgs = parse_args("write", call.arguments)?;
         let workspace = self.workspace.clone();
-        crate::blocking(move || prepare_write(&workspace, &ctx, args)).await
+        crate::blocking(move || prepare_write(&workspace, args)).await
     }
 }
 
-fn prepare_write(
-    workspace: &std::path::Path,
-    ctx: &ToolPreparationContext,
-    args: WriteArgs,
-) -> Result<PreparedTool, ToolError> {
-    let target = fs_cap::prepare_target(&ctx.cwd, std::path::Path::new(&args.file_path))?;
+fn prepare_write(workspace: &std::path::Path, args: WriteArgs) -> Result<PreparedTool, ToolError> {
+    let target = fs_cap::prepare_target(workspace, std::path::Path::new(&args.file_path))?;
     if matches!(&target, fs_cap::PreparedTarget::Existing(existing) if existing.directory) {
         return Err(ToolError::unsupported_security(
             "write target is a directory",
@@ -132,7 +127,7 @@ fn prepare_write(
         workspace,
         &target.binding_bytes(),
     )?;
-    let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
+    let context = crate::workspace_context_bytes(workspace);
     let operation = prepared_operation(
         "write",
         &args,
@@ -201,7 +196,7 @@ mod tests {
 
     #[test]
     fn permission_resource_is_the_file_path() {
-        let tool = WriteTool::new("/tmp");
+        let tool = WriteTool::new(&crate::test_workspace(std::env::temp_dir()));
         assert_eq!(
             tool.get_permission_resource(
                 "write",
@@ -219,7 +214,7 @@ mod tests {
     #[test]
     fn display_argument_abbreviates_workspace_and_home_paths() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let tool = WriteTool::new(workspace.path());
+        let tool = WriteTool::new(&crate::test_workspace(workspace.path()));
         assert_eq!(
             tool.get_display_argument(
                 "write",
@@ -251,8 +246,7 @@ mod tests {
         ToolPreparationContext {
             session: SessionId::new_v7(),
             run: RunId::new_v7(),
-            cwd: root.to_owned(),
-            workspace_root: root.to_owned(),
+            origin: crate::test_coding_origin(root),
             turn_context: crate::test_turn_context(),
         }
     }
@@ -260,7 +254,7 @@ mod tests {
     #[tokio::test]
     async fn distinct_write_content_has_distinct_fingerprint() {
         let root = tempfile::tempdir().expect("root");
-        let tool = WriteTool::new(root.path());
+        let tool = WriteTool::new(&crate::test_workspace(root.path()));
         let first = tool
             .prepare(
                 context(root.path()),
@@ -292,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn missing_subtree_write_prepares_without_creating_components() {
         let root = tempfile::tempdir().expect("root");
-        let prepared = WriteTool::new(root.path())
+        let prepared = WriteTool::new(&crate::test_workspace(root.path()))
             .prepare(
                 context(root.path()),
                 ToolCall {
@@ -346,7 +340,7 @@ mod tests {
         .expect("relative ancestor");
         symlink(&external, workspace.join("routes/absolute-ancestor")).expect("absolute ancestor");
 
-        let tool = WriteTool::new(&workspace);
+        let tool = WriteTool::new(&crate::test_workspace(&workspace));
         for (requested, destination, link) in [
             (
                 "routes/relative-leaf",
@@ -420,7 +414,7 @@ mod tests {
 
         let root = tempfile::tempdir().expect("root");
         symlink("created.txt", root.path().join("route")).expect("dangling route");
-        let prepared = WriteTool::new(root.path())
+        let prepared = WriteTool::new(&crate::test_workspace(root.path()))
             .prepare(
                 context(root.path()),
                 ToolCall {
@@ -461,7 +455,7 @@ mod tests {
         fs::write(root.path().join("value.txt"), "old").expect("fixture");
         symlink("value.txt", root.path().join("left")).expect("left route");
         symlink("value.txt", root.path().join("right")).expect("right route");
-        let tool = WriteTool::new(root.path());
+        let tool = WriteTool::new(&crate::test_workspace(root.path()));
         let prepare = |path: &str| {
             tool.prepare(
                 context(root.path()),
@@ -527,7 +521,7 @@ mod tests {
 
         let root = tempfile::tempdir().expect("root");
         fs::write(root.path().join("value.txt"), "old").expect("fixture");
-        let prepared = WriteTool::new(root.path())
+        let prepared = WriteTool::new(&crate::test_workspace(root.path()))
             .prepare_parallel(
                 context(root.path()),
                 vec![
@@ -564,7 +558,7 @@ mod tests {
     #[tokio::test]
     async fn repeated_creation_writes_apply_in_call_order() {
         let root = tempfile::tempdir().expect("root");
-        let prepared = WriteTool::new(root.path())
+        let prepared = WriteTool::new(&crate::test_workspace(root.path()))
             .prepare_parallel(
                 context(root.path()),
                 vec![

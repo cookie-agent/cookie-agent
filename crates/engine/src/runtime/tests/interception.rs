@@ -119,11 +119,12 @@ async fn blocking_tool_before_call_hook_skips_later_hooks() {
     )
     .await;
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session_id = start(&fixture, selection, "blocked-hook-chain").await;
     wait_for_session_not_running(&fixture.engine, session_id).await;
 
@@ -167,11 +168,12 @@ async fn tool_after_result_hooks_rewrite_in_registry_order() {
     )
     .await;
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session_id = start(&fixture, selection, "after-result-chain").await;
     wait_for_tool_execution(&fixture.engine, session_id, &executed).await;
     wait_for_session_not_running(&fixture.engine, session_id).await;

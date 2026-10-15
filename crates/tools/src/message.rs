@@ -9,7 +9,7 @@ use cookie_agent_protocol::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{fs_cap, prepared_operation, prepared_resource, safe_title};
+use crate::{prepared_operation, prepared_resource, safe_title};
 
 fn default_mode() -> ProducerDeliveryMode {
     ProducerDeliveryMode::Steer
@@ -41,6 +41,7 @@ impl MessageToolProvider {
     /// normalized-arguments record this call produces.
     pub(crate) fn spec() -> ToolSpec {
         ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::Bounded,
@@ -134,7 +135,7 @@ impl ToolProvider for MessageToolProvider {
             .engine
             .message_relationship(ctx.session, recipient)
             .map_err(|error| ToolError::execution(error.to_string()))?;
-        let cwd = fs_cap::cwd_context_bytes(&ctx.cwd)?;
+        let cwd = ctx.context_bytes();
         let operation = prepared_operation(
             "send_message",
             &args,

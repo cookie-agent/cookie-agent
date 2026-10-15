@@ -2093,6 +2093,7 @@ impl ToolProvider for PluginRegistry {
                     .into_iter()
                     .filter(|tool| runtime.mcp.plugin_owns_tool(&runtime.name, &tool.name))
                     .map(|tool| ToolSpec {
+                        collision: Default::default(),
                         output: tool.output,
                         concurrency: Default::default(),
                         // External opt-out requires a future extension-protocol capability.
@@ -2174,7 +2175,7 @@ impl ToolProvider for PluginRegistry {
                 .map_err(|error| ToolError::execution(error.to_string()))?,
             }],
             vec![resource],
-            Sha256Digest::of_bytes(ctx.workspace_root.to_string_lossy().as_bytes()),
+            Sha256Digest::of_bytes(&ctx.context_bytes()),
         )
         .map_err(|error| ToolError::execution(error.to_string()))?;
         PreparedTool::new(

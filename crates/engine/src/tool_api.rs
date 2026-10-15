@@ -67,6 +67,9 @@ pub struct PromptSection {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ToolSpec {
     pub name: String,
+    /// What happens when another source publishes the same name.
+    #[serde(default)]
+    pub collision: ToolCollision,
     pub permission_name: String,
     pub description: String,
     pub parameters: Value,
@@ -76,6 +79,21 @@ pub struct ToolSpec {
     pub result_truncation: ToolResultTruncationPolicy,
     #[serde(default)]
     pub output: cookie_agent_protocol::ToolOutputDeclaration,
+}
+
+impl ToolPreparationContext {
+    /// Workspace of the runtime that owns the tool, if it has one.
+    #[must_use]
+    pub fn workspace(&self) -> Option<&crate::WorkspaceContext> {
+        self.origin.workspace()
+    }
+
+    /// Bytes for the prepared operation's execution-context digest; see
+    /// [`crate::ToolOrigin::context_bytes`].
+    #[must_use]
+    pub fn context_bytes(&self) -> Vec<u8> {
+        self.origin.context_bytes()
+    }
 }
 
 /// Completion supplies output once, or explicitly finalizes already accepted deltas.
@@ -143,6 +161,18 @@ pub(crate) fn sanitize_tool_display(text: &str, maximum: usize) -> String {
         display.push(character);
     }
     display
+}
+
+/// How a runtime tool behaves when another source offers the same name.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCollision {
+    /// Stays published. Two such tools with one name are a composition error
+    /// until collision prefixing lands.
+    #[default]
+    Prefix,
+    /// Hidden whenever a non-fallback tool with the same name is published.
+    Fallback,
 }
 
 /// Declares whether calls to a tool may overlap with sibling calls from one model turn.
@@ -338,8 +368,10 @@ pub struct TurnAgentContext {
 pub struct ToolPreparationContext {
     pub session: SessionId,
     pub run: RunId,
-    pub cwd: PathBuf,
-    pub workspace_root: PathBuf,
+    /// Layer or runtime that owns the tool being prepared. Tools that work on
+    /// paths take their workspace from their own runtime; this tells every
+    /// tool where the call runs, for its operation context digest.
+    pub origin: crate::ToolOrigin,
     /// Static agent/model context shared with execution for this batch.
     pub turn_context: Arc<TurnAgentContext>,
 }

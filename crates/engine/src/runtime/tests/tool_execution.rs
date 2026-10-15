@@ -29,11 +29,12 @@ async fn normalized_tool_call_name_is_refused_before_execution() {
     let primary = "---\ndescription: Alias test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nAlias test prompt.\n";
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(&endpoint, primary);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestAliasProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestAliasProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -149,12 +150,13 @@ async fn parallel_tools_start_in_model_order_and_terminate_in_completion_order()
     );
     let state = Arc::new(ParallelToolState::default());
     let barrier = Arc::new(tokio::sync::Barrier::new(4));
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestParallelToolProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestParallelToolProvider {
             state: Arc::clone(&state),
             barrier: Some(Arc::clone(&barrier)),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -296,12 +298,13 @@ async fn opt_out_completion_never_allocates_capture_files_or_waits_for_publicati
         &endpoint,
         "---\ndescription: Opt-out capture admission\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nRead a page.\n",
     );
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestOptOutProvider(TestParallelToolProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestOptOutProvider(TestParallelToolProvider {
             state: Arc::new(ParallelToolState::default()),
             barrier: None,
-        })));
+        })),
+    );
     let attempted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let attempts = attempted.clone();
     fixture
@@ -418,12 +421,13 @@ async fn cancellation_after_successful_finalization_is_reconciled_at_terminal_co
     );
     plugin.interception_timeout_ms = 30_000;
     reopen_with_interception_plugins(&mut fixture, vec![("commit_gate".into(), plugin)]).await;
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestParallelToolProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestParallelToolProvider {
             state: Arc::new(ParallelToolState::default()),
             barrier: None,
-        }));
+        }),
+    );
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     let run = fixture
         .engine
@@ -717,12 +721,13 @@ async fn cancelling_parallel_tools_terminates_every_started_call_once() {
     );
     let state = Arc::new(ParallelToolState::default());
     let barrier = Arc::new(tokio::sync::Barrier::new(4));
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestParallelToolProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestParallelToolProvider {
             state: Arc::clone(&state),
             barrier: Some(Arc::clone(&barrier)),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -873,12 +878,13 @@ async fn same_file_write_and_edit_serialize_while_distinct_files_overlap() {
             "---\ndescription: Mutation serialization test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nRun mutations.\n",
         );
         let state = Arc::new(ParallelToolState::default());
-        fixture
-            .engine
-            .register_tool_provider(Arc::new(TestParallelToolProvider {
+        fixture.engine.register_tool_provider(
+            crate::ToolLayer::Local,
+            Arc::new(TestParallelToolProvider {
                 state: Arc::clone(&state),
                 barrier: barrier.clone(),
-            }));
+            }),
+        );
         let session = fixture
             .engine
             .create_session(selection.clone())
@@ -945,12 +951,13 @@ async fn same_key_parallel_calls_prepare_as_batch_and_execute_in_call_order() {
         "---\ndescription: Batch ordering test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nRun ordered batch.\n",
     );
     let state = Arc::new(ParallelToolState::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestParallelToolProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestParallelToolProvider {
             state: Arc::clone(&state),
             barrier: None,
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -1012,9 +1019,10 @@ async fn named_output_streams_publish_readable_manifests_without_display_leaking
             &endpoint,
             "---\ndescription: Named output\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nUse named output.\n",
         );
-        fixture
-            .engine
-            .register_tool_provider(Arc::new(NamedOutputProvider { failed }));
+        fixture.engine.register_tool_provider(
+            crate::ToolLayer::Local,
+            Arc::new(NamedOutputProvider { failed }),
+        );
         let session = fixture.engine.create_session(selection.clone()).unwrap();
         fixture
             .engine
@@ -1204,11 +1212,12 @@ async fn tool_before_hooks_run_only_after_permission_and_approval() {
         )],
     )
     .await;
-    denied
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    denied.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::new(TestFlag::default()),
-        }));
+        }),
+    );
     let denied_session = denied
         .engine
         .create_session(denied_selection.clone())
@@ -1249,11 +1258,12 @@ async fn tool_before_hooks_run_only_after_permission_and_approval() {
         )
         .await;
         let executed = Arc::new(TestFlag::default());
-        fixture
-            .engine
-            .register_tool_provider(Arc::new(TestWriteProvider {
+        fixture.engine.register_tool_provider(
+            crate::ToolLayer::Local,
+            Arc::new(TestWriteProvider {
                 executed: Arc::clone(&executed),
-            }));
+            }),
+        );
         let session = fixture
             .engine
             .create_session(selection.clone())
@@ -1320,11 +1330,12 @@ async fn validated_tool_modification_reprepares_before_the_next_hook() {
     )
     .await;
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -1364,11 +1375,12 @@ async fn registered_external_tool_must_declare_resource_and_cannot_bypass_deny()
         "---\ndescription: Resource-bound test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: deny\n---\nReject denied tools.\n",
     );
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -1431,11 +1443,12 @@ async fn unconditional_tools_are_published_and_run_under_a_denying_agent() {
         "---\ndescription: Denying test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: deny\n---\nDeny every rule-governed tool.\n",
     );
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestUnconditionalProvider(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestUnconditionalProvider(TestWriteProvider {
             executed: Arc::clone(&executed),
-        })));
+        })),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())

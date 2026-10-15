@@ -233,7 +233,7 @@ fn skill_grants_allow_ask_but_never_override_deny() {
         Some(&grants),
         &operation,
         &labels,
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     );
     assert_eq!(ask.effect, PermissionEffect::Allow);
 
@@ -248,7 +248,7 @@ fn skill_grants_allow_ask_but_never_override_deny() {
         Some(&grants),
         &operation,
         &labels,
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     );
     assert_eq!(denied.effect, PermissionEffect::Deny);
 }
@@ -282,14 +282,14 @@ fn turn_scoped_skill_grant_requires_explicit_ask() {
         None,
         None,
         "bash",
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     ));
     assert!(PermissionPipeline::tool_visible_with_grants(
         &base_policy,
         None,
         Some(&grants),
         "bash",
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     ));
     for command in ["git", "git status", "git commit -m x"] {
         let operation = operation(vec![resource(
@@ -303,7 +303,7 @@ fn turn_scoped_skill_grant_requires_explicit_ask() {
             Some(&grants),
             &operation,
             &[Some(command.into())],
-            std::path::Path::new("/workspace"),
+            Some(std::path::Path::new("/workspace")),
         );
         assert_eq!(decision.effect, PermissionEffect::Allow, "{command}");
     }
@@ -317,7 +317,7 @@ fn turn_scoped_skill_grant_requires_explicit_ask() {
             b"cargo test",
         )]),
         &[Some("cargo test".into())],
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     );
     assert_eq!(ungranted.effect, PermissionEffect::Deny);
     assert!(PermissionPipeline::tool_visible_with_grants(
@@ -325,7 +325,7 @@ fn turn_scoped_skill_grant_requires_explicit_ask() {
         None,
         None,
         "bash",
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     ));
 
     let denied = policy(vec![rule(
@@ -339,7 +339,7 @@ fn turn_scoped_skill_grant_requires_explicit_ask() {
         None,
         Some(&grants),
         "bash",
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     ));
 }
 
@@ -364,14 +364,14 @@ fn skill_grant_can_publish_another_skill_action() {
         None,
         None,
         "skill",
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     ));
     assert!(PermissionPipeline::tool_visible_with_grants(
         &base_policy,
         None,
         Some(&grants),
         "skill",
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     ));
     let operation = operation(vec![resource(
         PermissionAction::Skill,
@@ -384,7 +384,7 @@ fn skill_grant_can_publish_another_skill_action() {
         Some(&grants),
         &operation,
         &[Some("other-skill".into())],
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     );
     assert_eq!(decision.effect, PermissionEffect::Allow);
 }
@@ -453,7 +453,7 @@ fn decide_many(
         policy,
         &operation(resources),
         &labels,
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     )
 }
 
@@ -474,7 +474,7 @@ fn decide_loose(policy: &AgentSnapshot, action: PermissionAction) -> super::Perm
         policy,
         &operation,
         &[None],
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     )
 }
 
@@ -689,7 +689,7 @@ fn session_overlay_precedes_more_specific_agent_rules() {
             b"git status",
         )]),
         &[Some("git status".into())],
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     );
     assert_eq!(decision.effect, PermissionEffect::Deny);
     assert_eq!(
@@ -818,7 +818,7 @@ fn subagent_operation_matches_owned_child_agent_type_in_delegate_map() {
         )]),
         &operation,
         &[Some("reviewer".into())],
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     );
     assert_eq!(
         PermissionPipeline::action_for_permission_name("delegate").expect("delegate action"),
@@ -835,7 +835,7 @@ fn subagent_operation_matches_owned_child_agent_type_in_delegate_map() {
         )]),
         &operation,
         &[Some("reviewer".into())],
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     );
     assert_eq!(denied.effect, PermissionEffect::Deny);
 }
@@ -1001,7 +1001,7 @@ fn resource_names_do_not_override_configured_permission_effects() {
                         overlay.as_ref(),
                         &operation,
                         &labels,
-                        std::path::Path::new("/workspace"),
+                        Some(std::path::Path::new("/workspace")),
                     );
                     assert_eq!(decision.effect, effect, "{action:?} {name}");
                     assert_eq!(decision.evaluations[0].trace.effect, effect);
@@ -1056,7 +1056,7 @@ fn dotenv_files_accept_broad_policy_and_overlay_allows() {
                     Some(&overlay),
                     &operation(vec![resource(action, path, path.as_bytes())]),
                     &[Some(path.into())],
-                    std::path::Path::new("/workspace"),
+                    Some(std::path::Path::new("/workspace")),
                 );
                 assert_eq!(
                     decision.effect,
@@ -1111,7 +1111,7 @@ fn dotenv_specific_rules_override_broad_allows_in_each_layer() {
                     Some(&SessionPermissionOverlay { rules }),
                     &operation(vec![resource(action, path, path.as_bytes())]),
                     &[Some(path.into())],
-                    std::path::Path::new("/workspace"),
+                    Some(std::path::Path::new("/workspace")),
                 );
                 assert_eq!(decision.effect, effect, "overlay {action:?} {specific}");
             }
@@ -1159,7 +1159,7 @@ fn unmatched_dotenv_files_use_normal_default_deny() {
                     Some(&SessionPermissionOverlay { rules }),
                     &operation(vec![resource(action, path, path.as_bytes())]),
                     &[Some(path.into())],
-                    std::path::Path::new("/workspace"),
+                    Some(std::path::Path::new("/workspace")),
                 );
                 assert_eq!(decision.effect, PermissionEffect::Deny, "{action:?} {path}");
                 assert!(decision.evaluations[0].trace.candidates.is_empty());
@@ -1381,7 +1381,7 @@ fn plugin_visibility_is_action_scoped_and_execution_remains_authoritative() {
         None,
         Some(&grant),
         "plugin:delete",
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     ));
 
     let read_only_grant = SessionPermissionOverlay {
@@ -1398,14 +1398,14 @@ fn plugin_visibility_is_action_scoped_and_execution_remains_authoritative() {
         None,
         Some(&read_only_grant),
         "plugin:issue_read",
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     ));
     assert!(!PermissionPipeline::tool_visible_with_grants(
         &empty,
         None,
         Some(&read_only_grant),
         "plugin:issue_delete",
-        std::path::Path::new("/workspace"),
+        Some(std::path::Path::new("/workspace")),
     ));
 }
 
@@ -1542,7 +1542,7 @@ fn workspace_dir_pattern_matches_absolute_workspace_path_only() {
             &policy,
             PermissionAction::Write,
             "src/main.rs",
-            std::path::Path::new("/workspace"),
+            Some(std::path::Path::new("/workspace")),
         )
         .0,
         PermissionEffect::Allow
@@ -1552,11 +1552,82 @@ fn workspace_dir_pattern_matches_absolute_workspace_path_only() {
             &policy,
             PermissionAction::Write,
             "/outside/src/main.rs",
-            std::path::Path::new("/workspace"),
+            Some(std::path::Path::new("/workspace")),
         )
         .0,
         PermissionEffect::Deny
     );
+}
+
+#[test]
+fn workspace_less_tools_never_match_workspace_dir_or_relative_path_rules() {
+    let policy = policy(vec![
+        rule(
+            "workspace-read",
+            PermissionAction::Read,
+            "${workspace_dir}/*",
+            PermissionEffect::Allow,
+        ),
+        rule(
+            "relative-read",
+            PermissionAction::Read,
+            "notes/*",
+            PermissionEffect::Allow,
+        ),
+        rule(
+            "site",
+            PermissionAction::Webfetch,
+            "https://example.com/*",
+            PermissionEffect::Allow,
+        ),
+    ]);
+    let workspace = Some(std::path::Path::new("/workspace"));
+    for (action, resource, with_workspace) in [
+        (
+            PermissionAction::Read,
+            "/workspace/a.txt",
+            PermissionEffect::Allow,
+        ),
+        (
+            PermissionAction::Read,
+            "notes/a.txt",
+            PermissionEffect::Allow,
+        ),
+    ] {
+        assert_eq!(
+            super::effective_permission(&policy, action, resource, workspace).0,
+            with_workspace,
+            "{resource} with a workspace"
+        );
+        assert_eq!(
+            super::effective_permission(&policy, action, resource, None).0,
+            PermissionEffect::Deny,
+            "{resource} without a workspace"
+        );
+    }
+    // Rules that need no workspace keep matching workspace-less tools.
+    assert_eq!(
+        super::effective_permission(
+            &policy,
+            PermissionAction::Webfetch,
+            "https://example.com/page",
+            None
+        )
+        .0,
+        PermissionEffect::Allow
+    );
+    let decision = PermissionPipeline::default().decide_operation(
+        &policy,
+        &operation(vec![resource(
+            PermissionAction::Read,
+            "/workspace/a.txt",
+            b"file",
+        )]),
+        &[Some("/workspace/a.txt".into())],
+        None,
+    );
+    assert_eq!(decision.effect, PermissionEffect::Deny);
+    assert!(decision.evaluations[0].trace.candidates.is_empty());
 }
 
 #[test]
@@ -1580,7 +1651,7 @@ fn relative_and_workspace_dir_patterns_share_specificity_ordering() {
             &policy,
             PermissionAction::Write,
             "src/main.rs",
-            std::path::Path::new("/workspace"),
+            Some(std::path::Path::new("/workspace")),
         )
         .0,
         PermissionEffect::Allow
@@ -1604,7 +1675,13 @@ fn workspace_dir_expansion_canonicalizes_the_workspace_anchor() {
         PermissionEffect::Allow,
     )]);
     assert_eq!(
-        super::effective_permission(&policy, PermissionAction::Write, "src/main.rs", &alias,).0,
+        super::effective_permission(
+            &policy,
+            PermissionAction::Write,
+            "src/main.rs",
+            Some(&alias),
+        )
+        .0,
         PermissionEffect::Allow
     );
 }

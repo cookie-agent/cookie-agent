@@ -30,10 +30,19 @@ fn provider_registration_rejects_duplicate_provenance_ids() {
         cwd: fixture._directory.path().to_owned(),
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
-        tools: vec![
-            Arc::new(TestPromptProvider::new("test.duplicate", Vec::new())),
-            Arc::new(TestPromptProvider::new("test.duplicate", Vec::new())),
-        ],
+        runtimes: crate::RuntimeOptions {
+            global_tools: vec![Arc::new(TestPromptProvider::new(
+                "test.duplicate",
+                Vec::new(),
+            ))],
+            local_tools: Arc::new(|_| {
+                vec![Arc::new(TestPromptProvider::new(
+                    "test.duplicate",
+                    Vec::new(),
+                ))]
+            }),
+            ..crate::RuntimeOptions::new(fixture._directory.path())
+        },
     };
     let startup_error = match Engine::open(duplicate_options) {
         Ok(_) => panic!("duplicate startup provider ID must fail"),
@@ -50,11 +59,11 @@ fn provider_registration_rejects_duplicate_provenance_ids() {
         Arc::new(TestPromptProvider::new("test.runtime", Vec::new()));
     fixture
         .engine
-        .try_register_tool_provider(Arc::clone(&provider))
+        .try_register_tool_provider(crate::ToolLayer::Local, Arc::clone(&provider))
         .expect("first provider registration");
     let duplicate_error = fixture
         .engine
-        .try_register_tool_provider(provider)
+        .try_register_tool_provider(crate::ToolLayer::Local, provider)
         .expect_err("duplicate runtime provider ID must fail");
     assert!(matches!(duplicate_error, EngineError::ToolFailed(_)));
     assert!(
@@ -66,7 +75,10 @@ fn provider_registration_rejects_duplicate_provenance_ids() {
     for reserved_id in ["mcp", "plugin"] {
         let error = fixture
             .engine
-            .try_register_tool_provider(Arc::new(TestPromptProvider::new(reserved_id, Vec::new())))
+            .try_register_tool_provider(
+                crate::ToolLayer::Local,
+                Arc::new(TestPromptProvider::new(reserved_id, Vec::new())),
+            )
             .expect_err("startup provider ID must remain reserved");
         assert!(matches!(error, EngineError::ToolFailed(_)));
         assert!(
@@ -93,7 +105,7 @@ fn shared_project_cwd_reopens_with_the_same_model_revision_and_no_snapshot_files
         cwd: workspace.clone(),
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
-        tools: Vec::new(),
+        runtimes: crate::RuntimeOptions::new(&workspace),
     })
     .expect("engine in shared workspace");
     let revision = engine
@@ -109,10 +121,10 @@ fn shared_project_cwd_reopens_with_the_same_model_revision_and_no_snapshot_files
 
     let reopened = Engine::open(EngineOptions {
         data_dir,
-        cwd: workspace,
+        cwd: workspace.clone(),
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
-        tools: Vec::new(),
+        runtimes: crate::RuntimeOptions::new(&workspace),
     })
     .expect("reopened engine in shared workspace");
     assert_eq!(

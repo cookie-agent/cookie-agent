@@ -123,7 +123,7 @@ fn long_lines_are_cut_so_any_page_fits_the_result_limit() {
     );
     assert_eq!(result.metadata["total_lines"], 2_000);
 
-    let spec = ReadTool::new("/tmp")
+    let spec = ReadTool::new(&crate::test_workspace(std::env::temp_dir()))
         .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
         .unwrap()
         .remove(0);
@@ -140,7 +140,7 @@ fn multibyte_characters_are_not_split_by_a_line_cut() {
 
 #[test]
 fn permission_resource_is_the_file_path() {
-    let tool = ReadTool::new("/tmp");
+    let tool = ReadTool::new(&crate::test_workspace(std::env::temp_dir()));
     assert_eq!(
         tool.get_permission_resource("read", &serde_json::json!({"filePath":"src/lib.rs"}))
             .expect("permission resource"),
@@ -162,7 +162,7 @@ fn permission_resource_is_the_file_path() {
 #[test]
 fn display_argument_abbreviates_paths_and_includes_explicit_window() {
     let workspace = tempfile::tempdir().expect("workspace");
-    let tool = ReadTool::new(workspace.path());
+    let tool = ReadTool::new(&crate::test_workspace(workspace.path()));
     assert_eq!(
         tool.get_display_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
             .expect("relative"),
@@ -214,7 +214,8 @@ fn display_argument_abbreviates_paths_and_includes_explicit_window() {
 
 #[test]
 fn schema_documents_zero_based_offset_and_limit_default() {
-    let tool = ReadTool::new("/workspace");
+    let root = tempfile::tempdir().expect("workspace");
+    let tool = ReadTool::new(&crate::test_workspace(root.path()));
     let parameters = &tool
         .tools_for_session(&cookie_agent_engine::SessionToolContext::new(
             SessionId::new_v7(),
@@ -307,8 +308,7 @@ fn context_with_turn(root: &Path, turn_context: Arc<TurnAgentContext>) -> ToolPr
     ToolPreparationContext {
         session: SessionId::new_v7(),
         run: RunId::new_v7(),
-        cwd: root.to_owned(),
-        workspace_root: root.to_owned(),
+        origin: crate::test_coding_origin(root),
         turn_context,
     }
 }
@@ -318,7 +318,7 @@ fn context(root: &Path) -> ToolPreparationContext {
 }
 
 async fn prepared(root: &Path, path: &str) -> cookie_agent_engine::PreparedTool {
-    ReadTool::new(root)
+    ReadTool::new(&crate::test_workspace(root))
         .prepare(
             context(root),
             ToolCall {
@@ -336,7 +336,7 @@ async fn execute_media(
     path: &str,
     turn_context: Arc<TurnAgentContext>,
 ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
-    let prepared = ReadTool::new(root)
+    let prepared = ReadTool::new(&crate::test_workspace(root))
         .prepare(
             context_with_turn(root, Arc::clone(&turn_context)),
             ToolCall {
@@ -582,13 +582,12 @@ async fn outside_workspace_read_has_one_absolute_labeled_resource() {
     let workspace = tempfile::tempdir().expect("workspace");
     let external = tempfile::NamedTempFile::new().expect("external file");
     fs::write(external.path(), "external").expect("fixture");
-    let prepared = ReadTool::new(workspace.path())
+    let prepared = ReadTool::new(&crate::test_workspace(workspace.path()))
         .prepare(
             ToolPreparationContext {
                 session: SessionId::new_v7(),
                 run: RunId::new_v7(),
-                cwd: workspace.path().to_owned(),
-                workspace_root: workspace.path().to_owned(),
+                origin: crate::test_coding_origin(workspace.path()),
                 turn_context: crate::test_turn_context(),
             },
             ToolCall {
@@ -614,7 +613,7 @@ async fn outside_workspace_read_has_one_absolute_labeled_resource() {
     );
     assert_eq!(prepared.policy_labels(), [Some(expected_label.clone())]);
     assert_eq!(
-        ReadTool::new(workspace.path())
+        ReadTool::new(&crate::test_workspace(workspace.path()))
             .get_permission_resource("read", prepared.normalized_arguments())
             .expect("resource from prepared args"),
         ("read", Some(expected_label))
@@ -629,7 +628,7 @@ async fn workspace_read_label_is_canonical_workspace_relative() {
     let prepared = prepared(workspace.path(), "nested/value.txt").await;
     assert_eq!(prepared.policy_labels(), [Some("nested/value.txt".into())]);
     assert_eq!(
-        ReadTool::new(workspace.path())
+        ReadTool::new(&crate::test_workspace(workspace.path()))
             .get_permission_resource("read", prepared.normalized_arguments())
             .expect("resource from prepared args"),
         ("read", Some("nested/value.txt".into()))
@@ -699,7 +698,7 @@ async fn symlink_routes_keep_lexical_read_permissions_and_arguments() {
     .expect("relative ancestor");
     symlink(&external, workspace.join("routes/absolute-ancestor")).expect("absolute ancestor");
 
-    let tool = ReadTool::new(&workspace);
+    let tool = ReadTool::new(&crate::test_workspace(&workspace));
     for requested in [
         "routes/relative-leaf",
         "routes/absolute-leaf",
@@ -758,7 +757,7 @@ async fn dangling_symlink_read_errors_and_retargeted_routes_do_not_redirect() {
     fs::write(root.path().join("value.txt"), "value").expect("fixture");
     fs::write(root.path().join("other.txt"), "other").expect("other fixture");
     symlink("missing.txt", root.path().join("dangling")).expect("dangling link");
-    let dangling = ReadTool::new(root.path())
+    let dangling = ReadTool::new(&crate::test_workspace(root.path()))
         .prepare(
             context(root.path()),
             ToolCall {

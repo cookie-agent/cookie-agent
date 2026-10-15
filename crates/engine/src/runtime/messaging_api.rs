@@ -175,14 +175,10 @@ impl Engine {
         if !visible {
             return Ok(false);
         }
-        let providers = self
-            .inner
-            .tools
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        Ok(providers.iter().any(|provider| {
-            provider
+        let providers = self.inner.runtimes.providers();
+        Ok(providers.iter().any(|source| {
+            source
+                .provider
                 .tools_for_session(&crate::tool_api::SessionToolContext::new(session))
                 .ok()
                 .is_some_and(|tools| tools.iter().any(|tool| tool.name == "send_message"))

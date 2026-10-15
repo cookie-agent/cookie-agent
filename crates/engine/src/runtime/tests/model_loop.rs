@@ -472,11 +472,12 @@ async fn responses_message_transport_fields_allow_approval_and_summary_checkpoin
     fixture.config.runtime.context_compaction.keep_recent_tokens = 0;
     fixture.engine = reopen_engine(&fixture);
     let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::clone(&executed),
-        }));
+        }),
+    );
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
         .engine
@@ -738,7 +739,7 @@ async fn scripted_read_media_attaches_when_capable_and_fails_cleanly_when_incapa
         fs::write(fixture._directory.path().join("pixel.png"), PNG).unwrap();
         fixture
             .engine
-            .register_tool_provider(Arc::new(TestMediaReadProvider));
+            .register_tool_provider(crate::ToolLayer::Local, Arc::new(TestMediaReadProvider));
         let session = fixture.engine.create_session(selection.clone()).unwrap();
         fixture
             .engine
@@ -872,7 +873,7 @@ async fn history_media_over_the_model_count_limit_elides_oldest_and_proceeds() {
     fs::write(fixture._directory.path().join("second.png"), PNG).unwrap();
     fixture
         .engine
-        .register_tool_provider(Arc::new(TestMediaReadProvider));
+        .register_tool_provider(crate::ToolLayer::Local, Arc::new(TestMediaReadProvider));
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
         .engine
@@ -997,12 +998,13 @@ async fn model_tools_are_recorded_once_while_unchanged() {
         &endpoint,
         "---\ndescription: Model tools test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  bash: ask\n---\nRecord the tools.\n",
     );
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestParallelToolProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestParallelToolProvider {
             state: Arc::new(ParallelToolState::default()),
             barrier: None,
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -1077,11 +1079,12 @@ async fn repeated_write_outputs(loop_warning: bool) -> Vec<String> {
         fixture.config.runtime.loop_warning.enabled = false;
         fixture.engine = reopen_engine(&fixture);
     }
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::new(TestFlag::default()),
-        }));
+        }),
+    );
     let session = fixture
         .engine
         .create_session(selection.clone())

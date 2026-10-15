@@ -35,6 +35,7 @@ impl GoalTools {
 
     pub(crate) fn get_spec() -> ToolSpec {
         ToolSpec {
+collision: Default::default(),
 output: Default::default(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
@@ -47,6 +48,7 @@ output: Default::default(),
 
     pub(crate) fn update_spec() -> ToolSpec {
         ToolSpec {
+collision: Default::default(),
 output: Default::default(),
             concurrency: Default::default(),
             result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,

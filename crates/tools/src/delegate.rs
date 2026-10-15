@@ -9,7 +9,7 @@ use cookie_agent_protocol::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{fs_cap, prepared_operation, prepared_resource, safe_title};
+use crate::{prepared_operation, prepared_resource, safe_title};
 
 const DEFAULT_RESULT_LIMIT: u32 = 2_000;
 
@@ -85,6 +85,7 @@ impl DelegateToolProvider {
     pub(crate) fn specs(targets: &[&str]) -> Vec<ToolSpec> {
         vec![
         ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: result_truncation_policy("delegate_subagent"),
@@ -108,6 +109,7 @@ impl DelegateToolProvider {
             }),
         },
         ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
             result_truncation: result_truncation_policy("get_subagent_result"),
@@ -128,6 +130,7 @@ impl DelegateToolProvider {
             }),
         },
         ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
             result_truncation: result_truncation_policy("cancel_subagent"),
@@ -170,7 +173,7 @@ impl DelegateToolProvider {
             PreparedBindingLifetime::RestartStable,
             ApprovalResourceSource::PrimaryOperation,
         )?;
-        let cwd = fs_cap::cwd_context_bytes(&ctx.cwd)?;
+        let cwd = ctx.context_bytes();
         Ok(PreparedToolParts {
             operation: prepared_operation(
                 name,
@@ -521,12 +524,10 @@ mod tests {
         old_resource_kind: &str,
         old_binding: &[u8],
     ) {
-        let cwd = tempfile::tempdir().expect("cwd");
         let context = ToolPreparationContext {
             session: SessionId::new_v7(),
             run: RunId::new_v7(),
-            cwd: cwd.path().to_owned(),
-            workspace_root: cwd.path().to_owned(),
+            origin: cookie_agent_engine::ToolOrigin::Base,
             turn_context: crate::test_turn_context(),
         };
         let agent_type = AgentId::new("reviewer").expect("agent type");
@@ -543,7 +544,7 @@ mod tests {
             ApprovalResourceSource::PrimaryOperation,
         )
         .expect("legacy scoped resource");
-        let cwd = crate::fs_cap::cwd_context_bytes(&context.cwd).expect("cwd context");
+        let cwd = context.context_bytes();
         let old = crate::prepared_operation(
             name,
             args,

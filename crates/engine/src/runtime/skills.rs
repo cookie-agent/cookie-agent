@@ -89,12 +89,23 @@ impl Engine {
                 &policy,
                 &projection.permission_overlay,
                 grants.as_ref(),
-                self.inner.store.cwd(),
+                self.skill_workspace(skill),
                 name,
                 skill,
             )
             .1
         }))
+    }
+
+    /// Workspace a skill belongs to: project skills belong to the local
+    /// coding runtime's workspace, user skills to none.
+    fn skill_workspace(&self, skill: &SkillDocument) -> Option<&Path> {
+        match skill.source {
+            cookie_agent_protocol::SkillSource::Project => {
+                Some(self.inner.runtimes.local_workspace_root())
+            }
+            cookie_agent_protocol::SkillSource::User => None,
+        }
     }
 
     pub(crate) fn skill_grants_for_session(
@@ -134,7 +145,7 @@ impl Engine {
                     &policy,
                     &projection.permission_overlay,
                     grants.as_ref(),
-                    self.inner.store.cwd(),
+                    self.skill_workspace(skill),
                     &discovery.name,
                     skill,
                 );
@@ -167,7 +178,7 @@ impl Engine {
             Some(&projection.permission_overlay),
             PermissionAction::Skill,
             name,
-            self.inner.store.cwd(),
+            self.skill_workspace(skill),
         )
         .0;
         if effect == PermissionEffect::Deny {
@@ -208,7 +219,7 @@ impl Engine {
                 &policy,
                 &projection.permission_overlay,
                 grants.as_ref(),
-                self.inner.store.cwd(),
+                self.skill_workspace(skill),
                 skill_name,
                 skill,
             )
@@ -236,7 +247,7 @@ impl Engine {
             &policy,
             &projection.permission_overlay,
             grants.as_ref(),
-            self.inner.store.cwd(),
+            self.skill_workspace(skill),
             name,
             skill,
         )
@@ -268,7 +279,7 @@ impl Engine {
             Some(&projection.permission_overlay),
             PermissionAction::Skill,
             name,
-            self.inner.store.cwd(),
+            self.skill_workspace(&skill),
         )
         .0;
         if !permission_preapproved && effect != PermissionEffect::Allow {
@@ -648,7 +659,7 @@ impl Engine {
                     &policy.agent,
                     &projection.permission_overlay,
                     prospective_grants,
-                    self.inner.store.cwd(),
+                    self.skill_workspace(skill),
                     name,
                     skill,
                 )
@@ -706,7 +717,7 @@ fn model_skill_visibility(
     policy: &cookie_agent_protocol::AgentSnapshot,
     overlay: &SessionPermissionOverlay,
     grants: Option<&SessionPermissionOverlay>,
-    workspace: &Path,
+    workspace: Option<&Path>,
     name: &str,
     skill: &SkillDocument,
 ) -> (PermissionEffect, bool) {

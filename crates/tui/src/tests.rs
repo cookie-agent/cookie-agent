@@ -352,14 +352,17 @@ fn build_in_process_server(
         cwd: directory.path().to_owned(),
         config,
         model_manager: Arc::clone(&model_manager),
-        tools: Vec::new(),
+        runtimes: cookie_agent_engine::RuntimeOptions::new(directory.path()),
     })
     .expect("open engine");
     if with_skills {
         engine
-            .try_register_tool_provider(Arc::new(SkillFixtureTool {
-                engine: engine.clone(),
-            }))
+            .try_register_tool_provider(
+                cookie_agent_engine::ToolLayer::Base,
+                Arc::new(SkillFixtureTool {
+                    engine: engine.clone(),
+                }),
+            )
             .expect("skill tool");
     }
     (directory, Arc::new(Server::new(engine)))
@@ -402,6 +405,7 @@ impl cookie_agent_engine::ToolProvider for SkillFixtureTool {
             return Ok(Vec::new());
         }
         Ok(vec![cookie_agent_engine::ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),
@@ -491,7 +495,7 @@ impl cookie_agent_engine::ToolProvider for SkillFixtureTool {
                     .map_err(fixture_tool_error)?,
             }],
             vec![resource],
-            Sha256Digest::of_bytes(ctx.cwd.to_string_lossy().as_bytes()),
+            Sha256Digest::of_bytes(&ctx.context_bytes()),
         )
         .map_err(fixture_tool_error)?;
         cookie_agent_engine::PreparedTool::new(

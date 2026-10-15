@@ -139,7 +139,7 @@ fn open_engine(config_text: &str) -> Harness {
         cwd: directory.path().to_owned(),
         config,
         model_manager: manager,
-        tools: Vec::new(),
+        runtimes: cookie_agent_engine::RuntimeOptions::new(directory.path()),
     })
     .expect("engine");
     Harness {

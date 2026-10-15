@@ -1,4 +1,4 @@
-use std::{collections::HashSet, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
 
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalDecisionSource, ApprovalId, ApprovalRequest, ApprovalTrigger,
@@ -24,6 +24,7 @@ use crate::{
     media::{approved_media_type, canonical_video_mime_type},
     permissions::{PermissionDecision, PermissionPipeline},
     policy::FrozenRunPolicy,
+    runtimes::{SourcedProvider, current_tool, resolve_collisions},
     tool_api::{
         PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
         ToolPreparationContext, ToolProgress, ToolProvider, ToolStdin,
@@ -85,7 +86,9 @@ impl Engine {
             grants.as_ref(),
             prepared.operation(),
             prepared.policy_labels(),
-            self.inner.store.cwd(),
+            prepared_call
+                .origin()
+                .and_then(crate::ToolOrigin::workspace_root),
         ))
     }
 
@@ -197,45 +200,36 @@ impl Engine {
         policy: &FrozenRunPolicy,
         turn_context: Arc<crate::TurnAgentContext>,
     ) -> Vec<PreparedToolCall> {
-        let providers = self
-            .inner
-            .tools
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        let mut groups: Vec<(Arc<dyn ToolProvider>, Vec<usize>)> = Vec::new();
+        let providers = self.inner.runtimes.providers();
+        let session_context = SessionToolContext::new(session_id);
+        let mut groups: Vec<(SourcedProvider, Vec<usize>)> = Vec::new();
         for (index, (call, _)) in calls.iter().enumerate() {
-            if let Some(provider) = providers.iter().find(|provider| {
-                provider
-                    .tools_for_session(&SessionToolContext::new(session_id))
-                    .ok()
-                    .is_some_and(|tools| tools.iter().any(|tool| tool.name == call.name))
-            }) {
+            if let Some((source, _)) = current_tool(&providers, &session_context, &call.name) {
                 if let Some((_, indexes)) = groups
                     .iter_mut()
-                    .find(|(candidate, _)| Arc::ptr_eq(candidate, provider))
+                    .find(|(candidate, _)| Arc::ptr_eq(&candidate.provider, &source.provider))
                 {
                     indexes.push(index);
                 } else {
-                    groups.push((provider.clone(), vec![index]));
+                    groups.push((source, vec![index]));
                 }
             }
         }
         let mut prepared = (0..calls.len()).map(|_| None).collect::<Vec<_>>();
-        let context = ToolPreparationContext {
-            session: session_id,
-            run,
-            cwd: self.inner.store.cwd().to_owned(),
-            workspace_root: self.inner.store.cwd().to_owned(),
-            turn_context,
-        };
-        for (provider, indexes) in groups {
+        for (source, indexes) in groups {
             let provider_calls = indexes
                 .iter()
                 .map(|index| calls[*index].0.clone())
                 .collect();
-            let results = provider
-                .prepare_parallel(context.clone(), provider_calls)
+            let context = ToolPreparationContext {
+                session: session_id,
+                run,
+                origin: source.origin.clone(),
+                turn_context: turn_context.clone(),
+            };
+            let results = source
+                .provider
+                .prepare_parallel(context, provider_calls)
                 .await;
             for (index, result) in indexes.into_iter().zip(results) {
                 prepared[index] = Some(result);
@@ -249,7 +243,7 @@ impl Engine {
                     run,
                     call,
                     policy,
-                    context.turn_context.clone(),
+                    turn_context.clone(),
                     Some(published),
                     prepared[index].take(),
                 )
@@ -311,27 +305,21 @@ impl Engine {
         let permission_overlay = &session.permission_overlay;
         let grants = self.skill_grants_for_session(session_id);
         let delegate_enabled = !policy.delegate_targets(depth).is_empty();
-        let providers = self
-            .inner
-            .tools
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let current = providers.iter().find_map(|provider| {
-            provider
-                .tools_for_session(&SessionToolContext::new(session_id))
-                .ok()?
-                .into_iter()
-                .find(|tool| tool.name == call.name)
-                .map(|tool| (provider.clone(), tool))
-        });
+        let providers = self.inner.runtimes.providers();
+        let current = current_tool(&providers, &SessionToolContext::new(session_id), &call.name);
         let mut provider = match published {
             Some(Some(published))
-                if current.as_ref().is_some_and(|(provider, spec)| {
-                    Arc::ptr_eq(provider, &published.provider) && spec == &published.spec
+                if current.as_ref().is_some_and(|(source, spec)| {
+                    Arc::ptr_eq(&source.provider, &published.provider) && spec == &published.spec
                 }) =>
             {
-                Some((published.provider.clone(), published.spec.clone()))
+                Some((
+                    SourcedProvider {
+                        origin: published.origin.clone(),
+                        provider: published.provider.clone(),
+                    },
+                    published.spec.clone(),
+                ))
             }
             Some(Some(_)) => {
                 return PreparedToolCall {
@@ -372,6 +360,7 @@ impl Engine {
         {
             provider = providers.iter().find_map(|candidate| {
                 candidate
+                    .provider
                     .permission_for_unlisted_tool(&call.name)
                     .ok()
                     .flatten()
@@ -379,6 +368,7 @@ impl Engine {
                         (
                             candidate.clone(),
                             crate::ToolSpec {
+                                collision: Default::default(),
                                 output: Default::default(),
                                 concurrency: Default::default(),
                                 name: call.name.clone(),
@@ -391,7 +381,7 @@ impl Engine {
                     })
             });
         }
-        let Some((provider, tool_spec)) = provider else {
+        let Some((SourcedProvider { origin, provider }, tool_spec)) = provider else {
             return PreparedToolCall {
                 intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
                 prepared: Err(ToolFailure {
@@ -416,7 +406,7 @@ impl Engine {
                     Some(permission_overlay),
                     grants.as_ref(),
                     &permission_name,
-                    self.inner.store.cwd(),
+                    origin.workspace_root(),
                 ))
         {
             return PreparedToolCall {
@@ -440,8 +430,7 @@ impl Engine {
         let context = ToolPreparationContext {
             session: session_id,
             run,
-            cwd: self.inner.store.cwd().to_owned(),
-            workspace_root: self.inner.store.cwd().to_owned(),
+            origin,
             turn_context,
         };
         let prepared = match match prepared_override {
@@ -859,17 +848,10 @@ impl Engine {
         let session_projection = self.inner.store.get(session)?;
         let depth = session_depth(&session_projection.meta.origin);
         let delegate_enabled = !policy.delegate_targets(depth).is_empty();
-        let mut names = HashSet::new();
-        let mut output = Vec::new();
-        let mut published = std::collections::HashMap::new();
-        let providers = self
-            .inner
-            .tools
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        for provider in &providers {
-            for tool in provider
+        let mut candidates = Vec::new();
+        for source in self.inner.runtimes.providers() {
+            for tool in source
+                .provider
                 .tools_for_session(&SessionToolContext::new(session))
                 .map_err(|error| EngineError::ToolFailed(error.to_string()))?
             {
@@ -885,32 +867,37 @@ impl Engine {
                         &tool.permission_name,
                     )
                 {
-                    if !names.insert(tool.name.clone()) {
-                        return Err(EngineError::ToolFailed(format!(
-                            "tool name `{}` is published by more than one provider",
-                            tool.name
-                        )));
-                    }
-                    let schema = JsonSchema::new(tool.parameters.clone()).map_err(|error| {
-                        EngineError::ToolFailed(format!(
-                            "tool `{}` has invalid JSON Schema: {error}",
-                            tool.name
-                        ))
-                    })?;
-                    output.push(ToolDefinition::new(
-                        tool.name.clone(),
-                        tool.description.clone(),
-                        schema,
-                    ));
-                    published.insert(
-                        tool.name.clone(),
-                        PublishedTool {
-                            provider: provider.clone(),
-                            spec: tool,
-                        },
-                    );
+                    candidates.push((source.clone(), tool));
                 }
             }
+        }
+        let candidates = resolve_collisions(candidates).map_err(|name| {
+            EngineError::ToolFailed(format!(
+                "tool name `{name}` is published by more than one provider"
+            ))
+        })?;
+        let mut output = Vec::with_capacity(candidates.len());
+        let mut published = std::collections::HashMap::with_capacity(candidates.len());
+        for (source, tool) in candidates {
+            let schema = JsonSchema::new(tool.parameters.clone()).map_err(|error| {
+                EngineError::ToolFailed(format!(
+                    "tool `{}` has invalid JSON Schema: {error}",
+                    tool.name
+                ))
+            })?;
+            output.push(ToolDefinition::new(
+                tool.name.clone(),
+                tool.description.clone(),
+                schema,
+            ));
+            published.insert(
+                tool.name.clone(),
+                PublishedTool {
+                    origin: source.origin,
+                    provider: source.provider,
+                    spec: tool,
+                },
+            );
         }
         output.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(PublishedToolSet {

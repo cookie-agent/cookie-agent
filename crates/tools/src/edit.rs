@@ -9,6 +9,8 @@ use cookie_agent_protocol::{PermissionAction, PersistedToolResult as ToolResult}
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use cookie_agent_engine::WorkspaceContext;
+
 use crate::{fs_cap, parse_args, prepared_operation, prepared_path_resources, schema};
 
 #[derive(Clone, Debug)]
@@ -69,24 +71,26 @@ fn read_text(target: &fs_cap::PreparedExisting) -> Result<String, ToolError> {
 }
 
 impl EditTool {
+    /// A tool working in `workspace`, the workspace of the coding runtime
+    /// that offers it.
     #[must_use]
-    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+    pub fn new(workspace: &WorkspaceContext) -> Self {
         Self {
-            workspace: workspace.into(),
+            workspace: workspace.root().to_owned(),
         }
     }
 
     /// Parses arguments and resolves the target.
     fn prepare_target(
         &self,
-        ctx: &ToolPreparationContext,
         call: ToolCall,
     ) -> Result<(EditArgs, fs_cap::PreparedExisting), ToolError> {
         let args: EditArgs = parse_args("edit", call.arguments)?;
         if args.old_string.is_empty() {
             return Err(ToolError::execution("oldString must not be empty"));
         }
-        let target = fs_cap::prepare_existing(&ctx.cwd, std::path::Path::new(&args.file_path))?;
+        let target =
+            fs_cap::prepare_existing(&self.workspace, std::path::Path::new(&args.file_path))?;
         if target.directory {
             return Err(ToolError::unsupported_security(
                 "edit target is a directory",
@@ -100,7 +104,6 @@ impl EditTool {
     /// later never reverts changes made while it waited.
     fn prepare_edit(
         &self,
-        ctx: &ToolPreparationContext,
         args: EditArgs,
         target: fs_cap::PreparedExisting,
     ) -> Result<PreparedTool, ToolError> {
@@ -111,7 +114,7 @@ impl EditTool {
             &self.workspace,
             &target.binding_bytes(),
         )?;
-        let context = fs_cap::cwd_context_bytes(&ctx.cwd)?;
+        let context = crate::workspace_context_bytes(&self.workspace);
         let operation = prepared_operation(
             "edit",
             &args,
@@ -136,12 +139,6 @@ impl EditTool {
     }
 }
 
-impl Default for EditTool {
-    fn default() -> Self {
-        Self::new(std::env::current_dir().expect("current directory"))
-    }
-}
-
 #[async_trait]
 impl ToolProvider for EditTool {
     fn provider_id(&self) -> &'static str {
@@ -150,6 +147,7 @@ impl ToolProvider for EditTool {
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
@@ -199,15 +197,15 @@ impl ToolProvider for EditTool {
 
     async fn prepare(
         &self,
-        ctx: ToolPreparationContext,
+        _ctx: ToolPreparationContext,
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
         let tool = self.clone();
         crate::blocking(move || {
-            let (args, target) = tool.prepare_target(&ctx, call)?;
+            let (args, target) = tool.prepare_target(call)?;
             // Fail fast on an oldString that does not match the current content.
             match_count(&read_text(&target)?, &args)?;
-            tool.prepare_edit(&ctx, args, target)
+            tool.prepare_edit(args, target)
         })
         .await
     }
@@ -223,7 +221,7 @@ impl ToolProvider for EditTool {
         }
         let count = calls.len();
         let tool = self.clone();
-        crate::blocking(move || Ok(tool.prepare_batch(&ctx, calls)))
+        crate::blocking(move || Ok(tool.prepare_batch(calls)))
             .await
             .unwrap_or_else(|error| {
                 (0..count)
@@ -234,11 +232,7 @@ impl ToolProvider for EditTool {
 }
 
 impl EditTool {
-    fn prepare_batch(
-        &self,
-        ctx: &ToolPreparationContext,
-        calls: Vec<ToolCall>,
-    ) -> Vec<Result<PreparedTool, ToolError>> {
+    fn prepare_batch(&self, calls: Vec<ToolCall>) -> Vec<Result<PreparedTool, ToolError>> {
         // Same-file edits execute in call order under one serialization key,
         // each on the content its predecessor produced. Validate them the
         // same way: every edit matches against the text the previous
@@ -248,7 +242,7 @@ impl EditTool {
         for call in calls {
             // Early per-call failures (invalid arguments, missing target,
             // directory) stay isolated in their own slot.
-            match self.prepare_target(ctx, call) {
+            match self.prepare_target(call) {
                 Ok(entry) => {
                     pending.push(Some(entry));
                     results.push(None);
@@ -278,8 +272,7 @@ impl EditTool {
                     // Every member of the group reports the shared read failure.
                     Err(error) => Err(ToolError::execution(error.message())),
                 };
-                results[index] =
-                    Some(validated.and_then(|()| self.prepare_edit(ctx, args, target)));
+                results[index] = Some(validated.and_then(|()| self.prepare_edit(args, target)));
             }
         }
         results
@@ -335,7 +328,7 @@ mod tests {
 
     #[test]
     fn permission_resource_is_the_file_path() {
-        let tool = EditTool::new("/tmp");
+        let tool = EditTool::new(&crate::test_workspace(std::env::temp_dir()));
         assert_eq!(
             tool.get_permission_resource(
                 "edit",
@@ -360,7 +353,7 @@ mod tests {
     #[test]
     fn display_argument_abbreviates_workspace_and_home_paths() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let tool = EditTool::new(workspace.path());
+        let tool = EditTool::new(&crate::test_workspace(workspace.path()));
         let args = serde_json::json!({
             "filePath":workspace.path().join("value.txt"),
             "oldString":"a",
@@ -389,13 +382,12 @@ mod tests {
     async fn ambiguous_single_replacement_is_rejected_before_approval() {
         let root = tempfile::tempdir().expect("root");
         fs::write(root.path().join("value.txt"), "same same").expect("fixture");
-        let result = EditTool::new(root.path())
+        let result = EditTool::new(&crate::test_workspace(root.path()))
             .prepare(
                 ToolPreparationContext {
                     session: SessionId::new_v7(),
                     run: RunId::new_v7(),
-                    cwd: root.path().to_owned(),
-                    workspace_root: root.path().to_owned(),
+                    origin: crate::test_coding_origin(root.path()),
                     turn_context: crate::test_turn_context(),
                 },
                 ToolCall {
@@ -417,8 +409,7 @@ mod tests {
         ToolPreparationContext {
             session: SessionId::new_v7(),
             run: RunId::new_v7(),
-            cwd: root.to_owned(),
-            workspace_root: root.to_owned(),
+            origin: crate::test_coding_origin(root),
             turn_context: crate::test_turn_context(),
         }
     }
@@ -459,7 +450,7 @@ mod tests {
         .expect("relative ancestor");
         symlink(&external, workspace.join("routes/absolute-ancestor")).expect("absolute ancestor");
 
-        let tool = EditTool::new(&workspace);
+        let tool = EditTool::new(&crate::test_workspace(&workspace));
         for (requested, destination, link) in [
             (
                 "routes/relative-leaf",
@@ -541,7 +532,7 @@ mod tests {
         fs::write(root.path().join("destination/value.txt"), "old").expect("fixture");
         fs::write(root.path().join("other/value.txt"), "old").expect("other fixture");
         symlink("missing.txt", root.path().join("dangling")).expect("dangling route");
-        let dangling = EditTool::new(root.path())
+        let dangling = EditTool::new(&crate::test_workspace(root.path()))
             .prepare(
                 context(root.path()),
                 ToolCall {
@@ -558,7 +549,7 @@ mod tests {
         assert!(matches!(dangling, Err(ToolError::Failed(_))));
 
         symlink("destination", root.path().join("ancestor")).expect("ancestor route");
-        let prepared = EditTool::new(root.path())
+        let prepared = EditTool::new(&crate::test_workspace(root.path()))
             .prepare(
                 context(root.path()),
                 edit_call("ancestor/value.txt", "old", "new"),
@@ -590,7 +581,7 @@ mod tests {
         fs::write(root.path().join("value.txt"), "old").expect("fixture");
         symlink("value.txt", root.path().join("left")).expect("left route");
         symlink(root.path().join("value.txt"), root.path().join("right")).expect("right route");
-        let tool = EditTool::new(root.path());
+        let tool = EditTool::new(&crate::test_workspace(root.path()));
         let prepare = |path: &str| {
             tool.prepare(
                 context(root.path()),
@@ -641,7 +632,7 @@ mod tests {
     async fn parallel_same_file_edits_chain_in_call_order() {
         let root = tempfile::tempdir().expect("root");
         fs::write(root.path().join("value.txt"), "alpha beta gamma").expect("fixture");
-        let prepared = EditTool::new(root.path())
+        let prepared = EditTool::new(&crate::test_workspace(root.path()))
             .prepare_parallel(
                 context(root.path()),
                 vec![
@@ -677,7 +668,7 @@ mod tests {
     async fn chained_edit_matches_predecessor_output() {
         let root = tempfile::tempdir().expect("root");
         fs::write(root.path().join("value.txt"), "a").expect("fixture");
-        let prepared = EditTool::new(root.path())
+        let prepared = EditTool::new(&crate::test_workspace(root.path()))
             .prepare_parallel(
                 context(root.path()),
                 vec![
@@ -709,7 +700,7 @@ mod tests {
     async fn failed_chain_member_skips_without_breaking_the_chain() {
         let root = tempfile::tempdir().expect("root");
         fs::write(root.path().join("value.txt"), "a b c").expect("fixture");
-        let prepared = EditTool::new(root.path())
+        let prepared = EditTool::new(&crate::test_workspace(root.path()))
             .prepare_parallel(
                 context(root.path()),
                 vec![
@@ -744,7 +735,7 @@ mod tests {
     async fn early_preparation_errors_stay_isolated_in_a_batch() {
         let root = tempfile::tempdir().expect("root");
         fs::write(root.path().join("value.txt"), "alpha beta").expect("fixture");
-        let prepared = EditTool::new(root.path())
+        let prepared = EditTool::new(&crate::test_workspace(root.path()))
             .prepare_parallel(
                 context(root.path()),
                 vec![
@@ -774,7 +765,7 @@ mod tests {
     async fn edit_applies_to_content_changed_while_awaiting_execution() {
         let root = tempfile::tempdir().expect("root");
         fs::write(root.path().join("value.txt"), "a b").expect("fixture");
-        let tool = EditTool::new(root.path());
+        let tool = EditTool::new(&crate::test_workspace(root.path()));
         let prepared = tool
             .prepare_parallel(
                 context(root.path()),

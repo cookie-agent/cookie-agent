@@ -185,7 +185,7 @@ impl PermissionPipeline {
         policy: &AgentSnapshot,
         operation: &PreparedOperationIdentity,
         policy_labels: &[Option<String>],
-        workspace: &Path,
+        workspace: Option<&Path>,
     ) -> PermissionDecision {
         self.decide_operation_with_overlay(policy, None, operation, policy_labels, workspace)
     }
@@ -197,7 +197,7 @@ impl PermissionPipeline {
         overlay: Option<&SessionPermissionOverlay>,
         operation: &PreparedOperationIdentity,
         policy_labels: &[Option<String>],
-        workspace: &Path,
+        workspace: Option<&Path>,
     ) -> PermissionDecision {
         assert!(!operation.resources().is_empty());
         assert_eq!(operation.resources().len(), policy_labels.len());
@@ -264,7 +264,7 @@ impl PermissionPipeline {
         grants: Option<&SessionPermissionOverlay>,
         operation: &PreparedOperationIdentity,
         policy_labels: &[Option<String>],
-        workspace: &Path,
+        workspace: Option<&Path>,
     ) -> PermissionDecision {
         let mut decision = self.decide_operation_with_overlay(
             policy,
@@ -290,8 +290,8 @@ impl PermissionPipeline {
                     && normalized.as_ref().is_some_and(|normalized| {
                         permission_pattern_matches(
                             rule.resource.as_str(),
+                            resource.capability,
                             normalized,
-                            &absolute_resource(workspace, normalized),
                             workspace,
                         )
                     })
@@ -333,7 +333,7 @@ impl PermissionPipeline {
         overlay: Option<&SessionPermissionOverlay>,
         grants: Option<&SessionPermissionOverlay>,
         permission_name: &str,
-        workspace: &Path,
+        workspace: Option<&Path>,
     ) -> bool {
         if Self::tool_visible_with_overlay(policy, overlay, permission_name) {
             return true;
@@ -433,21 +433,15 @@ pub(crate) fn effective_permission(
     policy: &AgentSnapshot,
     action: PermissionAction,
     resource: &str,
-    workspace: &Path,
+    workspace: Option<&Path>,
 ) -> (PermissionEffect, String) {
-    let absolute_resource = absolute_resource(workspace, resource);
     let winner = policy
         .permissions
         .iter()
         .enumerate()
         .filter(|(_, rule)| {
             rule.action == action
-                && permission_pattern_matches(
-                    rule.resource.as_str(),
-                    resource,
-                    &absolute_resource,
-                    workspace,
-                )
+                && permission_pattern_matches(rule.resource.as_str(), action, resource, workspace)
         })
         .max_by_key(|(index, rule)| specificity(rule.resource.as_str(), *index));
     winner
@@ -472,9 +466,8 @@ pub(crate) fn effective_permission_with_overlay(
     overlay: Option<&SessionPermissionOverlay>,
     action: PermissionAction,
     resource: &str,
-    workspace: &Path,
+    workspace: Option<&Path>,
 ) -> (PermissionEffect, String) {
-    let absolute_resource = absolute_resource(workspace, resource);
     let winner = overlay.and_then(|overlay| {
         overlay
             .rules
@@ -484,8 +477,8 @@ pub(crate) fn effective_permission_with_overlay(
                 rule.action == action
                     && permission_pattern_matches(
                         rule.resource.as_str(),
+                        action,
                         resource,
-                        &absolute_resource,
                         workspace,
                     )
             })
@@ -502,18 +495,34 @@ pub(crate) fn effective_permission_with_overlay(
     )
 }
 
+/// Whether `pattern` matches `resource` for a tool whose runtime has
+/// `workspace`. `${workspace_dir}` patterns match the resource made absolute
+/// against the workspace. Without a workspace (the base layer and the global
+/// runtime) nothing can be resolved: `${workspace_dir}` patterns never match,
+/// and neither does any pattern for a relative path resource of a path action
+/// (`read`, `write`).
 fn permission_pattern_matches(
     pattern: &str,
-    relative_resource: &str,
-    absolute_resource: &str,
-    workspace: &Path,
+    action: PermissionAction,
+    resource: &str,
+    workspace: Option<&Path>,
 ) -> bool {
-    if pattern.contains(cookie_agent_protocol::WildcardPattern::WORKSPACE_DIR_EXPRESSION) {
-        let expanded = expand_workspace_pattern(pattern, workspace);
-        simple_wildcard_match(&expanded, absolute_resource)
-    } else {
-        simple_wildcard_match(pattern, relative_resource)
+    let workspace_pattern =
+        pattern.contains(cookie_agent_protocol::WildcardPattern::WORKSPACE_DIR_EXPRESSION);
+    match workspace {
+        Some(workspace) if workspace_pattern => simple_wildcard_match(
+            &expand_workspace_pattern(pattern, workspace),
+            &absolute_resource(workspace, resource),
+        ),
+        Some(_) => simple_wildcard_match(pattern, resource),
+        None if workspace_pattern => false,
+        None if is_path_action(action) && !Path::new(resource).is_absolute() => false,
+        None => simple_wildcard_match(pattern, resource),
     }
+}
+
+const fn is_path_action(action: PermissionAction) -> bool {
+    matches!(action, PermissionAction::Read | PermissionAction::Write)
 }
 
 fn plugin_rule_governs(pattern: &str, permission_name: &str) -> bool {
@@ -577,20 +586,14 @@ fn matching_rules(
     overlay: Option<&SessionPermissionOverlay>,
     action: PermissionAction,
     resource: &str,
-    workspace: &Path,
+    workspace: Option<&Path>,
 ) -> Vec<MatchedPermissionRule> {
-    let absolute_resource = absolute_resource(workspace, resource);
     policy
         .permissions
         .iter()
         .filter(|rule| {
             rule.action == action
-                && permission_pattern_matches(
-                    rule.resource.as_str(),
-                    resource,
-                    &absolute_resource,
-                    workspace,
-                )
+                && permission_pattern_matches(rule.resource.as_str(), action, resource, workspace)
         })
         .map(|rule| MatchedPermissionRule {
             source_layer: SafeCode::new("agent_document").expect("static safe code"),
@@ -606,8 +609,8 @@ fn matching_rules(
                     rule.action == action
                         && permission_pattern_matches(
                             rule.resource.as_str(),
+                            action,
                             resource,
-                            &absolute_resource,
                             workspace,
                         )
                 })
@@ -696,12 +699,14 @@ impl crate::Engine {
         let session = self.inner.store.get(session_id)?;
         let policy = governing_agent(&session);
         let mut overlay = session.permission_overlay.clone();
+        // Overlay rules resolve against the local coding runtime's workspace
+        // until sessions attach runtimes.
         let old_effect = rule_effect(
             &policy,
             &overlay,
             action,
             resource.as_str(),
-            self.inner.store.cwd(),
+            Some(self.inner.runtimes.local_workspace_root()),
         );
         overlay
             .rules
@@ -719,7 +724,7 @@ impl crate::Engine {
             &overlay,
             action,
             resource.as_str(),
-            self.inner.store.cwd(),
+            Some(self.inner.runtimes.local_workspace_root()),
         );
         if effect_rank(new_effect) > effect_rank(old_effect) {
             self.invalidate_action_grants(session_id, &session.meta.origin, action)?;
@@ -758,7 +763,7 @@ impl crate::Engine {
             &overlay,
             action,
             resource.as_str(),
-            self.inner.store.cwd(),
+            Some(self.inner.runtimes.local_workspace_root()),
         );
         let prior_len = overlay.rules.len();
         overlay
@@ -770,7 +775,7 @@ impl crate::Engine {
                 &overlay,
                 action,
                 resource.as_str(),
-                self.inner.store.cwd(),
+                Some(self.inner.runtimes.local_workspace_root()),
             );
             if effect_rank(new_effect) > effect_rank(old_effect) {
                 self.invalidate_action_grants(session_id, &session.meta.origin, action)?;
@@ -887,7 +892,7 @@ fn rule_effect(
     overlay: &SessionPermissionOverlay,
     action: PermissionAction,
     resource: &str,
-    workspace: &Path,
+    workspace: Option<&Path>,
 ) -> PermissionEffect {
     if resource == "*" {
         effective_loose_permission_with_overlay(policy, Some(overlay), action).0

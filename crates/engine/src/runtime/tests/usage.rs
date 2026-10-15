@@ -31,11 +31,12 @@ async fn anthropic_prompt_caching_records_wire_markers_usage_and_rollup() {
             None,
             "anthropic-compatible",
         );
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::new(TestFlag::default()),
-        }));
+        }),
+    );
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     for index in 0..3 {
         fixture
@@ -288,11 +289,12 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
             None,
             "anthropic-compatible",
         );
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestWriteProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
             executed: Arc::new(TestFlag::default()),
-        }));
+        }),
+    );
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
         .engine
@@ -342,9 +344,12 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
     fixture.engine.shutdown().await;
     drop(fixture.engine);
     let reopened = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
-    reopened.register_tool_provider(Arc::new(TestWriteProvider {
-        executed: Arc::new(TestFlag::default()),
-    }));
+    reopened.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
+            executed: Arc::new(TestFlag::default()),
+        }),
+    );
     reopened
         .start_run(
             RunStartParams {
@@ -505,14 +510,15 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
         cwd: fixture._directory.path().to_owned(),
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
-        tools: Vec::new(),
+        runtimes: crate::RuntimeOptions::new(fixture._directory.path()),
     })
     .expect("tree usage engine");
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
 
     let root = fixture
         .engine

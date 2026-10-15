@@ -212,7 +212,7 @@ async fn session_permission_overlay_is_durable_and_evaluated_after_restart() {
         Some(&projection.permission_overlay),
         &operation,
         &[Some("git status".into())],
-        reopened.inner.store.cwd(),
+        Some(reopened.inner.runtimes.local_workspace_root()),
     );
     assert_eq!(decision.effect, PermissionEffect::Deny);
     reopened.shutdown().await;
@@ -647,8 +647,7 @@ async fn permission_labels_come_from_prepared_permission_resource() {
             ToolPreparationContext {
                 session: SessionId::new_v7(),
                 run: cookie_agent_protocol::RunId::new_v7(),
-                cwd: "/tmp".into(),
-                workspace_root: "/tmp".into(),
+                origin: crate::ToolOrigin::Base,
                 turn_context: test_turn_context(),
             },
             ToolCall {
@@ -681,8 +680,7 @@ async fn permission_labels_come_from_prepared_permission_resource() {
             ToolPreparationContext {
                 session: SessionId::new_v7(),
                 run: cookie_agent_protocol::RunId::new_v7(),
-                cwd: "/tmp".into(),
-                workspace_root: "/tmp".into(),
+                origin: crate::ToolOrigin::Base,
                 turn_context: test_turn_context(),
             },
             ToolCall {

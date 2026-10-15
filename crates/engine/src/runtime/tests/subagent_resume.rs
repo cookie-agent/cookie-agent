@@ -16,11 +16,12 @@ use super::support::*;
 async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again() {
     let (endpoint, responses, server) = scripted_channel_server(6).await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -352,11 +353,12 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
         Some(1),
         None,
     );
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -511,11 +513,12 @@ async fn queued_terminal_resume_cancel_is_durable() {
         Some(1),
         None,
     );
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -650,11 +653,12 @@ async fn queued_terminal_resume_cancel_is_durable() {
 async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_completion() {
     let (endpoint, ready, resume_id, release, server) = scripted_running_resume_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -951,11 +955,12 @@ async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_te
     let (endpoint, ready, resume_id, release_child, server) =
         scripted_running_resume_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -1073,11 +1078,12 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
     let (endpoint, ready, resume_id, release_child, server) =
         scripted_running_resume_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -1332,11 +1338,12 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
     let (endpoint, ready, resume_id, _release_child, server) =
         scripted_running_resume_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -1451,11 +1458,12 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
     let (endpoint, ready, resume_id, _release_child, server) =
         scripted_running_resume_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())

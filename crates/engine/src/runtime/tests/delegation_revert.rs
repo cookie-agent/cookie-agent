@@ -104,11 +104,12 @@ async fn start_held_background_delegation(
     let (endpoint, child_reached, release, server) =
         held_background_child_server(expect_wake).await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())

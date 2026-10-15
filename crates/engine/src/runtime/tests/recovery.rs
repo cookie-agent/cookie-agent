@@ -382,7 +382,7 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
         cwd: fixture._directory.path().to_owned(),
         config: fixture.config,
         model_manager: Arc::clone(&fixture.manager),
-        tools: Vec::new(),
+        runtimes: crate::RuntimeOptions::new(fixture._directory.path()),
     })
     .expect("opening reads no session log");
     let rejected = tampered.ensure_tree_loaded(session.session_id);
@@ -688,10 +688,10 @@ async fn a_crash_mid_stream_recovers_without_the_live_only_partial_output() {
     drop(fixture.engine);
     let reopened = Engine::open(EngineOptions {
         data_dir: snapshot.path().join("data"),
+        runtimes: crate::RuntimeOptions::new(&cwd),
         cwd,
         config,
         model_manager: manager,
-        tools: Vec::new(),
     })
     .expect("reopen crashed snapshot");
     reopened

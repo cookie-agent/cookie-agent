@@ -60,6 +60,7 @@ impl ReadArtifactTool {
     #[must_use]
     pub fn spec() -> ToolSpec {
         ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
@@ -224,12 +225,11 @@ mod tests {
 
     use super::*;
 
-    fn context(session: SessionId, run: RunId, root: &std::path::Path) -> ToolPreparationContext {
+    fn context(session: SessionId, run: RunId) -> ToolPreparationContext {
         ToolPreparationContext {
             session,
             run,
-            cwd: root.into(),
-            workspace_root: root.into(),
+            origin: cookie_agent_engine::ToolOrigin::Base,
             turn_context: crate::test_turn_context(),
         }
     }
@@ -284,7 +284,7 @@ mod tests {
             (UNCONDITIONAL_PERMISSION_NAME, Some(digest.clone()))
         );
         let prepared = tool
-            .prepare(context(reader.session, reader.run, root.path()), call(args))
+            .prepare(context(reader.session, reader.run), call(args))
             .await
             .unwrap();
         assert_eq!(prepared.policy_labels(), [Some(digest.clone())]);
@@ -298,7 +298,6 @@ mod tests {
 
     #[tokio::test]
     async fn read_artifact_rejects_malformed_targets_and_limits() {
-        let root = tempfile::tempdir().unwrap();
         let digest = "a".repeat(64);
         for arguments in [
             serde_json::json!({"artifact": format!("artifact://{digest}")}),
@@ -312,7 +311,7 @@ mod tests {
             assert!(
                 ReadArtifactTool
                     .prepare(
-                        context(SessionId::new_v7(), RunId::new_v7(), root.path()),
+                        context(SessionId::new_v7(), RunId::new_v7()),
                         call(arguments.clone())
                     )
                     .await
@@ -324,11 +323,10 @@ mod tests {
 
     #[tokio::test]
     async fn read_artifact_clamps_the_page_limit() {
-        let root = tempfile::tempdir().unwrap();
         let digest = "a".repeat(64);
         let prepared = ReadArtifactTool
             .prepare(
-                context(SessionId::new_v7(), RunId::new_v7(), root.path()),
+                context(SessionId::new_v7(), RunId::new_v7()),
                 call(serde_json::json!({"artifact": digest, "stream": "stdout", "limit": 5_000})),
             )
             .await

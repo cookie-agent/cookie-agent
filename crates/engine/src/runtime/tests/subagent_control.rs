@@ -10,11 +10,12 @@ use super::support::*;
 async fn running_subagent_result_is_empty_waits_and_cancel_is_session_addressed() {
     let (endpoint, server) = scripted_cancellable_delegation_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -95,11 +96,12 @@ async fn running_subagent_result_is_empty_waits_and_cancel_is_session_addressed(
 async fn running_subagent_results_are_scoped_to_the_callers_tree() {
     let (endpoint, reached, release, server) = scripted_running_steer_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -193,11 +195,12 @@ async fn running_subagent_results_are_scoped_to_the_callers_tree() {
 async fn finished_subagent_woken_by_send_message_reports_running_then_new_turn_text() {
     let (endpoint, server) = scripted_finished_wake_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let (wake_reached, wake_release) = fixture.engine.install_producer_wake_hook();
     let parent = fixture
         .engine
@@ -319,11 +322,12 @@ async fn finished_subagent_woken_by_send_message_reports_running_then_new_turn_t
 async fn resume_settles_recovered_background_delegations_before_returning() {
     let (endpoint, reached, release, server) = scripted_running_steer_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -392,10 +396,10 @@ async fn resume_settles_recovered_background_delegations_before_returning() {
 
     let reopened = Engine::open(EngineOptions {
         data_dir: snapshot.path().join("data"),
+        runtimes: crate::RuntimeOptions::new(&cwd),
         cwd,
         config,
         model_manager: manager,
-        tools: Vec::new(),
     })
     .expect("reopen background delegate snapshot");
     reopened

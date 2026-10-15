@@ -21,6 +21,7 @@ mod policy;
 mod preview;
 pub(crate) mod runtime;
 mod runtime_snapshot;
+mod runtimes;
 pub mod session;
 #[cfg(test)]
 mod test_support;
@@ -50,11 +51,16 @@ pub use runtime::{
     ArtifactReadPage, Engine, EngineError, EngineHistoryView, EngineOptions, SkillInvocation,
 };
 pub use runtime_snapshot::PublishedRuntime;
+pub use runtimes::{
+    CodingToolsFactory, GLOBAL_RUNTIME_ID, LOCAL_RUNTIME_ID, MAX_ATTACHMENT_NAME_BYTES,
+    RuntimeInfo, RuntimeKind, RuntimeOptions, ToolLayer, ToolOrigin, WorkspaceContext,
+    coding_attachment_name,
+};
 pub use session::TailOwner;
 pub use tool_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, ProgressSink, PromptSection,
-    SessionToolContext, StdinWrite, ToolCall, ToolCompletion, ToolConcurrency, ToolError,
-    ToolExecutionContext, ToolPreparationContext, ToolProgress, ToolProvider,
+    SessionToolContext, StdinWrite, ToolCall, ToolCollision, ToolCompletion, ToolConcurrency,
+    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProgress, ToolProvider,
     ToolResultTruncationPolicy, ToolSpec, ToolStdin, TurnAgentContext,
 };
 

@@ -109,6 +109,7 @@ impl ToolProvider for GoalVisibilityProvider {
         .into_iter()
         .map(
             |(name, permission_name, description, parameters)| ToolSpec {
+                collision: Default::default(),
                 output: Default::default(),
                 name: name.into(),
                 permission_name: permission_name.into(),
@@ -2270,7 +2271,7 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
     );
     fixture
         .engine
-        .register_tool_provider(Arc::new(GoalVisibilityProvider));
+        .register_tool_provider(crate::ToolLayer::Base, Arc::new(GoalVisibilityProvider));
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -2729,11 +2730,12 @@ async fn paused_goal_survives_fork_and_revert_but_not_delegated_session_boundari
 
     let (endpoint, captured) = scripted_delegation_server().await;
     let (delegation_fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    delegation_fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    delegation_fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: delegation_fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = delegation_fixture
         .engine
         .create_session(selection.clone())

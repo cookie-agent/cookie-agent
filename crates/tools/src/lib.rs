@@ -1,11 +1,14 @@
 //! Exact cookie-agent protocol 39 prepared built-in tools.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use cookie_agent_engine::{
-    PreparedTool, SessionToolContext, ToolCall, ToolError, ToolPreparationContext, ToolProvider,
-    ToolSpec,
+    PreparedTool, RuntimeOptions, SessionToolContext, ToolCall, ToolError, ToolPreparationContext,
+    ToolProvider, ToolSpec, WorkspaceContext,
 };
 use cookie_agent_protocol::{
     ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, PermissionAction,
@@ -30,6 +33,21 @@ pub mod write;
 
 #[cfg(test)]
 mod tool_reference;
+
+/// Workspace of a coding runtime at `path`, for tests.
+#[cfg(test)]
+pub(crate) fn test_workspace(path: impl AsRef<Path>) -> WorkspaceContext {
+    WorkspaceContext::new(path.as_ref()).expect("test workspace")
+}
+
+/// Origin of a tool of a coding runtime at `path`, for tests.
+#[cfg(test)]
+pub(crate) fn test_coding_origin(path: impl AsRef<Path>) -> cookie_agent_engine::ToolOrigin {
+    cookie_agent_engine::ToolOrigin::Runtime(Arc::new(cookie_agent_engine::RuntimeInfo::coding(
+        cookie_agent_engine::LOCAL_RUNTIME_ID,
+        test_workspace(path),
+    )))
+}
 
 #[cfg(test)]
 pub(crate) fn test_turn_context() -> std::sync::Arc<cookie_agent_engine::TurnAgentContext> {
@@ -93,7 +111,7 @@ pub(crate) fn assert_workspace_rule_allows(
             &policy,
             prepared.operation(),
             prepared.policy_labels(),
-            workspace,
+            Some(workspace),
         );
     assert_eq!(decision.effect, PermissionEffect::Allow);
     assert_eq!(decision.evaluations.len(), 1);
@@ -135,6 +153,13 @@ pub(crate) fn safe_title(value: impl AsRef<str>) -> cookie_agent_protocol::SafeD
         safe
     })
     .expect("sanitized tool title")
+}
+
+/// Execution-context bytes of a coding tool: its workspace root, which is
+/// already canonical. Matches [`cookie_agent_engine::ToolOrigin::context_bytes`]
+/// for the runtime that owns the tool.
+pub(crate) fn workspace_context_bytes(workspace: &Path) -> Vec<u8> {
+    workspace.as_os_str().as_encoded_bytes().to_vec()
 }
 
 pub(crate) fn parse_args<T: DeserializeOwned>(
@@ -339,25 +364,31 @@ pub struct BuiltinTools {
     write: write::WriteTool,
     edit: edit::EditTool,
     bash: bash::BashTool,
+    webfetch: webfetch::WebfetchTool,
 }
 
 impl BuiltinTools {
+    /// The coding runtime's tools, working in its `workspace`.
     #[must_use]
-    pub fn new(workspace: impl Into<PathBuf>) -> Self {
-        let workspace = workspace.into();
+    pub fn new(workspace: &WorkspaceContext) -> Self {
         Self {
-            read: read::ReadTool::new(workspace.clone()),
-            write: write::WriteTool::new(workspace.clone()),
-            edit: edit::EditTool::new(workspace.clone()),
+            read: read::ReadTool::new(workspace),
+            write: write::WriteTool::new(workspace),
+            edit: edit::EditTool::new(workspace),
             bash: bash::BashTool::new(workspace),
+            webfetch: webfetch::WebfetchTool::coding(),
         }
     }
 }
 
-impl Default for BuiltinTools {
-    fn default() -> Self {
-        Self::new(std::env::current_dir().expect("current directory"))
-    }
+/// Runtime options for the daemon: the global runtime's fallback `webfetch`
+/// and a local coding runtime at `workspace` offering [`BuiltinTools`].
+#[must_use]
+pub fn runtime_options(workspace: impl Into<PathBuf>) -> RuntimeOptions {
+    let mut options = RuntimeOptions::new(workspace);
+    options.global_tools = vec![Arc::new(webfetch::WebfetchTool::global_fallback())];
+    options.local_tools = Arc::new(|workspace| vec![Arc::new(BuiltinTools::new(workspace))]);
+    options
 }
 
 #[async_trait]
@@ -372,7 +403,7 @@ impl ToolProvider for BuiltinTools {
         tools.extend(self.write.tools_for_session(ctx)?);
         tools.extend(self.edit.tools_for_session(ctx)?);
         tools.extend(self.bash.tools_for_session(ctx)?);
-        tools.extend(webfetch::WebfetchTool.tools_for_session(ctx)?);
+        tools.extend(self.webfetch.tools_for_session(ctx)?);
         Ok(tools)
     }
 
@@ -397,7 +428,7 @@ impl ToolProvider for BuiltinTools {
             "write" => self.write.get_permission_resource(name, arguments),
             "edit" => self.edit.get_permission_resource(name, arguments),
             "bash" => self.bash.get_permission_resource(name, arguments),
-            "webfetch" => webfetch::WebfetchTool.get_permission_resource(name, arguments),
+            "webfetch" => self.webfetch.get_permission_resource(name, arguments),
             _ => Err(tool_error(format!("unknown built-in tool `{name}`"))),
         }
     }
@@ -412,7 +443,7 @@ impl ToolProvider for BuiltinTools {
             "write" => self.write.get_display_argument(name, arguments),
             "edit" => self.edit.get_display_argument(name, arguments),
             "bash" => self.bash.get_display_argument(name, arguments),
-            "webfetch" => webfetch::WebfetchTool.get_display_argument(name, arguments),
+            "webfetch" => self.webfetch.get_display_argument(name, arguments),
             _ => Err(tool_error(format!("unknown built-in tool `{name}`"))),
         }
     }
@@ -427,7 +458,7 @@ impl ToolProvider for BuiltinTools {
             "write" => self.write.prepare(ctx, call).await,
             "edit" => self.edit.prepare(ctx, call).await,
             "bash" => self.bash.prepare(ctx, call).await,
-            "webfetch" => webfetch::WebfetchTool.prepare(ctx, call).await,
+            "webfetch" => self.webfetch.prepare(ctx, call).await,
             _ => Err(tool_error(format!("unknown built-in tool `{}`", call.name))),
         }
     }

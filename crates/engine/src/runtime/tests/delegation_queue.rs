@@ -10,11 +10,12 @@ use super::support::*;
 async fn background_startup_failure_releases_capacity_and_notifies() {
     let (endpoint, server) = scripted_startup_failure_delegation_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     fixture
         .engine
         .inner
@@ -95,11 +96,12 @@ async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
     let (endpoint, server) = scripted_queued_delegation_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     assert_eq!(fixture.config.runtime.delegation.max_concurrency, Some(4));
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())
@@ -164,11 +166,12 @@ async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
 async fn background_delegation_rejects_when_four_x_queue_is_full() {
     let (endpoint, server) = scripted_full_delegation_queue_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
             engine: fixture.engine.clone(),
-        }));
+        }),
+    );
     let parent = fixture
         .engine
         .create_session(selection.clone())

@@ -284,6 +284,7 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::GrantJournal(_) => "grant_journal",
         EngineError::ToolOutput(_) => "tool_output_io",
         EngineError::AgentMdIo { .. } => "agent_md_io",
+        EngineError::Workspace { .. } => "workspace_unavailable",
         EngineError::IneligibleAgent(_) => "ineligible_agent",
         EngineError::UnknownAgentModel { .. } => "unknown_agent_model",
         EngineError::UnavailableAgentModel { .. } => "unavailable_agent_model",

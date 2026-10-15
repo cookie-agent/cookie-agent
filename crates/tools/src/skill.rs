@@ -91,6 +91,7 @@ impl PreparedExecutor for SkillExecutor {
 impl SkillTool {
     pub(crate) fn spec() -> ToolSpec {
         ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),
@@ -184,7 +185,7 @@ impl ToolProvider for SkillTool {
             &args,
             vec![(PermissionAction::Skill, "load")],
             vec![resource],
-            ctx.cwd.to_string_lossy().as_bytes(),
+            &ctx.context_bytes(),
         )?;
         let normalized = serde_json::to_value(&args).map_err(tool_error)?;
         PreparedTool::new(

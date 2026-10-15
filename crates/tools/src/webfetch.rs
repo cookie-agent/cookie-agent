@@ -2,8 +2,8 @@ use std::{sync::OnceLock, time::Duration};
 
 use async_trait::async_trait;
 use cookie_agent_engine::{
-    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProvider, ToolSpec,
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolCollision, ToolError,
+    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
 use cookie_agent_protocol::{
     ApprovalResourceSource, PermissionAction, PersistedToolResult, PreparedBindingLifetime,
@@ -31,8 +31,32 @@ fn client() -> Result<&'static reqwest::Client, ToolError> {
     Ok(CLIENT.get_or_init(|| client))
 }
 
-#[derive(Debug, Default)]
-pub struct WebfetchTool;
+/// The `webfetch` tool. A coding runtime offers it as a regular tool; the
+/// global runtime offers it as a fallback that is hidden whenever a coding
+/// runtime's `webfetch` is published. Both declare the same parameters, so
+/// which one the model sees makes no difference to it.
+#[derive(Debug)]
+pub struct WebfetchTool {
+    collision: ToolCollision,
+}
+
+impl WebfetchTool {
+    /// The coding runtime's `webfetch`.
+    #[must_use]
+    pub const fn coding() -> Self {
+        Self {
+            collision: ToolCollision::Prefix,
+        }
+    }
+
+    /// The global runtime's fallback `webfetch`.
+    #[must_use]
+    pub const fn global_fallback() -> Self {
+        Self {
+            collision: ToolCollision::Fallback,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -56,12 +80,16 @@ impl WebfetchArgs {
 #[async_trait]
 impl ToolProvider for WebfetchTool {
     fn provider_id(&self) -> &'static str {
-        "builtin.webfetch"
+        match self.collision {
+            ToolCollision::Prefix => "builtin.webfetch",
+            ToolCollision::Fallback => "global.webfetch",
+        }
     }
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
-output: Default::default(),
+            collision: self.collision,
+            output: Default::default(),
             name: "webfetch".into(),
             permission_name: "webfetch".into(),
             description: "Fetch an HTTP or HTTPS URL. Output has final_url, status_code, content_type, and truncated header lines, a blank line, then the text body. Returns HTML as plaintext unless raw is true; other text passes through. Use read_artifact with the artifact a truncation hint names to page retained output, including the body.".into(),
@@ -412,7 +440,7 @@ mod tests {
 
     #[test]
     fn webfetch_keeps_standard_bounded_retention() {
-        let spec = WebfetchTool
+        let spec = WebfetchTool::coding()
             .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
             .unwrap()
             .remove(0);
@@ -478,13 +506,12 @@ mod tests {
     }
 
     async fn prepare(arguments: serde_json::Value) -> Result<PreparedTool, ToolError> {
-        WebfetchTool
+        WebfetchTool::coding()
             .prepare(
                 ToolPreparationContext {
                     session: SessionId::new_v7(),
                     run: RunId::new_v7(),
-                    cwd: "/tmp".into(),
-                    workspace_root: "/tmp".into(),
+                    origin: cookie_agent_engine::ToolOrigin::Base,
                     turn_context: crate::test_turn_context(),
                 },
                 ToolCall {
@@ -536,7 +563,7 @@ mod tests {
         assert_eq!(prepared.operation().resources().len(), 1);
         assert_eq!(prepared.policy_labels(), [Some(url.clone())]);
         assert_eq!(
-            WebfetchTool
+            WebfetchTool::coding()
                 .get_display_argument("webfetch", prepared.normalized_arguments())
                 .unwrap(),
             url
@@ -562,7 +589,7 @@ mod tests {
                 policy,
                 prepared.operation(),
                 prepared.policy_labels(),
-                std::path::Path::new("/tmp"),
+                Some(std::path::Path::new("/tmp")),
             )
         };
         assert_eq!(decide(&policy).effect, PermissionEffect::Deny);

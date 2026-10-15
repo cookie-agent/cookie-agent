@@ -62,6 +62,7 @@ impl ToolProvider for BackgroundJobProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),
@@ -238,11 +239,12 @@ async fn start_job_run(
     }
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(&endpoint, JOB_AGENT);
     let control = Arc::new(JobControl::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(BackgroundJobProvider {
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(BackgroundJobProvider {
             control: Arc::clone(&control),
-        }));
+        }),
+    );
     let session_id = fixture
         .engine
         .create_session(selection.clone())

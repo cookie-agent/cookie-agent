@@ -177,7 +177,7 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
         cwd: directory.path().to_owned(),
         config,
         model_manager: manager,
-        tools: Vec::new(),
+        runtimes: cookie_agent_engine::RuntimeOptions::new(directory.path()),
     })
     .expect("empty engine");
     let server = Arc::new(Server::new(engine.clone()));
@@ -406,7 +406,7 @@ fn harness_with_catalog(
         cwd: directory.path().to_owned(),
         config,
         model_manager: manager,
-        tools: Vec::new(),
+        runtimes: cookie_agent_engine::RuntimeOptions::new(directory.path()),
     })
     .expect("engine");
     let server = Arc::new(Server::new(engine.clone()));
