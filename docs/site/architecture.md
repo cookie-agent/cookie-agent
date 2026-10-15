@@ -35,8 +35,10 @@ The daemon itself hosts the base layer and the global runtime (MCP servers and
 plugins). The `local` coding runtime, with `read`, `write`, `edit`, `bash`,
 and `webfetch` in the daemon's working directory, runs on a task of the daemon
 process and is reached over the [runtime protocol](reference/runtime-protocol.md)
-through an in-memory frame pair, the same protocol a runtime in another
-process will speak over stdio.
+through an in-memory frame pair. A configured
+[`[runtimes.<id>]`](guide/runtimes.md) template starts runtimes in child
+processes (typically `cookie runtime coding --stdio` on another machine over
+ssh) that speak the same protocol over stdio.
 
 Any number of clients may attach to one daemon at once. Each sees every
 session's events live, can submit input to any of them, and is told of the
@@ -79,12 +81,12 @@ The TUI's own tests still drive a real `server` through a dev-dependency.
 | `plugin_sdk` | Official Rust SDK for out-of-process plugins: JSON-RPC framing, handler registration, tool declarations, event publication, and interception hooks. |
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
 | `config` | Strict runtime configuration and Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports `AgentMode`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |
-| `runtime_api` | The contract between the engine and the tools it runs: `ToolProvider`, `ToolSpec`, prepared calls, preparation and execution contexts, progress and stdin, the traits through which the engine provides output capture, artifact retention, and background jobs, runtime identity (`ToolOrigin`, `RuntimeInfo`, `WorkspaceContext`), tool attachment validation, and the `AGENTS.md` lookup. It also holds the [runtime protocol](reference/runtime-protocol.md): its wire types (`protocol`), the symmetric JSON-RPC peer both ends run with a newline-delimited stdio transport (`rpc`), and `RuntimeConnector`, which starts a runtime and returns its transport. Depends on `protocol` only. |
-| `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence, the base layer tools (delegation: `delegate_subagent`, `get_subagent_result`, `cancel_subagent`; messaging: `send_message`; `skill`; goals; `read_artifact`), and the runtime registry with the runtime protocol client (`runtimes::remote`). |
-| `coding_runtime` | The coding runtime: its `read`, `write`, `edit`, `bash`, and `webfetch` tools, working in the runtime's workspace, the global runtime's fallback `webfetch`, and the runtime protocol server (`server::serve`) that answers a daemon with them, the workspace's project skills, and its `AGENTS.md`, plus the in-process connector the daemon's `local` runtime uses. Depends on `runtime_api` and `config` (the skill parser), never on the engine. |
+| `runtime_api` | The contract between the engine and the tools it runs: `ToolProvider`, `ToolSpec`, prepared calls, preparation and execution contexts, progress and stdin, the traits through which the engine provides output capture, artifact retention, and background jobs, runtime identity (`ToolOrigin`, `RuntimeInfo`, `WorkspaceContext`), tool attachment validation, and the `AGENTS.md` lookup. It also holds the [runtime protocol](reference/runtime-protocol.md): its wire types (`protocol`), the symmetric JSON-RPC peer both ends run with a newline-delimited stdio transport (`rpc`), and `RuntimeConnector`, which starts a runtime for a requested workspace and returns its transport with a bounded `DiagnosticTail` of what it writes outside the protocol. Depends on `protocol` only. |
+| `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence, the base layer tools (delegation: `delegate_subagent`, `get_subagent_result`, `cancel_subagent`; messaging: `send_message`; `skill`; goals; `read_artifact`), and the runtime registry with the runtime protocol client (`runtimes::remote`), the child-process connector of configured templates (`runtimes::process`), and instance reconnects. |
+| `coding_runtime` | The coding runtime: its `read`, `write`, `edit`, `bash`, and `webfetch` tools, working in the runtime's workspace, the global runtime's fallback `webfetch`, and the runtime protocol server (`server::serve`) that answers a daemon with them, the workspace's project skills, and its `AGENTS.md`, plus the in-process connector the daemon's `local` runtime uses and `server::serve_stdio`, which `cookie runtime coding --stdio` runs. Depends on `runtime_api` and `config` (the skill parser), never on the engine. |
 | `server` | The `ServerProtocol` implementation over `Engine`, the axum WebSocket accept path, `Server::connect_in_process`, and the per-run token / ready-line APIs. Server side only. |
 | `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow. Depends only on `protocol` and runs over a `protocol::Client` it is handed. |
-| `cookie_agent` | CLI and composition root wiring every crate together. The only binary. |
+| `cookie_agent` | CLI and composition root wiring every crate together, and `cookie runtime coding --stdio`, which serves a coding runtime to a daemon without reading any configuration. The only binary. |
 
 ### Type unification
 
@@ -307,17 +309,22 @@ session and drive the run loop:
     servers, plugins, and a `webfetch` that is only a fallback; no workspace)
     and `local` (kind `coding`: `read`, `write`, `edit`, `bash`, and
     `webfetch` in the daemon's working directory). Both instances start with
-    the daemon (`Engine::open_async`); attaching any other runtime ID is an
-    unknown-runtime error until configured templates exist. The global
-    runtime is called in-process. `local` runs behind the
+    the daemon (`Engine::open_async`). Each configured `[runtimes.<id>]`
+    adds a protocol template whose `ProcessConnector` runs the template's
+    command (`runtimes/process.rs`); its instances start when a session
+    needs them and are keyed by the canonical workspace the runtime reports,
+    never by a path the daemon resolved. The global runtime is called
+    in-process. `local` and the configured runtimes run behind the
     [runtime protocol](reference/runtime-protocol.md): a protocol template
-    starts it with a `RuntimeConnector` and initializes it, and the client
-    publishes the tools it declared, proxies preparation and execution, routes
-    its progress into the daemon's output capture, retains the media it sends,
-    and maps its background jobs onto the engine's. When a protocol
-    connection is lost, calls in flight fail with `runtime_unavailable`,
-    running background jobs complete as failed, and the instance is marked
-    failed; starting it again gives it a new generation.
+    starts an instance with a `RuntimeConnector` and initializes it, and the
+    client publishes the tools it declared, proxies preparation and
+    execution, routes its progress into the daemon's output capture, retains
+    the media it sends, and maps its background jobs onto the engine's. When
+    a protocol connection is lost, calls in flight fail with
+    `runtime_unavailable` and running background jobs complete as failed;
+    the instance reconnects (1 s, 2 s, 4 s) with its tools still published,
+    and a restart revives it under a new generation. When every attempt
+    fails it becomes failed and its tools are dropped.
   - *attachments*: a session records the instances it uses with
     `runtime_attached` and `runtime_detached` events. New sessions attach
     `global` and `local`; a log with neither event reads the same way. Each

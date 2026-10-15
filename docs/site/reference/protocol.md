@@ -32,8 +32,8 @@ logs that recorded a `workspace` document source still read it as `user`).
 Protocol 40 added runtime attachments (see [Runtimes](#runtimes)):
 `session.create` takes `runtimes` and `global`, the session create, get, and
 resume results carry the session's `runtimes`, `session.runtime.attach`,
-`session.runtime.detach`, and `runtimes.list` are new, `runtimes.changed` is a
-new notification, permission rules, overlay mutations, approval requests, and
+`session.runtime.detach`, `runtimes.list`, and `runtimes.reconnect` are new,
+`runtimes.changed` is a new notification, permission rules, overlay mutations, approval requests, and
 tree grants carry a runtime selector or runtime ID, and `delegate_subagent`
 accepts `runtimes`. In the same version the `lazy` MCP server setting and the
 `lazy-not-connected` state were removed, MCP servers gained the `reconnecting`
@@ -157,6 +157,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.runtime.attach` | Session ID, `runtime_id`, `workspace` when the template takes one | The new `attachment` and the session's `runtimes` |
 | `session.runtime.detach` | Session ID, attachment `name` | The session's `runtimes` |
 | `runtimes.list` | Empty object | Runtime `templates` and live `instances` with status |
+| `runtimes.reconnect` | `runtime_id`, `workspace` when the template takes one | The `instance` afterwards, as `runtimes.list` reports it |
 | `session.set_permission_mode` | Any session ID in the target tree, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo`; updates the runtime-only tree mode | Empty object |
 | `skills.list` | Session ID | Discovered skills with source, precedence, visibility, and permission effect |
 | `skills.get` | Session ID, skill name, arguments | Permission-checked rendered preview and descriptor |
@@ -209,13 +210,24 @@ attachment of that name; attaching an instance a session already has is an
 error. A template whose definition takes a workspace requires `workspace`;
 for any other template, including `global` and `local`, supplying one is an
 error. Attaching a runtime ID without a template is an `unknown runtime`
-error; this protocol version has only the `global` and `local` templates.
+error. Besides `global` and `local`, the templates are the configured
+[`[runtimes.<id>]`](../guide/runtimes.md) tables. The daemon passes `workspace`
+to the runtime exactly as given; the attachment records the canonical path
+the runtime reported, and two spellings of one workspace share an instance.
 
 `runtimes.list` returns each template's `runtime_id` and whether it
 `takes_workspace`, and each instance's `runtime_id`, reported
 `attachment_name`, `kind`, `workspace`, and `platform` once started, its
 `status` (`starting`, `ready`, `reconnecting`, `failed`, or `stopped`), and a
 failure `message`.
+
+`runtimes.reconnect` retries an instance now: a `failed` instance is started
+again, under a new generation, and keeps its identity; an instance that is not
+running is started; a `ready` or `reconnecting` one is left as it is.
+`workspace` follows the attach rule, and for a failed instance it is the
+`workspace` that `runtimes.list` reports. A start that fails is an error with
+the reason, and is also reported in `runtimes.changed`. Retrying `global`
+also retries its failed MCP servers.
 
 ### Model availability
 

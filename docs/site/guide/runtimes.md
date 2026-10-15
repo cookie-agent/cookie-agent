@@ -91,9 +91,9 @@ records the reported path, and reopening the session asks for that path.
   rejected, and clients viewing an affected session get an error naming the
   runtime and the reason.
 - **Diagnostics.** The process's standard error is captured into a bounded
-  buffer (its last lines, at most 8 KiB). Failure reasons end with that tail,
-  so an `ssh` or `cookie runtime` error shows up in the TUI. Nothing of it is
-  written to the daemon's own terminal.
+  buffer (its last 32 lines, at most 4 KiB). Failure reasons end with that
+  tail, so an `ssh` or `cookie runtime` error shows up in the TUI. Nothing of
+  it is written to the daemon's own terminal.
 - **Drop.** When a running instance's process exits or its pipe closes, calls
   in flight fail with `runtime_unavailable`, its running background jobs
   complete as failed, and the daemon restarts the process up to 3 times after

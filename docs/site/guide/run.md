@@ -364,7 +364,10 @@ is open.
 
 Press `a` to attach a runtime: choose a template with the arrow keys and, when
 the template takes a workspace, Tab to the workspace path and type it; Enter
-attaches. Press `d` to detach the selected attachment. The daemon refuses both
+attaches. The path is passed to the runtime as typed and resolved on its
+machine (see [Runtimes](runtimes.md)). Press `d` to detach the selected
+attachment, and `r` to retry its instance now, for example after fixing why it
+failed (`runtimes.reconnect`). The daemon refuses both
 while the session has an active run, and refuses attaching an instance the
 session already has; the refusal appears in the status line. Attaching starts
 the instance first and records nothing when it fails to start.

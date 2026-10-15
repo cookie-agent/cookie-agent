@@ -3,9 +3,12 @@
 The runtime protocol connects the daemon to a *runtime*: a source of tools and
 workspace context that runs outside the engine (see the
 [runtimes specification](../specs/runtimes.md)). The daemon's built-in `local`
-coding runtime speaks it today, on a task of the daemon's own process over an
-in-memory frame pair, so the local and remote paths are one code path. The
-global runtime does not speak it; the engine calls it in-process.
+coding runtime speaks it on a task of the daemon's own process over an
+in-memory frame pair; a configured [`[runtimes.<id>]`](../guide/runtimes.md)
+template runs a command, typically `ssh host cookie runtime coding --stdio
+--workspace {workspace}`, and speaks it over the child's stdin and stdout. The
+local and remote paths are one code path. The global runtime does not speak
+it; the engine calls it in-process.
 
 The wire types live in `cookie_agent_runtime_api::protocol`, the JSON-RPC peer
 both ends run in `cookie_agent_runtime_api::rpc`, the coding runtime's server
@@ -39,22 +42,37 @@ the version in the reply the same way. There is no negotiation.
 
 ## Lifecycle
 
-1. The daemon connects (in-process: a new frame pair and a server task) and
-   sends `runtime/initialize`. Every other request before it is answered with
-   `-32012`; a second initialize with `-32011`.
+1. The daemon connects (in-process: a new frame pair and a server task; a
+   configured template: it runs the command in its own process group, a job
+   object on Windows, with the daemon's environment plus the template's `env`)
+   and sends `runtime/initialize`, all within the template's
+   `startup_timeout_ms`. Every other request before it is answered with
+   `-32012`; a second initialize with `-32011`. A child's stderr is kept as a
+   bounded tail (the last 32 lines, at most 4 KiB) that failure reasons end
+   with; nothing but protocol messages may appear on its stdout.
 2. Sessions use the instance: the daemon prepares, executes, and releases
    calls, and asks for `AGENTS.md` context at each root run's admission.
-3. The daemon sends `runtime/shutdown` when it shuts down, or simply closes
-   the transport. The runtime answers, cancels every running call and
-   background job, and stops. It also stops when its transport ends.
+3. The daemon sends `runtime/shutdown` when it shuts down, waits up to the
+   template's `shutdown_grace_ms` for the answer, and closes the transport
+   (a child's stdin); a child that has not exited after another grace is
+   killed with its process group. The runtime answers, cancels every running
+   call and background job, and stops. It also stops when its transport
+   ends.
 
 When the connection is lost while the instance is in use, every call in
-flight fails with `runtime_unavailable`, every running background job
-completes as failed (`runtime … exited before the job finished`), and the
-instance is marked `failed` and reported to clients; its tools leave the
-session's tool list. The next session that needs it starts it again under a
-new instance generation, so a call published before the restart fails as
-`operation_changed`. Calls are never retried transparently.
+flight fails with `runtime_unavailable` and every running background job
+completes as failed (`runtime … exited before the job finished`). The
+instance becomes `reconnecting`: its tools stay published, calls fail fast
+with `runtime_unavailable`, and the daemon starts it again up to 3 times,
+after 1 s, 2 s, and 4 s, sending `runtime/initialize` with the canonical
+workspace the instance reported. A restart that reports the same identity
+(runtime ID, kind, attachment name, workspace) revives the instance under a
+new generation: its tools are listed again, and a call published before the
+restart fails as `operation_changed`. When every attempt fails, the instance
+becomes `failed`, its tools leave the session's tool list, and clients are
+told the reason. A failed instance starts again when a session that uses it
+is created or opened, or on `runtimes.reconnect`. Calls are never retried
+transparently.
 
 ## Methods
 
@@ -85,10 +103,10 @@ ignored.
 |---|---|
 | `version` | The daemon's protocol version. |
 | `runtime_id` | The template's runtime ID, `[a-z][a-z0-9_]{0,31}`. |
-| `workspace` | The workspace path the daemon asks for, when the template has one. Optional: a runtime started for one workspace (`--workspace`) uses its own, and refuses a different one. |
+| `workspace` | The workspace path the daemon asks for, when the template has one, exactly as a session gave it: the runtime expands a leading `~` and resolves it on its own machine. Optional: a runtime started for one workspace (`--workspace`) uses its own, and refuses one that resolves elsewhere. |
 | `settings.tool_output` | The `[tool_output]` preview limits: `max_lines`, `max_bytes`, `head_lines`, `tail_lines`. |
 | `settings.agent_md` | `max_bytes`: files larger than this are skipped. At most the `AGENTS.md` event bound. |
-| `settings.mcp_servers` | The template's MCP servers. Always empty today; a coding runtime rejects a nonempty list. |
+| `settings.mcp_servers` | The template's MCP servers (`name` and the server's `config` table). A coding runtime does not host MCP servers yet and rejects a nonempty list. |
 
 A runtime rejects settings its kind does not support with `-32011`, as it does
 a workspace it cannot open.
