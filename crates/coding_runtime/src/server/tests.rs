@@ -504,3 +504,22 @@ async fn calls_are_prepared_executed_and_released_by_prepared_id() {
         .expect("server stops on EOF")
         .unwrap();
 }
+
+#[test]
+fn a_leading_tilde_expands_to_the_home_directory() {
+    use std::path::Path;
+
+    let home = cookie_agent_protocol::paths::home_dir().expect("home directory");
+    assert_eq!(super::expand_home(Path::new("~")), home);
+    assert_eq!(
+        super::expand_home(Path::new("~/src/cookie-agent")),
+        home.join("src/cookie-agent")
+    );
+    for unchanged in ["~other/src", "src/~", "/srv/~/x", "relative"] {
+        assert_eq!(
+            super::expand_home(Path::new(unchanged)),
+            Path::new(unchanged),
+            "{unchanged}"
+        );
+    }
+}

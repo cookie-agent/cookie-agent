@@ -17,7 +17,7 @@
 use std::{
     collections::HashMap,
     panic::AssertUnwindSafe,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicU64, Ordering},
@@ -106,6 +106,36 @@ pub fn in_process_connector() -> Arc<dyn RuntimeConnector> {
 #[must_use]
 pub fn in_process_connector_with(tools: CodingToolsFactory) -> Arc<dyn RuntimeConnector> {
     Arc::new(InProcessConnector { tools })
+}
+
+/// `path` with a leading `~` (alone, or followed by a separator) replaced by
+/// this machine's home directory; any other path unchanged.
+#[must_use]
+pub fn expand_home(path: &Path) -> PathBuf {
+    let mut components = path.components();
+    match components.next() {
+        Some(std::path::Component::Normal(first)) if first == "~" => {
+            match cookie_agent_protocol::paths::home_dir() {
+                Ok(home) => home.join(components.as_path()),
+                Err(_) => path.to_owned(),
+            }
+        }
+        _ => path.to_owned(),
+    }
+}
+
+/// Serves one daemon over this process's standard input and output, one
+/// JSON-RPC message per line, until it sends `runtime/shutdown` or standard
+/// input ends. Nothing else may write to standard output meanwhile.
+pub async fn serve_stdio(options: ServeOptions) {
+    serve(
+        Box::new(cookie_agent_runtime_api::rpc::LineTransport::new(
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+        )),
+        options,
+    )
+    .await;
 }
 
 /// Serves one daemon over `transport` until it sends `runtime/shutdown` or
@@ -349,7 +379,10 @@ impl Server {
                 "agent_md.max_bytes exceeds {AGENT_MD_MAX_BYTES}"
             )));
         }
-        let path = match (params.workspace.map(PathBuf::from), &self.options.workspace) {
+        let requested = params
+            .workspace
+            .map(|workspace| expand_home(Path::new(&workspace)));
+        let path = match (requested, &self.options.workspace) {
             (Some(requested), Some(own)) => {
                 let same = requested
                     .canonicalize()

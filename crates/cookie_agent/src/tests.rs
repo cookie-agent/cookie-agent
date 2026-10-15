@@ -269,6 +269,31 @@ fn cli_commands_and_removed_flags_are_exact() {
             .command,
         Some(Command::Daemon { port: Some(0) })
     );
+    assert_eq!(
+        Cli::try_parse_from([
+            "cookie",
+            "runtime",
+            "coding",
+            "--stdio",
+            "--workspace",
+            "~/my repo"
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Runtime {
+            command: RuntimeCommand::Coding {
+                stdio: true,
+                workspace: "~/my repo".into(),
+            }
+        })
+    );
+    for arguments in [
+        vec!["cookie", "runtime", "coding", "--workspace", "/srv"],
+        vec!["cookie", "runtime", "coding", "--stdio"],
+        vec!["cookie", "runtime", "global", "--stdio"],
+    ] {
+        assert!(Cli::try_parse_from(&arguments).is_err(), "{arguments:?}");
+    }
     assert!(Cli::try_parse_from(["cookie", "--trust-workspace", "daemon"]).is_err());
     assert!(Cli::try_parse_from(["cookie", "connect", "openai", "--api-key", "sentinel"]).is_err());
     assert!(Cli::try_parse_from(["cookie", "mcp", "approve", "github"]).is_err());
@@ -439,6 +464,12 @@ fn attach_connect_and_disconnect_are_cwd_independent() {
             command: McpCommand::List,
             url: DEFAULT_WEBSOCKET_URL.into(),
             token: TEST_TOKEN.into(),
+        },
+        Command::Runtime {
+            command: RuntimeCommand::Coding {
+                stdio: true,
+                workspace: "~/repo".into(),
+            },
         },
     ] {
         assert!(

@@ -127,6 +127,12 @@ enum Command {
         #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
         token: String,
     },
+    /// Serve a runtime to a daemon over the runtime protocol, as a
+    /// `[runtimes.<id>]` template runs it. Needs no provider configuration.
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommand,
+    },
     /// List MCP servers or start remote-server OAuth.
     Mcp {
         #[command(subcommand)]
@@ -135,6 +141,22 @@ enum Command {
         url: String,
         #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
         token: String,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq, Subcommand)]
+enum RuntimeCommand {
+    /// Serve a coding runtime (`read`, `write`, `edit`, `bash`, `webfetch`)
+    /// for one workspace on this machine.
+    Coding {
+        /// Speak the runtime protocol over standard input and output, one
+        /// JSON-RPC message per line. Required: it is the only transport.
+        #[arg(long, required = true)]
+        stdio: bool,
+        /// The workspace directory. A leading `~` is expanded; the path is
+        /// resolved on this machine.
+        #[arg(long)]
+        workspace: PathBuf,
     },
 }
 
@@ -330,6 +352,7 @@ async fn main_result() -> anyhow::Result<()> {
             url,
             token,
         }) => run_mcp(&url, &token, command).await,
+        Some(Command::Runtime { command }) => run_runtime(command).await,
         Some(Command::Attach { url, token }) => {
             #[cfg(feature = "tui")]
             cookie_agent_tui::markdown::warm_up_syntax_assets();
@@ -354,7 +377,8 @@ fn local_workspace(
             Command::Attach { .. }
                 | Command::Connect { .. }
                 | Command::Disconnect { .. }
-                | Command::Mcp { .. },
+                | Command::Mcp { .. }
+                | Command::Runtime { .. },
         )
     ) {
         Ok(None)
@@ -363,6 +387,34 @@ fn local_workspace(
             .context("determine current workspace")
             .map(Some)
     }
+}
+
+/// `cookie runtime coding --stdio`: serves one coding runtime for the
+/// workspace over this process's stdio until the daemon sends
+/// `runtime/shutdown` or closes standard input. Standard output carries only
+/// protocol messages; errors go to standard error.
+async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
+    let RuntimeCommand::Coding { stdio, workspace } = command;
+    anyhow::ensure!(stdio, "`--stdio` is the only runtime transport");
+    let expanded = cookie_agent_coding_runtime::server::expand_home(&workspace);
+    let workspace = expanded
+        .canonicalize()
+        .with_context(|| format!("workspace {} is unavailable", expanded.display()))?;
+    anyhow::ensure!(
+        workspace.is_dir(),
+        "workspace {} is not a directory",
+        workspace.display()
+    );
+    cookie_agent_coding_runtime::server::serve_stdio(
+        cookie_agent_coding_runtime::server::ServeOptions {
+            workspace: Some(workspace),
+            ..Default::default()
+        },
+    )
+    .await;
+    // The blocking standard-input reader may still wait for a line that
+    // never comes; exit without waiting for it.
+    std::process::exit(0)
 }
 
 async fn compose(workspace: &Path) -> anyhow::Result<Runtime> {
