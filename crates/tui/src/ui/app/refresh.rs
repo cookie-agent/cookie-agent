@@ -866,10 +866,9 @@ impl App {
             self.apply_sessions_change((**change).clone()).await;
             return;
         }
-        if matches!(delivery, ClientDelivery::McpChanged) {
+        if matches!(delivery, ClientDelivery::McpChanged(_)) {
             // An open MCP panel refreshes now instead of at its next poll.
             self.poll_mcp();
-            return;
         }
         if let ClientDelivery::RuntimeChanged(changed) = &delivery {
             let duplicate = self.runtime.revision() == Some(&changed.snapshot.runtime_revision);

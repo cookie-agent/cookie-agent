@@ -366,6 +366,14 @@ fn harness_with_catalog(
     catalog: Arc<CatalogSnapshot>,
     prepare_store: impl FnOnce(&ProviderStore),
 ) -> Harness {
+    harness_with_catalog_and_mcp(catalog, prepare_store, BTreeMap::new())
+}
+
+fn harness_with_catalog_and_mcp(
+    catalog: Arc<CatalogSnapshot>,
+    prepare_store: impl FnOnce(&ProviderStore),
+    mcp_servers: BTreeMap<String, LoadedMcpServer>,
+) -> Harness {
     let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
     create_private_test_dir(&project);
@@ -394,8 +402,11 @@ fn harness_with_catalog(
         },
         agents: BTreeMap::new(),
         agent_presets: BTreeMap::new(),
-        mcp_servers: BTreeMap::new(),
-        user_mcp_servers: BTreeMap::new(),
+        user_mcp_servers: mcp_servers
+            .iter()
+            .map(|(name, server)| (name.clone(), server.config.clone()))
+            .collect(),
+        mcp_servers,
         plugins: Default::default(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
         skills: cookie_agent_config::SkillRegistry::default(),
@@ -1082,4 +1093,158 @@ async fn runtime_attachments_are_reachable_through_rpc() {
         names(&fetched["result"]["runtimes"]).is_empty(),
         "{fetched}"
     );
+}
+
+/// Reads frames until a `method` notification that `accept` takes.
+async fn notification_where(
+    stream: &mut InProcessStream,
+    method: &str,
+    accept: impl Fn(&Value) -> bool,
+) -> Value {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let frame = stream.recv().await.expect("receive").expect("stream open");
+            let value = match frame {
+                MessageFrame::Value(value) => value,
+                MessageFrame::Text(text) => serde_json::from_str(&text).expect("JSON frame"),
+                MessageFrame::Bytes(bytes) => serde_json::from_slice(&bytes).expect("JSON frame"),
+            };
+            if value["method"] == method && accept(&value["params"]) {
+                return value["params"].clone();
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no matching {method} notification"))
+}
+
+#[tokio::test]
+async fn mcp_connection_failures_reach_clients_viewing_affected_sessions() {
+    let mut catalog = (*openai_catalog()).clone();
+    Arc::make_mut(&mut catalog.providers)
+        .values_mut()
+        .next()
+        .expect("OpenAI provider")
+        .record
+        .as_mut()
+        .expect("OpenAI provider record")
+        .api = Some("http://127.0.0.1:9/v1".into());
+    let catalog = Arc::new(catalog);
+    let missing = private_tempdir();
+    let harness = harness_with_catalog_and_mcp(
+        Arc::clone(&catalog),
+        |_| {},
+        BTreeMap::from([(
+            "broken".into(),
+            LoadedMcpServer {
+                source: McpServerSource::UserFile,
+                config: cookie_agent_config::McpServerConfig {
+                    command: Some(missing.path().join("no-such-server").display().to_string()),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                    cwd: None,
+                    url: None,
+                    headers: BTreeMap::new(),
+                    oauth: Default::default(),
+                    enabled: true,
+                    timeout_ms: Some(5_000),
+                },
+            },
+        )]),
+    );
+    let mut client = connect(Arc::clone(&harness.server)).await;
+    let (connected, _) = request(
+        &mut client,
+        2,
+        "provider.connect",
+        json!({
+            "provider_id":"openai",
+            "expected_catalog_revision":catalog.revision,
+            "setup_values":{},
+            "auth_method":"bearer-api-key-v1",
+            "auth_values":{"api_key":"test-secret"},
+            "client_connect_id":"mcp-failure-test"
+        }),
+    )
+    .await;
+    assert!(connected.get("result").is_some(), "{connected}");
+    let selection = json!({
+        "agent": "default",
+        "model": { "model": "openai/gpt-5-mini", "variant": null }
+    });
+    let (created, _) = request(
+        &mut client,
+        3,
+        "session.create",
+        json!({ "selection": selection.clone() }),
+    )
+    .await;
+    let session_id = created["result"]["session"]["session_id"].clone();
+    let (bare, _) = request(
+        &mut client,
+        4,
+        "session.create",
+        json!({ "selection": selection, "runtimes": [], "global": false }),
+    )
+    .await;
+    let bare_id = bare["result"]["session"]["session_id"].clone();
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !harness.engine.mcp_statuses().iter().any(|status| {
+            status.server == "broken" && status.state == cookie_agent_engine::McpServerState::Failed
+        }) {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the retry at creation fails");
+
+    // Subscribing tells the client about the failure it missed.
+    let (subscribed, _) = request(
+        &mut client,
+        5,
+        "events.subscribe",
+        json!({ "session_id": session_id }),
+    )
+    .await;
+    assert!(subscribed.get("result").is_some(), "{subscribed}");
+    let replayed = notification_where(&mut client, "mcp.changed", |params| {
+        params.get("failures").is_some()
+    })
+    .await;
+    assert_eq!(replayed["failures"][0]["server"], "broken");
+    assert_eq!(replayed["failures"][0]["runtime_id"], "global");
+    assert_eq!(replayed["failures"][0]["session_ids"], json!([session_id]));
+    assert!(
+        replayed["failures"][0]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("no-such-server")),
+        "{replayed}"
+    );
+
+    // A session without the global runtime is never named.
+    let (subscribed, _) = request(
+        &mut client,
+        6,
+        "events.subscribe",
+        json!({ "session_id": bare_id }),
+    )
+    .await;
+    assert!(subscribed.get("result").is_some(), "{subscribed}");
+
+    // Opening the session retries the server; the new failure names it.
+    let (resumed, _) = request(
+        &mut client,
+        7,
+        "session.resume",
+        json!({ "session_id": session_id }),
+    )
+    .await;
+    assert!(resumed.get("result").is_some(), "{resumed}");
+    let reported = notification_where(&mut client, "mcp.changed", |params| {
+        params.get("failures").is_some()
+    })
+    .await;
+    assert_eq!(reported["failures"][0]["session_ids"], json!([session_id]));
+    harness.server.shutdown();
+    harness.engine.shutdown().await;
 }

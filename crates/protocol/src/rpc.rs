@@ -454,9 +454,28 @@ pub enum RuntimeInstanceStatus {
 
 /// A runtime template was registered or an instance's status changed;
 /// refetch `runtimes.list`.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct RuntimesChangedNotification {}
+pub struct RuntimesChangedNotification {
+    /// Instances that failed to start, or dropped and did not reconnect,
+    /// that sessions this connection subscribes to are attached to. Absent
+    /// when the change carries no failure.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<RuntimeFailure>,
+}
+
+/// A runtime instance that is unavailable to the sessions attached to it.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeFailure {
+    pub runtime_id: RuntimeId,
+    /// The instance's workspace, for a template that takes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    pub reason: String,
+    /// The affected sessions among those this connection subscribes to.
+    pub session_ids: Vec<SessionId>,
+}
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionListParams {
@@ -1099,9 +1118,27 @@ pub enum SessionsChangedNotification {
 }
 
 /// MCP server configuration or status changed; refetch `mcp.server.list`.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct McpChangedNotification {}
+pub struct McpChangedNotification {
+    /// Servers that failed to connect, or dropped and did not reconnect, in
+    /// runtimes that sessions this connection subscribes to are attached
+    /// to. Absent when the change carries no failure.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<McpServerFailure>,
+}
+
+/// An MCP server whose tools are unavailable to the sessions using it.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerFailure {
+    /// The runtime hosting the server; `global` for top-level `[mcp]`.
+    pub runtime_id: RuntimeId,
+    pub server: String,
+    pub reason: String,
+    /// The affected sessions among those this connection subscribes to.
+    pub session_ids: Vec<SessionId>,
+}
 
 pub const SESSION_SUBMIT_INPUT_METHOD: &str = "session.submit_input";
 pub const SESSION_RECALL_INPUT_METHOD: &str = "session.recall_input";

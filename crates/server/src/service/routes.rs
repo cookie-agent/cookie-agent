@@ -470,6 +470,7 @@ impl ServerProtocol for Server {
         };
         context.register_session_subscription(params.session_id);
         context.forward_session_tail(params.session_id, receiver);
+        self.replay_connection_failures(context, params.session_id);
         Ok(result)
     }
 

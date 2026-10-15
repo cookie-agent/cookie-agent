@@ -678,6 +678,83 @@ async fn reopening_a_session_starts_its_attached_instances() {
     reopened.shutdown().await;
 }
 
+/// A `labpc` template whose instances never start.
+struct UnreachableTemplate;
+
+#[async_trait]
+impl crate::RuntimeTemplate for UnreachableTemplate {
+    fn runtime_id(&self) -> &str {
+        "labpc"
+    }
+
+    fn takes_workspace(&self) -> bool {
+        true
+    }
+
+    async fn start(
+        &self,
+        _workspace: Option<&std::path::Path>,
+    ) -> Result<crate::StartedRuntime, String> {
+        Err("ssh: connect to host labpc: Connection refused".into())
+    }
+}
+
+#[tokio::test]
+async fn an_instance_that_fails_to_start_on_open_is_reported() {
+    let (fixture, selection) = custom_fixture();
+    let api = workspace_dir(fixture._directory.path(), "api");
+    fixture
+        .engine
+        .register_runtime_template(FakeRuntimeTemplate::with_workspace(
+            "labpc",
+            probe_tools(ToolCollision::Prefix),
+        ))
+        .expect("register labpc");
+    let session = fixture
+        .engine
+        .create_session(selection)
+        .expect("session")
+        .session_id;
+    fixture
+        .engine
+        .attach_runtime(session, "labpc", Some(api.clone()), origin())
+        .await
+        .expect("attach labpc");
+    fixture
+        .engine
+        .inner
+        .store
+        .persist_buffered_session(session)
+        .expect("persist");
+    fixture.engine.shutdown().await;
+
+    let reopened = reopen_engine(&fixture);
+    reopened
+        .register_runtime_template(Arc::new(UnreachableTemplate))
+        .expect("register labpc again");
+    let mut failures = reopened.subscribe_runtime_failures();
+    reopened.resume(session).await.expect("resume");
+    let failure = failures.try_recv().expect("start failure reported");
+    assert_eq!(failure.runtime_id, "labpc");
+    assert_eq!(
+        failure.workspace.as_deref().map(std::path::Path::new),
+        Some(api.canonicalize().expect("canonical api").as_path())
+    );
+    assert!(
+        failure.reason.contains("Connection refused"),
+        "{}",
+        failure.reason
+    );
+    let instance = reopened
+        .runtime_instances()
+        .into_iter()
+        .find(|instance| instance.runtime_id == "labpc")
+        .expect("labpc instance");
+    assert_eq!(instance.status, crate::RuntimeInstanceStatus::Failed);
+    assert_eq!(instance.message.as_deref(), Some(failure.reason.as_str()));
+    reopened.shutdown().await;
+}
+
 #[tokio::test]
 async fn each_coding_attachment_loads_its_own_agent_md() {
     let (endpoint, captured) = scripted_model_server().await;

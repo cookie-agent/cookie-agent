@@ -1070,10 +1070,33 @@ impl StateStore {
                 DeliveryOutcome::Applied
             }
             ClientDelivery::PluginEvent(_) => DeliveryOutcome::Applied,
-            ClientDelivery::RuntimeChanged(_)
-            | ClientDelivery::SessionsChanged(_)
-            | ClientDelivery::McpChanged
-            | ClientDelivery::RuntimesChanged => DeliveryOutcome::Applied,
+            ClientDelivery::McpChanged(changed) => {
+                for failure in &changed.failures {
+                    self.push_failure_notice(&failure.session_ids, mcp_failure_notice(failure));
+                }
+                DeliveryOutcome::Applied
+            }
+            ClientDelivery::RuntimesChanged(changed) => {
+                for failure in &changed.failures {
+                    self.push_failure_notice(&failure.session_ids, runtime_failure_notice(failure));
+                }
+                DeliveryOutcome::Applied
+            }
+            ClientDelivery::RuntimeChanged(_) | ClientDelivery::SessionsChanged(_) => {
+                DeliveryOutcome::Applied
+            }
+        }
+    }
+
+    /// An error row in each of `sessions` this client shows. A connection
+    /// failure is a live daemon notification, not a durable event: wall
+    /// clock orders it.
+    fn push_failure_notice(&mut self, sessions: &[SessionId], text: String) {
+        let timestamp = jiff::Timestamp::now();
+        for session_id in sessions {
+            if let Some(state) = self.sessions.get_mut(session_id) {
+                push_event(state, EventLevel::Error, text.clone(), timestamp);
+            }
         }
     }
 
@@ -1348,3 +1371,25 @@ impl StateStore {
 
 #[cfg(test)]
 mod tests;
+
+/// The error row for an MCP server that is unavailable to a session.
+pub(crate) fn mcp_failure_notice(failure: &cookie_agent_protocol::McpServerFailure) -> String {
+    format!(
+        "MCP server `{}` ({} runtime) is unavailable: {}",
+        failure.server, failure.runtime_id, failure.reason
+    )
+}
+
+/// The error row for a runtime instance that is unavailable to a session.
+pub(crate) fn runtime_failure_notice(failure: &cookie_agent_protocol::RuntimeFailure) -> String {
+    match &failure.workspace {
+        Some(workspace) => format!(
+            "runtime `{}` at {workspace} is unavailable: {}",
+            failure.runtime_id, failure.reason
+        ),
+        None => format!(
+            "runtime `{}` is unavailable: {}",
+            failure.runtime_id, failure.reason
+        ),
+    }
+}

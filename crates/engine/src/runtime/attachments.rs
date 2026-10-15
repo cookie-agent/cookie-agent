@@ -4,7 +4,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use cookie_agent_protocol::{
-    AttachmentName, EventOrigin, RuntimeAttachment, SessionId, SessionStatus,
+    AttachmentName, EventOrigin, RuntimeAttachment, RuntimeId, SessionId, SessionStatus,
 };
 
 use super::{Engine, EngineError, Event};
@@ -238,6 +238,31 @@ impl Engine {
         Ok(failures)
     }
 
+    /// Connects what `session` uses, as when it is created or opened: every
+    /// attached instance is started, and every MCP server of an attached
+    /// instance whose last connection attempt failed is retried. The next
+    /// run waits for those attempts to finish; failures reach clients
+    /// viewing the session through the failure broadcasts.
+    pub(crate) async fn connect_session(&self, session: SessionId) {
+        self.ensure_session_runtimes_logged(session).await;
+        let attaches_global = self.session_runtimes(session).is_ok_and(|attachments| {
+            attachments
+                .iter()
+                .any(|attachment| attachment.runtime_id.as_str() == RuntimeId::GLOBAL)
+        });
+        if attaches_global {
+            self.retry_global_mcp();
+        }
+    }
+
+    /// Retries the global runtime's failed MCP servers (see
+    /// [`Self::connect_session`]).
+    fn retry_global_mcp(&self) {
+        if let Some(runtime) = &self.inner.runtime {
+            self.inner.mcp.retry_failed(runtime);
+        }
+    }
+
     /// [`Self::ensure_session_runtimes`] that reports failures on stderr:
     /// the attachment then publishes no tools.
     pub(crate) async fn ensure_session_runtimes_logged(&self, session: SessionId) {
@@ -274,6 +299,9 @@ impl Engine {
             .runtimes
             .ensure(runtime_id, workspace.as_deref())
             .await?;
+        if runtime_id == RuntimeId::GLOBAL {
+            self.retry_global_mcp();
+        }
         self.on_actor(session, move |engine| {
             let projection = engine.inner.store.get(session)?;
             if projection.status == SessionStatus::Running {
@@ -395,6 +423,23 @@ impl Engine {
     #[must_use]
     pub fn runtime_instances(&self) -> Vec<RuntimeInstanceSummary> {
         self.inner.runtimes.instances()
+    }
+
+    /// Runtime instances that failed to start, as they happen.
+    #[must_use]
+    pub fn subscribe_runtime_failures(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<crate::RuntimeFailure> {
+        self.inner.runtimes.subscribe_failures()
+    }
+
+    /// MCP servers of the global runtime that failed to connect, or dropped
+    /// and did not reconnect, as they happen.
+    #[must_use]
+    pub fn subscribe_mcp_failures(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<crate::McpServerFailure> {
+        self.inner.mcp.subscribe_failures()
     }
 
     /// Signals every runtime template or instance status change.

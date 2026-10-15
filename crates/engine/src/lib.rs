@@ -33,7 +33,7 @@ mod usage;
 pub use base_tools::base_layer_tool_specs;
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
-pub use mcp::{McpRegistry, McpServerState, McpServerStatus};
+pub use mcp::{McpRegistry, McpServerFailure, McpServerState, McpServerStatus};
 pub use plugin::{EngineEvent, PluginRegistry, PluginState, PluginStatus};
 pub use runtime::attachments::{SessionRuntimeRequest, SessionRuntimes};
 /// Stable `send_message:<code>` error strings carried by
@@ -51,8 +51,8 @@ pub use runtime::{
 };
 pub use runtime_snapshot::PublishedRuntime;
 pub use runtimes::{
-    RuntimeInstanceStatus, RuntimeInstanceSummary, RuntimeTemplate, RuntimeTemplateSummary,
-    StartedRuntime, ToolLayer,
+    RuntimeFailure, RuntimeInstanceStatus, RuntimeInstanceSummary, RuntimeTemplate,
+    RuntimeTemplateSummary, StartedRuntime, ToolLayer,
 };
 pub use session::TailOwner;
 

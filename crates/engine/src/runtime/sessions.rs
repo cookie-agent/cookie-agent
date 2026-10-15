@@ -93,6 +93,7 @@ impl Engine {
         let attachments = self.resolve_session_runtimes(&runtimes).await?;
         let meta = self.create_session_attached(selection, &attachments)?;
         let session_id = meta.session_id;
+        self.connect_session(session_id).await;
         if !overlay.rules.is_empty() {
             self.append(
                 session_id,
@@ -393,7 +394,7 @@ impl Engine {
                 "session {id} delegation recovery still settling after {DELEGATION_RECOVERY_SETTLE_BOUND:?}"
             );
         }
-        self.ensure_session_runtimes_logged(id).await;
+        self.connect_session(id).await;
         self.drain_queued_input(id).await;
         Ok(meta)
     }

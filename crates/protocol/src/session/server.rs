@@ -225,6 +225,17 @@ impl ServerContext {
             .remove(&session_id)
     }
 
+    /// The sessions this connection is subscribed to.
+    #[must_use]
+    pub fn subscribed_sessions(&self) -> Vec<SessionId> {
+        self.subscribed_sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .copied()
+            .collect()
+    }
+
     /// Returns whether this connection has successfully subscribed to the session.
     #[must_use]
     pub fn is_session_subscribed(&self, session_id: SessionId) -> bool {

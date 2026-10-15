@@ -90,10 +90,13 @@ pub enum ClientDelivery {
     },
     RuntimeChanged(Box<crate::RuntimeChangedNotification>),
     SessionsChanged(Box<crate::SessionsChangedNotification>),
-    McpChanged,
+    /// MCP server configuration or status changed; refetch
+    /// `mcp.server.list`. Carries connection failures for subscribed
+    /// sessions.
+    McpChanged(crate::McpChangedNotification),
     /// A runtime template or instance status changed; refetch
-    /// `runtimes.list`.
-    RuntimesChanged,
+    /// `runtimes.list`. Carries instance failures for subscribed sessions.
+    RuntimesChanged(crate::RuntimesChangedNotification),
 }
 
 type Deliveries = mpsc::UnboundedSender<ClientDelivery>;
@@ -1484,12 +1487,12 @@ async fn handle_frame(
             let _ = deliveries.send(ClientDelivery::SessionsChanged(Box::new(changed)));
         }
         Some(crate::MCP_CHANGED_METHOD) => {
-            let _: crate::McpChangedNotification = serde_json::from_str(params.get())?;
-            let _ = deliveries.send(ClientDelivery::McpChanged);
+            let changed: crate::McpChangedNotification = serde_json::from_str(params.get())?;
+            let _ = deliveries.send(ClientDelivery::McpChanged(changed));
         }
         Some(crate::RUNTIMES_CHANGED_METHOD) => {
-            let _: crate::RuntimesChangedNotification = serde_json::from_str(params.get())?;
-            let _ = deliveries.send(ClientDelivery::RuntimesChanged);
+            let changed: crate::RuntimesChangedNotification = serde_json::from_str(params.get())?;
+            let _ = deliveries.send(ClientDelivery::RuntimesChanged(changed));
         }
         _ => {}
     }

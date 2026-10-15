@@ -3452,3 +3452,63 @@ fn repeated_info_rows_stay_one_per_event() {
     }
     assert_eq!(state.transcript.len(), 2);
 }
+
+#[test]
+fn connection_failures_become_error_rows_in_each_named_session() {
+    let named = SessionId::new_v7();
+    let other = SessionId::new_v7();
+    let unknown = SessionId::new_v7();
+    let mut store = StateStore::default();
+    store.sessions.insert(named, SessionState::default());
+    store.sessions.insert(other, SessionState::default());
+    let errors = |store: &StateStore, session: SessionId| {
+        store.sessions[&session]
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Event {
+                    level: EventLevel::Error,
+                    text,
+                    ..
+                } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let runtime_id = |id: &str| cookie_agent_protocol::RuntimeId::new(id).unwrap();
+    assert!(matches!(
+        store.apply_delivery(ClientDelivery::McpChanged(
+            cookie_agent_protocol::McpChangedNotification {
+                failures: vec![cookie_agent_protocol::McpServerFailure {
+                    runtime_id: runtime_id("global"),
+                    server: "docs".into(),
+                    reason: "spawn failed".into(),
+                    session_ids: vec![named, unknown],
+                }],
+            }
+        )),
+        DeliveryOutcome::Applied
+    ));
+    assert!(matches!(
+        store.apply_delivery(ClientDelivery::RuntimesChanged(
+            cookie_agent_protocol::RuntimesChangedNotification {
+                failures: vec![cookie_agent_protocol::RuntimeFailure {
+                    runtime_id: runtime_id("labpc"),
+                    workspace: Some("/srv/api".into()),
+                    reason: "connection refused".into(),
+                    session_ids: vec![named],
+                }],
+            }
+        )),
+        DeliveryOutcome::Applied
+    ));
+    assert_eq!(
+        errors(&store, named),
+        [
+            "MCP server `docs` (global runtime) is unavailable: spawn failed",
+            "runtime `labpc` at /srv/api is unavailable: connection refused",
+        ]
+    );
+    assert!(errors(&store, other).is_empty());
+    assert!(!store.sessions.contains_key(&unknown));
+}

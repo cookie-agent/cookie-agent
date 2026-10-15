@@ -170,6 +170,17 @@ enum InstanceSlot {
     Stopped(Arc<RuntimeInstance>),
 }
 
+/// A runtime instance that failed to start, or dropped and did not
+/// reconnect.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeFailure {
+    pub runtime_id: String,
+    /// The workspace the instance was started for, when its template takes
+    /// one.
+    pub workspace: Option<String>,
+    pub reason: String,
+}
+
 /// A template as `runtimes.list` reports it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeTemplateSummary {
@@ -203,6 +214,8 @@ pub(crate) struct RuntimeRegistry {
     global: Arc<RuntimeInstance>,
     local: Arc<RuntimeInstance>,
     changes: tokio::sync::watch::Sender<u64>,
+    /// Instance failures, for clients viewing attached sessions.
+    failures: tokio::sync::broadcast::Sender<RuntimeFailure>,
     /// Composition diagnostics already reported, so each is reported once.
     reported: Mutex<std::collections::HashSet<String>>,
 }
@@ -238,6 +251,7 @@ impl RuntimeRegistry {
             global,
             local,
             changes: tokio::sync::watch::channel(0).0,
+            failures: tokio::sync::broadcast::channel(64).0,
             reported: Mutex::default(),
         }
     }
@@ -418,14 +432,13 @@ impl RuntimeRegistry {
                     "runtime `{runtime_id}` reported runtime ID `{}`",
                     started.info.id()
                 );
-                self.set_slot(pending, InstanceSlot::Failed(message.clone()));
+                self.fail_start(pending, message.clone());
                 Err(EngineError::Runtime(message))
             }
             Err(reason) => {
-                self.set_slot(pending, InstanceSlot::Failed(reason.clone()));
-                Err(EngineError::Runtime(format!(
-                    "runtime `{runtime_id}` failed to start: {reason}"
-                )))
+                let message = format!("runtime `{runtime_id}` failed to start: {reason}");
+                self.fail_start(pending, message.clone());
+                Err(EngineError::Runtime(message))
             }
         }
     }
@@ -446,6 +459,25 @@ impl RuntimeRegistry {
             .then(|| attachment.workspace.as_deref().map(Path::new))
             .flatten();
         self.ensure(attachment.runtime_id.as_str(), workspace).await
+    }
+
+    /// Records a failed start and reports it to clients.
+    fn fail_start(&self, key: InstanceKey, reason: String) {
+        let failure = RuntimeFailure {
+            runtime_id: key.runtime_id.clone(),
+            workspace: key
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.to_string_lossy().into_owned()),
+            reason: reason.clone(),
+        };
+        self.set_slot(key, InstanceSlot::Failed(reason));
+        let _ = self.failures.send(failure);
+    }
+
+    /// Instance failures as they happen.
+    pub(crate) fn subscribe_failures(&self) -> tokio::sync::broadcast::Receiver<RuntimeFailure> {
+        self.failures.subscribe()
     }
 
     fn set_slot(&self, key: InstanceKey, slot: InstanceSlot) {
