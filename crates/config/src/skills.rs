@@ -207,6 +207,9 @@ fn tool_action(name: &str) -> Option<PermissionAction> {
 pub struct SkillDocument {
     pub frontmatter: SkillFrontmatter,
     pub body: String,
+    /// The `SKILL.md` text the document was parsed from, line endings
+    /// normalized. A coding runtime sends it to the daemon.
+    pub document: String,
     pub source: SkillSource,
     pub path: PathBuf,
     pub base_dir: PathBuf,
@@ -260,6 +263,63 @@ impl SkillRegistry {
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
     }
+
+    /// A registry of already discovered skills, as a runtime reported them:
+    /// the precedence winners and every discovery.
+    ///
+    /// # Errors
+    ///
+    /// Fails when two skills share a name.
+    pub fn from_parts(
+        skills: Vec<SkillDocument>,
+        discoveries: Vec<SkillDiscovery>,
+    ) -> Result<Self, ConfigError> {
+        let mut registry = Self {
+            discoveries,
+            ..Self::default()
+        };
+        for skill in skills {
+            let name = skill.frontmatter.name.clone();
+            if registry.skills.contains_key(&name) {
+                return Err(skill_document(
+                    &skill.path,
+                    format!("skill `{name}` is reported twice"),
+                ));
+            }
+            registry.skills.insert(name, skill);
+        }
+        Ok(registry)
+    }
+}
+
+/// Parses a `SKILL.md` text a runtime reported, with the same rules as
+/// discovery: the frontmatter name must match the skill directory
+/// `base_dir`.
+///
+/// # Errors
+///
+/// Fails when the document is malformed or too large.
+pub fn parse_skill_document(
+    document: &str,
+    source: SkillSource,
+    path: &Path,
+    base_dir: &Path,
+    supporting_files: Vec<PathBuf>,
+) -> Result<SkillDocument, ConfigError> {
+    if document.len() as u64 > MAX_SKILL_BYTES {
+        return Err(skill_document(path, "SKILL.md exceeds 256 KiB"));
+    }
+    let directory_name = base_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| ConfigError::SkillName {
+            path: base_dir.to_owned(),
+            name: "<non-UTF-8>".into(),
+        })?;
+    validate_name(directory_name, base_dir)?;
+    let mut skill = parse_skill_text(directory_name, document.as_bytes(), source, path, base_dir)?;
+    skill.supporting_files = supporting_files;
+    Ok(skill)
 }
 
 /// Loads the user skills (`~/.agents/skills`, then the cookie-agent user root)
@@ -441,6 +501,19 @@ fn parse_skill(
     path: &Path,
     base_dir: &Path,
 ) -> Result<SkillDocument, ConfigError> {
+    let mut skill = parse_skill_text(directory_name, bytes, source, path, base_dir)?;
+    skill.supporting_files = supporting_file_sample(base_dir, path)?;
+    Ok(skill)
+}
+
+/// Parses a `SKILL.md` without looking at its directory.
+fn parse_skill_text(
+    directory_name: &str,
+    bytes: &[u8],
+    source: SkillSource,
+    path: &Path,
+    base_dir: &Path,
+) -> Result<SkillDocument, ConfigError> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| skill_document(path, "content is not UTF-8"))?
         .replace("\r\n", "\n")
@@ -487,14 +560,14 @@ fn parse_skill(
     if body.trim().is_empty() {
         return Err(skill_document(path, "skill body is empty"));
     }
-    let supporting_files = supporting_file_sample(base_dir, path)?;
     Ok(SkillDocument {
         frontmatter,
         body,
+        document: text,
         source,
         path: path.to_owned(),
         base_dir: base_dir.to_owned(),
-        supporting_files,
+        supporting_files: Vec::new(),
     })
 }
 

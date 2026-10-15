@@ -25,6 +25,7 @@ pub mod edit;
 pub mod fs_cap;
 mod path_args;
 pub mod read;
+pub mod server;
 pub mod webfetch;
 pub mod write;
 
@@ -289,7 +290,9 @@ impl BuiltinTools {
 pub fn runtime_options(workspace: impl Into<PathBuf>) -> RuntimeOptions {
     let mut options = RuntimeOptions::new(workspace);
     options.global_tools = vec![Arc::new(webfetch::WebfetchTool::global_fallback())];
-    options.local_tools = Arc::new(|workspace| vec![Arc::new(BuiltinTools::new(workspace))]);
+    options.local = cookie_agent_runtime_api::LocalRuntime::InProcess(Arc::new(|workspace| {
+        vec![Arc::new(BuiltinTools::new(workspace))]
+    }));
     options
 }
 

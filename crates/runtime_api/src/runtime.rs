@@ -43,6 +43,13 @@ impl WorkspaceContext {
         })
     }
 
+    /// A workspace a runtime reported: `root` is already canonical on the
+    /// runtime's machine, which runs `platform`.
+    #[must_use]
+    pub fn reported(root: PathBuf, platform: String) -> Self {
+        Self { root, platform }
+    }
+
     /// Canonical workspace root.
     #[must_use]
     pub fn root(&self) -> &Path {
@@ -210,6 +217,29 @@ impl ToolOrigin {
 pub type CodingToolsFactory =
     Arc<dyn Fn(&WorkspaceContext) -> Vec<Arc<dyn ToolProvider>> + Send + Sync>;
 
+/// Starts runtimes that speak the runtime protocol: each connection is one
+/// runtime instance. The in-process coding runtime implements it with an
+/// in-memory frame pair; a runtime in a child process implements it by
+/// spawning the process and framing its stdio with
+/// [`crate::rpc::LineTransport`].
+#[async_trait::async_trait]
+pub trait RuntimeConnector: Send + Sync {
+    /// Starts one runtime and returns the daemon's end of its transport.
+    /// The daemon then sends `runtime/initialize`. The error is a
+    /// human-readable reason.
+    async fn connect(&self) -> Result<Box<dyn cookie_agent_protocol::Transport>, String>;
+}
+
+/// How the daemon runs its `local` coding runtime.
+#[derive(Clone)]
+pub enum LocalRuntime {
+    /// Through the runtime protocol, like any other runtime.
+    Protocol(Arc<dyn RuntimeConnector>),
+    /// With providers called in-process, for tests and embedders that do not
+    /// need the protocol.
+    InProcess(CodingToolsFactory),
+}
+
 /// What the engine needs to build the global and local runtimes. MCP servers
 /// and plugins come from the configuration, and the engine provides the base
 /// layer itself.
@@ -219,19 +249,20 @@ pub struct RuntimeOptions {
     pub global_tools: Vec<Arc<dyn ToolProvider>>,
     /// Workspace of the local coding runtime.
     pub local_workspace: PathBuf,
-    /// Builds the local coding runtime's providers.
-    pub local_tools: CodingToolsFactory,
+    /// How the local coding runtime runs.
+    pub local: LocalRuntime,
 }
 
 impl RuntimeOptions {
-    /// A local coding runtime at `local_workspace` and a global runtime with
-    /// no tools beyond MCP servers and plugins.
+    /// A local coding runtime at `local_workspace` with no tools, called
+    /// in-process, and a global runtime with no tools beyond MCP servers and
+    /// plugins.
     #[must_use]
     pub fn new(local_workspace: impl Into<PathBuf>) -> Self {
         Self {
             global_tools: Vec::new(),
             local_workspace: local_workspace.into(),
-            local_tools: Arc::new(|_| Vec::new()),
+            local: LocalRuntime::InProcess(Arc::new(|_| Vec::new())),
         }
     }
 }

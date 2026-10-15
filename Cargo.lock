@@ -541,9 +541,12 @@ name = "cookie_agent_coding_runtime"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
+ "cookie_agent_config",
  "cookie_agent_engine",
  "cookie_agent_protocol",
  "cookie_agent_runtime_api",
+ "futures-util",
  "html2text",
  "libc",
  "memchr",

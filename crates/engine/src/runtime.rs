@@ -752,9 +752,17 @@ impl Engine {
                 path: options.runtimes.local_workspace.clone(),
                 source,
             })?;
+        let local_tools = match &options.runtimes.local {
+            cookie_agent_runtime_api::LocalRuntime::InProcess(tools) => Arc::clone(tools),
+            cookie_agent_runtime_api::LocalRuntime::Protocol(_) => {
+                return Err(EngineError::Runtime(
+                    "a local runtime behind the runtime protocol is not supported yet".into(),
+                ));
+            }
+        };
         let local_template = Arc::new(crate::runtimes::LocalTemplate::new(
             local_workspace,
-            Arc::clone(&options.runtimes.local_tools),
+            local_tools,
         ));
         let local = local_template.start_now().map_err(EngineError::Runtime)?;
         let mut provider_ids = HashSet::new();

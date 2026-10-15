@@ -11,8 +11,11 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
+base64 = "0.22"
+cookie_agent_config = { version = "=0.3.0", path = "../config" }
 cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
 cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api" }
+futures-util.workspace = true
 process-wrap.workspace = true
 html2text = "=0.15.5"
 memchr = "2.8.3"

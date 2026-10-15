@@ -35,12 +35,12 @@ fn provider_registration_rejects_duplicate_provenance_ids() {
                 "test.duplicate",
                 Vec::new(),
             ))],
-            local_tools: Arc::new(|_| {
+            local: cookie_agent_runtime_api::LocalRuntime::InProcess(Arc::new(|_| {
                 vec![Arc::new(TestPromptProvider::new(
                     "test.duplicate",
                     Vec::new(),
                 ))]
-            }),
+            })),
             ..cookie_agent_runtime_api::RuntimeOptions::new(fixture._directory.path())
         },
     };

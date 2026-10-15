@@ -420,7 +420,16 @@ async fn run_io(
 ) {
     let reason = loop {
         tokio::select! {
-            () = shared.stop.cancelled() => break "connection closed locally".to_owned(),
+            () = shared.stop.cancelled() => {
+                // Messages queued before the close, such as the reply to
+                // `runtime/shutdown`, still go out.
+                while let Ok(text) = outbound.try_recv() {
+                    if transport.send(MessageFrame::Text(text)).await.is_err() {
+                        break;
+                    }
+                }
+                break "connection closed locally".to_owned();
+            }
             text = outbound.recv() => {
                 let Some(text) = text else {
                     break "connection closed locally".to_owned();
