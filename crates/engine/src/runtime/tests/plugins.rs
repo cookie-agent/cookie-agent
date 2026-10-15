@@ -18,6 +18,7 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
         .set_session_permission(
             session.session_id,
             PermissionAction::Read,
+            None,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Allow,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
@@ -280,6 +281,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
             .set_session_permission(
                 session_id,
                 PermissionAction::Read,
+                None,
                 WildcardPattern::new("*").expect("wildcard"),
                 PermissionEffect::Allow,
                 cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
@@ -450,6 +452,7 @@ async fn plugin_diagnostic_coalescing_is_exact_and_shutdown_drains() {
         .set_session_permission(
             session.session_id,
             PermissionAction::Read,
+            None,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Allow,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
@@ -554,6 +557,7 @@ async fn plugin_diagnostic_wedge_does_not_block_shutdown() {
         .set_session_permission(
             session.session_id,
             PermissionAction::Read,
+            None,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Allow,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),

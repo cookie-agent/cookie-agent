@@ -18,7 +18,7 @@ pub use agents::{
     AgentFrontmatter, AgentLimits, AgentMaterializationInput, AgentMode, AgentModelFallback,
     AgentModelRef, AgentRegistry, BUILT_IN_APPROVAL_AGENT_ID, BUILT_IN_COMPACTION_AGENT_ID,
     BUILT_IN_DEFAULT_AGENT_ID, BUILT_IN_TITLE_AGENT_ID, PARENT_MODEL_EXPRESSION, PermissionAction,
-    PermissionEffect, PermissionRule, PermissionValue,
+    PermissionEffect, PermissionKey, PermissionRule, PermissionValue,
 };
 pub use cache::{
     AnthropicCacheConfig, BedrockCacheConfig, CacheConfig, CacheTtl, OpenAiCacheConfig,

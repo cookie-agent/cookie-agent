@@ -315,7 +315,7 @@ fn build_in_process_server(
     let mut agent = test_agent_document(&agent_id);
     if with_skills {
         agent.frontmatter.permissions.insert(
-            PermissionAction::Skill,
+            PermissionAction::Skill.into(),
             cookie_agent_config::PermissionValue::Effect(PermissionEffect::Ask),
         );
     }
@@ -394,6 +394,7 @@ fn approval_request() -> ApprovalRequest {
                 action: PermissionAction::Bash,
                 normalized_resource: "git status".into(),
                 candidates: vec![MatchedPermissionRule {
+                    runtime: None,
                     source_layer: SafeCode::new("test").expect("safe code"),
                     action: PermissionAction::Bash,
                     resource: cookie_agent_protocol::WildcardPattern::new("git status")

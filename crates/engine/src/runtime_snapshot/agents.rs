@@ -307,8 +307,8 @@ fn fingerprint(
         .map_err(|_| EngineError::RuntimeCompileFailed)
 }
 
-fn built_in_default_permissions() -> Result<IndexMap<PermissionAction, PermissionValue>, EngineError>
-{
+fn built_in_default_permissions()
+-> Result<IndexMap<cookie_agent_config::PermissionKey, PermissionValue>, EngineError> {
     let definitions = [
         (
             PermissionAction::Read,
@@ -362,7 +362,7 @@ fn built_in_default_permissions() -> Result<IndexMap<PermissionAction, Permissio
     let mut permissions = IndexMap::new();
     for (action, resource, effect) in definitions {
         let entry = permissions
-            .entry(action)
+            .entry(action.into())
             .or_insert_with(|| PermissionValue::Resources(IndexMap::new()));
         let PermissionValue::Resources(resources) = entry else {
             unreachable!("synthetic permissions use map form")
@@ -376,7 +376,7 @@ fn built_in_default_permissions() -> Result<IndexMap<PermissionAction, Permissio
 }
 
 pub(crate) fn delegation_targets(
-    permissions: &IndexMap<PermissionAction, PermissionValue>,
+    permissions: &IndexMap<cookie_agent_config::PermissionKey, PermissionValue>,
     known_agents: &BTreeMap<AgentId, ResolvedAgent>,
 ) -> Vec<AgentId> {
     let eligible_matches = |pattern: &str| -> Vec<AgentId> {
@@ -397,7 +397,9 @@ pub(crate) fn delegation_targets(
             .collect()
     };
     let mut targets = Vec::new();
-    match permissions.get(&PermissionAction::Delegate) {
+    match permissions.get(&cookie_agent_config::PermissionKey::any(
+        PermissionAction::Delegate,
+    )) {
         // Scalar effects are documented as equivalent to a `"*"` mapping:
         // expand them over every eligible subagent like any wildcard rule.
         Some(PermissionValue::Effect(effect)) if *effect != PermissionEffect::Deny => {
@@ -466,7 +468,7 @@ mod tests {
             PermissionEffect::Ask,
         );
         let permissions = IndexMap::from([(
-            PermissionAction::Delegate,
+            cookie_agent_config::PermissionKey::any(PermissionAction::Delegate),
             PermissionValue::Resources(resources),
         )]);
         assert_eq!(
@@ -613,7 +615,7 @@ mod tests {
             PermissionEffect::Allow,
         );
         let permissions = IndexMap::from([(
-            PermissionAction::Delegate,
+            cookie_agent_config::PermissionKey::any(PermissionAction::Delegate),
             PermissionValue::Resources(resources),
         )]);
         // Disabled and non-subagent matches are excluded; concrete and
@@ -629,7 +631,7 @@ mod tests {
         // A scalar `delegate: allow` is equivalent to a `"*"` mapping and
         // expands over every eligible subagent.
         let scalar = IndexMap::from([(
-            PermissionAction::Delegate,
+            cookie_agent_config::PermissionKey::any(PermissionAction::Delegate),
             PermissionValue::Effect(PermissionEffect::Allow),
         )]);
         assert_eq!(
@@ -640,7 +642,7 @@ mod tests {
             ]
         );
         let scalar_deny = IndexMap::from([(
-            PermissionAction::Delegate,
+            cookie_agent_config::PermissionKey::any(PermissionAction::Delegate),
             PermissionValue::Effect(PermissionEffect::Deny),
         )]);
         assert!(delegation_targets(&scalar_deny, &known).is_empty());

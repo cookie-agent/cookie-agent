@@ -49,6 +49,7 @@ async fn permission_query_reports_the_current_session_mode() {
 
 fn rule(action: PermissionAction, resource: &str, effect: PermissionEffect) -> PermissionRule {
     PermissionRule {
+        runtime: None,
         action,
         resource: WildcardPattern::new(resource).expect("pattern"),
         effect,
@@ -172,6 +173,7 @@ async fn session_permission_overlay_is_durable_and_evaluated_after_restart() {
         .set_session_permission(
             session.session_id,
             PermissionAction::Bash,
+            None,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Deny,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
@@ -238,6 +240,7 @@ async fn tightening_overlay_invalidates_tree_grants_durably() {
         .set_session_permission(
             session.session_id,
             PermissionAction::Bash,
+            None,
             WildcardPattern::new("*").unwrap(),
             PermissionEffect::Ask,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
@@ -272,6 +275,7 @@ async fn tightening_overlay_invalidates_tree_grants_durably() {
         .approvals
         .store
         .grant(TreeApprovalGrant {
+            runtime_id: None,
             grant_id,
             root_session_id: session.session_id,
             approval_id: ApprovalId::new_v7(),
@@ -286,6 +290,7 @@ async fn tightening_overlay_invalidates_tree_grants_durably() {
         .set_session_permission(
             session.session_id,
             PermissionAction::Bash,
+            None,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Deny,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
@@ -335,6 +340,7 @@ async fn clearing_allow_overlay_to_default_deny_invalidates_tree_grants() {
         .set_session_permission(
             session.session_id,
             PermissionAction::Bash,
+            None,
             wildcard.clone(),
             PermissionEffect::Allow,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
@@ -368,6 +374,7 @@ async fn clearing_allow_overlay_to_default_deny_invalidates_tree_grants() {
         .approvals
         .store
         .grant(TreeApprovalGrant {
+            runtime_id: None,
             grant_id,
             root_session_id: session.session_id,
             approval_id: ApprovalId::new_v7(),
@@ -383,6 +390,7 @@ async fn clearing_allow_overlay_to_default_deny_invalidates_tree_grants() {
         .clear_session_permission(
             session.session_id,
             PermissionAction::Bash,
+            None,
             &wildcard,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -558,6 +566,7 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
                 origin.clone(),
                 EventPayload::TreeApprovalGrantCommitted {
                     grant: TreeApprovalGrant {
+                        runtime_id: None,
                         grant_id,
                         root_session_id: root.session_id,
                         approval_id,

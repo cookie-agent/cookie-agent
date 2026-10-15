@@ -741,6 +741,7 @@ impl PreparedExecutor for TestDelegateExecutor {
                         base_dir: "/skills/restart-skill".into(),
                         supporting_files: Vec::new(),
                         grants: vec![cookie_agent_protocol::PermissionRule {
+                            runtime: None,
                             action: PermissionAction::Bash,
                             resource: WildcardPattern::new("git *").expect("grant"),
                             effect: PermissionEffect::Allow,

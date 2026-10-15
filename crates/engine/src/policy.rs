@@ -456,7 +456,7 @@ fn freeze_with_bindings(
             .frontmatter
             .permissions
             .iter()
-            .flat_map(|(action, value)| value.rules(*action))
+            .flat_map(|(key, value)| value.rules(key))
             .collect(),
         delegation,
         fallback_chain: bindings.clone(),

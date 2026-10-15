@@ -489,9 +489,36 @@ permissions:
 
 Effects are `allow`, `ask`, and `deny`. A bare effect is equivalent to mapping
 `"*"` to that effect. For matching patterns, more literal characters win, then
-fewer wildcards, then the later declaration on an exact tie. Unmatched resources
-are denied by default. `ask` remains an explicitly writable effect and routes
-matching calls through the existing approval flow; it is never an implicit fallback.
+fewer wildcards, then a rule with a runtime selector over one without, then the
+later declaration on an exact tie. Unmatched resources are denied by default.
+`ask` remains an explicitly writable effect and routes matching calls through
+the existing approval flow; it is never an implicit fallback.
+
+### Runtime selectors
+
+A key may name a runtime: `action@runtime_id` applies only to tools of
+[runtimes](../specs/runtimes.md) with that runtime ID, whatever workspace or
+attachment name they have in a session. A plain action applies to every
+runtime and to the daemon's base layer, so documents without selectors keep
+working unchanged.
+
+```yaml
+permissions:
+  bash: ask
+  bash@labpc:
+    "git *": allow
+  read@local:
+    "${workspace_dir}/*": allow
+```
+
+Here `git status` on the `labpc` runtime is allowed while every other command
+asks, and reads inside the local runtime's workspace are allowed. A qualified
+rule only outranks an unqualified one at the same resource specificity: with
+`bash: {"git push *": deny}` and `bash@labpc: {"*": allow}`, `git push` on
+`labpc` is still denied. The runtime ID follows `[a-z][a-z0-9_]{0,31}`.
+`delegate`, `message`, and `skill` belong to the base layer and take no
+selector. A selector also limits visibility: with only `bash@labpc` rules,
+`bash` tools of other runtimes are not published.
 
 ### Resource labels
 
@@ -546,7 +573,9 @@ denying. If neither a bare effect nor `"*"` exists, the normal unmatched result
 is `deny`.
 
 `${workspace_dir}` is allowed only in `read` and `write` patterns and expands
-against the engine workspace root during evaluation. Ordinary absolute patterns
+against the workspace of the runtime that prepared the call; relative path
+labels resolve against it too. Base-layer and global-runtime tools have no
+workspace, so `${workspace_dir}` and relative-path patterns never match them. Ordinary absolute patterns
 such as `/etc/*` control outside-workspace paths. Permission patterns do not
 expand environment variables. A `*` matches across directory separators, so
 `"${workspace_dir}/*"` already covers nested paths such as
@@ -730,8 +759,11 @@ the chosen agent's rules with the draft's rules applied, and the title reads
 the session's creation, so its first run already uses them; a session that was
 selected before `/new` is never changed.
 
-An overlay rule is evaluated before matching rules from the frozen agent
-snapshot. If no overlay rule matches, evaluation falls back to the agent
+Overlay rules accept the same runtime selector as agent documents
+(`session.permission.set` and `session.permission.clear` take an optional
+`runtime`), and a rule's selector is part of its identity: `bash` and
+`bash@labpc` with the same pattern are two rules. An overlay rule is evaluated
+before matching rules from the frozen agent snapshot. If no overlay rule matches, evaluation falls back to the agent
 document and then the normal default (`deny`). This default affects evaluation
 only; an action omitted from both layers has no visible tools. Changes affect
 subsequent visibility and permission evaluations only. They do not rewrite an
@@ -744,5 +776,13 @@ Every change appends a complete `session_permission_overlay_set` event to the
 session log. Overlay state therefore survives daemon restart and follows normal
 revert and fork branch semantics. Tightening a rule durably invalidates existing
 tree grants for that action under the session root before the overlay event is
-committed. Invalidation is action-wide because tree-grant records retain opaque
-prepared identities rather than normalized resource labels.
+committed. A change counts as tightening when it makes the rule stricter for
+the base layer or any runtime the session is attached to, each evaluated
+against that runtime's workspace. Invalidation is action-wide because tree-grant
+records retain opaque prepared identities rather than normalized resource
+labels; a qualified rule only invalidates grants of its runtime ID.
+
+Tree grants record the runtime ID of the tool they were approved for and only
+apply to calls on that runtime ID; base-layer grants record none. Grants and
+approval requests written before runtimes existed carry no runtime ID and are
+read as `local`.

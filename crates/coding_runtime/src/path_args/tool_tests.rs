@@ -75,11 +75,13 @@ fn assert_permission(
         max_output_tokens: 0,
         permissions: vec![
             PermissionRule {
+                runtime: None,
                 action,
                 resource: WildcardPattern::new("*").unwrap(),
                 effect: PermissionEffect::Deny,
             },
             PermissionRule {
+                runtime: None,
                 action,
                 resource: WildcardPattern::new(allowed).unwrap(),
                 effect: PermissionEffect::Allow,

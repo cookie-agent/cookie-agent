@@ -5,8 +5,8 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ApprovalId, PermissionAction, PermissionEffect, SafeCode, SafeErrorMessage, SessionId,
-    Sha256Digest, TreeApprovalGrantId, WildcardPattern,
+    ApprovalId, PermissionAction, PermissionEffect, RuntimeId, SafeCode, SafeErrorMessage,
+    SessionId, Sha256Digest, TreeApprovalGrantId, WildcardPattern,
 };
 
 #[derive(Clone, Debug, Eq, Hash, JsonSchema, PartialEq, Serialize)]
@@ -180,6 +180,9 @@ pub struct PreparedApprovalResource {
 pub struct MatchedPermissionRule {
     pub source_layer: SafeCode,
     pub action: PermissionAction,
+    /// The rule's runtime selector, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeId>,
     pub resource: WildcardPattern,
     pub effect: PermissionEffect,
 }
@@ -659,6 +662,10 @@ pub struct ApprovalRequest {
     #[schemars(length(min = 1, max = 256))]
     evaluations: Vec<ApprovalEvaluation>,
     constraints: ApprovalConstraints,
+    /// Runtime ID of the tool the request is for; `null` for the base
+    /// layer. Requests recorded before runtimes have no field and read as
+    /// `local`.
+    runtime_id: Option<RuntimeId>,
 }
 impl ApprovalRequest {
     pub fn new(
@@ -712,7 +719,20 @@ impl ApprovalRequest {
             operation,
             evaluations,
             constraints,
+            runtime_id: None,
         })
+    }
+    /// The request for a tool of the runtime with ID `runtime_id` (`None`
+    /// for the base layer).
+    #[must_use]
+    pub fn with_runtime(mut self, runtime_id: Option<RuntimeId>) -> Self {
+        self.runtime_id = runtime_id;
+        self
+    }
+    /// Runtime ID of the tool the request is for; `None` for the base layer.
+    #[must_use]
+    pub const fn runtime_id(&self) -> Option<&RuntimeId> {
+        self.runtime_id.as_ref()
     }
     #[must_use]
     pub const fn approval_id(&self) -> ApprovalId {
@@ -754,6 +774,8 @@ impl<'de> Deserialize<'de> for ApprovalRequest {
             operation: PreparedOperationIdentity,
             evaluations: Vec<ApprovalEvaluation>,
             constraints: ApprovalConstraints,
+            #[serde(default = "crate::legacy_local_runtime")]
+            runtime_id: Option<RuntimeId>,
         }
         let w = Wire::deserialize(d)?;
         let fingerprint = w.operation_fingerprint.clone();
@@ -765,7 +787,8 @@ impl<'de> Deserialize<'de> for ApprovalRequest {
             w.evaluations,
             w.constraints,
         )
-        .map_err(serde::de::Error::custom)?;
+        .map_err(serde::de::Error::custom)?
+        .with_runtime(w.runtime_id);
         if value.operation_fingerprint != fingerprint {
             return Err(serde::de::Error::custom(
                 "approval operation fingerprint mismatch",
@@ -787,6 +810,9 @@ pub struct TreeApprovalGrant {
     #[schemars(length(min = 1, max = 256))]
     pub resources: Vec<PreparedApprovalResource>,
     pub created_at: Timestamp,
+    /// Runtime ID the grant applies to; `null` for base-layer tools. Grants
+    /// recorded before runtimes have no field and read as `local`.
+    pub runtime_id: Option<RuntimeId>,
 }
 impl TreeApprovalGrant {
     pub fn validate(&self) -> Result<(), ApprovalSchemaError> {
@@ -840,6 +866,8 @@ impl<'de> Deserialize<'de> for TreeApprovalGrant {
             capabilities: Vec<ApprovalCapability>,
             resources: Vec<PreparedApprovalResource>,
             created_at: Timestamp,
+            #[serde(default = "crate::legacy_local_runtime")]
+            runtime_id: Option<RuntimeId>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -850,6 +878,7 @@ impl<'de> Deserialize<'de> for TreeApprovalGrant {
             capabilities: w.capabilities,
             resources: w.resources,
             created_at: w.created_at,
+            runtime_id: w.runtime_id,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

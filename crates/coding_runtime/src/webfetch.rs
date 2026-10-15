@@ -594,6 +594,7 @@ mod tests {
         };
         assert_eq!(decide(&policy).effect, PermissionEffect::Deny);
         policy.permissions.push(PermissionRule {
+            runtime: None,
             action: PermissionAction::Webfetch,
             resource: WildcardPattern::new(url.split('?').next().unwrap()).unwrap(),
             effect: PermissionEffect::Allow,

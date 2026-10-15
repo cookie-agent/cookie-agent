@@ -1140,6 +1140,7 @@ async fn webfetch_admission_visibility_and_fail_closed_permission_pipeline() {
             .set_session_permission(
                 session_id,
                 PermissionAction::Webfetch,
+                None,
                 cookie_agent_protocol::WildcardPattern::new("http://127.0.0.1:1/allowed?key=given")
                     .unwrap(),
                 effect,

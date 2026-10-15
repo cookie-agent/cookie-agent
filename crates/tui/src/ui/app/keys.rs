@@ -484,6 +484,7 @@ impl App {
             self.draft_permissions
                 .remove(previous_action, &previous_resource);
             self.draft_permissions.set(PermissionRule {
+                runtime: None,
                 action,
                 resource,
                 effect,
@@ -500,6 +501,7 @@ impl App {
             let result = async {
                 client
                     .set_session_permission(SessionPermissionSetParams {
+                        runtime: None,
                         session_id,
                         action,
                         resource,
@@ -508,6 +510,7 @@ impl App {
                     .await?;
                 client
                     .clear_session_permission(SessionPermissionClearParams {
+                        runtime: None,
                         session_id,
                         action: previous_action,
                         resource: previous_resource,
@@ -565,6 +568,7 @@ impl App {
         if self.permission_panel.draft {
             if let Ok(resource) = cookie_agent_protocol::WildcardPattern::new(resource) {
                 self.draft_permissions.set(PermissionRule {
+                    runtime: None,
                     action,
                     resource,
                     effect,
@@ -584,6 +588,7 @@ impl App {
         self.spawn_rpc(async move {
             let result = client
                 .set_session_permission(SessionPermissionSetParams {
+                    runtime: None,
                     session_id,
                     action,
                     resource,
@@ -618,6 +623,7 @@ impl App {
         self.spawn_rpc(async move {
             let result = client
                 .clear_session_permission(SessionPermissionClearParams {
+                    runtime: None,
                     session_id,
                     action,
                     resource,

@@ -3,7 +3,9 @@ use std::{borrow::Cow, collections::BTreeSet, fmt};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, FrozenModelBinding, ModelKey, ModelSelection, Sha256Digest, WildcardPattern};
+use crate::{
+    AgentId, FrozenModelBinding, ModelKey, ModelSelection, RuntimeId, Sha256Digest, WildcardPattern,
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct AgentSchemaVersion(());
@@ -129,8 +131,39 @@ pub enum PermissionEffect {
 #[serde(deny_unknown_fields)]
 pub struct PermissionRule {
     pub action: PermissionAction,
+    /// Runtime selector (`bash@labpc`): the rule applies only to tools of
+    /// runtimes with this runtime ID. Absent, it applies everywhere,
+    /// including the base layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeId>,
     pub resource: WildcardPattern,
     pub effect: PermissionEffect,
+}
+
+impl PermissionRule {
+    /// A rule with no runtime selector.
+    #[must_use]
+    pub const fn new(
+        action: PermissionAction,
+        resource: WildcardPattern,
+        effect: PermissionEffect,
+    ) -> Self {
+        Self {
+            action,
+            runtime: None,
+            resource,
+            effect,
+        }
+    }
+
+    /// Whether the rule applies to a tool of the runtime with ID `runtime`
+    /// (`None` for the base layer).
+    #[must_use]
+    pub fn applies_to(&self, runtime: Option<&str>) -> bool {
+        self.runtime
+            .as_ref()
+            .is_none_or(|selector| Some(selector.as_str()) == runtime)
+    }
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
@@ -151,11 +184,13 @@ impl SessionPermissionOverlay {
             return Err(AgentSchemaError::InvalidListBounds);
         }
         let mut keys = BTreeSet::new();
-        if !self
-            .rules
-            .iter()
-            .all(|rule| keys.insert((rule.action, rule.resource.as_str().to_owned())))
-        {
+        if !self.rules.iter().all(|rule| {
+            keys.insert((
+                rule.action,
+                rule.runtime.clone(),
+                rule.resource.as_str().to_owned(),
+            ))
+        }) {
             return Err(AgentSchemaError::DuplicatePermissionRule);
         }
         Ok(())

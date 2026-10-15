@@ -728,6 +728,7 @@ async fn apply_allowed_tools(
             .set_session_permission(
                 session_id,
                 action,
+                None,
                 WildcardPattern::new(resource).context("parse allowed-tools resource")?,
                 PermissionEffect::Allow,
                 headless_origin(),

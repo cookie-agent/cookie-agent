@@ -83,6 +83,7 @@ fn edit_approval(session_id: SessionId) -> ApprovalState {
                 action: PermissionAction::Write,
                 normalized_resource: "src/lib.rs".into(),
                 candidates: vec![MatchedPermissionRule {
+                    runtime: None,
                     source_layer: SafeCode::new("agent_document").expect("layer"),
                     action: PermissionAction::Write,
                     resource: WildcardPattern::new("*").expect("pattern"),

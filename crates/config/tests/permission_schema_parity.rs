@@ -557,3 +557,47 @@ fn workspace_dir_expression_is_portable_for_filesystem_permissions() {
     }
     assert_eq!(fingerprints[0], fingerprints[1]);
 }
+
+#[test]
+fn permission_keys_take_a_runtime_selector() {
+    let frontmatter: AgentFrontmatter = serde_yaml::from_str(
+        "description: Worker\nmode: subagent\nenabled: true\nmodels: []\npermissions:\n  bash: ask\n  bash@labpc:\n    \"git *\": allow\n  read@local:\n    \"${workspace_dir}/*\": allow\n",
+    )
+    .expect("qualified permission keys");
+    let keys = frontmatter
+        .permissions
+        .keys()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(keys, ["bash", "bash@labpc", "read@local"]);
+    let (key, value) = frontmatter.permissions.get_index(1).expect("bash@labpc");
+    let rules = value.rules(key);
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].action, PermissionAction::Bash);
+    assert_eq!(
+        rules[0].runtime.as_ref().map(|runtime| runtime.as_str()),
+        Some("labpc")
+    );
+    assert!(matches!(
+        frontmatter.permissions.get(&PermissionAction::Bash),
+        Some(PermissionValue::Effect(PermissionEffect::Ask))
+    ));
+
+    for rejected in [
+        "bash@",
+        "bash@LabPC",
+        "bash@1lab",
+        "fetch@labpc",
+        "delegate@labpc",
+        "message@labpc",
+        "skill@labpc",
+    ] {
+        let document = format!(
+            "description: Worker\nmode: subagent\nenabled: true\nmodels: []\npermissions:\n  {rejected}: allow\n"
+        );
+        assert!(
+            serde_yaml::from_str::<AgentFrontmatter>(&document).is_err(),
+            "{rejected}"
+        );
+    }
+}

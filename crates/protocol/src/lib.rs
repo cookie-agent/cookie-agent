@@ -25,6 +25,13 @@ impl<T: JsonSchema> JsonSchema for NullableSchema<T> {
     }
 }
 
+/// The runtime of a grant or approval recorded before runtimes existed:
+/// every such tool ran in the local coding runtime.
+#[allow(clippy::unnecessary_wraps)]
+pub(crate) fn legacy_local_runtime() -> Option<RuntimeId> {
+    Some(RuntimeId::local())
+}
+
 pub(crate) fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,

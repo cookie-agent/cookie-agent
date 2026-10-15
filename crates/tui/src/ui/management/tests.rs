@@ -254,6 +254,7 @@ fn install_keeps_the_selection_on_the_same_rule() {
     changed.permissions[0]
         .patterns
         .push(cookie_agent_protocol::EffectivePermissionRule {
+            runtime: None,
             resource: cookie_agent_protocol::WildcardPattern::new("src/**").unwrap(),
             effect: PermissionEffect::Allow,
             source: PermissionRuleSource::SessionOverlay,

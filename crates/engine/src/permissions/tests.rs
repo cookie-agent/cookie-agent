@@ -51,28 +51,33 @@ fn message_permission_name_maps_and_unknown_names_still_fail() {
 
 #[test]
 fn message_tool_visibility_requires_an_allow_or_ask_rule() {
-    assert!(!tool_visible(&[], None, PermissionAction::Message));
+    assert!(!tool_visible(&[], None, PermissionAction::Message, None));
     let only_deny = [rule(
         "deny-all",
         PermissionAction::Message,
         "*",
         PermissionEffect::Deny,
     )];
-    assert!(!tool_visible(&only_deny, None, PermissionAction::Message));
+    assert!(!tool_visible(
+        &only_deny,
+        None,
+        PermissionAction::Message,
+        None
+    ));
     let allows = [rule(
         "allow-child",
         PermissionAction::Message,
         "child",
         PermissionEffect::Allow,
     )];
-    assert!(tool_visible(&allows, None, PermissionAction::Message));
+    assert!(tool_visible(&allows, None, PermissionAction::Message, None));
     let asks = [rule(
         "ask-sibling",
         PermissionAction::Message,
         "sibling",
         PermissionEffect::Ask,
     )];
-    assert!(tool_visible(&asks, None, PermissionAction::Message));
+    assert!(tool_visible(&asks, None, PermissionAction::Message, None));
     // Delegate rules never make the message tool visible: the actions are
     // independent by decision.
     let delegate_only = [rule(
@@ -84,7 +89,8 @@ fn message_tool_visibility_requires_an_allow_or_ask_rule() {
     assert!(!tool_visible(
         &delegate_only,
         None,
-        PermissionAction::Message
+        PermissionAction::Message,
+        None
     ));
 }
 
@@ -190,10 +196,11 @@ fn unconditional_tools_are_visible_without_rules_and_cannot_be_ruled() {
         assert!(PermissionPipeline::tool_visible_with_overlay(
             &agent,
             None,
-            super::UNCONDITIONAL_PERMISSION_NAME
+            super::UNCONDITIONAL_PERMISSION_NAME,
+            None
         ));
         assert!(!PermissionPipeline::tool_visible_with_overlay(
-            &agent, None, "read"
+            &agent, None, "read", None
         ));
     }
     assert!(
@@ -396,6 +403,7 @@ fn rule(
     effect: PermissionEffect,
 ) -> PermissionRule {
     PermissionRule {
+        runtime: None,
         action,
         resource: WildcardPattern::new(resource).expect("wildcard"),
         effect,
@@ -1315,20 +1323,28 @@ fn visibility_uses_any_rule_without_resource_precedence() {
         assert!(super::tool_visible(
             &rules,
             Some(&deny),
-            PermissionAction::Webfetch
+            PermissionAction::Webfetch,
+            None
         ));
         assert!(super::tool_visible(
             &[],
             Some(&SessionPermissionOverlay {
                 rules: rules.clone()
             }),
-            PermissionAction::Webfetch
+            PermissionAction::Webfetch,
+            None
         ));
-        assert!(!super::tool_visible(&rules, None, PermissionAction::Read));
+        assert!(!super::tool_visible(
+            &rules,
+            None,
+            PermissionAction::Read,
+            None
+        ));
         assert!(!super::tool_visible(
             &[],
             Some(&deny),
-            PermissionAction::Webfetch
+            PermissionAction::Webfetch,
+            None
         ));
     }
     assert_eq!(
@@ -1365,7 +1381,8 @@ fn plugin_visibility_is_action_scoped_and_execution_remains_authoritative() {
     assert!(PermissionPipeline::tool_visible_with_overlay(
         &plugin_policy,
         Some(&overlay),
-        "plugin:echo"
+        "plugin:echo",
+        None
     ));
 
     let grant = SessionPermissionOverlay {
@@ -1423,7 +1440,8 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
     assert!(PermissionPipeline::tool_visible_with_overlay(
         &empty_policy,
         Some(&named_allow),
-        "read"
+        "read",
+        None
     ));
 
     let deny_with_exception = SessionPermissionOverlay {
@@ -1445,7 +1463,8 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
     assert!(PermissionPipeline::tool_visible_with_overlay(
         &empty_policy,
         Some(&deny_with_exception),
-        "read"
+        "read",
+        None
     ));
 
     let wildcard_deny = SessionPermissionOverlay {
@@ -1465,7 +1484,8 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
     assert!(PermissionPipeline::tool_visible_with_overlay(
         &policy_allow,
         Some(&wildcard_deny),
-        "read"
+        "read",
+        None
     ));
 
     let named_policy_allow = policy(vec![rule(
@@ -1485,7 +1505,8 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
     assert!(PermissionPipeline::tool_visible_with_overlay(
         &named_policy_allow,
         Some(&identical_named_deny),
-        "read"
+        "read",
+        None
     ));
 
     let markdown_deny = SessionPermissionOverlay {
@@ -1499,7 +1520,8 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
     assert!(PermissionPipeline::tool_visible_with_overlay(
         &named_policy_allow,
         Some(&markdown_deny),
-        "read"
+        "read",
+        None
     ));
 
     let text_deny = SessionPermissionOverlay {
@@ -1513,7 +1535,8 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
     assert!(PermissionPipeline::tool_visible_with_overlay(
         &named_policy_allow,
         Some(&text_deny),
-        "read"
+        "read",
+        None
     ));
 
     let policy_wildcard_allow = policy(vec![rule(
@@ -1525,7 +1548,8 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
     assert!(PermissionPipeline::tool_visible_with_overlay(
         &policy_wildcard_allow,
         Some(&identical_named_deny),
-        "read"
+        "read",
+        None
     ));
 }
 
@@ -1679,9 +1703,194 @@ fn workspace_dir_expansion_canonicalizes_the_workspace_anchor() {
             &policy,
             PermissionAction::Write,
             "src/main.rs",
-            Some(&alias),
+            Some(alias.as_path()),
         )
         .0,
         PermissionEffect::Allow
     );
+}
+
+fn qualified(
+    action: PermissionAction,
+    runtime: &str,
+    resource: &str,
+    effect: PermissionEffect,
+) -> PermissionRule {
+    PermissionRule {
+        runtime: Some(cookie_agent_protocol::RuntimeId::new(runtime).expect("runtime ID")),
+        ..rule("qualified", action, resource, effect)
+    }
+}
+
+fn decide_on(
+    policy: &AgentSnapshot,
+    command: &str,
+    scope: super::PermissionScope<'_>,
+) -> PermissionEffect {
+    let resource = resource(PermissionAction::Bash, command, command.as_bytes());
+    PermissionPipeline::default()
+        .decide_operation(
+            policy,
+            &operation(vec![resource]),
+            &[Some(command.to_owned())],
+            scope,
+        )
+        .effect
+}
+
+#[test]
+fn qualified_rules_apply_only_to_their_runtime_and_win_specificity_ties() {
+    let policy = policy(vec![
+        rule("bash", PermissionAction::Bash, "*", PermissionEffect::Ask),
+        qualified(
+            PermissionAction::Bash,
+            "labpc",
+            "*",
+            PermissionEffect::Allow,
+        ),
+        rule(
+            "git",
+            PermissionAction::Bash,
+            "git *",
+            PermissionEffect::Deny,
+        ),
+        qualified(
+            PermissionAction::Bash,
+            "labpc",
+            "cargo *",
+            PermissionEffect::Deny,
+        ),
+        // Declared after the qualified rule with the same pattern: the
+        // runtime selector still ranks it lower.
+        rule(
+            "cargo",
+            PermissionAction::Bash,
+            "cargo *",
+            PermissionEffect::Allow,
+        ),
+    ]);
+    let workspace = std::path::Path::new("/workspace");
+    let labpc = super::PermissionScope::runtime("labpc", Some(workspace));
+    let local = super::PermissionScope::runtime("local", Some(workspace));
+    // Same resource specificity: the qualified rule wins on its runtime.
+    assert_eq!(decide_on(&policy, "ls", labpc), PermissionEffect::Allow);
+    assert_eq!(decide_on(&policy, "ls", local), PermissionEffect::Ask);
+    assert_eq!(
+        decide_on(&policy, "ls", super::PermissionScope::BASE),
+        PermissionEffect::Ask
+    );
+    assert_eq!(
+        decide_on(&policy, "cargo test", labpc),
+        PermissionEffect::Deny
+    );
+    assert_eq!(
+        decide_on(&policy, "cargo test", local),
+        PermissionEffect::Allow
+    );
+    // A more specific unqualified pattern still beats a qualified catch-all.
+    assert_eq!(
+        decide_on(&policy, "git push", labpc),
+        PermissionEffect::Deny
+    );
+}
+
+#[test]
+fn a_runtime_selector_limits_tool_visibility_to_that_runtime() {
+    let policy = policy(vec![qualified(
+        PermissionAction::Bash,
+        "labpc",
+        "*",
+        PermissionEffect::Allow,
+    )]);
+    assert!(PermissionPipeline::tool_visible_with_overlay(
+        &policy,
+        None,
+        "bash",
+        Some("labpc")
+    ));
+    assert!(!PermissionPipeline::tool_visible_with_overlay(
+        &policy,
+        None,
+        "bash",
+        Some("local")
+    ));
+    assert!(!PermissionPipeline::tool_visible_with_overlay(
+        &policy, None, "bash", None
+    ));
+}
+
+#[test]
+fn overlay_rules_are_unique_per_runtime_selector() {
+    let overlay = SessionPermissionOverlay {
+        rules: vec![
+            rule("bash", PermissionAction::Bash, "*", PermissionEffect::Ask),
+            qualified(
+                PermissionAction::Bash,
+                "labpc",
+                "*",
+                PermissionEffect::Allow,
+            ),
+        ],
+    };
+    overlay.validate().expect("distinct selectors");
+    let view = super::effective_permission_view(&policy(Vec::new()), &overlay);
+    let bash = view
+        .iter()
+        .find(|entry| entry.action == PermissionAction::Bash)
+        .expect("bash entry");
+    assert_eq!(bash.effect, PermissionEffect::Ask);
+    assert_eq!(bash.patterns.len(), 1);
+    assert_eq!(
+        bash.patterns[0]
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.as_str()),
+        Some("labpc")
+    );
+}
+
+#[test]
+fn tree_grants_apply_only_to_their_runtime_and_old_grants_read_as_local() {
+    use cookie_agent_protocol::{
+        ApprovalId, OperationFingerprint, RuntimeId, SessionId, TreeApprovalGrant,
+        TreeApprovalGrantId,
+    };
+    let mut granted = resource(PermissionAction::Bash, "git status", b"git status");
+    granted.binding_lifetime = PreparedBindingLifetime::RestartStable;
+    let operation = operation(vec![granted]);
+    let root = SessionId::new_v7();
+    let grant = TreeApprovalGrant {
+        grant_id: TreeApprovalGrantId::new_v7(),
+        root_session_id: root,
+        approval_id: ApprovalId::new_v7(),
+        operation_fingerprint: OperationFingerprint::from_prepared_operation(&operation),
+        capabilities: operation.capabilities().to_vec(),
+        resources: operation.resources().to_vec(),
+        created_at: "2026-01-01T00:00:00Z".parse().expect("timestamp"),
+        runtime_id: Some(RuntimeId::new("labpc").unwrap()),
+    };
+    let store = super::ApprovalStore::default();
+    store.grant(grant.clone());
+    let labpc = RuntimeId::new("labpc").unwrap();
+    assert!(store.matching(root, &operation, Some(&labpc)).is_some());
+    assert!(
+        store
+            .matching(root, &operation, Some(&RuntimeId::local()))
+            .is_none()
+    );
+    assert!(store.matching(root, &operation, None).is_none());
+
+    // A grant recorded before runtimes has no runtime ID and reads as local.
+    let mut legacy = serde_json::to_value(&grant).expect("grant JSON");
+    legacy
+        .as_object_mut()
+        .expect("grant object")
+        .remove("runtime_id");
+    let legacy: TreeApprovalGrant = serde_json::from_value(legacy).expect("legacy grant");
+    assert_eq!(legacy.runtime_id, Some(RuntimeId::local()));
+    // A base-layer grant keeps an explicit null.
+    let mut base = serde_json::to_value(&grant).expect("grant JSON");
+    base["runtime_id"] = serde_json::Value::Null;
+    let base: TreeApprovalGrant = serde_json::from_value(base).expect("base grant");
+    assert_eq!(base.runtime_id, None);
 }

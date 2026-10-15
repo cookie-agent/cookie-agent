@@ -171,6 +171,7 @@ impl Engine {
             &agent,
             Some(&projection.permission_overlay),
             "message",
+            None,
         );
         if !visible {
             return Ok(false);

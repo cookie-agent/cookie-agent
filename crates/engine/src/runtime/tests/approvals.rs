@@ -462,6 +462,7 @@ async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
         .set_session_permission(
             session.session_id,
             PermissionAction::Write,
+            None,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Deny,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),

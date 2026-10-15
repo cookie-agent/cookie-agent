@@ -22,7 +22,7 @@ use crate::{
     PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
     ToolPreparationContext, ToolProgress, ToolProvider, ToolStdin,
     events::OutputHub,
-    permissions::{PermissionDecision, PermissionPipeline},
+    permissions::{PermissionDecision, PermissionPipeline, PermissionScope},
     policy::FrozenRunPolicy,
     runtimes::{ComposedTool, Composition, SourcedProvider, compose},
 };
@@ -82,7 +82,7 @@ impl Engine {
             prepared.policy_labels(),
             prepared_call
                 .origin()
-                .and_then(crate::ToolOrigin::workspace_root),
+                .map_or(PermissionScope::BASE, PermissionScope::of),
         ))
     }
 
@@ -430,7 +430,7 @@ impl Engine {
                     Some(permission_overlay),
                     grants.as_ref(),
                     &permission_name,
-                    origin.workspace_root(),
+                    PermissionScope::of(&origin),
                 ))
         {
             return PreparedToolCall {
@@ -912,6 +912,10 @@ impl Engine {
                     &policy.agent,
                     Some(&session_projection.permission_overlay),
                     &tool.permission_name,
+                    source
+                        .origin
+                        .runtime()
+                        .map(cookie_agent_runtime_api::RuntimeInfo::id),
                 )
         })
     }

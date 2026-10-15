@@ -534,56 +534,31 @@ async fn crash_clears_claims_and_leaves_other_plugin_connected() {
 }
 
 #[tokio::test]
-async fn built_in_tool_collision_fails_only_that_plugin() {
+async fn plugin_tools_may_share_names_with_other_runtimes_and_the_base_layer() {
+    // `read` belongs to the local coding runtime and `skill` to the base
+    // layer: composition prefixes the plugin's tools instead of failing it.
     let config = format!(
         "{}{}",
         plugin_table(
-            "collision",
+            "shadow_read",
             &[
-                ("FIXTURE_NAME", "collision".into()),
+                ("FIXTURE_NAME", "shadow_read".into()),
                 ("FIXTURE_TOOLS", tools("read")),
             ],
             "",
         ),
         plugin_table(
-            "steady",
+            "shadow_skill",
             &[
-                ("FIXTURE_NAME", "steady".into()),
-                ("FIXTURE_TOOLS", tools("steady_tool")),
+                ("FIXTURE_NAME", "shadow_skill".into()),
+                ("FIXTURE_TOOLS", tools("skill")),
             ],
             "",
         )
     );
     let harness = open_engine(&config);
-    wait_for_state(&harness.engine, "collision", PluginState::Failed).await;
-    wait_for_state(&harness.engine, "steady", PluginState::Connected).await;
-    assert!(
-        status(&harness.engine, "collision")
-            .reason
-            .unwrap()
-            .contains("colliding")
-    );
-    harness.engine.shutdown().await;
-}
-
-#[tokio::test]
-async fn skill_tool_collision_fails_plugin_without_breaking_composition() {
-    let config = plugin_table(
-        "collision",
-        &[
-            ("FIXTURE_NAME", "collision".into()),
-            ("FIXTURE_TOOLS", tools("skill")),
-        ],
-        "",
-    );
-    let harness = open_engine(&config);
-    wait_for_state(&harness.engine, "collision", PluginState::Failed).await;
-    assert!(
-        status(&harness.engine, "collision")
-            .reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("colliding tool name `skill`"))
-    );
+    wait_for_state(&harness.engine, "shadow_read", PluginState::Connected).await;
+    wait_for_state(&harness.engine, "shadow_skill", PluginState::Connected).await;
     harness
         .engine
         .runtime_snapshot()

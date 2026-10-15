@@ -189,6 +189,7 @@ fn validate_permission_expressions(
         let Some(action) = action.as_str() else {
             continue;
         };
+        let action = action.split_once('@').map_or(action, |(action, _)| action);
         let Some(resources) = permission.as_mapping() else {
             continue;
         };

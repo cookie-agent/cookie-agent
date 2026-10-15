@@ -368,6 +368,7 @@ impl Engine {
                 capabilities: record.request.operation().capabilities().to_vec(),
                 resources: record.request.operation().resources().to_vec(),
                 created_at: jiff::Timestamp::now(),
+                runtime_id: record.request.runtime_id().cloned(),
             };
             grant
                 .validate()

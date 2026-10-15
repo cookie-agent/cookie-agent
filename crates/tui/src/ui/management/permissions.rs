@@ -822,6 +822,7 @@ pub(in crate::ui) fn sample_permissions() -> SessionPermissionGetResult {
         EffectivePermissionAction, EffectivePermissionRule, WildcardPattern,
     };
     let rule = |resource: &str, effect, source| EffectivePermissionRule {
+        runtime: None,
         resource: WildcardPattern::new(resource).expect("pattern"),
         effect,
         source,

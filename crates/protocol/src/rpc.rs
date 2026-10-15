@@ -563,6 +563,9 @@ pub enum PermissionRuleSource {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectivePermissionRule {
+    /// The rule's runtime selector, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeId>,
     pub resource: WildcardPattern,
     pub effect: PermissionEffect,
     pub source: PermissionRuleSource,
@@ -596,6 +599,9 @@ pub struct SessionPermissionGetResult {
 pub struct SessionPermissionSetParams {
     pub session_id: SessionId,
     pub action: PermissionAction,
+    /// Runtime selector; absent for a rule that applies everywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeId>,
     pub resource: WildcardPattern,
     pub effect: PermissionEffect,
 }
@@ -605,6 +611,9 @@ pub struct SessionPermissionSetParams {
 pub struct SessionPermissionClearParams {
     pub session_id: SessionId,
     pub action: PermissionAction,
+    /// Runtime selector of the rule to clear; absent for an unqualified rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeId>,
     pub resource: WildcardPattern,
 }
 

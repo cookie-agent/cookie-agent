@@ -170,6 +170,13 @@ impl Engine {
         allow_prior_grant: bool,
         tool: ApprovalToolInput<'_>,
     ) -> Result<ApprovalOutcome, EngineError> {
+        // The request, and any tree grant made from it, belongs to the
+        // runtime of the tool it is for.
+        let request = request.with_runtime(
+            tool.origin
+                .and_then(crate::ToolOrigin::runtime)
+                .and_then(|runtime| cookie_agent_protocol::RuntimeId::new(runtime.id()).ok()),
+        );
         let approval_id = request.approval_id();
         let session = self.inner.store.get(active.session)?;
         let root = root_id(&session.meta.origin, active.session);
@@ -223,11 +230,11 @@ impl Engine {
         }
 
         if allow_prior_grant
-            && let Some(grant) = self
-                .inner
-                .approvals
-                .store
-                .matching(root, request.operation())
+            && let Some(grant) =
+                self.inner
+                    .approvals
+                    .store
+                    .matching(root, request.operation(), request.runtime_id())
         {
             let decision = ApprovalInternalDecision {
                 decision: ApprovalInternalDecisionKind::Allow,

@@ -92,6 +92,7 @@ fn policy(rules: Vec<PermissionRule>) -> AgentSnapshot {
 
 fn rule(action: PermissionAction, resource: &str, effect: PermissionEffect) -> PermissionRule {
     PermissionRule {
+        runtime: None,
         action,
         resource: WildcardPattern::new(resource).expect("wildcard"),
         effect,

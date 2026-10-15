@@ -505,9 +505,12 @@ with a diagnostic reason. Spawn failures, handshake timeouts, malformed response
 name mismatches, declaration errors, name collisions, unexpected EOF, and process exits affect
 only that plugin; the engine and other plugins continue running.
 
-Discovered tool names share one namespace with built-in and MCP tools. Built-in names are reserved,
-and MCP claims take precedence over plugin claims; a plugin collision fails, and a later lazy MCP
-claim preempts the plugin. When plugins collide with each other, the last plugin to finish
+Plugins live in the global runtime, and discovered tool names share its namespace with top-level
+MCP tools and the global `webfetch`. MCP claims take precedence over plugin claims; a plugin
+collision with them fails, and a later lazy MCP claim preempts the plugin. A name shared with
+another runtime (such as the local coding runtime's `read`) or with a base-layer tool (such as
+`skill`) is not a collision inside the runtime: the plugin's tool is published as
+`global_<name>` instead (see [tool composition](../specs/runtimes.md#63-collisions)). When plugins collide with each other, the last plugin to finish
 registration wins that tool; the earlier plugin remains connected for its other tools and publishes
 a status diagnostic. The winner's permission declaration applies. Claims and listings are removed
 immediately when the owning process exits or standard output closes, and prepared calls fail

@@ -94,6 +94,7 @@ pub(crate) fn assert_workspace_rule_allows(
         prompt_fingerprint: Sha256Digest::of_bytes(b"Test permission evaluation.\n"),
         max_output_tokens: 0,
         permissions: vec![PermissionRule {
+            runtime: None,
             action,
             resource: WildcardPattern::new(resource).expect("permission resource pattern"),
             effect: PermissionEffect::Allow,

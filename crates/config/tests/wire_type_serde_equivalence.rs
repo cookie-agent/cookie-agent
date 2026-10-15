@@ -54,11 +54,13 @@ fn config_agent_wire_types_match_protocol() {
     assert_same_json(
         &ConfigPermissionRule {
             action: ConfigPermissionAction::Read,
+            runtime: None,
             resource: resource.clone(),
             effect: ConfigPermissionEffect::Allow,
         },
         &PermissionRule {
             action: PermissionAction::Read,
+            runtime: None,
             resource,
             effect: PermissionEffect::Allow,
         },

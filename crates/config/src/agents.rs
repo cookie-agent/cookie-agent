@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use cookie_agent_identity::{AgentId, ConfiguredVariantRef, ModelKey, WildcardPattern};
+use cookie_agent_identity::{AgentId, ConfiguredVariantRef, ModelKey, RuntimeId, WildcardPattern};
 pub use cookie_agent_protocol::{AgentMode, PermissionAction, PermissionEffect, PermissionRule};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -66,15 +66,129 @@ impl<'de> Deserialize<'de> for PermissionValue {
     }
 }
 
+/// A permission map key: an action with an optional runtime selector,
+/// written `action` or `action@runtime_id` (for example `bash@labpc`).
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct PermissionKey {
+    pub action: PermissionAction,
+    pub runtime: Option<RuntimeId>,
+}
+
+/// An unqualified key hashes like its bare action, so a permission map can be
+/// looked up by [`PermissionAction`].
+impl std::hash::Hash for PermissionKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.action.hash(state);
+        if let Some(runtime) = &self.runtime {
+            runtime.hash(state);
+        }
+    }
+}
+
+/// A bare action looks up its unqualified key.
+impl indexmap::Equivalent<PermissionKey> for PermissionAction {
+    fn equivalent(&self, key: &PermissionKey) -> bool {
+        key.runtime.is_none() && key.action == *self
+    }
+}
+
+impl From<&PermissionKey> for PermissionKey {
+    fn from(key: &PermissionKey) -> Self {
+        key.clone()
+    }
+}
+
+impl PermissionKey {
+    /// The key for `action` on every runtime and the base layer.
+    #[must_use]
+    pub const fn any(action: PermissionAction) -> Self {
+        Self {
+            action,
+            runtime: None,
+        }
+    }
+}
+
+impl From<PermissionAction> for PermissionKey {
+    fn from(action: PermissionAction) -> Self {
+        Self::any(action)
+    }
+}
+
+impl std::fmt::Display for PermissionKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let action = serde_json::to_value(self.action)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        match &self.runtime {
+            Some(runtime) => write!(formatter, "{action}@{runtime}"),
+            None => formatter.write_str(&action),
+        }
+    }
+}
+
+impl std::str::FromStr for PermissionKey {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (action, runtime) = match value.split_once('@') {
+            Some((action, runtime)) => (action, Some(runtime)),
+            None => (value, None),
+        };
+        let action: PermissionAction =
+            serde_json::from_value(serde_json::Value::String(action.to_owned()))
+                .map_err(|_| format!("unknown permission action `{action}`"))?;
+        let runtime = runtime
+            .map(|runtime| {
+                RuntimeId::new(runtime).map_err(|_| {
+                    format!("invalid runtime selector `{runtime}`; expected [a-z][a-z0-9_]{{0,31}}")
+                })
+            })
+            .transpose()?;
+        if runtime.is_some()
+            && matches!(
+                action,
+                PermissionAction::Delegate | PermissionAction::Message | PermissionAction::Skill
+            )
+        {
+            return Err(format!(
+                "`{value}`: `delegate`, `message`, and `skill` belong to the base layer and take no runtime selector"
+            ));
+        }
+        Ok(Self { action, runtime })
+    }
+}
+
+impl Serialize for PermissionKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for PermissionKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 fn deserialize_permissions<'de, D>(
     deserializer: D,
-) -> Result<IndexMap<PermissionAction, PermissionValue>, D::Error>
+) -> Result<IndexMap<PermissionKey, PermissionValue>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     struct Visitor;
     impl<'de> serde::de::Visitor<'de> for Visitor {
-        type Value = IndexMap<PermissionAction, PermissionValue>;
+        type Value = IndexMap<PermissionKey, PermissionValue>;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             formatter.write_str("an ordered action permission map")
@@ -85,10 +199,8 @@ where
             A: serde::de::MapAccess<'de>,
         {
             let mut permissions = IndexMap::new();
-            while let Some((action, value)) =
-                map.next_entry::<PermissionAction, PermissionValue>()?
-            {
-                if permissions.insert(action, value).is_some() {
+            while let Some((key, value)) = map.next_entry::<PermissionKey, PermissionValue>()? {
+                if permissions.insert(key, value).is_some() {
                     return Err(serde::de::Error::custom("duplicate permission action"));
                 }
             }
@@ -99,17 +211,21 @@ where
 }
 
 impl PermissionValue {
-    pub fn rules(&self, action: PermissionAction) -> Vec<PermissionRule> {
+    /// The rules this value declares under `key`, in declaration order.
+    pub fn rules(&self, key: impl Into<PermissionKey>) -> Vec<PermissionRule> {
+        let key = key.into();
         match self {
             Self::Effect(effect) => vec![PermissionRule {
-                action,
+                action: key.action,
+                runtime: key.runtime.clone(),
                 resource: WildcardPattern::new("*").expect("static wildcard"),
                 effect: *effect,
             }],
             Self::Resources(resources) => resources
                 .iter()
                 .map(|(resource, effect)| PermissionRule {
-                    action,
+                    action: key.action,
+                    runtime: key.runtime.clone(),
                     resource: resource.clone(),
                     effect: *effect,
                 })
@@ -166,7 +282,7 @@ pub struct AgentFrontmatter {
     #[serde(default)]
     pub limits: AgentLimits,
     #[serde(default, deserialize_with = "deserialize_permissions")]
-    pub permissions: IndexMap<PermissionAction, PermissionValue>,
+    pub permissions: IndexMap<PermissionKey, PermissionValue>,
     /// Per-agent AGENTS.md loading. `None` defers to `[agent_md] enabled`;
     /// a value overrides it for root runs of this agent.
     #[serde(default)]
@@ -195,7 +311,7 @@ impl<'de> Deserialize<'de> for AgentFrontmatter {
             #[serde(default)]
             limits: RawLimits,
             #[serde(default, deserialize_with = "deserialize_permissions")]
-            permissions: IndexMap<PermissionAction, PermissionValue>,
+            permissions: IndexMap<PermissionKey, PermissionValue>,
             #[serde(default)]
             agent_md: Option<bool>,
         }
@@ -377,8 +493,9 @@ fn validate_agent_document(
     if permission_rules > MAX_LIST {
         return Err(ConfigError::AgentLimit(document.id.clone()));
     }
-    if let Some(delegate) = frontmatter.permissions.get(&PermissionAction::Delegate) {
-        let rules = delegate.rules(PermissionAction::Delegate);
+    let delegate_key = PermissionKey::any(PermissionAction::Delegate);
+    if let Some(delegate) = frontmatter.permissions.get(&delegate_key) {
+        let rules = delegate.rules(&delegate_key);
         // Expanded targets land in AgentDescriptor and FrozenDelegationPolicy,
         // both limited to 256 IDs; validate the deduplicated union exactly as
         // the runtime expansion produces it.
@@ -436,9 +553,9 @@ fn validate_agent_document(
             return Err(ConfigError::AgentLimit(document.id.clone()));
         }
     }
-    for (action, value) in &frontmatter.permissions {
-        if !matches!(action, PermissionAction::Read | PermissionAction::Write)
-            && value.rules(*action).iter().any(|rule| {
+    for (key, value) in &frontmatter.permissions {
+        if !matches!(key.action, PermissionAction::Read | PermissionAction::Write)
+            && value.rules(key).iter().any(|rule| {
                 rule.resource
                     .as_str()
                     .contains(WildcardPattern::WORKSPACE_DIR_EXPRESSION)

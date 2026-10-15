@@ -764,6 +764,7 @@ fn prepared_skill_invocation(skill: &SkillDocument, args: &str) -> PreparedSkill
             .iter()
             .map(|grant| PermissionRule {
                 action: grant.action,
+                runtime: None,
                 resource: grant.pattern.clone(),
                 effect: PermissionEffect::Allow,
             })

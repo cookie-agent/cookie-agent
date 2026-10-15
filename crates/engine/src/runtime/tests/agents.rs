@@ -323,16 +323,19 @@ async fn published_tool_order_is_stable_across_registration_and_overlay_order() 
         let session = fixture.engine.create_session(selection).unwrap();
         let mut rules = vec![
             PermissionRule {
+                runtime: None,
                 action: PermissionAction::Read,
                 resource: WildcardPattern::new("*").unwrap(),
                 effect: PermissionEffect::Allow,
             },
             PermissionRule {
+                runtime: None,
                 action: PermissionAction::Write,
                 resource: WildcardPattern::new("*").unwrap(),
                 effect: PermissionEffect::Allow,
             },
             PermissionRule {
+                runtime: None,
                 action: PermissionAction::Bash,
                 resource: WildcardPattern::new("*").unwrap(),
                 effect: PermissionEffect::Allow,

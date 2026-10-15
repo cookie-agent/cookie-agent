@@ -556,6 +556,7 @@ mod tests {
         let root = SessionId::new_v7();
         let store = ApprovalStore::default();
         store.grant(TreeApprovalGrant {
+            runtime_id: None,
             grant_id: TreeApprovalGrantId::new_v7(),
             root_session_id: root,
             approval_id: ApprovalId::new_v7(),
@@ -564,7 +565,7 @@ mod tests {
             resources: old.resources().to_vec(),
             created_at: "2026-01-01T00:00:00Z".parse().expect("timestamp"),
         });
-        assert!(store.matching(root, &current).is_none());
+        assert!(store.matching(root, &current, None).is_none());
     }
 
     #[test]
