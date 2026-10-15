@@ -24,7 +24,7 @@ use crate::{
     events::OutputHub,
     permissions::{PermissionDecision, PermissionPipeline},
     policy::FrozenRunPolicy,
-    runtimes::{SourcedProvider, current_tool, resolve_collisions},
+    runtimes::{ComposedTool, Composition, SourcedProvider, compose},
 };
 
 const TOOL_CANCELLATION_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -195,26 +195,35 @@ impl Engine {
         policy: &FrozenRunPolicy,
         turn_context: Arc<crate::TurnAgentContext>,
     ) -> Vec<PreparedToolCall> {
-        let providers = self.session_tool_sources(session_id).unwrap_or_default();
-        let session_context = SessionToolContext::new(session_id);
-        let mut groups: Vec<(SourcedProvider, Vec<usize>)> = Vec::new();
+        let composition = self.compose_for_policy(session_id, policy).ok();
+        // Calls grouped by the provider and attachment that answer them, each
+        // with the name its source knows the tool by.
+        let mut groups: Vec<(SourcedProvider, Vec<(usize, String)>)> = Vec::new();
         for (index, (call, _)) in calls.iter().enumerate() {
-            if let Some((source, _)) = current_tool(&providers, &session_context, &call.name) {
-                if let Some((_, indexes)) = groups
-                    .iter_mut()
-                    .find(|(candidate, _)| Arc::ptr_eq(&candidate.provider, &source.provider))
-                {
-                    indexes.push(index);
-                } else {
-                    groups.push((source, vec![index]));
-                }
+            let Some(tool) = composition
+                .as_ref()
+                .and_then(|composition| composition.get(&call.name))
+            else {
+                continue;
+            };
+            let entry = (index, tool.spec.name.clone());
+            if let Some((_, indexes)) = groups.iter_mut().find(|(candidate, _)| {
+                Arc::ptr_eq(&candidate.provider, &tool.source.provider)
+                    && candidate.attachment == tool.source.attachment
+            }) {
+                indexes.push(entry);
+            } else {
+                groups.push((tool.source.clone(), vec![entry]));
             }
         }
         let mut prepared = (0..calls.len()).map(|_| None).collect::<Vec<_>>();
         for (source, indexes) in groups {
             let provider_calls = indexes
                 .iter()
-                .map(|index| calls[*index].0.clone())
+                .map(|(index, name)| ToolCall {
+                    name: name.clone(),
+                    ..calls[*index].0.clone()
+                })
                 .collect();
             let context = ToolPreparationContext {
                 session: session_id,
@@ -226,7 +235,7 @@ impl Engine {
                 .provider
                 .prepare_parallel(context, provider_calls)
                 .await;
-            for (index, result) in indexes.into_iter().zip(results) {
+            for ((index, _), result) in indexes.into_iter().zip(results) {
                 prepared[index] = Some(result);
             }
         }
@@ -300,40 +309,39 @@ impl Engine {
         let permission_overlay = &session.permission_overlay;
         let grants = self.skill_grants_for_session(session_id);
         let delegate_enabled = !policy.delegate_targets(depth).is_empty();
-        let providers = self.session_tool_sources(session_id).unwrap_or_default();
-        let current = current_tool(&providers, &SessionToolContext::new(session_id), &call.name);
         let mut provider = match published {
-            Some(Some(published))
-                if current.as_ref().is_some_and(|(source, spec)| {
-                    Arc::ptr_eq(&source.provider, &published.provider) && spec == &published.spec
-                }) =>
-            {
-                Some((
-                    SourcedProvider {
-                        attachment: None,
-                        generation: 0,
-                        origin: published.origin.clone(),
-                        provider: published.provider.clone(),
-                    },
-                    published.spec.clone(),
-                ))
-            }
-            Some(Some(_)) => {
-                return PreparedToolCall {
-                    intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
-                    prepared: Err(ToolFailure {
-                        partial_output: None,
-                        code: ToolCallFailureCode::OperationChanged,
-                        message: format!(
-                            "tool definition changed after `{}` was published to the model",
-                            call.name
-                        ),
-                    }),
-                    call,
-                    permission_name: None,
-                    presentation: fallback_presentation,
-                    interception: None,
-                };
+            Some(Some(published)) => {
+                // The tool must still be what the model was offered: same
+                // attachment, same instance generation, same declaration.
+                let current = self
+                    .compose_for_policy(session_id, policy)
+                    .ok()
+                    .and_then(|composition| composition.get(&call.name).cloned());
+                if current.is_some_and(|current| {
+                    current.source.attachment == published.source.attachment
+                        && current.source.generation == published.source.generation
+                        && current.spec == published.spec
+                }) {
+                    Some((published.source.clone(), published.spec.clone()))
+                } else {
+                    return PreparedToolCall {
+                        intercepted_arguments: Arc::new(std::sync::Mutex::new(
+                            call.arguments.clone(),
+                        )),
+                        prepared: Err(ToolFailure {
+                            partial_output: None,
+                            code: ToolCallFailureCode::OperationChanged,
+                            message: format!(
+                                "tool definition changed after `{}` was published to the model",
+                                call.name
+                            ),
+                        }),
+                        call,
+                        permission_name: None,
+                        presentation: fallback_presentation,
+                        interception: None,
+                    };
+                }
             }
             Some(None) => {
                 return PreparedToolCall {
@@ -349,13 +357,21 @@ impl Engine {
                     interception: None,
                 };
             }
-            None => current,
+            None => self
+                .compose_session_tools(session_id, |_, _| true)
+                .ok()
+                .and_then(|composition| {
+                    composition
+                        .get(&call.name)
+                        .map(|tool| (tool.source.clone(), tool.spec.clone()))
+                }),
         };
         if published.is_none()
             && provider.is_none()
             && (call.name != "skill" || self.is_direct_skill_call(call.id))
         {
-            provider = providers.iter().find_map(|candidate| {
+            let sources = self.session_tool_sources(session_id).unwrap_or_default();
+            provider = sources.iter().find_map(|candidate| {
                 candidate
                     .provider
                     .permission_for_unlisted_tool(&call.name)
@@ -378,13 +394,7 @@ impl Engine {
                     })
             });
         }
-        let Some((
-            SourcedProvider {
-                origin, provider, ..
-            },
-            tool_spec,
-        )) = provider
-        else {
+        let Some((source, tool_spec)) = provider else {
             return PreparedToolCall {
                 intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
                 prepared: Err(ToolFailure {
@@ -397,6 +407,17 @@ impl Engine {
                 presentation: fallback_presentation,
                 interception: None,
             };
+        };
+        let SourcedProvider {
+            attachment,
+            origin,
+            provider,
+            ..
+        } = source;
+        // A prefixed tool runs under the name its runtime knows it by.
+        let call = ToolCall {
+            name: tool_spec.name.clone(),
+            ..call
         };
         let permission_name = tool_spec.permission_name.clone();
         let delegation_tool = permission_name == "delegate";
@@ -453,6 +474,7 @@ impl Engine {
             presentation,
             prepared,
             interception: Some(ToolInterceptionContext {
+                attachment,
                 provider,
                 spec: tool_spec,
                 preparation: context,
@@ -840,64 +862,79 @@ impl Engine {
             .definitions)
     }
 
+    /// The tool set of `session` as composed now from the sources `keep`
+    /// admits. Composition diagnostics are reported once each.
+    pub(crate) fn compose_session_tools(
+        &self,
+        session: SessionId,
+        keep: impl Fn(&SourcedProvider, &crate::ToolSpec) -> bool,
+    ) -> Result<Composition, EngineError> {
+        let context = SessionToolContext::new(session);
+        let mut candidates = Vec::new();
+        for source in self.session_tool_sources(session)? {
+            for tool in source
+                .provider
+                .tools_for_session(&context)
+                .map_err(|error| EngineError::ToolFailed(error.to_string()))?
+            {
+                if keep(&source, &tool) {
+                    candidates.push((source.clone(), tool));
+                }
+            }
+        }
+        let composition =
+            compose(candidates, crate::base_tools::reserved_tool_names()).map_err(|name| {
+                EngineError::ToolFailed(format!(
+                    "tool name `{name}` is published twice by one runtime"
+                ))
+            })?;
+        self.inner.runtimes.report(&composition.diagnostics);
+        Ok(composition)
+    }
+
+    /// The tool set `policy` publishes for `session`: enabled tools the
+    /// agent and the session overlay make visible, composed.
+    fn compose_for_policy(
+        &self,
+        session: SessionId,
+        policy: &FrozenRunPolicy,
+    ) -> Result<Composition, EngineError> {
+        let session_projection = self.inner.store.get(session)?;
+        let depth = session_depth(&session_projection.meta.origin);
+        let delegate_enabled = !policy.delegate_targets(depth).is_empty();
+        self.compose_session_tools(session, |source, tool| {
+            let delegation_tool = tool.permission_name == "delegate";
+            let goal_tool = source.attachment.is_none()
+                && matches!(tool.name.as_str(), "goal_get" | "goal_update");
+            (!delegation_tool || delegate_enabled)
+                && (!goal_tool || policy.goal_tools_enabled)
+                && PermissionPipeline::tool_visible_with_overlay(
+                    &policy.agent,
+                    Some(&session_projection.permission_overlay),
+                    &tool.permission_name,
+                )
+        })
+    }
+
     pub(super) fn published_tool_definitions(
         &self,
         session: SessionId,
         policy: &FrozenRunPolicy,
     ) -> Result<PublishedToolSet, EngineError> {
-        let session_projection = self.inner.store.get(session)?;
-        let depth = session_depth(&session_projection.meta.origin);
-        let delegate_enabled = !policy.delegate_targets(depth).is_empty();
-        let mut candidates = Vec::new();
-        for source in self.session_tool_sources(session)? {
-            for tool in source
-                .provider
-                .tools_for_session(&SessionToolContext::new(session))
-                .map_err(|error| EngineError::ToolFailed(error.to_string()))?
-            {
-                tool.output.validate().map_err(EngineError::ToolFailed)?;
-                let delegation_tool = tool.permission_name == "delegate";
-                let goal_tool = matches!(tool.name.as_str(), "goal_get" | "goal_update");
-                let enabled = (!delegation_tool || delegate_enabled)
-                    && (!goal_tool || policy.goal_tools_enabled);
-                if enabled
-                    && PermissionPipeline::tool_visible_with_overlay(
-                        &policy.agent,
-                        Some(&session_projection.permission_overlay),
-                        &tool.permission_name,
-                    )
-                {
-                    candidates.push((source.clone(), tool));
-                }
-            }
-        }
-        let candidates = resolve_collisions(candidates).map_err(|name| {
-            EngineError::ToolFailed(format!(
-                "tool name `{name}` is published by more than one provider"
-            ))
-        })?;
-        let mut output = Vec::with_capacity(candidates.len());
-        let mut published = std::collections::HashMap::with_capacity(candidates.len());
-        for (source, tool) in candidates {
-            let schema = JsonSchema::new(tool.parameters.clone()).map_err(|error| {
-                EngineError::ToolFailed(format!(
-                    "tool `{}` has invalid JSON Schema: {error}",
-                    tool.name
-                ))
+        let composition = self.compose_for_policy(session, policy)?;
+        let mut output = Vec::with_capacity(composition.tools.len());
+        let mut published = std::collections::HashMap::with_capacity(composition.tools.len());
+        for ComposedTool { name, source, spec } in composition.tools {
+            spec.output.validate().map_err(EngineError::ToolFailed)?;
+            let schema = JsonSchema::new(spec.parameters.clone()).map_err(|error| {
+                EngineError::ToolFailed(format!("tool `{name}` has invalid JSON Schema: {error}"))
             })?;
             output.push(ToolDefinition::new(
-                tool.name.clone(),
-                tool.description.clone(),
+                name.clone(),
+                spec.description.clone(),
                 schema,
             ));
-            published.insert(
-                tool.name.clone(),
-                PublishedTool {
-                    origin: source.origin,
-                    provider: source.provider,
-                    spec: tool,
-                },
-            );
+            published.insert(name, PublishedTool { source, spec });
         }
         output.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(PublishedToolSet {

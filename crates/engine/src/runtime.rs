@@ -389,6 +389,14 @@ impl PreparedToolCall {
             })
     }
 
+    /// The session attachment that owns the prepared tool; `None` for the
+    /// base layer or a call that did not prepare.
+    fn attachment(&self) -> Option<&cookie_agent_protocol::AttachmentName> {
+        self.interception
+            .as_ref()
+            .and_then(|context| context.attachment.as_ref())
+    }
+
     /// Layer or runtime that owns the prepared tool.
     fn origin(&self) -> Option<&crate::ToolOrigin> {
         self.interception
@@ -407,6 +415,9 @@ impl PreparedToolCall {
 }
 
 struct ToolInterceptionContext {
+    /// The session attachment that offers the tool; `None` for the base
+    /// layer.
+    attachment: Option<cookie_agent_protocol::AttachmentName>,
     provider: Arc<dyn ToolProvider>,
     spec: ToolSpec,
     preparation: ToolPreparationContext,
@@ -415,9 +426,9 @@ struct ToolInterceptionContext {
 }
 
 struct PublishedTool {
-    /// Layer or runtime that offers the tool.
-    origin: crate::ToolOrigin,
-    provider: Arc<dyn ToolProvider>,
+    /// The base layer or runtime attachment that offers the tool.
+    source: crate::runtimes::SourcedProvider,
+    /// The tool as its source declares it, under the name the source knows.
     spec: ToolSpec,
 }
 

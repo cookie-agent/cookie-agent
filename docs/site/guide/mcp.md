@@ -170,8 +170,12 @@ entry continues to win after write-back.
 
 An MCP tool is exposed as `<server>_<tool>`. Both components replace characters
 outside `[a-zA-Z0-9_-]` with `_`; there is no `mcp_` prefix. For example,
-`github` plus `search/repos` becomes `github_search_repos`. Startup rejects a
-server whose generated name collides with a built-in or another MCP tool.
+`github` plus `search/repos` becomes `github_search_repos`. Inside the global
+runtime, a server whose generated name collides with another MCP or plugin
+tool, or with the global `webfetch`, is rejected. A name that collides with a
+tool of another runtime or of the base layer is published with the runtime's
+attachment prefix instead, for example `global_github_search_repos`; see
+[tool composition](../specs/runtimes.md#63-collisions).
 
 ```yaml
 permissions:

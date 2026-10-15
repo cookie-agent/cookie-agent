@@ -43,6 +43,20 @@ impl Engine {
     }
 }
 
+/// Names of every base-layer tool. A runtime tool never takes one: it is
+/// published as `<attachment>_<name>` instead, even while the base tool is
+/// not offered.
+pub(crate) fn reserved_tool_names() -> &'static std::collections::HashSet<String> {
+    static NAMES: std::sync::OnceLock<std::collections::HashSet<String>> =
+        std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        base_layer_tool_specs("reserved")
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect()
+    })
+}
+
 /// Every base-layer tool as the engine publishes it, for the tool reference.
 /// `delegate_subagent` lists `delegate_target` as its only subagent.
 #[must_use]

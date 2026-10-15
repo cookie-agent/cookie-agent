@@ -284,29 +284,45 @@ session and drive the run loop:
   call runs on with its workspace, and the tool call's normalized parameters.
   `ask` skips the classifier, and `yolo` approves immediately. A doom-loop
   guard rejects repeated identical approvals.
-- **Tool layers and runtimes.** The engine composes the model's tool list
-  from three sources, in this order (`crates/engine/src/runtimes.rs`; see the
+- **Tool layers and runtimes.** The engine composes each session's tool list
+  from the base layer and the session's runtime attachments
+  (`crates/engine/src/runtimes`; see the
   [runtimes specification](specs/runtimes.md)):
   - the *base layer*: the daemon's own orchestration tools (delegation,
     `send_message`, `skill`, goals, `read_artifact`), which the engine
     implements and registers itself when it opens
-    (`crates/engine/src/base_tools`). It has no workspace.
-  - the *global runtime* (`global`): top-level MCP servers, plugins, and a
-    `webfetch` that is only a fallback. It has no workspace.
-  - the *local coding runtime* (`local`, kind `coding`): `read`, `write`,
-    `edit`, `bash`, and `webfetch`, whose workspace is the daemon's working
-    directory. Its attachment name is `local_<workspace basename>`, sanitized
-    to `[a-z0-9_]` and capped at 32 bytes.
+    (`crates/engine/src/base_tools`). It has no workspace and every session
+    has it.
+  - *runtime instances*, started from *templates* by a registry that keeps one
+    instance per (runtime ID, canonical workspace) and shares it with every
+    session attached to it. The built-in templates are `global` (top-level MCP
+    servers, plugins, and a `webfetch` that is only a fallback; no workspace)
+    and `local` (kind `coding`: `read`, `write`, `edit`, `bash`, and
+    `webfetch` in the daemon's working directory). Both instances start with
+    the daemon; attaching any other runtime ID is an unknown-runtime error
+    until configured templates exist.
+  - *attachments*: a session records the instances it uses with
+    `runtime_attached` and `runtime_detached` events. New sessions attach
+    `global` and `local`; a log with neither event reads the same way. Each
+    attachment has a session-unique name, the name its instance reports
+    (`local_<workspace basename>`, sanitized to `[a-z0-9_]` and capped at 32
+    bytes, for a coding runtime), suffixed `_2`, `_3`, ... on a clash.
 
-  Every published tool records which layer or runtime offers it. Preparation,
-  permission decisions, and visibility use that runtime's workspace: a tool
-  without one never matches a `${workspace_dir}` rule or a rule for a relative
-  path, and its operations digest the runtime ID instead of a path. Each tool
-  declares a collision mode: a `fallback` tool is hidden whenever a regular
-  tool with the same name is published, so the global `webfetch` only appears
-  without a coding runtime; any other duplicate name fails composition. The
-  daemon's working directory itself only locates the session store and stamps
-  each session's `cwd_identity`.
+  Every published tool records which layer or attachment offers it, and the
+  instance generation it came from. Preparation, permission decisions, and
+  visibility use that runtime's workspace: a tool without one never matches a
+  `${workspace_dir}` rule or a rule for a relative path, and its operations
+  digest the runtime ID instead of a path. Names are recomputed every model
+  turn: a name offered by one source is published bare; when several runtime
+  tools offer one name, or a runtime tool takes a base-layer name, each runtime
+  tool is published as `<attachment>_<name>` (the base tool keeps its name); a
+  `fallback` tool is hidden whenever a regular tool offers its name, so the
+  global `webfetch` only appears without a coding runtime; and a published name
+  longer than 64 bytes is dropped with a diagnostic. A call to a published name
+  runs on its attachment under the runtime's own name for the tool, and fails
+  as `operation_changed` when that attachment, instance, or declaration
+  changed since publication. The daemon's working directory itself only
+  locates the session store and stamps each session's `cwd_identity`.
 - **Tool dispatch.** Calls from one committed model turn are prepared and
   started in model order, then all permission decisions and serialized approval
   prompts resolve before execution begins. Tools explicitly marked parallel are

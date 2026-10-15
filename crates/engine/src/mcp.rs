@@ -1366,16 +1366,9 @@ impl McpRegistry {
         let oauth_credentials = OAuthCredentialFile::open(oauth_path)?;
         let inner = Arc::new(RegistryInner {
             servers: Mutex::new(BTreeMap::new()),
-            reserved_names: Mutex::new(HashSet::from([
-                "read".into(),
-                "write".into(),
-                "edit".into(),
-                "bash".into(),
-                "delegate_subagent".into(),
-                "get_subagent_result".into(),
-                "cancel_subagent".into(),
-                "skill".into(),
-            ])),
+            // Names of the global runtime's other tools; collisions with
+            // other runtimes and the base layer are resolved by prefixing.
+            reserved_names: Mutex::new(HashSet::new()),
             claimed_names: Mutex::new(HashMap::new()),
             plugin_collision_handler: Mutex::new(None),
             oauth_credentials,

@@ -58,6 +58,72 @@ pub(crate) mod scripted;
 pub(crate) use providers::*;
 pub(crate) use scripted::*;
 
+/// Builds a fake runtime instance's tools for its workspace.
+pub(crate) type FakeRuntimeTools =
+    Arc<dyn Fn(&crate::WorkspaceContext) -> Vec<Arc<dyn ToolProvider>> + Send + Sync>;
+
+/// An in-process coding runtime template for tests. With a fixed workspace it
+/// takes none, like `local`; without one, attaching it requires a workspace.
+pub(crate) struct FakeRuntimeTemplate {
+    pub(crate) id: &'static str,
+    pub(crate) fixed_workspace: Option<std::path::PathBuf>,
+    pub(crate) tools: FakeRuntimeTools,
+    pub(crate) starts: AtomicUsize,
+}
+
+impl FakeRuntimeTemplate {
+    /// A template that requires a workspace.
+    pub(crate) fn with_workspace(id: &'static str, tools: FakeRuntimeTools) -> Arc<Self> {
+        Arc::new(Self {
+            id,
+            fixed_workspace: None,
+            tools,
+            starts: AtomicUsize::new(0),
+        })
+    }
+
+    /// A template that takes no workspace and always works in `workspace`.
+    pub(crate) fn fixed(
+        id: &'static str,
+        workspace: &std::path::Path,
+        tools: FakeRuntimeTools,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            id,
+            fixed_workspace: Some(workspace.to_owned()),
+            tools,
+            starts: AtomicUsize::new(0),
+        })
+    }
+}
+
+#[async_trait]
+impl crate::RuntimeTemplate for FakeRuntimeTemplate {
+    fn runtime_id(&self) -> &str {
+        self.id
+    }
+
+    fn takes_workspace(&self) -> bool {
+        self.fixed_workspace.is_none()
+    }
+
+    async fn start(
+        &self,
+        workspace: Option<&std::path::Path>,
+    ) -> Result<crate::StartedRuntime, String> {
+        let path = workspace
+            .or(self.fixed_workspace.as_deref())
+            .ok_or("no workspace")?;
+        let workspace = crate::WorkspaceContext::new(path).map_err(|error| error.to_string())?;
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        Ok(crate::StartedRuntime {
+            info: cookie_agent_runtime_api::RuntimeInfo::coding(self.id, workspace.clone()),
+            providers: (self.tools)(&workspace),
+            skills: Vec::new(),
+        })
+    }
+}
+
 pub(crate) const PLUGIN_FIXTURE: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
 
@@ -1179,6 +1245,46 @@ pub(crate) fn try_frozen_root_policy(
         },
         fixture.config.runtime.model_retry,
     )
+}
+
+/// The root policy `engine` freezes for `selection`.
+pub(crate) fn frozen_root_policy_for(
+    engine: &Engine,
+    selection: &RunSelection,
+) -> crate::policy::FrozenRunPolicy {
+    engine
+        .freeze_selection_policy(selection)
+        .expect("frozen root policy")
+        .1
+}
+
+/// A root session whose log predates runtimes: its creation event is not
+/// followed by any attachment event.
+pub(crate) fn create_legacy_session(engine: &Engine, selection: RunSelection) -> SessionId {
+    let template = engine.create_session(selection).expect("template session");
+    let creation = engine
+        .inner
+        .store
+        .get(template.session_id)
+        .expect("template projection")
+        .log
+        .event_snapshot()
+        .first()
+        .expect("creation event")
+        .payload
+        .clone();
+    let session = SessionId::new_v7();
+    engine
+        .inner
+        .store
+        .create(
+            session,
+            cookie_agent_protocol::EventOrigin::new("user").expect("event origin"),
+            creation,
+        )
+        .expect("legacy session");
+    engine.spawn_actor(session).expect("legacy session actor");
+    session
 }
 
 pub(crate) fn synthetic_default_fixture(authored_agent: Option<&str>) -> Fixture {

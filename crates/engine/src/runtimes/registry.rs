@@ -203,6 +203,8 @@ pub(crate) struct RuntimeRegistry {
     global: Arc<RuntimeInstance>,
     local: Arc<RuntimeInstance>,
     changes: tokio::sync::watch::Sender<u64>,
+    /// Composition diagnostics already reported, so each is reported once.
+    reported: Mutex<std::collections::HashSet<String>>,
 }
 
 impl RuntimeRegistry {
@@ -236,6 +238,23 @@ impl RuntimeRegistry {
             global,
             local,
             changes: tokio::sync::watch::channel(0).0,
+            reported: Mutex::default(),
+        }
+    }
+
+    /// Reports each composition diagnostic once on stderr.
+    pub(crate) fn report(&self, diagnostics: &[String]) {
+        if diagnostics.is_empty() {
+            return;
+        }
+        let mut reported = self
+            .reported
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for diagnostic in diagnostics {
+            if reported.insert(diagnostic.clone()) {
+                eprintln!("cookie-agent: {diagnostic}");
+            }
         }
     }
 
