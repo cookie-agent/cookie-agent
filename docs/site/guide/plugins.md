@@ -34,9 +34,10 @@ tool_timeout_ms = 30000
 defaults to `true`, and `cwd` is optional. All timeout values must be positive.
 A disabled entry is not started but is still validated.
 
-Plugin processes receive only the variables in `env`; the engine clears its
-inherited environment, including `PATH`, before adding those configured values.
-Configure `PATH` explicitly when the plugin itself needs it.
+Plugin processes inherit the engine's environment, like MCP stdio servers, and
+`env` adds to it, overriding inherited variables of the same name. A plugin
+therefore also sees provider API keys and other secrets the engine reads from
+its environment.
 
 Each enabled plugin starts when the engine opens. Set `enabled = false` to keep
 an installed plugin configured without starting it. Configuration changes take
@@ -127,7 +128,7 @@ Plugin authors can use the
 |---|---|---|---|
 | `command` | string | *(required)* | Plugin executable. |
 | `args` | array of strings | empty | Command arguments. |
-| `env` | map of strings | empty | Complete child environment; inherited variables are cleared. |
+| `env` | map of strings | empty | Additions to the inherited engine environment; a listed variable overrides the inherited value. |
 | `cwd` | string | *(none)* | Child working directory. |
 | `enabled` | boolean | `true` | Whether the plugin starts with the engine. |
 | `producer_messaging` | boolean | `false` | Opt in to the producer messaging protocol capability, allowing the plugin to register producers and send model-bound messages. |
@@ -141,9 +142,8 @@ Plugin entries reject unknown fields. `command` must be present and nonempty,
 These rules apply even when `enabled = false`; disabling an entry prevents
 startup but does not bypass configuration validation.
 
-The child receives only the variables in `env`. It does not inherit the
-engine's environment, including `PATH`; use an absolute `command` and configure
-`PATH` explicitly when the executable or its children need it.
+The child inherits the engine's environment, including `PATH` and any provider
+API keys set there, plus the variables in `env`, which take precedence.
 
 Plugin commands are trusted local code, not a sandbox. Review workspace plugin
 configuration before opening the workspace. Tool permissions do not prevent

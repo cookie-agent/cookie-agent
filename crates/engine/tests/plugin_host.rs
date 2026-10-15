@@ -253,33 +253,35 @@ async fn happy_path_discovers_claims_pings_and_shuts_down() {
     );
 }
 
-// This test specifically asserts Unix HOME sanitization in the child environment.
+// Plugins inherit the engine's environment; `env` adds to it and wins.
 #[cfg(unix)]
 #[tokio::test]
-async fn plugin_environment_contains_only_configured_values() {
-    assert!(
-        std::env::var_os("HOME").is_some(),
-        "test parent must have HOME"
-    );
-    let marker_directory = tempfile::tempdir().expect("marker directory");
-    let env_file = marker_directory.path().join("environment.json");
-    let config = plugin_table(
-        "fixture",
-        &[
-            ("FIXTURE_NAME", "fixture".into()),
+async fn plugin_environment_inherits_the_engine_and_adds_configured_values() {
+    let parent_home = std::env::var("HOME").expect("test parent must have HOME");
+    for configured_home in [None, Some("/configured-home")] {
+        let marker_directory = tempfile::tempdir().expect("marker directory");
+        let env_file = marker_directory.path().join("environment.json");
+        let mut variables = vec![
+            ("FIXTURE_NAME", "fixture".to_owned()),
             ("FIXTURE_ENV_FILE", env_file.display().to_string()),
             ("FIXTURE_CONFIGURED_SENTINEL", "configured-value".into()),
-        ],
-        "",
-    );
-    let harness = open_engine(&config);
-    wait_for_state(&harness.engine, "fixture", PluginState::Connected).await;
-    let environment: serde_json::Value =
-        serde_json::from_slice(&fs::read(env_file).expect("fixture environment"))
-            .expect("environment JSON");
-    assert_eq!(environment["parent"], serde_json::Value::Null);
-    assert_eq!(environment["configured"], "configured-value");
-    harness.engine.shutdown().await;
+        ];
+        if let Some(home) = configured_home {
+            variables.push(("HOME", home.into()));
+        }
+        let config = plugin_table("fixture", &variables, "");
+        let harness = open_engine(&config);
+        wait_for_state(&harness.engine, "fixture", PluginState::Connected).await;
+        let environment: serde_json::Value =
+            serde_json::from_slice(&fs::read(env_file).expect("fixture environment"))
+                .expect("environment JSON");
+        assert_eq!(
+            environment["parent"],
+            configured_home.unwrap_or(parent_home.as_str())
+        );
+        assert_eq!(environment["configured"], "configured-value");
+        harness.engine.shutdown().await;
+    }
 }
 
 #[tokio::test]

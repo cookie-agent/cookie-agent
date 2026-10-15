@@ -1357,7 +1357,6 @@ impl PluginRuntime {
         let mut process = tokio::process::Command::new(command);
         process
             .args(&self.config.args)
-            .env_clear()
             .envs(&self.config.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
