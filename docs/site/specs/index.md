@@ -6,7 +6,7 @@ configuration reference.
 
 | Specification | Status |
 |---|---|
-| [Runtimes](runtimes.md) | Draft; product decisions approved 2026-10-15; daemon as gateway with global and coding runtimes |
+| [Runtimes](runtimes.md) | Draft; product decisions approved 2026-10-15; daemon as gateway with global and coding runtimes; phases 1-3 (runtime seam, attachments, runtime protocol) implemented |
 | [Agent messaging](agent-messaging.md) | Implemented; governing contract for `send_message` agent-to-agent messaging |
 | [Subagent handles](subagent-handles.md) | Draft proposal; short tree-unique handles for model-facing session references |
 | [Tree-scoped session ownership lock](tree-ownership-lock.md) | Implemented; one `owner.lock` per root session tree, no lock files for delegated children |
@@ -20,6 +20,7 @@ configuration reference.
 | [Refactor phase 3: module splits](refactor-phase-3-module-splits.md) | Implemented; split `Inner`, `App`, transcript renderer, `SessionStore`, TUI reducer |
 | [Goal mode and producers](../development/goal-mode.md) | Implemented, approved product contract |
 | [Protocol](../reference/protocol.md) | Implemented wire contract |
+| [Runtime protocol](../reference/runtime-protocol.md) | Implemented wire contract between the daemon and its runtimes, version 1 |
 | [Events](../reference/events.md) | Implemented persistence and subscription contract |
 | [Schemas](../reference/schemas.md) | Current compatibility contract |
 | [Tools](../reference/tools.md) | Implemented tool arguments, output, retention, and limits |

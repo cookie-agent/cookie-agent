@@ -4,7 +4,7 @@
 //! [`Peer`] type serves the daemon's client and the runtime's server. It runs
 //! over any frame [`Transport`]: an in-memory pair, or [`LineTransport`] over
 //! a child's stdio. Every frame is bounded by
-//! [`MAX_FRAME_BYTES`](crate::protocol::MAX_FRAME_BYTES) and parsed strictly;
+//! [`MAX_FRAME_BYTES`] and parsed strictly;
 //! a malformed frame ends the connection.
 //!
 //! The transport's `recv` must be cancel-safe: the peer's I/O task selects
@@ -570,7 +570,7 @@ fn parse_frame(bytes: &[u8]) -> Result<Envelope, String> {
 
 /// Newline-delimited frames over a byte stream, such as a child's stdio:
 /// one JSON message per line, each at most
-/// [`MAX_FRAME_BYTES`](crate::protocol::MAX_FRAME_BYTES).
+/// [`MAX_FRAME_BYTES`].
 pub struct LineTransport<R, W> {
     reader: FramedRead<R, LinesCodec>,
     writer: W,

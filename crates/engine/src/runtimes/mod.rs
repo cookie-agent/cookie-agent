@@ -16,9 +16,10 @@
 //!    (runtime ID, canonical workspace), shared by every session attached to
 //!    them. The built-in templates are the **global runtime** (ID `global`):
 //!    top-level MCP servers, plugins, and a `webfetch` declared
-//!    `ToolCollision::Fallback`, no workspace; and the **local coding
-//!    runtime** (ID `local`): `read`, `write`, `edit`, `bash`, and `webfetch`
-//!    in the daemon's working directory.
+//!    `ToolCollision::Fallback`, no workspace, called in-process; and the
+//!    **local coding runtime** (ID `local`): `read`, `write`, `edit`, `bash`,
+//!    and `webfetch` in the daemon's working directory, reached over the
+//!    runtime protocol (`remote`) in production.
 //!
 //! [`compose`] turns the sources' tools into published names, prefixing
 //! collisions with the attachment name. Every tool is traced to its

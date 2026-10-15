@@ -133,6 +133,10 @@ pub trait ToolProvider: Send + Sync {
     fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError>
     where
         Self: Sized;
+    /// The permission name and resource of `arguments`. The host asks only
+    /// for a prepared call without a [`crate::PreparedDeclaration`]; a
+    /// provider that cannot answer synchronously, such as a runtime behind
+    /// the runtime protocol, reports both at preparation instead.
     fn get_permission_resource(
         &self,
         tool_name: &str,
@@ -140,6 +144,9 @@ pub trait ToolProvider: Send + Sync {
     ) -> Result<(&'static str, Option<String>), ToolError>;
     fn get_display_argument(&self, name: &str, arguments: &Value) -> Result<String, ToolError>;
 
+    /// How clients show `call`. The host uses a prepared call's
+    /// [`crate::PreparedDeclaration`] when it has one, and asks here
+    /// otherwise, including for a call that failed to prepare.
     fn presentation(&self, call: &ToolCall) -> ToolCallPresentation {
         match self.get_display_argument(&call.name, &call.arguments) {
             Ok(display) => tool_presentation(&call.name, &display),
