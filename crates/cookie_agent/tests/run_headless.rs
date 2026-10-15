@@ -289,7 +289,7 @@ impl Fixture {
             cwd: workspace.clone(),
             config: configuration,
             model_manager,
-            runtimes: cookie_agent_tools::runtime_options(&workspace),
+            runtimes: cookie_agent_coding_runtime::runtime_options(&workspace),
         };
         let engine = Engine::open(options.clone()).expect("engine");
         Self {

@@ -516,13 +516,13 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
+ "cookie_agent_coding_runtime",
  "cookie_agent_config",
  "cookie_agent_engine",
  "cookie_agent_models",
  "cookie_agent_protocol",
  "cookie_agent_runtime_api",
  "cookie_agent_server",
- "cookie_agent_tools",
  "cookie_agent_tui",
  "libc",
  "serde",
@@ -534,6 +534,29 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "zeroize",
+]
+
+[[package]]
+name = "cookie_agent_coding_runtime"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "cookie_agent_engine",
+ "cookie_agent_protocol",
+ "cookie_agent_runtime_api",
+ "html2text",
+ "libc",
+ "memchr",
+ "process-wrap",
+ "reqwest",
+ "rustix",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -718,29 +741,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "zeroize",
-]
-
-[[package]]
-name = "cookie_agent_tools"
-version = "0.3.0"
-dependencies = [
- "async-trait",
- "cookie_agent_engine",
- "cookie_agent_protocol",
- "cookie_agent_runtime_api",
- "html2text",
- "libc",
- "memchr",
- "process-wrap",
- "reqwest",
- "rustix",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-util",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

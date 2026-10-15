@@ -1,4 +1,7 @@
-//! Exact cookie-agent protocol 39 prepared built-in tools.
+//! The coding runtime's tools for cookie-agent protocol 39: `read`, `write`,
+//! `edit`, `bash`, and `webfetch`, prepared against the workspace of the
+//! runtime that offers them. They implement the `cookie_agent_runtime_api`
+//! contract and never depend on the engine.
 
 use std::{
     path::{Path, PathBuf},

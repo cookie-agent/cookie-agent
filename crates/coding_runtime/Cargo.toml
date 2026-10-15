@@ -1,5 +1,5 @@
 [package]
-name = "cookie_agent_tools"
+name = "cookie_agent_coding_runtime"
 version = "0.3.0"
 publish = false
 edition.workspace = true

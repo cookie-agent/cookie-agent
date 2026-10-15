@@ -28,6 +28,7 @@ fn collect_files(root: &Path, directory: &Path, files: &mut Vec<PathBuf>) {
 const WORKSPACE_MANIFESTS: &[&str] = &[
     "crates/identity/Cargo.toml",
     "crates/config/Cargo.toml",
+    "crates/coding_runtime/Cargo.toml",
     "crates/cookie_agent/Cargo.toml",
     "crates/engine/Cargo.toml",
     "crates/models/Cargo.toml",
@@ -35,7 +36,6 @@ const WORKSPACE_MANIFESTS: &[&str] = &[
     "crates/protocol/Cargo.toml",
     "crates/runtime_api/Cargo.toml",
     "crates/server/Cargo.toml",
-    "crates/tools/Cargo.toml",
     "crates/tui/Cargo.toml",
 ];
 const PHASE1_MANIFESTS: &[&str] = &[

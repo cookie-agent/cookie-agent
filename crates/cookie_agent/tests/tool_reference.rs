@@ -7,10 +7,10 @@
 
 use std::fmt::Write as _;
 
+use cookie_agent_coding_runtime::{BuiltinTools, bash::bash_tool_description_for};
 use cookie_agent_engine::{base_layer_tool_specs, permissions::UNCONDITIONAL_PERMISSION_NAME};
 use cookie_agent_protocol::SessionId;
 use cookie_agent_runtime_api::{SessionToolContext, ToolProvider, ToolSpec, WorkspaceContext};
-use cookie_agent_tools::{BuiltinTools, bash::bash_tool_description_for};
 use serde_json::Value;
 
 const DOC_PATH: &str = concat!(

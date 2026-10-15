@@ -5,7 +5,7 @@ members = [
     "crates/plugin_sdk",
     "crates/runtime_api",
     "crates/engine",
-    "crates/tools",
+    "crates/coding_runtime",
     "crates/config",
     "crates/models",
     "crates/server",

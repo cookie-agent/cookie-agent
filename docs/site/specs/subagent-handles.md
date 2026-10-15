@@ -288,7 +288,7 @@ Both delegate result surfaces are already bounded — the teaser preview follows
 pipeline:
 
 - `delegate_subagent`'s terminal result opts out, matching `get_subagent_result`'s
-  existing opt-out (`result_truncation_policy`, `crates/tools/src/delegate.rs`).
+  existing opt-out (`result_truncation_policy`, `crates/engine/src/base_tools/delegate.rs`).
 - The `<subagent_notification>` body is delivered as-is.
 
 No surface in the delegation flow is truncated twice.

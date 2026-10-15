@@ -438,7 +438,7 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
         cwd: workspace.to_owned(),
         config: configuration,
         model_manager,
-        runtimes: cookie_agent_tools::runtime_options(workspace),
+        runtimes: cookie_agent_coding_runtime::runtime_options(workspace),
     })
     .context("open manifests, rehydrate project state, and reconcile engine")?;
     let server = Arc::new(Server::new(engine.clone()));
