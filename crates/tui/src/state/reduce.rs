@@ -472,7 +472,7 @@ pub(super) fn reduce_event_from(
             state.run_agent = Some(agent.agent.clone());
             state.run_snapshot = Some(agent);
             state.run_selected_suffix = Some(selected_suffix);
-            state.agent_md_previous_run = state.agent_md_latest_run.take();
+            state.agent_md_previous_run = std::mem::take(&mut state.agent_md_latest_run);
         }
         EventPayload::UserInputAdmitted { input } => {
             close_open_assistant(state, timestamp);
@@ -1519,12 +1519,22 @@ pub(super) fn reduce_event_from(
                 input,
             })
         }
-        EventPayload::AgentMdLoaded { entries, .. } => {
-            // Every root run reloads AGENTS.md; a row appears only when this
-            // run's context differs from the previous run's. A run that
-            // loaded none breaks the chain, so re-enabling shows a row again.
-            let unchanged = state.agent_md_previous_run.as_ref() == Some(&entries);
-            state.agent_md_latest_run = Some(entries.clone());
+        EventPayload::AgentMdLoaded {
+            entries,
+            attachment,
+        } => {
+            // Every root run reloads AGENTS.md, one event per attachment; a
+            // row appears only when an attachment's context differs from its
+            // previous run's. A run that loaded none for an attachment
+            // breaks its chain, so re-enabling shows a row again.
+            let attachment = attachment.map_or_else(
+                || cookie_agent_protocol::RuntimeId::LOCAL.to_owned(),
+                |name| name.as_str().to_owned(),
+            );
+            let unchanged = state.agent_md_previous_run.get(&attachment) == Some(&entries);
+            state
+                .agent_md_latest_run
+                .insert(attachment, entries.clone());
             if !unchanged {
                 push_item(state, timestamp, |id| TranscriptItem::AgentMd {
                     id,
@@ -1537,7 +1547,9 @@ pub(super) fn reduce_event_from(
         EventPayload::ModelToolsPublished { tool_names, .. } => {
             state.model_tools = Some(tool_names.into());
         }
-        EventPayload::AgentMdSkipped { path, byte_length } => push_event(
+        EventPayload::AgentMdSkipped {
+            path, byte_length, ..
+        } => push_event(
             state,
             EventLevel::Warning,
             format!(

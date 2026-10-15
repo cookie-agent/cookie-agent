@@ -724,13 +724,19 @@ pub struct SessionState {
     pub(crate) producer_claims: HashMap<u64, ProducerClaimProjection>,
     pub(crate) terminal_runs: HashSet<RunId>,
     pub approvals: Vec<ApprovalState>,
-    /// AGENTS.md entries loaded by the latest run (`None` when it loaded
-    /// none) and by the run before it. A row appears only when a run's
-    /// context differs from the previous run's, so turning AGENTS.md off and
-    /// back on shows again even when the files are unchanged.
-    pub(crate) agent_md_latest_run: Option<Vec<cookie_agent_protocol::AgentMdEntry>>,
-    pub(crate) agent_md_previous_run: Option<Vec<cookie_agent_protocol::AgentMdEntry>>,
+    /// AGENTS.md entries loaded by the latest run and by the run before it,
+    /// per attachment (events without one count as `local`). A run loads
+    /// one event per coding attachment that returned a file. A row appears
+    /// only when an attachment's context differs from its previous run's,
+    /// so turning AGENTS.md off and back on shows again even when the files
+    /// are unchanged.
+    pub(crate) agent_md_latest_run: AgentMdByAttachment,
+    pub(crate) agent_md_previous_run: AgentMdByAttachment,
 }
+
+/// AGENTS.md entries keyed by the attachment that loaded them.
+pub(crate) type AgentMdByAttachment =
+    std::collections::BTreeMap<String, Vec<cookie_agent_protocol::AgentMdEntry>>;
 
 impl SessionState {
     pub fn is_open_assistant_part(&self, item_id: u64, part_id: u64) -> bool {

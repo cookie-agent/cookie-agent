@@ -878,13 +878,29 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
         payload: EventPayload::AgentMdSkipped {
             path: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
             byte_length: AgentMdSkipped::MAX_SKIP_BYTES + 1,
+            attachment: None,
         },
         ..invalid
     };
     let value = serde_json::to_value(&skipped).unwrap();
+    assert!(value["payload"].get("attachment").is_none(), "{value}");
     assert_eq!(
         serde_json::from_value::<StoredEvent>(value).unwrap(),
         skipped
+    );
+    let attributed = StoredEvent {
+        payload: EventPayload::AgentMdSkipped {
+            path: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
+            byte_length: AgentMdSkipped::MAX_SKIP_BYTES + 1,
+            attachment: Some(crate::AttachmentName::new("labpc_api").unwrap()),
+        },
+        ..skipped.clone()
+    };
+    let value = serde_json::to_value(&attributed).unwrap();
+    assert_eq!(value["payload"]["attachment"], "labpc_api");
+    assert_eq!(
+        serde_json::from_value::<StoredEvent>(value).unwrap(),
+        attributed
     );
     assert_eq!(skipped.validate(), Ok(()));
 
@@ -892,6 +908,7 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
         payload: EventPayload::AgentMdSkipped {
             path: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
             byte_length: AgentMdSkipped::MAX_SKIP_BYTES,
+            attachment: None,
         },
         ..skipped
     };

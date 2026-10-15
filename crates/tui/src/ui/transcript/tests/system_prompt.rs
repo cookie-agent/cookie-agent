@@ -1010,6 +1010,7 @@ fn agent_md_and_skill_loads_render_as_expandable_context_rows() {
             EventPayload::AgentMdSkipped {
                 path: SafeDisplayText::new("/work/sub/AGENTS.md").expect("path"),
                 byte_length: cookie_agent_protocol::AgentMdSkipped::MAX_SKIP_BYTES + 1,
+                attachment: None,
             },
         ),
     ];
@@ -1159,6 +1160,82 @@ fn agent_md_row_reappears_when_a_run_without_it_breaks_the_chain() {
             BlockId::SystemPrompt,
             BlockId::AgentMd(3),
             BlockId::AgentMd(7),
+        ]
+    );
+}
+
+#[test]
+fn agent_md_rows_compare_each_attachment_with_its_own_previous_run() {
+    let session = SessionId::new_v7();
+    let loaded = |attachment: &str, source: &str, content: &str| EventPayload::AgentMdLoaded {
+        attachment: Some(cookie_agent_protocol::AttachmentName::new(attachment).expect("name")),
+        entries: vec![cookie_agent_protocol::AgentMdEntry {
+            source: SafeDisplayText::new(source).expect("source"),
+            content: content.into(),
+            byte_length: content.len() as u64,
+        }],
+    };
+    let [first, second, third] = [run_id(), run_id(), run_id()];
+    let events = [
+        session_created(session, 1),
+        run_started_with_suffix(session, 2, first, vec![resolved_model(None)]),
+        event(
+            session,
+            3,
+            first,
+            loaded("local_web", "/web/AGENTS.md", "web"),
+        ),
+        event(
+            session,
+            4,
+            first,
+            loaded("labpc_api", "/api/AGENTS.md", "api"),
+        ),
+        // Both unchanged: no rows, although each run loads two files.
+        run_started_with_suffix(session, 5, second, vec![resolved_model(None)]),
+        event(
+            session,
+            6,
+            second,
+            loaded("local_web", "/web/AGENTS.md", "web"),
+        ),
+        event(
+            session,
+            7,
+            second,
+            loaded("labpc_api", "/api/AGENTS.md", "api"),
+        ),
+        // Only the API's file changed: one row.
+        run_started_with_suffix(session, 8, third, vec![resolved_model(None)]),
+        event(
+            session,
+            9,
+            third,
+            loaded("local_web", "/web/AGENTS.md", "web"),
+        ),
+        event(
+            session,
+            10,
+            third,
+            loaded("labpc_api", "/api/AGENTS.md", "api v2"),
+        ),
+    ];
+    let mut store = StateStore::default();
+    for event in events {
+        assert!(store.apply_event(event));
+    }
+    let layout = transcript_layout(&store.sessions[&session], None, 100);
+    assert_eq!(
+        layout
+            .regions
+            .iter()
+            .map(|region| region.id)
+            .collect::<Vec<_>>(),
+        vec![
+            BlockId::SystemPrompt,
+            BlockId::AgentMd(3),
+            BlockId::AgentMd(4),
+            BlockId::AgentMd(10),
         ]
     );
 }

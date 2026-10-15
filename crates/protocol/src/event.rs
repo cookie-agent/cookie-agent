@@ -2038,6 +2038,10 @@ pub enum EventPayload {
     AgentMdSkipped {
         path: SafeDisplayText,
         byte_length: u64,
+        /// The coding-runtime attachment whose workspace holds the file.
+        /// Events written before runtimes have none and belong to `local`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attachment: Option<AttachmentName>,
     },
     PluginEventAdded {
         plugin: String,
@@ -2676,7 +2680,9 @@ impl EventPayload {
             Self::ModelToolsPublished { tool_names, .. } if !valid_model_tool_names(tool_names) => {
                 return Err(EventSchemaError::InvalidModelTools);
             }
-            Self::AgentMdSkipped { path, byte_length } => {
+            Self::AgentMdSkipped {
+                path, byte_length, ..
+            } => {
                 if byte_length <= &AgentMdSkipped::MAX_SKIP_BYTES || path.as_str().is_empty() {
                     return Err(EventSchemaError::InvalidAgentMd);
                 }
