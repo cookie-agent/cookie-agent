@@ -362,7 +362,7 @@ that needs general producer messages adds them to this protocol then.
 
 ## 11. Client protocol
 
-Protocol 38 → 39 (one bump per phase that changes the wire).
+Protocol 39 → 40 (one bump per phase that changes the wire; phase 1 already used 39 for removing `AgentDocumentSource::Workspace`).
 
 - `session.create` gains `runtimes: [{ runtime_id, workspace? }]` and
   `global: bool`. Omitted means `local` at the daemon's directory plus
@@ -406,7 +406,7 @@ This lands open review item 9 (extract `tool_api` into a leaf crate):
 Each phase lands with all gates green and updates the user-facing docs it
 changes (`architecture.md`, configuration, protocol, tools, system prompt).
 
-1. **Runtime seam, in-process, no wire change.** Extract `runtime_api`;
+1. **Runtime seam, in-process (protocol 39 only for removing the workspace agent source).** Extract `runtime_api`;
    split the base layer, the global runtime, and the `local` coding runtime
    behind one engine-side runtime abstraction. Move every
    workspace-semantics use of `store.cwd()` to the call's runtime:
@@ -417,7 +417,7 @@ changes (`architecture.md`, configuration, protocol, tools, system prompt).
    inherit the daemon's environment.
    **Done when** the only `store.cwd()` reads left are the store location and
    `cwd_identity`.
-2. **Attachments and composition (protocol 39).** Events, RPCs, defaults,
+2. **Attachments and composition (protocol 40).** Events, RPCs, defaults,
    collision prefixing, eager MCP connection with reconnect
    and drop notices (removing `lazy`), runtime-qualified permissions and
    grants, per-attachment `AGENTS.md` and skills, delegation narrowing, TUI
