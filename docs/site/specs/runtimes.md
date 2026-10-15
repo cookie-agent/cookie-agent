@@ -48,7 +48,7 @@ only notification path, and they stay a daemon-side plugin feature.
 | **Daemon** | Today's daemon, unchanged in process model: plain `cookie` runs it in-process, `cookie daemon` serves it over WebSocket. It is the gateway. Its working directory now only locates the session store and stamps `cwd_identity`. |
 | **Base layer** | Tools the daemon implements itself for its own orchestration. Always present, never detachable. |
 | **Runtime** | A source of tools, workspace context, and producer messages. |
-| **Runtime kind** | `global` or `coding` in this milestone. |
+| **Runtime kind** | `global` or `coding` in this milestone. A runtime reports its own kind in `runtime/initialize`; templates do not declare it. |
 | **Runtime template** | A configured way to start runtimes: `[runtimes.<id>]`. The `<id>` is the *runtime ID*. |
 | **Runtime instance** | A running runtime: one per (runtime ID, canonical workspace). Shared by every session attached to it. |
 | **Attachment** | A durable session fact binding a session to a runtime instance under a session-unique *attachment name*. |
@@ -93,7 +93,6 @@ Rules:
 
 ```toml
 [runtimes.labpc]
-kind = "coding"
 command = ["ssh", "labpc", "cookie", "runtime", "coding", "--stdio", "--workspace", "{workspace}"]
 env = { }                     # additions to the inherited environment
 startup_timeout_ms = 10000
@@ -105,10 +104,17 @@ command = "rust-analyzer-mcp"
 
 - Runtime IDs match `[a-z][a-z0-9_]{0,31}` because they become tool-name
   prefixes. `global` and `local` are reserved.
-- `[runtimes.local]` may exist without `command` and `kind`; it only carries
-  the `mcp` table for the built-in local coding runtime. Any other template
-  requires `kind` and a nonempty `command`. The `mcp` table is a coding-kind
-  setting; templates accept no `plugins` table.
+- `[runtimes.local]` may exist without `command`; it only carries the `mcp`
+  table for the built-in local coding runtime. Any other template requires a
+  nonempty `command`. Templates accept no `plugins` table.
+- Templates do not declare a kind. The command decides what runs, and the
+  runtime reports its kind in `runtime/initialize`, so there is one source of
+  truth. The `mcp` table is still parsed strictly when the configuration
+  loads; a runtime whose kind hosts no MCP servers rejects a nonempty one at
+  initialize.
+- A template whose command contains `{workspace}` needs a workspace: attach
+  and session creation require one. A template without the placeholder takes
+  none, and supplying one is an error.
 - `{workspace}` is substituted as one whole argv element, with no shell
   interpretation by cookie. A command that reaches a remote shell (ssh) is
   responsible for quoting; the reference docs must say so.
@@ -323,7 +329,7 @@ does not; it is called in-process through the same Rust trait.
 
 | Method | Direction | Purpose |
 |---|---|---|
-| `runtime/initialize` | daemon → runtime | Version, runtime ID, kind, requested workspace, and a kind-specific settings object (for `coding`: `tool_output` and `agent_md` limits and the template's MCP servers). Reply: version, attachment name, canonical workspace, platform, shell, tool declarations, skills. |
+| `runtime/initialize` | daemon → runtime | Version, runtime ID, requested workspace (when the template takes one), and settings: `tool_output` and `agent_md` limits and the template's MCP servers. A runtime rejects settings its kind does not support. Reply: version, kind, attachment name, canonical workspace, platform, shell, tool declarations, skills. |
 | `runtime/tools_changed` | runtime → daemon | Tool list changed; the daemon re-lists before the next model turn (section 6.1). |
 | `runtime/context` | daemon → runtime | Per-admission context for the run's preset: `AGENTS.md`. |
 | `tool/prepare` | daemon → runtime | Name, arguments, session, run, turn context. Reply: prepared ID, operation identity, permission resource, policy labels, presentation, display argument, serialization key, concurrency. |
