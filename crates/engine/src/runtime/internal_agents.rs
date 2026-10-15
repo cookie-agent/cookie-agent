@@ -541,17 +541,7 @@ impl Engine {
             schema: cookie_agent_protocol::AgentSchemaVersion::current(),
             mode: AgentMode::Internal,
             description: document.frontmatter.description.clone(),
-            document_source: match document.source {
-                cookie_agent_config::AgentDocumentSource::BuiltIn => {
-                    cookie_agent_protocol::AgentDocumentSource::BuiltIn
-                }
-                cookie_agent_config::AgentDocumentSource::User => {
-                    cookie_agent_protocol::AgentDocumentSource::User
-                }
-                cookie_agent_config::AgentDocumentSource::Workspace => {
-                    cookie_agent_protocol::AgentDocumentSource::Workspace
-                }
-            },
+            document_source: document.source,
             document_fingerprint: Sha256Digest::new(document.document_fingerprint.as_str())
                 .map_err(|_| EngineError::RuntimeCompileFailed)?,
             composed_prompt: document.body.clone(),

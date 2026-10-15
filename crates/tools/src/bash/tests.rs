@@ -80,7 +80,7 @@ fn policy(rules: Vec<PermissionRule>) -> AgentSnapshot {
         schema: AgentSchemaVersion::current(),
         mode: AgentMode::Primary,
         description: "Test agent".into(),
-        document_source: AgentDocumentSource::Workspace,
+        document_source: AgentDocumentSource::User,
         document_fingerprint: Sha256Digest::of_bytes(b"test document"),
         composed_prompt: "Test permission evaluation.\n".into(),
         prompt_fingerprint: Sha256Digest::of_bytes(b"Test permission evaluation.\n"),

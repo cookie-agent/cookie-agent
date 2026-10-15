@@ -1,11 +1,11 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 38 is current-only. A client must call `handshake` before any other
+Protocol 39 is current-only. A client must call `handshake` before any other
 method:
 
 ```json
-{ "protocol_version": 38, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+{ "protocol_version": 39, "client": { "kind": "tui", "instance_id": "<uuid>" } }
 ```
 
 `client.kind` names the client program: a lowercase letter followed by up to 15
@@ -14,7 +14,7 @@ lowercase letters, digits, or hyphens (the shipped clients use `tui` and `cli`).
 across reconnects so it can recognize events it caused. Any number of clients
 may connect to one daemon at once.
 
-The response is `{ "protocol_version": 38, "origin": "client:<kind>-<id>" }`,
+The response is `{ "protocol_version": 39, "origin": "client:<kind>-<id>" }`,
 where `<id>` is the instance id as 32 lowercase hex digits. The daemon stamps
 that origin on every event the connection's requests cause, so each client can
 tell its own actions from another client's. A repeated handshake on the same
@@ -25,12 +25,15 @@ member and the `origin` result. Protocol 35 replaced `run.recall_steer` with
 protocol 36 added the `resync` runtime change reason. Protocol 37 made
 `session.revert` require `expected_last_seq` and `session.fork` require
 `client_fork_id`, and added `session.compact.cancel`. Protocol 38 added
-`session.select_model` and the `session_model_selected` event. Older clients are
-rejected.
+`session.select_model` and the `session_model_selected` event. Protocol 39
+removed the workspace configuration layer: the `workspace` agent document source
+and the `workspace_file` MCP configuration source and target are gone (session
+logs that recorded a `workspace` document source still read it as `user`).
+Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 38.
+members of protocol 39.
 
 ## Error diagnostics
 
@@ -53,7 +56,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 38 alongside independent display and output references. The
+preserved in protocol 39 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment

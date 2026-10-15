@@ -9,7 +9,7 @@ host = "127.0.0.1"
 port = 7419
 ```
 
-Omission inherits the lower layer. An authored table replaces it completely;
+Omission keeps the defaults. An authored table replaces them completely;
 omitted fields use the defaults below. See [config.toml](../guide/configuration.md).
 Unknown fields fail. The port accepts `0` through `65535`; `0` asks the OS for
 an available port, so clients must use the actual bound port. `cookie daemon

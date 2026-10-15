@@ -167,18 +167,18 @@ no tail to keep it current), a session adopted after a snapshot subscription
 
 ## Configuration and layering
 
-The `config` crate reads two optional authored layers:
+The `config` crate reads built-in defaults and one optional authored layer, the
+user layer:
 
 ```text
-~/.cookie-agent/config.toml                 # user layer
+~/.cookie-agent/config.toml
 ~/.cookie-agent/agents/<agent-id>.md
-<exact-cwd>/.cookie-agent/config.toml       # workspace layer
-<exact-cwd>/.cookie-agent/agents/<agent-id>.md
+~/.cookie-agent/agents/<preset>/<agent-id>.md
 ```
 
-There is no upward workspace search. A workspace setting replaces the
-corresponding user setting; a same-ID workspace provider or agent replaces the
-complete user definition. Unknown keys, leftover schema/version fields, wrong
+There is no workspace configuration layer: `<cwd>/.cookie-agent/config.toml`
+and `<cwd>/.cookie-agent/agents/` are never opened. The working directory only
+contributes context, `AGENTS.md` files and project skills. Unknown keys, leftover schema/version fields, wrong
 types, and malformed values are rejected without migration or silent ignores.
 The TUI additionally reads an independent `~/.cookie-agent/tui.toml`.
 
@@ -459,7 +459,7 @@ source's tree and therefore needs that tree's lock, taking it when it is free
 and failing as foreign-owned when it is not. Grants and grant invalidations
 committed by another process become
 visible after restart. Concurrent MCP configuration edits remain last-writer
-wins. Ownership failures in protocol 38 use an ordinary fault
+wins. Ownership failures in protocol 39 use an ordinary fault
 message rather than a new wire error.
 
 The data directory must be on a local filesystem with correct `flock` or
@@ -497,7 +497,7 @@ details.
 ## Protocol surface
 
 The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
-an authenticated WebSocket at `/ws`, protocol 38 current-only, `handshake` first.
+an authenticated WebSocket at `/ws`, protocol 39 current-only, `handshake` first.
 Discovery is a single `runtime.snapshot.get` call that returns one coherent
 runtime snapshot (schema 5). Session events stream through `events.subscribe`
 and plugin bus events through `events.plugin`. Raw tool output is not streamed

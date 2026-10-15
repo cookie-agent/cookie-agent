@@ -388,8 +388,7 @@ Plugins register hook names in `capabilities.intercept`. The complete 0.0.6 set 
 `user_before_input`, `model_before_request`, `provider_before_headers`,
 `provider_before_request`, `provider_after_response`, `message_end`, `model_before_select`,
 `session_before_fork`, and `session_before_revert`. An unlisted hook is never delivered. Hooks run synchronously in configured
-registration order. User-file order is retained; workspace entries replace same-name user entries
-in place, while new workspace plugins append in workspace order. Each hook has
+registration order, which is their order in the user `config.toml`. Each hook has
 `interception_timeout_ms` (2000 by default); timeout, process
 exit, or a full plugin queue fails open, records a diagnostic, and allows remaining hooks to run.
 

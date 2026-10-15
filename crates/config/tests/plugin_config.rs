@@ -1,6 +1,6 @@
 use std::fs;
 
-use cookie_agent_config::load_from_roots;
+use cookie_agent_config::load_from_user_root;
 
 fn root(config: &str) -> tempfile::TempDir {
     let directory = tempfile::tempdir().expect("tempdir");
@@ -11,21 +11,21 @@ fn root(config: &str) -> tempfile::TempDir {
 #[test]
 fn enabled_plugin_requires_command() {
     let directory = root("[plugins.demo]\n");
-    let error = load_from_roots(Some(directory.path()), None).expect_err("missing command");
+    let error = load_from_user_root(Some(directory.path())).expect_err("missing command");
     assert!(error.to_string().contains("invalid field `command`"));
 }
 
 #[test]
 fn producer_messaging_defaults_off_and_accepts_boolean_opt_in() {
     let defaults = root("[plugins.demo]\ncommand = \"plugin\"\n");
-    let loaded = load_from_roots(Some(defaults.path()), None).expect("default capability");
+    let loaded = load_from_user_root(Some(defaults.path())).expect("default capability");
     assert!(!loaded.plugins["demo"].producer_messaging);
 
     for (configured, expected) in [("true", true), ("false", false)] {
         let directory = root(&format!(
             "[plugins.demo]\ncommand = \"plugin\"\nproducer_messaging = {configured}\n"
         ));
-        let loaded = load_from_roots(Some(directory.path()), None).expect("boolean capability");
+        let loaded = load_from_user_root(Some(directory.path())).expect("boolean capability");
         assert_eq!(loaded.plugins["demo"].producer_messaging, expected);
     }
 }
@@ -33,14 +33,14 @@ fn producer_messaging_defaults_off_and_accepts_boolean_opt_in() {
 #[test]
 fn plugin_fields_are_strict() {
     let directory = root("[plugins.demo]\ncommand = \"plugin\"\nunknown = true\n");
-    let error = load_from_roots(Some(directory.path()), None).expect_err("unknown field");
+    let error = load_from_user_root(Some(directory.path())).expect_err("unknown field");
     assert!(error.to_string().contains("unknown"));
 
     for value in ["\"true\"", "1", "[]", "{}"] {
         let directory = root(&format!(
             "[plugins.demo]\ncommand = \"plugin\"\nproducer_messaging = {value}\n"
         ));
-        let error = load_from_roots(Some(directory.path()), None).expect_err("non-boolean field");
+        let error = load_from_user_root(Some(directory.path())).expect_err("non-boolean field");
         assert!(
             error
                 .to_string()
@@ -60,7 +60,7 @@ fn plugin_timeouts_must_be_positive() {
         let directory = root(&format!(
             "[plugins.demo]\ncommand = \"plugin\"\n{timeout}\n"
         ));
-        let error = load_from_roots(Some(directory.path()), None).expect_err("invalid timeout");
+        let error = load_from_user_root(Some(directory.path())).expect_err("invalid timeout");
         assert!(error.to_string().contains("invalid field"));
         assert!(
             error
@@ -74,7 +74,7 @@ fn plugin_timeouts_must_be_positive() {
 #[test]
 fn disabled_plugin_with_valid_fields_is_accepted() {
     let directory = root("[plugins.demo]\ncommand = \"plugin\"\nenabled = false\n");
-    let loaded = load_from_roots(Some(directory.path()), None).expect("disabled plugin");
+    let loaded = load_from_user_root(Some(directory.path())).expect("disabled plugin");
     assert!(!loaded.plugins["demo"].enabled);
 }
 
@@ -84,24 +84,23 @@ fn disabled_plugin_still_rejects_invalid_fields() {
         let directory = root(&format!(
             "[plugins.demo]\ncommand = \"plugin\"\nenabled = false\n{invalid}\n"
         ));
-        let error = load_from_roots(Some(directory.path()), None).expect_err("invalid disabled");
+        let error = load_from_user_root(Some(directory.path())).expect_err("invalid disabled");
         assert!(error.to_string().contains("invalid field"));
         assert!(error.to_string().contains("line 4"));
     }
 }
 
 #[test]
-fn workspace_plugin_overrides_user_entry_by_name() {
+fn plugins_keep_their_authored_order() {
     let user = root(
         "[plugins.zeta]\ncommand = \"zeta\"\n[plugins.demo]\ncommand = \"user-plugin\"\nproducer_messaging = true\n[plugins.alpha]\ncommand = \"alpha\"\n",
     );
-    let workspace = root("[plugins.demo]\ncommand = \"workspace-plugin\"\n");
-    let loaded = load_from_roots(Some(user.path()), Some(workspace.path())).expect("plugins");
+    let loaded = load_from_user_root(Some(user.path())).expect("plugins");
     assert_eq!(
         loaded.plugins["demo"].command.as_deref(),
-        Some("workspace-plugin")
+        Some("user-plugin")
     );
-    assert!(!loaded.plugins["demo"].producer_messaging);
+    assert!(loaded.plugins["demo"].producer_messaging);
     assert_eq!(
         loaded
             .plugins

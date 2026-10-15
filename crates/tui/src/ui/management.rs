@@ -30,7 +30,6 @@ pub(super) enum McpTransport {
 pub(super) enum PersistChoice {
     Runtime,
     User,
-    Workspace,
 }
 
 impl PersistChoice {
@@ -38,7 +37,6 @@ impl PersistChoice {
         match self {
             Self::Runtime => None,
             Self::User => Some(McpConfigTarget::UserFile),
-            Self::Workspace => Some(McpConfigTarget::WorkspaceFile),
         }
     }
 
@@ -46,7 +44,6 @@ impl PersistChoice {
         match self {
             Self::Runtime => "runtime only",
             Self::User => "user config.toml",
-            Self::Workspace => "project config.toml",
         }
     }
 }
@@ -186,7 +183,7 @@ impl McpForm {
         }];
     }
 
-    pub(super) fn cycle_choice(&mut self, backward: bool) {
+    pub(super) fn cycle_choice(&mut self) {
         match self.focus {
             McpFormFocus::Transport => {
                 self.transport = match self.transport {
@@ -201,15 +198,9 @@ impl McpForm {
             McpFormFocus::Enabled => self.enabled = !self.enabled,
             McpFormFocus::Lazy => self.lazy = !self.lazy,
             McpFormFocus::Persist => {
-                self.persist = match (self.persist, backward) {
-                    (PersistChoice::Runtime, false) | (PersistChoice::Workspace, true) => {
-                        PersistChoice::User
-                    }
-                    (PersistChoice::User, false) => PersistChoice::Workspace,
-                    (PersistChoice::Workspace, false) | (PersistChoice::User, true) => {
-                        PersistChoice::Runtime
-                    }
-                    (PersistChoice::Runtime, true) => PersistChoice::Workspace,
+                self.persist = match self.persist {
+                    PersistChoice::Runtime => PersistChoice::User,
+                    PersistChoice::User => PersistChoice::Runtime,
                 }
             }
             _ => {}

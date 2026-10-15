@@ -129,7 +129,7 @@ fn test_agent_document(id: &AgentId) -> AgentDocument {
             agent_md: None,
         },
         body: body.to_owned(),
-        source: AgentDocumentSource::Workspace,
+        source: AgentDocumentSource::User,
         document_fingerprint: test_digest("primary document"),
         prompt_fingerprint: test_digest(body),
     }
@@ -343,7 +343,6 @@ fn build_in_process_server(
         agent_presets: BTreeMap::new(),
         mcp_servers: BTreeMap::new(),
         user_mcp_servers: BTreeMap::new(),
-        workspace_mcp_servers: BTreeMap::new(),
         plugins: Default::default(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
         skills,

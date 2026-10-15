@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fs, sync::Arc, time::Duration};
 
-use cookie_agent_config::load_from_roots;
+use cookie_agent_config::load_from_user_root;
 use cookie_agent_engine::{Engine, EngineOptions, PluginState};
 use cookie_agent_identity::CatalogRevision;
 use cookie_agent_models::{
@@ -106,7 +106,7 @@ fn open_engine(config_text: &str) -> Harness {
     let config_root = directory.path().join("config");
     create_private_test_dir(&config_root);
     write_private_test_file(&config_root.join("config.toml"), config_text.as_bytes());
-    let config = load_from_roots(None, Some(&config_root)).expect("loaded config");
+    let config = load_from_user_root(Some(&config_root)).expect("loaded config");
     let provider_store = directory.path().join("provider-store");
     create_private_test_dir(&provider_store);
     let now = Timestamp::now();

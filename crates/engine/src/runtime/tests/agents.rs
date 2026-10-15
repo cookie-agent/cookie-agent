@@ -11,13 +11,13 @@ use crate::{EngineError, EngineHistoryView, ToolProvider};
 use super::support::*;
 
 #[test]
-fn workspace_internal_agent_replaces_builtin_document_and_limits() {
+fn user_internal_agent_replaces_builtin_document_and_limits() {
     let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         "http://127.0.0.1:9/v1",
         "---\ndescription: Primary test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nPrimary.\n",
         Some((
             "approval.md",
-            "---\ndescription: Workspace approval\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1234, max_output_tokens: 345 }\npermissions: {}\n---\nWorkspace approval prompt.\n",
+            "---\ndescription: User approval\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1234, max_output_tokens: 345 }\npermissions: {}\n---\nUser approval prompt.\n",
         )),
         None,
         false,
@@ -30,13 +30,13 @@ fn workspace_internal_agent_replaces_builtin_document_and_limits() {
             &owner,
             owner.selected_suffix.first(),
         )
-        .expect("workspace approval policy");
+        .expect("user approval policy");
 
     assert_eq!(
         policy.agent.document_source,
-        cookie_agent_protocol::AgentDocumentSource::Workspace
+        cookie_agent_protocol::AgentDocumentSource::User
     );
-    assert_eq!(policy.agent.composed_prompt, "Workspace approval prompt.\n");
+    assert_eq!(policy.agent.composed_prompt, "User approval prompt.\n");
     assert_eq!(policy.limits.timeout_ms, 1234);
     assert_eq!(policy.limits.max_output_tokens, 345);
     assert!(policy.agent.permissions.is_empty());

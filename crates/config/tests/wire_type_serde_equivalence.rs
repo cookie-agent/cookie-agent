@@ -46,10 +46,6 @@ fn config_agent_wire_types_match_protocol() {
     for (config, protocol) in [
         (ConfigDocumentSource::BuiltIn, AgentDocumentSource::BuiltIn),
         (ConfigDocumentSource::User, AgentDocumentSource::User),
-        (
-            ConfigDocumentSource::Workspace,
-            AgentDocumentSource::Workspace,
-        ),
     ] {
         assert_same_json(&config, &protocol);
     }

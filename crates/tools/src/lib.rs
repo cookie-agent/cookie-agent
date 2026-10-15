@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 38 prepared built-in tools.
+//! Exact cookie-agent protocol 39 prepared built-in tools.
 
 use std::path::{Path, PathBuf};
 
@@ -74,7 +74,7 @@ pub(crate) fn assert_workspace_rule_allows(
         schema: AgentSchemaVersion::current(),
         mode: AgentMode::Primary,
         description: "Test agent".into(),
-        document_source: AgentDocumentSource::Workspace,
+        document_source: AgentDocumentSource::User,
         document_fingerprint: Sha256Digest::of_bytes(b"test document"),
         composed_prompt: "Test permission evaluation.\n".into(),
         prompt_fingerprint: Sha256Digest::of_bytes(b"Test permission evaluation.\n"),

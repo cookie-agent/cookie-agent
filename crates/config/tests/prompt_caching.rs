@@ -2,7 +2,7 @@ use std::fs;
 
 use cookie_agent_config::{
     AgentFrontmatter, CacheTtl, ConfigError, OpenAiCacheMode, OpenAiPromptCacheRetention,
-    OpenAiPromptCacheTtl, RollingCacheTtl, load_from_roots,
+    OpenAiPromptCacheTtl, RollingCacheTtl, load_from_user_root,
 };
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
@@ -10,7 +10,7 @@ use tempfile::TempDir;
 fn load(text: &str) -> Result<cookie_agent_config::LoadedConfiguration, ConfigError> {
     let directory = TempDir::new().unwrap();
     fs::write(directory.path().join("config.toml"), text).unwrap();
-    load_from_roots(None, Some(directory.path()))
+    load_from_user_root(Some(directory.path()))
 }
 
 fn custom_provider(adaptor: &str, auth: &str, setup: &str, cache: &str) -> String {

@@ -65,8 +65,10 @@ interactive prompt, so a missing token is clap's standard required-argument
 error. The URL defaults to `ws://127.0.0.1:7419/ws` and may be changed with
 `--url`; only loopback WebSocket URLs with the exact `/ws` path are accepted.
 See [Server](../engine/server.md).
-Only open trusted workspaces: configured plugins and eager MCP servers can
-start during engine initialization, before a model tool call is approved.
+Configured plugins and eager MCP servers, which come only from the user
+`config.toml`, start during engine initialization, before a model tool call is
+approved. Repository `AGENTS.md` files and project skills still enter model
+context, so open unfamiliar workspaces with care.
 Allowed shell commands run without a filesystem sandbox; see the
 [security contract](security.md#process-boundary).
 

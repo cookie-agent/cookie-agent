@@ -52,7 +52,7 @@ fn mcp_panel_renders_live_state_and_connection() {
     let mut panel = super::McpPanel::default();
     panel.install(vec![McpServerInfo {
         name: "remote".into(),
-        source: McpConfigSource::WorkspaceFile,
+        source: McpConfigSource::UserFile,
         definition: McpServerDefinition {
             command: None,
             args: Vec::new(),

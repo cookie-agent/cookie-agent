@@ -1,7 +1,7 @@
 use std::fs;
 
 use cookie_agent_config::{
-    ConfigError, McpServerConfig, McpServerSource, load_from_roots, write_mcp_server,
+    ConfigError, McpServerConfig, McpServerSource, load_from_user_root, write_mcp_server,
 };
 
 fn root(config: &str) -> tempfile::TempDir {
@@ -17,7 +17,7 @@ fn mcp_transport_requires_exactly_one_command_or_url() {
         "[mcp.servers.bad]\ncommand = \"one\"\nurl = \"https://example.test/mcp\"\n",
     ] {
         let directory = root(server);
-        let error = load_from_roots(Some(directory.path()), None).expect_err("invalid MCP server");
+        let error = load_from_user_root(Some(directory.path())).expect_err("invalid MCP server");
         assert!(matches!(error, ConfigError::McpServer { ref server, .. } if server == "bad"));
     }
 }
@@ -32,24 +32,26 @@ fn mcp_transport_specific_fields_and_timeout_are_strict() {
     ] {
         let directory = root(&format!("[mcp.servers.bad]\n{server}"));
         assert!(matches!(
-            load_from_roots(Some(directory.path()), None),
+            load_from_user_root(Some(directory.path())),
             Err(ConfigError::McpServer { server, .. }) if server == "bad"
         ));
     }
 }
 
 #[test]
-fn workspace_server_override_retains_workspace_provenance() {
-    let user = root("[mcp.servers.github]\ncommand = \"global-server\"\n");
-    let workspace = root("[mcp.servers.github]\nurl = \"https://example.test/mcp\"\nlazy = true\n");
-    let loaded = load_from_roots(Some(user.path()), Some(workspace.path())).expect("configuration");
+fn user_servers_have_user_file_provenance() {
+    let user = root("[mcp.servers.github]\nurl = \"https://example.test/mcp\"\n");
+    let loaded = load_from_user_root(Some(user.path())).expect("configuration");
     let server = &loaded.mcp_servers["github"];
-    assert_eq!(server.source, McpServerSource::WorkspaceFile);
+    assert_eq!(server.source, McpServerSource::UserFile);
     assert_eq!(
         server.config.url.as_deref(),
         Some("https://example.test/mcp")
     );
-    assert!(server.config.lazy);
+    assert_eq!(
+        loaded.user_mcp_servers.keys().collect::<Vec<_>>(),
+        ["github"]
+    );
 }
 
 #[test]
@@ -67,7 +69,7 @@ fn remote_oauth_accepts_auto_booleans_and_strict_settings() {
         let directory = root(&format!(
             "[mcp.servers.remote]\nurl = \"https://example.test/mcp\"\n{oauth}"
         ));
-        let loaded = load_from_roots(Some(directory.path()), None).expect("OAuth config");
+        let loaded = load_from_user_root(Some(directory.path())).expect("OAuth config");
         assert_eq!(loaded.mcp_servers["remote"].config.oauth.enabled(), enabled);
         assert!(
             !format!("{:?}", loaded.mcp_servers["remote"].config).contains("oauth-secret-sentinel")
@@ -82,7 +84,7 @@ fn remote_oauth_accepts_auto_booleans_and_strict_settings() {
         let directory = root(&format!(
             "[mcp.servers.remote]\nurl = \"https://example.test/mcp\"\n{oauth}"
         ));
-        assert!(load_from_roots(Some(directory.path()), None).is_err());
+        assert!(load_from_user_root(Some(directory.path())).is_err());
     }
 }
 
@@ -108,7 +110,7 @@ fn write_back_replaces_only_the_named_table_and_round_trips_strictly() {
     let text = fs::read_to_string(&path).expect("written config");
     assert!(text.contains("# keep this comment"));
     assert!(text.contains("max_lines = 42"));
-    let loaded = load_from_roots(Some(directory.path()), None).expect("strict round trip");
+    let loaded = load_from_user_root(Some(directory.path())).expect("strict round trip");
     assert_eq!(loaded.mcp_servers["demo"].config, replacement);
 }
 

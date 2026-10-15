@@ -4,7 +4,7 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-use cookie_agent_config::{ConfigError, ContextCompactionTrigger, load_from_roots};
+use cookie_agent_config::{ConfigError, ContextCompactionTrigger, load_from_user_root};
 use cookie_agent_identity::AgentId;
 use tempfile::TempDir;
 
@@ -82,7 +82,7 @@ fn compaction_triggers_are_strict_and_legacy_buffer_is_supported() {
         &legacy,
         "[context_compaction]\nauto = true\nbuffer_tokens = 33000\n",
     );
-    let loaded = load_from_roots(None, Some(&legacy)).unwrap();
+    let loaded = load_from_user_root(Some(&legacy)).unwrap();
     assert!(loaded.runtime.context_compaction.auto_compaction);
     assert_eq!(
         loaded.runtime.context_compaction.trigger,
@@ -96,7 +96,7 @@ fn compaction_triggers_are_strict_and_legacy_buffer_is_supported() {
 
     let defaults = temp.path().join("defaults");
     write_config(&defaults, "providers = {}\n");
-    let loaded = load_from_roots(None, Some(&defaults)).unwrap();
+    let loaded = load_from_user_root(Some(&defaults)).unwrap();
     assert!(loaded.runtime.providers.is_empty());
     assert_eq!(
         loaded.runtime.context_compaction.trigger,
@@ -109,7 +109,7 @@ fn compaction_triggers_are_strict_and_legacy_buffer_is_supported() {
         "[context_compaction]\ntrigger = { percent = 80 }\n",
     );
     assert_eq!(
-        load_from_roots(None, Some(&percent))
+        load_from_user_root(Some(&percent))
             .unwrap()
             .runtime
             .context_compaction
@@ -123,7 +123,7 @@ fn compaction_triggers_are_strict_and_legacy_buffer_is_supported() {
         "[context_compaction]\ntrigger = { buffer_tokens = 12000 }\n",
     );
     assert_eq!(
-        load_from_roots(None, Some(&fixed))
+        load_from_user_root(Some(&fixed))
             .unwrap()
             .runtime
             .context_compaction
@@ -142,7 +142,7 @@ fn compaction_triggers_are_strict_and_legacy_buffer_is_supported() {
             &format!("[context_compaction]\ntrigger = {{ percent = {invalid_percent} }}\n"),
         );
         assert!(matches!(
-            load_from_roots(None, Some(&invalid)),
+            load_from_user_root(Some(&invalid)),
             Err(ConfigError::InvalidRuntime(_))
         ));
     }
@@ -152,13 +152,13 @@ fn compaction_triggers_are_strict_and_legacy_buffer_is_supported() {
         &both,
         "[context_compaction]\ntrigger = { percent = 70 }\nbuffer_tokens = 33000\n",
     );
-    let error = load_from_roots(None, Some(&both)).unwrap_err();
+    let error = load_from_user_root(Some(&both)).unwrap_err();
     assert!(matches!(&error, ConfigError::Toml(_)));
     assert!(error.to_string().contains("cannot both be set"));
 
     let versioned = temp.path().join("versioned");
     write_config(&versioned, "schema_version = 10\n");
-    let error = load_from_roots(None, Some(&versioned)).unwrap_err();
+    let error = load_from_user_root(Some(&versioned)).unwrap_err();
     assert!(matches!(
         error,
         ConfigError::ConfigSchemaRemoved { line: 1, .. }
@@ -172,7 +172,7 @@ fn compaction_triggers_are_strict_and_legacy_buffer_is_supported() {
 
     let unknown = temp.path().join("unknown-top-level");
     write_config(&unknown, "unexpected_setting = true\n");
-    let error = load_from_roots(None, Some(&unknown)).unwrap_err();
+    let error = load_from_user_root(Some(&unknown)).unwrap_err();
     let message = error.to_string();
     assert!(matches!(error, ConfigError::Toml(_)));
     assert!(message.contains("config.toml"), "{message}");
@@ -185,7 +185,7 @@ fn compaction_triggers_are_strict_and_legacy_buffer_is_supported() {
         "[context_compaction]\nsoft_threshold_percent = 70\n",
     );
     assert!(matches!(
-        load_from_roots(None, Some(&removed)),
+        load_from_user_root(Some(&removed)),
         Err(ConfigError::Toml(_))
     ));
 
@@ -195,7 +195,7 @@ fn compaction_triggers_are_strict_and_legacy_buffer_is_supported() {
         "[context_compaction]\nmax_native_context_bytes = 2097152\n",
     );
     assert!(matches!(
-        load_from_roots(None, Some(&removed_hard)),
+        load_from_user_root(Some(&removed_hard)),
         Err(ConfigError::Toml(_))
     ));
 
@@ -208,7 +208,7 @@ fn compaction_triggers_are_strict_and_legacy_buffer_is_supported() {
         ),
     );
     assert!(matches!(
-        load_from_roots(None, Some(&native)),
+        load_from_user_root(Some(&native)),
         Err(ConfigError::Toml(_))
     ));
 }
@@ -225,7 +225,7 @@ fn agent_internal_mode_and_parent_model_are_strict() {
         "---\ndescription: Normal\nmode: primary\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\npermissions: {}\n---\nNormal.\n",
     );
     assert!(matches!(
-        load_from_roots(None, Some(&normal_parent)),
+        load_from_user_root(Some(&normal_parent)),
         Err(ConfigError::AgentField {
             field: "models",
             ..
@@ -240,7 +240,7 @@ fn agent_internal_mode_and_parent_model_are_strict() {
         "---\ntype: internal\ndescription: Legacy\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nLegacy.\n",
     );
     assert!(matches!(
-        load_from_roots(None, Some(&legacy_type)),
+        load_from_user_root(Some(&legacy_type)),
         Err(ConfigError::AgentDocument { .. })
     ));
 
@@ -251,7 +251,7 @@ fn agent_internal_mode_and_parent_model_are_strict() {
         "approval.md",
         "---\ndescription: Internal approval\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 1000, max_output_tokens: 100 }\npermissions: {}\n---\nApprove safely.\n",
     );
-    let loaded = load_from_roots(None, Some(&internal)).unwrap();
+    let loaded = load_from_user_root(Some(&internal)).unwrap();
     let approval = loaded
         .agents
         .get(&AgentId::new("approval").unwrap())
@@ -274,7 +274,7 @@ fn agent_internal_mode_and_parent_model_are_strict() {
         "---\ndescription: Primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions:\n  delegate:\n    approval: allow\n---\nPrimary.\n",
     );
     assert!(matches!(
-        load_from_roots(None, Some(&delegation)),
+        load_from_user_root(Some(&delegation)),
         Err(ConfigError::IneligibleDelegationTarget { .. })
     ));
 }
@@ -300,7 +300,7 @@ fn wildcard_delegation_patterns_validate_against_known_subagents() {
         "---\ndescription: Primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions:\n  delegate:\n    sub-*: allow\n---\nPrimary.\n",
     );
     // The pattern matches at least one known eligible subagent.
-    assert!(load_from_roots(None, Some(&root)).is_ok());
+    assert!(load_from_user_root(Some(&root)).is_ok());
 
     // A pattern matching only disabled/ineligible agents is dead.
     let dead = temp.path().join("wildcard-delegation-dead");
@@ -316,7 +316,7 @@ fn wildcard_delegation_patterns_validate_against_known_subagents() {
         "---\ndescription: Primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions:\n  delegate:\n    sub-*: allow\n---\nPrimary.\n",
     );
     assert!(matches!(
-        load_from_roots(None, Some(&dead)),
+        load_from_user_root(Some(&dead)),
         Err(ConfigError::UnmatchedDelegationPattern { .. })
     ));
 
@@ -329,7 +329,7 @@ fn wildcard_delegation_patterns_validate_against_known_subagents() {
         "---\ndescription: Primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions:\n  delegate:\n    ghost-*: allow\n---\nPrimary.\n",
     );
     assert!(matches!(
-        load_from_roots(None, Some(&unknown)),
+        load_from_user_root(Some(&unknown)),
         Err(ConfigError::UnmatchedDelegationPattern { .. })
     ));
 }
@@ -345,7 +345,7 @@ fn timeout_ms_is_rejected_for_non_internal_agents() {
         "---\ndescription: Primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\nlimits: { timeout_ms: 1000 }\npermissions: {}\n---\nPrimary.\n",
     );
 
-    let error = load_from_roots(None, Some(&root)).unwrap_err();
+    let error = load_from_user_root(Some(&root)).unwrap_err();
     assert!(matches!(error, ConfigError::AgentTimeoutInternalOnly(_)));
     assert!(
         error
@@ -359,7 +359,7 @@ fn delegation_runtime_defaults_and_limits_are_strict() {
     let temp = TempDir::new().unwrap();
     let defaults = temp.path().join("delegation-defaults");
     write_config(&defaults, "");
-    let loaded = load_from_roots(None, Some(&defaults)).unwrap();
+    let loaded = load_from_user_root(Some(&defaults)).unwrap();
     assert_eq!(loaded.runtime.delegation.max_depth, 3);
     assert_eq!(loaded.runtime.delegation.max_concurrency, Some(4));
     assert_eq!(loaded.runtime.delegation.max_resident_subagents, 20);
@@ -373,7 +373,7 @@ fn delegation_runtime_defaults_and_limits_are_strict() {
         &authored,
         "[delegation]\nmax_depth = 5\nmax_concurrency = 2\nmax_resident_subagents = 7\nidle_eviction_after = \"90m\"\n",
     );
-    let loaded = load_from_roots(None, Some(&authored)).unwrap();
+    let loaded = load_from_user_root(Some(&authored)).unwrap();
     assert_eq!(loaded.runtime.delegation.max_depth, 5);
     assert_eq!(loaded.runtime.delegation.max_concurrency, Some(2));
     assert_eq!(loaded.runtime.delegation.max_resident_subagents, 7);
@@ -385,11 +385,11 @@ fn delegation_runtime_defaults_and_limits_are_strict() {
     let invalid = temp.path().join("delegation-invalid");
     write_config(&invalid, "[delegation]\nmax_concurrency = 0\n");
     assert!(matches!(
-        load_from_roots(None, Some(&invalid)),
+        load_from_user_root(Some(&invalid)),
         Err(ConfigError::InvalidRuntime(_))
     ));
     write_config(&invalid, "[delegation]\nidle_eviction_after = \"later\"\n");
-    assert!(load_from_roots(None, Some(&invalid)).is_err());
+    assert!(load_from_user_root(Some(&invalid)).is_err());
 }
 
 #[test]
@@ -397,7 +397,7 @@ fn pricing_defaults_empty_and_rejects_invalid_rates() {
     let temp = TempDir::new().unwrap();
     let defaults = temp.path().join("pricing-defaults");
     write_config(&defaults, "");
-    let loaded = load_from_roots(None, Some(&defaults)).unwrap();
+    let loaded = load_from_user_root(Some(&defaults)).unwrap();
     assert!(loaded.runtime.pricing.models.is_empty());
 
     let authored = temp.path().join("pricing-authored");
@@ -405,7 +405,7 @@ fn pricing_defaults_empty_and_rejects_invalid_rates() {
         &authored,
         "[providers.\"custom.test\"]\nsource = \"models_dev\"\n[providers.\"custom.test\".models.model.pricing]\ninput_per_million_usd = \"10000.000000000001\"\noutput_per_million_usd = \"5.0\"\nreasoning_per_million_usd = \"7.5\"\ncache_read_per_million_usd = \"0.125\"\ncache_write_per_million_usd = \"0.000000000001\"\n",
     );
-    let loaded = load_from_roots(None, Some(&authored)).unwrap();
+    let loaded = load_from_user_root(Some(&authored)).unwrap();
     let rates = loaded
         .runtime
         .pricing
@@ -431,30 +431,18 @@ fn pricing_defaults_empty_and_rejects_invalid_rates() {
         &invalid,
         "[providers.\"custom.test\"]\nsource = \"models_dev\"\n[providers.\"custom.test\".models.model.pricing]\ninput_per_million_usd = \"-1.0\"\n",
     );
-    assert!(load_from_roots(None, Some(&invalid)).is_err());
+    assert!(load_from_user_root(Some(&invalid)).is_err());
 }
 
 #[test]
-fn model_local_pricing_obeys_whole_provider_layer_replacement_and_empty_rates() {
+fn model_local_pricing_accepts_empty_rates_and_rejects_invalid_ones() {
     let temporary = TempDir::new().unwrap();
-    let user = temporary.path().join("user");
-    let workspace = temporary.path().join("workspace");
-    write_config(
-        &user,
-        "[providers.openai]\nsource = \"models_dev\"\n[providers.openai.models.a.pricing]\ninput_per_million_usd = \"1.25\"\noutput_per_million_usd = \"5\"\n",
-    );
+    let workspace = temporary.path().join("user");
     write_config(
         &workspace,
         "[providers.openai]\nsource = \"models_dev\"\n[providers.openai.models.b]\nenabled = false\npricing = {}\n",
     );
-    let loaded = load_from_roots(Some(&user), Some(&workspace)).unwrap();
-    assert!(
-        !loaded
-            .runtime
-            .pricing
-            .models
-            .contains_key(&"openai/a".parse().unwrap())
-    );
+    let loaded = load_from_user_root(Some(&workspace)).unwrap();
     let rates = loaded
         .runtime
         .pricing
@@ -469,10 +457,7 @@ fn model_local_pricing_obeys_whole_provider_layer_replacement_and_empty_rates() 
         "[providers.openai]\nsource = \"models_dev\"\n[providers.openai.models.b]\npricing = { unknown = \"1\" }",
     ] {
         write_config(&workspace, invalid);
-        assert!(
-            load_from_roots(None, Some(&workspace)).is_err(),
-            "{invalid}"
-        );
+        assert!(load_from_user_root(Some(&workspace)).is_err(), "{invalid}");
     }
 }
 
@@ -490,7 +475,7 @@ fn authored_agent_registry_retains_slash_model_ids_without_model_compilation() {
         ),
     );
 
-    let loaded = load_from_roots(None, Some(&root)).unwrap();
+    let loaded = load_from_user_root(Some(&root)).unwrap();
     let registry = loaded.agent_registry();
     let input = registry.materialization_inputs().next().unwrap();
     assert!(input.root_eligible);
@@ -521,38 +506,9 @@ fn authored_agents_cannot_use_the_built_in_default_id() {
     );
 
     assert!(matches!(
-        load_from_roots(None, Some(&root)),
+        load_from_user_root(Some(&root)),
         Err(ConfigError::ReservedAgentId(id)) if id.as_str() == "default"
     ));
-}
-
-#[test]
-fn workspace_agent_replaces_user_agent_before_registry_validation() {
-    let temp = TempDir::new().unwrap();
-    let user = temp.path().join("user-agents");
-    let workspace = temp.path().join("workspace-agents");
-    write_config(&user, "");
-    write_agent(
-        &user,
-        "primary.md",
-        &agent(
-            "Discarded",
-            "[{ model: \"openai/group/model\" }, { model: \"openai/group/model\" }]",
-        ),
-    );
-    write_config(&workspace, "");
-    write_agent(
-        &workspace,
-        "primary.md",
-        &agent("Workspace", "[{ model: \"openai/group/model\" }]"),
-    );
-
-    let loaded = load_from_roots(Some(&user), Some(&workspace)).unwrap();
-    let registry = loaded.agent_registry();
-    let document = registry
-        .get(&cookie_agent_identity::AgentId::new("primary").unwrap())
-        .unwrap();
-    assert_eq!(document.frontmatter.description, "Workspace");
 }
 
 #[test]
@@ -561,23 +517,21 @@ fn explicit_source_has_no_alias_or_compatibility_reader() {
     let root = temp.path().join("explicit");
     write_config(&root, "[providers.test]\nsource = \"explicit\"\n");
     assert!(matches!(
-        load_from_roots(None, Some(&root)),
+        load_from_user_root(Some(&root)),
         Err(ConfigError::Toml(_))
     ));
 }
 
 #[test]
-fn invalid_shadowed_provider_is_still_a_hard_error() {
+fn invalid_user_provider_error_names_its_file() {
     let temp = TempDir::new().unwrap();
     let user = temp.path().join("user");
-    let workspace = temp.path().join("workspace");
     write_config(
         &user,
         "[providers.\"custom.test\"]\nsource = \"custom\"\nunknown = true\n",
     );
-    write_config(&workspace, &custom("https://workspace.example/v1"));
 
-    let error = load_from_roots(Some(&user), Some(&workspace)).unwrap_err();
+    let error = load_from_user_root(Some(&user)).unwrap_err();
     let ConfigError::Toml(message) = error else {
         panic!("expected TOML error for invalid user provider")
     };
@@ -595,7 +549,7 @@ fn header_interpolation_is_allowed_and_templates_remain_unresolved() {
         "auth = { method = \"no-auth-v1\", values = {} }\nheaders = { x-safe = \"${env:COOKIE_AGENT_HEADER_TEST:-fallback}-${session_id}\" }",
     );
     write_config(&root, &text);
-    let loaded = load_from_roots(None, Some(&root)).unwrap();
+    let loaded = load_from_user_root(Some(&root)).unwrap();
     let provider = loaded.runtime.providers.values().next().unwrap();
     let cookie_agent_models::ProviderDefinition::Custom(provider) = provider else {
         panic!("custom provider")
@@ -608,7 +562,7 @@ fn header_interpolation_is_allowed_and_templates_remain_unresolved() {
 
 #[test]
 fn shipped_headers_are_present_and_authored_empty_values_delete_them() {
-    let loaded = load_from_roots(None, None).unwrap();
+    let loaded = load_from_user_root(None).unwrap();
     assert_eq!(
         loaded.runtime.headers[&cookie_agent_models::HeaderName::new("user-agent").unwrap()]
             .as_str(),
@@ -623,7 +577,7 @@ fn shipped_headers_are_present_and_authored_empty_values_delete_them() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("delete-default");
     write_config(&root, "[headers]\nX-Session-ID = \"\"\n");
-    let loaded = load_from_roots(None, Some(&root)).unwrap();
+    let loaded = load_from_user_root(Some(&root)).unwrap();
     assert!(
         !loaded
             .runtime
@@ -638,9 +592,7 @@ fn forbidden_header_errors_name_scope_header_and_owner() {
 
     let global = temp.path().join("global-owned-header");
     write_config(&global, "[headers]\ncontent-type = \"text/plain\"\n");
-    let error = load_from_roots(None, Some(&global))
-        .unwrap_err()
-        .to_string();
+    let error = load_from_user_root(Some(&global)).unwrap_err().to_string();
     assert!(error.contains("global"), "{error}");
     assert!(error.contains("content-type"), "{error}");
     assert!(error.contains("protocol adapter"), "{error}");
@@ -651,7 +603,7 @@ fn forbidden_header_errors_name_scope_header_and_owner() {
         "auth = { method = \"no-auth-v1\", values = {} }\nheaders = { host = \"example.test\" }",
     );
     write_config(&provider, &text);
-    let error = load_from_roots(None, Some(&provider))
+    let error = load_from_user_root(Some(&provider))
         .unwrap_err()
         .to_string();
     assert!(error.contains("custom.test"), "{error}");
@@ -665,7 +617,7 @@ fn forbidden_header_errors_name_scope_header_and_owner() {
         "display_name = \"Model\"\nheaders = { anthropic-beta = \"feature\" }",
     );
     write_config(&model, &text);
-    let error = load_from_roots(None, Some(&model)).unwrap_err().to_string();
+    let error = load_from_user_root(Some(&model)).unwrap_err().to_string();
     assert!(error.contains("custom.test"), "{error}");
     assert!(error.contains("model `group/model`"), "{error}");
     assert!(error.contains("anthropic-beta"), "{error}");
@@ -681,7 +633,7 @@ fn managed_auth_is_mutually_exclusive_and_custom_ids_are_unprefixed() {
         "[providers.openai]\nsource = \"models_dev\"\napi_key = \"a\"\nauth_override = { method = \"bearer-api-key-v1\", values = { api_key = \"b\" } }\n",
     );
     assert!(matches!(
-        load_from_roots(None, Some(&conflict)),
+        load_from_user_root(Some(&conflict)),
         Err(ConfigError::Provider { .. })
     ));
 
@@ -692,7 +644,7 @@ fn managed_auth_is_mutually_exclusive_and_custom_ids_are_unprefixed() {
         &bare,
         &custom("https://example.test/v1").replace("custom.test", "test"),
     );
-    assert!(load_from_roots(None, Some(&bare)).is_ok());
+    assert!(load_from_user_root(Some(&bare)).is_ok());
 }
 
 #[test]
@@ -706,7 +658,7 @@ fn secret_sentinel_is_redacted_on_parse_interpolation_and_unknown_field_errors()
             "[providers.openai]\nsource = \"models_dev\"\napi_key = \"{SECRET_SENTINEL}\"\nbroken = [\n"
         ),
     );
-    assert_redacted(&load_from_roots(None, Some(&parse)).unwrap_err());
+    assert_redacted(&load_from_user_root(Some(&parse)).unwrap_err());
 
     let interpolation = temp.path().join("interpolation-secret");
     write_config(
@@ -717,7 +669,7 @@ fn secret_sentinel_is_redacted_on_parse_interpolation_and_unknown_field_errors()
     );
     let _guard = env_lock();
     unsafe { std::env::remove_var("P1_MISSING_SECRET") };
-    assert_redacted(&load_from_roots(None, Some(&interpolation)).unwrap_err());
+    assert_redacted(&load_from_user_root(Some(&interpolation)).unwrap_err());
 
     let unknown = temp.path().join("unknown-secret");
     write_config(
@@ -726,7 +678,7 @@ fn secret_sentinel_is_redacted_on_parse_interpolation_and_unknown_field_errors()
             "[providers.openai]\nsource = \"models_dev\"\napi_key = \"ok\"\nunknown_secret = \"{SECRET_SENTINEL}\"\n"
         ),
     );
-    assert_redacted(&load_from_roots(None, Some(&unknown)).unwrap_err());
+    assert_redacted(&load_from_user_root(Some(&unknown)).unwrap_err());
 }
 
 #[test]
@@ -740,7 +692,7 @@ fn interpolated_secret_is_redacted_on_success_and_configuration_drop() {
     let _guard = env_lock();
     unsafe { std::env::set_var("P1_SUCCESS_SECRET", SECRET_SENTINEL) };
     {
-        let loaded = load_from_roots(None, Some(&root)).unwrap();
+        let loaded = load_from_user_root(Some(&root)).unwrap();
         assert!(!format!("{loaded:?}").contains(SECRET_SENTINEL));
     }
     unsafe { std::env::remove_var("P1_SUCCESS_SECRET") };
@@ -772,7 +724,7 @@ fn agent_presets_replace_shared_documents_and_add_agents() {
         "---\ndescription: Python only\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/python\" }]\npermissions: {}\n---\nPython worker.\n",
     );
 
-    let loaded = load_from_roots(None, Some(&root)).unwrap();
+    let loaded = load_from_user_root(Some(&root)).unwrap();
     assert_eq!(loaded.agents.len(), 2);
     assert_eq!(
         loaded.agents[&AgentId::new("primary").unwrap()]
@@ -799,7 +751,7 @@ fn unused_agent_presets_are_loaded_strictly() {
     write_config(&root, "");
     write_agent(&root, "unused/broken.md", "not frontmatter");
     assert!(matches!(
-        load_from_roots(None, Some(&root)),
+        load_from_user_root(Some(&root)),
         Err(ConfigError::AgentDocument { .. })
     ));
 }
@@ -815,7 +767,7 @@ fn regular_non_markdown_files_at_the_agent_root_are_ignored() {
         &agent("Primary", "[{ model: \"custom.test/model\" }]"),
     );
     write_agent(&root, "README.txt", "Agent authoring notes");
-    let loaded = load_from_roots(None, Some(&root)).expect("root README is ignored");
+    let loaded = load_from_user_root(Some(&root)).expect("root README is ignored");
     assert!(
         loaded
             .agents
@@ -844,7 +796,7 @@ fn preset_override_cannot_disable_a_shared_delegation_target() {
         "---\ndescription: Disabled worker\nmode: subagent\nenabled: false\nmodels: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nDisabled.\n",
     );
     assert!(matches!(
-        load_from_roots(None, Some(&root)),
+        load_from_user_root(Some(&root)),
         Err(ConfigError::IneligibleDelegationTarget { agent, target })
             if agent.as_str() == "primary" && target.as_str() == "worker"
     ));
@@ -861,7 +813,7 @@ fn reserved_agent_rules_apply_inside_presets() {
         &agent("Reserved", "[{ model: \"custom.test/model\" }]"),
     );
     assert!(matches!(
-        load_from_roots(None, Some(&default_root)),
+        load_from_user_root(Some(&default_root)),
         Err(ConfigError::ReservedAgentId(id)) if id.as_str() == "default"
     ));
 
@@ -873,7 +825,7 @@ fn reserved_agent_rules_apply_inside_presets() {
         &agent("Approval", "[{ model: \"custom.test/model\" }]"),
     );
     assert!(matches!(
-        load_from_roots(None, Some(&internal_root)),
+        load_from_user_root(Some(&internal_root)),
         Err(ConfigError::AgentField { agent, field: "mode" }) if agent.as_str() == "approval"
     ));
 }
@@ -889,7 +841,7 @@ fn preset_names_and_directory_depth_are_strict() {
         &agent("Primary", "[{ model: \"custom.test/model\" }]"),
     );
     assert!(matches!(
-        load_from_roots(None, Some(&invalid_name)),
+        load_from_user_root(Some(&invalid_name)),
         Err(ConfigError::AgentPresetName { .. })
     ));
 
@@ -901,7 +853,7 @@ fn preset_names_and_directory_depth_are_strict() {
         &agent("Primary", "[{ model: \"custom.test/model\" }]"),
     );
     assert!(matches!(
-        load_from_roots(None, Some(&nested)),
+        load_from_user_root(Some(&nested)),
         Err(ConfigError::UnsafePath)
     ));
 
@@ -909,7 +861,7 @@ fn preset_names_and_directory_depth_are_strict() {
     write_config(&non_markdown, "");
     write_agent(&non_markdown, "python/readme.txt", "ignored");
     assert!(matches!(
-        load_from_roots(None, Some(&non_markdown)),
+        load_from_user_root(Some(&non_markdown)),
         Err(ConfigError::UnsafePath)
     ));
 }
@@ -921,7 +873,7 @@ fn preset_agents_match_shared_crlf_and_byte_limits() {
     write_config(&crlf, "");
     let document = agent("CRLF preset", "[{ model: \"custom.test/model\" }]").replace('\n', "\r\n");
     write_agent(&crlf, "python/primary.md", &document);
-    let loaded = load_from_roots(None, Some(&crlf)).unwrap();
+    let loaded = load_from_user_root(Some(&crlf)).unwrap();
     assert_eq!(
         loaded.agent_presets["python"][&AgentId::new("primary").unwrap()].body,
         "Prompt.\n"
@@ -931,7 +883,7 @@ fn preset_agents_match_shared_crlf_and_byte_limits() {
     write_config(&oversized, "");
     write_agent(&oversized, "python/primary.md", &"x".repeat(256 * 1024 + 1));
     assert!(matches!(
-        load_from_roots(None, Some(&oversized)),
+        load_from_user_root(Some(&oversized)),
         Err(ConfigError::TooLarge(_))
     ));
 }

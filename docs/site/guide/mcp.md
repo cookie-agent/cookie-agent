@@ -22,9 +22,8 @@ oauth = true
 lazy = true
 ```
 
-Workspace-specific servers use the same syntax in
-`<cwd>/.cookie-agent/config.toml` and take precedence. A same-name workspace
-server replaces the complete user server entry; nested fields never merge.
+Servers are configured only in the user file. A `<cwd>/.cookie-agent/config.toml`
+is never read, so a repository cannot add MCP servers.
 
 Each server must set exactly one of `command` or `url`. `args`, `env`, and `cwd`
 apply only to stdio commands; `headers` applies only to Streamable HTTP. Servers
@@ -139,7 +138,7 @@ The panel can reconnect a failed server, toggle enablement, and add, edit, or
 remove definitions. Add/edit forms accept either a command, JSON string array
 of arguments, JSON string object of environment variables, and optional working
 directory, or a URL plus a JSON string object of headers. Choose
-`runtime only`, `user config.toml`, or `project config.toml` before submitting.
+`runtime only` or `user config.toml` before submitting.
 Edits do not rename a server; remove the old name and add the new one instead.
 
 Stdio servers negotiate MCP 2025-11-25 when needed. Servers that implement the
@@ -154,10 +153,11 @@ enabled server enters the normal lazy or eager connection lifecycle. MCP tools
 are permission-gated like normal tools: an agent with no `mcp` permission entry
 cannot see them, and scoped rules decide each call.
 
-Project MCP configuration and project agent documents are version-controlled
-content equivalent to code. A repository can ship both a server definition and
-an agent document that permits its tools. Review those files and work only in
-repositories you trust.
+MCP servers and agent documents come only from your user configuration;
+a repository's `.cookie-agent/config.toml` and `.cookie-agent/agents/` are never
+read, so opening a repository cannot add a server or an agent that permits its
+tools. Repository `AGENTS.md` files and project skills still enter model context;
+review them in repositories you do not trust.
 
 Connection failures are isolated per server. A failed server publishes no tools
 and does not prevent other servers from connecting.
@@ -219,13 +219,13 @@ described in [config.toml](configuration.md).
 ## Runtime layers and persistence
 
 The running engine adds a mutable `Runtime` layer for MCP server entries. It
-wins over the workspace and user file layers and lasts for the daemon lifetime.
-Runtime removals are tombstones: the named server is absent even when a file
-layer defines it. Runtime, user-file, and workspace-file entries use the same
-connection lifecycle. Nothing is written automatically.
+wins over the user file and lasts for the daemon lifetime. Runtime removals are
+tombstones: the named server is absent even when the user file defines it.
+Runtime and user-file entries use the same connection lifecycle. Nothing is
+written automatically.
 
-Explicit MCP write-back replaces only `[mcp.servers.<name>]` in the selected
-user or project file using a format-preserving TOML document edit. Unrelated
+Explicit MCP write-back replaces only `[mcp.servers.<name>]` in the user
+`config.toml` using a format-preserving TOML document edit. Unrelated
 keys, tables, and comments are retained. The complete candidate is passed
 through the strict configuration loader before an atomic replacement; an
 existing unknown field, type conflict, or malformed table fails without

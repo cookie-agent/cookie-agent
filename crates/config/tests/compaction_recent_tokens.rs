@@ -1,7 +1,7 @@
 use std::fs;
 
 use cookie_agent_config::{
-    ConfigError, ContextCompactionConfig, ContextCompactionTrigger, load_from_roots,
+    ConfigError, ContextCompactionConfig, ContextCompactionTrigger, load_from_user_root,
 };
 
 fn root(config: &str) -> tempfile::TempDir {
@@ -19,7 +19,7 @@ fn recent_tokens_defaults_match_rust_serde_and_loader() {
     let parsed: ContextCompactionConfig = toml::from_str("").unwrap();
     assert_eq!(parsed.keep_recent_tokens, 16_384);
     assert_eq!(
-        load_from_roots(None, None)
+        load_from_user_root(None)
             .unwrap()
             .runtime
             .context_compaction
@@ -32,7 +32,7 @@ fn recent_tokens_defaults_match_rust_serde_and_loader() {
         "[context_compaction]\nauto = false\n",
     ] {
         let directory = root(config);
-        let loaded = load_from_roots(Some(directory.path()), None).unwrap();
+        let loaded = load_from_user_root(Some(directory.path())).unwrap();
         assert_eq!(loaded.runtime.context_compaction.keep_recent_tokens, 16_384);
     }
 }
@@ -44,7 +44,7 @@ fn recent_tokens_accept_zero_and_large_budgets_without_clamping() {
         let parsed: ContextCompactionConfig = toml::from_str(&setting).unwrap();
         assert_eq!(parsed.keep_recent_tokens, tokens);
         let directory = root(&format!("[context_compaction]\n{setting}"));
-        let loaded = load_from_roots(Some(directory.path()), None).unwrap();
+        let loaded = load_from_user_root(Some(directory.path())).unwrap();
         assert_eq!(loaded.runtime.context_compaction.keep_recent_tokens, tokens);
     }
     let parsed: ContextCompactionConfig =
@@ -74,7 +74,7 @@ fn recent_tokens_reject_invalid_values_and_unknown_fields() {
         let directory = root(&format!("[context_compaction]\n{setting}\n"));
         assert!(
             matches!(
-                load_from_roots(Some(directory.path()), None),
+                load_from_user_root(Some(directory.path())),
                 Err(ConfigError::Toml(_))
             ),
             "accepted {setting}"
@@ -86,7 +86,7 @@ fn recent_tokens_reject_invalid_values_and_unknown_fields() {
 fn recent_tokens_are_independent_of_trigger_and_summary_limits() {
     let directory =
         root("[context_compaction]\nbuffer_tokens = 33000\nkeep_recent_tokens = 8192\n");
-    let loaded = load_from_roots(Some(directory.path()), None).unwrap();
+    let loaded = load_from_user_root(Some(directory.path())).unwrap();
     assert_eq!(loaded.runtime.context_compaction.keep_recent_tokens, 8192);
     assert_eq!(
         loaded.runtime.context_compaction.trigger,
@@ -100,27 +100,8 @@ fn recent_tokens_are_independent_of_trigger_and_summary_limits() {
             "[context_compaction]\nkeep_recent_tokens = 0\n{invalid}\n"
         ));
         assert!(matches!(
-            load_from_roots(Some(directory.path()), None),
+            load_from_user_root(Some(directory.path())),
             Err(ConfigError::InvalidRuntime(_))
         ));
     }
-}
-
-#[test]
-fn recent_tokens_follow_section_replacement_semantics() {
-    let user = root("[context_compaction]\nkeep_recent_tokens = 8192\n");
-    let workspace = root("[context_compaction]\nkeep_recent_tokens = 0\n");
-    let loaded = load_from_roots(Some(user.path()), Some(workspace.path())).unwrap();
-    assert_eq!(loaded.runtime.context_compaction.keep_recent_tokens, 0);
-
-    let workspace = root("[context_compaction]\nauto = false\n");
-    let loaded = load_from_roots(Some(user.path()), Some(workspace.path())).unwrap();
-    assert_eq!(loaded.runtime.context_compaction.keep_recent_tokens, 16_384);
-    assert!(!loaded.runtime.context_compaction.auto_compaction);
-
-    let invalid_user = root("[context_compaction]\nkeep_recent_tokens = -1\n");
-    assert!(matches!(
-        load_from_roots(Some(invalid_user.path()), Some(workspace.path())),
-        Err(ConfigError::Toml(_))
-    ));
 }

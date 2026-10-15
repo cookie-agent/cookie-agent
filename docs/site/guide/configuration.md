@@ -1,8 +1,8 @@
 # config.toml
 
-The engine reads `~/.cookie-agent/config.toml`, then
-`<exact-cwd>/.cookie-agent/config.toml`, over built-in defaults. Neither file is
-required; an empty file is valid. This complete example changes one setting:
+The engine reads `~/.cookie-agent/config.toml` over built-in defaults. The file
+is not required; an empty file is valid. This complete example changes one
+setting:
 
 ```toml
 [model_retry]
@@ -11,23 +11,24 @@ standard_retries = 1
 
 ## Locations and inheritance
 
-The user layer and the exact working directory's `.cookie-agent` layer are both
-optional. Configuration is loaded from the exact working directory only; there
-is no upward search. Within a layer, `config.toml` and the `agents/` directory
-are optional. A same-ID workspace provider, MCP server, plugin, or agent replaces
-the complete user entry; nested fields never merge.
+Configuration is the built-in defaults plus one optional authored layer, the
+user layer in `~/.cookie-agent/`. Within it, `config.toml` and the `agents/`
+directory are optional. There is no workspace layer: a
+`<cwd>/.cookie-agent/config.toml` or `<cwd>/.cookie-agent/agents/` directory is
+never opened, so a leftover file there is ignored without a warning. The
+working directory still supplies [AGENTS.md context](agents.md#agentsmd-context)
+and project [skills](skills.md), which are context, not configuration.
 
-An authored settings table replaces the lower layer's whole table. Omitted
-fields in that replacement use defaults, not the lower file's values. For
-example, the snippet above also resets `overload_retries` and
-`backoff_ceiling_ms` to their defaults. An omitted table inherits unchanged.
-Global [headers](../engine/headers.md) are the exception: names merge and empty
-values delete inherited headers. Model and variant sparse inheritance happens
-within one provider definition, not between files.
+An authored settings table replaces the built-in table as a whole. Omitted
+fields in it use defaults. For example, the snippet above leaves
+`overload_retries` and `backoff_ceiling_ms` at their defaults. An omitted table
+keeps the defaults unchanged. Global [headers](../engine/headers.md) are the
+exception: names merge with the built-in headers and empty values delete them.
+Model and variant sparse inheritance happens within one provider definition.
 
 Agents are separate [Markdown documents](agents.md); [skills](skills.md) have
 their own discovery rules. The client loads [tui.toml](../tui/configuration.md)
-independently and has no workspace layer.
+independently.
 
 ## Accepted top-level keys
 

@@ -80,7 +80,7 @@ fn checked_fixture_rejects_ambient_config_overrides_before_cli_secret_input() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(report.contains("interactive TTY"), "{report}");
-    assert!(!report.contains("load workspace configuration"), "{report}");
+    assert!(!report.contains("load user configuration"), "{report}");
     for secret in [
         "expected-process-credential",
         "ignored-theme",
@@ -104,7 +104,7 @@ fn disconnect_is_cwd_independent_and_rejects_non_tty() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(report.contains("interactive TTY"), "{report}");
-    assert!(!report.contains("workspace configuration"), "{report}");
+    assert!(!report.contains("load user configuration"), "{report}");
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn attach_uses_the_tui_entry_point_without_a_workspace() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(report.contains("connect to daemon WebSocket"), "{report}");
-    assert!(!report.contains("workspace configuration"), "{report}");
+    assert!(!report.contains("load user configuration"), "{report}");
     assert!(!report.contains("built without TUI support"), "{report}");
 }
 
@@ -132,6 +132,6 @@ fn connect_is_cwd_independent_and_rejects_non_tty_before_credentials() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(report.contains("interactive TTY"), "{report}");
-    assert!(!report.contains("workspace configuration"), "{report}");
+    assert!(!report.contains("load user configuration"), "{report}");
     assert!(!report.contains("expected-process-credential"), "{report}");
 }

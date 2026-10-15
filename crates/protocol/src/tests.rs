@@ -156,7 +156,7 @@ fn child_agent(binding: FrozenModelBinding) -> AgentSnapshot {
         schema: AgentSchemaVersion::current(),
         mode: AgentMode::Subagent,
         description: "Delegated worker".into(),
-        document_source: AgentDocumentSource::Workspace,
+        document_source: AgentDocumentSource::User,
         document_fingerprint: Sha256Digest::of_bytes(b"document"),
         composed_prompt: "Complete the delegated task.".into(),
         prompt_fingerprint: Sha256Digest::of_bytes(b"prompt"),
@@ -195,7 +195,8 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 38);
+    assert_eq!(PROTOCOL_VERSION, 39);
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(38)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(37)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(36)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(35)).is_err());
@@ -2136,4 +2137,16 @@ fn session_create_permission_settings_are_optional_and_strict() {
     let preview: SessionPermissionPreviewParams =
         serde_json::from_value(json!({ "selection": selection })).expect("preview");
     assert!(preview.rules.is_empty());
+}
+
+#[test]
+fn historical_workspace_document_source_decodes_as_user() {
+    assert_eq!(
+        serde_json::from_str::<AgentDocumentSource>("\"workspace\"").unwrap(),
+        AgentDocumentSource::User
+    );
+    assert_eq!(
+        serde_json::to_string(&AgentDocumentSource::User).unwrap(),
+        "\"user\""
+    );
 }

@@ -147,11 +147,6 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
         .filter(|(_, server)| server.source == McpServerSource::UserFile)
         .map(|(name, server)| (name.clone(), server.config.clone()))
         .collect();
-    let workspace_mcp_servers = mcp_servers
-        .iter()
-        .filter(|(_, server)| server.source == McpServerSource::WorkspaceFile)
-        .map(|(name, server)| (name.clone(), server.config.clone()))
-        .collect();
     let config = LoadedConfiguration {
         runtime: EngineConfig {
             server: ServerConfig::default(),
@@ -173,7 +168,6 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
         agent_presets: BTreeMap::new(),
         mcp_servers,
         user_mcp_servers,
-        workspace_mcp_servers,
         plugins: Default::default(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
         skills: cookie_agent_config::SkillRegistry::default(),
@@ -403,7 +397,6 @@ fn harness_with_catalog(
         agent_presets: BTreeMap::new(),
         mcp_servers: BTreeMap::new(),
         user_mcp_servers: BTreeMap::new(),
-        workspace_mcp_servers: BTreeMap::new(),
         plugins: Default::default(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
         skills: cookie_agent_config::SkillRegistry::default(),

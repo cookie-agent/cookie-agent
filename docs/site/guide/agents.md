@@ -6,10 +6,11 @@ model fallback chain, and its runtime limits. The harness supplies four agents:
 three internal agents plus the synthesized `default` coding agent when no
 authored root agent is runnable.
 
-Author common agents under `~/.cookie-agent/agents/`. The exact workspace may
-use the same document format under `<cwd>/.cookie-agent/agents/`; a same-ID
-workspace document takes precedence and replaces the complete user document.
-Frontmatter fields and nested permission maps never merge across layers.
+Author agents under `~/.cookie-agent/agents/`. That user directory is the only
+place agent documents are read from: a `<cwd>/.cookie-agent/agents/` directory
+is never opened for agent documents or presets, and leftover files there are
+ignored without a warning. (`AGENTS.md` files there are still read as
+[context](#agentsmd-context).)
 
 ## Agent document structure
 
@@ -237,11 +238,10 @@ A finished child that is woken again is picked up on the next tree refresh.
 
 ## Layering and replacement
 
-User-layer and workspace-layer agent directories merge into one registry by
-agent ID. A same-ID workspace agent replaces the user agent completely. The IDs
-`approval`, `compaction`, and `title` are reserved for internal agents; an
-authored document with one of those IDs must use `mode: internal` and replaces
-the built-in document through normal layering. The ID `default` is reserved for
+User agent documents and the built-in documents form one registry by agent ID.
+The IDs `approval`, `compaction`, and `title` are reserved for internal agents;
+an authored document with one of those IDs must use `mode: internal` and
+replaces the built-in document completely. The ID `default` is reserved for
 the engine-supplied fallback agent and cannot be authored at all.
 
 If no authored agent is runnable as a root, the engine synthesizes the built-in

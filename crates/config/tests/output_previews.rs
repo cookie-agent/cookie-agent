@@ -1,6 +1,6 @@
 use std::fs;
 
-use cookie_agent_config::load_from_roots;
+use cookie_agent_config::load_from_user_root;
 
 fn root(config: &str) -> tempfile::TempDir {
     let directory = tempfile::tempdir().expect("tempdir");
@@ -9,7 +9,7 @@ fn root(config: &str) -> tempfile::TempDir {
 }
 
 fn error(config: &str) -> String {
-    load_from_roots(Some(root(config).path()), None)
+    load_from_user_root(Some(root(config).path()))
         .err()
         .unwrap_or_else(|| panic!("{config} should be rejected"))
         .to_string()
@@ -38,7 +38,7 @@ fn omitted_kept_lines_are_capped_by_the_room_max_lines_leaves() {
         ("max_lines = 10\nhead_lines = 10\ntail_lines = 0\n", (10, 0)),
     ] {
         let directory = root(&format!("[tool_output]\n{table}[subagent_output]\n{table}"));
-        let loaded = load_from_roots(Some(directory.path()), None)
+        let loaded = load_from_user_root(Some(directory.path()))
             .unwrap_or_else(|error| panic!("{table}: {error}"));
         assert_eq!(loaded.runtime.tool_output.kept_lines(), expected, "{table}");
         assert_eq!(
@@ -74,22 +74,10 @@ fn kept_lines_must_fit_the_limit_and_keep_something() {
 #[test]
 fn subagent_previews_fit_the_event_bound() {
     let directory = root("[subagent_output]\nmax_bytes = 61440\n");
-    let loaded = load_from_roots(Some(directory.path()), None).expect("largest preview");
+    let loaded = load_from_user_root(Some(directory.path())).expect("largest preview");
     assert_eq!(loaded.runtime.subagent_output.max_bytes, 61_440);
     assert!(error("[subagent_output]\nmax_bytes = 61441\n").contains("1..=61440"));
     // Tool output has no such ceiling of its own.
     let directory = root("[tool_output]\nmax_bytes = 1048576\n");
-    load_from_roots(Some(directory.path()), None).expect("large tool previews");
-}
-
-#[test]
-fn an_authored_table_replaces_the_lower_one_with_defaults_for_omitted_keys() {
-    let user = root("[subagent_output]\nmax_lines = 40\nhead_lines = 30\n");
-    let workspace = root("[subagent_output]\nmax_bytes = 4096\n");
-    let loaded =
-        load_from_roots(Some(user.path()), Some(workspace.path())).expect("layered previews");
-    let subagent = &loaded.runtime.subagent_output;
-    assert_eq!(subagent.max_bytes, 4096);
-    assert_ne!(subagent.max_lines, 40);
-    assert_eq!((subagent.head_lines, subagent.tail_lines), (None, None));
+    load_from_user_root(Some(directory.path())).expect("large tool previews");
 }

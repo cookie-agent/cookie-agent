@@ -754,7 +754,7 @@ async fn immediate_first_run_waits_for_complete_eager_mcp_listing() {
 }
 
 #[tokio::test]
-async fn immediate_first_run_waits_for_project_mcp_listing_without_separate_approval() {
+async fn immediate_first_run_waits_for_mcp_listing_without_separate_approval() {
     let (endpoint, captured) = scripted_model_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
         &endpoint,
@@ -763,7 +763,7 @@ async fn immediate_first_run_waits_for_project_mcp_listing_without_separate_appr
         None,
         false,
         None,
-        Some(delayed_mcp_server(McpServerSource::WorkspaceFile)),
+        Some(delayed_mcp_server(McpServerSource::UserFile)),
     );
     let session = fixture
         .engine

@@ -1192,7 +1192,6 @@ pub struct ApprovalListResult {
 #[serde(rename_all = "snake_case")]
 pub enum McpConfigSource {
     UserFile,
-    WorkspaceFile,
     Runtime,
 }
 
@@ -1200,7 +1199,6 @@ pub enum McpConfigSource {
 #[serde(rename_all = "snake_case")]
 pub enum McpConfigTarget {
     UserFile,
-    WorkspaceFile,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

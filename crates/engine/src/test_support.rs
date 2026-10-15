@@ -149,7 +149,7 @@ pub(crate) fn agent_snapshot(agent: &str, mode: AgentMode) -> AgentSnapshot {
         schema: AgentSchemaVersion::current(),
         mode,
         description: format!("Test {agent} agent"),
-        document_source: AgentDocumentSource::Workspace,
+        document_source: AgentDocumentSource::User,
         document_fingerprint: Sha256Digest::of_bytes(format!("{agent} document").as_bytes()),
         composed_prompt: format!("You are the {agent} test agent.\n"),
         prompt_fingerprint: Sha256Digest::of_bytes(format!("{agent} prompt").as_bytes()),

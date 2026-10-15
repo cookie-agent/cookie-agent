@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use cookie_agent_config::{ConfigError, load_from_roots};
+use cookie_agent_config::{ConfigError, load_from_user_root};
 use cookie_agent_identity::AgentId;
 use tempfile::TempDir;
 
@@ -19,7 +19,7 @@ fn root_with_agent(temp: &TempDir, name: &str, file: &str, body: &str) -> std::p
 }
 
 fn load(root: &Path) -> Result<cookie_agent_config::LoadedConfiguration, ConfigError> {
-    load_from_roots(None, Some(root))
+    load_from_user_root(Some(root))
 }
 
 #[test]

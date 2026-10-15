@@ -10,7 +10,7 @@ providers can still be available through the catalog and user provider store.
 `/connect` in the TUI, or `cookie connect --token <TOKEN>` against the daemon
 (or set `COOKIE_DAEMON_TOKEN`), walks through provider setup and
 authentication. Connections are stored globally for the
-current user, not in the workspace config. Setup is validated locally; the first
+current user, not in `config.toml`. Setup is validated locally; the first
 model request tests the credentials. Never commit credential-bearing files.
 
 At startup, the engine serves the validated catalog cache (or the bundled
@@ -552,11 +552,10 @@ There is no null/clear operation. Example fragment disabling a managed variant:
 enabled = false
 ```
 
-### File layers and headers
+### Provider definitions and headers
 
-A workspace provider replaces the complete same-ID user provider, including
-credentials, models, pricing, and variants. The sparse rules above apply only
-inside that effective definition. Headers use the separate
+Providers are defined only in the user `config.toml`. The sparse rules above
+apply inside one provider definition. Headers use the separate
 [Request Header](../engine/headers.md) composition and ownership rules; their
 values are public metadata, not secret-typed storage.
 

@@ -71,7 +71,7 @@ fn assert_permission(
         schema: AgentSchemaVersion::current(),
         mode: AgentMode::Primary,
         description: "Test agent".into(),
-        document_source: AgentDocumentSource::Workspace,
+        document_source: AgentDocumentSource::User,
         document_fingerprint: Sha256Digest::of_bytes(b"test"),
         composed_prompt: "Test permissions".into(),
         prompt_fingerprint: Sha256Digest::of_bytes(b"test"),

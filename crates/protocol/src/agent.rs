@@ -190,8 +190,11 @@ impl<'de> Deserialize<'de> for SessionPermissionOverlay {
 #[serde(rename_all = "snake_case")]
 pub enum AgentDocumentSource {
     BuiltIn,
+    /// Also decodes `workspace`, which session logs written before the
+    /// workspace configuration layer was removed may contain: event history is
+    /// versionless and read best-effort, so those sessions still open.
+    #[serde(alias = "workspace")]
     User,
-    Workspace,
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]

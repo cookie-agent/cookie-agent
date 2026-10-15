@@ -2,7 +2,7 @@ use std::fs;
 
 use cookie_agent_config::{
     AgentFrontmatter, ConfigError, PermissionAction, PermissionEffect, PermissionValue,
-    load_from_roots, simple_wildcard_match,
+    load_from_user_root, simple_wildcard_match,
 };
 use tempfile::TempDir;
 
@@ -75,7 +75,7 @@ fn old_rule_list_and_delegation_field_are_rejected() {
     )
     .unwrap();
     assert!(matches!(
-        load_from_roots(None, Some(&root)),
+        load_from_user_root(Some(&root)),
         Err(ConfigError::AgentDocument { .. })
     ));
 }
@@ -90,7 +90,7 @@ fn removed_tools_field_names_permission_driven_replacement() {
         "---\ndescription: Worker\nmode: subagent\nenabled: true\nmodels: []\ntools: [read]\npermissions: {}\n---\nWorker.\n",
     )
     .unwrap();
-    let error = load_from_roots(None, Some(&root)).unwrap_err();
+    let error = load_from_user_root(Some(&root)).unwrap_err();
     assert!(matches!(error, ConfigError::AgentToolsRemoved(_)));
     let message = error.to_string();
     assert!(message.contains("`tools`"));
@@ -108,7 +108,7 @@ fn renamed_model_fallback_field_names_models_replacement() {
     )
     .unwrap();
 
-    let error = load_from_roots(None, Some(&root)).unwrap_err();
+    let error = load_from_user_root(Some(&root)).unwrap_err();
     assert!(matches!(error, ConfigError::AgentModelsRenamed(_)));
     let message = error.to_string();
     assert!(message.contains("`model_fallback`"), "{message}");
@@ -238,7 +238,7 @@ fn leftover_agent_schema_is_rejected_with_removal_guidance() {
     )
     .unwrap();
 
-    let error = load_from_roots(None, Some(&root)).unwrap_err();
+    let error = load_from_user_root(Some(&root)).unwrap_err();
     let ConfigError::AgentSchemaRemoved { path, line } = &error else {
         panic!("expected removed agent schema error")
     };
@@ -309,7 +309,7 @@ Fixture agent body.
         .unwrap();
     }
 
-    let loaded = load_from_roots(None, Some(&project)).expect("fixture agents");
+    let loaded = load_from_user_root(Some(&project)).expect("fixture agents");
     assert_eq!(loaded.agents.len(), 5);
     for (id, document) in &loaded.agents {
         let cases = [
@@ -508,7 +508,7 @@ fn workspace_dir_expression_is_action_scoped_and_unknown_expressions_are_rejecte
         )
         .unwrap();
         assert!(matches!(
-            load_from_roots(None, Some(&root)),
+            load_from_user_root(Some(&root)),
             Err(ConfigError::AgentPermissionExpression(_))
         ));
     }
@@ -526,7 +526,7 @@ fn workspace_dir_expression_is_action_scoped_and_unknown_expressions_are_rejecte
         )
         .unwrap();
         assert!(matches!(
-            load_from_roots(None, Some(&root)),
+            load_from_user_root(Some(&root)),
             Err(ConfigError::AgentPermissionExpression(_))
         ));
     }
@@ -542,7 +542,7 @@ fn workspace_dir_expression_is_portable_for_filesystem_permissions() {
         fs::create_dir_all(root.join("agents")).unwrap();
         fs::write(root.join("config.toml"), "").unwrap();
         fs::write(root.join("agents/worker.md"), document).unwrap();
-        let loaded = load_from_roots(None, Some(&root)).unwrap();
+        let loaded = load_from_user_root(Some(&root)).unwrap();
         let worker = loaded.agents.values().next().unwrap();
         fingerprints.push(worker.document_fingerprint.clone());
         let read = worker

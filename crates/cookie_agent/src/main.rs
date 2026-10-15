@@ -98,7 +98,7 @@ enum Command {
         #[command(flatten)]
         args: Box<run::RunArgs>,
     },
-    /// Serve the exact cookie-agent protocol 38 JSON-RPC WebSocket daemon on localhost.
+    /// Serve the exact cookie-agent protocol 39 JSON-RPC WebSocket daemon on localhost.
     Daemon {
         /// Localhost port to bind. `0` selects an ephemeral port; the ready line
         /// reports the real one.
@@ -389,8 +389,8 @@ async fn compose_with<T: CatalogTransport + 'static>(
     >,
     open_data_dir: impl FnOnce() -> anyhow::Result<PathBuf>,
 ) -> anyhow::Result<Runtime> {
-    let configuration =
-        cookie_agent_config::load(workspace).context("load workspace configuration and agents")?;
+    let configuration = cookie_agent_config::load(workspace)
+        .context("load user configuration, agents, and skills")?;
     compose_with_configuration(
         workspace,
         configuration,

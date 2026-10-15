@@ -25,7 +25,7 @@ pub use cache::{
     OpenAiCacheMode, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, RollingCacheTtl,
 };
 pub use error::ConfigError;
-pub use loader::{ConfigLayerPaths, LoadedConfiguration, load, load_from_roots};
+pub use loader::{ConfigLayerPaths, LoadedConfiguration, load, load_from_user_root};
 pub use loader::{LoadedMcpServer, McpServerSource};
 pub use mcp_store::write_mcp_server;
 pub use prompt_template::{

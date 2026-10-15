@@ -509,7 +509,7 @@ fn project_oauth_registry(
         BTreeMap::from([(
             name.to_owned(),
             LoadedMcpServer {
-                source: McpServerSource::WorkspaceFile,
+                source: McpServerSource::UserFile,
                 config: remote_config(url),
             },
         )]),

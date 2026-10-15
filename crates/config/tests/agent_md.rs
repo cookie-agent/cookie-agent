@@ -1,12 +1,12 @@
 use std::fs;
 
-use cookie_agent_config::{ConfigError, load_from_roots};
+use cookie_agent_config::{ConfigError, load_from_user_root};
 use tempfile::TempDir;
 
 fn load(text: &str) -> Result<cookie_agent_config::LoadedConfiguration, ConfigError> {
     let directory = TempDir::new().unwrap();
     fs::write(directory.path().join("config.toml"), text).unwrap();
-    load_from_roots(None, Some(directory.path()))
+    load_from_user_root(Some(directory.path()))
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn load_agent(mode: &str, agent_md: Option<&str>) -> Result<Option<bool>, Config
         ),
     )
     .unwrap();
-    let loaded = load_from_roots(None, Some(directory.path()))?;
+    let loaded = load_from_user_root(Some(directory.path()))?;
     Ok(loaded
         .agents
         .get(&cookie_agent_identity::AgentId::new("worker").unwrap())

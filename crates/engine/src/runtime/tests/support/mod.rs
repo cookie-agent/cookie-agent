@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use cookie_agent_config::{
     ApprovalConfig, ContextCompactionConfig, EngineConfig, LoadedConfiguration, LoadedMcpServer,
     McpServerConfig, McpServerSource, ModelRetryConfig, PluginConfig, ServerConfig,
-    SessionTitleConfig, ToolOutputConfig, load_from_roots,
+    SessionTitleConfig, ToolOutputConfig, load_from_user_root,
 };
 
 use cookie_agent_models::{
@@ -400,7 +400,6 @@ pub(crate) fn fixture() -> Fixture {
         agent_presets: BTreeMap::new(),
         mcp_servers: BTreeMap::new(),
         user_mcp_servers: BTreeMap::new(),
-        workspace_mcp_servers: BTreeMap::new(),
         plugins: Default::default(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
         skills: cookie_agent_config::SkillRegistry::default(),
@@ -518,7 +517,7 @@ pub(crate) fn empty_provider_workspace(path: &std::path::Path) -> LoadedConfigur
         &agents.join("primary.md"),
         "---\ndescription: Bedrock test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0\", variant: base }]\npermissions: {}\n---\nUse Bedrock.\n",
     );
-    load_from_roots(None, Some(&project)).expect("workspace config")
+    load_from_user_root(Some(&project)).expect("user config")
 }
 
 pub(crate) fn open_workspace_engine(
@@ -575,7 +574,7 @@ compaction = "openai-responses-compact"
         &agents.join("primary.md"),
         "---\ndescription: Native compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"openai/gpt-test\", variant: base }]\npermissions: {}\n---\nTest native compaction.\n",
     );
-    let mut config = load_from_roots(None, Some(&project)).expect("loaded config");
+    let mut config = load_from_user_root(Some(&project)).expect("loaded config");
     config.runtime.session_title.generate_on_first_turn = false;
     let provider_id = ProviderId::new("openai").expect("provider ID");
     let model_id = ProviderModelId::new("gpt-test").expect("model ID");
@@ -1090,7 +1089,7 @@ __MODEL_CAPABILITIES__
     if let Some((name, document)) = internal {
         write_private_test_file(&agents.join(name), document);
     }
-    let mut config = load_from_roots(None, Some(&project)).expect("loaded config");
+    let mut config = load_from_user_root(Some(&project)).expect("loaded config");
     if let Some(server) = mcp_server {
         config.mcp_servers.insert("fixture".into(), server);
     }
@@ -1220,7 +1219,7 @@ default_variant = "precise"
         create_private_test_dir(&agents);
         write_private_test_file(&agents.join("primary.md"), agent);
     }
-    let config = load_from_roots(None, Some(&project)).expect("loaded config");
+    let config = load_from_user_root(Some(&project)).expect("loaded config");
     let provider_store = directory.path().join("provider-store");
     create_private_test_dir(&provider_store);
     let now = Timestamp::now();

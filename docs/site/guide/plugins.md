@@ -10,8 +10,8 @@ contracts, see [Plugin development](../development/plugins.md).
 
 ## Configure and enable a plugin
 
-Configure each plugin under `[plugins.<name>]` in user or workspace
-`config.toml`. A workspace entry replaces a user entry with the same name.
+Configure each plugin under `[plugins.<name>]` in the user `config.toml`
+(`~/.cookie-agent/config.toml`).
 The map defaults to empty. Names must be nonempty, at most 128 bytes, and contain
 no control characters. The following is a complete illustrative `config.toml`;
 the executable and working directory must exist when the engine starts.
@@ -117,10 +117,9 @@ grace period, and then terminates the process if needed.
 
 ## Accepted fields
 
-Plugin definitions are layered by plugin name. A workspace definition replaces
-the complete same-name user definition without merging nested fields. The
-replacement keeps that user's position in authored order, which is also the
-interception order; workspace-only plugins append in workspace-authored order.
+Plugins are defined only in the user `config.toml`; a
+`<cwd>/.cookie-agent/config.toml` is never read. Their authored order is also the
+interception order.
 Plugin authors can use the
 [development guide](../development/plugins.md) for protocol and tool contracts.
 
@@ -145,7 +144,6 @@ startup but does not bypass configuration validation.
 The child inherits the engine's environment, including `PATH` and any provider
 API keys set there, plus the variables in `env`, which take precedence.
 
-Plugin commands are trusted local code, not a sandbox. Review workspace plugin
-configuration before opening the workspace. Tool permissions do not prevent
+Plugin commands are trusted local code, not a sandbox. Tool permissions do not prevent
 configured startup or independently authorize interception hooks. See
 [security boundaries](security.md#process-boundary).

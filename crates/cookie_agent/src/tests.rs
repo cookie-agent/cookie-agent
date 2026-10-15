@@ -1,7 +1,7 @@
 /// A syntactically valid 43-character base64url daemon token.
 const TEST_TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-/// Compose with configuration loaded from the workspace only, isolating tests from any
+/// Compose with the workspace's `.cookie-agent` as the user layer root, isolating tests from any
 /// real user-level configuration on the host.
 async fn compose_isolated<T: CatalogTransport + 'static>(
     workspace: &std::path::Path,
@@ -14,8 +14,8 @@ async fn compose_isolated<T: CatalogTransport + 'static>(
     open_data_dir: impl FnOnce() -> anyhow::Result<std::path::PathBuf>,
 ) -> anyhow::Result<Runtime> {
     let configuration =
-        cookie_agent_config::load_from_roots(None, Some(&workspace.join(".cookie-agent")))
-            .context("load isolated workspace configuration and agents")?;
+        cookie_agent_config::load_from_user_root(Some(&workspace.join(".cookie-agent")))
+            .context("load isolated user configuration and agents")?;
     compose_with_configuration(
         workspace,
         configuration,

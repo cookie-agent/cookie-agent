@@ -43,7 +43,6 @@ pub struct LoadedConfiguration {
     pub agent_presets: BTreeMap<String, BTreeMap<AgentId, AgentDocument>>,
     pub mcp_servers: BTreeMap<String, LoadedMcpServer>,
     pub user_mcp_servers: BTreeMap<String, crate::McpServerConfig>,
-    pub workspace_mcp_servers: BTreeMap<String, crate::McpServerConfig>,
     pub plugins: IndexMap<String, crate::PluginConfig>,
     pub config_paths: ConfigLayerPaths,
     pub skills: crate::SkillRegistry,
@@ -51,14 +50,13 @@ pub struct LoadedConfiguration {
 
 #[derive(Clone, Debug, Default)]
 pub struct ConfigLayerPaths {
+    /// The user layer's `config.toml`, the only authored configuration file.
     pub user: Option<PathBuf>,
-    pub workspace: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum McpServerSource {
     UserFile,
-    WorkspaceFile,
     Runtime,
 }
 
@@ -83,26 +81,22 @@ impl LoadedConfiguration {
     }
 }
 
-/// Loads user config and exact-cwd `.cookie-agent` with no upward search.
+/// Loads the built-in defaults and the user layer, and discovers skills for
+/// `cwd`. Configuration has no workspace layer: `<cwd>/.cookie-agent/config.toml`
+/// and `<cwd>/.cookie-agent/agents/` are never opened.
 pub fn load(cwd: &Path) -> Result<LoadedConfiguration, ConfigError> {
     let cwd = cwd.canonicalize().map_err(ConfigError::Io)?;
     let user = user_root();
-    let mut loaded = load_from_roots(user.as_deref(), Some(&cwd.join(".cookie-agent")))?;
+    let mut loaded = load_from_user_root(user.as_deref())?;
     loaded.skills = crate::load_skills(&cwd)?;
     Ok(loaded)
 }
 
-/// Loads explicit roots, primarily for composition and adversarial tests.
-pub fn load_from_roots(
-    user_root: Option<&Path>,
-    workspace_root: Option<&Path>,
-) -> Result<LoadedConfiguration, ConfigError> {
+/// Loads the built-in defaults and an explicit user layer root, primarily for
+/// composition and adversarial tests. Skills are not discovered.
+pub fn load_from_user_root(user_root: Option<&Path>) -> Result<LoadedConfiguration, ConfigError> {
     let user = user_root
         .map(|path| open_layer_root(path, AgentDocumentSource::User))
-        .transpose()?
-        .flatten();
-    let workspace = workspace_root
-        .map(|path| open_layer_root(path, AgentDocumentSource::Workspace))
         .transpose()?
         .flatten();
     let mut runtime = EngineConfig {
@@ -125,7 +119,6 @@ pub fn load_from_roots(
     let mut preset_agents = BTreeMap::<String, BTreeMap<AgentId, AgentDocument>>::new();
     let mut mcp_servers = BTreeMap::new();
     let mut user_mcp_servers = BTreeMap::new();
-    let mut workspace_mcp_servers = BTreeMap::new();
     let mut plugins = IndexMap::new();
     let built_in_text =
         BUILT_IN_CONFIG.replace("${cookie_agent_version}", env!("CARGO_PKG_VERSION"));
@@ -140,26 +133,19 @@ pub fn load_from_roots(
     interpolate_provider_values(&mut built_in_value, &mut Vec::new())?;
     let built_in_layer = decode_runtime_layer(&mut built_in_value, &built_in_text, built_in_path)?;
     apply_settings(&mut runtime, &built_in_layer);
-    for root in [user.as_ref(), workspace.as_ref()].into_iter().flatten() {
+    if let Some(root) = &user {
         if let Some((mut layer, source_text)) = root.load_runtime()? {
             apply_settings(&mut runtime, &layer);
             if let Some(mcp) = layer.mcp.take() {
-                let source = match root.source {
-                    AgentDocumentSource::User => McpServerSource::UserFile,
-                    AgentDocumentSource::Workspace => McpServerSource::WorkspaceFile,
-                    AgentDocumentSource::BuiltIn => McpServerSource::Runtime,
-                };
                 for (name, config) in mcp.servers {
-                    match source {
-                        McpServerSource::UserFile => {
-                            user_mcp_servers.insert(name.clone(), config.clone());
-                        }
-                        McpServerSource::WorkspaceFile => {
-                            workspace_mcp_servers.insert(name.clone(), config.clone());
-                        }
-                        McpServerSource::Runtime => unreachable!("file configuration layer"),
-                    }
-                    mcp_servers.insert(name, LoadedMcpServer { source, config });
+                    user_mcp_servers.insert(name.clone(), config.clone());
+                    mcp_servers.insert(
+                        name,
+                        LoadedMcpServer {
+                            source: McpServerSource::UserFile,
+                            config,
+                        },
+                    );
                 }
             }
             if let Some(layer_plugins) = layer.plugins.take() {
@@ -254,11 +240,9 @@ pub fn load_from_roots(
         agent_presets,
         mcp_servers,
         user_mcp_servers,
-        workspace_mcp_servers,
         plugins,
         config_paths: ConfigLayerPaths {
             user: user_root.map(|root| root.join("config.toml")),
-            workspace: workspace_root.map(|root| root.join("config.toml")),
         },
         skills: crate::SkillRegistry::default(),
     })
@@ -534,7 +518,7 @@ mod agent_loader_tests {
         load_agent_document(
             directory.path(),
             "worker.md",
-            AgentDocumentSource::Workspace,
+            AgentDocumentSource::User,
             &mut documents,
         )
         .unwrap();
@@ -542,7 +526,7 @@ mod agent_loader_tests {
             load_agent_document(
                 directory.path(),
                 "worker.md",
-                AgentDocumentSource::Workspace,
+                AgentDocumentSource::User,
                 &mut documents,
             ),
             Err(ConfigError::DuplicateAgent(id)) if id.as_str() == "worker"

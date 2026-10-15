@@ -19,7 +19,7 @@ use std::{
 };
 
 use cookie_agent::run::{AllowedTool, OutputMode, PermissionModeArg, RunArgs, execute_with_io};
-use cookie_agent_config::load;
+use cookie_agent_config::{load_from_user_root, load_skills};
 use cookie_agent_engine::{Engine, EngineHistoryView, EngineOptions};
 use cookie_agent_models::{
     ModelManager,
@@ -210,7 +210,8 @@ impl ProcessFixture {
         make_private(&home);
         make_private(&workspace);
         let server = MockModelServer::start();
-        write_workspace(&workspace, &server.endpoint());
+        // The binary reads configuration and agents only from the user layer.
+        write_workspace(&home, &server.endpoint());
         Self {
             _root: root,
             home,
@@ -271,7 +272,11 @@ impl Fixture {
         let provider_store_path = root.path().join("providers");
         fs::create_dir(&provider_store_path).expect("provider store directory");
         make_private(&provider_store_path);
-        let mut configuration = load(&workspace).expect("test configuration");
+        // The workspace's `.cookie-agent` doubles as the user layer root, so
+        // one directory carries configuration, agents, and project skills.
+        let mut configuration = load_from_user_root(Some(&workspace.join(".cookie-agent")))
+            .expect("test configuration");
+        configuration.skills = load_skills(&workspace).expect("test skills");
         configuration.plugins.extend(plugins);
         let model_manager = Arc::new(
             ModelManager::new_with_headers(
@@ -2593,6 +2598,29 @@ async fn start_run_admission_failures_map_to_one() {
 }
 
 #[test]
+fn cookie_binary_never_opens_workspace_configuration_or_agents() {
+    let fixture = ProcessFixture::new();
+    // Each of these is a hard error if the loader ever reads it.
+    let workspace_root = fixture.workspace.join(".cookie-agent");
+    fs::create_dir_all(workspace_root.join("agents/preset")).expect("workspace agents");
+    fs::write(workspace_root.join("config.toml"), "unknown_key = 1\n").expect("workspace config");
+    fs::write(workspace_root.join("agents/broken.md"), "not an agent\n").expect("agent");
+    fs::write(
+        workspace_root.join("agents/preset/broken.md"),
+        "not an agent\n",
+    )
+    .expect("preset agent");
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("user layer only")));
+    let output = fixture.run(&["run", "binary prompt", "--json"]);
+    assert_eq!(output.status.code(), Some(0), "{}", process_report(&output));
+    let stdout = String::from_utf8(output.stdout).expect("binary JSON output");
+    let records = parse_json_lines(&stdout);
+    assert_eq!(records.last().unwrap()["final_text"], "user layer only");
+}
+
+#[test]
 fn cookie_binary_composes_runs_and_emits_json() {
     let fixture = ProcessFixture::new();
     fixture
@@ -2647,7 +2675,7 @@ fn cookie_binary_maps_run_and_environment_failures() {
 #[test]
 fn cookie_binary_treats_plugin_handled_input_as_success_without_a_run() {
     let fixture = ProcessFixture::new();
-    let config = fixture.workspace.join(".cookie-agent/config.toml");
+    let config = fixture.home.join(".cookie-agent/config.toml");
     let mut file = fs::OpenOptions::new()
         .append(true)
         .open(config)
@@ -2683,7 +2711,7 @@ env = {{ FIXTURE_NAME = 'command_handler', FIXTURE_CAPABILITIES = '{{"producer_m
 #[test]
 fn cookie_binary_treats_blocked_model_selection_as_failure() {
     let fixture = ProcessFixture::new();
-    let config = fixture.workspace.join(".cookie-agent/config.toml");
+    let config = fixture.home.join(".cookie-agent/config.toml");
     let mut file = fs::OpenOptions::new()
         .append(true)
         .open(config)

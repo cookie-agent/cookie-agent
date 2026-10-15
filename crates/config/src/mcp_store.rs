@@ -7,7 +7,7 @@ use std::{
 use serde::Serialize;
 use toml_edit::{DocumentMut, Item, Table};
 
-use crate::{ConfigError, McpServerConfig, load_from_roots};
+use crate::{ConfigError, McpServerConfig, load_from_user_root};
 
 #[derive(Serialize)]
 struct ServerDocument<'a> {
@@ -77,7 +77,7 @@ fn write_mcp_server_observed(
     let candidate = document.to_string();
 
     let validation_root = tempfile_root(path, &candidate)?;
-    let validation = load_from_roots(Some(&validation_root), None);
+    let validation = load_from_user_root(Some(&validation_root));
     let _ = fs::remove_dir_all(&validation_root);
     validation?;
 

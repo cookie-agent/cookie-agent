@@ -71,11 +71,7 @@ impl App {
                         | McpFormFocus::Persist
                 )
             }) {
-                self.mcp_panel
-                    .form
-                    .as_mut()
-                    .expect("form")
-                    .cycle_choice(key.code == KeyCode::Left);
+                self.mcp_panel.form.as_mut().expect("form").cycle_choice();
                 return;
             }
             if key.code == KeyCode::Enter {

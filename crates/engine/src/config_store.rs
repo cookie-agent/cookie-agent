@@ -14,20 +14,16 @@ use crate::{Engine, EngineError, McpServerState};
 #[derive(Clone, Debug)]
 pub(crate) struct ConfigStore {
     user: BTreeMap<String, McpServerConfig>,
-    workspace: BTreeMap<String, McpServerConfig>,
     runtime: BTreeMap<String, Option<McpServerConfig>>,
     user_path: Option<PathBuf>,
-    workspace_path: Option<PathBuf>,
 }
 
 impl ConfigStore {
     pub(crate) fn new(config: &LoadedConfiguration) -> Self {
         Self {
             user: config.user_mcp_servers.clone(),
-            workspace: config.workspace_mcp_servers.clone(),
             runtime: BTreeMap::new(),
             user_path: config.config_paths.user.clone(),
-            workspace_path: config.config_paths.workspace.clone(),
         }
     }
 
@@ -38,26 +34,16 @@ impl ConfigStore {
                 config,
             });
         }
-        self.workspace
-            .get(name)
-            .cloned()
-            .map(|config| LoadedMcpServer {
-                source: McpServerSource::WorkspaceFile,
-                config,
-            })
-            .or_else(|| {
-                self.user.get(name).cloned().map(|config| LoadedMcpServer {
-                    source: McpServerSource::UserFile,
-                    config,
-                })
-            })
+        self.user.get(name).cloned().map(|config| LoadedMcpServer {
+            source: McpServerSource::UserFile,
+            config,
+        })
     }
 
     fn effective_all(&self) -> BTreeMap<String, LoadedMcpServer> {
         let names = self
             .user
             .keys()
-            .chain(self.workspace.keys())
             .chain(self.runtime.keys())
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
@@ -116,16 +102,14 @@ impl ConfigStore {
             .ok_or_else(|| {
                 EngineError::Mcp(format!("server `{name}` has no runtime entry to persist"))
             })?;
-        let (path, layer) = match target {
-            McpConfigTarget::UserFile => (&self.user_path, &mut self.user),
-            McpConfigTarget::WorkspaceFile => (&self.workspace_path, &mut self.workspace),
-        };
-        let path = path.as_ref().ok_or_else(|| {
-            EngineError::Mcp("the selected configuration file layer is unavailable".into())
-        })?;
+        let McpConfigTarget::UserFile = target;
+        let path = self
+            .user_path
+            .as_ref()
+            .ok_or_else(|| EngineError::Mcp("the user configuration file is unavailable".into()))?;
         write_mcp_server(path, name, &config)
             .map_err(|error| EngineError::Mcp(error.to_string()))?;
-        layer.insert(name.to_owned(), config);
+        self.user.insert(name.to_owned(), config);
         Ok(())
     }
 }
@@ -326,7 +310,6 @@ impl Engine {
 fn source_to_wire(source: McpServerSource) -> McpConfigSource {
     match source {
         McpServerSource::UserFile => McpConfigSource::UserFile,
-        McpServerSource::WorkspaceFile => McpConfigSource::WorkspaceFile,
         McpServerSource::Runtime => McpConfigSource::Runtime,
     }
 }
@@ -390,30 +373,24 @@ fn definition_from_wire(definition: McpServerDefinition) -> McpServerConfig {
 mod tests {
     use std::fs;
 
-    use cookie_agent_config::{McpServerSource, load_from_roots};
+    use cookie_agent_config::{McpServerSource, load_from_user_root};
     use cookie_agent_protocol::McpConfigTarget;
 
     use super::ConfigStore;
 
     #[test]
-    fn runtime_layer_overrides_files_can_remove_and_writes_back_strictly() {
+    fn runtime_layer_overrides_the_user_file_can_remove_and_writes_back_strictly() {
         let user = tempfile::tempdir().expect("user root");
-        let workspace = tempfile::tempdir().expect("workspace root");
         fs::write(
             user.path().join("config.toml"),
-            "# user comment\n[mcp.servers.demo]\ncommand = \"user\"\n",
+            "[mcp.servers.demo]\ncommand = \"user\"\n",
         )
         .expect("user config");
-        fs::write(
-            workspace.path().join("config.toml"),
-            "[mcp.servers.demo]\ncommand = \"workspace\"\n",
-        )
-        .expect("workspace config");
-        let loaded = load_from_roots(Some(user.path()), Some(workspace.path())).expect("layers");
+        let loaded = load_from_user_root(Some(user.path())).expect("user layer");
         let mut store = ConfigStore::new(&loaded);
         assert_eq!(
-            store.effective("demo").expect("workspace server").source,
-            McpServerSource::WorkspaceFile
+            store.effective("demo").expect("user server").source,
+            McpServerSource::UserFile
         );
         let mut runtime = store.effective("demo").expect("server").config;
         runtime.command = Some("runtime".into());
@@ -425,18 +402,20 @@ mod tests {
         store
             .persist("demo", McpConfigTarget::UserFile)
             .expect("write user layer");
-        assert!(
-            fs::read_to_string(user.path().join("config.toml"))
-                .expect("written user config")
-                .contains("runtime")
-        );
+        let written =
+            fs::read_to_string(user.path().join("config.toml")).expect("written user config");
+        assert!(written.contains("runtime"));
         store.remove("demo").expect("runtime tombstone");
         assert!(store.effective("demo").is_none());
-        let reloaded = load_from_roots(Some(user.path()), Some(workspace.path()))
-            .expect("strictly reloaded file layers");
+        let reloaded =
+            load_from_user_root(Some(user.path())).expect("strictly reloaded user layer");
         assert_eq!(
             reloaded.mcp_servers["demo"].source,
-            McpServerSource::WorkspaceFile
+            McpServerSource::UserFile
+        );
+        assert_eq!(
+            reloaded.mcp_servers["demo"].config.command.as_deref(),
+            Some("runtime")
         );
     }
 }

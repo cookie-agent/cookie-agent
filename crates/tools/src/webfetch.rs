@@ -546,7 +546,7 @@ mod tests {
             schema: AgentSchemaVersion::current(),
             mode: AgentMode::Primary,
             description: "Test".into(),
-            document_source: AgentDocumentSource::Workspace,
+            document_source: AgentDocumentSource::User,
             document_fingerprint: Sha256Digest::of_bytes(b"test"),
             composed_prompt: "test".into(),
             prompt_fingerprint: Sha256Digest::of_bytes(b"test"),
