@@ -30,5 +30,6 @@ zeroize.workspace = true
 [dev-dependencies]
 cookie_agent_engine = { version = "=0.3.0", path = "../engine", features = ["test-support"] }
 cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = ["test-support"] }
+cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api" }
 jiff.workspace = true
 tempfile.workspace = true

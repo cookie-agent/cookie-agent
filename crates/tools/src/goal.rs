@@ -1,12 +1,13 @@
 use async_trait::async_trait;
-use cookie_agent_engine::{
-    Engine, PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError,
-    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
-};
+use cookie_agent_engine::Engine;
 use cookie_agent_protocol::{
     ApprovalResourceSource, GoalGetParams, GoalUpdateParams, PermissionAction,
     PersistedToolResult as ToolResult, PreparedBindingLifetime, PreparedOperationIdentity,
     SessionId,
+};
+use cookie_agent_runtime_api::{
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
+    ToolPreparationContext, ToolProvider, ToolSpec,
 };
 
 use crate::{parse_args, prepared_operation, prepared_resource, safe_title, schema, tool_error};
@@ -37,8 +38,8 @@ impl GoalTools {
         ToolSpec {
 collision: Default::default(),
 output: Default::default(),
-            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
-            result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
+            concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
+            result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut,
             name: "goal_get".into(),
             permission_name: "read".into(),
             description: "Read the root session's objective, lifecycle status, revision, and full checklist. The root checklist is authoritative; verify work directly or through subagents before treating an item as finished.".into(),
@@ -51,7 +52,7 @@ output: Default::default(),
 collision: Default::default(),
 output: Default::default(),
             concurrency: Default::default(),
-            result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
+            result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut,
             name: "goal_update".into(),
             permission_name: "write".into(),
             description: "Replace the current root goal's full checklist. The current active or paused goal is selected when this update executes, even if the goal changed since this run started. The last accepted replacement wins. This cannot change the objective or issue lifecycle commands; a nonempty all-finished checklist completes the goal. Verify evidence directly or through subagents before marking items finished; the root checklist is authoritative over subagent self-reports.".into(),
@@ -199,7 +200,7 @@ impl PreparedExecutor for GoalExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+    ) -> Result<cookie_agent_runtime_api::ToolCompletion, ToolError> {
         let result: Result<ToolResult, ToolError> = async move {
             if context.cancellation.is_cancelled() {
                 return Err(ToolError::execution("goal tool was cancelled"));
@@ -238,7 +239,7 @@ impl PreparedExecutor for GoalExecutor {
             goal_result(title, result)
         }
         .await;
-        result.map(cookie_agent_engine::ToolCompletion::single)
+        result.map(cookie_agent_runtime_api::ToolCompletion::single)
     }
 }
 
@@ -257,7 +258,7 @@ fn goal_result(title: &str, result: serde_json::Value) -> Result<ToolResult, Too
 
 #[cfg(test)]
 mod tests {
-    use cookie_agent_engine::ToolProvider;
+    use cookie_agent_runtime_api::ToolProvider;
 
     use super::GoalTools;
 
@@ -287,11 +288,11 @@ mod tests {
         assert_eq!(update.permission_name, "write");
         assert_eq!(
             get.result_truncation,
-            cookie_agent_engine::ToolResultTruncationPolicy::OptOut
+            cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut
         );
         assert_eq!(
             update.result_truncation,
-            cookie_agent_engine::ToolResultTruncationPolicy::OptOut
+            cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut
         );
         assert_eq!(get.parameters["additionalProperties"], false);
         assert_eq!(update.parameters["additionalProperties"], false);

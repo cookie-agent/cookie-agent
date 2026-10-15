@@ -1,14 +1,13 @@
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
+use cookie_agent_engine::events::OutputHub;
 use cookie_agent_engine::permissions::PermissionPipeline;
-use cookie_agent_engine::{
-    ProgressSink, ToolCall, ToolError, ToolPreparationContext, ToolProvider, events::OutputHub,
-};
 use cookie_agent_protocol::{
     AgentDocumentSource, AgentId, AgentMode, AgentSchemaVersion, AgentSnapshot, OutputStream,
     PermissionAction, PermissionEffect, PermissionRule, RunId, SafeDisplayText, SessionId,
     Sha256Digest, ToolCallId, WildcardPattern,
 };
+use cookie_agent_runtime_api::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
 use tokio::io::AsyncWriteExt;
 
 use super::{
@@ -54,7 +53,7 @@ fn display_argument_is_a_one_line_command_that_keeps_and_segments() {
     ));
 }
 
-async fn prepare(root: &Path, command: &str) -> cookie_agent_engine::PreparedTool {
+async fn prepare(root: &Path, command: &str) -> cookie_agent_runtime_api::PreparedTool {
     BashTool::new(&crate::test_workspace(root))
         .prepare(
             ToolPreparationContext {
@@ -265,13 +264,13 @@ async fn interactive_is_prepared_for_runtime_stdin() {
     let tool = BashTool::new(&crate::test_workspace(root.path()));
     let result = tool
         .prepare(
-            cookie_agent_engine::ToolPreparationContext {
+            cookie_agent_runtime_api::ToolPreparationContext {
                 session: SessionId::new_v7(),
                 run: RunId::new_v7(),
                 origin: crate::test_coding_origin(root.path()),
                 turn_context: crate::test_turn_context(),
             },
-            cookie_agent_engine::ToolCall {
+            cookie_agent_runtime_api::ToolCall {
                 id: ToolCallId::new_v7(),
                 name: "bash".into(),
                 arguments: serde_json::json!({
@@ -290,7 +289,7 @@ async fn output_reader_preserves_utf8_across_pipe_reads_and_flushes() {
     let call_id = ToolCallId::new_v7();
     let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
     let hub = OutputHub::new(call_id, 64 * 1024);
-    let progress = ProgressSink::for_test(
+    let progress = cookie_agent_engine::testing::capturing_progress_sink(
         sender,
         hub.clone(),
         root.path().join("artifacts"),
@@ -330,7 +329,7 @@ async fn output_reader_streams_bounded_display_without_buffering_full_output() {
     let root = tempfile::tempdir().unwrap();
     let call_id = ToolCallId::new_v7();
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(2_048);
-    let progress = ProgressSink::for_test(
+    let progress = cookie_agent_engine::testing::capturing_progress_sink(
         progress_tx,
         OutputHub::new(call_id, 64 * 1024),
         root.path().join("artifacts"),
@@ -387,7 +386,7 @@ async fn output_reader_streams_bounded_display_without_buffering_full_output() {
 
 #[tokio::test]
 async fn real_bash_completion_keeps_read_order_and_nonzero_exits_are_data() {
-    use cookie_agent_engine::PreparedExecutor;
+    use cookie_agent_runtime_api::PreparedExecutor;
     for status in [0, 1, 7] {
         let root = tempfile::tempdir().unwrap();
         let artifacts = tempfile::tempdir().unwrap();
@@ -407,12 +406,12 @@ async fn real_bash_completion_keeps_read_order_and_nonzero_exits_are_data() {
             executable: crate::fs_cap::prepare_existing(Path::new("/"), &executable).unwrap(),
         };
         let (sender, mut receiver) = tokio::sync::mpsc::channel(128);
-        let mut context = cookie_agent_engine::ToolExecutionContext::for_test(
+        let mut context = cookie_agent_engine::testing::tool_execution_context(
             artifacts.path().join("artifacts"),
             crate::test_turn_context(),
         )
         .unwrap();
-        context.progress = ProgressSink::for_test(
+        context.progress = cookie_agent_engine::testing::capturing_progress_sink(
             sender,
             OutputHub::new(call_id, 64 * 1024),
             artifacts.path().join("streams"),
@@ -472,7 +471,7 @@ async fn signalled_bash_is_still_a_tool_failure() {
     let root = tempfile::tempdir().unwrap();
     let artifacts = tempfile::tempdir().unwrap();
     let prepared = prepare(root.path(), "kill -TERM $$").await;
-    let context = cookie_agent_engine::ToolExecutionContext::for_test(
+    let context = cookie_agent_engine::testing::tool_execution_context(
         artifacts.path().join("artifacts"),
         crate::test_turn_context(),
     )
@@ -505,7 +504,7 @@ async fn real_bash_timeout_drains_progress_before_terminal_completion() {
                 .expect("prepared executable"),
         };
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
-        let progress = ProgressSink::for_test(
+        let progress = cookie_agent_engine::testing::capturing_progress_sink(
             progress_tx,
             OutputHub::new(call_id, 64 * 1024),
             artifacts.path().join("artifacts"),
@@ -612,7 +611,7 @@ async fn killing_prepared_process_group_removes_descendants() {
 async fn prepare_arguments(
     root: &Path,
     arguments: serde_json::Value,
-) -> Result<cookie_agent_engine::PreparedTool, ToolError> {
+) -> Result<cookie_agent_runtime_api::PreparedTool, ToolError> {
     BashTool::new(&crate::test_workspace(root))
         .prepare(
             ToolPreparationContext {
@@ -653,7 +652,7 @@ async fn background_needs_an_engine_run() {
     )
     .await
     .expect("prepare");
-    let context = cookie_agent_engine::ToolExecutionContext::for_test(
+    let context = cookie_agent_engine::testing::tool_execution_context(
         artifacts.path().join("artifacts"),
         crate::test_turn_context(),
     )
@@ -669,7 +668,7 @@ async fn background_needs_an_engine_run() {
 
 #[tokio::test]
 async fn zero_timeout_never_times_out() {
-    use cookie_agent_engine::PreparedExecutor;
+    use cookie_agent_runtime_api::PreparedExecutor;
     let root = tempfile::tempdir().unwrap();
     let artifacts = tempfile::tempdir().unwrap();
     let call_id = ToolCallId::new_v7();
@@ -686,12 +685,12 @@ async fn zero_timeout_never_times_out() {
         executable: crate::fs_cap::prepare_existing(Path::new("/"), &executable).unwrap(),
     };
     let (sender, _receiver) = tokio::sync::mpsc::channel(128);
-    let mut context = cookie_agent_engine::ToolExecutionContext::for_test(
+    let mut context = cookie_agent_engine::testing::tool_execution_context(
         artifacts.path().join("artifacts"),
         crate::test_turn_context(),
     )
     .unwrap();
-    context.progress = ProgressSink::for_test(
+    context.progress = cookie_agent_engine::testing::capturing_progress_sink(
         sender,
         OutputHub::new(call_id, 64 * 1024),
         artifacts.path().join("streams"),

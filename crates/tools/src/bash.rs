@@ -17,14 +17,14 @@ use std::sync::OnceLock;
 use std::os::unix::fs::MetadataExt;
 
 use async_trait::async_trait;
-use cookie_agent_engine::ToolProgress;
-use cookie_agent_engine::{
-    PreparedExecutor, PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError,
-    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec, ToolStdin,
-};
 use cookie_agent_protocol::PersistedToolResult as ToolResult;
 use cookie_agent_protocol::{ApprovalResourceSource, PermissionAction, PreparedBindingLifetime};
 use cookie_agent_protocol::{OutputStream, SafeDisplayText, ToolCallId};
+use cookie_agent_runtime_api::ToolProgress;
+use cookie_agent_runtime_api::{
+    PreparedExecutor, PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError,
+    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec, ToolStdin,
+};
 #[cfg(windows)]
 use process_wrap::tokio::{CommandWrap, JobObject as ProcessJobObject, KillOnDrop};
 use schemars::JsonSchema;
@@ -38,7 +38,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use cookie_agent_engine::WorkspaceContext;
+use cookie_agent_runtime_api::WorkspaceContext;
 
 use crate::{fs_cap, parse_args, prepared_operation, prepared_resource, schema};
 
@@ -356,7 +356,7 @@ impl ToolProvider for BashTool {
             output: cookie_agent_protocol::ToolOutputDeclaration::Named {
                 streams: vec!["stdout".into(), "stderr".into()],
             },
-            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
+            concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
             name: "bash".into(),
             permission_name: Self::get_permission_name("bash")?.into(),
@@ -744,7 +744,7 @@ impl BashExecutor {
     async fn execute_background(
         self,
         context: &ToolExecutionContext,
-    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+    ) -> Result<cookie_agent_runtime_api::ToolCompletion, ToolError> {
         let job = context.start_background().await?;
         let SpawnedShell {
             mut tree,
@@ -788,7 +788,7 @@ impl BashExecutor {
             let _ = stderr_task.await;
             background_report(pid, &command, &exit, started.elapsed())
         })?;
-        let mut completion = cookie_agent_engine::ToolCompletion::streamed(ToolResult {
+        let mut completion = cookie_agent_runtime_api::ToolCompletion::streamed(ToolResult {
             display: Some(notice.clone()),
             retained_output: None,
             title: crate::safe_title("Bash"),
@@ -819,7 +819,7 @@ impl PreparedExecutor for BashExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+    ) -> Result<cookie_agent_runtime_api::ToolCompletion, ToolError> {
         if self.args.background {
             return self.execute_background(&context).await;
         }
@@ -828,7 +828,7 @@ impl PreparedExecutor for BashExecutor {
                 .await
         }
         .await;
-        result.map(cookie_agent_engine::ToolCompletion::streamed)
+        result.map(cookie_agent_runtime_api::ToolCompletion::streamed)
     }
 }
 
@@ -881,7 +881,7 @@ fn background_report(
     command: &str,
     exit: &BackgroundExit,
     elapsed: Duration,
-) -> cookie_agent_engine::BackgroundReport {
+) -> cookie_agent_runtime_api::BackgroundReport {
     let elapsed = format!("{:.1}s", elapsed.as_secs_f64());
     let status = match exit {
         BackgroundExit::Finished(Ok(status)) => match status.code() {
@@ -891,7 +891,7 @@ fn background_report(
         BackgroundExit::Finished(Err(error)) => format!("could not be waited on ({error})"),
         BackgroundExit::TimedOut => "timed out and was killed".to_owned(),
     };
-    cookie_agent_engine::BackgroundReport {
+    cookie_agent_runtime_api::BackgroundReport {
         summary: format!("bash {status}: {command}"),
         element: "background_bash".into(),
         attributes: pid

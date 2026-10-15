@@ -10,7 +10,6 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    future::Future,
     sync::{Mutex, Weak},
     time::Duration,
 };
@@ -26,7 +25,11 @@ use tokio_util::sync::CancellationToken;
 use super::{
     Engine, EngineError, Inner, output_capture::OutputCapture, producers::ProducerAuthority,
 };
-use crate::{ProgressSink, ToolCompletion, ToolError, ToolProgress, events::OutputHub};
+use cookie_agent_runtime_api::{
+    BackgroundJob, BackgroundJobs, BackgroundLauncher, BackgroundReport, BackgroundTask,
+};
+
+use crate::{ToolCompletion, ToolError, ToolProgress, events::OutputHub};
 
 /// Idempotency key of the one completion message a job sends.
 const COMPLETION_KEY: &str = "background-completion";
@@ -69,28 +72,9 @@ impl std::fmt::Debug for BackgroundCapability {
     }
 }
 
-/// What a finished background job reports to the agent. The engine renders
-/// `<element attributes…>`, the body, and the job's output preview (truncated
-/// like any tool result), then the closing tag.
-pub struct BackgroundReport {
-    /// One-line summary shown on the notification row.
-    pub summary: String,
-    /// Element name wrapping the agent-visible report, such as `background_bash`.
-    pub element: String,
-    /// Attributes on the opening tag, in order.
-    pub attributes: Vec<(String, String)>,
-    /// Report lines placed before the output preview.
-    pub body: String,
-}
-
-/// A reserved background job. [`BackgroundJob::progress`] captures the job's
-/// output like a foreground call's; [`BackgroundJob::launch`] hands over the
-/// future that runs it. Dropping the job unlaunched releases the reservation.
-pub struct BackgroundJob {
-    progress: ProgressSink,
-    launch: Launch,
-}
-
+/// The engine's side of a reserved job: started by
+/// [`cookie_agent_runtime_api::BackgroundJob::launch`], released when dropped
+/// unlaunched.
 struct Launch {
     engine: Engine,
     session: SessionId,
@@ -110,17 +94,15 @@ impl Drop for Launch {
     }
 }
 
-impl BackgroundJob {
-    pub(crate) async fn reserve(
-        capability: &BackgroundCapability,
-        session: SessionId,
-    ) -> Result<Self, ToolError> {
-        let inner = capability
+#[async_trait::async_trait]
+impl BackgroundJobs for BackgroundCapability {
+    async fn reserve(&self, session: SessionId) -> Result<BackgroundJob, ToolError> {
+        let inner = self
             .inner
             .upgrade()
             .ok_or_else(|| ToolError::execution("engine is shutting down"))?;
         let engine = Engine { inner };
-        let tool_call_id = capability.tool_call_id;
+        let tool_call_id = self.tool_call_id;
         let producer_id = engine
             .register_producer(session, tool_authority(tool_call_id))
             .await
@@ -148,7 +130,7 @@ impl BackgroundJob {
             ToolOutputDeclaration::Named {
                 streams: vec!["stdout".into(), "stderr".into()],
             },
-            capability.limits,
+            self.limits,
         )
         .await
         {
@@ -158,13 +140,9 @@ impl BackgroundJob {
                 return Err(error);
             }
         };
-        Ok(Self {
-            progress: ProgressSink::with_capture(
-                sender,
-                OutputHub::new(tool_call_id, 0),
-                capture.clone(),
-            ),
-            launch: Launch {
+        Ok(BackgroundJob::new(
+            capture.progress_sink(sender, OutputHub::new(tool_call_id, 0)),
+            Box::new(Launch {
                 engine,
                 session,
                 tool_call_id,
@@ -173,33 +151,21 @@ impl BackgroundJob {
                 progress,
                 kill,
                 arm,
-            },
-        })
+            }),
+        ))
     }
+}
 
-    /// The sink the job writes its output to.
-    #[must_use]
-    pub fn progress(&self) -> ProgressSink {
-        self.progress.clone()
-    }
-
-    /// Runs `job` detached from the call. Its report is delivered once the
-    /// call commits; the job is dropped (killing what it owns) if the call
-    /// never commits, is reverted, or its session is deleted.
-    pub fn launch(
-        self,
-        job: impl Future<Output = BackgroundReport> + Send + 'static,
-    ) -> Result<(), ToolError> {
-        let Self { progress, launch } = self;
-        drop(progress);
-        let engine = launch.engine.clone();
+impl BackgroundLauncher for Launch {
+    fn launch(self: Box<Self>, task: BackgroundTask) -> Result<(), ToolError> {
+        let engine = self.engine.clone();
         let runtime = engine
             .inner
             .runtime
             .clone()
             .or_else(|| tokio::runtime::Handle::try_current().ok())
             .ok_or_else(|| ToolError::execution("engine is shutting down"))?;
-        if engine.spawn_admission_task(&runtime, launch.run(job)) {
+        if engine.spawn_admission_task(&runtime, self.run(task)) {
             Ok(())
         } else {
             Err(ToolError::execution("engine is shutting down"))
@@ -208,7 +174,7 @@ impl BackgroundJob {
 }
 
 impl Launch {
-    async fn run(mut self, job: impl Future<Output = BackgroundReport> + Send) {
+    async fn run(mut self: Box<Self>, job: BackgroundTask) {
         let report = {
             let mut job = std::pin::pin!(job);
             loop {

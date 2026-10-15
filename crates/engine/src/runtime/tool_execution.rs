@@ -1,37 +1,31 @@
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalDecisionSource, ApprovalId, ApprovalRequest, ApprovalTrigger,
-    BoundedDisplayText, ExtensionToolBeforeCallAction, ExtensionToolBeforeCallParams,
-    OperationFingerprint, PersistedToolResult as ToolResult, PluginDiagnosticKind,
-    PreparedOperationIdentity, RunId, SessionId, Sha256Digest, ToolCallPresentation,
+    ExtensionToolBeforeCallAction, ExtensionToolBeforeCallParams, OperationFingerprint,
+    PersistedToolResult as ToolResult, PluginDiagnosticKind, PreparedOperationIdentity, RunId,
+    SessionId, Sha256Digest,
 };
 use futures_util::FutureExt as _;
 use oven_sdk::{JsonSchema, ToolDefinition};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use super::artifacts::MAX_ATTACHMENT_BYTES;
 use super::{
     ActiveRun, ApprovalToolInput, Engine, EngineError, Event, OutputCapture, PreparedToolCall,
     PublishedTool, PublishedToolSet, ToolCallFailureCode, ToolFailure, ToolInterceptionContext,
     approval_flow::approval_expiry,
     approval_projection::denied_tool_failure,
-    helpers::{safe_display, session_depth, truncate_utf8},
+    helpers::{safe_display, session_depth},
 };
 use crate::{
+    PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
+    ToolPreparationContext, ToolProgress, ToolProvider, ToolStdin,
     events::OutputHub,
-    media::{approved_media_type, canonical_video_mime_type},
     permissions::{PermissionDecision, PermissionPipeline},
     policy::FrozenRunPolicy,
     runtimes::{SourcedProvider, current_tool, resolve_collisions},
-    tool_api::{
-        PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-        ToolPreparationContext, ToolProgress, ToolProvider, ToolStdin,
-    },
 };
-
-const MAX_VIDEO_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 
 const TOOL_CANCELLATION_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -40,7 +34,7 @@ fn tool_progress_event(progress: &ToolProgress) -> Event {
         tool_call_id: progress.tool_call_id,
         message: safe_display(&progress.message),
         display: progress.display.as_deref().map(|text| {
-            crate::tool_api::sanitize_tool_display(
+            cookie_agent_runtime_api::sanitize_tool_display(
                 text,
                 cookie_agent_protocol::SafeDisplayText::MAX_BYTES,
             )
@@ -142,7 +136,7 @@ impl Engine {
                         active,
                         run,
                         request,
-                        prepared.executor.clone(),
+                        prepared.executor().clone(),
                         true,
                         ApprovalToolInput {
                             name: &prepared_call.call.name,
@@ -265,7 +259,7 @@ impl Engine {
         published: Option<Option<&PublishedTool>>,
         prepared_override: Option<Result<PreparedTool, ToolError>>,
     ) -> PreparedToolCall {
-        let fallback_presentation = tool_title_only(&call.name);
+        let fallback_presentation = cookie_agent_runtime_api::tool_title_only(&call.name);
         if call.arguments.is_null() {
             // A null argument object is the marked-invalid convention for
             // provider argument text that could not be parsed. Refuse before
@@ -508,8 +502,8 @@ impl Engine {
                 )
                 .into());
             }
-            let operation = prepared.operation.clone();
-            let policy_labels = prepared.policy_labels.clone();
+            let operation = prepared.operation().clone();
+            let policy_labels = prepared.policy_labels().to_vec();
             if let Some(interception) = interception {
                 let context_id = crate::plugin::plugin_context_id();
                 for plugin in engine.inner.plugins.interception_plugins(
@@ -607,9 +601,9 @@ impl Engine {
                             )
                         })
                         .map_err(ToolFailure::from)?;
-                    if candidate.operation.capabilities() != operation.capabilities()
-                        || candidate.operation.resources() != operation.resources()
-                        || candidate.policy_labels != policy_labels
+                    if candidate.operation().capabilities() != operation.capabilities()
+                        || candidate.operation().resources() != operation.resources()
+                        || candidate.policy_labels() != policy_labels
                     {
                         let message = format!(
                             "plugin `{plugin}` changed the approved permission capability or resource"
@@ -633,13 +627,13 @@ impl Engine {
                         .unwrap_or_else(|poisoned| poisoned.into_inner()) = call.arguments.clone();
                 }
             }
-            let _serialization_guard = if let Some(key) = &prepared.serialization_key {
+            let _serialization_guard = if let Some(key) = prepared.serialization_key() {
                 Some(engine.mutation_lock(key).lock_owned().await)
             } else {
                 None
             };
             let executor = prepared
-                .executor
+                .executor()
                 .lock()
                 .await
                 .take()
@@ -702,26 +696,23 @@ impl Engine {
             let invoke = std::panic::AssertUnwindSafe(executor.execute(ToolExecutionContext {
                 session: active.session,
                 run,
-                progress: if result_truncation == crate::ToolResultTruncationPolicy::OptOut
-                    || capture.is_none()
-                {
-                    ProgressSink::new(progress_tx.clone(), hub.clone())
-                } else {
-                    ProgressSink::with_capture(
-                        progress_tx.clone(),
-                        hub.clone(),
-                        capture.clone().expect("retained output capture"),
-                    )
+                progress: match &capture {
+                    Some(capture)
+                        if result_truncation != crate::ToolResultTruncationPolicy::OptOut =>
+                    {
+                        capture.progress_sink(progress_tx.clone(), hub.clone())
+                    }
+                    _ => ProgressSink::new(progress_tx.clone()),
                 },
                 cancellation: tool_cancellation.clone(),
                 stdin: interactive.then_some(stdin),
                 turn_context,
                 artifacts: engine.inner.artifacts.clone(),
-                background: Some(super::background_tasks::BackgroundCapability {
+                background: Some(Arc::new(super::background_tasks::BackgroundCapability {
                     inner: Arc::downgrade(&engine.inner),
                     tool_call_id: call.id,
                     limits: active.policy.result_limits.tool_output,
-                }),
+                })),
             }))
             .catch_unwind()
             .map(|result| {
@@ -939,7 +930,7 @@ fn incomplete_completion(message: &str) -> crate::ToolCompletion {
     crate::ToolCompletion::streamed(ToolResult {
         title: safe_display("Incomplete tool output"),
         output: String::new(),
-        display: Some(crate::tool_api::bounded_tool_display(message)),
+        display: Some(cookie_agent_runtime_api::bounded_tool_display(message)),
         retained_output: None,
         metadata: Value::Null,
         truncation: None,
@@ -1044,97 +1035,11 @@ pub(crate) fn apply_permission_resource(
     }
 }
 
-pub(crate) fn tool_title_only(name: &str) -> ToolCallPresentation {
-    ToolCallPresentation {
-        title: safe_display(name),
-        primary_argument: None,
-    }
-}
-
-pub(crate) fn tool_presentation(name: &str, primary: &str) -> ToolCallPresentation {
-    let argument = truncate_utf8(primary.trim(), BoundedDisplayText::MAX_BYTES);
-    ToolCallPresentation {
-        title: safe_display(name),
-        primary_argument: Some(
-            BoundedDisplayText::new(if argument.is_empty() {
-                "unavailable".into()
-            } else {
-                argument
-            })
-            .expect("byte-bounded display argument"),
-        ),
-    }
-}
-
-pub(crate) fn validate_attachment(
-    mime_type: &str,
-    path: &Path,
-    bytes: &[u8],
-) -> Result<(), ToolError> {
-    let max_attachment_bytes = if mime_type.starts_with("video/") {
-        MAX_VIDEO_ATTACHMENT_BYTES
-    } else {
-        MAX_ATTACHMENT_BYTES
-    };
-    if bytes.len() as u64 > max_attachment_bytes {
-        return Err(ToolError::resource_limit(format!(
-            "attachment is {} bytes; the limit is {max_attachment_bytes} bytes",
-            bytes.len()
-        )));
-    }
-    let validated = approved_media_type(path, bytes)?.ok_or_else(|| {
-        ToolError::execution("attachment is not a supported image, PDF, or video")
-    })?;
-    if canonical_video_mime_type(validated) != canonical_video_mime_type(mime_type) {
-        return Err(ToolError::execution(format!(
-            "attachment MIME mismatch: declared {mime_type}, validated {validated}"
-        )));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn presentation_byte_caps_arguments_and_preserves_controls() {
-        let presentation = super::tool_presentation("bash", "cat secret.txt; TOKEN=visible\u{1b}");
-        assert_eq!(presentation.title.as_str(), "bash");
-        let argument = presentation.primary_argument.unwrap();
-        assert_eq!(argument.as_str(), "cat secret.txt; TOKEN=visible\u{1b}");
+    use cookie_agent_protocol::ToolCallId;
 
-        let oversized = "x".repeat(BoundedDisplayText::MAX_BYTES + 8);
-        let argument = super::tool_presentation("bash", &oversized)
-            .primary_argument
-            .unwrap();
-        assert_eq!(argument.as_str().len(), BoundedDisplayText::MAX_BYTES);
-
-        // Three-byte graphemes do not divide the cap evenly: the cut stays on a
-        // character boundary rather than yielding an invalid UTF-8 prefix.
-        let multibyte = "→".repeat(BoundedDisplayText::MAX_BYTES);
-        let argument = super::tool_presentation("bash", &multibyte)
-            .primary_argument
-            .unwrap();
-        assert_eq!(
-            argument.as_str(),
-            "→".repeat(BoundedDisplayText::MAX_BYTES / 3)
-        );
-
-        assert_eq!(
-            super::tool_presentation("bash", "  \n\t ")
-                .primary_argument
-                .unwrap()
-                .as_str(),
-            "unavailable"
-        );
-    }
-
-    use std::path::Path;
-
-    use cookie_agent_protocol::{BoundedDisplayText, ToolCallId};
-
-    use super::{
-        MAX_VIDEO_ATTACHMENT_BYTES, ToolCall, fallback_operation_fingerprint, validate_attachment,
-    };
+    use super::{ToolCall, fallback_operation_fingerprint};
 
     #[test]
     fn discovery_failure_fingerprints_keep_known_tool_actions() {
@@ -1159,48 +1064,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn video_attachment_limit_accepts_boundary_and_rejects_plus_one() {
-        let video = |size: usize| {
-            let mut bytes = vec![0_u8; size];
-            bytes[..4].copy_from_slice(b"FLV\x01");
-            bytes
-        };
-        let at_limit = video(MAX_VIDEO_ATTACHMENT_BYTES as usize);
-        validate_attachment("video/x-flv", Path::new("clip.flv"), &at_limit).unwrap();
-
-        let over_limit = video(MAX_VIDEO_ATTACHMENT_BYTES as usize + 1);
-        let error =
-            validate_attachment("video/x-flv", Path::new("clip.flv"), &over_limit).unwrap_err();
-        assert!(error.to_string().contains("26214400"));
-    }
-
-    #[test]
-    fn video_mime_aliases_validate_in_alias_and_canonical_forms() {
-        let mut quicktime = 16_u32.to_be_bytes().to_vec();
-        quicktime.extend_from_slice(b"ftypqt  \0\0\0\0");
-        for declared in ["video/mov", "video/quicktime"] {
-            validate_attachment(declared, Path::new("clip.mov"), &quicktime).unwrap();
-        }
-
-        let avi = b"RIFF\x04\x00\x00\x00AVI ";
-        for declared in ["video/avi", "video/x-msvideo"] {
-            validate_attachment(declared, Path::new("clip.avi"), avi).unwrap();
-        }
-
-        let mpeg = [0x00, 0x00, 0x01, 0xba];
-        for declared in ["video/mpg", "video/mpeg"] {
-            validate_attachment(declared, Path::new("clip.mpg"), &mpeg).unwrap();
-        }
-    }
-
     #[tokio::test]
     async fn null_tool_arguments_are_rejected_before_schema_validation() {
         use std::sync::Arc;
 
         use cookie_agent_protocol::RunId;
 
-        use crate::tool_api::{ToolCall, TurnAgentContext};
+        use cookie_agent_runtime_api::{ToolCall, TurnAgentContext};
 
         use super::ToolCallFailureCode;
 
@@ -1215,7 +1085,9 @@ mod tests {
             agent: policy.agent.agent.clone(),
             model: binding.selection.model.clone(),
             adapter: crate::policy::wire_adapter(binding.descriptor.adapter_id.as_str()),
-            adapter_family: crate::policy::adapter_family(binding.descriptor.adapter_id.as_str()),
+            adapter_family: crate::policy::tool_adapter_family(
+                binding.descriptor.adapter_id.as_str(),
+            ),
             capabilities: policy
                 .model_capabilities(&binding)
                 .expect("model capabilities"),

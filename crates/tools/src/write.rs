@@ -1,15 +1,15 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use cookie_agent_engine::{
+use cookie_agent_protocol::{PermissionAction, PersistedToolResult as ToolResult};
+use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, SessionToolContext, ToolCall,
     ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
-use cookie_agent_protocol::{PermissionAction, PersistedToolResult as ToolResult};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use cookie_agent_engine::WorkspaceContext;
+use cookie_agent_runtime_api::WorkspaceContext;
 
 use crate::{fs_cap, parse_args, prepared_operation, prepared_path_resources, schema};
 
@@ -55,7 +55,7 @@ impl ToolProvider for WriteTool {
         Ok(vec![ToolSpec {
             collision: Default::default(),
             output: Default::default(),
-            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
+            concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
             name: "write".into(),
             permission_name: Self::get_permission_name("write")?.into(),
@@ -158,7 +158,7 @@ impl PreparedExecutor for WriteExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+    ) -> Result<cookie_agent_runtime_api::ToolCompletion, ToolError> {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::execution(
                 "prepared write cancelled before commit",
@@ -170,27 +170,29 @@ impl PreparedExecutor for WriteExecutor {
         })
         .await?;
         let path = path.display();
-        Ok(cookie_agent_engine::ToolCompletion::single(ToolResult {
-            display: None,
-            retained_output: None,
-            title: crate::safe_title(format!("Wrote {path}")),
-            output: format!("Wrote {bytes} bytes to {path}"),
-            metadata: serde_json::json!({ "bytes": bytes }),
-            truncation: None,
-            attachments: Vec::new(),
-            additional_messages: Vec::new(),
-        }))
+        Ok(cookie_agent_runtime_api::ToolCompletion::single(
+            ToolResult {
+                display: None,
+                retained_output: None,
+                title: crate::safe_title(format!("Wrote {path}")),
+                output: format!("Wrote {bytes} bytes to {path}"),
+                metadata: serde_json::json!({ "bytes": bytes }),
+                truncation: None,
+                attachments: Vec::new(),
+                additional_messages: Vec::new(),
+            },
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(unix, windows))]
-    use cookie_agent_engine::ToolExecutionContext;
-    use cookie_agent_engine::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
     use cookie_agent_protocol::{
         OperationFingerprint, PermissionAction, RunId, SessionId, ToolCallId,
     };
+    #[cfg(any(unix, windows))]
+    use cookie_agent_runtime_api::ToolExecutionContext;
+    use cookie_agent_runtime_api::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
 
     use super::WriteTool;
 
@@ -394,7 +396,7 @@ mod tests {
             );
             prepared
                 .execute_for_test(
-                    ToolExecutionContext::for_test(
+                    cookie_agent_engine::testing::tool_execution_context(
                         root.path().join("artifacts"),
                         crate::test_turn_context(),
                     )
@@ -427,7 +429,7 @@ mod tests {
             .expect("prepare dangling write");
         prepared
             .execute_for_test(
-                ToolExecutionContext::for_test(
+                cookie_agent_engine::testing::tool_execution_context(
                     root.path().join("artifacts"),
                     crate::test_turn_context(),
                 )
@@ -481,7 +483,7 @@ mod tests {
         fs::remove_file(root.path().join("left")).expect("remove route");
         symlink("other.txt", root.path().join("left")).expect("retarget route");
         left.execute_for_test(
-            ToolExecutionContext::for_test(
+            cookie_agent_engine::testing::tool_execution_context(
                 root.path().join("artifacts"),
                 crate::test_turn_context(),
             )
@@ -510,8 +512,11 @@ mod tests {
 
     #[cfg(any(unix, windows))]
     fn execution_context(root: &std::path::Path) -> ToolExecutionContext {
-        ToolExecutionContext::for_test(root.join("artifacts"), crate::test_turn_context())
-            .expect("execution context")
+        cookie_agent_engine::testing::tool_execution_context(
+            root.join("artifacts"),
+            crate::test_turn_context(),
+        )
+        .expect("execution context")
     }
 
     #[cfg(any(unix, windows))]

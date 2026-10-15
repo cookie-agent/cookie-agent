@@ -390,11 +390,7 @@ async fn display_budget_does_not_stop_authoritative_capture() {
     .unwrap();
     let (sender, mut receiver) = tokio::sync::mpsc::channel(128);
     let id = cookie_agent_protocol::ToolCallId::new_v7();
-    let sink = crate::ProgressSink::with_capture(
-        sender,
-        crate::events::OutputHub::new(id, 64 * 1024),
-        capture.clone(),
-    );
+    let sink = capture.progress_sink(sender, crate::events::OutputHub::new(id, 64 * 1024));
     for _ in 0..100 {
         sink.send(crate::ToolProgress {
             tool_call_id: id,
@@ -447,11 +443,7 @@ async fn progress_backpressure_precedes_acceptance_and_never_drops_output() {
     .unwrap();
     let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
     let id = cookie_agent_protocol::ToolCallId::new_v7();
-    let sink = crate::ProgressSink::with_capture(
-        sender,
-        crate::events::OutputHub::new(id, 100),
-        capture.clone(),
-    );
+    let sink = capture.progress_sink(sender, crate::events::OutputHub::new(id, 100));
     let delta = |text: &str| crate::ToolProgress {
         tool_call_id: id,
         message: String::new(),

@@ -1,6 +1,6 @@
 # Architecture
 
-cookie agent is a subagent-first coding harness built as a Rust workspace of ten
+cookie agent is a subagent-first coding harness built as a Rust workspace of eleven
 crates. A local daemon owns provider connections, sessions, model execution,
 permissions, and persistence; a terminal UI communicates with it over a versioned
 JSON-RPC WebSocket protocol. Session history is a versionless, best-effort-read
@@ -49,9 +49,10 @@ identity
   └─ protocol        (wire types + session layer: transports, client, serve)
        ├─ plugin_sdk
        ├─ tui           (depends on protocol only; never on the engine)
+       ├─ runtime_api   (tool provider contract; never on the engine)
        ├─ models
        │    └─ config
-       │         └─ engine
+       │         └─ engine  (also on runtime_api)
        │              ├─ tools
        │              └─ server
        └─ cookie_agent (binary: composes every layer)
@@ -70,6 +71,7 @@ The TUI's own tests still drive a real `server` through a dev-dependency.
 | `plugin_sdk` | Official Rust SDK for out-of-process plugins: JSON-RPC framing, handler registration, tool declarations, event publication, and interception hooks. |
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
 | `config` | Strict runtime configuration and Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports `AgentMode`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |
+| `runtime_api` | The contract between the engine and the tools it runs: `ToolProvider`, `ToolSpec`, prepared calls, preparation and execution contexts, progress and stdin, the traits through which the engine provides output capture, artifact retention, and background jobs, runtime identity (`ToolOrigin`, `RuntimeInfo`, `WorkspaceContext`), and tool attachment validation. Depends on `protocol` only. |
 | `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence. |
 | `tools` | Built-in `read`, `write`, `edit`, `bash`, and `webfetch` tools plus the delegation (`delegate_subagent`, `get_subagent_result`, `cancel_subagent`), messaging (`send_message`), `skill`, goal, and `read_artifact` providers. |
 | `server` | The `ServerProtocol` implementation over `Engine`, the axum WebSocket accept path, `Server::connect_in_process`, and the per-run token / ready-line APIs. Server side only. |

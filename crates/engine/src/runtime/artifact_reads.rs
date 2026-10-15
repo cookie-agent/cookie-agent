@@ -5,21 +5,16 @@ use cookie_agent_protocol::{
 use std::sync::Arc;
 
 use super::{Engine, artifacts::ArtifactRouter, blocking_io};
-use crate::ToolError;
+use cookie_agent_runtime_api::ArtifactReadPage;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArtifactReadPage {
-    pub content: String,
-    pub next_offset_lines: Option<u64>,
-    pub source: String,
-}
+use crate::ToolError;
 
 impl Engine {
     /// Read an artifact, or one stream of a named-stream manifest, as
     /// `session` sees it: only content stored in that session's own tree
     /// resolves (tree-local D1). No ownership lookup is made. This synchronous
     /// API blocks; async tool executors use
-    /// `ToolExecutionContext::read_artifact`.
+    /// [`crate::ToolExecutionContext::read_artifact`].
     pub fn read_artifact(
         &self,
         session: SessionId,

@@ -30,6 +30,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    ToolPreparationContext,
     delegation_events::{DelegationEventError, DelegationEventStore},
     events::{self, EventLogError},
     grant_journal::{GrantJournalError, GrantJournals},
@@ -41,7 +42,6 @@ use crate::{
         AgentRegistry, PublishedRuntime, RuntimePublication, build_runtime_snapshot,
     },
     session::{SessionError, SessionStore},
-    tool_api::ToolPreparationContext,
 };
 
 mod admission;
@@ -85,7 +85,6 @@ pub(crate) mod tool_execution;
 mod tool_prompts;
 mod working_directory;
 
-pub use artifact_reads::ArtifactReadPage;
 pub(crate) use artifact_reads::read_artifact_async;
 pub(crate) use artifacts::{ArtifactRouter, SessionArtifacts};
 pub(crate) use delegation::render_subagent_notification;
@@ -128,7 +127,7 @@ pub(crate) use test_hooks::*;
 // A terminal result was finalized successfully before cancellation won its commit.
 pub(crate) const CANCELLED_AFTER_COMPLETION: &str = "cancelled_after_completion";
 
-use crate::tool_api::{
+use cookie_agent_runtime_api::{
     PreparedSerializationKey, PreparedTool, StdinWrite, ToolCall, ToolConcurrency, ToolError,
     ToolProvider, ToolSpec, TurnAgentContext,
 };
@@ -142,7 +141,7 @@ pub struct EngineOptions {
     pub config: LoadedConfiguration,
     pub model_manager: Arc<ModelManager>,
     /// The global runtime's extra tools and the local coding runtime.
-    pub runtimes: crate::RuntimeOptions,
+    pub runtimes: cookie_agent_runtime_api::RuntimeOptions,
 }
 
 #[derive(Debug, Error)]
@@ -399,7 +398,7 @@ impl PreparedToolCall {
         self.prepared
             .as_ref()
             .ok()
-            .and_then(|prepared| prepared.serialization_key.clone())
+            .and_then(|prepared| prepared.serialization_key().cloned())
     }
 }
 
@@ -461,10 +460,29 @@ impl ToolCallFailureCode {
     }
 }
 
+impl ToolCallFailureCode {
+    const fn of(error: &ToolError) -> Self {
+        match error {
+            ToolError::ProgressSinkClosed | ToolError::Failed(_) => Self::ExecutionFailed,
+            ToolError::OperationChanged(_) => Self::OperationChanged,
+            ToolError::UnsupportedSecurity(_) | ToolError::ResourceLimit(_) => {
+                Self::ExecutionFailed
+            }
+            ToolError::UnsupportedPlatform(_) => Self::UnsupportedPlatform,
+            ToolError::InvalidUrl(_) => Self::InvalidUrl,
+            ToolError::PermissionDenied(_) => Self::PermissionDenied,
+            ToolError::RedirectError(_) => Self::RedirectError,
+            ToolError::Timeout(_) => Self::Timeout,
+            ToolError::TransportError(_) => Self::TransportError,
+            ToolError::UnsupportedContentType(_) => Self::UnsupportedContentType,
+        }
+    }
+}
+
 impl From<ToolError> for ToolFailure {
     fn from(error: ToolError) -> Self {
         Self {
-            code: error.code(),
+            code: ToolCallFailureCode::of(&error),
             message: error.message(),
             partial_output: None,
         }

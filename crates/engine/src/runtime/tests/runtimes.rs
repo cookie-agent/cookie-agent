@@ -3,8 +3,10 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use cookie_agent_protocol::{RunId, ToolCallId};
 
+use cookie_agent_runtime_api::ToolCollision;
+
 use crate::{
-    PreparedTool, SessionToolContext, ToolCall, ToolCollision, ToolError, ToolLayer, ToolOrigin,
+    PreparedTool, SessionToolContext, ToolCall, ToolError, ToolLayer, ToolOrigin,
     ToolPreparationContext, ToolProvider, ToolSpec, TurnAgentContext,
 };
 
@@ -80,7 +82,9 @@ impl ToolProvider for OriginProbe {
 }
 
 fn runtime_id(origin: &ToolOrigin) -> Option<&str> {
-    origin.runtime().map(crate::RuntimeInfo::id)
+    origin
+        .runtime()
+        .map(cookie_agent_runtime_api::RuntimeInfo::id)
 }
 
 #[tokio::test]
@@ -128,7 +132,10 @@ async fn global_fallback_is_published_alone_and_hidden_behind_the_local_tool() {
     let published = &composed.tools["write"];
     assert_eq!(runtime_id(&published.origin), Some("local"));
     let local_runtime = published.origin.runtime().expect("local runtime");
-    assert_eq!(local_runtime.kind(), crate::RuntimeKind::Coding);
+    assert_eq!(
+        local_runtime.kind(),
+        cookie_agent_runtime_api::RuntimeKind::Coding
+    );
     assert_eq!(
         local_runtime.workspace().expect("local workspace").root(),
         fixture.engine.inner.runtimes.local_workspace_root()
@@ -143,7 +150,7 @@ async fn global_fallback_is_published_alone_and_hidden_behind_the_local_tool() {
         agent: policy.agent.agent.clone(),
         model: binding.selection.model.clone(),
         adapter: crate::policy::wire_adapter(binding.descriptor.adapter_id.as_str()),
-        adapter_family: crate::policy::adapter_family(binding.descriptor.adapter_id.as_str()),
+        adapter_family: crate::policy::tool_adapter_family(binding.descriptor.adapter_id.as_str()),
         capabilities: policy
             .model_capabilities(&binding)
             .expect("model capabilities"),

@@ -286,8 +286,6 @@ fn read_verified_file_paged(
 
 mod platform;
 
-pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
-
 /// One tree's content-addressed blobs. Each is named by the SHA-256 of its
 /// content and never changes once published; readers verify the digest.
 #[derive(Debug)]
@@ -795,6 +793,28 @@ pub(crate) struct ArtifactRouter {
     /// The engine installs this once the store exists; a session no resolver
     /// places is treated as its own tree.
     tree_resolver: Mutex<Option<TreeResolver>>,
+}
+
+#[async_trait::async_trait]
+impl cookie_agent_runtime_api::ToolArtifacts for ArtifactRouter {
+    fn retain(
+        &self,
+        session: SessionId,
+        content: &[u8],
+    ) -> Result<(ArtifactReference, String), crate::ToolError> {
+        Self::retain(self, session, content)
+            .map_err(|error| crate::ToolError::execution(error.to_string()))
+    }
+
+    async fn read_page(
+        self: Arc<Self>,
+        session: SessionId,
+        target: cookie_agent_protocol::ArtifactReadTarget,
+        offset: u64,
+        limit: u64,
+    ) -> Result<cookie_agent_runtime_api::ArtifactReadPage, crate::ToolError> {
+        super::read_artifact_async(self, session, target, offset, limit).await
+    }
 }
 
 impl std::fmt::Debug for ArtifactRouter {

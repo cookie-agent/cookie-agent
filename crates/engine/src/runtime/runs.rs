@@ -11,7 +11,7 @@ use super::{
     approval_projection::{approval_records, approval_run_id},
     helpers::safe_error,
 };
-use crate::tool_api::StdinWrite;
+use cookie_agent_runtime_api::StdinWrite;
 
 impl Engine {
     pub async fn start_run(

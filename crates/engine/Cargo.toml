@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-test-support = []
+test-support = ["cookie_agent_runtime_api/test-support"]
 
 [lints]
 workspace = true
@@ -21,7 +21,7 @@ cookie_agent_config = { version = "=0.3.0", path = "../config" }
 cookie_agent_identity = { version = "=0.3.0", path = "../identity" }
 cookie_agent_models = { version = "=0.3.0", path = "../models" }
 cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
-crc32fast.workspace = true
+cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api" }
 fs2.workspace = true
 futures-util.workspace = true
 indexmap.workspace = true
@@ -48,6 +48,7 @@ rustix.workspace = true
 
 [dev-dependencies]
 cookie_agent_models = { version = "=0.3.0", path = "../models", features = ["test-support"] }
+cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api", features = ["test-support"] }
 insta.workspace = true
 oven-sdk-openai.workspace = true
 tempfile.workspace = true

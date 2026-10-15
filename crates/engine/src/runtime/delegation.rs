@@ -3440,7 +3440,7 @@ pub(crate) fn render_delegate_teaser_body(
     };
     // Line breaks and tabs survive so lists, tables, and code in the report
     // keep their shape; every other control character is folded away.
-    let preview = crate::tool_api::sanitize_tool_display(
+    let preview = cookie_agent_runtime_api::sanitize_tool_display(
         preview,
         cookie_agent_protocol::MAX_DELEGATE_PREVIEW_BYTES,
     );
@@ -3712,7 +3712,7 @@ fn paginated_subagent_result(status: &str, text: &str, offset: u32, limit: u32) 
     }
     output.push_str("</content>");
     ToolResult {
-        display: Some(crate::tool_api::bounded_tool_display(&output)),
+        display: Some(cookie_agent_runtime_api::bounded_tool_display(&output)),
         retained_output: None,
         title: safe_display("Read subagent result"),
         output,
@@ -3767,7 +3767,7 @@ fn terminal_delegate_result(
 
 fn structured_delegate_result(title: &str, output: String, metadata: Value) -> ToolResult {
     ToolResult {
-        display: Some(crate::tool_api::bounded_tool_display(&output)),
+        display: Some(cookie_agent_runtime_api::bounded_tool_display(&output)),
         retained_output: None,
         title: safe_display(title),
         output,

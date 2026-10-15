@@ -8,7 +8,7 @@ use super::{
     approval_projection::{approval_records, permission_overlay_epoch},
     helpers::root_id,
 };
-use crate::tool_api::ToolError;
+use cookie_agent_runtime_api::ToolError;
 
 impl Engine {
     pub async fn approval_respond(

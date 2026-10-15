@@ -1,0 +1,25 @@
+[package]
+name = "cookie_agent_runtime_api"
+version = "0.3.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Helpers that run prepared tools outside the engine in tests.
+test-support = []
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
+crc32fast.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true

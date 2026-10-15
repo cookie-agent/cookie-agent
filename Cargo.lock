@@ -567,7 +567,7 @@ dependencies = [
  "cookie_agent_identity",
  "cookie_agent_models",
  "cookie_agent_protocol",
- "crc32fast",
+ "cookie_agent_runtime_api",
  "fs2",
  "futures-util",
  "http",
@@ -679,6 +679,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cookie_agent_runtime_api"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "cookie_agent_protocol",
+ "crc32fast",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "cookie_agent_server"
 version = "0.3.0"
 dependencies = [
@@ -689,6 +704,7 @@ dependencies = [
  "cookie_agent_engine",
  "cookie_agent_models",
  "cookie_agent_protocol",
+ "cookie_agent_runtime_api",
  "futures-util",
  "getrandom 0.2.17",
  "jiff",
@@ -709,8 +725,8 @@ dependencies = [
  "async-trait",
  "cookie_agent_config",
  "cookie_agent_engine",
- "cookie_agent_models",
  "cookie_agent_protocol",
+ "cookie_agent_runtime_api",
  "html2text",
  "libc",
  "memchr",
@@ -737,6 +753,7 @@ dependencies = [
  "cookie_agent_engine",
  "cookie_agent_models",
  "cookie_agent_protocol",
+ "cookie_agent_runtime_api",
  "cookie_agent_server",
  "crossterm",
  "foldhash",

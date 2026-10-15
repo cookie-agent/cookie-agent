@@ -33,6 +33,7 @@ const WORKSPACE_MANIFESTS: &[&str] = &[
     "crates/models/Cargo.toml",
     "crates/plugin_sdk/Cargo.toml",
     "crates/protocol/Cargo.toml",
+    "crates/runtime_api/Cargo.toml",
     "crates/server/Cargo.toml",
     "crates/tools/Cargo.toml",
     "crates/tui/Cargo.toml",

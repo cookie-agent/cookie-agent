@@ -1,6 +1,6 @@
 use std::{fs, io::Read, os::unix::fs::symlink, path::Path, sync::atomic::AtomicUsize};
 
-use cookie_agent_engine::ToolError;
+use cookie_agent_runtime_api::ToolError;
 
 use super::unix::reserve_weight;
 use super::{PreparedExisting, PreparedTarget, prepare_existing, prepare_target};

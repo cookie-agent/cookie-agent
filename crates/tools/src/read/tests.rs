@@ -1,12 +1,12 @@
 use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
 
-use cookie_agent_engine::{
-    SessionToolContext, ToolCall, ToolError, ToolExecutionContext, ToolPreparationContext,
-    ToolProvider, ToolResultTruncationPolicy, TurnAgentContext,
-};
 use cookie_agent_protocol::{
     AdaptorId, MediaCapability, MediaKind, MimeType, Modality, PermissionAction,
     PersistedToolResult, RunId, SessionId, ToolCallId, ToolEmittedContent,
+};
+use cookie_agent_runtime_api::{
+    SessionToolContext, ToolCall, ToolError, ToolPreparationContext, ToolProvider,
+    ToolResultTruncationPolicy, TurnAgentContext,
 };
 
 use super::{MAX_LINE_BYTES, ReadTool, directory_page, text_result};
@@ -63,22 +63,18 @@ fn turn_context(
         model: base.model.clone(),
         adapter,
         adapter_family: match adapter {
-            AdaptorId::Anthropic => {
-                cookie_agent_models::adapters::OvenAdapterFamily::AnthropicCompatible
-            }
+            AdaptorId::Anthropic => cookie_agent_runtime_api::AdapterFamily::AnthropicCompatible,
             AdaptorId::OpenaiCompatible => {
-                cookie_agent_models::adapters::OvenAdapterFamily::OpenaiCompatible
+                cookie_agent_runtime_api::AdapterFamily::OpenaiCompatible
             }
             AdaptorId::AwsBedrockConverse => {
-                cookie_agent_models::adapters::OvenAdapterFamily::AwsBedrockConverse
+                cookie_agent_runtime_api::AdapterFamily::AwsBedrockConverse
             }
-            AdaptorId::GoogleGemini => {
-                cookie_agent_models::adapters::OvenAdapterFamily::GoogleGemini
-            }
+            AdaptorId::GoogleGemini => cookie_agent_runtime_api::AdapterFamily::GoogleGemini,
             AdaptorId::GoogleVertexGemini => {
-                cookie_agent_models::adapters::OvenAdapterFamily::GoogleVertexGemini
+                cookie_agent_runtime_api::AdapterFamily::GoogleVertexGemini
             }
-            _ => cookie_agent_models::adapters::OvenAdapterFamily::OpenaiChat,
+            _ => cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
         },
         capabilities,
     })
@@ -217,7 +213,7 @@ fn schema_documents_zero_based_offset_and_limit_default() {
     let root = tempfile::tempdir().expect("workspace");
     let tool = ReadTool::new(&crate::test_workspace(root.path()));
     let parameters = &tool
-        .tools_for_session(&cookie_agent_engine::SessionToolContext::new(
+        .tools_for_session(&cookie_agent_runtime_api::SessionToolContext::new(
             SessionId::new_v7(),
         ))
         .expect("read spec")[0]
@@ -317,7 +313,7 @@ fn context(root: &Path) -> ToolPreparationContext {
     context_with_turn(root, crate::test_turn_context())
 }
 
-async fn prepared(root: &Path, path: &str) -> cookie_agent_engine::PreparedTool {
+async fn prepared(root: &Path, path: &str) -> cookie_agent_runtime_api::PreparedTool {
     ReadTool::new(&crate::test_workspace(root))
         .prepare(
             context(root),
@@ -347,7 +343,7 @@ async fn execute_media(
         )
         .await?;
     prepared
-        .execute_for_test(ToolExecutionContext::for_test(
+        .execute_for_test(cookie_agent_engine::testing::tool_execution_context(
             root.join("artifacts"),
             turn_context,
         )?)
@@ -736,7 +732,7 @@ async fn symlink_routes_keep_lexical_read_permissions_and_arguments() {
         );
         let result = prepared
             .execute_for_test(
-                ToolExecutionContext::for_test(
+                cookie_agent_engine::testing::tool_execution_context(
                     root.path().join("artifacts"),
                     crate::test_turn_context(),
                 )
@@ -775,7 +771,7 @@ async fn dangling_symlink_read_errors_and_retargeted_routes_do_not_redirect() {
     symlink("other.txt", root.path().join("route")).expect("retarget route");
     let result = prepared
         .execute_for_test(
-            ToolExecutionContext::for_test(
+            cookie_agent_engine::testing::tool_execution_context(
                 root.path().join("artifacts"),
                 crate::test_turn_context(),
             )

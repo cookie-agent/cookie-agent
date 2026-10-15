@@ -4,19 +4,20 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cookie_agent_engine::{
-    AttachmentGate, PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError,
-    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec, approved_media_type,
-    attachment_gate_error, gate_attachment, sniff_media_type,
-};
 use cookie_agent_protocol::{
     PermissionAction, PersistedToolResult as ToolResult, ToolEmittedContent, ToolEmittedMessage,
     ToolEmittedMessageRole,
 };
+use cookie_agent_runtime_api::{
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
+    ToolPreparationContext, ToolProvider, ToolSpec, media::AttachmentGate,
+    media::approved_media_type, media::attachment_gate_error, media::gate_attachment,
+    media::sniff_media_type,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use cookie_agent_engine::WorkspaceContext;
+use cookie_agent_runtime_api::WorkspaceContext;
 
 use crate::{fs_cap, parse_args, prepared_operation, prepared_path_resources, schema};
 
@@ -27,7 +28,7 @@ const MAX_LINE_BYTES: usize = 4 * 1024;
 /// Output budget for one page of text, under the 2 MiB result limit.
 const MAX_PAGE_BYTES: usize = ToolResult::MAX_OUTPUT_BYTES - 64 * 1024;
 const READ_BUFFER_BYTES: usize = 64 * 1024;
-const _: () = assert!(READ_BUFFER_BYTES >= cookie_agent_engine::MEDIA_SNIFF_BYTES);
+const _: () = assert!(READ_BUFFER_BYTES >= cookie_agent_runtime_api::media::MEDIA_SNIFF_BYTES);
 
 #[derive(Debug)]
 pub struct ReadTool {
@@ -76,8 +77,8 @@ impl ToolProvider for ReadTool {
         Ok(vec![ToolSpec {
             collision: Default::default(),
             output: Default::default(),
-            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
-            result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
+            concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
+            result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut,
             name: "read".into(),
             permission_name: Self::get_permission_name("read")?.into(),
             description:
@@ -206,7 +207,7 @@ impl PreparedExecutor for ReadExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+    ) -> Result<cookie_agent_runtime_api::ToolCompletion, ToolError> {
         let result = crate::blocking(move || {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::execution(
@@ -275,7 +276,7 @@ retained_output: None,
         text_result(path, &mut reader, self.offset, self.limit)
         })
         .await;
-        result.map(cookie_agent_engine::ToolCompletion::single)
+        result.map(cookie_agent_runtime_api::ToolCompletion::single)
     }
 }
 

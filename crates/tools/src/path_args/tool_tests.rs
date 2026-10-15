@@ -1,13 +1,11 @@
 use std::{fs, path::Path, process::Command};
 
-use cookie_agent_engine::{
-    PreparedTool, ToolCall, ToolExecutionContext, ToolPreparationContext, ToolProvider,
-    permissions::PermissionPipeline,
-};
+use cookie_agent_engine::permissions::PermissionPipeline;
 use cookie_agent_protocol::{
     AgentDocumentSource, AgentId, AgentMode, AgentSchemaVersion, AgentSnapshot, PermissionAction,
     PermissionEffect, PermissionRule, RunId, SessionId, Sha256Digest, ToolCallId, WildcardPattern,
 };
+use cookie_agent_runtime_api::{PreparedTool, ToolCall, ToolPreparationContext, ToolProvider};
 
 use crate::{edit::EditTool, read::ReadTool, write::WriteTool};
 
@@ -155,7 +153,7 @@ async fn home_path_subprocess_helper() {
             assert_permission(&prepared, &workspace, "value", PermissionEffect::Allow);
             let result = prepared
                 .execute_for_test(
-                    ToolExecutionContext::for_test(
+                    cookie_agent_engine::testing::tool_execution_context(
                         workspace.join("artifacts"),
                         crate::test_turn_context(),
                     )
@@ -225,8 +223,11 @@ async fn home_path_subprocess_helper() {
     );
     let result = prepared
         .execute_for_test(
-            ToolExecutionContext::for_test(workspace.join("artifacts"), crate::test_turn_context())
-                .unwrap(),
+            cookie_agent_engine::testing::tool_execution_context(
+                workspace.join("artifacts"),
+                crate::test_turn_context(),
+            )
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -252,7 +253,7 @@ async fn home_path_subprocess_helper() {
         );
         prepared
             .execute_for_test(
-                ToolExecutionContext::for_test(
+                cookie_agent_engine::testing::tool_execution_context(
                     workspace.join("artifacts"),
                     crate::test_turn_context(),
                 )

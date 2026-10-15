@@ -510,7 +510,7 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
         cwd: fixture._directory.path().to_owned(),
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
-        runtimes: crate::RuntimeOptions::new(fixture._directory.path()),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(fixture._directory.path()),
     })
     .expect("tree usage engine");
     fixture.engine.register_tool_provider(

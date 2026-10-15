@@ -3168,7 +3168,7 @@ enum McpAttachmentError {
 #[derive(Debug)]
 struct RetainedMcpAttachment {
     attachment: ToolAttachment,
-    delivery: crate::media::AttachmentGate,
+    delivery: cookie_agent_runtime_api::media::AttachmentGate,
 }
 
 fn route_mcp_attachment(
@@ -3180,13 +3180,15 @@ fn route_mcp_attachment(
         return false;
     }
     match retained.delivery {
-        crate::media::AttachmentGate::AttachToolResult => attachments.push(retained.attachment),
-        crate::media::AttachmentGate::DeliverViaUserTurn => {
+        cookie_agent_runtime_api::media::AttachmentGate::AttachToolResult => {
+            attachments.push(retained.attachment)
+        }
+        cookie_agent_runtime_api::media::AttachmentGate::DeliverViaUserTurn => {
             emitted_attachments.push(retained.attachment);
         }
-        crate::media::AttachmentGate::RejectUnsupportedModel
-        | crate::media::AttachmentGate::RejectUnsupportedFamily
-        | crate::media::AttachmentGate::RejectTooLarge { .. } => {
+        cookie_agent_runtime_api::media::AttachmentGate::RejectUnsupportedModel
+        | cookie_agent_runtime_api::media::AttachmentGate::RejectUnsupportedFamily
+        | cookie_agent_runtime_api::media::AttachmentGate::RejectTooLarge { .. } => {
             unreachable!("rejected MCP attachment gates return an error")
         }
     }
@@ -3208,29 +3210,30 @@ fn retain_base64_attachment(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data)
         .map_err(|error| McpAttachmentError::Invalid(error.to_string()))?;
-    let mut delivery = crate::media::AttachmentGate::AttachToolResult;
-    let sniffed = crate::media::approved_media_type(std::path::Path::new(""), &bytes)
-        .map_err(|error| McpAttachmentError::Invalid(error.to_string()))?;
+    let mut delivery = cookie_agent_runtime_api::media::AttachmentGate::AttachToolResult;
+    let sniffed =
+        cookie_agent_runtime_api::media::approved_media_type(std::path::Path::new(""), &bytes)
+            .map_err(|error| McpAttachmentError::Invalid(error.to_string()))?;
     let retained_mime = if mime_type.is_empty() || mime_type == "application/octet-stream" {
         sniffed.unwrap_or(mime_type.as_str())
     } else {
         mime_type.as_str()
     };
     let attachment = if let Some(mime) = sniffed {
-        if crate::media::canonical_video_mime_type(mime)
-            != crate::media::canonical_video_mime_type(retained_mime)
+        if cookie_agent_runtime_api::media::canonical_video_mime_type(mime)
+            != cookie_agent_runtime_api::media::canonical_video_mime_type(retained_mime)
         {
             return Err(McpAttachmentError::Invalid(format!(
                 "attachment MIME mismatch: declared {retained_mime}, validated {mime}"
             )));
         }
-        let gate = crate::media::gate_attachment(
+        let gate = cookie_agent_runtime_api::media::gate_attachment(
             context.turn_context.adapter_family,
             &context.turn_context.capabilities,
             mime,
             bytes.len() as u64,
         );
-        if let Some(error) = crate::media::attachment_gate_error(
+        if let Some(error) = cookie_agent_runtime_api::media::attachment_gate_error(
             gate,
             mime,
             &context.turn_context.model,

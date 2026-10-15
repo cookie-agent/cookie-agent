@@ -139,7 +139,7 @@ pub(crate) fn production_provider_harness(
         cwd: directory.path().to_owned(),
         config,
         model_manager: manager,
-        runtimes: cookie_agent_engine::RuntimeOptions::new(directory.path()),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(directory.path()),
     })
     .expect("production engine");
     let server = Arc::new(Server::new(engine.clone()));

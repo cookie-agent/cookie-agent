@@ -1,11 +1,12 @@
 use async_trait::async_trait;
-use cookie_agent_engine::{
-    Engine, PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError,
-    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
-};
+use cookie_agent_engine::Engine;
 use cookie_agent_protocol::{
     ApprovalResourceSource, PermissionAction, PersistedToolResult as ToolResult,
     PreparedBindingLifetime,
+};
+use cookie_agent_runtime_api::{
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
+    ToolPreparationContext, ToolProvider, ToolSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,7 +42,7 @@ impl PreparedExecutor for SkillExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+    ) -> Result<cookie_agent_runtime_api::ToolCompletion, ToolError> {
         let result: Result<ToolResult, ToolError> = async move {
             if self
                 .engine
@@ -84,7 +85,7 @@ impl PreparedExecutor for SkillExecutor {
             })
         }
         .await;
-        result.map(cookie_agent_engine::ToolCompletion::single)
+        result.map(cookie_agent_runtime_api::ToolCompletion::single)
     }
 }
 

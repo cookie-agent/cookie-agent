@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     ProgressSink, SessionToolContext, ToolCall, ToolExecutionContext, ToolPreparationContext,
-    ToolProvider as _, TurnAgentContext, events::OutputHub,
+    ToolProvider as _, TurnAgentContext,
 };
 
 use super::{
@@ -209,15 +209,15 @@ fn make_turn_context(
         adapter,
         adapter_family: match adapter {
             cookie_agent_protocol::AdaptorId::Anthropic => {
-                cookie_agent_models::adapters::OvenAdapterFamily::AnthropicCompatible
+                cookie_agent_runtime_api::AdapterFamily::AnthropicCompatible
             }
             cookie_agent_protocol::AdaptorId::OpenaiCompatible => {
-                cookie_agent_models::adapters::OvenAdapterFamily::OpenaiCompatible
+                cookie_agent_runtime_api::AdapterFamily::OpenaiCompatible
             }
             cookie_agent_protocol::AdaptorId::GoogleGemini => {
-                cookie_agent_models::adapters::OvenAdapterFamily::GoogleGemini
+                cookie_agent_runtime_api::AdapterFamily::GoogleGemini
             }
-            _ => cookie_agent_models::adapters::OvenAdapterFamily::OpenaiChat,
+            _ => cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
         },
         capabilities,
     }
@@ -236,7 +236,7 @@ async fn execute(
                 session: SessionId::new_v7(),
                 run: RunId::new_v7(),
                 origin: crate::ToolOrigin::Runtime(std::sync::Arc::new(
-                    crate::RuntimeInfo::global(),
+                    cookie_agent_runtime_api::RuntimeInfo::global(),
                 )),
                 turn_context: turn_context(),
             },
@@ -249,7 +249,7 @@ async fn execute(
         .await
         .expect("prepare MCP call");
     let executor = prepared
-        .executor
+        .executor()
         .lock()
         .await
         .take()
@@ -260,7 +260,7 @@ async fn execute(
         .execute(ToolExecutionContext {
             session: SessionId::new_v7(),
             run: RunId::new_v7(),
-            progress: ProgressSink::new(progress_tx, OutputHub::new(call_id, 1024)),
+            progress: ProgressSink::new(progress_tx),
             cancellation: CancellationToken::new(),
             stdin: None,
             turn_context: turn_context(),
@@ -283,12 +283,11 @@ fn names_are_sanitized_without_prefix() {
 #[test]
 fn tool_result_retains_only_distinct_structured_content() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let call_id = ToolCallId::new_v7();
     let (progress_tx, _progress_rx) = tokio::sync::mpsc::channel(1);
     let context = ToolExecutionContext {
         session: SessionId::new_v7(),
         run: RunId::new_v7(),
-        progress: ProgressSink::new(progress_tx, OutputHub::new(call_id, 1024)),
+        progress: ProgressSink::new(progress_tx),
         cancellation: CancellationToken::new(),
         stdin: None,
         turn_context: Arc::new(make_turn_context(
@@ -354,12 +353,11 @@ fn base64_attachments_follow_the_media_gate() {
     ];
     let data = base64::engine::general_purpose::STANDARD.encode(PNG);
     let directory = tempfile::tempdir().expect("tempdir");
-    let call_id = ToolCallId::new_v7();
     let (progress_tx, _progress_rx) = tokio::sync::mpsc::channel(1);
     let context = |turn: TurnAgentContext| ToolExecutionContext {
         session: SessionId::new_v7(),
         run: RunId::new_v7(),
-        progress: ProgressSink::new(progress_tx.clone(), OutputHub::new(call_id, 1024)),
+        progress: ProgressSink::new(progress_tx.clone()),
         cancellation: CancellationToken::new(),
         stdin: None,
         turn_context: Arc::new(turn),
@@ -394,7 +392,7 @@ fn base64_attachments_follow_the_media_gate() {
     .expect("user-turn image must retain");
     assert_eq!(
         retained.delivery,
-        crate::media::AttachmentGate::DeliverViaUserTurn
+        cookie_agent_runtime_api::media::AttachmentGate::DeliverViaUserTurn
     );
 
     let video_turn = |adapter| {
@@ -434,7 +432,7 @@ fn base64_attachments_follow_the_media_gate() {
             .expect("user-turn video must retain");
     assert_eq!(
         retained.delivery,
-        crate::media::AttachmentGate::DeliverViaUserTurn
+        cookie_agent_runtime_api::media::AttachmentGate::DeliverViaUserTurn
     );
 
     let result: rmcp::model::CallToolResult = serde_json::from_value(serde_json::json!({
@@ -486,7 +484,7 @@ fn base64_attachments_follow_the_media_gate() {
     assert_eq!(audio.attachment.mime_type.as_str(), "audio/mpeg");
     assert_eq!(
         audio.delivery,
-        crate::media::AttachmentGate::DeliverViaUserTurn
+        cookie_agent_runtime_api::media::AttachmentGate::DeliverViaUserTurn
     );
 
     let octet_stream: rmcp::model::CallToolResult = serde_json::from_value(serde_json::json!({
@@ -536,12 +534,11 @@ fn tool_result_caps_combined_attachments_and_degrades_overflow_inline() {
     let result = serde_json::from_value(serde_json::json!({ "content": content }))
         .expect("oversized MCP attachment result");
     let directory = tempfile::tempdir().expect("tempdir");
-    let call_id = ToolCallId::new_v7();
     let (progress_tx, _progress_rx) = tokio::sync::mpsc::channel(1);
     let context = ToolExecutionContext {
         session: SessionId::new_v7(),
         run: RunId::new_v7(),
-        progress: ProgressSink::new(progress_tx, OutputHub::new(call_id, 1024)),
+        progress: ProgressSink::new(progress_tx),
         cancellation: CancellationToken::new(),
         stdin: None,
         turn_context: Arc::new(make_turn_context(AdaptorId::Anthropic, true)),

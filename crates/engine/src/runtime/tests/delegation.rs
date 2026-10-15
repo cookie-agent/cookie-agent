@@ -640,7 +640,7 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
 
     let reopened = Engine::open(EngineOptions {
         data_dir: snapshot.path().join("data"),
-        runtimes: crate::RuntimeOptions::new(&cwd),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(&cwd),
         cwd,
         config,
         model_manager: manager,

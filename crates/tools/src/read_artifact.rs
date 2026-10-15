@@ -5,13 +5,14 @@
 //! call is allowed ([`UNCONDITIONAL_PERMISSION_NAME`]).
 
 use async_trait::async_trait;
-use cookie_agent_engine::{
-    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProvider, ToolSpec, permissions::UNCONDITIONAL_PERMISSION_NAME,
-};
+use cookie_agent_engine::permissions::UNCONDITIONAL_PERMISSION_NAME;
 use cookie_agent_protocol::{
     ApprovalResourceSource, ArtifactReadTarget, PermissionAction,
     PersistedToolResult as ToolResult, PreparedBindingLifetime, SessionId,
+};
+use cookie_agent_runtime_api::{
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
+    ToolPreparationContext, ToolProvider, ToolSpec,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -62,8 +63,8 @@ impl ReadArtifactTool {
         ToolSpec {
             collision: Default::default(),
             output: Default::default(),
-            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
-            result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
+            concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
+            result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut,
             name: TOOL_NAME.into(),
             permission_name: UNCONDITIONAL_PERMISSION_NAME.into(),
             description: "Read retained tool output by line, using a zero-based offset. Truncated results and elided history name the artifact (and stream) to read in a read_artifact hint; continue from the offset it gives.".into(),
@@ -188,7 +189,7 @@ impl PreparedExecutor for ReadArtifactExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+    ) -> Result<cookie_agent_runtime_api::ToolCompletion, ToolError> {
         if context.session != self.session {
             return Err(ToolError::operation_changed("session changed"));
         }
@@ -199,23 +200,25 @@ impl PreparedExecutor for ReadArtifactExecutor {
         let artifact = self.target.digest.to_string();
         let stream = self.target.stream.clone();
         let page = context.read_artifact(self.target, offset, limit).await?;
-        Ok(cookie_agent_engine::ToolCompletion::single(ToolResult {
-            title: safe_title("Artifact page"),
-            output: page.content,
-            display: None,
-            retained_output: None,
-            metadata: serde_json::json!({
-                "artifact": artifact,
-                "stream": stream,
-                "offset": offset,
-                "limit": limit,
-                "next_offset": page.next_offset_lines,
-                "source": page.source,
-            }),
-            truncation: None,
-            attachments: Vec::new(),
-            additional_messages: Vec::new(),
-        }))
+        Ok(cookie_agent_runtime_api::ToolCompletion::single(
+            ToolResult {
+                title: safe_title("Artifact page"),
+                output: page.content,
+                display: None,
+                retained_output: None,
+                metadata: serde_json::json!({
+                    "artifact": artifact,
+                    "stream": stream,
+                    "offset": offset,
+                    "limit": limit,
+                    "next_offset": page.next_offset_lines,
+                    "source": page.source,
+                }),
+                truncation: None,
+                attachments: Vec::new(),
+                additional_messages: Vec::new(),
+            },
+        ))
     }
 }
 
@@ -229,7 +232,7 @@ mod tests {
         ToolPreparationContext {
             session,
             run,
-            origin: cookie_agent_engine::ToolOrigin::Base,
+            origin: cookie_agent_runtime_api::ToolOrigin::Base,
             turn_context: crate::test_turn_context(),
         }
     }
@@ -263,7 +266,7 @@ mod tests {
     #[tokio::test]
     async fn read_artifact_pages_the_session_trees_artifact_without_retaining_output() {
         let root = tempfile::tempdir().unwrap();
-        let producer = ToolExecutionContext::for_test(
+        let producer = cookie_agent_engine::testing::tool_execution_context(
             root.path().join("artifacts"),
             crate::test_turn_context(),
         )
@@ -271,7 +274,7 @@ mod tests {
         let artifact = producer
             .retain_validated_attachment("text/plain", None, b"zero\none\ntwo\n")
             .unwrap();
-        let reader = ToolExecutionContext::for_test(
+        let reader = cookie_agent_engine::testing::tool_execution_context(
             root.path().join("artifacts"),
             crate::test_turn_context(),
         )

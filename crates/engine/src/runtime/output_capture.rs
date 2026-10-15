@@ -123,7 +123,44 @@ impl Drop for Capture {
 #[derive(Clone, Debug)]
 pub(crate) struct OutputCapture(Arc<Capture>);
 
+/// A capture together with the hub that publishes its output live: the
+/// engine's side of a [`crate::ProgressSink`].
+#[derive(Debug)]
+struct HubCapture {
+    capture: OutputCapture,
+    output: OutputHub,
+}
+
+#[async_trait::async_trait]
+impl cookie_agent_runtime_api::ProgressCapture for HubCapture {
+    async fn emit(
+        &self,
+        progress: ToolProgress,
+        display: Option<tokio::sync::mpsc::OwnedPermit<ToolProgress>>,
+    ) -> Result<(), ToolError> {
+        self.capture
+            .emit(progress, self.output.clone(), display)
+            .await
+    }
+}
+
 impl OutputCapture {
+    /// A progress sink whose output this capture retains while `output`
+    /// publishes it live.
+    pub(crate) fn progress_sink(
+        &self,
+        sender: tokio::sync::mpsc::Sender<ToolProgress>,
+        output: OutputHub,
+    ) -> crate::ProgressSink {
+        crate::ProgressSink::with_capture(
+            sender,
+            Arc::new(HubCapture {
+                capture: self.clone(),
+                output,
+            }),
+        )
+    }
+
     fn session(&self) -> cookie_agent_protocol::SessionId {
         self.0.session
     }
@@ -729,7 +766,7 @@ fn byte_size(bytes: u64) -> String {
 }
 
 fn normalize_result(result: &mut PersistedToolResult) -> Result<(), ToolError> {
-    result.display = Some(crate::tool_api::bounded_tool_display(
+    result.display = Some(cookie_agent_runtime_api::bounded_tool_display(
         result.display.as_deref().unwrap_or_default(),
     ));
     result

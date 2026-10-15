@@ -396,7 +396,7 @@ async fn resume_settles_recovered_background_delegations_before_returning() {
 
     let reopened = Engine::open(EngineOptions {
         data_dir: snapshot.path().join("data"),
-        runtimes: crate::RuntimeOptions::new(&cwd),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(&cwd),
         cwd,
         config,
         model_manager: manager,

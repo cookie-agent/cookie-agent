@@ -1,11 +1,13 @@
 use async_trait::async_trait;
 use cookie_agent_engine::{
-    AgentMessageInvocation, Engine, MESSAGE_INVALID_ARGUMENTS, MESSAGE_INVALID_BODY,
-    PreparedExecutor, PreparedTool, SessionToolContext, SubagentScope, ToolCall, ToolCompletion,
-    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
+    AgentMessageInvocation, Engine, MESSAGE_INVALID_ARGUMENTS, MESSAGE_INVALID_BODY, SubagentScope,
 };
 use cookie_agent_protocol::{
     PermissionAction, PersistedToolResult as ToolResult, ProducerDeliveryMode, SessionId,
+};
+use cookie_agent_runtime_api::{
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolCompletion, ToolError,
+    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -43,8 +45,8 @@ impl MessageToolProvider {
         ToolSpec {
             collision: Default::default(),
             output: Default::default(),
-            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
-            result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::Bounded,
+            concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
+            result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::Bounded,
             name: "send_message".into(),
             permission_name: "message".into(),
             description: "Send a message to another agent in your session tree. Recipient accepts a subagent handle or a full UUID.".into(),

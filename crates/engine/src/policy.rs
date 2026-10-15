@@ -1036,6 +1036,25 @@ pub(crate) fn wire_adapter(value: &str) -> protocol::AdaptorId {
     }
 }
 
+/// The adapter family tools see for a frozen binding's protocol adapter.
+pub(crate) fn tool_adapter_family(value: &str) -> cookie_agent_runtime_api::AdapterFamily {
+    use cookie_agent_models::adapters::OvenAdapterFamily as Oven;
+    use cookie_agent_runtime_api::AdapterFamily as Tool;
+    match adapter_family(value) {
+        Oven::Anthropic => Tool::Anthropic,
+        Oven::AnthropicCompatible => Tool::AnthropicCompatible,
+        Oven::OpenaiChat => Tool::OpenaiChat,
+        Oven::OpenaiResponses => Tool::OpenaiResponses,
+        Oven::OpenaiCompatible => Tool::OpenaiCompatible,
+        Oven::GoogleGemini => Tool::GoogleGemini,
+        Oven::GoogleVertexGemini => Tool::GoogleVertexGemini,
+        Oven::AwsBedrockConverse => Tool::AwsBedrockConverse,
+        Oven::AzureOpenaiChat => Tool::AzureOpenaiChat,
+        Oven::AzureOpenaiResponses => Tool::AzureOpenaiResponses,
+        Oven::CohereV2Chat => Tool::CohereV2Chat,
+    }
+}
+
 pub(crate) fn adapter_family(value: &str) -> cookie_agent_models::adapters::OvenAdapterFamily {
     cookie_agent_models::adapters::wire_adapter_for_protocol(value)
         .expect("frozen binding contains a reviewed protocol adapter")

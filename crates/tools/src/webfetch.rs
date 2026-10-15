@@ -1,12 +1,12 @@
 use std::{sync::OnceLock, time::Duration};
 
 use async_trait::async_trait;
-use cookie_agent_engine::{
-    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolCollision, ToolError,
-    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
-};
 use cookie_agent_protocol::{
     ApprovalResourceSource, PermissionAction, PersistedToolResult, PreparedBindingLifetime,
+};
+use cookie_agent_runtime_api::{
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolCollision, ToolError,
+    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -94,7 +94,7 @@ impl ToolProvider for WebfetchTool {
             permission_name: "webfetch".into(),
             description: "Fetch an HTTP or HTTPS URL. Output has final_url, status_code, content_type, and truncated header lines, a blank line, then the text body. Returns HTML as plaintext unless raw is true; other text passes through. Use read_artifact with the artifact a truncation hint names to page retained output, including the body.".into(),
             parameters: schema::<WebfetchArgs>(),
-            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
+            concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
         }])
     }
@@ -254,10 +254,10 @@ impl PreparedExecutor for WebfetchArgs {
     async fn execute(
         self: Box<Self>,
         _context: ToolExecutionContext,
-    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+    ) -> Result<cookie_agent_runtime_api::ToolCompletion, ToolError> {
         let result: Result<PersistedToolResult, ToolError> =
             async move { self.fetch().await }.await;
-        result.map(cookie_agent_engine::ToolCompletion::single)
+        result.map(cookie_agent_runtime_api::ToolCompletion::single)
     }
 }
 
@@ -446,7 +446,7 @@ mod tests {
             .remove(0);
         assert_eq!(
             spec.result_truncation,
-            cookie_agent_engine::ToolResultTruncationPolicy::Bounded
+            cookie_agent_runtime_api::ToolResultTruncationPolicy::Bounded
         );
     }
 
@@ -511,7 +511,7 @@ mod tests {
                 ToolPreparationContext {
                     session: SessionId::new_v7(),
                     run: RunId::new_v7(),
-                    origin: cookie_agent_engine::ToolOrigin::Base,
+                    origin: cookie_agent_runtime_api::ToolOrigin::Base,
                     turn_context: crate::test_turn_context(),
                 },
                 ToolCall {

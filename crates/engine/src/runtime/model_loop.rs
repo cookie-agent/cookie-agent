@@ -29,6 +29,7 @@ use super::{
     tool_execution::fallback_operation_fingerprint,
 };
 use crate::{
+    ToolCall, ToolConcurrency, TurnAgentContext,
     events::OutputHub,
     model_bridge::{AbortBridge, TurnAccumulator},
     model_history::{
@@ -36,7 +37,6 @@ use crate::{
     },
     model_policy::{ErrorPolicy, classify as classify_model_error, summary as model_error_summary},
     policy::{self, FrozenRunPolicy, freeze_root_agent_policy, resolve_agent},
-    tool_api::{ToolCall, ToolConcurrency, TurnAgentContext},
 };
 
 /// Initial response metadata captured before the provider stream is consumed.
@@ -1263,16 +1263,16 @@ impl Engine {
                                     .as_ref()
                                     .expect("prepared operation")
                                     .operation(),
-                                policy_labels: &prepared
+                                policy_labels: prepared
                                     .prepared
                                     .as_ref()
                                     .expect("prepared operation")
-                                    .policy_labels,
+                                    .policy_labels(),
                                 executor: prepared
                                     .prepared
                                     .as_ref()
                                     .expect("prepared operation")
-                                    .executor
+                                    .executor()
                                     .clone(),
                                 message: Some(message),
                                 tool: ApprovalToolInput {
@@ -1702,7 +1702,9 @@ impl Engine {
                     agent: policy.agent.agent.clone(),
                     model: binding.selection.model.clone(),
                     adapter: policy::wire_adapter(binding.descriptor.adapter_id.as_str()),
-                    adapter_family: policy::adapter_family(binding.descriptor.adapter_id.as_str()),
+                    adapter_family: policy::tool_adapter_family(
+                        binding.descriptor.adapter_id.as_str(),
+                    ),
                     capabilities: policy
                         .model_capabilities(binding)
                         .ok_or(EngineError::NoRunnableModel)?,

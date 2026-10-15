@@ -52,7 +52,7 @@ use tokio::{
 };
 use tokio_util::codec::{FramedRead, LinesCodec};
 
-use crate::tool_api::{
+use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
     ToolPreparationContext, ToolProvider, ToolSpec,
 };

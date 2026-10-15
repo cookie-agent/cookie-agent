@@ -30,7 +30,7 @@ fn provider_registration_rejects_duplicate_provenance_ids() {
         cwd: fixture._directory.path().to_owned(),
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
-        runtimes: crate::RuntimeOptions {
+        runtimes: cookie_agent_runtime_api::RuntimeOptions {
             global_tools: vec![Arc::new(TestPromptProvider::new(
                 "test.duplicate",
                 Vec::new(),
@@ -41,7 +41,7 @@ fn provider_registration_rejects_duplicate_provenance_ids() {
                     Vec::new(),
                 ))]
             }),
-            ..crate::RuntimeOptions::new(fixture._directory.path())
+            ..cookie_agent_runtime_api::RuntimeOptions::new(fixture._directory.path())
         },
     };
     let startup_error = match Engine::open(duplicate_options) {
@@ -105,7 +105,7 @@ fn shared_project_cwd_reopens_with_the_same_model_revision_and_no_snapshot_files
         cwd: workspace.clone(),
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
-        runtimes: crate::RuntimeOptions::new(&workspace),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(&workspace),
     })
     .expect("engine in shared workspace");
     let revision = engine
@@ -124,7 +124,7 @@ fn shared_project_cwd_reopens_with_the_same_model_revision_and_no_snapshot_files
         cwd: workspace.clone(),
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
-        runtimes: crate::RuntimeOptions::new(&workspace),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(&workspace),
     })
     .expect("reopened engine in shared workspace");
     assert_eq!(

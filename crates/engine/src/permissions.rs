@@ -17,7 +17,8 @@ use cookie_agent_protocol::{
 };
 use thiserror::Error;
 
-use crate::tool_api::UNSCOPED_PERMISSION_RESOURCE_DISPLAY;
+/// Display stand-in for a permission resource the tool did not scope.
+pub(crate) const UNSCOPED_PERMISSION_RESOURCE_DISPLAY: &str = "<permission-name-only>";
 
 /// Permission name of base-layer tools that need no rule: they are always
 /// published and every call is allowed without evaluating rules or asking,

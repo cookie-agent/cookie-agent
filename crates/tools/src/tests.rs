@@ -1,11 +1,11 @@
-use cookie_agent_engine::{
-    SessionToolContext, ToolCall, ToolError, ToolPreparationContext, ToolProvider,
-};
 use cookie_agent_protocol::{
     ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, OperationFingerprint,
     PermissionAction, PreparedApprovalResource, PreparedBindingLifetime,
     PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
     PreparedResourceIdentity, RunId, SessionId, Sha256Digest, ToolCallId,
+};
+use cookie_agent_runtime_api::{
+    SessionToolContext, ToolCall, ToolError, ToolPreparationContext, ToolProvider,
 };
 
 use super::{
@@ -54,11 +54,11 @@ fn self_paginating_tools_declare_truncation_opt_out() {
         .remove(0);
     assert_eq!(
         read.result_truncation,
-        cookie_agent_engine::ToolResultTruncationPolicy::OptOut
+        cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut
     );
     assert_eq!(
         super::delegate::result_truncation_policy("get_subagent_result"),
-        cookie_agent_engine::ToolResultTruncationPolicy::OptOut
+        cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut
     );
 }
 
@@ -178,7 +178,7 @@ async fn builtin_relative_paths_stay_on_the_prepared_cwd_route() {
         outputs.push(
             prepared
                 .execute_for_test(
-                    cookie_agent_engine::ToolExecutionContext::for_test(
+                    cookie_agent_engine::testing::tool_execution_context(
                         root.path().join("artifacts"),
                         crate::test_turn_context(),
                     )
@@ -232,7 +232,7 @@ async fn builtin_parallel_edits_to_the_same_file_chain() {
     let second = prepared.next().expect("second").expect("second edit");
     assert!(prepared.next().is_none());
     let execution = || {
-        cookie_agent_engine::ToolExecutionContext::for_test(
+        cookie_agent_engine::testing::tool_execution_context(
             root.path().join("artifacts"),
             crate::test_turn_context(),
         )

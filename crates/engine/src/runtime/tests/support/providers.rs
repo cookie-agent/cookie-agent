@@ -7,7 +7,7 @@ pub(crate) fn test_turn_context() -> Arc<TurnAgentContext> {
         agent: AgentId::new("test").expect("test agent ID"),
         model: "test/model".parse().expect("test model key"),
         adapter: cookie_agent_protocol::AdaptorId::OpenaiChat,
-        adapter_family: cookie_agent_models::adapters::OvenAdapterFamily::OpenaiChat,
+        adapter_family: cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
         capabilities: cookie_agent_protocol::ModelCapabilities {
             input: BTreeSet::from([cookie_agent_protocol::Modality::Text]),
             output: BTreeSet::from([cookie_agent_protocol::Modality::Text]),
@@ -1206,15 +1206,15 @@ impl PreparedExecutor for TestMediaReadExecutor {
         let result: Result<cookie_agent_protocol::PersistedToolResult, ToolError> = async move {
             let bytes =
                 fs::read(&self.path).map_err(|error| ToolError::execution(error.to_string()))?;
-            let mime = crate::approved_media_type(&self.path, &bytes)?
+            let mime = cookie_agent_runtime_api::media::approved_media_type(&self.path, &bytes)?
                 .ok_or_else(|| ToolError::execution("test read expected media"))?;
-            let gate = crate::gate_attachment(
+            let gate = cookie_agent_runtime_api::media::gate_attachment(
                 context.turn_context.adapter_family,
                 &context.turn_context.capabilities,
                 mime,
                 bytes.len() as u64,
             );
-            if let Some(error) = crate::attachment_gate_error(
+            if let Some(error) = cookie_agent_runtime_api::media::attachment_gate_error(
                 gate,
                 mime,
                 &context.turn_context.model,

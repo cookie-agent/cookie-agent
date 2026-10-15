@@ -20,8 +20,9 @@ use super::{
     internal_agents::{expand_internal_prompt, internal_text_history, parse_internal_approval},
 };
 use crate::permissions::ApprovalStore;
-use crate::tool_api::{PreparedExecutorCell, UNSCOPED_PERMISSION_RESOURCE_DISPLAY};
+use crate::permissions::UNSCOPED_PERMISSION_RESOURCE_DISPLAY;
 use cookie_agent_protocol::InternalAgentKind;
+use cookie_agent_runtime_api::PreparedExecutorCell;
 
 /// The built-in approval reviewer prompt, sent as the system prompt in place
 /// of `{{default_prompt}}`. The output contract stays in the request itself.
@@ -514,7 +515,7 @@ fn approval_stateless_input(
         // Sorts before `normalized_parameters`, which stay last.
         "executes_in": tool
             .origin
-            .map_or_else(|| "unknown".to_owned(), crate::ToolOrigin::describe),
+            .map_or_else(|| "unknown".to_owned(), crate::runtimes::describe_origin),
         "normalized_parameters": canonical_approval_parameters(tool.normalized_parameters),
     });
     format!(
@@ -1117,9 +1118,11 @@ mod tests {
             "the `local` coding runtime with workspace {}",
             context.root().display()
         );
-        let local =
-            crate::ToolOrigin::Runtime(Arc::new(crate::RuntimeInfo::coding("local", context)));
-        let global = crate::ToolOrigin::Runtime(Arc::new(crate::RuntimeInfo::global()));
+        let local = crate::ToolOrigin::Runtime(Arc::new(
+            cookie_agent_runtime_api::RuntimeInfo::coding("local", context),
+        ));
+        let global =
+            crate::ToolOrigin::Runtime(Arc::new(cookie_agent_runtime_api::RuntimeInfo::global()));
         for (origin, expected) in [
             (&local, expected),
             (

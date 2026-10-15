@@ -17,7 +17,7 @@ use super::{
     approval_flow::{approval_constraints, approval_deadline_exhausted, approval_evaluations},
     helpers::root_id,
 };
-use crate::tool_api::PreparedExecutorCell;
+use cookie_agent_runtime_api::PreparedExecutorCell;
 
 const AUTO_APPROVE_N_REJECTION_FEEDBACK: &str = "rejected by auto-approve(N) mode";
 
@@ -1140,9 +1140,7 @@ mod tests {
                                     tool_call_id: id,
                                     output: Default::default(),
                                     owner: owner.clone(),
-                                    presentation: crate::runtime::tool_execution::tool_title_only(
-                                        "bash",
-                                    ),
+                                    presentation: cookie_agent_runtime_api::tool_title_only("bash"),
                                     operation_fingerprint: operation,
                                 },
                             },

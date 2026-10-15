@@ -186,7 +186,7 @@ impl PreparedExecutor for BackgroundJobExecutor {
                 .expect("job output");
             control.release.notified().await;
             flag.0 = None;
-            crate::BackgroundReport {
+            cookie_agent_runtime_api::BackgroundReport {
                 summary: "job finished".into(),
                 element: "background_job".into(),
                 attributes: vec![("from".into(), "7".into())],

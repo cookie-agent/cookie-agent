@@ -409,7 +409,7 @@ pub(crate) fn fixture() -> Fixture {
         cwd: directory.path().to_owned(),
         config: config.clone(),
         model_manager: Arc::clone(&manager),
-        runtimes: crate::RuntimeOptions::new(directory.path()),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(directory.path()),
     })
     .expect("empty engine");
     Fixture {
@@ -541,7 +541,7 @@ pub(crate) fn open_workspace_engine(
         cwd: workspace.to_owned(),
         config,
         model_manager: Arc::clone(&manager),
-        runtimes: crate::RuntimeOptions::new(workspace),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(workspace),
     })
     .expect("workspace engine");
     (engine, manager)
@@ -663,7 +663,7 @@ compaction = "openai-responses-compact"
         cwd: directory.path().to_owned(),
         config: config.clone(),
         model_manager: Arc::clone(&manager),
-        runtimes: crate::RuntimeOptions::new(directory.path()),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(directory.path()),
     })
     .expect("managed engine");
     (
@@ -789,7 +789,7 @@ pub(crate) async fn retry_fixture_with_endpoint(
         cwd: fixture._directory.path().to_owned(),
         config: fixture.config.clone(),
         model_manager: Arc::clone(&manager),
-        runtimes: crate::RuntimeOptions::new(fixture._directory.path()),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(fixture._directory.path()),
     })
     .expect("retry engine");
     fixture.manager = manager;
@@ -809,7 +809,7 @@ pub(crate) async fn reopen_fixture_with_residency(
         cwd: fixture._directory.path().to_owned(),
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
-        runtimes: crate::RuntimeOptions::new(fixture._directory.path()),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(fixture._directory.path()),
     })
     .expect("reopen fixture with subagent residency settings");
 }
@@ -1130,7 +1130,7 @@ __MODEL_CAPABILITIES__
         cwd: directory.path().to_owned(),
         config: config.clone(),
         model_manager: Arc::clone(&manager),
-        runtimes: crate::RuntimeOptions::new(directory.path()),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(directory.path()),
     })
     .expect("custom engine");
     let selection = RunSelection {
@@ -1252,7 +1252,7 @@ default_variant = "precise"
         cwd: directory.path().to_owned(),
         config: config.clone(),
         model_manager: Arc::clone(&manager),
-        runtimes: crate::RuntimeOptions::new(directory.path()),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(directory.path()),
     })?;
     Ok(Fixture {
         _directory: directory,
@@ -1784,7 +1784,7 @@ pub(crate) fn reopen_engine_parts(
         cwd: directory.path().to_owned(),
         config: config.clone(),
         model_manager: manager,
-        runtimes: crate::RuntimeOptions::new(directory.path()),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(directory.path()),
     })
     .expect("reopened engine")
 }
@@ -2053,7 +2053,7 @@ pub(crate) async fn anthropic_replay_fallback_fixture(endpoint: &str) -> (Fixtur
         cwd: fixture._directory.path().to_owned(),
         config: fixture.config.clone(),
         model_manager: Arc::clone(&manager),
-        runtimes: crate::RuntimeOptions::new(fixture._directory.path()),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(fixture._directory.path()),
     })
     .expect("replay engine");
     fixture.manager = manager;

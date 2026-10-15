@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use cookie_agent_engine::ToolError;
+use cookie_agent_runtime_api::ToolError;
 use serde::{Deserialize, Deserializer, de::Error as _};
 
 pub(crate) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {

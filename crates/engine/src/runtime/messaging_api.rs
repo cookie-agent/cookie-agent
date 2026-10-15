@@ -179,7 +179,7 @@ impl Engine {
         Ok(providers.iter().any(|source| {
             source
                 .provider
-                .tools_for_session(&crate::tool_api::SessionToolContext::new(session))
+                .tools_for_session(&cookie_agent_runtime_api::SessionToolContext::new(session))
                 .ok()
                 .is_some_and(|tools| tools.iter().any(|tool| tool.name == "send_message"))
         }))

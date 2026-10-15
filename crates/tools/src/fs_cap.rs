@@ -19,7 +19,7 @@ mod unix {
         sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     };
 
-    use cookie_agent_engine::ToolError;
+    use cookie_agent_runtime_api::ToolError;
     use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, RawMode};
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -548,7 +548,7 @@ mod windows {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use cookie_agent_engine::ToolError;
+    use cookie_agent_runtime_api::ToolError;
     use windows_sys::Win32::{
         Foundation::{HANDLE, INVALID_HANDLE_VALUE},
         Storage::FileSystem::{
@@ -1372,8 +1372,8 @@ mod windows {
 pub use windows::*;
 
 /// Identifies the session working directory for operation fingerprints.
-fn io_error(error: impl std::fmt::Display) -> cookie_agent_engine::ToolError {
-    cookie_agent_engine::ToolError::execution(error.to_string())
+fn io_error(error: impl std::fmt::Display) -> cookie_agent_runtime_api::ToolError {
+    cookie_agent_runtime_api::ToolError::execution(error.to_string())
 }
 
 #[cfg(all(test, unix))]
@@ -1383,7 +1383,7 @@ mod tests;
 mod windows_tests {
     use std::{fs, path::Path, process::Command};
 
-    use cookie_agent_engine::ToolError;
+    use cookie_agent_runtime_api::ToolError;
 
     use super::{
         PreparedExisting, PreparedTarget, components_start_with, ensure_resolution_bound,

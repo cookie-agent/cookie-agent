@@ -113,11 +113,8 @@ fn plugin_event_origins_preserve_valid_names_and_hash_legacy_names() {
     assert_eq!(legacy, plugin_event_origin("command_handler"));
 }
 use crate::{
-    events::OutputHub,
-    tool_api::{
-        ProgressSink, ToolCall, ToolExecutionContext, ToolPreparationContext, ToolProvider,
-        TurnAgentContext,
-    },
+    ProgressSink, ToolCall, ToolExecutionContext, ToolPreparationContext, ToolProvider,
+    TurnAgentContext,
 };
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
@@ -279,7 +276,7 @@ fn turn_context() -> Arc<TurnAgentContext> {
         agent: AgentId::new("test").expect("agent ID"),
         model: "test/model".parse().expect("model key"),
         adapter: cookie_agent_protocol::AdaptorId::OpenaiChat,
-        adapter_family: cookie_agent_models::adapters::OvenAdapterFamily::OpenaiChat,
+        adapter_family: cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
         capabilities: ModelCapabilities {
             input: [Modality::Text].into_iter().collect(),
             output: [Modality::Text].into_iter().collect(),
@@ -307,7 +304,7 @@ async fn prepared(harness: &Harness) -> crate::PreparedTool {
                 session: SessionId::new_v7(),
                 run: RunId::new_v7(),
                 origin: crate::ToolOrigin::Runtime(std::sync::Arc::new(
-                    crate::RuntimeInfo::global(),
+                    cookie_agent_runtime_api::RuntimeInfo::global(),
                 )),
                 turn_context: turn_context(),
             },
@@ -326,9 +323,8 @@ async fn execute(
     prepared: crate::PreparedTool,
     cancellation: CancellationToken,
 ) -> Result<cookie_agent_protocol::PersistedToolResult, crate::ToolError> {
-    let call_id = ToolCallId::new_v7();
     let executor = prepared
-        .executor
+        .executor()
         .lock()
         .await
         .take()
@@ -338,7 +334,7 @@ async fn execute(
         .execute(ToolExecutionContext {
             session: SessionId::new_v7(),
             run: RunId::new_v7(),
-            progress: ProgressSink::new(progress, OutputHub::new(call_id, 1024)),
+            progress: ProgressSink::new(progress),
             cancellation,
             stdin: None,
             turn_context: turn_context(),
@@ -437,7 +433,12 @@ async fn crash_during_call_invalidates_prepared_tool_and_listing() {
             .expect("tool listing")
             .is_empty()
     );
-    let executor = stale.executor.lock().await.take().expect("stale executor");
+    let executor = stale
+        .executor()
+        .lock()
+        .await
+        .take()
+        .expect("stale executor");
     assert!(executor.revalidate().await.is_err());
     harness.registry.shutdown().await;
 }

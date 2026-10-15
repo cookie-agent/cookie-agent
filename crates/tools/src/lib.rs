@@ -6,17 +6,16 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cookie_agent_engine::{
+use cookie_agent_protocol::{
+    ApprovalResourceSource, PermissionAction, PreparedApprovalResource, PreparedBindingLifetime,
+};
+pub(crate) use cookie_agent_runtime_api::authoring::{
+    parse_args, prepared_operation, prepared_resource, safe_title, schema,
+};
+use cookie_agent_runtime_api::{
     PreparedTool, RuntimeOptions, SessionToolContext, ToolCall, ToolError, ToolPreparationContext,
     ToolProvider, ToolSpec, WorkspaceContext,
 };
-use cookie_agent_protocol::{
-    ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, PermissionAction,
-    PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
-    PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, Sha256Digest,
-};
-use schemars::JsonSchema;
-use serde::{Serialize, de::DeserializeOwned};
 
 pub mod bash;
 pub mod delegate;
@@ -42,20 +41,22 @@ pub(crate) fn test_workspace(path: impl AsRef<Path>) -> WorkspaceContext {
 
 /// Origin of a tool of a coding runtime at `path`, for tests.
 #[cfg(test)]
-pub(crate) fn test_coding_origin(path: impl AsRef<Path>) -> cookie_agent_engine::ToolOrigin {
-    cookie_agent_engine::ToolOrigin::Runtime(Arc::new(cookie_agent_engine::RuntimeInfo::coding(
-        cookie_agent_engine::LOCAL_RUNTIME_ID,
-        test_workspace(path),
-    )))
+pub(crate) fn test_coding_origin(path: impl AsRef<Path>) -> cookie_agent_runtime_api::ToolOrigin {
+    cookie_agent_runtime_api::ToolOrigin::Runtime(Arc::new(
+        cookie_agent_runtime_api::RuntimeInfo::coding(
+            cookie_agent_runtime_api::LOCAL_RUNTIME_ID,
+            test_workspace(path),
+        ),
+    ))
 }
 
 #[cfg(test)]
-pub(crate) fn test_turn_context() -> std::sync::Arc<cookie_agent_engine::TurnAgentContext> {
-    std::sync::Arc::new(cookie_agent_engine::TurnAgentContext {
+pub(crate) fn test_turn_context() -> std::sync::Arc<cookie_agent_runtime_api::TurnAgentContext> {
+    std::sync::Arc::new(cookie_agent_runtime_api::TurnAgentContext {
         agent: cookie_agent_protocol::AgentId::new("test").expect("test agent ID"),
         model: "test/model".parse().expect("test model key"),
         adapter: cookie_agent_protocol::AdaptorId::OpenaiChat,
-        adapter_family: cookie_agent_models::adapters::OvenAdapterFamily::OpenaiChat,
+        adapter_family: cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
         capabilities: cookie_agent_protocol::ModelCapabilities {
             input: std::collections::BTreeSet::from([cookie_agent_protocol::Modality::Text]),
             output: std::collections::BTreeSet::from([cookie_agent_protocol::Modality::Text]),
@@ -77,14 +78,14 @@ pub(crate) fn test_turn_context() -> std::sync::Arc<cookie_agent_engine::TurnAge
 
 #[cfg(test)]
 pub(crate) fn assert_workspace_rule_allows(
-    prepared: &cookie_agent_engine::PreparedTool,
+    prepared: &cookie_agent_runtime_api::PreparedTool,
     workspace: &Path,
     action: PermissionAction,
     resource: &str,
 ) {
     use cookie_agent_protocol::{
         AgentDocumentSource, AgentId, AgentMode, AgentSchemaVersion, AgentSnapshot,
-        PermissionEffect, PermissionRule, WildcardPattern,
+        PermissionEffect, PermissionRule, Sha256Digest, WildcardPattern,
     };
 
     let policy = AgentSnapshot {
@@ -117,10 +118,6 @@ pub(crate) fn assert_workspace_rule_allows(
     assert_eq!(decision.evaluations.len(), 1);
 }
 
-pub(crate) fn schema<T: JsonSchema>() -> serde_json::Value {
-    serde_json::to_value(schemars::schema_for!(T)).expect("tool schemas serialize")
-}
-
 /// Runs filesystem work on tokio's blocking pool instead of a runtime worker.
 pub(crate) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, ToolError> + Send + 'static,
@@ -134,102 +131,11 @@ pub(crate) fn tool_error(error: impl std::fmt::Display) -> ToolError {
     ToolError::execution(error.to_string())
 }
 
-pub(crate) fn safe_title(value: impl AsRef<str>) -> cookie_agent_protocol::SafeDisplayText {
-    let mut safe = String::new();
-    for character in value.as_ref().chars() {
-        let character = if character.is_control() {
-            ' '
-        } else {
-            character
-        };
-        if safe.len() + character.len_utf8() > cookie_agent_protocol::SafeDisplayText::MAX_BYTES {
-            break;
-        }
-        safe.push(character);
-    }
-    cookie_agent_protocol::SafeDisplayText::new(if safe.is_empty() {
-        "Tool result".to_owned()
-    } else {
-        safe
-    })
-    .expect("sanitized tool title")
-}
-
 /// Execution-context bytes of a coding tool: its workspace root, which is
-/// already canonical. Matches [`cookie_agent_engine::ToolOrigin::context_bytes`]
+/// already canonical. Matches [`cookie_agent_runtime_api::ToolOrigin::context_bytes`]
 /// for the runtime that owns the tool.
 pub(crate) fn workspace_context_bytes(workspace: &Path) -> Vec<u8> {
     workspace.as_os_str().as_encoded_bytes().to_vec()
-}
-
-pub(crate) fn parse_args<T: DeserializeOwned>(
-    tool: &str,
-    value: serde_json::Value,
-) -> Result<T, ToolError> {
-    serde_json::from_value(value).map_err(|error| {
-        tool_error(format!(
-            "The {tool} tool was called with invalid arguments: {error}.\nPlease rewrite the input so it satisfies the expected schema."
-        ))
-    })
-}
-
-pub(crate) fn prepared_operation<T: Serialize>(
-    tool: &str,
-    normalized_arguments: &T,
-    capabilities: Vec<(PermissionAction, &str)>,
-    resources: Vec<PreparedApprovalResource>,
-    execution_context_bytes: &[u8],
-) -> Result<PreparedOperationIdentity, ToolError> {
-    let arguments = serde_json::to_vec(normalized_arguments).map_err(tool_error)?;
-    let capabilities = capabilities
-        .into_iter()
-        .map(|(action, operation)| {
-            Ok(ApprovalCapability {
-                action,
-                operation: PreparedCapabilityOperation::new(format!("{tool}:{operation}"))
-                    .map_err(tool_error)?,
-            })
-        })
-        .collect::<Result<Vec<_>, ToolError>>()?;
-    PreparedOperationIdentity::new(
-        Sha256Digest::of_bytes(&arguments),
-        capabilities,
-        resources,
-        Sha256Digest::of_bytes(execution_context_bytes),
-    )
-    .map_err(tool_error)
-}
-
-pub(crate) fn prepared_resource(
-    action: PermissionAction,
-    logical_kind: &str,
-    stable_label_bytes: &[u8],
-    binding_bytes: &[u8],
-    lifetime: PreparedBindingLifetime,
-    source: ApprovalResourceSource,
-) -> Result<PreparedApprovalResource, ToolError> {
-    let label = Sha256Digest::of_bytes(stable_label_bytes);
-    let mut complete_binding = Vec::new();
-    complete_binding.extend_from_slice(logical_kind.as_bytes());
-    complete_binding.push(0);
-    complete_binding.extend_from_slice(stable_label_bytes);
-    complete_binding.push(0);
-    complete_binding.extend_from_slice(binding_bytes);
-    Ok(PreparedApprovalResource {
-        capability: action,
-        canonical: PreparedResourceIdentity::new(format!("{logical_kind}:{}", label.as_str()))
-            .map_err(tool_error)?,
-        binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(&complete_binding),
-        binding_lifetime: lifetime,
-        boundary: if action == PermissionAction::Bash {
-            ApprovalBoundary::CommandPrefix {
-                prefix: String::from_utf8_lossy(stable_label_bytes).into_owned(),
-            }
-        } else {
-            ApprovalBoundary::Exact
-        },
-        source,
-    })
 }
 
 pub(crate) fn prepared_path_resources(

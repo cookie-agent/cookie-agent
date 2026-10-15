@@ -352,7 +352,7 @@ fn build_in_process_server(
         cwd: directory.path().to_owned(),
         config,
         model_manager: Arc::clone(&model_manager),
-        runtimes: cookie_agent_engine::RuntimeOptions::new(directory.path()),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(directory.path()),
     })
     .expect("open engine");
     if with_skills {
@@ -383,20 +383,20 @@ struct SkillFixtureArgs {
     args: String,
 }
 
-fn fixture_tool_error(error: impl std::fmt::Display) -> cookie_agent_engine::ToolError {
-    cookie_agent_engine::ToolError::execution(error.to_string())
+fn fixture_tool_error(error: impl std::fmt::Display) -> cookie_agent_runtime_api::ToolError {
+    cookie_agent_runtime_api::ToolError::execution(error.to_string())
 }
 
 #[async_trait::async_trait]
-impl cookie_agent_engine::ToolProvider for SkillFixtureTool {
+impl cookie_agent_runtime_api::ToolProvider for SkillFixtureTool {
     fn provider_id(&self) -> &'static str {
         "test.skill"
     }
 
     fn tools_for_session(
         &self,
-        ctx: &cookie_agent_engine::SessionToolContext,
-    ) -> Result<Vec<cookie_agent_engine::ToolSpec>, cookie_agent_engine::ToolError> {
+        ctx: &cookie_agent_runtime_api::SessionToolContext,
+    ) -> Result<Vec<cookie_agent_runtime_api::ToolSpec>, cookie_agent_runtime_api::ToolError> {
         if !self
             .engine
             .skill_tool_available(ctx.session)
@@ -404,7 +404,7 @@ impl cookie_agent_engine::ToolProvider for SkillFixtureTool {
         {
             return Ok(Vec::new());
         }
-        Ok(vec![cookie_agent_engine::ToolSpec {
+        Ok(vec![cookie_agent_runtime_api::ToolSpec {
             collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
@@ -423,14 +423,14 @@ impl cookie_agent_engine::ToolProvider for SkillFixtureTool {
 
     fn get_permission_name(
         _tool_name: &str,
-    ) -> Result<&'static str, cookie_agent_engine::ToolError> {
+    ) -> Result<&'static str, cookie_agent_runtime_api::ToolError> {
         Ok("skill")
     }
 
     fn permission_for_unlisted_tool(
         &self,
         tool_name: &str,
-    ) -> Result<Option<&'static str>, cookie_agent_engine::ToolError> {
+    ) -> Result<Option<&'static str>, cookie_agent_runtime_api::ToolError> {
         Ok((tool_name == "skill").then_some("skill"))
     }
 
@@ -438,7 +438,7 @@ impl cookie_agent_engine::ToolProvider for SkillFixtureTool {
         &self,
         _name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), cookie_agent_engine::ToolError> {
+    ) -> Result<(&'static str, Option<String>), cookie_agent_runtime_api::ToolError> {
         let args: SkillFixtureArgs =
             serde_json::from_value(arguments.clone()).map_err(fixture_tool_error)?;
         Ok(("skill", Some(args.name)))
@@ -448,7 +448,7 @@ impl cookie_agent_engine::ToolProvider for SkillFixtureTool {
         &self,
         _name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<String, cookie_agent_engine::ToolError> {
+    ) -> Result<String, cookie_agent_runtime_api::ToolError> {
         Ok(
             serde_json::from_value::<SkillFixtureArgs>(arguments.clone())
                 .map_err(fixture_tool_error)?
@@ -458,9 +458,9 @@ impl cookie_agent_engine::ToolProvider for SkillFixtureTool {
 
     async fn prepare(
         &self,
-        ctx: cookie_agent_engine::ToolPreparationContext,
-        call: cookie_agent_engine::ToolCall,
-    ) -> Result<cookie_agent_engine::PreparedTool, cookie_agent_engine::ToolError> {
+        ctx: cookie_agent_runtime_api::ToolPreparationContext,
+        call: cookie_agent_runtime_api::ToolCall,
+    ) -> Result<cookie_agent_runtime_api::PreparedTool, cookie_agent_runtime_api::ToolError> {
         let args: SkillFixtureArgs =
             serde_json::from_value(call.arguments).map_err(fixture_tool_error)?;
         if self.engine.is_direct_skill_call(call.id) {
@@ -498,7 +498,7 @@ impl cookie_agent_engine::ToolProvider for SkillFixtureTool {
             Sha256Digest::of_bytes(&ctx.context_bytes()),
         )
         .map_err(fixture_tool_error)?;
-        cookie_agent_engine::PreparedTool::new(
+        cookie_agent_runtime_api::PreparedTool::new(
             operation,
             normalized,
             None,
@@ -516,15 +516,15 @@ struct SkillFixtureExecutor {
 }
 
 #[async_trait::async_trait]
-impl cookie_agent_engine::PreparedExecutor for SkillFixtureExecutor {
-    async fn revalidate(&self) -> Result<(), cookie_agent_engine::ToolError> {
+impl cookie_agent_runtime_api::PreparedExecutor for SkillFixtureExecutor {
+    async fn revalidate(&self) -> Result<(), cookie_agent_runtime_api::ToolError> {
         Ok(())
     }
 
     async fn execute(
         self: Box<Self>,
-        context: cookie_agent_engine::ToolExecutionContext,
-    ) -> Result<cookie_agent_engine::ToolCompletion, cookie_agent_engine::ToolError> {
+        context: cookie_agent_runtime_api::ToolExecutionContext,
+    ) -> Result<cookie_agent_runtime_api::ToolCompletion, cookie_agent_runtime_api::ToolError> {
         let invocation = self
             .engine
             .invoke_skill(
@@ -536,7 +536,7 @@ impl cookie_agent_engine::PreparedExecutor for SkillFixtureExecutor {
             )
             .await
             .map_err(fixture_tool_error)?;
-        Ok(cookie_agent_engine::ToolCompletion::single(
+        Ok(cookie_agent_runtime_api::ToolCompletion::single(
             cookie_agent_protocol::PersistedToolResult {
                 display: None,
                 retained_output: None,

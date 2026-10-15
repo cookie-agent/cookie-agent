@@ -1,11 +1,12 @@
 use async_trait::async_trait;
-use cookie_agent_engine::{
-    DelegateInvocation, Engine, PreparedExecutor, PreparedTool, PromptSection, SessionToolContext,
-    ToolCall, ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
-};
+use cookie_agent_engine::{DelegateInvocation, Engine};
 use cookie_agent_protocol::{
     AgentId, ApprovalResourceSource, PermissionAction, PersistedToolResult as ToolResult,
     PreparedBindingLifetime,
+};
+use cookie_agent_runtime_api::{
+    PreparedExecutor, PreparedTool, PromptSection, SessionToolContext, ToolCall, ToolError,
+    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -15,11 +16,11 @@ const DEFAULT_RESULT_LIMIT: u32 = 2_000;
 
 pub(crate) fn result_truncation_policy(
     tool_name: &str,
-) -> cookie_agent_engine::ToolResultTruncationPolicy {
+) -> cookie_agent_runtime_api::ToolResultTruncationPolicy {
     if matches!(tool_name, "get_subagent_result" | "delegate_subagent") {
-        cookie_agent_engine::ToolResultTruncationPolicy::OptOut
+        cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut
     } else {
-        cookie_agent_engine::ToolResultTruncationPolicy::Bounded
+        cookie_agent_runtime_api::ToolResultTruncationPolicy::Bounded
     }
 }
 
@@ -87,7 +88,7 @@ impl DelegateToolProvider {
         ToolSpec {
             collision: Default::default(),
             output: Default::default(),
-            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
+            concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
             result_truncation: result_truncation_policy("delegate_subagent"),
             name: "delegate_subagent".into(),
             permission_name: "delegate".into(),
@@ -382,7 +383,7 @@ impl PreparedExecutor for DelegateExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+    ) -> Result<cookie_agent_runtime_api::ToolCompletion, ToolError> {
         let result: Result<ToolResult, ToolError> = async move {
             if context.cancellation.is_cancelled() {
                 return Err(ToolError::execution(
@@ -441,7 +442,7 @@ impl PreparedExecutor for DelegateExecutor {
             }
         }
         .await;
-        result.map(cookie_agent_engine::ToolCompletion::single)
+        result.map(cookie_agent_runtime_api::ToolCompletion::single)
     }
 }
 
@@ -503,13 +504,12 @@ fn parse_cancel(arguments: &serde_json::Value) -> Result<CancelArgs, ToolError> 
 
 #[cfg(test)]
 mod tests {
-    use cookie_agent_engine::{
-        ToolError, ToolPreparationContext, ToolProvider, permissions::ApprovalStore,
-    };
+    use cookie_agent_engine::permissions::ApprovalStore;
     use cookie_agent_protocol::{
         AgentId, ApprovalId, ApprovalResourceSource, OperationFingerprint, PermissionAction,
         PreparedBindingLifetime, RunId, SessionId, TreeApprovalGrant, TreeApprovalGrantId,
     };
+    use cookie_agent_runtime_api::{ToolError, ToolPreparationContext, ToolProvider};
     use serde::Serialize;
 
     use super::{
@@ -527,7 +527,7 @@ mod tests {
         let context = ToolPreparationContext {
             session: SessionId::new_v7(),
             run: RunId::new_v7(),
-            origin: cookie_agent_engine::ToolOrigin::Base,
+            origin: cookie_agent_runtime_api::ToolOrigin::Base,
             turn_context: crate::test_turn_context(),
         };
         let agent_type = AgentId::new("reviewer").expect("agent type");
@@ -632,12 +632,12 @@ mod tests {
     fn only_paginated_subagent_results_opt_out_of_truncation() {
         assert_eq!(
             super::result_truncation_policy("cancel_subagent"),
-            cookie_agent_engine::ToolResultTruncationPolicy::Bounded
+            cookie_agent_runtime_api::ToolResultTruncationPolicy::Bounded
         );
         for name in ["delegate_subagent", "get_subagent_result"] {
             assert_eq!(
                 super::result_truncation_policy(name),
-                cookie_agent_engine::ToolResultTruncationPolicy::OptOut
+                cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut
             );
         }
     }

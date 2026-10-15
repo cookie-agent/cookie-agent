@@ -25,18 +25,14 @@ mod runtimes;
 pub mod session;
 #[cfg(test)]
 mod test_support;
-mod tool_api;
+#[cfg(feature = "test-support")]
+pub mod testing;
 mod usage;
 
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
 pub use mcp::{McpRegistry, McpServerState, McpServerStatus};
-pub use media::{
-    AttachmentGate, MEDIA_SNIFF_BYTES, approved_media_type, attachment_gate_error, gate_attachment,
-    sniff_media_type,
-};
 pub use plugin::{EngineEvent, PluginRegistry, PluginState, PluginStatus};
-pub use runtime::background_tasks::{BackgroundJob, BackgroundReport};
 /// Stable `send_message:<code>` error strings carried by
 /// [`EngineError::Messaging`]. The tool layer surfaces them verbatim so sending
 /// models can react predictably (retry, back off, or give up).
@@ -48,20 +44,18 @@ pub use runtime::messaging_api::{
 };
 pub use runtime::{
     AgentMessageHandle, AgentMessageInvocation, AgentRecipientState, ApprovalRespondFailure,
-    ArtifactReadPage, Engine, EngineError, EngineHistoryView, EngineOptions, SkillInvocation,
+    Engine, EngineError, EngineHistoryView, EngineOptions, SkillInvocation,
 };
 pub use runtime_snapshot::PublishedRuntime;
-pub use runtimes::{
-    CodingToolsFactory, GLOBAL_RUNTIME_ID, LOCAL_RUNTIME_ID, MAX_ATTACHMENT_NAME_BYTES,
-    RuntimeInfo, RuntimeKind, RuntimeOptions, ToolLayer, ToolOrigin, WorkspaceContext,
-    coding_attachment_name,
-};
+pub use runtimes::ToolLayer;
 pub use session::TailOwner;
-pub use tool_api::{
+
+// The tool API, imported once for the engine's own modules.
+pub(crate) use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, ProgressSink, PromptSection,
-    SessionToolContext, StdinWrite, ToolCall, ToolCollision, ToolCompletion, ToolConcurrency,
-    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProgress, ToolProvider,
-    ToolResultTruncationPolicy, ToolSpec, ToolStdin, TurnAgentContext,
+    SessionToolContext, ToolCall, ToolCompletion, ToolConcurrency, ToolError, ToolExecutionContext,
+    ToolOrigin, ToolPreparationContext, ToolProgress, ToolProvider, ToolResultTruncationPolicy,
+    ToolSpec, ToolStdin, TurnAgentContext, WorkspaceContext,
 };
 
 pub(crate) use runtime::{ArtifactRouter, SessionArtifacts};
