@@ -6,6 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cookie_agent_protocol::{
     PersistedToolResult as ToolResult, PreparedOperationIdentity, Sha256Digest,
+    ToolCallPresentation,
 };
 
 use crate::{ToolError, ToolExecutionContext};
@@ -90,6 +91,11 @@ impl PreparedSerializationKey {
     pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
         Self(bytes.into())
     }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 #[async_trait]
@@ -110,12 +116,26 @@ pub trait PreparedExecutor: Send + Sync {
 /// The executor of a prepared call, taken exactly once by whoever runs it.
 pub type PreparedExecutorCell = Arc<tokio::sync::Mutex<Option<Box<dyn PreparedExecutor>>>>;
 
+/// What a provider that cannot answer the sync [`crate::ToolProvider`]
+/// metadata methods, such as a runtime behind the runtime protocol, reports
+/// about one prepared call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedDeclaration {
+    /// The permission name the call is checked under.
+    pub permission_name: String,
+    /// The permission resource of the call's normalized arguments.
+    pub permission_resource: Option<String>,
+    /// How clients show the call.
+    pub presentation: ToolCallPresentation,
+}
+
 pub struct PreparedTool {
     operation: PreparedOperationIdentity,
     policy_labels: Vec<Option<String>>,
     normalized_arguments: serde_json::Value,
     serialization_key: Option<PreparedSerializationKey>,
     executor: PreparedExecutorCell,
+    declaration: Option<PreparedDeclaration>,
 }
 
 impl PreparedTool {
@@ -146,7 +166,57 @@ impl PreparedTool {
             normalized_arguments,
             serialization_key,
             executor: Arc::new(tokio::sync::Mutex::new(Some(executor))),
+            declaration: None,
         })
+    }
+
+    /// Attaches the permission and presentation the provider reported while
+    /// preparing; the host then uses them instead of asking the provider.
+    #[must_use]
+    pub fn with_declaration(mut self, declaration: PreparedDeclaration) -> Self {
+        self.declaration = Some(declaration);
+        self
+    }
+
+    /// The permission and presentation reported at preparation, if any.
+    #[must_use]
+    pub const fn declaration(&self) -> Option<&PreparedDeclaration> {
+        self.declaration.as_ref()
+    }
+
+    /// Restores policy labels a provider set while preparing, as another
+    /// process reported them: a label is either the resource's canonical
+    /// identity, a label matching its digest, or absent (the loose marker).
+    pub fn with_reported_policy_labels(
+        mut self,
+        labels: Vec<Option<String>>,
+    ) -> Result<Self, ToolError> {
+        if labels.len() != self.operation.resources().len() {
+            return Err(ToolError::execution(
+                "prepared policy labels must cover every resource",
+            ));
+        }
+        for (resource, label) in self.operation.resources().iter().zip(&labels) {
+            let Some(label) = label else { continue };
+            if label.is_empty() {
+                return Err(ToolError::execution(
+                    "permission resource must not be empty",
+                ));
+            }
+            let canonical = resource.canonical.as_str();
+            let expected = Sha256Digest::of_bytes(label.as_bytes());
+            if label != canonical
+                && canonical
+                    .rsplit_once(':')
+                    .is_none_or(|(_, digest)| digest != expected.as_str())
+            {
+                return Err(ToolError::execution(
+                    "prepared policy label does not match its immutable resource identity",
+                ));
+            }
+        }
+        self.policy_labels = labels;
+        Ok(self)
     }
 
     #[must_use]

@@ -27,8 +27,8 @@ pub use execution::{
     ToolExecutionContext, ToolPreparationContext, ToolProgress, ToolStdin, TurnAgentContext,
 };
 pub use prepared::{
-    PreparedExecutor, PreparedExecutorCell, PreparedSerializationKey, PreparedTool, ToolCompletion,
-    bounded_tool_display, sanitize_tool_display,
+    PreparedDeclaration, PreparedExecutor, PreparedExecutorCell, PreparedSerializationKey,
+    PreparedTool, ToolCompletion, bounded_tool_display, sanitize_tool_display,
 };
 pub use provider::{
     PromptSection, SessionToolContext, ToolCall, ToolCollision, ToolConcurrency, ToolProvider,

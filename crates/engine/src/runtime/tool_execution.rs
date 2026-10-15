@@ -446,27 +446,38 @@ impl Engine {
                 interception: None,
             };
         }
-        let original_resource = provider
-            .get_permission_resource(&call.name, &call.arguments)
-            .ok()
-            .and_then(|(_, resource)| resource);
-        let presentation = provider.presentation(&call);
         let context = ToolPreparationContext {
             session: session_id,
             run,
             origin,
             turn_context,
         };
-        let prepared = match match prepared_override {
+        let (prepared, original_resource) = match match prepared_override {
             Some(prepared) => prepared,
             None => provider.prepare(context.clone(), call.clone()).await,
         } {
             Ok(prepared) => {
-                apply_permission_resource(provider.as_ref(), &call.name, &permission_name, prepared)
-                    .map_err(Into::into)
+                match apply_permission_resource(
+                    provider.as_ref(),
+                    &call.name,
+                    &permission_name,
+                    prepared,
+                ) {
+                    Ok((prepared, resource)) => (Ok(prepared), resource),
+                    Err(error) => (Err(error.into()), None),
+                }
             }
-            Err(error) => Err(error.into()),
+            Err(error) => (Err(error.into()), None),
         };
+        // A provider that reports its metadata at preparation (a runtime
+        // behind the runtime protocol) also reports how the call is shown.
+        let presentation = match &prepared {
+            Ok(prepared) => prepared
+                .declaration()
+                .map(|declaration| declaration.presentation.clone()),
+            Err(_) => None,
+        }
+        .unwrap_or_else(|| provider.presentation(&call));
         PreparedToolCall {
             intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
             call,
@@ -592,33 +603,32 @@ impl Engine {
                     };
                     let valid_schema = jsonschema::validator_for(&interception.spec.parameters)
                         .is_ok_and(|validator| validator.is_valid(&arguments));
-                    let modified_resource = interception
-                        .provider
-                        .get_permission_resource(&call.name, &arguments)
-                        .ok()
-                        .and_then(|(_, resource)| resource);
-                    if !arguments.is_object()
-                        || !valid_schema
-                        || modified_resource != interception.permission_resource
-                    {
-                        let message = format!(
-                            "plugin `{plugin}` produced invalid tool arguments or changed the permission resource"
-                        );
+                    let invalid_modification = |message: String| {
                         engine.record_plugin_diagnostic(
                             active.session,
-                            plugin,
+                            plugin.clone(),
                             PluginDiagnosticKind::InvalidModification,
                             message.clone(),
                         );
-                        return Err(ToolFailure {
+                        ToolFailure {
                             partial_output: None,
                             code: ToolCallFailureCode::ExecutionFailed,
                             message,
-                        });
+                        }
+                    };
+                    let invalid_arguments = || {
+                        format!(
+                            "plugin `{plugin}` produced invalid tool arguments or changed the permission resource"
+                        )
+                    };
+                    if !arguments.is_object() || !valid_schema {
+                        return Err(invalid_modification(invalid_arguments()));
                     }
                     let mut modified_call = call.clone();
                     modified_call.arguments = arguments;
-                    let candidate = interception
+                    // The permission resource of the modified arguments is
+                    // what preparing them reports.
+                    let (candidate, modified_resource) = interception
                         .provider
                         .prepare(interception.preparation.clone(), modified_call.clone())
                         .await
@@ -631,6 +641,9 @@ impl Engine {
                             )
                         })
                         .map_err(ToolFailure::from)?;
+                    if modified_resource != interception.permission_resource {
+                        return Err(invalid_modification(invalid_arguments()));
+                    }
                     if candidate.operation().capabilities() != operation.capabilities()
                         || candidate.operation().resources() != operation.resources()
                         || candidate.policy_labels() != policy_labels
@@ -1041,14 +1054,27 @@ fn fallback_permission_name(tool_name: &str) -> Option<&'static str> {
     }
 }
 
+/// Applies the permission resource of a prepared call's normalized
+/// arguments, and returns it. A provider that reported its metadata at
+/// preparation is not asked again.
 pub(crate) fn apply_permission_resource(
     provider: &dyn ToolProvider,
     name: &str,
     expected_permission_name: &str,
     prepared: PreparedTool,
-) -> Result<PreparedTool, ToolError> {
-    let (permission_name, resource) =
-        provider.get_permission_resource(name, prepared.normalized_arguments())?;
+) -> Result<(PreparedTool, Option<String>), ToolError> {
+    let (permission_name, resource) = match prepared.declaration() {
+        Some(declaration) => (
+            std::borrow::Cow::Owned(declaration.permission_name.clone()),
+            declaration.permission_resource.clone(),
+        ),
+        None => {
+            let (permission_name, resource) =
+                provider.get_permission_resource(name, prepared.normalized_arguments())?;
+            (std::borrow::Cow::Borrowed(permission_name), resource)
+        }
+    };
+    let permission_name = permission_name.as_ref();
     if permission_name != expected_permission_name
         && !(permission_name == "plugin" && expected_permission_name.starts_with("plugin:"))
     {
@@ -1060,8 +1086,11 @@ pub(crate) fn apply_permission_resource(
         // No rule is evaluated, so the prepared capability is not checked
         // against an action.
         return match resource {
-            Some(resource) => prepared.with_permission_resource(Some(resource)),
-            None => Ok(prepared),
+            Some(resource) => Ok((
+                prepared.with_permission_resource(Some(resource.clone()))?,
+                Some(resource),
+            )),
+            None => Ok((prepared, None)),
         };
     }
     let action = PermissionPipeline::action_for_permission_name(permission_name)
@@ -1079,8 +1108,11 @@ pub(crate) fn apply_permission_resource(
     // A provider may return None when it manages policy labels while preparing
     // the operation. Providers that need the loose marker set it explicitly.
     match resource {
-        Some(resource) => prepared.with_permission_resource(Some(resource)),
-        None => Ok(prepared),
+        Some(resource) => Ok((
+            prepared.with_permission_resource(Some(resource.clone()))?,
+            Some(resource),
+        )),
+        None => Ok((prepared, None)),
     }
 }
 

@@ -682,7 +682,8 @@ async fn permission_labels_come_from_prepared_permission_resource() {
     let labeled = crate::runtime::tool_execution::apply_permission_resource(
         &provider, "read", "read", prepared,
     )
-    .expect("overwrite");
+    .expect("overwrite")
+    .0;
     assert_eq!(
         provider
             .get_permission_resource("read", labeled.normalized_arguments())
@@ -714,6 +715,7 @@ async fn permission_labels_come_from_prepared_permission_resource() {
     let labeled = crate::runtime::tool_execution::apply_permission_resource(
         &provider, "read", "read", prepared,
     )
-    .expect("preserve labels");
+    .expect("preserve labels")
+    .0;
     assert_eq!(labeled.policy_labels(), [Some("divergent-raw".into())]);
 }
