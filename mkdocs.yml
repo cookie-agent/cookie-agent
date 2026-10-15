@@ -106,6 +106,7 @@ nav:
       - Rust API: reference/api.md
   - Specs:
       - Status and scope: specs/index.md
+      - Runtimes: specs/runtimes.md
       - Tool output streams: specs/tool-output-streams.md
       - Agent messaging: specs/agent-messaging.md
       - Model configuration: specs/model-configuration.md
