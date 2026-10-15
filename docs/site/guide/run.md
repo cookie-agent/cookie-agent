@@ -116,6 +116,7 @@ intact.
 | `/model` | Choose the model for the next run, then its variant; nothing applies until the variant is chosen, and Esc in the variant list returns to the models |
 | `/connect` | Connect or update a managed provider |
 | `/mcp` | Manage MCP servers; see [MCP servers](mcp.md) |
+| `/runtime` (also `runtimes`) | Attach and detach the selected session's runtimes; see [Runtimes panel](#runtimes-panel) |
 | `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](agents.md#permissions) |
 | `/sessions` (also `resume`, `load`, `continue`) | Choose a session |
 | `/skills` | Search user-invocable skills, pick one, then enter optional arguments; see [Skills](skills.md) |
@@ -128,8 +129,8 @@ intact.
 | `/quit` (also `q`, `exit`) | Exit the TUI |
 
 In a read-only session owned by another cookie process, commands that write to
-the session (`/permissions`, `/skills`, `/cancel`, `/goal`, `/compact`) are
-hidden.
+the session (`/permissions`, `/runtime`, `/skills`, `/cancel`, `/goal`,
+`/compact`) are hidden.
 
 The composer only ever sends messages: text beginning with `/` is sent as a
 prompt like any other. To start a message with `/`, open the palette and type
@@ -346,6 +347,32 @@ mode. See [Permissions](agents.md#permissions).
 When pricing is available, the bottom bar also shows the selected session's
 estimated cost between the permission mode and context usage. Click the cost to
 open the `/usage` dashboard. Unpriced sessions omit the segment.
+
+The left of the bottom bar shows the session's directory followed by the names
+of its runtime attachments, for example `~/web · global, local_web`, or
+`no runtimes` for a session with none.
+
+## Runtimes panel
+
+`/runtime` lists the selected session's
+[runtime attachments](../specs/runtimes.md#5-session-attachments): each
+attachment's name, runtime ID, workspace, and instance status (`starting`,
+`ready`, `reconnecting`, `failed`, `stopped`, or `not running`). The details
+pane shows the selected attachment's kind, platform, and, for a failed
+instance, the reason. The panel refreshes on every runtime change and while it
+is open.
+
+Press `a` to attach a runtime: choose a template with the arrow keys and, when
+the template takes a workspace, Tab to the workspace path and type it; Enter
+attaches. Press `d` to detach the selected attachment. The daemon refuses both
+while the session has an active run, and refuses attaching an instance the
+session already has; the refusal appears in the status line. Attaching starts
+the instance first and records nothing when it fails to start.
+
+When an MCP server or runtime instance a session uses fails to connect, or
+drops and does not reconnect, the TUI adds an error row to each affected
+session naming the server or runtime and the reason (see
+[MCP connection lifecycle](mcp.md#connection-lifecycle)).
 
 ## Usage dashboard
 

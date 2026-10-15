@@ -26,13 +26,36 @@ is never read, so a repository cannot add MCP servers.
 
 Each server must set exactly one of `command` or `url`. `args`, `env`, and `cwd`
 apply only to stdio commands; `headers` applies only to Streamable HTTP. Servers
-are enabled by default, and every enabled server connects when the daemon
-starts; there is no deferred connection, and an authored `lazy` key is an
-unknown field. `timeout_ms` bounds connection, listing, and calls and defaults
-to 30000. Servers connect in parallel. The first run waits for every server's
-initial connection and `tools/list` attempt to finish, so its tool context is
-not built from a partial startup snapshot. Each wait remains bounded by that
-server's `timeout_ms`; one server's failure does not block the others.
+are enabled by default. `timeout_ms` bounds connection, listing, and calls and
+defaults to 30000.
+
+## Connection lifecycle
+
+Top-level `[mcp]` servers belong to the [global runtime](../specs/runtimes.md),
+and every enabled server connects eagerly: there is no deferred connection, and
+an authored `lazy` key is an unknown field.
+
+- **At startup** every enabled server connects, in parallel, when the daemon
+  starts. The first run waits for every server's initial connection and
+  `tools/list` attempt to finish, so its tool context is not built from a
+  partial startup snapshot. Each wait is bounded by that server's
+  `timeout_ms`; one server's failure does not block the others.
+- **A failed server** publishes no tools. It is retried when a session that
+  uses the global runtime is created or opened (and when the global runtime is
+  attached to a session), and the session's next run waits for that attempt
+  too. `r` in `/mcp` (or `mcp.server.reconnect`) retries it on demand.
+- **A dropped server** (a stdio process that exits, a closed pipe, or an HTTP
+  session the transport gives up on) is restarted up to 3 times, after 1 s,
+  2 s, and 4 s. While it reconnects it shows as `reconnecting`, its tools stay
+  published so the model's tool list does not change, and calls fail fast with
+  the `runtime_unavailable` failure code; calls are never retried for the
+  model. A successful attempt restores the server with its current tool list.
+  When every attempt fails, its tools are dropped and it becomes `failed`.
+
+A failure at connect time and a drop that exhausts its reconnects reach every
+client viewing a session that uses the server: the TUI shows an error row in
+each such session naming the server and the reason (see
+[connection failures](../reference/protocol.md#connection-failures)).
 
 ## OAuth for remote servers
 
@@ -126,15 +149,18 @@ separately.
 
 ## TUI management
 
-Run `/mcp` to open the live MCP panel. The list reports `connected` with its
-tool count, `connecting`, `failed` with the connection error,
-`needs_auth`, and `disabled`. The panel polls the daemon
-while it is open. Select a server to inspect its complete command, arguments,
+Run `/mcp` to open the live MCP panel. It lists the servers of every runtime,
+grouped and labelled by the runtime that hosts them (`global` for top-level
+`[mcp]` servers) and their source. The list reports `connected` with its
+tool count, `connecting`, `reconnecting`, `failed` with the connection error,
+`needs_auth`, and `disabled`. The panel refreshes on every MCP change and polls
+the daemon while it is open. Select a server to inspect its complete command, arguments,
 environment, and working directory, or URL and headers. Press `a` on a
 `needs_auth` remote server to begin OAuth.
 
 The panel can reconnect a failed server, toggle enablement, and add, edit, or
-remove definitions. Add/edit forms accept either a command, JSON string array
+remove definitions. It edits global-runtime servers only; a coding runtime's
+servers come from its runtime template. Add/edit forms accept either a command, JSON string array
 of arguments, JSON string object of environment variables, and optional working
 directory, or a URL plus a JSON string object of headers. Choose
 `runtime only` or `user config.toml` before submitting.
@@ -159,7 +185,8 @@ tools. Repository `AGENTS.md` files and project skills still enter model context
 review them in repositories you do not trust.
 
 Connection failures are isolated per server. A failed server publishes no tools
-and does not prevent other servers from connecting.
+and does not prevent other servers from connecting (see
+[Connection lifecycle](#connection-lifecycle)).
 
 Definitions created or changed through the TUI are runtime-layer entries and
 live only for the current daemon unless explicitly written to a file. A runtime

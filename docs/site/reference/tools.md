@@ -26,6 +26,20 @@ fan-out limit. Exclusive calls run one at a time after the parallel calls have
 finished. Results remain associated with their tool call IDs, while terminal
 events are persisted in completion order.
 
+## Tool call failures
+
+A failed tool call terminates with a failure code and a message for the model:
+
+| Code | Meaning |
+|---|---|
+| `execution_failed` | The tool ran, or tried to, and failed. |
+| `operation_changed` | What the call was prepared and approved against changed before it ran, such as an MCP tool list or a restarted runtime. |
+| `prepared_capability_lost` | The prepared call was lost, for example in a daemon restart between preparation and execution. |
+| `permission_denied` | A permission rule denied the call. |
+| `runtime_unavailable` | The runtime or MCP server that owns the tool is reconnecting or dropped during the call. The call is not retried for the model; the tool stays published while its owner reconnects. |
+| `unsupported_platform` | The tool cannot run on this platform. |
+| `invalid_url`, `redirect_error`, `timeout`, `transport_error`, `unsupported_content_type` | `webfetch` failures (see [Webfetch](#webfetch)). |
+
 ## Webfetch
 
 `webfetch` accepts `{"url":"https://docs.quantumcookie.xyz/", "raw":false}`.

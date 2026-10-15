@@ -56,7 +56,7 @@ origin class. This keeps the origin grammar restricted to `user`, `engine`,
 | Category | Event payload types |
 |---|---|
 | Session | `session_created`, `session_reverted` (legacy), `session_permission_overlay_set`, `runtime_attached`, `runtime_detached`, `skill_loaded`, `skill_invocation_noted`, `session_title_committed`, `delegated_context_seeded` |
-| AGENTS.md context | `agent_md_loaded` |
+| AGENTS.md context | `agent_md_loaded`, `agent_md_skipped` |
 | Plugins | `plugin_event_added`, `plugin_diagnostic` |
 | Goals | `goal_activated`, `goal_checklist_revised`, `goal_lifecycle_changed` |
 | Producer messaging | `producer_message_accepted`, `producer_message_admitted`, `producer_messages_claimed`, `producer_messages_released`, `producer_message_consumed`, `producer_message_discarded` |
@@ -264,6 +264,11 @@ entries as one provenance-delimited user turn. Compaction pins that turn
 alongside loaded skill bodies. See
 [System Prompt Composition](system-prompt.md#agentsmd-context-turn).
 
+`agent_md_skipped` is a run-scoped warning for an `AGENTS.md` file over the
+size limit: its display `path`, its `byte_length`, and the optional
+`attachment` whose workspace holds it (absent in events written before
+runtimes, which belong to `local`). The file contributes no context.
+
 Legacy `plugin_event_added` is a runless plugin publication containing `plugin`, `name`, and arbitrary
 JSON `payload`. Plugin-originated payloads are capped at 256 KiB, names at 128 characters, and the
 complete serialized event at 272 KiB; per-plugin/session rate and byte quotas apply. The event is normal
@@ -402,7 +407,8 @@ in parallel, so progress and `tool_call_terminated` events from different calls
 may interleave, and terminations commit in completion order. The ordering
 guarantee is per call: its start precedes all of its progress and stdin events,
 which precede its single termination. Consumers must correlate calls by
-`tool_call_id` rather than cross-call event position.
+`tool_call_id` rather than cross-call event position. A failed termination
+carries one of the [tool failure codes](tools.md#tool-call-failures).
 
 `internal_agent_usage_recorded` attributes each completed
 internal model request to its internal run, internal agent ID, kind, and resolved

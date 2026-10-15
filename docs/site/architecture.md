@@ -307,6 +307,19 @@ session and drive the run loop:
     attachment has a session-unique name, the name its instance reports
     (`local_<workspace basename>`, sanitized to `[a-z0-9_]` and capped at 32
     bytes, for a coding runtime), suffixed `_2`, `_3`, ... on a clash.
+  - *connections*: everything a session uses is connected before its first
+    run. The global runtime's MCP servers connect eagerly when the daemon
+    starts, and the first run waits for those attempts. Creating or opening a
+    session starts its attached instances and retries the failed MCP servers
+    of an attached global runtime; its next run waits for them. A connected
+    MCP server that drops is restarted by the shared reconnect policy
+    (`crates/engine/src/runtimes/reconnect.rs`: three attempts after 1 s,
+    2 s, and 4 s); meanwhile its tools stay published and calls fail fast with
+    `runtime_unavailable`, and when every attempt fails its tools are
+    dropped. Connect failures, exhausted reconnects, and failed instance
+    starts are broadcast by the MCP and runtime registries; the server turns
+    them into `mcp.changed` and `runtimes.changed` notifications that name the
+    affected sessions each connection subscribes to.
 
   Every published tool records which layer or attachment offers it, and the
   instance generation it came from. Preparation, permission decisions, and

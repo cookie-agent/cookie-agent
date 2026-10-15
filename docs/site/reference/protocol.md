@@ -35,7 +35,11 @@ resume results carry the session's `runtimes`, `session.runtime.attach`,
 `session.runtime.detach`, and `runtimes.list` are new, `runtimes.changed` is a
 new notification, permission rules, overlay mutations, approval requests, and
 tree grants carry a runtime selector or runtime ID, and `delegate_subagent`
-accepts `runtimes`. Older clients are rejected.
+accepts `runtimes`. In the same version the `lazy` MCP server setting and the
+`lazy-not-connected` state were removed, MCP servers gained the `reconnecting`
+state and their hosting `runtime_id` in `mcp.server.list`, and `mcp.changed`
+and `runtimes.changed` gained `failures` (see
+[Connection failures](#connection-failures)). Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
@@ -387,8 +391,8 @@ the title, and continues with new physical sequences.
 | `events.subscription` | One stored event, live-only stream output, a session sequence gap, or a rewind |
 | `events.plugin` | Session-scoped non-durable plugin event |
 | `sessions.changed` | One session index change: `upserted`, `removed`, `approvals_changed`, `permission_mode_changed`, or `resync` |
-| `mcp.changed` | Empty object: MCP server configuration or status changed |
-| `runtimes.changed` | Empty object: a runtime template was registered or an instance's status changed |
+| `mcp.changed` | MCP server configuration or status changed; optional `failures` |
+| `runtimes.changed` | A runtime template was registered or an instance's status changed; optional `failures` |
 
 ### Daemon-wide changes
 
@@ -414,9 +418,40 @@ is the only way other clients learn of a change.
 connection that falls more than 64 notifications behind receives one with a
 null `previous_revision`, the current snapshot, and the reason `resync`; a
 client that holds a different revision refetches `runtime.snapshot.get` rather
-than trusting either. `mcp.changed` carries nothing;
+than trusting either. A status `mcp.changed` is an empty object;
 bursts coalesce into one notification, and a client refetches `mcp.server.list`.
 `runtimes.changed` works the same way for `runtimes.list`.
+
+### Connection failures
+
+When an MCP server fails to connect, or drops and does not reconnect, and when
+a runtime instance fails to start, the daemon sends one notification for it
+with a `failures` list to each connection subscribed (`events.subscribe`) to a
+session that uses it. Each entry names the affected `session_ids` among that
+connection's subscriptions:
+
+| Notification | `failures` entry |
+|---|---|
+| `mcp.changed` | `runtime_id` hosting the server (`global` for top-level `[mcp]`), `server`, `reason`, `session_ids` |
+| `runtimes.changed` | `runtime_id`, `workspace` when the template takes one, `reason`, `session_ids` |
+
+Subscribing to a session also sends the failures that already affect it, so a
+client that opens a session after its servers failed still learns why their
+tools are missing. Failures are live notifications, not session events; the
+TUI shows each as an error row in every named session it displays.
+`failures` is omitted when empty.
+
+### MCP servers
+
+`mcp.server.list` returns each server's hosting `runtime_id`, `name`,
+`source`, `definition`, `state`, `tool_count`, `message`, and
+`auth_in_progress`. `state` is `connected`, `connecting`, `reconnecting`,
+`failed`, `needs_auth`, `disabled`, or `disconnected`. A `reconnecting` server
+dropped and is being restarted: its tools stay published and calls fail with
+the `runtime_unavailable` failure code until it reconnects or, after every
+attempt failed, becomes `failed` and its tools are dropped (see
+[MCP](../guide/mcp.md#connection-lifecycle)). The `mcp.server.*` mutations,
+`mcp.server.reconnect`, and `mcp.auth.*` act on servers of the global runtime.
 
 The shared client maps these to `ClientDelivery` variants (`Live`, replay
 deliveries, `PluginEvent`, `RuntimeChanged`, `RecoveryFailed`), so a UI
