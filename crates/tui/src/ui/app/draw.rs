@@ -380,6 +380,16 @@ impl App {
                     &self.theme,
                 );
             }
+            Modal::Runtimes => {
+                let rows = self.runtime_rows();
+                crate::ui::management::render_runtimes(
+                    frame,
+                    centered(frame.area(), 88, 70),
+                    &mut self.runtime_panel,
+                    &rows,
+                    &self.theme,
+                );
+            }
             Modal::Permissions => {
                 let mode = (self.new_session_draft.is_some() || self.selected.is_some())
                     .then(|| self.displayed_permission_mode());
@@ -443,6 +453,28 @@ impl App {
             .map(shorten_home)
             .unwrap_or_else(|| "—".into());
 
+        // The session's attachment names follow its directory; a session
+        // created before runtimes is attached to `global` and `local`.
+        let attachments = self
+            .selected
+            .and_then(|session_id| self.store.sessions.get(&session_id))
+            .map(|state| match state.runtime_attachments.attachments() {
+                Some(attachments) => attachments
+                    .iter()
+                    .map(|attachment| attachment.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                None => format!(
+                    "{}, {}",
+                    cookie_agent_protocol::RuntimeId::GLOBAL,
+                    cookie_agent_protocol::RuntimeId::LOCAL
+                ),
+            });
+        let cwd = match attachments {
+            Some(attachments) if attachments.is_empty() => format!("{cwd} · no runtimes"),
+            Some(attachments) => format!("{cwd} · {attachments}"),
+            None => cwd,
+        };
         let cwd = self.working_state().map_or(cwd, |working| {
             let glyph = ['◐', '◓', '◑', '◒'][usize::from(self.clock_bucket())];
             let label = match working {

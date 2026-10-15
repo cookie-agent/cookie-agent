@@ -280,7 +280,14 @@ impl Drop for AuthListener {
 
 impl McpPanel {
     pub(super) fn install(&mut self, mut servers: Vec<McpServerInfo>) {
-        servers.sort_by(|left, right| left.name.cmp(&right.name));
+        // Grouped by runtime, the editable global servers first.
+        servers.sort_by(|left, right| {
+            (!is_global(left), left.runtime_id.as_str(), &left.name).cmp(&(
+                !is_global(right),
+                right.runtime_id.as_str(),
+                &right.name,
+            ))
+        });
         self.servers = servers;
         self.refresh_in_flight = false;
         if self.auth.as_ref().is_some_and(|auth| {
@@ -293,6 +300,19 @@ impl McpPanel {
             self.clear_auth();
         }
         self.clamp();
+    }
+
+    /// The selected server, when `mcp.server.*` can edit it: only the
+    /// global runtime's servers are configured here; a coding runtime's come
+    /// from its template.
+    pub(super) fn selected_editable(&self) -> Result<Option<&McpServerInfo>, String> {
+        match self.selected() {
+            Some(server) if !is_global(server) => Err(format!(
+                "MCP server `{}` belongs to runtime `{}`; edit its [runtimes.{}.mcp] template",
+                server.name, server.runtime_id, server.runtime_id
+            )),
+            selected => Ok(selected),
+        }
     }
 
     pub(super) fn clear_auth(&mut self) {
@@ -371,11 +391,12 @@ pub(super) fn render_mcp(frame: &mut Frame, area: Rect, panel: &mut McpPanel, th
             let state = mcp_state_label(server.state);
             let tools = (server.tool_count > 0).then(|| format!(" ({})", server.tool_count));
             ListItem::new(format!(
-                "{}  {}{}  [{:?}]",
+                "{}  {}{}  [{} · {}]",
                 server.name,
                 state,
                 tools.unwrap_or_default(),
-                server.source
+                server.runtime_id,
+                source_label(server.source)
             ))
         })
         .collect::<Vec<_>>();
@@ -402,7 +423,10 @@ pub(super) fn render_mcp(frame: &mut Frame, area: Rect, panel: &mut McpPanel, th
         || "No MCP servers configured.".to_owned(),
         |server| {
             let connection = definition_display(&server.definition);
-            let mut text = format!("{}\n{}", server.name, connection);
+            let mut text = format!(
+                "{} (runtime {})\n{}",
+                server.name, server.runtime_id, connection
+            );
             if let Some(message) = &server.message {
                 text.push_str("\n\n");
                 text.push_str(message);
@@ -992,6 +1016,17 @@ fn format_cost(cost: Option<f64>) -> String {
     cost.map_or_else(|| "unpriced".to_owned(), format_cost_usd)
 }
 
+fn is_global(server: &McpServerInfo) -> bool {
+    server.runtime_id.as_str() == cookie_agent_protocol::RuntimeId::GLOBAL
+}
+
+const fn source_label(source: cookie_agent_protocol::McpConfigSource) -> &'static str {
+    match source {
+        cookie_agent_protocol::McpConfigSource::UserFile => "user config",
+        cookie_agent_protocol::McpConfigSource::Runtime => "runtime only",
+    }
+}
+
 fn definition_display(definition: &McpServerDefinition) -> String {
     if let Some(command) = &definition.command {
         let mut parts = vec![command.clone()];
@@ -1038,6 +1073,11 @@ pub(super) fn action_label(action: PermissionAction) -> &'static str {
         PermissionAction::Webfetch => "webfetch",
     }
 }
+
+mod runtimes;
+pub(super) use runtimes::{
+    RuntimeFormFocus, RuntimePanel, RuntimeRow, render_runtimes, runtime_rows,
+};
 
 mod permissions;
 pub(super) use permissions::{

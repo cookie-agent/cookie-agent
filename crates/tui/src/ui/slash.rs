@@ -36,6 +36,7 @@ pub(crate) enum SlashCommand {
     Model,
     Connect,
     Mcp,
+    Runtime,
     Permissions,
     Usage,
     Sessions,
@@ -141,6 +142,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "manage MCP servers",
         action: PaletteAction::Run(SlashCommand::Mcp),
         writes_session: false,
+    },
+    CommandSpec {
+        name: "runtime",
+        aliases: &["runtimes"],
+        description: "attach and detach the session's runtimes",
+        action: PaletteAction::Run(SlashCommand::Runtime),
+        writes_session: true,
     },
     CommandSpec {
         name: "permissions",

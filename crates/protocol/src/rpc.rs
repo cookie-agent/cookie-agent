@@ -1459,6 +1459,9 @@ pub struct McpServerDefinition {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerInfo {
+    /// The runtime hosting the server; `global` for top-level `[mcp]`
+    /// servers, the only ones `mcp.server.*` mutations edit.
+    pub runtime_id: RuntimeId,
     pub name: String,
     pub source: McpConfigSource,
     pub definition: McpServerDefinition,

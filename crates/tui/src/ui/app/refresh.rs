@@ -565,6 +565,19 @@ impl App {
                     Err(error) => self.status = format!("MCP refresh failed: {error}"),
                 }
             }
+            RpcUpdate::RuntimesRefreshed { result } => {
+                self.runtime_panel.refresh_in_flight = false;
+                match result {
+                    Ok(listing) => self.runtime_panel.install(listing),
+                    Err(error) => self.status = format!("runtime refresh failed: {error}"),
+                }
+            }
+            RpcUpdate::RuntimeAttachmentChanged { result } => {
+                self.status = match result {
+                    Ok(message) | Err(message) => message,
+                };
+                self.poll_runtimes();
+            }
             RpcUpdate::McpMutation { result } => match *result {
                 Ok(_) => {
                     self.status = "MCP server state updated.".into();
@@ -869,6 +882,9 @@ impl App {
         if matches!(delivery, ClientDelivery::McpChanged(_)) {
             // An open MCP panel refreshes now instead of at its next poll.
             self.poll_mcp();
+        }
+        if matches!(delivery, ClientDelivery::RuntimesChanged(_)) {
+            self.poll_runtimes();
         }
         if let ClientDelivery::RuntimeChanged(changed) = &delivery {
             let duplicate = self.runtime.revision() == Some(&changed.snapshot.runtime_revision);
@@ -1215,6 +1231,22 @@ impl App {
             approval_seconds_left,
             queue_age,
         }
+    }
+
+    pub(in crate::ui) fn poll_runtimes(&mut self) {
+        if self.modal != Modal::Runtimes || self.runtime_panel.refresh_in_flight {
+            return;
+        }
+        self.runtime_panel.refresh_in_flight = true;
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .list_runtimes()
+                .await
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::RuntimesRefreshed { result });
+        });
     }
 
     pub(in crate::ui) fn poll_mcp(&mut self) {

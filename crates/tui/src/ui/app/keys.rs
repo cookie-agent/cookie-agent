@@ -101,26 +101,26 @@ impl App {
             KeyCode::Up => move_picker_selection(&mut self.mcp_panel.selection, count, true),
             KeyCode::Down => move_picker_selection(&mut self.mcp_panel.selection, count, false),
             KeyCode::Char('n') => self.mcp_panel.form = Some(McpForm::add()),
-            KeyCode::Char('e') => {
-                if let Some(server) = self.mcp_panel.selected().cloned() {
-                    self.mcp_panel.form = Some(McpForm::edit(&server));
+            KeyCode::Char('e' | 'd' | ' ') => match self.mcp_panel.selected_editable() {
+                Err(refusal) => self.status = refusal,
+                Ok(None) => {}
+                Ok(Some(server)) => {
+                    let server = server.clone();
+                    match key.code {
+                        KeyCode::Char('e') => self.mcp_panel.form = Some(McpForm::edit(&server)),
+                        KeyCode::Char('d') => self.dispatch_mcp_remove(server.name),
+                        _ => self.dispatch_mcp_toggle(server.name, !server.definition.enabled),
+                    }
                 }
-            }
-            KeyCode::Char('d') => {
-                if let Some(name) = self.mcp_panel.selected().map(|server| server.name.clone()) {
-                    self.dispatch_mcp_remove(name);
+            },
+            KeyCode::Char('r') => match self.mcp_panel.selected_editable() {
+                Err(refusal) => self.status = refusal,
+                Ok(server) => {
+                    if let Some(name) = server.map(|server| server.name.clone()) {
+                        self.dispatch_mcp_reconnect(name);
+                    }
                 }
-            }
-            KeyCode::Char(' ') => {
-                if let Some(server) = self.mcp_panel.selected().cloned() {
-                    self.dispatch_mcp_toggle(server.name, !server.definition.enabled);
-                }
-            }
-            KeyCode::Char('r') => {
-                if let Some(name) = self.mcp_panel.selected().map(|server| server.name.clone()) {
-                    self.dispatch_mcp_reconnect(name);
-                }
-            }
+            },
             KeyCode::Char('a') => {
                 if let Some(server) = self.mcp_panel.selected().cloned()
                     && server.state == McpServerState::NeedsAuth
@@ -129,6 +129,119 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    pub(super) fn handle_runtime_key(&mut self, key: KeyEvent) {
+        if let Some(focus) = self.runtime_panel.form.as_ref().map(|form| form.focus) {
+            match key.code {
+                KeyCode::Esc => self.runtime_panel.form = None,
+                KeyCode::Tab | KeyCode::BackTab => self.runtime_panel.move_focus(),
+                KeyCode::Enter => self.submit_runtime_attach(),
+                KeyCode::Up | KeyCode::Left if focus == RuntimeFormFocus::Template => {
+                    self.runtime_panel.cycle_template(true);
+                }
+                KeyCode::Down | KeyCode::Right if focus == RuntimeFormFocus::Template => {
+                    self.runtime_panel.cycle_template(false);
+                }
+                _ if focus == RuntimeFormFocus::Workspace => {
+                    if let Some(form) = self.runtime_panel.form.as_mut() {
+                        edit_plain_input(&mut form.workspace, key);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        let rows = self.runtime_rows();
+        match key.code {
+            KeyCode::Esc => self.modal = Modal::None,
+            KeyCode::Up => {
+                move_picker_selection(&mut self.runtime_panel.selection, rows.len(), true)
+            }
+            KeyCode::Down => {
+                move_picker_selection(&mut self.runtime_panel.selection, rows.len(), false);
+            }
+            KeyCode::Char('a') => {
+                if let Err(error) = self.runtime_panel.begin_attach() {
+                    self.status = error;
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(row) = self
+                    .runtime_panel
+                    .selection
+                    .selected()
+                    .and_then(|index| rows.get(index))
+                {
+                    self.dispatch_runtime_detach(row.attachment.name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn submit_runtime_attach(&mut self) {
+        let (runtime_id, workspace) = match self.runtime_panel.attach_request() {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
+        let Some(session_id) = self.selected else {
+            self.status = "select a session before attaching a runtime".into();
+            return;
+        };
+        self.runtime_panel.form = None;
+        self.status = format!("attaching runtime `{runtime_id}`...");
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .attach_runtime(cookie_agent_protocol::SessionRuntimeAttachParams {
+                    session_id,
+                    runtime_id,
+                    workspace,
+                })
+                .await
+                .map(|result| format!("attached runtime as `{}`", result.attachment.name))
+                .map_err(|error| format!("attach failed: {error}"));
+            let _ = updates.send(RpcUpdate::RuntimeAttachmentChanged { result });
+        });
+    }
+
+    fn dispatch_runtime_detach(&self, name: cookie_agent_protocol::AttachmentName) {
+        let Some(session_id) = self.selected else {
+            return;
+        };
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .detach_runtime(cookie_agent_protocol::SessionRuntimeDetachParams {
+                    session_id,
+                    name: name.clone(),
+                })
+                .await
+                .map(|_| format!("detached runtime `{name}`"))
+                .map_err(|error| format!("detach failed: {error}"));
+            let _ = updates.send(RpcUpdate::RuntimeAttachmentChanged { result });
+        });
+    }
+
+    /// The selected session's attachments with their instances.
+    pub(in crate::ui) fn runtime_rows(&self) -> Vec<crate::ui::management::RuntimeRow> {
+        let attachments = self
+            .selected
+            .and_then(|session_id| self.store.sessions.get(&session_id))
+            .map(|state| state.runtime_attachments.attachments());
+        match attachments {
+            Some(attachments) => crate::ui::management::runtime_rows(
+                attachments,
+                self.runtime_panel.listing.as_ref(),
+            ),
+            None => Vec::new(),
         }
     }
 
@@ -696,6 +809,7 @@ impl App {
             Modal::UserMessage => self.handle_user_menu_key(key).await,
             Modal::RevertConfirm => self.handle_revert_confirm_key(key).await,
             Modal::Mcp => self.handle_mcp_key(key).await,
+            Modal::Runtimes => self.handle_runtime_key(key),
             Modal::Permissions => self.handle_permissions_key(key).await,
             Modal::Usage => match key.code {
                 KeyCode::Esc => self.modal = Modal::None,
@@ -1812,6 +1926,7 @@ impl App {
                     | Modal::DisconnectConfirm
                     | Modal::RevertConfirm
                     | Modal::Mcp
+                    | Modal::Runtimes
                     | Modal::Permissions
                     | Modal::Usage
                     | Modal::GoalDetail

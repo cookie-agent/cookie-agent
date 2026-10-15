@@ -51,6 +51,7 @@ fn stdio_mcp_form_accepts_args_environment_and_working_directory() {
 fn mcp_panel_renders_live_state_and_connection() {
     let mut panel = super::McpPanel::default();
     panel.install(vec![McpServerInfo {
+        runtime_id: cookie_agent_protocol::RuntimeId::new("global").unwrap(),
         name: "remote".into(),
         source: McpConfigSource::UserFile,
         definition: McpServerDefinition {
@@ -95,6 +96,7 @@ fn mcp_panel_renders_live_state_and_connection() {
 fn mcp_panel_renders_copyable_oauth_wait() {
     let mut panel = super::McpPanel::default();
     panel.install(vec![McpServerInfo {
+        runtime_id: cookie_agent_protocol::RuntimeId::new("global").unwrap(),
         name: "remote".into(),
         source: McpConfigSource::UserFile,
         definition: McpServerDefinition {
@@ -601,4 +603,180 @@ fn usage_panel_footer_switches_when_content_scrolls() {
             buffer[(48, y)].symbol()
         );
     }
+}
+
+fn runtime_listing() -> cookie_agent_protocol::RuntimesListResult {
+    use cookie_agent_protocol::{
+        AttachmentName, RuntimeId, RuntimeInstanceInfo, RuntimeInstanceStatus, RuntimeKind,
+        RuntimeTemplateInfo,
+    };
+    let instance =
+        |id: &str, name: &str, workspace: Option<&str>, status, message: Option<&str>| {
+            RuntimeInstanceInfo {
+                runtime_id: RuntimeId::new(id).unwrap(),
+                attachment_name: Some(AttachmentName::new(name).unwrap()),
+                kind: Some(if id == "global" {
+                    RuntimeKind::Global
+                } else {
+                    RuntimeKind::Coding
+                }),
+                workspace: workspace.map(str::to_owned),
+                platform: workspace.map(|_| "linux".to_owned()),
+                status,
+                message: message.map(str::to_owned),
+            }
+        };
+    cookie_agent_protocol::RuntimesListResult {
+        templates: vec![
+            RuntimeTemplateInfo {
+                runtime_id: RuntimeId::new("global").unwrap(),
+                takes_workspace: false,
+            },
+            RuntimeTemplateInfo {
+                runtime_id: RuntimeId::new("labpc").unwrap(),
+                takes_workspace: true,
+            },
+        ],
+        instances: vec![
+            instance("global", "global", None, RuntimeInstanceStatus::Ready, None),
+            instance(
+                "local",
+                "local_web",
+                Some("/srv/web"),
+                RuntimeInstanceStatus::Ready,
+                None,
+            ),
+            instance(
+                "labpc",
+                "labpc_api",
+                Some("/srv/api"),
+                RuntimeInstanceStatus::Failed,
+                Some("runtime `labpc` failed to start: connection refused"),
+            ),
+        ],
+    }
+}
+
+#[test]
+fn runtime_rows_match_instances_and_read_legacy_sessions_as_global_and_local() {
+    use cookie_agent_protocol::{AttachmentName, RuntimeAttachment, RuntimeId, RuntimeKind};
+    let listing = runtime_listing();
+    let attached = [RuntimeAttachment {
+        name: AttachmentName::new("labpc_api").unwrap(),
+        runtime_id: RuntimeId::new("labpc").unwrap(),
+        kind: RuntimeKind::Coding,
+        workspace: Some("/srv/api".into()),
+    }];
+    let rows = super::runtime_rows(Some(&attached), Some(&listing));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].instance.as_ref().map(|instance| instance.status),
+        Some(cookie_agent_protocol::RuntimeInstanceStatus::Failed)
+    );
+
+    let legacy = super::runtime_rows(None, Some(&listing));
+    assert_eq!(
+        legacy
+            .iter()
+            .map(|row| row.attachment.name.as_str())
+            .collect::<Vec<_>>(),
+        ["global", "local_web"]
+    );
+    assert!(legacy.iter().all(|row| row.instance.is_some()));
+    assert!(super::runtime_rows(Some(&[]), Some(&listing)).is_empty());
+}
+
+#[test]
+fn runtime_attach_requires_a_workspace_exactly_when_the_template_takes_one() {
+    let mut panel = super::RuntimePanel::default();
+    assert!(panel.begin_attach().is_err(), "nothing to attach yet");
+    panel.install(runtime_listing());
+    panel.begin_attach().expect("attach step");
+    let (runtime_id, workspace) = panel.attach_request().expect("global takes none");
+    assert_eq!(runtime_id.as_str(), "global");
+    assert_eq!(workspace, None);
+    // The workspace field is only reachable for a template that takes one.
+    panel.move_focus();
+    assert_eq!(
+        panel.form.as_ref().map(|form| form.focus),
+        Some(super::RuntimeFormFocus::Template)
+    );
+
+    panel.cycle_template(false);
+    let error = panel.attach_request().expect_err("labpc needs a workspace");
+    assert!(error.contains("labpc"), "{error}");
+    panel.move_focus();
+    assert_eq!(
+        panel.form.as_ref().map(|form| form.focus),
+        Some(super::RuntimeFormFocus::Workspace)
+    );
+    panel
+        .form
+        .as_mut()
+        .expect("form")
+        .workspace
+        .set_buffer(" ~/api ".into());
+    let (runtime_id, workspace) = panel.attach_request().expect("labpc with a workspace");
+    assert_eq!(runtime_id.as_str(), "labpc");
+    assert_eq!(workspace.as_deref(), Some("~/api"));
+
+    // Switching to a template without a workspace leaves the field.
+    panel.cycle_template(false);
+    assert_eq!(
+        panel.form.as_ref().map(|form| form.focus),
+        Some(super::RuntimeFormFocus::Template)
+    );
+}
+
+#[test]
+fn runtime_panel_renders_attachments_with_status_and_failure_reason() {
+    use cookie_agent_protocol::{AttachmentName, RuntimeAttachment, RuntimeId, RuntimeKind};
+    let listing = runtime_listing();
+    let attached = [
+        RuntimeAttachment {
+            name: AttachmentName::new("global").unwrap(),
+            runtime_id: RuntimeId::new("global").unwrap(),
+            kind: RuntimeKind::Global,
+            workspace: None,
+        },
+        RuntimeAttachment {
+            name: AttachmentName::new("labpc_api").unwrap(),
+            runtime_id: RuntimeId::new("labpc").unwrap(),
+            kind: RuntimeKind::Coding,
+            workspace: Some("/srv/api".into()),
+        },
+    ];
+    let rows = super::runtime_rows(Some(&attached), Some(&listing));
+    let mut panel = super::RuntimePanel::default();
+    panel.install(listing);
+    panel.selection.select(Some(1));
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            super::render_runtimes(
+                frame,
+                frame.area(),
+                &mut panel,
+                &rows,
+                &crate::theme::Theme::default(),
+            );
+        })
+        .expect("render runtime panel");
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(
+        text.contains("global  global  (no workspace)  ready"),
+        "{text}"
+    );
+    assert!(
+        text.contains("labpc_api  labpc  /srv/api  failed"),
+        "{text}"
+    );
+    assert!(text.contains("connection refused"), "{text}");
+    assert!(text.contains("a attach | d detach"), "{text}");
 }

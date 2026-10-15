@@ -146,6 +146,10 @@ impl Engine {
                     McpServerState::Failed => WireMcpServerState::Failed,
                 });
                 McpServerInfo {
+                    runtime_id: cookie_agent_protocol::RuntimeId::new(
+                        cookie_agent_protocol::RuntimeId::GLOBAL,
+                    )
+                    .expect("`global` is a valid runtime ID"),
                     name,
                     source: source_to_wire(loaded.source),
                     definition: definition_to_wire(&loaded.config),

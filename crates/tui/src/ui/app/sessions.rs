@@ -483,7 +483,11 @@ impl App {
             Modal::Variants => self.variant_step_options().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
             Modal::UserMessage => USER_MENU_ITEMS.len(),
-            Modal::Mcp | Modal::Permissions | Modal::Usage | Modal::GoalDetail => 0,
+            Modal::Mcp
+            | Modal::Runtimes
+            | Modal::Permissions
+            | Modal::Usage
+            | Modal::GoalDetail => 0,
             Modal::ConnectDetails
             | Modal::ConnectSetup
             | Modal::ConnectError

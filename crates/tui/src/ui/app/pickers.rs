@@ -920,7 +920,11 @@ impl App {
             | Modal::DisconnectConfirm => {}
             Modal::UserMessage => self.activate_user_menu_entry(index),
             Modal::RevertConfirm => {}
-            Modal::Mcp | Modal::Permissions | Modal::Usage | Modal::GoalDetail => {}
+            Modal::Mcp
+            | Modal::Runtimes
+            | Modal::Permissions
+            | Modal::Usage
+            | Modal::GoalDetail => {}
             Modal::None => {}
         }
     }

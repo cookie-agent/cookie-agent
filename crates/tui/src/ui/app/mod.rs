@@ -99,7 +99,8 @@ use super::events::{RenderScheduler, TerminalRestore, install_terminal_panic_hoo
 use super::input::{self, InputState};
 use super::management::{
     AuthListener, McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm,
-    PermissionFormFocus, PermissionHits, PermissionPanel, PermissionRow, UsagePanel, step_effect,
+    PermissionFormFocus, PermissionHits, PermissionPanel, PermissionRow, RuntimeFormFocus,
+    RuntimePanel, UsagePanel, step_effect,
 };
 use super::pickers::{
     SearchPickerFocus, SearchPickerState, SessionSearchRow, agent_matches, cycle_selection,
@@ -138,6 +139,7 @@ pub(super) enum Modal {
     /// Confirm guard behind the menu's revert action.
     RevertConfirm,
     Mcp,
+    Runtimes,
     Permissions,
     Usage,
     GoalDetail,
@@ -651,6 +653,7 @@ pub struct App {
     pub(super) permission_modes: HashMap<SessionId, PermissionMode>,
     permission_mode_generations: HashMap<SessionId, u64>,
     pub(super) mcp_panel: McpPanel,
+    pub(super) runtime_panel: RuntimePanel,
     pub(super) permission_panel: PermissionPanel,
     pub(super) usage_panel: UsagePanel,
     pub(super) usage_load_generation: u64,
@@ -885,6 +888,13 @@ pub(in crate::ui) enum RpcUpdate {
     },
     McpRefreshed {
         result: Result<cookie_agent_protocol::McpServerListResult, String>,
+    },
+    RuntimesRefreshed {
+        result: Result<cookie_agent_protocol::RuntimesListResult, String>,
+    },
+    /// An attach or detach finished; `Ok` carries the status line.
+    RuntimeAttachmentChanged {
+        result: Result<String, String>,
     },
     McpMutation {
         result: Box<Result<Option<McpServerInfo>, String>>,
@@ -1188,6 +1198,7 @@ impl App {
             permission_modes: HashMap::new(),
             permission_mode_generations: HashMap::new(),
             mcp_panel: McpPanel::default(),
+            runtime_panel: RuntimePanel::default(),
             permission_panel: PermissionPanel::default(),
             usage_panel: UsagePanel::default(),
             usage_load_generation: 0,
@@ -1751,6 +1762,7 @@ async fn event_loop(
             },
             _ = mcp_poll.tick() => {
                 app.poll_mcp();
+                app.poll_runtimes();
             },
             _ = frame_tick.tick(), if frame_due => {
                 // The frame cadence drives the clock bucket (the "thinking…"

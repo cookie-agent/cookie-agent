@@ -24,6 +24,7 @@ mod providers;
 mod queue;
 mod read_output;
 mod render_preview;
+mod runtimes;
 mod scrolling;
 mod selection;
 mod sessions_tree;

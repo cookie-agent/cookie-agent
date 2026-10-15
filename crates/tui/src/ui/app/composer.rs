@@ -257,6 +257,14 @@ impl App {
             }
             return;
         }
+        if self.modal == Modal::Runtimes {
+            if let Some(form) = &mut self.runtime_panel.form
+                && form.focus == RuntimeFormFocus::Workspace
+            {
+                form.workspace.insert_text(&text.replace(['\r', '\n'], ""));
+            }
+            return;
+        }
         if self.modal == Modal::Permissions {
             if let Some(form) = &mut self.permission_panel.form
                 && form.focus == PermissionFormFocus::Pattern
@@ -1045,6 +1053,15 @@ impl App {
                 self.modal = Modal::Mcp;
                 self.mcp_panel.form = None;
                 self.poll_mcp();
+            }
+            SlashCommand::Runtime => {
+                if self.selected.is_none() {
+                    self.status = "select a session before managing its runtimes".into();
+                } else {
+                    self.modal = Modal::Runtimes;
+                    self.runtime_panel.form = None;
+                    self.poll_runtimes();
+                }
             }
             SlashCommand::Permissions => {
                 if self.new_session_draft.is_some() {
