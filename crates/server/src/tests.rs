@@ -202,7 +202,6 @@ async fn mcp_management_is_reachable_through_protocol() {
         headers: BTreeMap::new(),
         oauth: None,
         enabled: true,
-        lazy: true,
         timeout_ms: Some(1000),
     };
     client

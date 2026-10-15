@@ -19,7 +19,6 @@ timeout_ms = 30000
 [mcp.servers.remote]
 url = "https://mcp.example.com/mcp"
 oauth = true
-lazy = true
 ```
 
 Servers are configured only in the user file. A `<cwd>/.cookie-agent/config.toml`
@@ -27,13 +26,13 @@ is never read, so a repository cannot add MCP servers.
 
 Each server must set exactly one of `command` or `url`. `args`, `env`, and `cwd`
 apply only to stdio commands; `headers` applies only to Streamable HTTP. Servers
-are enabled by default. An enabled server connects at startup unless `lazy =
-true`; a lazy server exposes no tools until its first named tool use establishes
-the connection. `timeout_ms` bounds connection, listing, and calls and defaults
-to 30000. Eager servers connect in parallel. The first run waits for every
-eager server's initial connection and `tools/list` attempt to finish, so its tool
-context is not built from a partial startup snapshot. Each wait remains bounded
-by that server's `timeout_ms`; one server's failure does not block the others.
+are enabled by default, and every enabled server connects when the daemon
+starts; there is no deferred connection, and an authored `lazy` key is an
+unknown field. `timeout_ms` bounds connection, listing, and calls and defaults
+to 30000. Servers connect in parallel. The first run waits for every server's
+initial connection and `tools/list` attempt to finish, so its tool context is
+not built from a partial startup snapshot. Each wait remains bounded by that
+server's `timeout_ms`; one server's failure does not block the others.
 
 ## OAuth for remote servers
 
@@ -129,7 +128,7 @@ separately.
 
 Run `/mcp` to open the live MCP panel. The list reports `connected` with its
 tool count, `connecting`, `failed` with the connection error,
-`needs_auth`, `disabled`, and `lazy-not-connected`. The panel polls the daemon
+`needs_auth`, and `disabled`. The panel polls the daemon
 while it is open. Select a server to inspect its complete command, arguments,
 environment, and working directory, or URL and headers. Press `a` on a
 `needs_auth` remote server to begin OAuth.
@@ -149,7 +148,7 @@ SSE transport is not supported.
 ## Repository security
 
 There is no separate MCP trust store or approval prompt. Every configured,
-enabled server enters the normal lazy or eager connection lifecycle. MCP tools
+enabled server connects eagerly. MCP tools
 are permission-gated like normal tools: an agent with no `mcp` permission entry
 cannot see them, and scoped rules decide each call.
 
@@ -217,7 +216,6 @@ described in [config.toml](configuration.md).
 | `headers` | map of strings | empty | Static request headers; valid only with `url`. |
 | `oauth` | boolean or table | auto | Streamable HTTP OAuth. Omit, set `true`, or use `{}` for reactive OAuth; set `false` to disable it. A table accepts optional `client_id`, `client_secret`, `client_metadata_url`, and `scopes`. A static `Authorization` header takes precedence. |
 | `enabled` | boolean | `true` | Whether the server may connect. |
-| `lazy` | boolean | `false` | Defer connection and tool listing until first named use. |
 | `timeout_ms` | integer | `30000` | Positive timeout for connect, list, and call operations. |
 
 ## Runtime layers and persistence

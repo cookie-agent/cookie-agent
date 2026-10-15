@@ -480,7 +480,6 @@ fn remote_config(url: String) -> McpServerConfig {
         headers: BTreeMap::new(),
         oauth: Default::default(),
         enabled: true,
-        lazy: true,
         timeout_ms: Some(5_000),
     }
 }
@@ -1332,8 +1331,7 @@ async fn shutdown_and_supersede_end_inflight_flows() {
 async fn eager_readiness_finishes_at_needs_auth_without_waiting_for_browser_flow() {
     let fixture = OAuthFixture::start().await;
     let directory = tempfile::tempdir().expect("project data");
-    let mut config = remote_config(fixture.mcp_url());
-    config.lazy = false;
+    let config = remote_config(fixture.mcp_url());
     let registry = McpRegistry::new(
         BTreeMap::from([(
             "remote".into(),

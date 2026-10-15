@@ -42,9 +42,9 @@ fn plugin_table(name: &str, env: &[(&str, String)], extra: &str) -> String {
     )
 }
 
-fn mcp_table(name: &str, lazy: bool) -> String {
+fn mcp_table(name: &str) -> String {
     format!(
-        "[mcp.servers.{name}]\ncommand = {}\nargs = [{}]\nlazy = {lazy}\n",
+        "[mcp.servers.{name}]\ncommand = {}\nargs = [{}]\n",
         toml_string(python_command()),
         toml_string(MCP_FIXTURE)
     )
@@ -570,7 +570,7 @@ async fn plugin_tools_may_share_names_with_other_runtimes_and_the_base_layer() {
 async fn eager_mcp_preempts_plugin_claim_regardless_of_startup_order() {
     let config = format!(
         "{}{}",
-        mcp_table("fixture", false),
+        mcp_table("fixture"),
         plugin_table(
             "collision",
             &[
@@ -620,32 +620,6 @@ async fn later_plugin_registration_wins_only_the_duplicate_tool() {
             .is_some_and(|reason| reason.contains("later plugin `second`"))
     );
     assert_eq!(status(&harness.engine, "second").tools, ["shared_tool"]);
-    harness.engine.shutdown().await;
-}
-
-#[tokio::test]
-async fn lazy_mcp_preempts_an_existing_plugin_claim_when_connected() {
-    let config = format!(
-        "{}{}",
-        mcp_table("fixture", true),
-        plugin_table(
-            "collision",
-            &[
-                ("FIXTURE_NAME", "collision".into()),
-                ("FIXTURE_TOOLS", tools("fixture_echo_text")),
-            ],
-            "",
-        )
-    );
-    let harness = open_engine(&config);
-    wait_for_state(&harness.engine, "collision", PluginState::Connected).await;
-    harness
-        .engine
-        .reconnect_mcp_server("fixture".into())
-        .await
-        .expect("connect lazy MCP");
-    wait_for_mcp_connected(&harness.engine, "fixture").await;
-    wait_for_state(&harness.engine, "collision", PluginState::Failed).await;
     harness.engine.shutdown().await;
 }
 

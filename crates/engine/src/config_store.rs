@@ -138,9 +138,6 @@ impl Engine {
                     .state
                 {
                     McpServerState::Disabled => WireMcpServerState::Disabled,
-                    McpServerState::Disconnected if loaded.config.lazy => {
-                        WireMcpServerState::LazyNotConnected
-                    }
                     McpServerState::Disconnected => WireMcpServerState::Disconnected,
                     McpServerState::Connecting => WireMcpServerState::Connecting,
                     McpServerState::Connected => WireMcpServerState::Connected,
@@ -335,7 +332,6 @@ fn definition_to_wire(config: &McpServerConfig) -> McpServerDefinition {
             }
         }),
         enabled: config.enabled,
-        lazy: config.lazy,
         timeout_ms: config.timeout_ms,
     }
 }
@@ -364,7 +360,6 @@ fn definition_from_wire(definition: McpServerDefinition) -> McpServerConfig {
             }
         },
         enabled: definition.enabled,
-        lazy: definition.lazy,
         timeout_ms: definition.timeout_ms,
     }
 }

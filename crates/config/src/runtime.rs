@@ -115,8 +115,6 @@ pub struct McpServerConfig {
     pub oauth: McpOAuthConfig,
     #[serde(default = "yes")]
     pub enabled: bool,
-    #[serde(default)]
-    pub lazy: bool,
     pub timeout_ms: Option<u64>,
 }
 

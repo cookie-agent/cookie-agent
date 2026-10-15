@@ -41,7 +41,7 @@ fn oauth_path(directory: &tempfile::TempDir) -> std::path::PathBuf {
         .join(OAUTH_STORE_FILE)
 }
 
-fn fixture_config(lazy: bool) -> McpServerConfig {
+fn fixture_config() -> McpServerConfig {
     McpServerConfig {
         command: Some(PYTHON.into()),
         args: vec![
@@ -58,7 +58,6 @@ fn fixture_config(lazy: bool) -> McpServerConfig {
         headers: BTreeMap::new(),
         oauth: Default::default(),
         enabled: true,
-        lazy,
         // Generous: under a loaded parallel test run (Windows CI especially)
         // starting Python and completing the handshake can take seconds. No
         // test relies on this timeout firing; slow-list tests cancel instead.
@@ -66,13 +65,13 @@ fn fixture_config(lazy: bool) -> McpServerConfig {
     }
 }
 
-fn registry(directory: &tempfile::TempDir, source: McpServerSource, lazy: bool) -> McpRegistry {
+fn registry(directory: &tempfile::TempDir, source: McpServerSource) -> McpRegistry {
     McpRegistry::new(
         BTreeMap::from([(
             "fixture".into(),
             LoadedMcpServer {
                 source,
-                config: fixture_config(lazy),
+                config: fixture_config(),
             },
         )]),
         oauth_path(directory),
@@ -85,7 +84,7 @@ fn notification_fixture_config(
     notifications: usize,
     relist_name: &str,
 ) -> McpServerConfig {
-    let mut config = fixture_config(true);
+    let mut config = fixture_config();
     config.args = vec![
             "-c".into(),
             r#"import json
@@ -589,7 +588,7 @@ fn tool_specs_force_closed_object_schema_and_keep_defs() {
 #[tokio::test]
 async fn stdio_lists_calls_and_refreshes_tools() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let registry = registry(&directory, McpServerSource::UserFile, false);
+    let registry = registry(&directory, McpServerSource::UserFile);
     let server = registry.server("fixture").expect("fixture server");
     server.connect().await.expect("connect fixture");
     let specs = registry
@@ -634,7 +633,7 @@ async fn stdio_lists_calls_and_refreshes_tools() {
 #[test]
 fn mcp_registry_has_no_system_prompt_contribution() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let registry = registry(&directory, McpServerSource::UserFile, false);
+    let registry = registry(&directory, McpServerSource::UserFile);
     assert!(
         registry
             .prompt_sections(&SessionToolContext::new(SessionId::new_v7()))
@@ -821,32 +820,10 @@ async fn dropping_registry_aborts_idle_tool_refresh_worker() {
     .expect("tool refresh worker stopped");
 }
 
-#[tokio::test]
-async fn lazy_server_connects_on_first_named_use() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let registry = registry(&directory, McpServerSource::UserFile, true);
-    assert!(
-        registry
-            .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
-            .expect("initial tools")
-            .is_empty()
-    );
-    let result = execute(
-        &registry,
-        &directory,
-        "fixture_echo_text",
-        json!({"text":"lazy"}),
-    )
-    .await;
-    assert_eq!(result.output, "lazy");
-    assert_eq!(registry.statuses()[0].state, McpServerState::Connected);
-    registry.shutdown().await;
-}
-
 #[test]
 fn stale_generation_created_during_publish_cannot_overwrite_newer_tools() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let registry = registry(&directory, McpServerSource::UserFile, true);
+    let registry = registry(&directory, McpServerSource::UserFile);
     let server = registry.server("fixture").expect("server");
     server.list_generation.store(1, Ordering::Release);
     server.publish_tools_before_commit(
@@ -865,7 +842,7 @@ fn stale_generation_created_during_publish_cannot_overwrite_newer_tools() {
 #[test]
 fn identical_relist_keeps_tools_and_claims_untouched() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let registry = registry(&directory, McpServerSource::UserFile, true);
+    let registry = registry(&directory, McpServerSource::UserFile);
     let server = registry.server("fixture").expect("server");
     let tool = || Tool::new("same", "same", Arc::new(Map::new()));
     server.list_generation.store(1, Ordering::Release);
@@ -942,7 +919,7 @@ async fn removing_server_cancels_pending_tool_list_refresh() {
 #[test]
 fn stale_refresh_failure_cannot_invalidate_newer_publication() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let registry = registry(&directory, McpServerSource::UserFile, true);
+    let registry = registry(&directory, McpServerSource::UserFile);
     let server = registry.server("fixture").expect("server");
     server.set_status(McpServerState::Connected, None);
     server.list_generation.store(1, Ordering::Release);
@@ -964,7 +941,7 @@ fn stale_refresh_failure_cannot_invalidate_newer_publication() {
 #[test]
 fn collisions_fail_the_named_server() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let registry = registry(&directory, McpServerSource::UserFile, true);
+    let registry = registry(&directory, McpServerSource::UserFile);
     let server = registry.server("fixture").expect("server");
     registry
         .inner
@@ -987,7 +964,7 @@ fn collisions_fail_the_named_server() {
 #[tokio::test]
 async fn eager_readiness_waits_for_initial_tool_listing() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let mut config = fixture_config(false);
+    let mut config = fixture_config();
     config
         .env
         .insert("MCP_FIXTURE_LIST_DELAY_MS".into(), "100".into());
@@ -1020,7 +997,7 @@ async fn eager_readiness_waits_for_initial_tool_listing() {
 #[tokio::test]
 async fn shutdown_aborts_inflight_connect_and_blocks_late_installation() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let mut config = fixture_config(false);
+    let mut config = fixture_config();
     config
         .env
         .insert("MCP_FIXTURE_LIST_DELAY_MS".into(), "10000".into());
@@ -1089,7 +1066,7 @@ async fn shutdown_aborts_inflight_connect_and_blocks_late_installation() {
 #[tokio::test]
 async fn replacing_an_inflight_connect_cannot_publish_stale_tools() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let mut delayed = fixture_config(false);
+    let mut delayed = fixture_config();
     delayed
         .env
         .insert("MCP_FIXTURE_LIST_DELAY_MS".into(), "10000".into());
@@ -1119,7 +1096,7 @@ async fn replacing_an_inflight_connect_cannot_publish_stale_tools() {
             "fixture".into(),
             LoadedMcpServer {
                 source: McpServerSource::Runtime,
-                config: fixture_config(true),
+                config: fixture_config(),
             },
         )
         .await
@@ -1143,7 +1120,7 @@ async fn replacing_an_inflight_connect_cannot_publish_stale_tools() {
 #[tokio::test]
 async fn reconnect_failure_transitions_server_to_failed() {
     let directory = tempfile::tempdir().expect("tempdir");
-    let mut config = fixture_config(true);
+    let mut config = fixture_config();
     config.command = Some(
         directory
             .path()
@@ -1190,14 +1167,14 @@ fn sanitized_server_name_collisions_are_rejected_at_startup() {
             "git hub".into(),
             LoadedMcpServer {
                 source: McpServerSource::UserFile,
-                config: fixture_config(true),
+                config: fixture_config(),
             },
         ),
         (
             "git/hub".into(),
             LoadedMcpServer {
                 source: McpServerSource::UserFile,
-                config: fixture_config(true),
+                config: fixture_config(),
             },
         ),
     ]);

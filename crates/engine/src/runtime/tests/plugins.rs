@@ -589,7 +589,7 @@ async fn plugin_diagnostic_wedge_does_not_block_shutdown() {
 }
 
 #[tokio::test]
-async fn lazy_mcp_preemption_rejects_the_plugin_tool_published_to_the_model() {
+async fn a_late_mcp_connection_rejects_the_plugin_tool_published_to_the_model() {
     const PLUGIN_FIXTURE: &str =
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
     const MCP_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py");
@@ -624,7 +624,7 @@ env = {{ FIXTURE_NAME = "collision", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE 
 command = {}
 args = [{}]
 env = {{ MCP_FIXTURE_CALL_FILE = {} }}
-lazy = true
+enabled = false
 "#,
         toml_string(python_command()),
         toml_string(PLUGIN_FIXTURE),
@@ -671,11 +671,13 @@ lazy = true
         .expect("model request reached")
         .expect("model reach signal");
 
+    // Enabling the server mid-turn connects it, and its tool claims the
+    // name the plugin's published tool holds.
     fixture
         .engine
-        .reconnect_mcp_server("fixture".into())
+        .set_mcp_server_enabled("fixture".into(), true)
         .await
-        .expect("connect lazy MCP");
+        .expect("enable MCP");
     // Plugin lifecycle changes are not session events; this is the only
     // observation API available for asynchronous MCP/plugin preemption.
     tokio::time::timeout(test_timeout(3), async {

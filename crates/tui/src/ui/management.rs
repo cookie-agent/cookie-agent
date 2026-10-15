@@ -57,7 +57,6 @@ pub(super) enum McpFormFocus {
     Environment,
     Cwd,
     Enabled,
-    Lazy,
     Persist,
     Submit,
 }
@@ -72,7 +71,6 @@ pub(super) struct McpForm {
     pub(super) environment: InputState,
     pub(super) cwd: InputState,
     pub(super) enabled: bool,
-    pub(super) lazy: bool,
     pub(super) persist: PersistChoice,
     pub(super) focus: McpFormFocus,
     base: McpServerDefinition,
@@ -90,7 +88,6 @@ impl McpForm {
             environment: json_input("{}"),
             cwd: InputState::default(),
             enabled: true,
-            lazy: false,
             persist: PersistChoice::Runtime,
             focus: McpFormFocus::Name,
             base: McpServerDefinition {
@@ -102,7 +99,6 @@ impl McpForm {
                 headers: BTreeMap::new(),
                 oauth: None,
                 enabled: true,
-                lazy: false,
                 timeout_ms: None,
             },
         }
@@ -138,7 +134,6 @@ impl McpForm {
             ),
             cwd: json_input(server.definition.cwd.as_deref().unwrap_or_default()),
             enabled: server.definition.enabled,
-            lazy: server.definition.lazy,
             persist: PersistChoice::Runtime,
             focus: McpFormFocus::Name,
             base: server.definition.clone(),
@@ -146,7 +141,7 @@ impl McpForm {
     }
 
     pub(super) fn move_focus(&mut self, backward: bool) {
-        const STDIO_FIELDS: [McpFormFocus; 10] = [
+        const STDIO_FIELDS: [McpFormFocus; 9] = [
             McpFormFocus::Name,
             McpFormFocus::Transport,
             McpFormFocus::Endpoint,
@@ -154,17 +149,15 @@ impl McpForm {
             McpFormFocus::Environment,
             McpFormFocus::Cwd,
             McpFormFocus::Enabled,
-            McpFormFocus::Lazy,
             McpFormFocus::Persist,
             McpFormFocus::Submit,
         ];
-        const HTTP_FIELDS: [McpFormFocus; 8] = [
+        const HTTP_FIELDS: [McpFormFocus; 7] = [
             McpFormFocus::Name,
             McpFormFocus::Transport,
             McpFormFocus::Endpoint,
             McpFormFocus::Extras,
             McpFormFocus::Enabled,
-            McpFormFocus::Lazy,
             McpFormFocus::Persist,
             McpFormFocus::Submit,
         ];
@@ -196,7 +189,6 @@ impl McpForm {
                 });
             }
             McpFormFocus::Enabled => self.enabled = !self.enabled,
-            McpFormFocus::Lazy => self.lazy = !self.lazy,
             McpFormFocus::Persist => {
                 self.persist = match self.persist {
                     PersistChoice::Runtime => PersistChoice::User,
@@ -229,7 +221,6 @@ impl McpForm {
         }
         let mut definition = self.base.clone();
         definition.enabled = self.enabled;
-        definition.lazy = self.lazy;
         match self.transport {
             McpTransport::Stdio => {
                 definition.command = Some(endpoint);
@@ -499,7 +490,6 @@ fn render_mcp_form(frame: &mut Frame, area: Rect, form: &McpForm, theme: &Theme)
     }
     rows.extend([
         (McpFormFocus::Enabled, "Enabled", form.enabled.to_string()),
-        (McpFormFocus::Lazy, "Lazy", form.lazy.to_string()),
         (McpFormFocus::Persist, "Save", form.persist.label().into()),
         (McpFormFocus::Submit, "Submit", "press enter".into()),
     ]);
@@ -1030,7 +1020,6 @@ fn mcp_state_label(state: cookie_agent_protocol::McpServerState) -> &'static str
         cookie_agent_protocol::McpServerState::Failed => "failed",
         cookie_agent_protocol::McpServerState::NeedsAuth => "needs_auth",
         cookie_agent_protocol::McpServerState::Disabled => "disabled",
-        cookie_agent_protocol::McpServerState::LazyNotConnected => "lazy-not-connected",
         cookie_agent_protocol::McpServerState::Disconnected => "disconnected",
     }
 }

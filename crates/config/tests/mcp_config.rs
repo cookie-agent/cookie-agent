@@ -39,6 +39,15 @@ fn mcp_transport_specific_fields_and_timeout_are_strict() {
 }
 
 #[test]
+fn removed_lazy_setting_is_an_unknown_field() {
+    for lazy in ["lazy = true\n", "lazy = false\n"] {
+        let directory = root(&format!("[mcp.servers.old]\ncommand = \"server\"\n{lazy}"));
+        let error = load_from_user_root(Some(directory.path())).expect_err("lazy is not a field");
+        assert!(error.to_string().contains("lazy"), "{error}");
+    }
+}
+
+#[test]
 fn user_servers_have_user_file_provenance() {
     let user = root("[mcp.servers.github]\nurl = \"https://example.test/mcp\"\n");
     let loaded = load_from_user_root(Some(user.path())).expect("configuration");
@@ -103,7 +112,6 @@ fn write_back_replaces_only_the_named_table_and_round_trips_strictly() {
         headers: std::collections::BTreeMap::from([("Authorization".into(), "Bearer x".into())]),
         oauth: Default::default(),
         enabled: false,
-        lazy: true,
         timeout_ms: Some(5000),
     };
     write_mcp_server(&path, "demo", &replacement).expect("write MCP table");
@@ -128,7 +136,6 @@ fn write_back_rejects_an_existing_strict_conflict_without_changing_the_file() {
         headers: Default::default(),
         oauth: Default::default(),
         enabled: true,
-        lazy: false,
         timeout_ms: None,
     };
     assert!(write_mcp_server(&path, "demo", &config).is_err());

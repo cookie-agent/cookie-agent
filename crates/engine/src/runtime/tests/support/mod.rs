@@ -2216,7 +2216,6 @@ pub(crate) fn delayed_mcp_server(source: McpServerSource) -> LoadedMcpServer {
             headers: BTreeMap::new(),
             oauth: Default::default(),
             enabled: true,
-            lazy: false,
             timeout_ms: Some(5_000),
         },
     }

@@ -1355,7 +1355,6 @@ pub enum McpServerState {
     Failed,
     NeedsAuth,
     Disabled,
-    LazyNotConnected,
     Disconnected,
 }
 
@@ -1412,7 +1411,6 @@ pub struct McpServerDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth: Option<McpOAuthDefinition>,
     pub enabled: bool,
-    pub lazy: bool,
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<u64>", required)]
     pub timeout_ms: Option<u64>,

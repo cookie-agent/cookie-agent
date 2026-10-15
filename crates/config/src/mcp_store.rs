@@ -256,7 +256,6 @@ mod tests {
             headers: Default::default(),
             oauth: Default::default(),
             enabled: true,
-            lazy: false,
             timeout_ms: None,
         }
     }

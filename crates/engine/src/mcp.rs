@@ -1461,7 +1461,6 @@ impl McpRegistry {
             .into_iter()
             .filter(|server| {
                 server.loaded.config.enabled
-                    && !server.loaded.config.lazy
                     && server.current_state() == McpServerState::Disconnected
             })
             .collect::<Vec<_>>();
@@ -1643,9 +1642,7 @@ impl McpRegistry {
         {
             let _ = service.close_with_timeout(Duration::from_secs(4)).await;
         }
-        if runtime.loaded.config.enabled
-            && !runtime.loaded.config.lazy
-            && runtime.current_state() == McpServerState::Disconnected
+        if runtime.loaded.config.enabled && runtime.current_state() == McpServerState::Disconnected
         {
             let handle = tokio::runtime::Handle::try_current()
                 .map_err(|_| ToolError::execution("MCP runtime is unavailable"))?;
@@ -1803,23 +1800,10 @@ impl McpRegistry {
             .ok_or_else(|| ToolError::execution(format!("unknown MCP server `{name}`")))
     }
 
-    async fn resolve_tool(
-        &self,
-        tool_name: &str,
-    ) -> Result<(Arc<ServerRuntime>, String), ToolError> {
+    fn resolve_tool(&self, tool_name: &str) -> Result<(Arc<ServerRuntime>, String), ToolError> {
         for server in self.servers() {
             if let Some(raw) = server.raw_tool_name(tool_name) {
                 return Ok((server, raw));
-            }
-        }
-        for server in self.servers() {
-            if server.loaded.config.lazy
-                && tool_name.starts_with(&format!("{}_", server.sanitized_name))
-            {
-                server.connect().await?;
-                if let Some(raw) = server.raw_tool_name(tool_name) {
-                    return Ok((server, raw));
-                }
             }
         }
         Err(ToolError::execution(format!(
@@ -2809,17 +2793,6 @@ impl ToolProvider for McpRegistry {
         Ok("mcp")
     }
 
-    fn permission_for_unlisted_tool(
-        &self,
-        tool_name: &str,
-    ) -> Result<Option<&'static str>, ToolError> {
-        Ok(self
-            .servers()
-            .into_iter()
-            .any(|server| tool_name.starts_with(&format!("{}_", server.sanitized_name)))
-            .then_some("mcp"))
-    }
-
     fn get_permission_resource(
         &self,
         tool_name: &str,
@@ -2846,7 +2819,7 @@ impl ToolProvider for McpRegistry {
         ctx: ToolPreparationContext,
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
-        let (server, raw_name) = self.resolve_tool(&call.name).await?;
+        let (server, raw_name) = self.resolve_tool(&call.name)?;
         let arguments = call
             .arguments
             .as_object()

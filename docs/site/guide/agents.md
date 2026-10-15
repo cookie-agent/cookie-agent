@@ -653,7 +653,7 @@ Delegation tools additionally require the `delegate` map to name at least one
 eligible target with `allow` or `ask`. There is no separate tool allowlist.
 
 There is also no separate MCP server approval prompt or trust store. Configured,
-enabled servers follow their normal lazy or eager connection lifecycle, while
+enabled servers connect eagerly, while
 the agent's `mcp` map remains the sole visibility and call gate. Project MCP
 configuration and project agent documents are version-controlled content
 equivalent to code: a repository can ship both a server definition and an agent

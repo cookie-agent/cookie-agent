@@ -507,7 +507,7 @@ only that plugin; the engine and other plugins continue running.
 
 Plugins live in the global runtime, and discovered tool names share its namespace with top-level
 MCP tools and the global `webfetch`. MCP claims take precedence over plugin claims; a plugin
-collision with them fails, and a later lazy MCP claim preempts the plugin. A name shared with
+collision with them fails, and an MCP server that connects or relists later preempts the plugin. A name shared with
 another runtime (such as the local coding runtime's `read`) or with a base-layer tool (such as
 `skill`) is not a collision inside the runtime: the plugin's tool is published as
 `global_<name>` instead (see [tool composition](../specs/runtimes.md#63-collisions)). When plugins collide with each other, the last plugin to finish

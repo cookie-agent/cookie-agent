@@ -65,10 +65,7 @@ impl App {
             ) && self.mcp_panel.form.as_ref().is_some_and(|form| {
                 matches!(
                     form.focus,
-                    McpFormFocus::Transport
-                        | McpFormFocus::Enabled
-                        | McpFormFocus::Lazy
-                        | McpFormFocus::Persist
+                    McpFormFocus::Transport | McpFormFocus::Enabled | McpFormFocus::Persist
                 )
             }) {
                 self.mcp_panel.form.as_mut().expect("form").cycle_choice();
