@@ -159,7 +159,9 @@ configuration, and keep working (section 8).
 
 A session's attachment set is the fold of these events. `SessionCreated`
 stays as it is; creation writes one `RuntimeAttached` per initial attachment
-in the same append.
+in the same append. A session whose log holds no
+`RuntimeAttached` or `RuntimeDetached` event at all was created before this
+change and is read as attached to `global` and `local`.
 
 ### 5.2 Operations
 
