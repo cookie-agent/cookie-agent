@@ -299,12 +299,20 @@ impl Engine {
                 .clone(),
             manifest_revision: child_policy.selected_suffix[0].manifest_revision.clone(),
         };
+        // The child inherits the parent's attachments, narrowed by the
+        // request, and records them itself so its log is self-describing.
+        let attachments = self
+            .delegated_attachments(&parent, entry.request.runtimes.as_deref())
+            .iter()
+            .map(super::attachments::attached_event)
+            .collect();
         let store = self.inner.store.clone();
         self.spawn_admission_blocking(move || {
-            store.create_with_status(
+            store.create_with_initial(
                 child_session_id,
                 super::event_origin("engine:delegation"),
                 creation,
+                attachments,
             )
         })
         .await?;

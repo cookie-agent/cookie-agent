@@ -275,6 +275,7 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
         recipe_registry_revision: runtime.result.snapshot.recipe_registry_revision.clone(),
     };
     let request = cookie_agent_protocol::DelegateRequestPayload {
+        runtimes: None,
         description: "Scripted delegation".into(),
         prompt: "scripted delegated task".into(),
         title: SessionTitle::new("Scripted delegation").expect("title"),
@@ -444,6 +445,7 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
         (intact_id, "intact reservation"),
     ] {
         let request = cookie_agent_protocol::DelegateRequestPayload {
+            runtimes: None,
             description: description.into(),
             prompt: format!("{description} delegated task"),
             title: SessionTitle::new(description).expect("title"),

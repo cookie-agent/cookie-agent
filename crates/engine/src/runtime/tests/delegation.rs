@@ -15,6 +15,7 @@ async fn ordinary_delegate_rejects_forged_staged_skill_prefix() {
     let error = fixture
         .engine
         .delegate_invoke(crate::DelegateInvocation {
+            runtimes: None,
             parent_session_id: SessionId::new_v7(),
             parent_run_id: cookie_agent_protocol::RunId::new_v7(),
             parent_tool_call_id: ToolCallId::new_v7(),
@@ -689,4 +690,171 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
                 })
     )));
     reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn delegated_children_inherit_and_narrow_the_parent_attachments() {
+    let primary = "---\ndescription: Narrowing owner\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    sub-*: allow\n---\nNarrowing owner prompt.\n";
+    let worker = "---\ndescription: Narrowing worker\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nWorker prompt.\n";
+    let (endpoint, responses, captured) = scripted_channel_server(5).await;
+    for (trigger, call, arguments) in [
+        (
+            "delegate twice",
+            "narrowed-call",
+            serde_json::json!({
+                "agent_type":"sub-worker",
+                "description":"Narrowed child",
+                "prompt":"narrowed child task",
+                "runtimes":["labpc_api"]
+            }),
+        ),
+        ("narrowed child task", "", serde_json::Value::Null),
+    ] {
+        let body = if call.is_empty() {
+            scripted_text_body("narrowed child report")
+        } else {
+            scripted_tool_body(call, "delegate_subagent", arguments)
+        };
+        responses
+            .send(MatchedScriptedResponse::last_message_contains(
+                trigger, body,
+            ))
+            .expect("scripted response");
+    }
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "narrowed child report",
+            scripted_tool_body(
+                "inherited-call",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"sub-worker",
+                    "description":"Inherited child",
+                    "prompt":"inherited child task"
+                }),
+            ),
+        ))
+        .expect("second delegation");
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "inherited child task",
+            scripted_text_body("inherited child report"),
+        ))
+        .expect("inherited child response");
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "inherited child report",
+            scripted_text_body("parent done"),
+        ))
+        .expect("parent response");
+    let (fixture, selection) = custom_fixture_with_capabilities_and_worker_name(
+        &endpoint,
+        primary,
+        None,
+        None,
+        false,
+        None,
+        None,
+        4_096,
+        Some(worker),
+        "openai-chat",
+        None,
+        None,
+        None,
+        "sub-worker",
+    );
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Base,
+        Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }),
+    );
+    let api = fixture._directory.path().join("api");
+    create_private_test_dir(&api);
+    fixture
+        .engine
+        .register_runtime_template(FakeRuntimeTemplate::with_workspace(
+            "labpc",
+            Arc::new(|_| Vec::new()),
+        ))
+        .expect("register labpc");
+    let parent = fixture.engine.create_session(selection.clone()).unwrap();
+    let origin = cookie_agent_protocol::EventOrigin::new("client:test").unwrap();
+    fixture
+        .engine
+        .attach_runtime(parent.session_id, "labpc", Some(api), origin.clone())
+        .await
+        .expect("attach labpc");
+    let unknown = fixture.engine.validate_delegated_runtimes(
+        parent.session_id,
+        &[cookie_agent_protocol::AttachmentName::new("nowhere").unwrap()],
+    );
+    assert!(
+        unknown.as_ref().is_err_and(|error| error
+            .to_string()
+            .contains("unknown runtime attachment `nowhere`")),
+        "{unknown:?}"
+    );
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("narrowing").unwrap(),
+                selection,
+                input: "delegate twice".into(),
+            },
+            origin,
+        )
+        .await
+        .unwrap();
+    await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "narrowing delegation completion",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
+    with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
+
+    let parent_names = fixture
+        .engine
+        .session_runtimes(parent.session_id)
+        .unwrap()
+        .into_iter()
+        .map(|attachment| attachment.name.into_string())
+        .collect::<Vec<_>>();
+    assert_eq!(parent_names.len(), 3);
+    let mut children = fixture
+        .engine
+        .children(parent.session_id)
+        .expect("children")
+        .into_iter()
+        .map(|child| {
+            let projection = fixture.engine.inner.store.get(child.session_id).unwrap();
+            let recorded = projection
+                .log
+                .event_snapshot()
+                .iter()
+                .filter(|event| matches!(event.payload, EventPayload::RuntimeAttached { .. }))
+                .count();
+            let names = fixture
+                .engine
+                .session_runtimes(child.session_id)
+                .unwrap()
+                .into_iter()
+                .map(|attachment| attachment.name.into_string())
+                .collect::<Vec<_>>();
+            (names.len(), names, recorded)
+        })
+        .collect::<Vec<_>>();
+    children.sort();
+    assert_eq!(
+        children,
+        [(1, vec!["labpc_api".to_owned()], 1), (3, parent_names, 3),]
+    );
+    fixture.engine.shutdown().await;
 }

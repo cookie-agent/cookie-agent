@@ -173,7 +173,7 @@ the [security guidance](security.md#agentsmd-context-files). Configure limits in
 
 `delegate_subagent` requires a short `description`, a self-contained `prompt`,
 an allowed `agent_type`, and accepts optional `background`, `resume_session_id`,
-and `inherit_context` arguments. Foreground calls block and return a concise
+`inherit_context`, and `runtimes` arguments. Foreground calls block and return a concise
 result teaser. Background calls return immediately with the child's handle;
 admission still waits for any required permission approval. A child is
 addressed everywhere by its short tree-unique handle
@@ -202,6 +202,14 @@ dropped. The retained text is capped at 64 KiB by truncating the oldest content
 first. This is a capability and privacy boundary: retained parent text crosses
 into the child agent's model context and must be appropriate for that child.
 `inherit_context` and `resume_session_id` cannot both be set.
+
+A new child is attached to the same [runtimes](../specs/runtimes.md) as its
+parent, under the same attachment names, and records those attachments in its
+own log. `runtimes` narrows that set to the listed attachment names of the
+parent (an empty list leaves the child only the base layer); a name the parent
+does not have rejects the call. A resumed child keeps its own attachments, so
+`runtimes` cannot be combined with `resume_session_id`. The child composes its
+tools from its own attachments the same way the parent does.
 
 Background sessions move through `queued`, `running`, and a terminal
 `completed`, `failed`, `interrupted`, or `cancelled` state. Completion appends a

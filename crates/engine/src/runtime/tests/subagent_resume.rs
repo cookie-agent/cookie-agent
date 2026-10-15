@@ -754,6 +754,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         .expect("running resume reservation event")
         .clone();
     let matching_redelivery = DelegateInvocation {
+        runtimes: None,
         parent_session_id: resumed_entry.reservation.parent_session_id,
         parent_run_id: resumed_entry.reservation.parent_run_id,
         parent_tool_call_id: resumed_entry.reservation.parent_tool_call_id,
@@ -808,6 +809,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
     let mode_conflict = fixture
         .engine
         .delegate_invoke(DelegateInvocation {
+            runtimes: None,
             background: false,
             ..matching_redelivery
         })

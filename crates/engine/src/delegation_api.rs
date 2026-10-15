@@ -33,6 +33,8 @@ pub struct DelegateInvocation {
     /// the parent's tree at admission.
     pub resume_session_id: Option<String>,
     pub inherit_context: bool,
+    /// The parent's attachments the child gets; all of them when `None`.
+    pub runtimes: Option<Vec<cookie_agent_protocol::AttachmentName>>,
 }
 
 /// Stable child identity returned to the delegate tool provider.

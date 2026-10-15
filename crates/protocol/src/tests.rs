@@ -1816,6 +1816,7 @@ fn delegation_reserved_event_roundtrips_current_request() {
         })],
         request_fingerprint: Sha256Digest::of_bytes(b"request"),
         request: DelegateRequestPayload {
+            runtimes: None,
             description: "Review implementation".into(),
             prompt: "Review the implementation".into(),
             title: SessionTitle::new("Review implementation").unwrap(),

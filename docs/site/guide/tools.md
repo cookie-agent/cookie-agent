@@ -322,7 +322,7 @@ Only when at least one skill is visible to the session.
 ## `delegate_subagent`
 
 ```text
-delegate_subagent(agent_type: "<subagent id>", background?: boolean, description: string, inherit_context?: boolean, prompt: string, resume_session_id?: string)
+delegate_subagent(agent_type: "<subagent id>", background?: boolean, description: string, inherit_context?: boolean, prompt: string, resume_session_id?: string, runtimes?: string[])
 ```
 
 Description sent to the model:
@@ -341,6 +341,7 @@ Only when the agent can delegate to at least one subagent at this depth. The `ag
 | `inherit_context` | `boolean` | no | Default: `false`. |
 | `prompt` | `string` | yes | Full task brief with objective, context, and deliverable |
 | `resume_session_id` | `string` | no | Optional. Handle or UUID of an existing subagent of yours to resume, e.g. "explore_1a2b3c4d". Only subagents you delegated are valid. |
+| `runtimes` | `string[]` | no | Optional. Names of your runtimes (see <runtimes>) the subagent may use; all of them when omitted. Not allowed with resume_session_id. |
 
 ??? note "Parameters JSON Schema"
 
@@ -373,6 +374,13 @@ Only when the agent can delegate to at least one subagent at this depth. The `ag
         "resume_session_id": {
           "description": "Optional. Handle or UUID of an existing subagent of yours to resume, e.g. \"explore_1a2b3c4d\". Only subagents you delegated are valid.",
           "type": "string"
+        },
+        "runtimes": {
+          "description": "Optional. Names of your runtimes (see <runtimes>) the subagent may use; all of them when omitted. Not allowed with resume_session_id.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [

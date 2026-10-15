@@ -84,8 +84,9 @@ async fn delegated_child_uses_description_title_without_title_agent() {
         child.meta.title.as_ref().map(SessionTitle::as_str),
         Some("Write report")
     );
+    // Creation writes the inherited `global` and `local` attachments first.
     assert!(matches!(
-        child.log.events()[1].payload,
+        child.log.events()[3].payload,
         EventPayload::SessionTitleCommitted {
             change: SessionTitleChange::DelegatedSet { .. },
             input_through_seq: 0,

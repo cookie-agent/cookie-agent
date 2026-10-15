@@ -323,6 +323,44 @@ impl Engine {
         Ok(())
     }
 
+    /// Rejects a delegation narrowing that names an attachment the parent
+    /// does not have.
+    pub(crate) fn validate_delegated_runtimes(
+        &self,
+        parent: SessionId,
+        runtimes: &[AttachmentName],
+    ) -> Result<(), EngineError> {
+        let attached = self.session_runtimes(parent)?;
+        if let Some(unknown) = runtimes
+            .iter()
+            .find(|name| !attached.iter().any(|attachment| &attachment.name == *name))
+        {
+            let names = attached
+                .iter()
+                .map(|attachment| attachment.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(EngineError::ToolFailed(format!(
+                "unknown runtime attachment `{unknown}`; this session has: {names}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The attachments a delegated child of `parent` starts with: the
+    /// parent's, in its order, narrowed to `runtimes` when given.
+    pub(crate) fn delegated_attachments(
+        &self,
+        parent: &SessionProjection,
+        runtimes: Option<&[AttachmentName]>,
+    ) -> Vec<RuntimeAttachment> {
+        let mut attachments = self.attachments_of(parent);
+        if let Some(runtimes) = runtimes {
+            attachments.retain(|attachment| runtimes.contains(&attachment.name));
+        }
+        attachments
+    }
+
     /// Registers a runtime template so sessions can attach it. Production
     /// registers only the built-in `global` and `local` templates; embedding
     /// hosts and tests may add in-process ones.

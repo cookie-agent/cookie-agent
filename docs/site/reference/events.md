@@ -295,7 +295,9 @@ Foreground delegation retains its tool result as its only result channel.
 The `delegation_*` lifecycle records are durable control events on the parent
 session. `delegation_reserved` contains the complete current delegate request,
 child agent snapshot, selected model suffix, runtime revisions, request
-fingerprint, and optional typed staged-skill provenance.
+fingerprint, and optional typed staged-skill provenance. The request's optional
+`runtimes` lists the parent attachments the child was narrowed to; the child
+itself records its attachments with `runtime_attached` events at creation.
 `delegation_started` records publication of the child session;
 `delegation_run_started` and `delegation_run_attached` distinguish a new child
 run from attachment to an already-running resumed child. `delegation_finished`

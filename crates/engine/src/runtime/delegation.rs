@@ -372,6 +372,15 @@ impl Engine {
                 "resume_session_id and inherit_context cannot both be set".into(),
             ));
         }
+        if invocation.resume_session_id.is_some() && invocation.runtimes.is_some() {
+            return Err(EngineError::ToolFailed(
+                "a resumed subagent keeps its runtimes; runtimes cannot be set with resume_session_id"
+                    .into(),
+            ));
+        }
+        if let Some(runtimes) = &invocation.runtimes {
+            self.validate_delegated_runtimes(invocation.parent_session_id, runtimes)?;
+        }
         let resume_session_id = invocation
             .resume_session_id
             .as_deref()
@@ -396,7 +405,8 @@ impl Engine {
                 && existing.request.prompt == invocation.prompt
                 && existing.request.resume_session_id == resume_session_id
                 && existing.request.inherit_context == invocation.inherit_context
-                && existing.request.staged_skill == staged_skill;
+                && existing.request.staged_skill == staged_skill
+                && existing.request.runtimes == invocation.runtimes;
             if !request_matches {
                 return Err(EngineError::ToolFailed(
                     "delegate redelivery does not match its durable reservation".into(),
@@ -567,6 +577,7 @@ impl Engine {
             seeded_context,
             background: invocation.background,
             staged_skill,
+            runtimes: invocation.runtimes,
         };
         let cache_strategies = policy::wire_cache_strategies(&child_policy.cache_strategies)?;
         let fingerprint = delegation_events::delegation_request_fingerprint(

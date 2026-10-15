@@ -235,9 +235,20 @@ pub struct DelegateRequestPayload {
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<StagedSkillPayload>", required)]
     pub staged_skill: Option<StagedSkillPayload>,
+    /// The parent's attachments the child gets; all of them when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 256))]
+    pub runtimes: Option<Vec<AttachmentName>>,
 }
 impl DelegateRequestPayload {
     fn validate(&self) -> Result<(), EventSchemaError> {
+        if self
+            .runtimes
+            .as_ref()
+            .is_some_and(|runtimes| runtimes.len() > 256 || self.resume_session_id.is_some())
+        {
+            return Err(EventSchemaError::InvalidDelegationLifecycle);
+        }
         if self.description.is_empty()
             || self.prompt.is_empty()
             || (self.resume_session_id.is_some() && self.inherit_context)
