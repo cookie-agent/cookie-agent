@@ -1519,7 +1519,7 @@ pub(super) fn reduce_event_from(
                 input,
             })
         }
-        EventPayload::AgentMdLoaded { entries } => {
+        EventPayload::AgentMdLoaded { entries, .. } => {
             // Every root run reloads AGENTS.md; a row appears only when this
             // run's context differs from the previous run's. A run that
             // loaded none breaks the chain, so re-enabling shows a row again.

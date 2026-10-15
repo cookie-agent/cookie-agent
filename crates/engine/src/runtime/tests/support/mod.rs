@@ -119,7 +119,8 @@ impl crate::RuntimeTemplate for FakeRuntimeTemplate {
         Ok(crate::StartedRuntime {
             info: cookie_agent_runtime_api::RuntimeInfo::coding(self.id, workspace.clone()),
             providers: (self.tools)(&workspace),
-            skills: Vec::new(),
+            skills: cookie_agent_config::load_project_skills(workspace.root())
+                .map_err(|error| error.to_string())?,
         })
     }
 }

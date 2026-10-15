@@ -386,8 +386,8 @@ async fn compose_with<T: CatalogTransport + 'static>(
     >,
     open_data_dir: impl FnOnce() -> anyhow::Result<PathBuf>,
 ) -> anyhow::Result<Runtime> {
-    let configuration = cookie_agent_config::load(workspace)
-        .context("load user configuration, agents, and skills")?;
+    let configuration =
+        cookie_agent_config::load().context("load user configuration, agents, and skills")?;
     compose_with_configuration(
         workspace,
         configuration,

@@ -677,3 +677,216 @@ async fn reopening_a_session_starts_its_attached_instances() {
     assert_eq!(names, ["write"]);
     reopened.shutdown().await;
 }
+
+#[tokio::test]
+async fn each_coding_attachment_loads_its_own_agent_md() {
+    let (endpoint, captured) = scripted_model_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let root = fixture._directory.path();
+    write_private_test_file(&root.join("AGENTS.md"), "local rules");
+    let api = workspace_dir(root, "api");
+    write_private_test_file(&api.join("AGENTS.md"), "labpc rules");
+    fixture
+        .engine
+        .register_runtime_template(FakeRuntimeTemplate::with_workspace(
+            "labpc",
+            probe_tools(ToolCollision::Prefix),
+        ))
+        .expect("register labpc");
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session")
+        .session_id;
+    fixture
+        .engine
+        .attach_runtime(session, "labpc", Some(api), origin())
+        .await
+        .expect("attach labpc");
+    fixture
+        .engine
+        .start_run(
+            cookie_agent_protocol::RunStartParams {
+                reset_fallback: false,
+                session_id: session,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("agent-md").unwrap(),
+                selection,
+                input: "read the rules".into(),
+            },
+            origin(),
+        )
+        .await
+        .expect("start run");
+    wait_for_session_not_running(&fixture.engine, session).await;
+    let local = fixture
+        .engine
+        .inner
+        .runtimes
+        .local()
+        .info()
+        .attachment_name()
+        .to_owned();
+    let loaded = fixture
+        .engine
+        .inner
+        .store
+        .get(session)
+        .expect("session")
+        .log
+        .event_snapshot()
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::AgentMdLoaded {
+                entries,
+                attachment,
+            } => Some((
+                attachment.as_ref().map(|name| name.to_string()),
+                entries[0].content.clone(),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        loaded,
+        [
+            (Some(local.clone()), "local rules".to_owned()),
+            (Some("labpc_api".to_owned()), "labpc rules".to_owned()),
+        ]
+    );
+    let history = serde_json::to_string(
+        &fixture
+            .engine
+            .get_history(session, crate::EngineHistoryView::Assembled)
+            .await
+            .expect("history"),
+    )
+    .expect("history JSON");
+    assert!(
+        history.contains(&format!("runtime=\\\"{local}\\\"")),
+        "{history}"
+    );
+    assert!(history.contains("runtime=\\\"labpc_api\\\""), "{history}");
+    with_watchdog("captured request", captured)
+        .await
+        .expect("captured request");
+    fixture.engine.shutdown().await;
+}
+
+fn write_skill(root: &std::path::Path, name: &str, body: &str) {
+    let directory = root.join(".cookie-agent/skills").join(name);
+    std::fs::create_dir_all(&directory).expect("skill directory");
+    write_private_test_file(
+        &directory.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: {body}\n---\n{body}\n"),
+    );
+}
+
+#[tokio::test]
+async fn same_named_project_skills_of_two_attachments_are_prefixed() {
+    let (mut fixture, selection) = custom_fixture();
+    let root = fixture._directory.path().to_owned();
+    write_skill(&root, "deploy", "Local deploy.");
+    let api = workspace_dir(&root, "api");
+    write_skill(&api, "deploy", "Labpc deploy.");
+    let user = root.join("user-skills");
+    create_private_test_dir(&user);
+    for (name, body) in [("deploy", "User deploy."), ("solo", "User solo.")] {
+        let directory = user.join(name);
+        std::fs::create_dir_all(&directory).expect("user skill directory");
+        write_private_test_file(
+            &directory.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {body}\n---\n{body}\n"),
+        );
+    }
+    fixture.config.skills =
+        cookie_agent_config::load_skill_roots(None, Some(&user), &[]).expect("user skills");
+    fixture.engine.shutdown().await;
+    fixture.engine = reopen_engine(&fixture);
+    fixture
+        .engine
+        .register_runtime_template(FakeRuntimeTemplate::with_workspace(
+            "labpc",
+            probe_tools(ToolCollision::Prefix),
+        ))
+        .expect("register labpc");
+    let session = fixture
+        .engine
+        .create_session(selection)
+        .expect("session")
+        .session_id;
+    let listed = |engine: &crate::Engine| {
+        engine
+            .list_skills(session)
+            .expect("skills")
+            .skills
+            .into_iter()
+            .map(|skill| (skill.name, skill.precedence_winner))
+            .collect::<Vec<_>>()
+    };
+    // A project skill shadows the user skill of its name.
+    assert_eq!(
+        listed(&fixture.engine),
+        [
+            ("deploy".to_owned(), true),
+            ("deploy".to_owned(), false),
+            ("solo".to_owned(), true)
+        ]
+    );
+
+    let attached = fixture
+        .engine
+        .attach_runtime(session, "labpc", Some(api), origin())
+        .await
+        .expect("attach labpc");
+    let local = fixture
+        .engine
+        .inner
+        .runtimes
+        .local()
+        .info()
+        .attachment_name()
+        .to_owned();
+    // The user `deploy` stays shadowed and no session skill is named
+    // `deploy` any more, so it is not listed.
+    let mut expected = vec![
+        ("labpc_api_deploy".to_owned(), true),
+        (format!("{local}_deploy"), true),
+        ("solo".to_owned(), true),
+    ];
+    expected.sort();
+    assert_eq!(listed(&fixture.engine), expected);
+    fixture
+        .engine
+        .set_session_permission(
+            session,
+            cookie_agent_protocol::PermissionAction::Skill,
+            None,
+            cookie_agent_protocol::WildcardPattern::new("*").unwrap(),
+            cookie_agent_protocol::PermissionEffect::Allow,
+            origin(),
+        )
+        .await
+        .expect("allow skills");
+    let rendered = fixture
+        .engine
+        .get_skill(session, "labpc_api_deploy", "")
+        .expect("prefixed skill")
+        .rendered;
+    assert_eq!(rendered.trim(), "Labpc deploy.");
+
+    fixture
+        .engine
+        .detach_runtime(session, attached.name, origin())
+        .await
+        .expect("detach labpc");
+    assert_eq!(
+        fixture
+            .engine
+            .get_skill(session, "deploy", "")
+            .expect("bare again")
+            .rendered
+            .trim(),
+        "Local deploy."
+    );
+    fixture.engine.shutdown().await;
+}

@@ -3,7 +3,7 @@
 use std::{path::Path, sync::Arc};
 
 use async_trait::async_trait;
-use cookie_agent_config::SkillDocument;
+use cookie_agent_config::SkillRegistry;
 use cookie_agent_runtime_api::{
     CodingToolsFactory, GLOBAL_RUNTIME_ID, LOCAL_RUNTIME_ID, RuntimeInfo, ToolProvider,
     WorkspaceContext,
@@ -34,7 +34,7 @@ impl RuntimeTemplate for GlobalTemplate {
 impl GlobalTemplate {
     pub(crate) fn started(
         providers: Vec<Arc<dyn ToolProvider>>,
-        skills: Vec<SkillDocument>,
+        skills: SkillRegistry,
     ) -> StartedRuntime {
         StartedRuntime {
             info: RuntimeInfo::global(),
@@ -55,12 +55,15 @@ impl LocalTemplate {
         Self { workspace, tools }
     }
 
-    /// Starts the instance: builds its tools for the workspace.
+    /// Starts the instance: builds its tools for the workspace and finds the
+    /// project skills from the repository root down to the workspace.
     pub(crate) fn start_now(&self) -> Result<StartedRuntime, String> {
+        let skills = cookie_agent_config::load_project_skills(self.workspace.root())
+            .map_err(|error| format!("project skills: {error}"))?;
         Ok(StartedRuntime {
             info: RuntimeInfo::coding(LOCAL_RUNTIME_ID, self.workspace.clone()),
             providers: (self.tools)(&self.workspace),
-            skills: Vec::new(),
+            skills,
         })
     }
 }

@@ -220,16 +220,16 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
         .local_workspace_root()
         .display()
         .to_string();
-    let working_directory = prompt.find("<working_directory>").unwrap();
-    assert!(prompt.contains(&format!("<working_directory>{cwd}</working_directory>")));
+    let runtimes = prompt.find("<runtimes>").unwrap();
+    assert!(prompt.contains(&format!("workspace=\"{cwd}\"")));
     let provider = prompt.find("Provider section.").unwrap();
     let skills = prompt.find("<available_skills>").unwrap();
     let plugin = prompt.find("Plugin tail.").unwrap();
-    assert!(agent < working_directory);
-    assert!(working_directory < provider && provider < skills && skills < plugin);
+    assert!(agent < runtimes);
+    assert!(runtimes < provider && provider < skills && skills < plugin);
     // Every appended block is introduced by the markdown horizontal-rule
     // separator, so block boundaries are visible in the assembled prompt.
-    assert!(prompt.contains("---\n\n<working_directory>"));
+    assert!(prompt.contains("---\n\n<runtimes>"));
     assert!(prompt.contains("---\n\n<tool_instructions provider=\"test.order\">"));
     assert!(prompt.contains("---\n\n<available_skills>"));
     assert!(prompt.contains("---\n\nPlugin tail."));
@@ -250,7 +250,7 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
 }
 
 #[tokio::test]
-async fn working_directory_section_reports_session_cwd() {
+async fn runtimes_section_lists_the_session_attachments() {
     let (endpoint, captured) = scripted_model_server().await;
     let fixture = synthetic_default_fixture_with_config(None, &endpoint, "").expect("engine");
     let descriptor = fixture
@@ -296,10 +296,21 @@ async fn working_directory_section_reports_session_cwd() {
         .local_workspace_root()
         .display()
         .to_string();
+    let local = fixture
+        .engine
+        .inner
+        .runtimes
+        .local()
+        .info()
+        .attachment_name()
+        .to_owned();
     assert!(
-        run.agent
-            .composed_prompt
-            .contains(&format!("<working_directory>{cwd}</working_directory>"))
+        run.agent.composed_prompt.contains(&format!(
+            "<runtimes>\n<runtime name=\"global\" kind=\"global\" prefixed=\"false\"/>\n<runtime name=\"{local}\" kind=\"coding\" workspace=\"{cwd}\" platform=\"{}\" prefixed=\"false\"/>\n</runtimes>\n",
+            std::env::consts::OS
+        )),
+        "{}",
+        run.agent.composed_prompt
     );
     assert_eq!(
         Sha256Digest::of_bytes(run.agent.composed_prompt.as_bytes()),
@@ -454,9 +465,36 @@ async fn invalid_tool_prompt_sections_fail_run_admission() {
     fixture.engine.shutdown().await;
 }
 
+/// The `AGENTS.md` files a new session attached to `global` and `local`
+/// loads: the local attachment's entries and skips.
+fn local_agent_md(
+    engine: &crate::Engine,
+    selection: &RunSelection,
+    preset: Option<&str>,
+    agent_override: Option<bool>,
+) -> Result<
+    (
+        Vec<cookie_agent_protocol::AgentMdEntry>,
+        Vec<cookie_agent_protocol::AgentMdSkipped>,
+    ),
+    crate::EngineError,
+> {
+    let session = engine.create_session(selection.clone())?.session_id;
+    let loaded = engine.load_agent_md(session, preset, agent_override)?;
+    assert!(
+        loaded.len() <= 1,
+        "only the local attachment has a workspace"
+    );
+    Ok(loaded
+        .into_iter()
+        .next()
+        .map(|loaded| (loaded.entries, loaded.skipped))
+        .unwrap_or_default())
+}
+
 #[tokio::test]
 async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() {
-    let (mut fixture, _) = custom_fixture();
+    let (mut fixture, selection) = custom_fixture();
     let root = fixture._directory.path();
     let agents = root.join(".cookie-agent").join("agents");
     write_private_test_file(&agents.join("AGENTS.md"), "default AGENTS.md context");
@@ -482,10 +520,8 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     };
     let project_source = relative(&[".cookie-agent", "agents", "AGENTS.md"]);
     let cwd_source = "AGENTS.md";
-    let (entries, skipped) = fixture
-        .engine
-        .load_agent_md(None, None)
-        .expect("default AGENTS.md context");
+    let (entries, skipped) =
+        local_agent_md(&fixture.engine, &selection, None, None).expect("default AGENTS.md context");
     assert_eq!(entries.len(), 2);
     assert!(skipped.is_empty());
     assert_eq!(entries[0].source.as_str(), project_source.as_str());
@@ -496,9 +532,7 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     let preset = agents.join("python");
     create_private_test_dir(&preset);
     write_private_test_file(&preset.join("AGENTS.md"), "preset AGENTS.md context");
-    let (entries, skipped) = fixture
-        .engine
-        .load_agent_md(Some("python"), None)
+    let (entries, skipped) = local_agent_md(&fixture.engine, &selection, Some("python"), None)
         .expect("preset AGENTS.md context");
     assert_eq!(entries.len(), 2);
     assert!(skipped.is_empty());
@@ -515,13 +549,16 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
 
     write_private_test_file(&root.join("AGENTS.md"), "fresh cwd context");
     assert_eq!(
-        fixture.engine.load_agent_md(None, None).unwrap().0[1].content,
+        local_agent_md(&fixture.engine, &selection, None, None)
+            .unwrap()
+            .0[1]
+            .content,
         "fresh cwd context"
     );
     std::fs::remove_file(agents.join("AGENTS.md")).unwrap();
     std::fs::remove_file(preset.join("AGENTS.md")).unwrap();
     std::fs::remove_file(root.join("AGENTS.md")).unwrap();
-    let (entries, skipped) = fixture.engine.load_agent_md(None, None).unwrap();
+    let (entries, skipped) = local_agent_md(&fixture.engine, &selection, None, None).unwrap();
     assert!(entries.is_empty());
     assert!(skipped.is_empty());
 
@@ -529,18 +566,19 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     fixture.config.runtime.agent_md.enabled = false;
     fixture.engine = reopen_engine(&fixture);
     write_private_test_file(&root.join("AGENTS.md"), "disabled context");
-    let (entries, skipped) = fixture.engine.load_agent_md(None, None).unwrap();
+    let (entries, skipped) = local_agent_md(&fixture.engine, &selection, None, None).unwrap();
     assert!(entries.is_empty());
     assert!(skipped.is_empty());
     // An agent document's `agent_md` overrides the global switch both ways.
-    let (entries, _) = fixture.engine.load_agent_md(None, Some(true)).unwrap();
+    let (entries, _) = local_agent_md(&fixture.engine, &selection, None, Some(true)).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].content, "disabled context");
 
     fixture.engine.shutdown().await;
     fixture.config.runtime.agent_md.enabled = true;
     fixture.engine = reopen_engine(&fixture);
-    let (entries, skipped) = fixture.engine.load_agent_md(None, Some(false)).unwrap();
+    let (entries, skipped) =
+        local_agent_md(&fixture.engine, &selection, None, Some(false)).unwrap();
     assert!(entries.is_empty());
     assert!(skipped.is_empty());
     write_private_test_file(&root.join("AGENTS.md"), "oversized context");
@@ -552,7 +590,7 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
         .unwrap();
     file.set_len(oversized_len).unwrap();
     drop(file);
-    let (entries, skipped) = fixture.engine.load_agent_md(None, None).unwrap();
+    let (entries, skipped) = local_agent_md(&fixture.engine, &selection, None, None).unwrap();
     assert!(entries.is_empty());
     assert_eq!(skipped.len(), 1);
     assert_eq!(
@@ -683,7 +721,7 @@ async fn consecutive_root_runs_reload_agent_md() {
         .events()
         .into_iter()
         .filter_map(|event| {
-            let EventPayload::AgentMdLoaded { entries } = event.payload else {
+            let EventPayload::AgentMdLoaded { entries, .. } = event.payload else {
                 return None;
             };
             Some((event.run_id.unwrap(), entries[0].content.clone()))
@@ -757,7 +795,7 @@ async fn root_run_persists_and_replays_agent_md_as_a_user_turn() {
         loaded.origin.as_ref().map(|origin| origin.as_str()),
         Some("engine:agent-md")
     );
-    let EventPayload::AgentMdLoaded { entries } = &loaded.payload else {
+    let EventPayload::AgentMdLoaded { entries, .. } = &loaded.payload else {
         unreachable!()
     };
     assert_eq!(entries.len(), 2);

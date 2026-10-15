@@ -73,7 +73,7 @@ impl Engine {
             })?
             .permission_overlay
             .clone();
-        let grants = self.skill_grants_for_session(active.session);
+        let grants = self.skill_grants_for_session(active.session, prepared_call.attachment());
         Ok(self.inner.permissions.decide_operation_with_grants(
             &active.policy.agent,
             Some(&permission_overlay),
@@ -307,7 +307,6 @@ impl Engine {
         };
         let depth = session_depth(&session.meta.origin);
         let permission_overlay = &session.permission_overlay;
-        let grants = self.skill_grants_for_session(session_id);
         let delegate_enabled = !policy.delegate_targets(depth).is_empty();
         let mut provider = match published {
             Some(Some(published)) => {
@@ -419,6 +418,7 @@ impl Engine {
             name: tool_spec.name.clone(),
             ..call
         };
+        let grants = self.skill_grants_for_session(session_id, attachment.as_ref());
         let permission_name = tool_spec.permission_name.clone();
         let delegation_tool = permission_name == "delegate";
         let enabled = !delegation_tool || delegate_enabled;
@@ -894,7 +894,7 @@ impl Engine {
 
     /// The tool set `policy` publishes for `session`: enabled tools the
     /// agent and the session overlay make visible, composed.
-    fn compose_for_policy(
+    pub(crate) fn compose_for_policy(
         &self,
         session: SessionId,
         policy: &FrozenRunPolicy,

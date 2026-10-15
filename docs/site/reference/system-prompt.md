@@ -10,10 +10,9 @@ agent but is not copied into prompt text.
 For a root or delegated run, the engine composes the model request in this order:
 
 1. The selected agent document body becomes `AgentSnapshot.composed_prompt`.
-2. The workspace of the local coding runtime (today the daemon's working
-   directory) is appended as a single `<working_directory>` block so the model
-   knows where relative paths resolve.
-   The prompt and document fingerprints are updated.
+2. The session's runtime attachments are appended as a single `<runtimes>`
+   block so the model knows which runtimes it can use and where relative paths
+   resolve. The prompt and document fingerprints are updated.
 3. Trusted in-process tool providers may append bounded behavioral-policy
    sections. Sections retain provider provenance and update both prompt and
    document fingerprints.
@@ -29,7 +28,7 @@ For a root or delegated run, the engine composes the model request in this order
    session history.
 
 Appended blocks are joined by a markdown horizontal rule (`\n\n---\n\n`) so the
-boundaries between the authored body, the working-directory block, tool-provider
+boundaries between the authored body, the runtimes block, tool-provider
 sections, the skills listing, and a plugin addendum are visible. The authored
 body is first and carries no leading separator; a plugin `replace_system_prompt`
 replaces the whole prompt instead of appending to it.
@@ -43,8 +42,8 @@ needs current history.
 ## Fingerprints
 
 The document fingerprint covers the agent identity, strict frontmatter, and
-body. The prompt fingerprint covers prompt text only. The working-directory
-block, tool-provider sections, skill listings, and plugin composition update the
+body. The prompt fingerprint covers prompt text only. The runtimes block,
+tool-provider sections, skill listings, and plugin composition update the
 effective fingerprints before
 `run_started` is persisted. Model-attempt events record the prompt fingerprint,
 and replay validation rejects attempt attribution that contradicts the frozen
@@ -83,15 +82,38 @@ MCP providers are architecturally excluded. Remote MCP output remains delimited
 data and typed tool metadata; it cannot contribute durable system instructions,
 and no configuration switch enables that path.
 
+## Runtimes block
+
+The block lists every attachment of the session in attach order, with its
+kind, and for a coding runtime its canonical workspace and platform. Each entry
+also says whether, at admission, any of the runtime's tools is published under
+its attachment prefix because another runtime or the base layer offers the same
+name:
+
+```text
+<runtimes>
+<runtime name="global" kind="global" prefixed="false"/>
+<runtime name="local_web" kind="coding" workspace="/home/me/web" platform="linux" prefixed="true"/>
+<runtime name="labpc_api" kind="coding" workspace="/home/me/api" platform="linux" prefixed="true"/>
+</runtimes>
+File tools and bash of a coding runtime resolve relative paths against its workspace. Use workspace-relative paths for files inside it. When several runtimes offer a tool with one name, each is published as `<runtime name>_<tool>`; `prefixed="true"` marks a runtime whose tools carry that prefix.
+```
+
+Attribute values are XML-escaped. The block is frozen with the prompt: an
+attachment added or removed after admission changes the next run's block, not
+the current one.
+
 ## AGENTS.md context turn
 
 At each root run start where AGENTS.md loading is on (the run agent's
-`agent_md` frontmatter, else `[agent_md] enabled`), cookie agent discovers
-applicable `AGENTS.md` files and
-stores their bounded content in `agent_md_loaded`. Files larger than 2 MiB are
-skipped and surfaced as `AgentMdSkipped` warning events. History replays the
-latest run's entries as one user turn, wrapped in a `<system-reminder>` block
-with each file delimited as:
+`agent_md` frontmatter, else `[agent_md] enabled`), each coding runtime the
+session is attached to discovers the applicable `AGENTS.md` files in its own
+workspace, and cookie agent stores their bounded content in one
+`agent_md_loaded` event per attachment that returned a file, naming the
+attachment. Files larger than 2 MiB are skipped and surfaced as
+`AgentMdSkipped` warning events. History replays the latest run's entries, the
+latest event per attachment, as one user turn, wrapped in a
+`<system-reminder>` block with each file delimited as:
 
 ```text
 <system-reminder>
@@ -107,6 +129,10 @@ IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow 
 IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
 </system-reminder>
 ```
+
+With more than one attachment each `<contents>` element also carries a
+`runtime="<attachment>"` attribute. Events written before runtimes carry no
+attachment and count as the `local` runtime's.
 
 Making this context a turn rather than system text keeps the stable system
 cache key independent of normal repository edits, preserves per-file
@@ -144,8 +170,8 @@ cached prefix rather than using an isolated cache namespace. See the
 
 | Agent type | System prompt | Additional context |
 |---|---|---|
-| Root | Selected authored agent body, or the concise built-in default coding prompt; working-directory block, optional tool-provider sections, skill listing, and plugin composition | Root-only AGENTS.md context turn, loaded skill bodies, then session history |
-| Delegated | Frozen delegated agent body; working-directory block, optional tool-provider sections, skill listing, and plugin composition | No filesystem AGENTS.md context load. Explicit inherited user/assistant text and ordinary child history remain separate turns. |
+| Root | Selected authored agent body, or the concise built-in default coding prompt; runtimes block, optional tool-provider sections, skill listing, and plugin composition | Root-only AGENTS.md context turn, loaded skill bodies, then session history |
+| Delegated | Frozen delegated agent body; runtimes block, optional tool-provider sections, skill listing, and plugin composition | No filesystem AGENTS.md context load. Explicit inherited user/assistant text and ordinary child history remain separate turns. |
 | Internal | Authored reserved internal agent body when available, otherwise its built-in prompt | No AGENTS.md discovery, skill listing, or plugin prompt interception. Invocation-specific input is supplied separately. |
 
 The built-in `approval`, `compaction`, and `title` prompts are each roughly 100
@@ -159,12 +185,11 @@ The system prompt does not contain an environment dump, tool-schema prose, MCP
 server instructions, filesystem inventories, or generic operational boilerplate.
 Tools and MCP capabilities are represented by typed request definitions and
 permission policy. Runtime state belongs in events or request fields. The narrow
-exceptions are the frozen session working directory, which is needed to resolve
-relative paths, and the bounded set of authored behavioral-policy sections from
+exceptions are the frozen runtimes block, which is needed to resolve relative
+paths and to tell runtimes apart, and the bounded set of authored behavioral-policy sections from
 trusted local providers: reviewed local code supplies them, fingerprints cover
-them, and the admitted run freezes them. Working-directory text is XML-escaped
-and skipped rather than truncated if the composed prompt is already at the byte
-limit. Changing, externally controlled, or redundant information remains in
+them, and the admitted run freezes them. The runtimes block is XML-escaped and skipped rather than truncated if the
+composed prompt is already at the byte limit. Changing, externally controlled, or redundant information remains in
 typed fields or explicit context turns.
 
 See [Agents](../guide/agents.md), [Events](events.md), and

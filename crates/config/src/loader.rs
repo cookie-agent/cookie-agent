@@ -45,6 +45,7 @@ pub struct LoadedConfiguration {
     pub user_mcp_servers: BTreeMap<String, crate::McpServerConfig>,
     pub plugins: IndexMap<String, crate::PluginConfig>,
     pub config_paths: ConfigLayerPaths,
+    /// User skills, contributed by the global runtime.
     pub skills: crate::SkillRegistry,
 }
 
@@ -81,14 +82,14 @@ impl LoadedConfiguration {
     }
 }
 
-/// Loads the built-in defaults and the user layer, and discovers skills for
-/// `cwd`. Configuration has no workspace layer: `<cwd>/.cookie-agent/config.toml`
-/// and `<cwd>/.cookie-agent/agents/` are never opened.
-pub fn load(cwd: &Path) -> Result<LoadedConfiguration, ConfigError> {
-    let cwd = cwd.canonicalize().map_err(ConfigError::Io)?;
+/// Loads the built-in defaults and the user layer, and discovers user skills.
+/// Configuration has no workspace layer: `<cwd>/.cookie-agent/config.toml` and
+/// `<cwd>/.cookie-agent/agents/` are never opened. Project skills are found by
+/// each coding runtime for its own workspace when it starts.
+pub fn load() -> Result<LoadedConfiguration, ConfigError> {
     let user = user_root();
     let mut loaded = load_from_user_root(user.as_deref())?;
-    loaded.skills = crate::load_skills(&cwd)?;
+    loaded.skills = crate::load_user_skills()?;
     Ok(loaded)
 }
 

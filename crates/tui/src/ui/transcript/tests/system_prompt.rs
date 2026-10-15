@@ -963,6 +963,7 @@ fn replay_rebuild_restores_new_event_backed_blocks() {
 
 fn agent_md_loaded(content: &str) -> EventPayload {
     EventPayload::AgentMdLoaded {
+        attachment: None,
         entries: vec![cookie_agent_protocol::AgentMdEntry {
             source: SafeDisplayText::new("/work/AGENTS.md").expect("source"),
             content: content.into(),
@@ -1100,6 +1101,7 @@ fn multi_file_agent_md_names_each_source_when_expanded() {
             session,
             2,
             EventPayload::AgentMdLoaded {
+                attachment: None,
                 entries: vec![
                     entry("/repo/AGENTS.md", "repo rule"),
                     entry("/repo/app/AGENTS.md", "app rule\napp detail"),

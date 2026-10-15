@@ -21,7 +21,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cookie_agent_config::SkillDocument;
+use cookie_agent_config::SkillRegistry;
 use cookie_agent_protocol::{RuntimeAttachment, RuntimeKind};
 use cookie_agent_runtime_api::{RuntimeInfo, ToolOrigin, ToolProvider};
 
@@ -53,7 +53,7 @@ pub struct StartedRuntime {
     /// Skills the runtime contributes: user skills for the global runtime,
     /// project skills found for its workspace for a coding runtime. Read once
     /// at start.
-    pub skills: Vec<SkillDocument>,
+    pub skills: SkillRegistry,
 }
 
 /// Lifecycle state of a runtime instance as clients see it.
@@ -73,7 +73,7 @@ pub(crate) struct RuntimeInstance {
     /// tool published before a restart fails as changed.
     generation: u64,
     providers: Mutex<Vec<Arc<dyn ToolProvider>>>,
-    skills: Vec<Arc<SkillDocument>>,
+    skills: Arc<SkillRegistry>,
 }
 
 impl RuntimeInstance {
@@ -82,7 +82,7 @@ impl RuntimeInstance {
             info: Arc::new(started.info),
             generation,
             providers: Mutex::new(started.providers),
-            skills: started.skills.into_iter().map(Arc::new).collect(),
+            skills: Arc::new(started.skills),
         }
     }
 
@@ -113,7 +113,7 @@ impl RuntimeInstance {
             .push(provider);
     }
 
-    pub(crate) fn skills(&self) -> &[Arc<SkillDocument>] {
+    pub(crate) fn skills(&self) -> &Arc<SkillRegistry> {
         &self.skills
     }
 
@@ -304,6 +304,7 @@ impl RuntimeRegistry {
     }
 
     /// The local coding runtime's workspace root.
+    #[cfg(test)]
     pub(crate) fn local_workspace_root(&self) -> &Path {
         self.local
             .info

@@ -299,7 +299,7 @@ fn build_in_process_server(
         .expect("model manager"),
     );
     let agent_id = AgentId::new("primary").expect("agent id");
-    let skills = if with_skills {
+    if with_skills {
         let base = directory.path().to_owned();
         let root = base.join(".cookie-agent/skills");
         fs::create_dir_all(root.join("fresh-skill")).expect("skill directory");
@@ -308,10 +308,9 @@ fn build_in_process_server(
                 "---\nname: fresh-skill\ndescription: Fresh session skill\nargument-hint: <value>\n---\nFresh $ARGUMENTS.\n",
             )
             .expect("skill document");
-        cookie_agent_config::load_skill_roots(None, None, &[base]).expect("skill registry")
-    } else {
-        cookie_agent_config::SkillRegistry::default()
-    };
+    }
+    // The local coding runtime discovers the workspace's project skills.
+    let skills = cookie_agent_config::SkillRegistry::default();
     let mut agent = test_agent_document(&agent_id);
     if with_skills {
         agent.frontmatter.permissions.insert(

@@ -113,7 +113,7 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
     )
     .await;
     let grants = reopened
-        .skill_grants_for_session(child_id)
+        .skill_grants_for_session(child_id, None)
         .expect("reconstructed child grants");
     assert!(grants.rules.iter().any(|rule| {
         rule.action == PermissionAction::Bash && rule.resource.as_str() == "git *"
@@ -132,4 +132,52 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
         1
     );
     reopened.shutdown().await;
+}
+
+#[test]
+fn project_skill_grants_apply_to_the_contributing_attachment_only() {
+    let (fixture, _selection) = custom_fixture();
+    let session = cookie_agent_protocol::SessionId::new_v7();
+    let grant = |action, resource: &str| cookie_agent_protocol::PermissionRule {
+        action,
+        runtime: None,
+        resource: cookie_agent_protocol::WildcardPattern::new(resource).unwrap(),
+        effect: cookie_agent_protocol::PermissionEffect::Allow,
+    };
+    let labpc = cookie_agent_protocol::AttachmentName::new("labpc_api").unwrap();
+    let local = cookie_agent_protocol::AttachmentName::new("local_web").unwrap();
+    fixture.engine.install_skill_grants_for_test(
+        session,
+        "deploy",
+        Some(labpc.clone()),
+        vec![
+            grant(cookie_agent_protocol::PermissionAction::Bash, "make *"),
+            grant(cookie_agent_protocol::PermissionAction::Skill, "release"),
+        ],
+    );
+    fixture.engine.install_skill_grants_for_test(
+        session,
+        "user-notes",
+        None,
+        vec![grant(
+            cookie_agent_protocol::PermissionAction::Bash,
+            "notes *",
+        )],
+    );
+    let granted = |attachment: Option<&cookie_agent_protocol::AttachmentName>| {
+        let mut resources = fixture
+            .engine
+            .skill_grants_for_session(session, attachment)
+            .expect("grants")
+            .rules
+            .into_iter()
+            .map(|rule| rule.resource.as_str().to_owned())
+            .collect::<Vec<_>>();
+        resources.sort();
+        resources
+    };
+    assert_eq!(granted(Some(&labpc)), ["make *", "notes *", "release"]);
+    assert_eq!(granted(Some(&local)), ["notes *"]);
+    // The base layer sees the project skill's grants for base actions only.
+    assert_eq!(granted(None), ["notes *", "release"]);
 }

@@ -46,7 +46,7 @@ impl PreparedExecutor for SkillExecutor {
         let result: Result<ToolResult, ToolError> = async move {
             if self
                 .engine
-                .skill_invocation_context(&self.args.name)
+                .skill_invocation_context(context.session, &self.args.name)
                 .map_err(tool_error)?
                 == Some(cookie_agent_config::SkillContext::Fork)
             {

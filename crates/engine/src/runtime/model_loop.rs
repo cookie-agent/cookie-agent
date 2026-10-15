@@ -248,7 +248,7 @@ impl Engine {
         original_input = original_input.filter(|original| original != &params.input);
         let direct_plan = direct_skill
             .as_ref()
-            .map(|(name, args)| self.prepare_user_skill_invocation(name, args))
+            .map(|(name, args)| self.prepare_user_skill_invocation(params.session_id, name, args))
             .transpose()?;
         let prospective_plan = staged_skill.as_ref().or(direct_plan.as_ref());
         let prospective_grants = prospective_plan.and_then(|plan| plan.grants());
@@ -389,16 +389,20 @@ impl Engine {
                 }
             }
         }
-        let (agent_md, agent_md_skipped) = if is_root {
+        let agent_md = if is_root {
             let agent_override = run_policy
                 .registry
                 .get(&run_policy.agent.agent)
                 .and_then(|agent| agent.document.frontmatter.agent_md);
-            self.load_agent_md(params.selection.preset.as_deref(), agent_override)?
+            self.load_agent_md(
+                params.session_id,
+                params.selection.preset.as_deref(),
+                agent_override,
+            )?
         } else {
-            (Vec::new(), Vec::new())
+            Vec::new()
         };
-        self.compose_working_directory_section(&mut run_policy);
+        self.compose_runtimes_section(&mut run_policy, params.session_id);
         self.compose_tool_prompt_sections(&mut run_policy, params.session_id)?;
         self.compose_skill_listing(
             params.session_id,
@@ -577,35 +581,40 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(run_id, active.clone());
-        if !agent_md.is_empty()
-            && let Err(error) = self
-                .append(
-                    params.session_id,
-                    Some(run_id),
-                    event_origin("engine:agent-md"),
-                    Event::AgentMdLoaded { entries: agent_md },
-                )
-                .await
-        {
-            return Err(self
-                .terminalize_run_setup_failure(&active, run_id, error)
-                .await);
-        }
-        for skip in agent_md_skipped {
-            let path = skip.path.clone();
-            let byte_length = skip.byte_length;
-            if let Err(error) = self
-                .append(
-                    params.session_id,
-                    Some(run_id),
-                    event_origin("engine:agent-md"),
-                    Event::AgentMdSkipped { path, byte_length },
-                )
-                .await
+        for loaded in agent_md {
+            if !loaded.entries.is_empty()
+                && let Err(error) = self
+                    .append(
+                        params.session_id,
+                        Some(run_id),
+                        event_origin("engine:agent-md"),
+                        Event::AgentMdLoaded {
+                            entries: loaded.entries,
+                            attachment: Some(loaded.attachment),
+                        },
+                    )
+                    .await
             {
                 return Err(self
                     .terminalize_run_setup_failure(&active, run_id, error)
                     .await);
+            }
+            for skip in loaded.skipped {
+                let path = skip.path.clone();
+                let byte_length = skip.byte_length;
+                if let Err(error) = self
+                    .append(
+                        params.session_id,
+                        Some(run_id),
+                        event_origin("engine:agent-md"),
+                        Event::AgentMdSkipped { path, byte_length },
+                    )
+                    .await
+                {
+                    return Err(self
+                        .terminalize_run_setup_failure(&active, run_id, error)
+                        .await);
+                }
             }
         }
         for message in injected_messages {

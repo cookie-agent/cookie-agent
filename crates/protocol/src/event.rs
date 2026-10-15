@@ -213,6 +213,10 @@ pub struct StagedSkillPayload {
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<ModelKey>", required)]
     pub model: Option<ModelKey>,
+    /// The attachment that contributed a project skill; its grants apply
+    /// only to that attachment's tools. Absent for a user skill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<AttachmentName>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -2014,6 +2018,11 @@ pub enum EventPayload {
     AgentMdLoaded {
         #[schemars(length(min = 1, max = 2))]
         entries: Vec<AgentMdEntry>,
+        /// The coding-runtime attachment whose workspace the files came
+        /// from. Events written before runtimes have none and belong to
+        /// `local`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attachment: Option<AttachmentName>,
     },
     AgentMdSkipped {
         path: SafeDisplayText,
@@ -2645,7 +2654,7 @@ impl EventPayload {
             Self::SkillInvocationNoted { name } if name.is_empty() => {
                 return Err(EventSchemaError::InvalidSkillEvent);
             }
-            Self::AgentMdLoaded { entries } => {
+            Self::AgentMdLoaded { entries, .. } => {
                 if entries.is_empty() || entries.len() > 2 {
                     return Err(EventSchemaError::InvalidAgentMd);
                 }

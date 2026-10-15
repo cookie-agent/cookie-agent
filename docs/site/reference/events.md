@@ -253,11 +253,15 @@ a late tool result). Readers that ignore the field see only new decisions for
 such an attempt.
 
 `agent_md_loaded` is a run-scoped root-session event stamped
-`engine:agent-md`. It contains one or two discovered `AGENTS.md` entries,
-each with a bounded display source, retained content, truncation flag, and
-original byte size. Missing or disabled context produces no event. History uses
-only the latest run's event and replays its entries as one provenance-delimited
-user turn. Compaction pins that turn alongside loaded skill bodies. See
+`engine:agent-md`. It contains one or two `AGENTS.md` entries a coding runtime
+discovered in its workspace, each with a bounded display source, retained
+content, truncation flag, and original byte size, and the optional `attachment`
+naming that runtime's attachment. A run writes one event per attachment that
+returned a file. Missing or disabled context produces no event. History uses
+only the latest run's events, the latest per attachment (an event without
+`attachment` predates runtimes and counts as `local`'s), and replays their
+entries as one provenance-delimited user turn. Compaction pins that turn
+alongside loaded skill bodies. See
 [System Prompt Composition](system-prompt.md#agentsmd-context-turn).
 
 Legacy `plugin_event_added` is a runless plugin publication containing `plugin`, `name`, and arbitrary

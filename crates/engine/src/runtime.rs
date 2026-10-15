@@ -74,6 +74,7 @@ mod prompt_blocks;
 mod recovery;
 mod residency;
 mod runs;
+mod runtimes_section;
 mod sessions;
 mod skills;
 mod submit;
@@ -84,7 +85,6 @@ mod tests;
 mod titles;
 pub(crate) mod tool_execution;
 mod tool_prompts;
-mod working_directory;
 
 pub(crate) use artifact_reads::read_artifact_async;
 pub(crate) use artifacts::{ArtifactRouter, SessionArtifacts};
@@ -724,7 +724,6 @@ pub(crate) struct Inner {
     pub(crate) plugins: Arc<crate::PluginRegistry>,
     pub(crate) mcp_mutation: tokio::sync::Mutex<()>,
     permissions: PermissionPipeline,
-    pub(crate) skills: Arc<cookie_agent_config::SkillRegistry>,
     pub(crate) sessions: SessionRuntimeState,
     pub(crate) delegation: DelegationRuntimeState,
     pub(crate) approvals: ApprovalRuntimeState,
@@ -761,7 +760,6 @@ impl Engine {
         for provider in options.runtimes.global_tools.iter().chain(&local.providers) {
             reserve_provider_id(&mut provider_ids, provider.as_ref())?;
         }
-        let skills = Arc::new(options.config.skills.clone());
         let config_store = crate::config_store::ConfigStore::new(&options.config);
         let current_models = options.model_manager.current();
         let (agents, agent_presets) = resolve_agent_registries(&options.config, &current_models)?;
@@ -804,7 +802,10 @@ impl Engine {
         global_providers.extend(options.runtimes.global_tools.iter().cloned());
         let runtimes = crate::runtimes::RuntimeRegistry::new(
             Arc::new(crate::runtimes::GlobalTemplate),
-            crate::runtimes::GlobalTemplate::started(global_providers, Vec::new()),
+            crate::runtimes::GlobalTemplate::started(
+                global_providers,
+                options.config.skills.clone(),
+            ),
             local_template,
             local,
         );
@@ -846,7 +847,6 @@ impl Engine {
                 plugins,
                 mcp_mutation: tokio::sync::Mutex::new(()),
                 permissions: PermissionPipeline::default(),
-                skills,
                 sessions: SessionRuntimeState::default(),
                 delegation: DelegationRuntimeState::default(),
                 approvals: ApprovalRuntimeState::default(),

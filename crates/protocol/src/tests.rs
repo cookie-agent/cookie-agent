@@ -853,6 +853,7 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
         seq: 1,
         timestamp: jiff::Timestamp::now(),
         payload: EventPayload::AgentMdLoaded {
+            attachment: None,
             entries: vec![AgentMdEntry {
                 source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                 content: "project rules".into(),
@@ -865,6 +866,7 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
 
     let invalid = StoredEvent {
         payload: EventPayload::AgentMdLoaded {
+            attachment: None,
             entries: Vec::new(),
         },
         ..event

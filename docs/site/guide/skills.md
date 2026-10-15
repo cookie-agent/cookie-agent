@@ -1,30 +1,42 @@
 # Skill
 
-Skills are reusable instruction bundles loaded once when the engine opens. A
-skill is a directory whose name contains lowercase letters, digits, and single
-hyphens, with an exact-case `SKILL.md` file inside it. Other files under the
-directory are available as scripts, references, or assets.
+Skills are reusable instruction bundles loaded once when the runtime that
+contributes them starts. A skill is a directory whose name contains lowercase
+letters, digits, and single hyphens, with an exact-case `SKILL.md` file inside
+it. Other files under the directory are available as scripts, references, or
+assets.
 
 ## Discovery and precedence
 
-Cookie Agent discovers skills from these locations, lowest to highest
-precedence:
+A session's skills come from the [runtimes](../specs/runtimes.md) it is
+attached to. The global runtime contributes the user skills:
 
 - `~/.agents/skills/<name>/SKILL.md` (cross-client convention, shared with
   other agents)
-- `~/.cookie-agent/skills/<name>/SKILL.md` (cookie-agent-native user skills)
-- `.agents/skills/<name>/SKILL.md`, then `.cookie-agent/skills/<name>/SKILL.md`,
-  from the worktree root downward to the working directory
+- `~/.cookie-agent/skills/<name>/SKILL.md` (cookie-agent-native user skills,
+  which win over the shared location)
+
+Each coding runtime contributes the project skills it finds for its own
+workspace: `.agents/skills/<name>/SKILL.md`, then
+`.cookie-agent/skills/<name>/SKILL.md`, in every directory from the repository
+root (the nearest ancestor with `.git`) down to the workspace, deeper
+directories winning. The built-in `local` runtime does this for the daemon's
+working directory when the daemon starts; another coding runtime does it when
+its instance starts.
 
 The user locations resolve from the standard home directory and are the normal
 place for reusable personal skills; `~/.agents/skills` is the right home for
 skills shared with other agents that follow the cross-client convention.
 
-Same-named skills are replaced whole, never merged: a higher-precedence
-location wins, and within one directory scope the cookie-agent-native root wins
-over `.agents/skills`. Shadowed user-scope skills remain visible in
-`skills.list`, but cannot be invoked and are not offered by the TUI. Skill files are
-not hot-reloaded; restart the engine after changing them.
+Same-named skills are replaced whole, never merged: a project skill shadows a
+user skill of the same name, and within one directory scope the
+cookie-agent-native root wins over `.agents/skills`. When project skills of two
+attachments share a name, each is offered as `<attachment>_<name>`, for example
+`local_web_deploy` and `labpc_api_deploy`, like colliding tools. Shadowed skills
+remain visible in `skills.list`, but cannot be invoked and are not offered by
+the TUI. A session without the global runtime has no user skills, and one
+without a coding runtime has no project skills. Skill files are not
+hot-reloaded; restart the engine after changing them.
 
 ## Authoring
 
@@ -93,6 +105,10 @@ glob semantics. For example, `Bash(git:*)` creates grants for both `git` and
 patterns pass through unchanged: `Write(src/**)` grants the `src/**` glob.
 
 On load, these entries create turn-scoped allow grants labeled for that skill.
+A project skill's grants apply only to the tools of the attachment that
+contributed it (and, for `Skill` and `Delegate` grants, to the base layer's
+`skill` and `delegate_subagent` tools); a user skill's grants apply to every
+runtime.
 Grants from every skill loaded during the same turn are merged; loading a
 grantless skill does not remove grants from an earlier skill. The complete
 collection disappears on the next committed user input. Grants can only upgrade

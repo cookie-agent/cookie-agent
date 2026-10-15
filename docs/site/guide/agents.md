@@ -144,18 +144,25 @@ unless it is turned off. The run agent's `agent_md` frontmatter decides when it 
 set; otherwise the global [`[agent_md]`](../engine/agent_md.md) `enabled` switch
 does. The files are read fresh, so edits apply to the next run:
 
+Every coding runtime the session is attached to applies the same lookup to its
+own workspace (for the built-in `local` runtime, the daemon's working
+directory):
+
 1. `.cookie-agent/agents/AGENTS.md` is the default project file. When the run
    uses a preset and `.cookie-agent/agents/<preset>/AGENTS.md` exists, that file
    replaces the default project file.
-2. `<cwd>/AGENTS.md` is loaded in addition when present.
+2. `<workspace>/AGENTS.md` is loaded in addition when present.
+
+Presets themselves are still defined only by the daemon's user configuration.
 
 Missing files add no event or model tokens. Files larger than 2 MiB are skipped
 and surfaced as `AgentMdSkipped` warning events. Delegated sessions do not
 discover these files for their own runs; explicitly inherited parent text and
 forked event prefixes retain their existing behavior. Internal agents never
-discover them. Loaded entries are persisted with provenance in
-`agent_md_loaded` and replayed as one user context turn wrapped in a
-`<system-reminder>` block, not as system-prompt text.
+discover them. Loaded entries are persisted with provenance in one
+`agent_md_loaded` event per attachment that returned a file and replayed
+together as one user context turn wrapped in a `<system-reminder>` block, not
+as system-prompt text.
 
 Repository-controlled `AGENTS.md` content enters model context automatically.
 Treat it as untrusted instructions when opening unfamiliar workspaces and review

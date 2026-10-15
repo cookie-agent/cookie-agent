@@ -56,7 +56,7 @@ pub(crate) fn checkpoint_retained_history<E: Borrow<StoredEvent>>(
         .iter()
         .filter(|event| matches!(event.payload, EventPayload::SkillLoaded { .. }))
         .count();
-    let pinned_agent_md = usize::from(latest_agent_md_event(events).is_some());
+    let pinned_agent_md = usize::from(!latest_agent_md_events(events).is_empty());
     let pinned_count = pinned_agent_md.saturating_add(pinned_skills);
     let mut history = history.iter();
     let mut retained = history.next().cloned().into_iter().collect::<Vec<_>>();
@@ -331,14 +331,17 @@ fn latest_checkpoint<'a>(
     })
 }
 
-fn is_pinned_event(
-    event: &StoredEvent,
-    latest_agent_md_seq: Option<u64>,
-    through_seq: u64,
-) -> bool {
+fn is_pinned_event(event: &StoredEvent, latest_agent_md_seqs: &[u64], through_seq: u64) -> bool {
     event.seq <= through_seq
         && (matches!(event.payload, EventPayload::SkillLoaded { .. })
-            || latest_agent_md_seq == Some(event.seq))
+            || latest_agent_md_seqs.contains(&event.seq))
+}
+
+fn latest_agent_md_seqs(events: &[&StoredEvent]) -> Vec<u64> {
+    latest_agent_md_events(events)
+        .iter()
+        .map(|event| event.seq)
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -354,7 +357,7 @@ fn selected_checkpoint_events<'a>(
     close_dependencies: bool,
     mode: CheckpointSelectionMode,
 ) -> Vec<&'a StoredEvent> {
-    let latest_agent_md_seq = latest_agent_md_event(events).map(|event| event.seq);
+    let latest_agent_md_seqs = latest_agent_md_seqs(events);
     let pending_producer_admissions = match mode {
         CheckpointSelectionMode::InternalSummary => GoalProducerProjection::from_events(events)
             .messages
@@ -367,7 +370,7 @@ fn selected_checkpoint_events<'a>(
     let mut selected = events
         .iter()
         .filter(|event| {
-            is_pinned_event(event, latest_agent_md_seq, source_through_seq)
+            is_pinned_event(event, &latest_agent_md_seqs, source_through_seq)
                 || pending_producer_admissions.contains(&event.seq)
                 || recent_from_seq
                     .is_some_and(|from| (from..=source_through_seq).contains(&event.seq))
@@ -439,7 +442,7 @@ fn close_event_dependencies<'a>(events: &[&'a StoredEvent], selected: &mut Vec<&
 }
 
 fn pinned_history_len(events: &[&StoredEvent]) -> usize {
-    usize::from(latest_agent_md_event(events).is_some())
+    usize::from(!latest_agent_md_events(events).is_empty())
         + events
             .iter()
             .filter(|event| matches!(event.payload, EventPayload::SkillLoaded { .. }))
@@ -523,9 +526,9 @@ pub(crate) fn compaction_prefix_history<E: Borrow<StoredEvent>>(
     } else {
         (events.to_vec(), None)
     };
-    let latest_agent_md_seq = latest_agent_md_event(events).map(|event| event.seq);
+    let latest_agent_md_seqs = latest_agent_md_seqs(events);
     visible.retain(|event| {
-        event.seq < recent_from_seq || is_pinned_event(event, latest_agent_md_seq, u64::MAX)
+        event.seq < recent_from_seq || is_pinned_event(event, &latest_agent_md_seqs, u64::MAX)
     });
     close_event_dependencies(events, &mut visible);
     visible.sort_by_key(|event| event.seq);
@@ -865,12 +868,22 @@ fn assemble_history_with_replay(
             _ => None,
         })
         .collect::<HashSet<_>>();
-    let loaded_agent_md = latest_agent_md_event(context_events).and_then(|event| {
-        let EventPayload::AgentMdLoaded { entries } = &event.payload else {
-            return None;
-        };
-        Some(agent_md_turn(entries))
-    });
+    let loaded_agent_md = {
+        let loaded = latest_agent_md_events(context_events)
+            .into_iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::AgentMdLoaded {
+                    entries,
+                    attachment,
+                } => Some((
+                    attachment.as_ref().map(|name| name.as_str()),
+                    entries.as_slice(),
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        (!loaded.is_empty()).then(|| agent_md_turn(&loaded))
+    };
     let mut logical = Vec::<LogicalTurn<'_>>::new();
     let mut submitted = HashMap::<u64, &str>::new();
     let mut pending_model_calls = HashMap::<
@@ -1330,41 +1343,69 @@ fn assemble_history_with_replay(
     })
 }
 
-fn latest_agent_md_event<'a>(events: &[&'a StoredEvent]) -> Option<&'a StoredEvent> {
+/// The current `AGENTS.md` context: the latest run's `agent_md_loaded`
+/// events, the latest one per attachment, in log order. Events without an
+/// attachment were written before runtimes and belong to `local`.
+fn latest_agent_md_events<'a>(events: &[&'a StoredEvent]) -> Vec<&'a StoredEvent> {
     let latest_run = events.iter().rev().find_map(|event| {
         matches!(event.payload, EventPayload::RunStarted { .. }).then_some(event.run_id)
     });
-    events.iter().rev().copied().find(|event| {
-        matches!(event.payload, EventPayload::AgentMdLoaded { .. })
-            && latest_run.is_none_or(|run| event.run_id == run)
-    })
+    let mut seen = HashSet::new();
+    let mut latest = events
+        .iter()
+        .rev()
+        .copied()
+        .filter(|event| latest_run.is_none_or(|run| event.run_id == run))
+        .filter(|event| match &event.payload {
+            EventPayload::AgentMdLoaded { attachment, .. } => seen.insert(
+                attachment
+                    .as_ref()
+                    .map_or(cookie_agent_protocol::RuntimeId::LOCAL, |name| {
+                        name.as_str()
+                    })
+                    .to_owned(),
+            ),
+            _ => false,
+        })
+        .collect::<Vec<_>>();
+    latest.reverse();
+    latest
 }
 
 const AGENT_MD_PREAMBLE: &str = "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# AGENTS.md\nCodebase and user instructions are shown below. Be sure to adhere to these instructions.\nIMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.";
 
 const AGENT_MD_FOOTNOTE: &str = "IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.";
 
-fn agent_md_turn(entries: &[cookie_agent_protocol::AgentMdEntry]) -> String {
-    if entries.is_empty() {
+/// One user turn holding every loaded file. With several attachments each
+/// file names the attachment it came from.
+fn agent_md_turn(loaded: &[(Option<&str>, &[cookie_agent_protocol::AgentMdEntry])]) -> String {
+    let several = loaded.len() > 1;
+    let files = loaded
+        .iter()
+        .flat_map(|(attachment, entries)| {
+            entries.iter().map(move |entry| {
+                let source = escape_xml_attribute(entry.source.as_str());
+                let runtime = attachment
+                    .filter(|_| several)
+                    .map(|name| format!(" runtime=\"{}\"", escape_xml_attribute(name)))
+                    .unwrap_or_default();
+                format!(
+                    "<contents from=\"{source}\"{runtime}>\n{}\n</contents>",
+                    entry.content
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    if files.is_empty() {
         return String::new();
     }
-    let files = entries
-        .iter()
-        .map(|entry| {
-            let source = escape_xml_attribute(entry.source.as_str());
-            format!(
-                "<contents from=\"{source}\">\n{}\n</contents>",
-                entry.content
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    let files = files.join("\n\n");
     format!("{AGENT_MD_PREAMBLE}\n\n{files}\n\n{AGENT_MD_FOOTNOTE}\n</system-reminder>")
 }
 
 #[cfg(test)]
 pub(crate) fn agent_md_turn_for_test(entries: &[cookie_agent_protocol::AgentMdEntry]) -> String {
-    agent_md_turn(entries)
+    agent_md_turn(&[(None, entries)])
 }
 
 fn escape_xml_attribute(value: &str) -> String {

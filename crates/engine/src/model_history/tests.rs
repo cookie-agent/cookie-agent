@@ -511,6 +511,7 @@ fn checkpoint_accounting_retains_agent_md_and_every_skill_body() {
             1,
             run,
             EventPayload::AgentMdLoaded {
+                attachment: None,
                 entries: vec![AgentMdEntry {
                     source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                     content: "pinned AGENTS.md context".into(),
@@ -548,7 +549,7 @@ fn checkpoint_accounting_retains_agent_md_and_every_skill_body() {
 
 #[test]
 fn agent_md_turn_uses_system_reminder_with_contents_blocks() {
-    let rendered = super::agent_md_turn(&[AgentMdEntry {
+    let rendered = super::agent_md_turn_for_test(&[AgentMdEntry {
         source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
         content: "project rules".into(),
         byte_length: 13,
@@ -592,6 +593,7 @@ fn replay_orders_agent_md_then_skills_then_delegated_seed() {
             3,
             run,
             EventPayload::AgentMdLoaded {
+                attachment: None,
                 entries: vec![AgentMdEntry {
                     source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                     content: "AGENTS.md context body".into(),
@@ -2115,6 +2117,7 @@ fn compaction_prefix_uses_current_agent_md_across_run_boundary() {
             seq,
             run,
             EventPayload::AgentMdLoaded {
+                attachment: None,
                 entries: vec![AgentMdEntry {
                     source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                     content: content.into(),
@@ -2192,6 +2195,7 @@ fn summary_projection_orders_and_deduplicates_pinned_context() {
             1,
             run,
             EventPayload::AgentMdLoaded {
+                attachment: None,
                 entries: vec![AgentMdEntry {
                     source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                     content: "pinned agent rules".into(),
@@ -2804,4 +2808,66 @@ fn aborted_reasoning_only_turn_is_skipped_without_an_interrupt_marker() {
     let encoded = serde_json::to_string(&context.history).expect("history JSON");
     assert!(!encoded.contains(INTERRUPTED_TURN_MARKER));
     assert!(!encoded.contains("hidden reasoning"));
+}
+
+#[test]
+fn agent_md_replay_keeps_the_latest_event_per_attachment() {
+    let run = RunId::new_v7();
+    let loaded = |seq, attachment: Option<&str>, content: &str| {
+        event(
+            seq,
+            run,
+            EventPayload::AgentMdLoaded {
+                attachment: attachment
+                    .map(|name| cookie_agent_protocol::AttachmentName::new(name).unwrap()),
+                entries: vec![AgentMdEntry {
+                    source: SafeDisplayText::new("AGENTS.md").unwrap(),
+                    content: content.into(),
+                    byte_length: content.len() as u64,
+                }],
+            },
+        )
+    };
+    let events = [
+        run_started_event(1, run, &binding()),
+        loaded(2, Some("local_web"), "stale local rules"),
+        loaded(3, Some("labpc_api"), "labpc rules"),
+        loaded(4, Some("local_web"), "local rules"),
+    ];
+    let events = events.iter().collect::<Vec<_>>();
+    let latest = super::latest_agent_md_events(&events);
+    assert_eq!(
+        latest.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        [3, 4]
+    );
+
+    // Several attachments: each file names the attachment it came from.
+    let rendered = super::agent_md_turn(&[
+        (
+            Some("labpc_api"),
+            &[AgentMdEntry {
+                source: SafeDisplayText::new("AGENTS.md").unwrap(),
+                content: "labpc rules".into(),
+                byte_length: 11,
+            }][..],
+        ),
+        (
+            Some("local_web"),
+            &[AgentMdEntry {
+                source: SafeDisplayText::new("AGENTS.md").unwrap(),
+                content: "local rules".into(),
+                byte_length: 11,
+            }][..],
+        ),
+    ]);
+    assert!(rendered.contains("<contents from=\"AGENTS.md\" runtime=\"labpc_api\">\nlabpc rules"));
+    assert!(rendered.contains("<contents from=\"AGENTS.md\" runtime=\"local_web\">\nlocal rules"));
+
+    // An event written before runtimes has no attachment and is `local`'s.
+    let legacy = [
+        run_started_event(1, run, &binding()),
+        loaded(2, None, "legacy rules"),
+    ];
+    let legacy = legacy.iter().collect::<Vec<_>>();
+    assert_eq!(super::latest_agent_md_events(&legacy).len(), 1);
 }

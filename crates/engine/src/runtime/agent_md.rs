@@ -1,6 +1,6 @@
 use std::{fs::File, io::Read as _, path::Path};
 
-use cookie_agent_protocol::{AgentMdEntry, AgentMdSkipped, SafeDisplayText};
+use cookie_agent_protocol::{AgentMdEntry, AgentMdSkipped, SafeDisplayText, SessionId};
 
 use super::{Engine, EngineError};
 
@@ -8,20 +8,57 @@ use super::{Engine, EngineError};
 /// `AgentMdSkipped` warning event, mirroring Claude Code behavior.
 pub(crate) const AGENT_MD_MAX_BYTES: u64 = AgentMdEntry::MAX_CONTENT_BYTES as u64;
 
+/// The `AGENTS.md` files one coding-runtime attachment returned.
+pub(crate) struct AttachmentAgentMd {
+    pub(crate) attachment: cookie_agent_protocol::AttachmentName,
+    pub(crate) entries: Vec<AgentMdEntry>,
+    pub(crate) skipped: Vec<AgentMdSkipped>,
+}
+
 impl Engine {
     /// `agent_override` is the run agent's `agent_md` frontmatter; when present
-    /// it replaces the global `[agent_md] enabled` switch. Files are looked up
-    /// in the local coding runtime's workspace.
+    /// it replaces the global `[agent_md] enabled` switch. Each coding-runtime
+    /// attachment of `session` applies the lookup to its own workspace: the
+    /// preset's `.cookie-agent/agents/<preset>/AGENTS.md`, else
+    /// `.cookie-agent/agents/AGENTS.md`, then `<workspace>/AGENTS.md`.
     pub(crate) fn load_agent_md(
         &self,
+        session: SessionId,
         preset: Option<&str>,
         agent_override: Option<bool>,
-    ) -> Result<(Vec<AgentMdEntry>, Vec<AgentMdSkipped>), EngineError> {
+    ) -> Result<Vec<AttachmentAgentMd>, EngineError> {
         if !agent_override.unwrap_or(self.inner.config.runtime.agent_md.enabled) {
-            return Ok((Vec::new(), Vec::new()));
+            return Ok(Vec::new());
         }
-        let cwd = self.inner.runtimes.local_workspace_root();
-        let agents_dir = cwd.join(".cookie-agent").join("agents");
+        let mut loaded = Vec::new();
+        for attachment in self.session_runtimes(session)? {
+            if attachment.kind != cookie_agent_protocol::RuntimeKind::Coding {
+                continue;
+            }
+            let Some(instance) = self.inner.runtimes.instance(&attachment) else {
+                continue;
+            };
+            let Some(workspace) = instance.info().workspace() else {
+                continue;
+            };
+            let (entries, skipped) = self.load_workspace_agent_md(workspace.root(), preset)?;
+            if !entries.is_empty() || !skipped.is_empty() {
+                loaded.push(AttachmentAgentMd {
+                    attachment: attachment.name,
+                    entries,
+                    skipped,
+                });
+            }
+        }
+        Ok(loaded)
+    }
+
+    fn load_workspace_agent_md(
+        &self,
+        workspace: &Path,
+        preset: Option<&str>,
+    ) -> Result<(Vec<AgentMdEntry>, Vec<AgentMdSkipped>), EngineError> {
+        let agents_dir = workspace.join(".cookie-agent").join("agents");
         let mut entries = Vec::with_capacity(2);
         let mut skipped = Vec::new();
         let project_path = if let Some(preset) = preset {
@@ -34,21 +71,25 @@ impl Engine {
         } else {
             agents_dir.join("AGENTS.md")
         };
-        if let Some(entry) = self.read_agent_md_file(&project_path)? {
+        if let Some(entry) = self.read_agent_md_file(&project_path, workspace)? {
             entries.push(entry);
         } else if let Some(skip) = skipped_agent_md_file(&project_path) {
             skipped.push(skip);
         }
-        let cwd_path = cwd.join("AGENTS.md");
-        if let Some(entry) = self.read_agent_md_file(&cwd_path)? {
+        let workspace_path = workspace.join("AGENTS.md");
+        if let Some(entry) = self.read_agent_md_file(&workspace_path, workspace)? {
             entries.push(entry);
-        } else if let Some(skip) = skipped_agent_md_file(&cwd_path) {
+        } else if let Some(skip) = skipped_agent_md_file(&workspace_path) {
             skipped.push(skip);
         }
         Ok((entries, skipped))
     }
 
-    fn read_agent_md_file(&self, path: &Path) -> Result<Option<AgentMdEntry>, EngineError> {
+    fn read_agent_md_file(
+        &self,
+        path: &Path,
+        workspace: &Path,
+    ) -> Result<Option<AgentMdEntry>, EngineError> {
         let mut file = match File::open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -96,11 +137,8 @@ impl Engine {
             }
         };
         Ok(Some(AgentMdEntry {
-            source: SafeDisplayText::new(relative_display_path(
-                path,
-                self.inner.runtimes.local_workspace_root(),
-            ))
-            .expect("AGENTS.md relative path is bounded"),
+            source: SafeDisplayText::new(relative_display_path(path, workspace))
+                .expect("AGENTS.md relative path is bounded"),
             byte_length: observed_bytes,
             content,
         }))
@@ -116,7 +154,7 @@ pub(crate) fn skipped_agent_md_file(path: &Path) -> Option<AgentMdSkipped> {
     })
 }
 
-/// Display path relative to the session working directory when possible, so
+/// Display path relative to the runtime's workspace when possible, so
 /// model-facing context (e.g. AGENTS.md `from=` attributes) reinforces
 /// workspace-relative path style.
 fn relative_display_path(path: &Path, cwd: &Path) -> String {

@@ -733,6 +733,7 @@ impl PreparedExecutor for TestDelegateExecutor {
                 engine.stage_skill_fork_for_test(
                     call_id,
                     &cookie_agent_protocol::StagedSkillPayload {
+                        attachment: None,
                         provenance: cookie_agent_protocol::StagedSkillProvenance::SkillFork,
                         name: "restart-skill".into(),
                         args: String::new(),

@@ -262,15 +262,23 @@ impl SkillRegistry {
     }
 }
 
-/// Loads skills once for engine construction. Skill files are intentionally not hot-reloaded.
-pub fn load_skills(cwd: &Path) -> Result<SkillRegistry, ConfigError> {
-    let cwd = cwd.canonicalize().map_err(ConfigError::Io)?;
+/// Loads the user skills (`~/.agents/skills`, then the cookie-agent user root)
+/// once for engine construction; the global runtime contributes them. Skill
+/// files are intentionally not hot-reloaded.
+pub fn load_user_skills() -> Result<SkillRegistry, ConfigError> {
     let shared_user = paths::home_dir()
         .ok()
         .map(|home| home.join(".agents/skills"));
     let user = user_skill_root();
-    let project = project_skill_roots(&cwd);
-    load_skill_roots(shared_user.as_deref(), user.as_deref(), &project)
+    load_skill_roots(shared_user.as_deref(), user.as_deref(), &[])
+}
+
+/// Loads the project skills a coding runtime contributes for `workspace`:
+/// each directory from the repository root (the nearest ancestor with
+/// `.git`, else the workspace itself) down to the workspace, in that order.
+pub fn load_project_skills(workspace: &Path) -> Result<SkillRegistry, ConfigError> {
+    let workspace = workspace.canonicalize().map_err(ConfigError::Io)?;
+    load_skill_roots(None, None, &project_skill_roots(&workspace))
 }
 
 /// Loads explicit skill roots in low-to-high project precedence order.
@@ -543,8 +551,10 @@ fn skill_document(path: &Path, message: impl Into<String>) -> ConfigError {
     }
 }
 
+/// Renders the `<available_skills>` listing of `skills`, each under the name
+/// the session knows it by.
 pub fn render_available_skills<'a>(
-    skills: impl IntoIterator<Item = &'a SkillDocument>,
+    skills: impl IntoIterator<Item = (&'a str, &'a SkillDocument)>,
     context_tokens: u64,
 ) -> Result<String, ConfigError> {
     let skills = skills.into_iter().collect::<Vec<_>>();
@@ -556,9 +566,9 @@ pub fn render_available_skills<'a>(
         .saturating_mul(4);
     let render = |include_when: bool, descriptions: &[String]| {
         let mut output = String::from("<available_skills>");
-        for (skill, description) in skills.iter().zip(descriptions) {
+        for ((name, skill), description) in skills.iter().zip(descriptions) {
             output.push_str("<skill><name>");
-            output.push_str(&escape_xml(&skill.frontmatter.name));
+            output.push_str(&escape_xml(name));
             output.push_str("</name><description>");
             output.push_str(&escape_xml(description));
             if include_when && let Some(when) = &skill.frontmatter.when_to_use {
@@ -574,7 +584,7 @@ pub fn render_available_skills<'a>(
     };
     let mut descriptions = skills
         .iter()
-        .map(|skill| skill.frontmatter.description.clone())
+        .map(|(_, skill)| skill.frontmatter.description.clone())
         .collect::<Vec<_>>();
     let full = render(true, &descriptions);
     if full.len() <= budget {
@@ -909,8 +919,13 @@ mod tests {
         )
         .expect("skill document");
         let registry = load_skill_roots(None, None, &[temp.path().to_owned()]).expect("registry");
-        let rendered = render_available_skills(registry.skills().map(|(_, skill)| skill), 10_000)
-            .expect("bounded listing");
+        let rendered = render_available_skills(
+            registry
+                .skills()
+                .map(|(name, skill)| (name.as_str(), skill)),
+            10_000,
+        )
+        .expect("bounded listing");
         assert!(rendered.len() <= 400);
         assert!(rendered.contains("<name>budget</name>"));
         assert!(!rendered.contains(&"w".repeat(100)));

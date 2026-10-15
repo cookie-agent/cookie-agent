@@ -19,7 +19,7 @@ use std::{
 };
 
 use cookie_agent::run::{AllowedTool, OutputMode, PermissionModeArg, RunArgs, execute_with_io};
-use cookie_agent_config::{load_from_user_root, load_skills};
+use cookie_agent_config::load_from_user_root;
 use cookie_agent_engine::{Engine, EngineHistoryView, EngineOptions};
 use cookie_agent_models::{
     ModelManager,
@@ -270,10 +270,10 @@ impl Fixture {
         fs::create_dir(&provider_store_path).expect("provider store directory");
         make_private(&provider_store_path);
         // The workspace's `.cookie-agent` doubles as the user layer root, so
-        // one directory carries configuration, agents, and project skills.
+        // one directory carries configuration, agents, and project skills,
+        // which the local coding runtime discovers for its workspace.
         let mut configuration = load_from_user_root(Some(&workspace.join(".cookie-agent")))
             .expect("test configuration");
-        configuration.skills = load_skills(&workspace).expect("test skills");
         configuration.plugins.extend(plugins);
         let model_manager = Arc::new(
             ModelManager::new_with_headers(
