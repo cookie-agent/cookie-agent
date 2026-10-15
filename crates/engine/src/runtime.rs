@@ -781,7 +781,10 @@ impl Engine {
         let local_template = Arc::new(crate::runtimes::ProtocolTemplate::local(
             Arc::clone(connector),
             local_workspace.root(),
-            crate::runtimes::runtime_settings(&options.config),
+            crate::runtimes::runtime_settings(
+                &options.config,
+                cookie_agent_runtime_api::LOCAL_RUNTIME_ID,
+            ),
         ));
         let local = crate::RuntimeTemplate::start(local_template.as_ref(), None)
             .await
@@ -850,6 +853,7 @@ impl Engine {
             local,
         ));
         runtimes.watch_builtin();
+        crate::runtimes::register_configured_templates(&runtimes, &options.config)?;
         let delegation_events = DelegationEventStore::new(Arc::clone(&store));
         let grant_journals = GrantJournals::new(store.workdir_dir_path());
         let (runtime_notifications, _) = broadcast::channel(64);
@@ -1547,15 +1551,16 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
-        for connection in self.inner.runtimes.clear() {
-            connection.shutdown(RUNTIME_SHUTDOWN_GRACE).await;
-        }
+        let connections = self.inner.runtimes.clear();
+        futures_util::future::join_all(
+            connections
+                .iter()
+                .map(crate::runtimes::RuntimeClient::shutdown),
+        )
+        .await;
         self.inner.store.release_ownership();
     }
 }
-
-/// How long shutdown waits for a runtime to acknowledge `runtime/shutdown`.
-const RUNTIME_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 fn local_workspace(options: &EngineOptions) -> Result<crate::WorkspaceContext, EngineError> {
     crate::WorkspaceContext::new(&options.runtimes.local_workspace).map_err(|source| {

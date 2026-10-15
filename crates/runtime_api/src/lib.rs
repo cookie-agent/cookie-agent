@@ -42,7 +42,7 @@ pub use provider::{
     ToolResultTruncationPolicy, ToolSpec, tool_presentation, tool_title_only,
 };
 pub use runtime::{
-    CodingToolsFactory, GLOBAL_RUNTIME_ID, LOCAL_RUNTIME_ID, LocalRuntime,
-    MAX_ATTACHMENT_NAME_BYTES, RuntimeConnector, RuntimeInfo, RuntimeKind, RuntimeOptions,
-    ToolOrigin, WorkspaceContext, coding_attachment_name,
+    CodingToolsFactory, DiagnosticTail, GLOBAL_RUNTIME_ID, LOCAL_RUNTIME_ID, LocalRuntime,
+    MAX_ATTACHMENT_NAME_BYTES, RuntimeConnection, RuntimeConnector, RuntimeInfo, RuntimeKind,
+    RuntimeOptions, ToolOrigin, WorkspaceContext, coding_attachment_name,
 };

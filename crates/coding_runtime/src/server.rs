@@ -29,9 +29,9 @@ use base64::Engine as _;
 use cookie_agent_protocol::{SessionId, Transport};
 use cookie_agent_runtime_api::{
     BackgroundJob, BackgroundJobs, BackgroundLauncher, BackgroundTask, CodingToolsFactory,
-    ProgressCapture, ProgressSink, RuntimeConnector, RuntimeInfo, SessionToolContext, StdinWrite,
-    ToolArtifacts, ToolCall, ToolError, ToolExecutionContext, ToolOrigin, ToolPreparationContext,
-    ToolProgress, ToolProvider, ToolStdin, WorkspaceContext,
+    ProgressCapture, ProgressSink, RuntimeConnection, RuntimeConnector, RuntimeInfo,
+    SessionToolContext, StdinWrite, ToolArtifacts, ToolCall, ToolError, ToolExecutionContext,
+    ToolOrigin, ToolPreparationContext, ToolProgress, ToolProvider, ToolStdin, WorkspaceContext,
     context::{AGENT_MD_MAX_BYTES, load_agent_md},
     protocol::{
         self, ContextParams, ContextResult, Empty, ExecuteOutcome, ExecuteParams, ExecuteResult,
@@ -80,7 +80,7 @@ struct InProcessConnector {
 
 #[async_trait]
 impl RuntimeConnector for InProcessConnector {
-    async fn connect(&self) -> Result<Box<dyn Transport>, String> {
+    async fn connect(&self, _workspace: Option<&Path>) -> Result<RuntimeConnection, String> {
         let (daemon, runtime) = cookie_agent_protocol::in_process_pair(64);
         tokio::spawn(serve(
             Box::new(runtime),
@@ -89,7 +89,7 @@ impl RuntimeConnector for InProcessConnector {
                 tools: Arc::clone(&self.tools),
             },
         ));
-        Ok(Box::new(daemon))
+        Ok(RuntimeConnection::new(Box::new(daemon)))
     }
 }
 

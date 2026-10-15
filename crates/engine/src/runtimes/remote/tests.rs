@@ -80,6 +80,10 @@ impl Transport for Breakable {
 struct TestConnector {
     tools: CodingToolsFactory,
     broken: Mutex<CancellationToken>,
+    /// Connections made so far.
+    connects: std::sync::atomic::AtomicUsize,
+    /// While set, connecting fails, as when a host is unreachable.
+    refuse: std::sync::atomic::AtomicBool,
 }
 
 impl TestConnector {
@@ -87,11 +91,17 @@ impl TestConnector {
         Arc::new(Self {
             tools,
             broken: Mutex::new(CancellationToken::new()),
+            connects: std::sync::atomic::AtomicUsize::new(0),
+            refuse: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
     fn builtin() -> Arc<Self> {
         Self::new(ServeOptions::default().tools)
+    }
+
+    fn connects(&self) -> usize {
+        self.connects.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Cuts the current connections; later connections work.
@@ -104,7 +114,15 @@ impl TestConnector {
 
 #[async_trait]
 impl RuntimeConnector for TestConnector {
-    async fn connect(&self) -> Result<Box<dyn Transport>, String> {
+    async fn connect(
+        &self,
+        _workspace: Option<&std::path::Path>,
+    ) -> Result<cookie_agent_runtime_api::RuntimeConnection, String> {
+        if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("connection refused".into());
+        }
+        self.connects
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let (daemon, runtime) = in_process_pair(64);
         tokio::spawn(serve(
             Box::new(runtime),
@@ -113,10 +131,12 @@ impl RuntimeConnector for TestConnector {
                 tools: Arc::clone(&self.tools),
             },
         ));
-        Ok(Box::new(Breakable {
-            inner: daemon,
-            broken: self.broken.lock().unwrap().clone(),
-        }))
+        Ok(cookie_agent_runtime_api::RuntimeConnection::new(Box::new(
+            Breakable {
+                inner: daemon,
+                broken: self.broken.lock().unwrap().clone(),
+            },
+        )))
     }
 }
 
@@ -125,12 +145,17 @@ async fn connect(
     connector: &Arc<TestConnector>,
     workspace: &std::path::Path,
 ) -> (crate::StartedRuntime, Arc<dyn ToolProvider>) {
-    let transport = connector.connect().await.unwrap();
-    let settings = runtime_settings(&custom_fixture().0.config);
-    let (client, result) =
-        RuntimeClient::initialize(transport, "remote", Some(workspace), &settings)
-            .await
-            .unwrap();
+    let connection = connector.connect(Some(workspace)).await.unwrap();
+    let settings = runtime_settings(&custom_fixture().0.config, "remote");
+    let (client, result) = RuntimeClient::initialize(
+        connection,
+        "remote",
+        Some(workspace),
+        &settings,
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
     let started = started(client, result).unwrap();
     let provider = Arc::clone(&started.providers[0]);
     (started, provider)
@@ -659,13 +684,14 @@ async fn a_lost_instance_fails_and_restarts_under_a_new_generation() {
     let connector = TestConnector::builtin();
     let registry = &fixture.engine.inner.runtimes;
     registry
-        .register_template(Arc::new(ProtocolTemplate {
-            runtime_id: "remote".into(),
-            takes_workspace: true,
-            fixed_workspace: None,
-            connector: connector.clone(),
-            settings: runtime_settings(&fixture.config),
-        }))
+        .register_template(Arc::new(ProtocolTemplate::new(
+            "remote",
+            true,
+            connector.clone(),
+            runtime_settings(&fixture.config, "remote"),
+            WAIT,
+            Duration::from_secs(1),
+        )))
         .unwrap();
     let mut failures = registry.subscribe_failures();
     let first = registry
@@ -761,4 +787,87 @@ async fn the_local_runtime_runs_behind_the_protocol() {
     tokio::time::timeout(WAIT, connection.closed())
         .await
         .expect("shutdown closes the local runtime");
+}
+
+fn register_remote(
+    fixture: &crate::runtime::tests::support::Fixture,
+    connector: &Arc<TestConnector>,
+) {
+    fixture
+        .engine
+        .inner
+        .runtimes
+        .register_template(Arc::new(ProtocolTemplate::new(
+            "remote",
+            true,
+            connector.clone(),
+            runtime_settings(&fixture.config, "remote"),
+            WAIT,
+            Duration::from_secs(1),
+        )))
+        .unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn instances_are_keyed_by_the_workspace_the_runtime_reports() {
+    let (fixture, selection) = custom_fixture();
+    let root = private_tempdir();
+    let api = root.path().join("api");
+    std::fs::create_dir(&api).unwrap();
+    let canonical = api.canonicalize().unwrap();
+    let first_link = root.path().join("first");
+    let second_link = root.path().join("second");
+    std::os::unix::fs::symlink(&api, &first_link).unwrap();
+    std::os::unix::fs::symlink(&api, &second_link).unwrap();
+    let connector = TestConnector::builtin();
+    register_remote(&fixture, &connector);
+    let registry = &fixture.engine.inner.runtimes;
+
+    // The daemon passes the path as given; the runtime resolves it.
+    let instance = registry.ensure("remote", Some(&first_link)).await.unwrap();
+    assert_eq!(
+        instance.info().workspace().unwrap().root(),
+        canonical.as_path()
+    );
+    assert_eq!(connector.connects(), 1);
+    // The same spelling and the canonical path reuse it without connecting.
+    for path in [&first_link, &canonical] {
+        let again = registry.ensure("remote", Some(path)).await.unwrap();
+        assert!(Arc::ptr_eq(&again, &instance));
+    }
+    assert_eq!(connector.connects(), 1);
+    // A new spelling must start a runtime to learn where it resolves; that
+    // one is stopped again and the running instance is shared.
+    let deduplicated = registry.ensure("remote", Some(&second_link)).await.unwrap();
+    assert!(Arc::ptr_eq(&deduplicated, &instance));
+    assert_eq!(connector.connects(), 2);
+    let remote = registry
+        .instances()
+        .into_iter()
+        .filter(|instance| instance.runtime_id == "remote")
+        .collect::<Vec<_>>();
+    assert_eq!(remote.len(), 1, "{remote:?}");
+    assert_eq!(
+        remote[0].workspace.as_deref(),
+        Some(canonical.to_string_lossy().as_ref())
+    );
+
+    // A session records the canonical path, which reopening asks for.
+    let session = fixture.engine.create_session(selection).unwrap().session_id;
+    let attachment = fixture
+        .engine
+        .attach_runtime(
+            session,
+            "remote",
+            Some(second_link.clone()),
+            cookie_agent_protocol::EventOrigin::new("user").unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        attachment.workspace.as_deref(),
+        Some(canonical.to_string_lossy().as_ref())
+    );
+    fixture.engine.shutdown().await;
 }

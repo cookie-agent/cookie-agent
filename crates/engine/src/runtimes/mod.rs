@@ -37,6 +37,7 @@ use cookie_agent_runtime_api::{ToolOrigin, ToolProvider};
 
 mod builtin;
 mod composition;
+mod process;
 mod reconnect;
 mod registry;
 mod remote;
@@ -49,7 +50,9 @@ pub use registry::{
     RuntimeTemplateSummary, StartedRuntime,
 };
 pub(crate) use registry::{RuntimeInstance, RuntimeRegistry};
-pub(crate) use remote::{ProtocolTemplate, runtime_settings};
+pub(crate) use remote::{
+    ProtocolTemplate, RuntimeClient, register_configured_templates, runtime_settings,
+};
 
 /// One-line description of where a tool runs, for the approval reviewer.
 pub(crate) fn describe_origin(origin: &ToolOrigin) -> String {

@@ -9,12 +9,14 @@
 //! jobs. When the connection is lost, calls in flight fail with
 //! `runtime_unavailable` and running background jobs complete as failed.
 //!
-//! A runtime in a child process plugs in as another [`RuntimeConnector`].
+//! A runtime in a child process plugs in as another [`RuntimeConnector`]
+//! (`super::process`).
 
 use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, Weak},
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -22,11 +24,11 @@ use base64::Engine as _;
 use cookie_agent_config::{SkillDiscovery, SkillRegistry};
 use cookie_agent_protocol::{SessionId, ToolCallId, ToolCallPresentation};
 use cookie_agent_runtime_api::{
-    BackgroundJob, BackgroundJobs, BackgroundReport, PreparedDeclaration, PreparedExecutor,
-    PreparedSerializationKey, PreparedTool, ProgressSink, PromptSection, RuntimeConnector,
-    RuntimeInfo, SessionToolContext, ToolArtifacts, ToolCall, ToolCompletion, ToolError,
-    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec, ToolStdin,
-    WorkspaceContext,
+    BackgroundJob, BackgroundJobs, BackgroundReport, DiagnosticTail, PreparedDeclaration,
+    PreparedExecutor, PreparedSerializationKey, PreparedTool, ProgressSink, PromptSection,
+    RuntimeConnection, RuntimeConnector, RuntimeInfo, SessionToolContext, ToolArtifacts, ToolCall,
+    ToolCompletion, ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider,
+    ToolSpec, ToolStdin, WorkspaceContext,
     context::AgentMdContext,
     protocol::{
         self, ContextParams, ContextResult, Empty, ExecuteOutcome, ExecuteParams, ExecuteResult,
@@ -40,7 +42,10 @@ use cookie_agent_runtime_api::{
 };
 use tokio::sync::oneshot;
 
-use super::registry::{RuntimeTemplate, StartedRuntime};
+use super::{
+    process::ProcessConnector,
+    registry::{RuntimeRegistry, RuntimeTemplate, StartedRuntime},
+};
 use crate::EngineError;
 
 /// Failed preparations whose presentation the engine has not asked for yet.
@@ -55,9 +60,40 @@ pub(crate) struct ProtocolTemplate {
     fixed_workspace: Option<PathBuf>,
     connector: Arc<dyn RuntimeConnector>,
     settings: RuntimeSettings,
+    /// Bound on connecting and initializing; `None` for an in-process
+    /// runtime.
+    startup_timeout: Option<Duration>,
+    /// How long a stopping instance gets to answer `runtime/shutdown`.
+    shutdown_grace: Duration,
 }
 
+/// How long the daemon waits for the in-process `local` runtime to answer
+/// `runtime/shutdown`.
+pub(crate) const LOCAL_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+
 impl ProtocolTemplate {
+    /// A configured template: its instances run `connector` for the
+    /// workspace a session asks for when `takes_workspace`, and must answer
+    /// `runtime/initialize` within `startup_timeout`.
+    pub(crate) fn new(
+        runtime_id: &str,
+        takes_workspace: bool,
+        connector: Arc<dyn RuntimeConnector>,
+        settings: RuntimeSettings,
+        startup_timeout: Duration,
+        shutdown_grace: Duration,
+    ) -> Self {
+        Self {
+            runtime_id: runtime_id.to_owned(),
+            takes_workspace,
+            fixed_workspace: None,
+            connector,
+            settings,
+            startup_timeout: Some(startup_timeout),
+            shutdown_grace,
+        }
+    }
+
     /// The `local` coding runtime for `workspace`.
     pub(crate) fn local(
         connector: Arc<dyn RuntimeConnector>,
@@ -70,7 +106,28 @@ impl ProtocolTemplate {
             fixed_workspace: Some(workspace.to_owned()),
             connector,
             settings,
+            startup_timeout: None,
+            shutdown_grace: LOCAL_SHUTDOWN_GRACE,
         }
+    }
+
+    async fn connect_and_initialize(
+        &self,
+        workspace: Option<&Path>,
+        diagnostics: &Mutex<Option<DiagnosticTail>>,
+    ) -> Result<StartedRuntime, String> {
+        let connection = self.connector.connect(workspace).await?;
+        lock(diagnostics).clone_from(&connection.diagnostics);
+        let requested = workspace.or(self.fixed_workspace.as_deref());
+        let (client, result) = RuntimeClient::initialize(
+            connection,
+            &self.runtime_id,
+            requested,
+            &self.settings,
+            self.shutdown_grace,
+        )
+        .await?;
+        started(client, result)
     }
 }
 
@@ -85,18 +142,31 @@ impl RuntimeTemplate for ProtocolTemplate {
     }
 
     async fn start(&self, workspace: Option<&Path>) -> Result<StartedRuntime, String> {
-        let transport = self.connector.connect().await?;
-        let workspace = workspace.or(self.fixed_workspace.as_deref());
-        let (client, result) =
-            RuntimeClient::initialize(transport, &self.runtime_id, workspace, &self.settings)
-                .await?;
-        started(client, result)
+        let diagnostics = Mutex::new(None);
+        let attempt = self.connect_and_initialize(workspace, &diagnostics);
+        let result = match self.startup_timeout {
+            Some(timeout) => tokio::time::timeout(timeout, attempt)
+                .await
+                .unwrap_or_else(|_| {
+                    Err(format!(
+                        "the runtime did not start within {} ms",
+                        timeout.as_millis()
+                    ))
+                }),
+            None => attempt.await,
+        };
+        result.map_err(|reason| match lock(&diagnostics).as_ref() {
+            Some(tail) => tail.annotate(&reason),
+            None => reason,
+        })
     }
 }
 
-/// The settings a runtime gets from the daemon's configuration.
+/// The settings instances of `runtime_id` get from the daemon's
+/// configuration, its template's MCP servers included.
 pub(crate) fn runtime_settings(
     config: &cookie_agent_config::LoadedConfiguration,
+    runtime_id: &str,
 ) -> RuntimeSettings {
     let limits = crate::preview::PreviewLimits::from(&config.runtime.tool_output);
     RuntimeSettings {
@@ -109,8 +179,49 @@ pub(crate) fn runtime_settings(
         agent_md: protocol::AgentMdLimits {
             max_bytes: cookie_agent_runtime_api::context::AGENT_MD_MAX_BYTES,
         },
-        mcp_servers: Vec::new(),
+        mcp_servers: config
+            .runtimes
+            .iter()
+            .find(|(id, _)| id.as_str() == runtime_id)
+            .map(|(_, template)| {
+                template
+                    .mcp_servers
+                    .iter()
+                    .map(|(name, server)| protocol::McpServerSettings {
+                        name: name.clone(),
+                        config: serde_json::to_value(server)
+                            .expect("MCP server configuration serializes"),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
+}
+
+/// Registers a protocol template per configured `[runtimes.<id>]` other
+/// than `local`, each starting its instances with a [`ProcessConnector`].
+pub(crate) fn register_configured_templates(
+    registry: &RuntimeRegistry,
+    config: &cookie_agent_config::LoadedConfiguration,
+) -> Result<(), EngineError> {
+    for (runtime_id, template) in &config.runtimes {
+        if runtime_id.is_reserved() {
+            continue;
+        }
+        registry.register_template(Arc::new(ProtocolTemplate::new(
+            runtime_id.as_str(),
+            template.takes_workspace(),
+            Arc::new(ProcessConnector::new(
+                template.command.clone(),
+                template.env.clone(),
+                template.shutdown_grace(),
+            )),
+            runtime_settings(config, runtime_id.as_str()),
+            template.startup_timeout(),
+            template.shutdown_grace(),
+        )))?;
+    }
+    Ok(())
 }
 
 /// One connection to a runtime instance. Dropping the last handle closes it.
@@ -122,6 +233,10 @@ pub(crate) struct RuntimeClient {
 struct ClientInner {
     peer: Peer,
     runtime_id: String,
+    /// What the runtime writes outside the protocol, such as its stderr.
+    diagnostics: Option<DiagnosticTail>,
+    /// How long [`RuntimeClient::shutdown`] waits for the runtime.
+    shutdown_grace: Duration,
     tools: Mutex<Arc<DeclaredTools>>,
     /// Executing calls by prepared ID: the host services their progress and
     /// background jobs reach.
@@ -188,15 +303,18 @@ impl RuntimeClient {
     /// Connects over `transport` and initializes the runtime. The error is
     /// a human-readable reason.
     pub(crate) async fn initialize(
-        transport: Box<dyn cookie_agent_protocol::Transport>,
+        connection: RuntimeConnection,
         runtime_id: &str,
         workspace: Option<&Path>,
         settings: &RuntimeSettings,
+        shutdown_grace: Duration,
     ) -> Result<(Self, InitializeResult), String> {
-        let (peer, incoming) = Peer::start(transport);
+        let (peer, incoming) = Peer::start(connection.transport);
         let inner = Arc::new(ClientInner {
             peer,
             runtime_id: runtime_id.to_owned(),
+            diagnostics: connection.diagnostics,
+            shutdown_grace,
             tools: Mutex::default(),
             executions: Mutex::default(),
             jobs: Mutex::default(),
@@ -233,21 +351,32 @@ impl RuntimeClient {
         self.inner.peer.is_closed()
     }
 
-    /// Waits for the connection to end and returns why it did.
+    /// Waits for the connection to end and returns why it did, followed by
+    /// what the runtime last wrote outside the protocol.
     pub(crate) fn closed(&self) -> impl std::future::Future<Output = String> + Send + 'static {
         let peer = self.inner.peer.clone();
-        async move { peer.closed().await }
+        let diagnostics = self.inner.diagnostics.clone();
+        async move {
+            let reason = peer.closed().await;
+            match diagnostics {
+                Some(tail) => tail.annotate(&reason),
+                None => reason,
+            }
+        }
     }
 
-    /// Asks the runtime to stop and waits up to `grace` for its answer.
-    pub(crate) async fn shutdown(&self, grace: std::time::Duration) {
+    /// Asks the runtime to stop and waits up to its shutdown grace for the
+    /// answer, then closes the connection; a runtime process that has not
+    /// exited after another grace is killed.
+    pub(crate) async fn shutdown(&self) {
         let _ = tokio::time::timeout(
-            grace,
+            self.inner.shutdown_grace,
             self.inner
                 .peer
                 .request::<_, Empty>(method::SHUTDOWN, &Empty {}),
         )
         .await;
+        self.inner.peer.close();
     }
 
     /// The runtime's `AGENTS.md` context for a run of `preset`.

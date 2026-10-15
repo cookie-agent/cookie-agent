@@ -403,9 +403,10 @@ impl Engine {
         attachments
     }
 
-    /// Registers a runtime template so sessions can attach it. Production
-    /// registers only the built-in `global` and `local` templates; embedding
-    /// hosts and tests may add in-process ones.
+    /// Registers a runtime template so sessions can attach it. The engine
+    /// registers the built-in `global` and `local` templates and the
+    /// configured `[runtimes.<id>]` ones; embedding hosts and tests may add
+    /// in-process ones.
     pub fn register_runtime_template(
         &self,
         template: Arc<dyn RuntimeTemplate>,

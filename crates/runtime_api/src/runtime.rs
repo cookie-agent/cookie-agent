@@ -225,9 +225,96 @@ pub type CodingToolsFactory =
 #[async_trait::async_trait]
 pub trait RuntimeConnector: Send + Sync {
     /// Starts one runtime and returns the daemon's end of its transport.
+    /// `workspace` is the path a session asked for, exactly as given, when
+    /// the template takes one; the runtime resolves it on its own machine.
     /// The daemon then sends `runtime/initialize`. The error is a
     /// human-readable reason.
-    async fn connect(&self) -> Result<Box<dyn cookie_agent_protocol::Transport>, String>;
+    async fn connect(&self, workspace: Option<&Path>) -> Result<RuntimeConnection, String>;
+}
+
+/// A runtime a [`RuntimeConnector`] started.
+pub struct RuntimeConnection {
+    /// The daemon's end of the runtime's transport.
+    pub transport: Box<dyn cookie_agent_protocol::Transport>,
+    /// What the runtime writes outside the protocol, such as a child
+    /// process's standard error; the daemon adds it to failure reasons.
+    pub diagnostics: Option<DiagnosticTail>,
+}
+
+impl RuntimeConnection {
+    /// A connection with no diagnostics beyond the protocol.
+    #[must_use]
+    pub fn new(transport: Box<dyn cookie_agent_protocol::Transport>) -> Self {
+        Self {
+            transport,
+            diagnostics: None,
+        }
+    }
+}
+
+/// The last lines a runtime wrote outside the protocol, bounded to
+/// [`DiagnosticTail::MAX_BYTES`] in at most [`DiagnosticTail::MAX_LINES`]
+/// lines of at most [`DiagnosticTail::MAX_LINE_BYTES`] each. Clones share
+/// one buffer.
+#[derive(Clone, Debug, Default)]
+pub struct DiagnosticTail {
+    lines: Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+}
+
+impl DiagnosticTail {
+    pub const MAX_BYTES: usize = 4 * 1024;
+    pub const MAX_LINES: usize = 32;
+    pub const MAX_LINE_BYTES: usize = 512;
+
+    /// Records one line (without its terminator), cut to
+    /// [`Self::MAX_LINE_BYTES`] and stripped of control characters; the
+    /// oldest lines go when the bounds are exceeded. Blank lines are skipped.
+    pub fn push_line(&self, line: &str) {
+        let mut cleaned = String::with_capacity(line.len().min(Self::MAX_LINE_BYTES));
+        for character in line.chars() {
+            let character = if character == '\t' { ' ' } else { character };
+            if character.is_control() {
+                continue;
+            }
+            if cleaned.len() + character.len_utf8() > Self::MAX_LINE_BYTES {
+                break;
+            }
+            cleaned.push(character);
+        }
+        let cleaned = cleaned.trim_end();
+        if cleaned.trim().is_empty() {
+            return;
+        }
+        let mut lines = self
+            .lines
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        lines.push_back(cleaned.to_owned());
+        while lines.len() > Self::MAX_LINES
+            || lines.iter().map(|line| line.len() + 1).sum::<usize>() > Self::MAX_BYTES
+        {
+            lines.pop_front();
+        }
+    }
+
+    /// The recorded lines joined by newlines; `None` when there are none.
+    #[must_use]
+    pub fn text(&self) -> Option<String> {
+        let lines = self
+            .lines
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (!lines.is_empty()).then(|| lines.iter().cloned().collect::<Vec<_>>().join("\n"))
+    }
+
+    /// `reason` followed by the recorded lines, for a failure message.
+    #[must_use]
+    pub fn annotate(&self, reason: &str) -> String {
+        match self.text() {
+            Some(text) => format!("{reason}; stderr:\n{text}"),
+            None => reason.to_owned(),
+        }
+    }
 }
 
 /// How the daemon runs its `local` coding runtime.
@@ -271,7 +358,42 @@ impl RuntimeOptions {
 mod tests {
     use std::path::Path;
 
-    use super::coding_attachment_name;
+    use super::{DiagnosticTail, coding_attachment_name};
+
+    #[test]
+    fn a_diagnostic_tail_keeps_the_last_bounded_lines() {
+        let tail = DiagnosticTail::default();
+        assert_eq!(tail.text(), None);
+        assert_eq!(tail.annotate("exited"), "exited");
+        tail.push_line("ssh: connect to host labpc port 22: Connection refused\r");
+        tail.push_line("   ");
+        tail.push_line("bell\u{7} and\ttab");
+        assert_eq!(
+            tail.text().unwrap(),
+            "ssh: connect to host labpc port 22: Connection refused\nbell and tab"
+        );
+        assert_eq!(
+            tail.clone().annotate("exited"),
+            "exited; stderr:\nssh: connect to host labpc port 22: Connection refused\nbell and tab"
+        );
+
+        let long = "é".repeat(DiagnosticTail::MAX_LINE_BYTES);
+        tail.push_line(&long);
+        let last = tail.text().unwrap().lines().last().unwrap().to_owned();
+        assert_eq!(last.len(), DiagnosticTail::MAX_LINE_BYTES);
+
+        for index in 0..DiagnosticTail::MAX_LINES + 5 {
+            tail.push_line(&format!("line {index}"));
+        }
+        let text = tail.text().unwrap();
+        assert_eq!(text.lines().count(), DiagnosticTail::MAX_LINES);
+        assert!(text.ends_with(&format!("line {}", DiagnosticTail::MAX_LINES + 4)));
+
+        for _ in 0..DiagnosticTail::MAX_LINES {
+            tail.push_line(&"x".repeat(DiagnosticTail::MAX_LINE_BYTES));
+        }
+        assert!(tail.text().unwrap().len() <= DiagnosticTail::MAX_BYTES);
+    }
 
     #[test]
     fn attachment_names_follow_the_sanitization_rule() {

@@ -6,12 +6,14 @@
 //! to it. The `global` and `local` instances start with the engine; any other
 //! instance starts when a session first needs it.
 //!
-//! Production registers only the built-in `global` and `local` templates;
-//! `local` runs behind the runtime protocol. An instance whose protocol
-//! connection ends is marked failed, and the next session that needs it
-//! starts it again under a new generation. Configured templates
-//! (`[runtimes.<id>]`) plug in here as further protocol templates with their
-//! own connector.
+//! Production registers the built-in `global` and `local` templates and one
+//! protocol template per configured `[runtimes.<id>]`, whose instances run in
+//! child processes; `local` runs behind the runtime protocol in-process.
+//! Instances are keyed by the canonical workspace the runtime reports, never
+//! by a path the daemon resolved itself, since a workspace may live on
+//! another machine. An instance whose protocol connection ends is marked
+//! failed, and the next session that needs it starts it again under a new
+//! generation.
 
 use std::{
     collections::BTreeMap,
@@ -30,7 +32,7 @@ use cookie_agent_runtime_api::{RuntimeInfo, ToolOrigin, ToolProvider};
 use crate::EngineError;
 
 /// A way to start runtime instances: the built-in `global` and `local`
-/// runtimes today, configured `[runtimes.<id>]` templates later.
+/// runtimes and the configured `[runtimes.<id>]` templates.
 #[async_trait]
 pub trait RuntimeTemplate: Send + Sync {
     /// The runtime ID instances of this template carry.
@@ -41,8 +43,9 @@ pub trait RuntimeTemplate: Send + Sync {
     fn takes_workspace(&self) -> bool;
 
     /// Starts one instance. `workspace` is `Some` exactly when
-    /// [`Self::takes_workspace`] is true. The error is a human-readable
-    /// reason.
+    /// [`Self::takes_workspace`] is true, and is the path a session asked
+    /// for, exactly as given: the runtime resolves it and reports the
+    /// canonical workspace. The error is a human-readable reason.
     async fn start(&self, workspace: Option<&Path>) -> Result<StartedRuntime, String>;
 }
 
@@ -251,6 +254,9 @@ pub(crate) struct RuntimeRegistry {
     base: Mutex<Vec<Arc<dyn ToolProvider>>>,
     templates: Mutex<BTreeMap<String, Arc<dyn RuntimeTemplate>>>,
     slots: Mutex<BTreeMap<InstanceKey, InstanceSlot>>,
+    /// Workspace spellings that resolved to another canonical workspace when
+    /// an instance started for them, by (runtime ID, requested workspace).
+    aliases: Mutex<BTreeMap<InstanceKey, PathBuf>>,
     /// Serializes instance starts so one instance never starts twice.
     start: tokio::sync::Mutex<()>,
     generations: AtomicU64,
@@ -289,6 +295,7 @@ impl RuntimeRegistry {
             base: Mutex::default(),
             templates: Mutex::new(templates),
             slots: Mutex::new(slots),
+            aliases: Mutex::default(),
             start: tokio::sync::Mutex::new(()),
             generations: AtomicU64::new(3),
             global,
@@ -394,17 +401,20 @@ impl RuntimeRegistry {
         }
     }
 
-    /// The running instance for `runtime_id` at `workspace`, if it is up.
-    fn ready(&self, runtime_id: &str, workspace: Option<&Path>) -> Option<Arc<RuntimeInstance>> {
+    /// The running instance a request for `runtime_id` at `requested`
+    /// refers to, if it is up. A template that takes no workspace has one
+    /// instance; otherwise `requested` is the canonical workspace or a
+    /// spelling of it that an earlier start resolved.
+    fn live(&self, requested: &InstanceKey) -> Option<Arc<RuntimeInstance>> {
+        let key = self.resolve(requested);
         let slots = self
             .slots
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        slots.iter().find_map(|(key, slot)| match slot {
+        slots.iter().find_map(|(candidate, slot)| match slot {
             InstanceSlot::Ready(instance)
-                if key.runtime_id == runtime_id
-                    && workspace
-                        .is_none_or(|workspace| key.workspace.as_deref() == Some(workspace)) =>
+                if candidate.runtime_id == key.runtime_id
+                    && (key.workspace.is_none() || candidate.workspace == key.workspace) =>
             {
                 Some(Arc::clone(instance))
             }
@@ -412,9 +422,31 @@ impl RuntimeRegistry {
         })
     }
 
+    /// The canonical key a request resolved to when an instance started for
+    /// it; the request itself otherwise.
+    fn resolve(&self, requested: &InstanceKey) -> InstanceKey {
+        self.aliases
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(requested)
+            .map_or_else(
+                || requested.clone(),
+                |workspace| InstanceKey {
+                    runtime_id: requested.runtime_id.clone(),
+                    workspace: Some(workspace.clone()),
+                },
+            )
+    }
+
     /// The instance of `runtime_id` for `workspace`, started when it is not
     /// running. `workspace` must be given exactly when the template takes
     /// one; an unknown runtime ID is an error.
+    ///
+    /// The workspace is passed to the runtime exactly as given: it may live
+    /// on another machine, so the daemon never resolves it. The instance is
+    /// keyed by the canonical workspace the runtime reports, so two spellings
+    /// of one workspace share an instance; a second start that resolves to a
+    /// running instance is stopped again.
     pub(crate) async fn ensure(
         self: &Arc<Self>,
         runtime_id: &str,
@@ -423,8 +455,13 @@ impl RuntimeRegistry {
         let template = self
             .template(runtime_id)
             .ok_or_else(|| EngineError::Runtime(format!("unknown runtime `{runtime_id}`")))?;
-        let workspace = match (template.takes_workspace(), workspace) {
+        match (template.takes_workspace(), workspace) {
             (true, None) => {
+                return Err(EngineError::Runtime(format!(
+                    "runtime `{runtime_id}` requires a workspace"
+                )));
+            }
+            (true, Some(workspace)) if workspace.as_os_str().is_empty() => {
                 return Err(EngineError::Runtime(format!(
                     "runtime `{runtime_id}` requires a workspace"
                 )));
@@ -434,42 +471,24 @@ impl RuntimeRegistry {
                     "runtime `{runtime_id}` takes no workspace"
                 )));
             }
-            (true, Some(workspace)) => Some(workspace.canonicalize().map_err(|error| {
-                EngineError::Runtime(format!(
-                    "workspace {} for runtime `{runtime_id}` is unavailable: {error}",
-                    workspace.display()
-                ))
-            })?),
-            (false, None) => None,
+            _ => {}
+        }
+        let requested = InstanceKey {
+            runtime_id: runtime_id.to_owned(),
+            workspace: workspace.map(Path::to_owned),
         };
-        if let Some(instance) = self.ready(runtime_id, workspace.as_deref()) {
+        if let Some(instance) = self.live(&requested) {
             return Ok(instance);
         }
         let _start = self.start.lock().await;
-        if let Some(instance) = self.ready(runtime_id, workspace.as_deref()) {
+        if let Some(instance) = self.live(&requested) {
             return Ok(instance);
         }
-        let pending = InstanceKey {
-            runtime_id: runtime_id.to_owned(),
-            workspace: workspace.clone(),
-        };
+        let pending = self.resolve(&requested);
         self.set_slot(pending.clone(), InstanceSlot::Starting);
-        match template.start(workspace.as_deref()).await {
+        match template.start(workspace).await {
             Ok(started) if started.info.id() == runtime_id => {
-                let generation = self.generations.fetch_add(1, Ordering::Relaxed);
-                let instance = Arc::new(RuntimeInstance::new(started, generation));
-                let key = InstanceKey::of(&instance.info);
-                {
-                    let mut slots = self
-                        .slots
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    slots.remove(&pending);
-                    slots.insert(key, InstanceSlot::Ready(Arc::clone(&instance)));
-                }
-                self.watch(&instance);
-                self.notify();
-                Ok(instance)
+                Ok(self.install(&requested, &pending, started))
             }
             Ok(started) => {
                 let message = format!(
@@ -485,6 +504,47 @@ impl RuntimeRegistry {
                 Err(EngineError::Runtime(message))
             }
         }
+    }
+
+    /// Records a started instance under the canonical workspace it reported,
+    /// or returns the running instance already there.
+    fn install(
+        self: &Arc<Self>,
+        requested: &InstanceKey,
+        pending: &InstanceKey,
+        started: StartedRuntime,
+    ) -> Arc<RuntimeInstance> {
+        let key = InstanceKey::of(&started.info);
+        if let (Some(_), Some(canonical)) = (&requested.workspace, &key.workspace)
+            && &key != requested
+        {
+            self.aliases
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(requested.clone(), canonical.clone());
+        }
+        let mut slots = self
+            .slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        slots.remove(pending);
+        if let Some(InstanceSlot::Ready(existing)) = slots.get(&key) {
+            // Another spelling of a workspace that already has an instance.
+            let existing = Arc::clone(existing);
+            drop(slots);
+            if let Some(connection) = started.connection {
+                tokio::spawn(async move { connection.shutdown().await });
+            }
+            self.notify();
+            return existing;
+        }
+        let generation = self.generations.fetch_add(1, Ordering::Relaxed);
+        let instance = Arc::new(RuntimeInstance::new(started, generation));
+        slots.insert(key, InstanceSlot::Ready(Arc::clone(&instance)));
+        drop(slots);
+        self.watch(&instance);
+        self.notify();
+        instance
     }
 
     /// The instance a recorded attachment refers to, started when it is not
