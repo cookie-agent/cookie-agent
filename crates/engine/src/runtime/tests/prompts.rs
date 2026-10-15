@@ -467,7 +467,7 @@ async fn invalid_tool_prompt_sections_fail_run_admission() {
 
 /// The `AGENTS.md` files a new session attached to `global` and `local`
 /// loads: the local attachment's entries and skips.
-fn local_agent_md(
+async fn local_agent_md(
     engine: &crate::Engine,
     selection: &RunSelection,
     preset: Option<&str>,
@@ -480,7 +480,9 @@ fn local_agent_md(
     crate::EngineError,
 > {
     let session = engine.create_session(selection.clone())?.session_id;
-    let loaded = engine.load_agent_md(session, preset, agent_override)?;
+    let loaded = engine
+        .load_agent_md(session, preset, agent_override)
+        .await?;
     assert!(
         loaded.len() <= 1,
         "only the local attachment has a workspace"
@@ -520,8 +522,9 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     };
     let project_source = relative(&[".cookie-agent", "agents", "AGENTS.md"]);
     let cwd_source = "AGENTS.md";
-    let (entries, skipped) =
-        local_agent_md(&fixture.engine, &selection, None, None).expect("default AGENTS.md context");
+    let (entries, skipped) = local_agent_md(&fixture.engine, &selection, None, None)
+        .await
+        .expect("default AGENTS.md context");
     assert_eq!(entries.len(), 2);
     assert!(skipped.is_empty());
     assert_eq!(entries[0].source.as_str(), project_source.as_str());
@@ -533,6 +536,7 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     create_private_test_dir(&preset);
     write_private_test_file(&preset.join("AGENTS.md"), "preset AGENTS.md context");
     let (entries, skipped) = local_agent_md(&fixture.engine, &selection, Some("python"), None)
+        .await
         .expect("preset AGENTS.md context");
     assert_eq!(entries.len(), 2);
     assert!(skipped.is_empty());
@@ -550,6 +554,7 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     write_private_test_file(&root.join("AGENTS.md"), "fresh cwd context");
     assert_eq!(
         local_agent_md(&fixture.engine, &selection, None, None)
+            .await
             .unwrap()
             .0[1]
             .content,
@@ -558,7 +563,9 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     std::fs::remove_file(agents.join("AGENTS.md")).unwrap();
     std::fs::remove_file(preset.join("AGENTS.md")).unwrap();
     std::fs::remove_file(root.join("AGENTS.md")).unwrap();
-    let (entries, skipped) = local_agent_md(&fixture.engine, &selection, None, None).unwrap();
+    let (entries, skipped) = local_agent_md(&fixture.engine, &selection, None, None)
+        .await
+        .unwrap();
     assert!(entries.is_empty());
     assert!(skipped.is_empty());
 
@@ -566,31 +573,38 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     fixture.config.runtime.agent_md.enabled = false;
     fixture.engine = reopen_engine(&fixture);
     write_private_test_file(&root.join("AGENTS.md"), "disabled context");
-    let (entries, skipped) = local_agent_md(&fixture.engine, &selection, None, None).unwrap();
+    let (entries, skipped) = local_agent_md(&fixture.engine, &selection, None, None)
+        .await
+        .unwrap();
     assert!(entries.is_empty());
     assert!(skipped.is_empty());
     // An agent document's `agent_md` overrides the global switch both ways.
-    let (entries, _) = local_agent_md(&fixture.engine, &selection, None, Some(true)).unwrap();
+    let (entries, _) = local_agent_md(&fixture.engine, &selection, None, Some(true))
+        .await
+        .unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].content, "disabled context");
 
     fixture.engine.shutdown().await;
     fixture.config.runtime.agent_md.enabled = true;
     fixture.engine = reopen_engine(&fixture);
-    let (entries, skipped) =
-        local_agent_md(&fixture.engine, &selection, None, Some(false)).unwrap();
+    let (entries, skipped) = local_agent_md(&fixture.engine, &selection, None, Some(false))
+        .await
+        .unwrap();
     assert!(entries.is_empty());
     assert!(skipped.is_empty());
     write_private_test_file(&root.join("AGENTS.md"), "oversized context");
     let oversized = root.join("AGENTS.md");
-    let oversized_len = crate::runtime::AGENT_MD_MAX_BYTES + 1;
+    let oversized_len = cookie_agent_runtime_api::context::AGENT_MD_MAX_BYTES + 1;
     let file = std::fs::OpenOptions::new()
         .write(true)
         .open(&oversized)
         .unwrap();
     file.set_len(oversized_len).unwrap();
     drop(file);
-    let (entries, skipped) = local_agent_md(&fixture.engine, &selection, None, None).unwrap();
+    let (entries, skipped) = local_agent_md(&fixture.engine, &selection, None, None)
+        .await
+        .unwrap();
     assert!(entries.is_empty());
     assert_eq!(skipped.len(), 1);
     assert_eq!(

@@ -46,14 +46,12 @@ use crate::{
 
 mod admission;
 mod agent_md;
-pub(crate) mod attachments;
-#[cfg(test)]
-pub(crate) use agent_md::AGENT_MD_MAX_BYTES;
 mod approval_api;
 mod approval_flow;
 mod approval_projection;
 mod artifact_reads;
 pub(crate) mod artifacts;
+pub(crate) mod attachments;
 pub(crate) mod background_tasks;
 mod blocking_io;
 pub(crate) mod compaction;

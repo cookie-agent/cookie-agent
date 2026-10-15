@@ -13,6 +13,7 @@
 //! as specified in `docs/site/specs/runtimes.md`.
 
 pub mod authoring;
+pub mod context;
 mod error;
 mod execution;
 pub mod media;

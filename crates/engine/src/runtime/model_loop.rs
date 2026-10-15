@@ -398,7 +398,8 @@ impl Engine {
                 params.session_id,
                 params.selection.preset.as_deref(),
                 agent_override,
-            )?
+            )
+            .await?
         } else {
             Vec::new()
         };

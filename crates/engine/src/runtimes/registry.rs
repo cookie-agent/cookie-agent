@@ -117,6 +117,27 @@ impl RuntimeInstance {
         &self.skills
     }
 
+    /// The `AGENTS.md` context of a coding runtime for a run of `preset`;
+    /// `None` for a runtime without a workspace.
+    pub(crate) async fn agent_md(
+        &self,
+        preset: Option<&str>,
+    ) -> Result<Option<cookie_agent_runtime_api::context::AgentMdContext>, EngineError> {
+        let Some(workspace) = self.info.workspace() else {
+            return Ok(None);
+        };
+        cookie_agent_runtime_api::context::load_agent_md(
+            workspace.root(),
+            preset,
+            cookie_agent_runtime_api::context::AGENT_MD_MAX_BYTES,
+        )
+        .map(Some)
+        .map_err(|error| EngineError::AgentMdIo {
+            path: error.path,
+            source: error.source,
+        })
+    }
+
     /// The attachment a session records for this instance under `name`.
     pub(crate) fn attachment(
         &self,
