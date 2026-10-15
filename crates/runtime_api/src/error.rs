@@ -27,6 +27,10 @@ pub enum ToolError {
     TransportError(String),
     #[error("unsupported content type: {0}")]
     UnsupportedContentType(String),
+    /// The runtime or MCP server that owns the tool is reconnecting or
+    /// gone; the call was not attempted or did not complete.
+    #[error("runtime unavailable: {0}")]
+    RuntimeUnavailable(String),
 }
 
 impl ToolError {
@@ -51,6 +55,11 @@ impl ToolError {
     }
 
     #[must_use]
+    pub fn runtime_unavailable(message: impl Into<String>) -> Self {
+        Self::RuntimeUnavailable(message.into())
+    }
+
+    #[must_use]
     pub fn execution(message: impl Into<String>) -> Self {
         Self::Failed(cookie_agent_protocol::diagnostics::detail(&message.into()).to_string())
     }
@@ -69,6 +78,7 @@ impl ToolError {
             | Self::Timeout(message)
             | Self::TransportError(message)
             | Self::UnsupportedContentType(message)
+            | Self::RuntimeUnavailable(message)
             | Self::ResourceLimit(message) => message.clone(),
         }
     }

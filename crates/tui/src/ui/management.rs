@@ -1017,6 +1017,7 @@ fn mcp_state_label(state: cookie_agent_protocol::McpServerState) -> &'static str
     match state {
         cookie_agent_protocol::McpServerState::Connected => "connected",
         cookie_agent_protocol::McpServerState::Connecting => "connecting",
+        cookie_agent_protocol::McpServerState::Reconnecting => "reconnecting",
         cookie_agent_protocol::McpServerState::Failed => "failed",
         cookie_agent_protocol::McpServerState::NeedsAuth => "needs_auth",
         cookie_agent_protocol::McpServerState::Disabled => "disabled",

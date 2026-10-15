@@ -141,6 +141,7 @@ impl Engine {
                     McpServerState::Disconnected => WireMcpServerState::Disconnected,
                     McpServerState::Connecting => WireMcpServerState::Connecting,
                     McpServerState::Connected => WireMcpServerState::Connected,
+                    McpServerState::Reconnecting => WireMcpServerState::Reconnecting,
                     McpServerState::NeedsAuth => WireMcpServerState::NeedsAuth,
                     McpServerState::Failed => WireMcpServerState::Failed,
                 });

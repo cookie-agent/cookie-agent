@@ -36,10 +36,12 @@ use cookie_agent_runtime_api::{ToolOrigin, ToolProvider};
 
 mod builtin;
 mod composition;
+mod reconnect;
 mod registry;
 
 pub(crate) use builtin::{GlobalTemplate, LocalTemplate};
 pub(crate) use composition::{ComposedTool, Composition, compose};
+pub(crate) use reconnect::{ReconnectOutcome, ReconnectPolicy};
 pub(crate) use registry::{RuntimeInstance, RuntimeRegistry};
 pub use registry::{
     RuntimeInstanceStatus, RuntimeInstanceSummary, RuntimeTemplate, RuntimeTemplateSummary,

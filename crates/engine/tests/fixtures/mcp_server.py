@@ -3,6 +3,12 @@ import os
 import sys
 import time
 
+if os.environ.get("MCP_FIXTURE_REFUSE_FILE") and os.path.exists(
+    os.environ["MCP_FIXTURE_REFUSE_FILE"]
+):
+    # Simulates a server that cannot start while the file exists.
+    sys.exit(1)
+
 
 if os.environ.get("MCP_FIXTURE_PID_FILE"):
     # Published by rename so a reader never sees an empty pid file.
@@ -70,6 +76,9 @@ for line in sys.stdin:
         if os.environ.get("MCP_FIXTURE_CALL_FILE"):
             with open(os.environ["MCP_FIXTURE_CALL_FILE"], "w", encoding="utf-8") as call_file:
                 json.dump(params, call_file)
+        if params["arguments"].get("text") == "exit":
+            # Simulates a crash in the middle of a call.
+            sys.exit(0)
         if params["name"] == "fail":
             response(request_id, {
                 "content": [{"type": "text", "text": "fixture failure"}],

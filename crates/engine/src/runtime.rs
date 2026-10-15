@@ -456,6 +456,7 @@ pub(crate) enum ToolCallFailureCode {
     OperationChanged,
     PreparedCapabilityLost,
     UnsupportedPlatform,
+    RuntimeUnavailable,
 }
 
 impl ToolCallFailureCode {
@@ -471,6 +472,7 @@ impl ToolCallFailureCode {
             Self::OperationChanged => "operation_changed",
             Self::PreparedCapabilityLost => "prepared_capability_lost",
             Self::UnsupportedPlatform => "unsupported_platform",
+            Self::RuntimeUnavailable => "runtime_unavailable",
         })
     }
 }
@@ -490,6 +492,7 @@ impl ToolCallFailureCode {
             ToolError::Timeout(_) => Self::Timeout,
             ToolError::TransportError(_) => Self::TransportError,
             ToolError::UnsupportedContentType(_) => Self::UnsupportedContentType,
+            ToolError::RuntimeUnavailable(_) => Self::RuntimeUnavailable,
         }
     }
 }

@@ -1352,6 +1352,9 @@ pub enum McpConfigTarget {
 pub enum McpServerState {
     Connected,
     Connecting,
+    /// The connection dropped and is being re-established. The server's
+    /// tools stay published; calls fail with `runtime_unavailable`.
+    Reconnecting,
     Failed,
     NeedsAuth,
     Disabled,

@@ -1168,4 +1168,17 @@ mod tests {
         );
         fixture.engine.shutdown().await;
     }
+
+    #[test]
+    fn an_unavailable_runtime_fails_with_its_own_code() {
+        let failure = super::ToolFailure::from(crate::ToolError::runtime_unavailable(
+            "MCP server `docs` is reconnecting",
+        ));
+        assert!(matches!(
+            failure.code,
+            super::ToolCallFailureCode::RuntimeUnavailable
+        ));
+        assert_eq!(failure.code.safe_code().as_str(), "runtime_unavailable");
+        assert_eq!(failure.message, "MCP server `docs` is reconnecting");
+    }
 }

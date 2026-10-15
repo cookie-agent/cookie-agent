@@ -60,6 +60,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 use tokio_util::sync::CancellationToken;
 
+use crate::runtimes::{ReconnectOutcome, ReconnectPolicy};
 use crate::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolConcurrency, ToolError,
     ToolExecutionContext, ToolPreparationContext, ToolProgress, ToolProvider, ToolSpec,
@@ -86,8 +87,18 @@ pub enum McpServerState {
     Disconnected,
     Connecting,
     Connected,
+    /// The connection dropped and is being re-established; the server's
+    /// tools stay published and calls fail fast with `runtime_unavailable`.
+    Reconnecting,
     NeedsAuth,
     Failed,
+}
+
+/// An MCP server that failed to connect, or dropped and did not reconnect.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct McpServerFailure {
+    pub server: String,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -126,6 +137,56 @@ struct ServerRuntime {
     auth_flow: Mutex<Option<OAuthFlowState>>,
     auth_generation: AtomicU64,
     auth_lock: AsyncMutex<()>,
+    /// The installed connection, watched for drops.
+    connection: Mutex<Option<LiveConnection>>,
+}
+
+/// One installed connection of a server. `lost` fires when its transport
+/// ends; `retired` when it is closed on purpose.
+struct LiveConnection {
+    id: u64,
+    lost: CancellationToken,
+    retired: CancellationToken,
+}
+
+impl Drop for LiveConnection {
+    fn drop(&mut self) {
+        self.retired.cancel();
+    }
+}
+
+/// A transport that signals `lost` when its peer stops sending: a stdio
+/// process exit, a closed pipe, or an HTTP session the transport gave up on.
+struct WatchedTransport<T> {
+    inner: T,
+    lost: CancellationToken,
+}
+
+impl<T: Transport<RoleClient>> Transport<RoleClient> for WatchedTransport<T> {
+    type Error = T::Error;
+
+    fn send(
+        &mut self,
+        item: TxJsonRpcMessage<RoleClient>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.inner.send(item)
+    }
+
+    fn receive(&mut self) -> impl Future<Output = Option<RxJsonRpcMessage<RoleClient>>> + Send {
+        let lost = self.lost.clone();
+        let receive = self.inner.receive();
+        async move {
+            let message = receive.await;
+            if message.is_none() {
+                lost.cancel();
+            }
+            message
+        }
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        self.inner.close()
+    }
 }
 
 struct ToolRefreshDebounce {
@@ -183,6 +244,12 @@ struct RegistryInner {
     eager_ready: Notify,
     /// Bumped on every server configuration or status change.
     changes: tokio::sync::watch::Sender<u64>,
+    /// Connection failures, for clients viewing affected sessions.
+    failures: tokio::sync::broadcast::Sender<McpServerFailure>,
+    /// How a dropped connection is re-established.
+    reconnect: Mutex<ReconnectPolicy>,
+    /// Source of [`LiveConnection::id`].
+    connection_ids: AtomicU64,
 }
 
 impl RegistryInner {
@@ -1379,6 +1446,9 @@ impl McpRegistry {
             eager_pending: AtomicUsize::new(0),
             eager_ready: Notify::new(),
             changes: tokio::sync::watch::channel(0).0,
+            failures: tokio::sync::broadcast::channel(64).0,
+            reconnect: Mutex::new(ReconnectPolicy::default()),
+            connection_ids: AtomicU64::new(1),
         });
         let mut sanitized_servers = HashMap::new();
         let mut runtimes = BTreeMap::new();
@@ -1419,6 +1489,7 @@ impl McpRegistry {
                 auth_flow: Mutex::new(None),
                 auth_generation: AtomicU64::new(0),
                 auth_lock: AsyncMutex::new(()),
+                connection: Mutex::new(None),
             });
             runtimes.insert(name, runtime);
         }
@@ -1466,7 +1537,7 @@ impl McpRegistry {
             .collect::<Vec<_>>();
         self.inner
             .eager_pending
-            .store(servers.len(), Ordering::Release);
+            .fetch_add(servers.len(), Ordering::AcqRel);
         for server in servers {
             let registry = Arc::clone(&self.inner);
             let task_registry = Arc::clone(&registry);
@@ -1485,6 +1556,39 @@ impl McpRegistry {
                 .unwrap_or_else(|p| p.into_inner())
                 .push(task);
         }
+    }
+
+    /// Retries every enabled server whose last connection attempt failed, as
+    /// when a session that uses them is created or opened. The retries count
+    /// as startup connections: the next run waits for them to finish.
+    pub(crate) fn retry_failed(&self, runtime: &tokio::runtime::Handle) {
+        for server in self.servers() {
+            if !server.loaded.config.enabled || server.current_state() != McpServerState::Failed {
+                continue;
+            }
+            // Visible at once, so a client that looks right after the
+            // session opened sees the attempt rather than the old failure.
+            server.set_status(McpServerState::Connecting, None);
+            self.inner.eager_pending.fetch_add(1, Ordering::AcqRel);
+            let readiness = EagerConnect(Arc::clone(&self.inner));
+            let _ = self.spawn_connection(server, runtime, Some(readiness));
+        }
+    }
+
+    /// Connection failures as they happen.
+    #[must_use]
+    pub fn subscribe_failures(&self) -> tokio::sync::broadcast::Receiver<McpServerFailure> {
+        self.inner.failures.subscribe()
+    }
+
+    /// Replaces how dropped connections are re-established.
+    #[cfg(test)]
+    pub(crate) fn set_reconnect_policy(&self, policy: ReconnectPolicy) {
+        *self
+            .inner
+            .reconnect
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = policy;
     }
 
     pub(crate) async fn await_eager_ready(&self) {
@@ -1627,6 +1731,7 @@ impl McpRegistry {
             auth_flow: Mutex::new(None),
             auth_generation: AtomicU64::new(0),
             auth_lock: AsyncMutex::new(()),
+            connection: Mutex::new(None),
         });
         {
             let mut servers = self
@@ -1695,6 +1800,7 @@ impl McpRegistry {
             )));
         }
         server.cancel_tool_refresh();
+        server.retire_connection();
         server.clear_claims();
         server
             .tools
@@ -1865,7 +1971,131 @@ impl ServerRuntime {
         }
         self.clear_claims();
         self.tools.lock().unwrap_or_else(|p| p.into_inner()).clear();
-        self.set_status(McpServerState::Failed, Some(message));
+        self.set_status(McpServerState::Failed, Some(message.clone()));
+        if let Some(registry) = self.registry.upgrade() {
+            let _ = registry.failures.send(McpServerFailure {
+                server: self.name.clone(),
+                reason: message,
+            });
+        }
+    }
+
+    /// Forgets the installed connection without treating its end as a drop.
+    fn retire_connection(&self) {
+        self.connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+    }
+
+    /// Reports that the installed connection's transport is gone.
+    fn signal_lost(&self) {
+        if let Some(connection) = self
+            .connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            connection.lost.cancel();
+        }
+    }
+
+    /// Installs `lost` as the current connection's drop signal and spawns
+    /// the task that reconnects when it fires.
+    fn watch_connection(self: &Arc<Self>, registry: &Arc<RegistryInner>, lost: CancellationToken) {
+        let id = registry.connection_ids.fetch_add(1, Ordering::Relaxed);
+        let retired = CancellationToken::new();
+        *self
+            .connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(LiveConnection {
+            id,
+            lost: lost.clone(),
+            retired: retired.clone(),
+        });
+        let server = Arc::downgrade(self);
+        let shutdown = registry.shutdown.clone();
+        let superseded = self.superseded.clone();
+        let task = tokio::spawn(async move {
+            tokio::select! {
+                () = lost.cancelled() => {}
+                () = retired.cancelled() => return,
+                () = shutdown.cancelled() => return,
+                () = superseded.cancelled() => return,
+            }
+            if let Some(server) = server.upgrade() {
+                server.recover(id).await;
+            }
+        });
+        let mut tasks = registry
+            .connection_tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(task);
+    }
+
+    /// Bridges the drop of connection `id`: the server's tools stay
+    /// published while [`ReconnectPolicy`] re-establishes it, and are
+    /// dropped when every attempt fails.
+    async fn recover(self: Arc<Self>, id: u64) {
+        let Some(registry) = self.registry.upgrade() else {
+            return;
+        };
+        {
+            let mut connection = self
+                .connection
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if connection.as_ref().map(|connection| connection.id) != Some(id) {
+                return;
+            }
+            *connection = None;
+        }
+        if registry.shutdown.is_cancelled() || self.superseded.is_cancelled() {
+            return;
+        }
+        if let Some(mut dead) = self.service.lock().await.take() {
+            let _ = dead.close_with_timeout(Duration::from_secs(1)).await;
+        }
+        self.cancel_tool_refresh_task();
+        self.set_status(
+            McpServerState::Reconnecting,
+            Some("connection lost; reconnecting".into()),
+        );
+        let policy = registry
+            .reconnect
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let outcome = tokio::select! {
+            outcome = policy.run(&registry.shutdown, |attempt| {
+                let server = Arc::clone(&self);
+                async move {
+                    // A manual reconnect, edit, or auth challenge took over.
+                    if server.current_state() != McpServerState::Reconnecting {
+                        return Ok(());
+                    }
+                    server.set_status(
+                        McpServerState::Reconnecting,
+                        Some(format!("connection lost; reconnect attempt {attempt}")),
+                    );
+                    server.connect().await.map_err(|error| error.message())
+                }
+            }) => outcome,
+            () = self.superseded.cancelled() => ReconnectOutcome::Cancelled,
+        };
+        if let ReconnectOutcome::Exhausted {
+            attempts,
+            last_error,
+        } = outcome
+            && self.current_state() == McpServerState::Reconnecting
+        {
+            self.fail(format!(
+                "MCP server `{}` disconnected and did not reconnect after {attempts} attempts: {last_error}",
+                self.name
+            ));
+        }
     }
 
     fn mark_needs_auth(&self, challenge: Option<String>, reason: &str) {
@@ -2295,10 +2525,17 @@ impl ServerRuntime {
                     self.name
                 )));
             }
-            McpServerState::Disconnected | McpServerState::Connecting | McpServerState::Failed => {}
+            McpServerState::Disconnected
+            | McpServerState::Connecting
+            | McpServerState::Reconnecting
+            | McpServerState::Failed => {}
         }
         self.reset_tool_refresh();
-        self.set_status(McpServerState::Connecting, None);
+        // A reconnect keeps its state, so the tools stay published.
+        if self.current_state() != McpServerState::Reconnecting {
+            self.set_status(McpServerState::Connecting, None);
+        }
+        let lost = CancellationToken::new();
         let handler = McpClientHandler {
             server: Arc::downgrade(self),
         };
@@ -2327,7 +2564,10 @@ impl ServerRuntime {
                 ))
             })?;
             let cleanup = ChildCleanup::new();
-            let transport = ReapingChildTransport::new(transport, cleanup.clone());
+            let transport = WatchedTransport {
+                inner: ReapingChildTransport::new(transport, cleanup.clone()),
+                lost: lost.clone(),
+            };
             let outcome = tokio::select! {
                 result = tokio::time::timeout(timeout, handler.serve_with_lifecycle(transport, lifecycle)) => Some(result),
                 () = registry.shutdown.cancelled() => None,
@@ -2398,10 +2638,13 @@ impl ServerRuntime {
                     .redirect(reqwest::redirect::Policy::none())
                     .build()
                     .map_err(|_| ToolError::execution("MCP HTTP client setup failed"))?;
-                let transport = StreamableHttpClientTransport::with_client(
-                    AuthClient::new(client, manager),
-                    config,
-                );
+                let transport = WatchedTransport {
+                    inner: StreamableHttpClientTransport::with_client(
+                        AuthClient::new(client, manager),
+                        config,
+                    ),
+                    lost: lost.clone(),
+                };
                 tokio::select! {
                     result = tokio::time::timeout(timeout, handler.serve_with_lifecycle(transport, lifecycle)) => result,
                     () = registry.shutdown.cancelled() => {
@@ -2412,7 +2655,10 @@ impl ServerRuntime {
                     }
                 }
             } else {
-                let transport = StreamableHttpClientTransport::from_config(config);
+                let transport = WatchedTransport {
+                    inner: StreamableHttpClientTransport::from_config(config),
+                    lost: lost.clone(),
+                };
                 tokio::select! {
                     result = tokio::time::timeout(timeout, handler.serve_with_lifecycle(transport, lifecycle)) => result,
                     () = registry.shutdown.cancelled() => {
@@ -2509,6 +2755,7 @@ impl ServerRuntime {
         }
         *installed = Some(service);
         drop(installed);
+        self.watch_connection(&registry, lost);
         self.set_status(McpServerState::Connected, None);
         Ok(())
     }
@@ -2895,9 +3142,18 @@ impl PreparedExecutor for McpExecutor {
         let params = CallToolRequestParams::new(self.raw_name.clone())
             .with_arguments(self.arguments.clone());
         let timeout = self.server.timeout();
+        if self.server.current_state() == McpServerState::Reconnecting {
+            return Err(ToolError::runtime_unavailable(format!(
+                "MCP server `{}` is reconnecting",
+                self.server.name
+            )));
+        }
         let service = self.server.service.lock().await;
         let Some(service) = service.as_ref() else {
-            return Err(ToolError::execution("MCP server is not connected"));
+            return Err(ToolError::runtime_unavailable(format!(
+                "MCP server `{}` is not connected",
+                self.server.name
+            )));
         };
         self.server
             .progress
@@ -2914,6 +3170,13 @@ impl PreparedExecutor for McpExecutor {
                     self.server.mark_needs_auth(auth_challenge(&error), &cookie_agent_protocol::diagnostics::error_chain(&error));
                     Err(ToolError::execution(format!(
                         "MCP server `{}` requires OAuth authorization",
+                        self.server.name
+                    )))
+                }
+                Err(rmcp::ServiceError::TransportClosed) => {
+                    self.server.signal_lost();
+                    Err(ToolError::runtime_unavailable(format!(
+                        "MCP server `{}` disconnected during the call",
                         self.server.name
                     )))
                 }

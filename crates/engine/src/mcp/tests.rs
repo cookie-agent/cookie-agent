@@ -22,7 +22,8 @@ use crate::{
 };
 
 use super::{
-    McpRegistry, McpServerState, OAUTH_STORE_FILE, TOOL_LIST_DEBOUNCE, convert_tool, sanitize_name,
+    McpRegistry, McpServerFailure, McpServerState, OAUTH_STORE_FILE, TOOL_LIST_DEBOUNCE,
+    convert_tool, sanitize_name,
 };
 
 #[cfg(unix)]
@@ -228,6 +229,17 @@ async fn execute(
     name: &str,
     arguments: Value,
 ) -> cookie_agent_protocol::PersistedToolResult {
+    try_execute(registry, directory, name, arguments)
+        .await
+        .expect("execute MCP call")
+}
+
+async fn try_execute(
+    registry: &McpRegistry,
+    directory: &tempfile::TempDir,
+    name: &str,
+    arguments: Value,
+) -> Result<cookie_agent_protocol::PersistedToolResult, crate::ToolError> {
     let call_id = ToolCallId::new_v7();
     let prepared = registry
         .prepare(
@@ -268,9 +280,11 @@ async fn execute(
             background: None,
         })
         .await
-        .expect("execute MCP call")
-        .into_result_for_test()
-        .expect("terminal MCP output")
+        .map(|completion| {
+            completion
+                .into_result_for_test()
+                .expect("terminal MCP output")
+        })
 }
 
 #[test]
@@ -1182,4 +1196,190 @@ fn sanitized_server_name_collisions_are_rejected_at_startup() {
         McpRegistry::new(servers, oauth_path(&directory)).expect_err("sanitized server collision");
     assert!(error.to_string().contains("git/hub"));
     assert!(error.to_string().contains("git hub"));
+}
+
+fn tool_names(registry: &McpRegistry) -> Vec<String> {
+    registry
+        .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
+        .expect("MCP tools")
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect()
+}
+
+async fn wait_for_state(registry: &McpRegistry, expected: McpServerState) {
+    tokio::time::timeout(WAIT, async {
+        while registry.statuses()[0].state != expected {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "server did not reach {expected:?}: {:?}",
+            registry.statuses()[0]
+        )
+    });
+}
+
+/// A connected fixture whose restarts fail while `refuse` exists.
+async fn droppable_registry(
+    directory: &tempfile::TempDir,
+    refuse: &std::path::Path,
+    policy: crate::runtimes::ReconnectPolicy,
+) -> McpRegistry {
+    let mut config = fixture_config();
+    config.env.insert(
+        "MCP_FIXTURE_REFUSE_FILE".into(),
+        refuse.to_string_lossy().into_owned(),
+    );
+    let registry = McpRegistry::new(
+        BTreeMap::from([(
+            "fixture".into(),
+            LoadedMcpServer {
+                source: McpServerSource::UserFile,
+                config,
+            },
+        )]),
+        oauth_path(directory),
+    )
+    .expect("registry");
+    registry.set_reconnect_policy(policy);
+    registry
+        .server("fixture")
+        .expect("fixture")
+        .connect()
+        .await
+        .expect("connect fixture");
+    registry
+}
+
+#[tokio::test]
+async fn a_dropped_server_keeps_its_tools_while_reconnecting_and_restores_them() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let refuse = directory.path().join("refuse");
+    let registry = droppable_registry(
+        &directory,
+        &refuse,
+        crate::runtimes::ReconnectPolicy::with_delays(vec![Duration::from_millis(5); 10_000]),
+    )
+    .await;
+    let published = tool_names(&registry);
+    assert_eq!(published.len(), 2);
+
+    std::fs::write(&refuse, "").expect("refuse restarts");
+    let error = try_execute(
+        &registry,
+        &directory,
+        "fixture_echo_text",
+        json!({"text":"exit"}),
+    )
+    .await
+    .expect_err("the server exits during the call");
+    assert!(
+        matches!(error, crate::ToolError::RuntimeUnavailable(_)),
+        "{error:?}"
+    );
+    wait_for_state(&registry, McpServerState::Reconnecting).await;
+    assert_eq!(tool_names(&registry), published);
+    let error = try_execute(
+        &registry,
+        &directory,
+        "fixture_echo_text",
+        json!({"text":"while reconnecting"}),
+    )
+    .await
+    .expect_err("calls fail fast while reconnecting");
+    assert!(
+        matches!(error, crate::ToolError::RuntimeUnavailable(_)),
+        "{error:?}"
+    );
+
+    std::fs::remove_file(&refuse).expect("allow restarts");
+    wait_for_state(&registry, McpServerState::Connected).await;
+    assert_eq!(tool_names(&registry), published);
+    let result = execute(
+        &registry,
+        &directory,
+        "fixture_echo_text",
+        json!({"text":"back"}),
+    )
+    .await;
+    assert_eq!(result.output, "back");
+    registry.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_server_that_cannot_reconnect_drops_its_tools_and_reports_why() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let refuse = directory.path().join("refuse");
+    let registry = droppable_registry(
+        &directory,
+        &refuse,
+        crate::runtimes::ReconnectPolicy::with_delays(vec![Duration::from_millis(1); 2]),
+    )
+    .await;
+    let mut failures = registry.subscribe_failures();
+    std::fs::write(&refuse, "").expect("refuse restarts");
+    try_execute(
+        &registry,
+        &directory,
+        "fixture_echo_text",
+        json!({"text":"exit"}),
+    )
+    .await
+    .expect_err("the server exits during the call");
+
+    let McpServerFailure { server, reason } = tokio::time::timeout(WAIT, failures.recv())
+        .await
+        .expect("failure reported")
+        .expect("failure channel open");
+    assert_eq!(server, "fixture");
+    assert!(
+        reason.contains("did not reconnect after 2 attempts"),
+        "{reason}"
+    );
+    let status = registry.statuses().remove(0);
+    assert_eq!(status.state, McpServerState::Failed);
+    assert_eq!(status.message.as_deref(), Some(reason.as_str()));
+    assert!(tool_names(&registry).is_empty());
+    registry.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_failed_server_is_retried_when_asked_and_reports_the_failure() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let refuse = directory.path().join("refuse");
+    std::fs::write(&refuse, "").expect("refuse starts");
+    let mut config = fixture_config();
+    config.env.insert(
+        "MCP_FIXTURE_REFUSE_FILE".into(),
+        refuse.to_string_lossy().into_owned(),
+    );
+    let registry = McpRegistry::new(
+        BTreeMap::from([(
+            "fixture".into(),
+            LoadedMcpServer {
+                source: McpServerSource::UserFile,
+                config,
+            },
+        )]),
+        oauth_path(&directory),
+    )
+    .expect("registry");
+    let mut failures = registry.subscribe_failures();
+    registry.start_eager(&tokio::runtime::Handle::current());
+    registry.await_eager_ready().await;
+    assert_eq!(registry.statuses()[0].state, McpServerState::Failed);
+    let failure = failures.try_recv().expect("startup failure reported");
+    assert_eq!(failure.server, "fixture");
+    assert!(tool_names(&registry).is_empty());
+
+    std::fs::remove_file(&refuse).expect("allow starts");
+    registry.retry_failed(&tokio::runtime::Handle::current());
+    assert_eq!(registry.statuses()[0].state, McpServerState::Connecting);
+    registry.await_eager_ready().await;
+    assert_eq!(registry.statuses()[0].state, McpServerState::Connected);
+    assert_eq!(tool_names(&registry).len(), 2);
+    registry.shutdown().await;
 }
