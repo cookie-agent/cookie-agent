@@ -334,6 +334,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) headers: Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>,
     pub(crate) mcp: Option<McpConfig>,
     pub(crate) plugins: Option<PluginsConfig>,
+    pub(crate) runtimes: Option<BTreeMap<String, crate::runtime_templates::RawRuntimeTemplate>>,
     #[serde(default)]
     pub(crate) providers: SensitiveProviderValues,
 }

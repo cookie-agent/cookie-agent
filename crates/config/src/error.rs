@@ -39,6 +39,8 @@ pub enum ConfigError {
     McpServer { server: String, reason: String },
     #[error("plugin `{plugin}` is invalid: {reason}")]
     Plugin { plugin: String, reason: String },
+    #[error("runtime template `{runtime}` is invalid: {reason}")]
+    RuntimeTemplate { runtime: String, reason: String },
     #[error("environment interpolation is invalid at `{0}`")]
     Interpolation(String),
     #[error("environment variable `{variable}` is missing at `{path}`")]

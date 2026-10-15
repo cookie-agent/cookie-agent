@@ -95,6 +95,7 @@ nav:
       - 'Providers [providers]': guide/providers.md
       - 'MCP [mcp]': guide/mcp.md
       - 'Plugins [plugins]': guide/plugins.md
+      - 'Runtimes [runtimes]': guide/runtimes.md
   - TUI Configuration:
       - tui.toml: tui/configuration.md
       - 'Minimum Event Level [minimum_event_level]': tui/minimum_event_level.md

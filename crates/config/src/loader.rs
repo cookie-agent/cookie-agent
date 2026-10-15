@@ -44,6 +44,8 @@ pub struct LoadedConfiguration {
     pub mcp_servers: BTreeMap<String, LoadedMcpServer>,
     pub user_mcp_servers: BTreeMap<String, crate::McpServerConfig>,
     pub plugins: IndexMap<String, crate::PluginConfig>,
+    /// The `[runtimes.<id>]` templates, `local` included when authored.
+    pub runtimes: BTreeMap<cookie_agent_identity::RuntimeId, crate::RuntimeTemplateConfig>,
     pub config_paths: ConfigLayerPaths,
     /// User skills, contributed by the global runtime.
     pub skills: crate::SkillRegistry,
@@ -121,6 +123,7 @@ pub fn load_from_user_root(user_root: Option<&Path>) -> Result<LoadedConfigurati
     let mut mcp_servers = BTreeMap::new();
     let mut user_mcp_servers = BTreeMap::new();
     let mut plugins = IndexMap::new();
+    let mut runtimes = BTreeMap::new();
     let built_in_text =
         BUILT_IN_CONFIG.replace("${cookie_agent_version}", env!("CARGO_PKG_VERSION"));
     let built_in_path = Path::new("<built-in>/config.toml");
@@ -162,6 +165,9 @@ pub fn load_from_user_root(user_root: Option<&Path>) -> Result<LoadedConfigurati
                         )
                     },
                 ));
+            }
+            if let Some(templates) = layer.runtimes.take() {
+                runtimes = crate::runtime_templates::validate_runtime_templates(templates)?;
             }
             for (id, mut value) in std::mem::take(&mut layer.providers) {
                 let json = SensitiveJsonValue::from_toml(value.take());
@@ -242,6 +248,7 @@ pub fn load_from_user_root(user_root: Option<&Path>) -> Result<LoadedConfigurati
         mcp_servers,
         user_mcp_servers,
         plugins,
+        runtimes,
         config_paths: ConfigLayerPaths {
             user: user_root.map(|root| root.join("config.toml")),
         },
@@ -394,6 +401,7 @@ fn decode_runtime_layer(
         "headers",
         "mcp",
         "plugins",
+        "runtimes",
         "providers",
     ];
     let table = value.as_table_mut().ok_or_else(|| {

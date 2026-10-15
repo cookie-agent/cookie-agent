@@ -343,6 +343,7 @@ fn build_in_process_server(
         mcp_servers: BTreeMap::new(),
         user_mcp_servers: BTreeMap::new(),
         plugins: Default::default(),
+        runtimes: Default::default(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
         skills,
     };

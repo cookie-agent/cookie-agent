@@ -8,6 +8,7 @@ mod loader;
 mod mcp_store;
 mod prompt_template;
 mod runtime;
+mod runtime_templates;
 mod secure_fs;
 mod skills;
 mod toml_values;
@@ -38,6 +39,7 @@ pub use runtime::{
     PluginConfig, PluginsConfig, PricingConfig, SUBAGENT_OUTPUT_MAX_BYTES, ServerConfig,
     SessionTitleConfig, SubagentOutputConfig, ToolOutputConfig,
 };
+pub use runtime_templates::{RuntimeTemplateConfig, WORKSPACE_PLACEHOLDER};
 pub use skills::{
     SkillAllowedTool, SkillContext, SkillDiagnostic, SkillDiscovery, SkillDocument,
     SkillFrontmatter, SkillRegistry, load_project_skills, load_skill_roots, load_user_skills,

@@ -51,6 +51,7 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | `providers` | [Providers](providers.md) |
 | `mcp` | [MCP](mcp.md) |
 | `plugins` | [Plugins](plugins.md) |
+| `runtimes` | [Runtimes](runtimes.md) |
 
 Every key above is a **top-level** table: write `[messaging]`, `[delegation]`,
 and so on, never `[runtime.messaging]` or another nested spelling. Older docs

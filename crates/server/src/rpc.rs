@@ -375,6 +375,7 @@ fn config_debug_code(error: &cookie_agent_config::ConfigError) -> &'static str {
         ConfigError::FileIo { .. } => "config_io",
         ConfigError::McpServer { .. } => "config_mcp_server",
         ConfigError::Plugin { .. } => "config_plugin",
+        ConfigError::RuntimeTemplate { .. } => "config_runtime_template",
         ConfigError::Interpolation(_) => "config_interpolation",
         ConfigError::MissingEnvironment { .. } => "config_missing_environment",
         ConfigError::NonUtf8Environment { .. } => "config_non_utf8_environment",

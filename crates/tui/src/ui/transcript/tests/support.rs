@@ -131,6 +131,7 @@ pub(crate) fn production_provider_harness(
         mcp_servers: BTreeMap::new(),
         user_mcp_servers: BTreeMap::new(),
         plugins: Default::default(),
+        runtimes: Default::default(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
         skills: cookie_agent_config::SkillRegistry::default(),
     };
