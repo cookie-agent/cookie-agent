@@ -27,6 +27,10 @@ pub enum IdentityError {
     StrictIdentifier,
     #[error("invalid revision")]
     Revision,
+    #[error("invalid runtime id")]
+    Runtime,
+    #[error("invalid attachment name")]
+    Attachment,
 }
 
 macro_rules! string_identity {
@@ -258,6 +262,48 @@ shared_permission_string_impl!(
     })
 );
 string_identity!(
+    RuntimeId,
+    Runtime,
+    valid_runtime_id,
+    32,
+    "^[a-z][a-z0-9_]{0,31}$"
+);
+
+impl RuntimeId {
+    /// Runtime ID of the daemon's global runtime.
+    pub const GLOBAL: &'static str = "global";
+    /// Runtime ID of the built-in coding runtime for the daemon's working
+    /// directory.
+    pub const LOCAL: &'static str = "local";
+
+    /// The global runtime's ID.
+    #[must_use]
+    pub fn global() -> Self {
+        Self(Self::GLOBAL.to_owned())
+    }
+
+    /// The local coding runtime's ID.
+    #[must_use]
+    pub fn local() -> Self {
+        Self(Self::LOCAL.to_owned())
+    }
+
+    /// Whether the ID is reserved for a built-in runtime (`global`, `local`).
+    #[must_use]
+    pub fn is_reserved(&self) -> bool {
+        matches!(self.0.as_str(), Self::GLOBAL | Self::LOCAL)
+    }
+}
+
+string_identity!(
+    AttachmentName,
+    Attachment,
+    valid_attachment_name,
+    40,
+    "^[a-z][a-z0-9_]{0,39}$"
+);
+
+string_identity!(
     ProviderId,
     Provider,
     valid_provider_id,
@@ -405,6 +451,23 @@ fn valid_agent_id(value: &str) -> bool {
             .last()
             .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
         && !value.as_bytes().windows(2).any(|pair| pair == b"--")
+}
+
+fn valid_runtime_id(value: &str) -> bool {
+    valid_lower_snake(value, 32)
+}
+
+fn valid_attachment_name(value: &str) -> bool {
+    valid_lower_snake(value, 40)
+}
+
+/// `[a-z][a-z0-9_]*` of at most `maximum` bytes.
+fn valid_lower_snake(value: &str, maximum: usize) -> bool {
+    (1..=maximum).contains(&value.len())
+        && value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 fn valid_provider_id(value: &str) -> bool {

@@ -446,17 +446,20 @@ impl EventLog {
             session_id,
             origin,
             creation,
+            Vec::new(),
             capability,
             true,
             Some(authority),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_owned(
         path: PathBuf,
         session_id: SessionId,
         origin: EventOrigin,
         creation: EventPayload,
+        initial: Vec<EventPayload>,
         capability: WriteCapability,
         persisted: bool,
         _test_authority: Option<WriteAuthority>,
@@ -487,7 +490,10 @@ impl EventLog {
         if !matches!(creation, EventPayload::SessionCreated { .. }) {
             return Err(EventLogError::MissingCreation(log.path.clone()));
         }
-        log.append_inner(None, None, origin, creation)?;
+        log.append_inner(None, None, origin.clone(), creation)?;
+        for event in initial {
+            log.append_inner(None, None, origin.clone(), event)?;
+        }
         Ok(log)
     }
 
@@ -505,20 +511,26 @@ impl EventLog {
             session_id,
             origin,
             creation,
+            Vec::new(),
             capability,
             false,
             Some(authority),
         )
     }
 
+    /// Creates a buffered log holding `creation` followed by `initial`, all
+    /// published together with the session's first persistence.
     pub(crate) fn create_buffered_owned(
         path: PathBuf,
         session_id: SessionId,
         origin: EventOrigin,
         creation: EventPayload,
+        initial: Vec<EventPayload>,
         capability: WriteCapability,
     ) -> Result<Arc<Self>, EventLogError> {
-        Self::create_owned(path, session_id, origin, creation, capability, false, None)
+        Self::create_owned(
+            path, session_id, origin, creation, initial, capability, false, None,
+        )
     }
 
     #[cfg(test)]
@@ -2835,6 +2847,11 @@ fn validate_record_incremental(
         EventPayload::SessionModelSelected { .. } => {
             if record.run_id.is_some() {
                 return corrupt(path, "SessionModelSelected must be runless");
+            }
+        }
+        EventPayload::RuntimeAttached { .. } | EventPayload::RuntimeDetached { .. } => {
+            if record.run_id.is_some() {
+                return corrupt(path, "runtime attachment events must be runless");
             }
         }
         EventPayload::GoalActivated { .. }

@@ -28,14 +28,20 @@
 //! [`WorkspaceContext`]) live in `cookie_agent_runtime_api`, which tool
 //! providers depend on; this module composes them.
 
-use std::{
-    path::Path,
-    sync::{Arc, Mutex},
-};
+use std::sync::Arc;
 
 use cookie_agent_runtime_api::{
-    LOCAL_RUNTIME_ID, RuntimeInfo, SessionToolContext, ToolCollision, ToolOrigin, ToolProvider,
-    ToolSpec, WorkspaceContext,
+    SessionToolContext, ToolCollision, ToolOrigin, ToolProvider, ToolSpec,
+};
+
+mod builtin;
+mod registry;
+
+pub(crate) use builtin::{GlobalTemplate, LocalTemplate};
+pub(crate) use registry::{RuntimeInstance, RuntimeRegistry};
+pub use registry::{
+    RuntimeInstanceStatus, RuntimeInstanceSummary, RuntimeTemplate, RuntimeTemplateSummary,
+    StartedRuntime,
 };
 
 /// One-line description of where a tool runs, for the approval reviewer.
@@ -59,96 +65,25 @@ pub(crate) fn describe_origin(origin: &ToolOrigin) -> String {
 }
 
 /// Where [`crate::Engine::try_register_tool_provider`] adds a provider.
-/// Variants are in composition order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolLayer {
     /// The daemon's base layer.
     Base,
-    /// The global runtime.
+    /// The global runtime instance.
     Global,
-    /// The local coding runtime.
+    /// The local coding runtime instance.
     Local,
 }
 
-impl ToolLayer {
-    const fn index(self) -> usize {
-        match self {
-            Self::Base => 0,
-            Self::Global => 1,
-            Self::Local => 2,
-        }
-    }
-}
-
-/// A provider together with the layer or runtime that owns it.
+/// A provider together with the layer or runtime attachment that owns it.
 #[derive(Clone)]
 pub(crate) struct SourcedProvider {
+    /// The session's attachment name; `None` for the base layer.
+    pub(crate) attachment: Option<cookie_agent_protocol::AttachmentName>,
+    /// The instance generation; `0` for the base layer.
+    pub(crate) generation: u64,
     pub(crate) origin: ToolOrigin,
     pub(crate) provider: Arc<dyn ToolProvider>,
-}
-
-/// The engine's tool sources, kept in composition order: base layer, global
-/// runtime, local coding runtime, each in registration order.
-pub(crate) struct RuntimeSet {
-    global: Arc<RuntimeInfo>,
-    local: Arc<RuntimeInfo>,
-    /// Providers per layer, indexed by [`ToolLayer::index`].
-    providers: Mutex<[Vec<SourcedProvider>; 3]>,
-}
-
-impl RuntimeSet {
-    pub(crate) fn new(local_workspace: WorkspaceContext) -> Self {
-        Self {
-            global: Arc::new(RuntimeInfo::global()),
-            local: Arc::new(RuntimeInfo::coding(LOCAL_RUNTIME_ID, local_workspace)),
-            providers: Mutex::default(),
-        }
-    }
-
-    /// The local coding runtime's workspace root: the workspace of project
-    /// skills, `AGENTS.md`, the `<working_directory>` block, and session
-    /// overlay effects until sessions attach runtimes.
-    pub(crate) fn local_workspace_root(&self) -> &Path {
-        self.local
-            .workspace()
-            .expect("the local coding runtime has a workspace")
-            .root()
-    }
-
-    fn origin(&self, layer: ToolLayer) -> ToolOrigin {
-        match layer {
-            ToolLayer::Base => ToolOrigin::Base,
-            ToolLayer::Global => ToolOrigin::Runtime(Arc::clone(&self.global)),
-            ToolLayer::Local => ToolOrigin::Runtime(Arc::clone(&self.local)),
-        }
-    }
-
-    pub(crate) fn push(&self, layer: ToolLayer, provider: Arc<dyn ToolProvider>) {
-        let origin = self.origin(layer);
-        self.providers
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())[layer.index()]
-        .push(SourcedProvider { origin, provider });
-    }
-
-    /// Every provider in composition order.
-    pub(crate) fn providers(&self) -> Vec<SourcedProvider> {
-        self.providers
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .concat()
-    }
-
-    pub(crate) fn clear(&self) {
-        for layer in self
-            .providers
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .iter_mut()
-        {
-            layer.clear();
-        }
-    }
 }
 
 /// The provider and spec that currently answer to `name` in `session`: the

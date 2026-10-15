@@ -208,6 +208,7 @@ impl Engine {
     ) -> Result<RunStartResult, EngineError> {
         self.inner.mcp.await_eager_ready().await;
         self.inner.plugins.await_eager_ready().await;
+        self.ensure_session_runtimes_logged(params.session_id).await;
         if let Some((invocation_id, generation)) = admission
             && !self.admission_generation_live(invocation_id, generation)
         {

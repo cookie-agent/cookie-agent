@@ -1035,7 +1035,8 @@ async fn successful_new_after_delivery_handoff_uses_event_loop_receiver() {
     assert!(!app.store.sessions.contains_key(&session_id));
 
     handle_detached_replay(&mut app, &mut deliveries, session_id).await;
-    assert_eq!(app.store.sessions[&session_id].last_seq, 1);
+    // Creation and its `global` and `local` attachments.
+    assert_eq!(app.store.sessions[&session_id].last_seq, 3);
     assert!(app.store.sessions[&session_id].creation_agent.is_some());
 }
 
@@ -1066,7 +1067,8 @@ async fn successful_sessions_picker_selection_after_delivery_handoff_uses_event_
     assert!(!app.store.sessions.contains_key(&session.session_id));
 
     handle_detached_replay(&mut app, &mut deliveries, session.session_id).await;
-    assert_eq!(app.store.sessions[&session.session_id].last_seq, 1);
+    // Creation and its `global` and `local` attachments.
+    assert_eq!(app.store.sessions[&session.session_id].last_seq, 3);
     assert!(
         app.store.sessions[&session.session_id]
             .creation_agent

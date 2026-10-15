@@ -55,7 +55,7 @@ origin class. This keeps the origin grammar restricted to `user`, `engine`,
 
 | Category | Event payload types |
 |---|---|
-| Session | `session_created`, `session_reverted` (legacy), `session_permission_overlay_set`, `skill_loaded`, `skill_invocation_noted`, `session_title_committed`, `delegated_context_seeded` |
+| Session | `session_created`, `session_reverted` (legacy), `session_permission_overlay_set`, `runtime_attached`, `runtime_detached`, `skill_loaded`, `skill_invocation_noted`, `session_title_committed`, `delegated_context_seeded` |
 | AGENTS.md context | `agent_md_loaded` |
 | Plugins | `plugin_event_added`, `plugin_diagnostic` |
 | Goals | `goal_activated`, `goal_checklist_revised`, `goal_lifecycle_changed` |
@@ -308,6 +308,20 @@ delegation event, that delegation is not recovered, the parent session records
 the diagnostic, and unrelated delegations remain recoverable. Legacy
 `delegations.jsonl` files are ignored, so pre-release in-flight journal entries
 do not cross this upgrade.
+
+The runless `runtime_attached` and `runtime_detached` events record the
+session's [runtime attachments](../specs/runtimes.md#5-session-attachments).
+`runtime_attached` carries the session-unique attachment `name`, the
+`runtime_id` of the template, the runtime's `kind` (`global` or `coding`), and,
+when the runtime has one, the canonical `workspace` it reported.
+`runtime_detached` carries the `name` it removes. The attachment set is the fold
+of these events in log order; a session's creation writes one
+`runtime_attached` per initial attachment together with `session_created`, so
+both reach disk with the session's first persistence. A log that holds neither
+event was written before runtimes existed and reads as attached to `global`
+and `local`; the engine writes those two attachments out before such a
+session's first attach or detach. Delegated children record their own
+attachments.
 
 The runless `session_permission_overlay_set` event's `overlay`
 contains the complete, validated set of unique `(action, resource)` rules for

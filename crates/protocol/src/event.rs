@@ -1986,6 +1986,19 @@ pub enum EventPayload {
     SessionPermissionOverlaySet {
         overlay: SessionPermissionOverlay,
     },
+    /// The session was attached to a runtime instance under `name`.
+    RuntimeAttached {
+        name: AttachmentName,
+        runtime_id: RuntimeId,
+        kind: RuntimeKind,
+        /// Canonical workspace the runtime reported; absent without one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
+    /// The attachment `name` was removed from the session.
+    RuntimeDetached {
+        name: AttachmentName,
+    },
     SkillLoaded {
         name: String,
         rendered_body: String,
@@ -2522,6 +2535,8 @@ impl EventPayload {
             Self::SessionCreated { .. }
                 | Self::SessionReverted { .. }
                 | Self::SessionPermissionOverlaySet { .. }
+                | Self::RuntimeAttached { .. }
+                | Self::RuntimeDetached { .. }
                 | Self::SkillLoaded { .. }
                 | Self::SkillInvocationNoted { .. }
                 | Self::PluginEventAdded { .. }

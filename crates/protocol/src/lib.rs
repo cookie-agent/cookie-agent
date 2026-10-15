@@ -93,6 +93,7 @@ impl JsonSchema for RequiredModelSelectionSchema {
 
 mod agent;
 mod approval;
+mod attachment;
 mod bindings;
 pub mod diagnostics;
 mod event;
@@ -115,14 +116,16 @@ mod setup_value;
 
 pub use agent::*;
 pub use approval::*;
+pub use attachment::*;
 pub use bindings::*;
 pub use cookie_agent_identity::{
-    AdapterId, AgentId, AgentRevision, AuthFieldName, AuthMethodId, AuthParameterId, AuthRecipeId,
-    CacheEntryId, CacheRevision, CanonicalModelId, CatalogRevision, IdentityError, ManifestEntryId,
-    ManifestRevision, ModelKey, ModelRevision, ModelSelection, ModelSnapshotRevision,
-    ProtocolRecipeId, ProviderId, ProviderModelId, ProviderRecipeId, ProviderSetupRecipeId,
-    ProviderStateRevision, ProviderStoreRevision, RecipeCompilerVersion, RecipeRegistryRevision,
-    RuntimeRevision, SafeCode, SetupFieldId, StoreEntryId, VariantId, WildcardPattern,
+    AdapterId, AgentId, AgentRevision, AttachmentName, AuthFieldName, AuthMethodId,
+    AuthParameterId, AuthRecipeId, CacheEntryId, CacheRevision, CanonicalModelId, CatalogRevision,
+    IdentityError, ManifestEntryId, ManifestRevision, ModelKey, ModelRevision, ModelSelection,
+    ModelSnapshotRevision, ProtocolRecipeId, ProviderId, ProviderModelId, ProviderRecipeId,
+    ProviderSetupRecipeId, ProviderStateRevision, ProviderStoreRevision, RecipeCompilerVersion,
+    RecipeRegistryRevision, RuntimeId, RuntimeRevision, SafeCode, SetupFieldId, StoreEntryId,
+    VariantId, WildcardPattern,
 };
 pub use event::*;
 pub use extension::*;

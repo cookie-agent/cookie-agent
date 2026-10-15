@@ -35,6 +35,7 @@ pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
 pub use mcp::{McpRegistry, McpServerState, McpServerStatus};
 pub use plugin::{EngineEvent, PluginRegistry, PluginState, PluginStatus};
+pub use runtime::attachments::{SessionRuntimeRequest, SessionRuntimes};
 /// Stable `send_message:<code>` error strings carried by
 /// [`EngineError::Messaging`]. The tool layer surfaces them verbatim so sending
 /// models can react predictably (retry, back off, or give up).
@@ -49,7 +50,10 @@ pub use runtime::{
     Engine, EngineError, EngineHistoryView, EngineOptions, SkillInvocation,
 };
 pub use runtime_snapshot::PublishedRuntime;
-pub use runtimes::ToolLayer;
+pub use runtimes::{
+    RuntimeInstanceStatus, RuntimeInstanceSummary, RuntimeTemplate, RuntimeTemplateSummary,
+    StartedRuntime, ToolLayer,
+};
 pub use session::TailOwner;
 
 // The tool API, imported once for the engine's own modules.

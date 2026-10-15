@@ -46,6 +46,7 @@ use crate::{
 
 mod admission;
 mod agent_md;
+pub(crate) mod attachments;
 #[cfg(test)]
 pub(crate) use agent_md::AGENT_MD_MAX_BYTES;
 mod approval_api;
@@ -259,6 +260,9 @@ pub enum EngineError {
     Producer(String),
     #[error("messaging: {0}")]
     Messaging(String),
+    /// A runtime could not be attached, detached, or started.
+    #[error("runtime error: {0}")]
+    Runtime(String),
     #[error(transparent)]
     ModelManager(#[from] cookie_agent_models::ModelManagerError),
     #[error(transparent)]
@@ -702,8 +706,8 @@ pub(crate) struct Inner {
     engine_events: broadcast::Sender<crate::EngineEvent>,
     plugin_diagnostics: PluginDiagnosticsState,
     runtime_revision_index: Mutex<RuntimeRevisionIndex>,
-    /// Tool providers by layer and runtime.
-    pub(crate) runtimes: crate::runtimes::RuntimeSet,
+    /// The base layer, runtime templates, and running runtime instances.
+    pub(crate) runtimes: crate::runtimes::RuntimeRegistry,
     provider_ids: Mutex<HashSet<&'static str>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
     pub(crate) plugins: Arc<crate::PluginRegistry>,
@@ -737,20 +741,13 @@ impl Engine {
                 path: options.runtimes.local_workspace.clone(),
                 source,
             })?;
-        let runtimes = crate::runtimes::RuntimeSet::new(local_workspace.clone());
-        let mut layered = options
-            .runtimes
-            .global_tools
-            .iter()
-            .map(|provider| (crate::ToolLayer::Global, Arc::clone(provider)))
-            .collect::<Vec<_>>();
-        layered.extend(
-            (options.runtimes.local_tools)(&local_workspace)
-                .into_iter()
-                .map(|provider| (crate::ToolLayer::Local, provider)),
-        );
+        let local_template = Arc::new(crate::runtimes::LocalTemplate::new(
+            local_workspace,
+            Arc::clone(&options.runtimes.local_tools),
+        ));
+        let local = local_template.start_now().map_err(EngineError::Runtime)?;
         let mut provider_ids = HashSet::new();
-        for (_, provider) in &layered {
+        for provider in options.runtimes.global_tools.iter().chain(&local.providers) {
             reserve_provider_id(&mut provider_ids, provider.as_ref())?;
         }
         let skills = Arc::new(options.config.skills.clone());
@@ -781,7 +778,9 @@ impl Engine {
             .map_err(|error| EngineError::ToolFailed(error.to_string()))?,
         );
         reserve_provider_id(&mut provider_ids, mcp.as_ref())?;
-        for (_, provider) in &layered {
+        // Inside the global runtime, MCP and plugin tools may not take the
+        // names of its other tools.
+        for provider in &options.runtimes.global_tools {
             mcp.reserve_provider(provider.as_ref())
                 .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
         }
@@ -790,11 +789,14 @@ impl Engine {
             Arc::clone(&mcp),
         ));
         reserve_provider_id(&mut provider_ids, plugins.as_ref())?;
-        runtimes.push(crate::ToolLayer::Global, mcp.clone());
-        runtimes.push(crate::ToolLayer::Global, plugins.clone());
-        for (layer, provider) in layered {
-            runtimes.push(layer, provider);
-        }
+        let mut global_providers: Vec<Arc<dyn ToolProvider>> = vec![mcp.clone(), plugins.clone()];
+        global_providers.extend(options.runtimes.global_tools.iter().cloned());
+        let runtimes = crate::runtimes::RuntimeRegistry::new(
+            Arc::new(crate::runtimes::GlobalTemplate),
+            crate::runtimes::GlobalTemplate::started(global_providers, Vec::new()),
+            local_template,
+            local,
+        );
         let delegation_events = DelegationEventStore::new(Arc::clone(&store));
         let grant_journals = GrantJournals::new(store.workdir_dir_path());
         let (runtime_notifications, _) = broadcast::channel(64);
@@ -1328,8 +1330,9 @@ impl Engine {
             .expect("tool provider collision");
     }
 
-    /// Adds `provider` to `layer`. The engine registers the base layer itself
-    /// when it opens and the runtimes get their providers from
+    /// Adds `provider` to the base layer or to the `global` or `local`
+    /// runtime instance. The engine registers the base layer itself when it
+    /// opens and the runtimes get their providers from
     /// [`EngineOptions::runtimes`]; tests may add more.
     pub fn try_register_tool_provider(
         &self,
@@ -1342,11 +1345,17 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         reserve_provider_id(&mut provider_ids, provider.as_ref())?;
-        if let Err(error) = self.inner.mcp.reserve_provider(provider.as_ref()) {
-            provider_ids.remove(provider.provider_id());
-            return Err(EngineError::ToolFailed(error.to_string()));
+        match layer {
+            crate::ToolLayer::Base => self.inner.runtimes.push_base(provider),
+            crate::ToolLayer::Global => {
+                if let Err(error) = self.inner.mcp.reserve_provider(provider.as_ref()) {
+                    provider_ids.remove(provider.provider_id());
+                    return Err(EngineError::ToolFailed(error.to_string()));
+                }
+                self.inner.runtimes.global().push_provider(provider);
+            }
+            crate::ToolLayer::Local => self.inner.runtimes.local().push_provider(provider),
         }
-        self.inner.runtimes.push(layer, provider);
         Ok(())
     }
 

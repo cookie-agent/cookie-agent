@@ -32,7 +32,7 @@ impl Engine {
             })
             .collect();
         let context = SessionToolContext::for_prompt_composition(session, delegate_targets);
-        let providers = self.inner.runtimes.providers();
+        let providers = self.session_tool_sources(session)?;
         let mut rendered = Vec::new();
         let mut total_body_bytes = 0usize;
 

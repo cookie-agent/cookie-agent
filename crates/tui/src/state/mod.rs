@@ -652,6 +652,9 @@ pub struct SessionState {
     /// delegated pickers use.
     pub run_selected_suffix: Option<Vec<cookie_agent_protocol::FrozenModelBinding>>,
     pub model_selection: cookie_agent_protocol::SessionModelState,
+    /// The session's runtime attachments, folded from its events. A log with
+    /// no attach or detach event is attached to `global` and `local`.
+    pub runtime_attachments: cookie_agent_protocol::RuntimeAttachmentFold,
     pub goal: Option<GoalState>,
     pub transcript: Vec<TranscriptItem>,
     /// Durable insertion time per transcript item id. Cross-session rows such

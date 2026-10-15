@@ -79,7 +79,12 @@ async fn preview_matches_the_session_a_create_with_the_same_rules_produces() {
 
     let session = fixture
         .engine
-        .create_session_with_permissions(selection, Some(PermissionMode::Ask), rules)
+        .create_session_with_permissions(
+            selection,
+            Some(PermissionMode::Ask),
+            rules,
+            Default::default(),
+        )
         .await
         .expect("session");
     let live = fixture
@@ -96,9 +101,14 @@ async fn preview_matches_the_session_a_create_with_the_same_rules_produces() {
         .get(session.session_id)
         .expect("session projection");
     assert_eq!(projection.permission_overlay.rules.len(), 2);
+    // Creation writes the session's attachments with it; the overlay follows.
     let events = projection.log.event_snapshot();
     assert!(matches!(
         events[1].payload,
+        EventPayload::RuntimeAttached { .. }
+    ));
+    assert!(matches!(
+        events[3].payload,
         EventPayload::SessionPermissionOverlaySet { .. }
     ));
     fixture.engine.shutdown().await;
@@ -120,7 +130,7 @@ async fn invalid_initial_rules_fail_before_a_session_exists() {
     assert!(
         fixture
             .engine
-            .create_session_with_permissions(selection.clone(), None, duplicate)
+            .create_session_with_permissions(selection.clone(), None, duplicate, Default::default())
             .await
             .is_err()
     );
@@ -129,7 +139,7 @@ async fn invalid_initial_rules_fail_before_a_session_exists() {
     // No settings: the plain create, with the default mode.
     let session = fixture
         .engine
-        .create_session_with_permissions(selection, None, Vec::new())
+        .create_session_with_permissions(selection, None, Vec::new(), Default::default())
         .await
         .expect("session");
     let live = fixture
@@ -147,7 +157,8 @@ async fn invalid_initial_rules_fail_before_a_session_exists() {
             .log
             .event_snapshot()
             .len(),
-        1
+        3,
+        "the creation event and the `global` and `local` attachments"
     );
     fixture.engine.shutdown().await;
 }

@@ -322,6 +322,7 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::Goal(_) => "goal",
         EngineError::Producer(_) => "producer",
         EngineError::Messaging(_) => "messaging",
+        EngineError::Runtime(_) => "runtime",
         EngineError::ModelManager(_) => "model_manager",
         EngineError::Manifest(_) => "manifest",
     }

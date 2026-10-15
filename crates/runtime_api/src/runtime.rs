@@ -20,24 +20,7 @@ pub const LOCAL_RUNTIME_ID: &str = "local";
 /// Upper bound of an attachment name in bytes.
 pub const MAX_ATTACHMENT_NAME_BYTES: usize = 32;
 
-/// What a runtime offers. A runtime reports its own kind.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RuntimeKind {
-    /// The daemon's own runtime: MCP servers and plugins, no workspace.
-    Global,
-    /// A runtime that works in one workspace with file and shell tools.
-    Coding,
-}
-
-impl RuntimeKind {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Global => "global",
-            Self::Coding => "coding",
-        }
-    }
-}
+pub use cookie_agent_protocol::RuntimeKind;
 
 /// The workspace a coding runtime works in.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,6 +79,22 @@ impl RuntimeInfo {
         }
     }
 
+    /// A runtime of `kind` that reports `attachment_name` and `workspace`.
+    #[must_use]
+    pub fn new(
+        id: &str,
+        kind: RuntimeKind,
+        attachment_name: &str,
+        workspace: Option<WorkspaceContext>,
+    ) -> Self {
+        Self {
+            id: id.to_owned(),
+            kind,
+            attachment_name: attachment_name.to_owned(),
+            workspace,
+        }
+    }
+
     /// A coding runtime for `workspace`, named per [`coding_attachment_name`].
     #[must_use]
     pub fn coding(id: &str, workspace: WorkspaceContext) -> Self {
@@ -117,8 +116,9 @@ impl RuntimeInfo {
         self.kind
     }
 
-    /// The name a session would attach this instance under. Tool-name
-    /// prefixing on collisions uses it (not yet applied).
+    /// The name the instance reports for itself. A session attaches it under
+    /// this name, suffixed with `_2`, `_3`, ... when the session already has
+    /// an attachment of that name.
     #[must_use]
     pub fn attachment_name(&self) -> &str {
         &self.attachment_name

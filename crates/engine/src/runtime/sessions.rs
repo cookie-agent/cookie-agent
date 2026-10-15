@@ -76,17 +76,22 @@ impl Engine {
     /// [`Self::create_session`] that also commits an initial permission
     /// overlay and sets the new tree's permission mode before the session
     /// can run anything. The rules are validated before the session exists.
+    ///
+    /// `runtimes` names the runtimes the session attaches; instances that
+    /// are not running are started first, and a failure creates nothing.
     pub async fn create_session_with_permissions(
         &self,
         selection: RunSelection,
         mode: Option<PermissionMode>,
         rules: Vec<PermissionRule>,
+        runtimes: super::attachments::SessionRuntimes,
     ) -> Result<SessionMeta, EngineError> {
         let overlay = SessionPermissionOverlay { rules };
         overlay
             .validate()
             .map_err(|error| EngineError::Permission(error.to_string()))?;
-        let meta = self.create_session(selection)?;
+        let attachments = self.resolve_session_runtimes(&runtimes).await?;
+        let meta = self.create_session_attached(selection, &attachments)?;
         let session_id = meta.session_id;
         if !overlay.rules.is_empty() {
             self.append(
@@ -105,7 +110,17 @@ impl Engine {
         Ok(meta)
     }
 
+    /// Creates a root session attached to `global` and `local`.
     pub fn create_session(&self, selection: RunSelection) -> Result<SessionMeta, EngineError> {
+        self.create_session_attached(selection, &self.default_attachments())
+    }
+
+    /// Creates a root session whose creation also records `attachments`.
+    pub(crate) fn create_session_attached(
+        &self,
+        selection: RunSelection,
+        attachments: &[cookie_agent_protocol::RuntimeAttachment],
+    ) -> Result<SessionMeta, EngineError> {
         let (runtime, policy) = self.freeze_selection_policy(&selection)?;
         let id = SessionId::new_v7();
         let cwd_identity = cwd_identity(self.inner.store.cwd())?;
@@ -131,10 +146,14 @@ impl Engine {
             recipe_registry_revision: runtime.result.snapshot.recipe_registry_revision.clone(),
             manifest_revision: runtime.current_manifest.revision.clone(),
         };
-        self.inner.store.create(
+        self.inner.store.create_with_initial(
             id,
             EventOrigin::new("user").expect("static event origin is valid"),
             creation,
+            attachments
+                .iter()
+                .map(super::attachments::attached_event)
+                .collect(),
         )?;
         self.spawn_actor(id)?;
         Ok(self.inner.store.get(id)?.metadata())
@@ -377,6 +396,7 @@ impl Engine {
                 "session {id} delegation recovery still settling after {DELEGATION_RECOVERY_SETTLE_BOUND:?}"
             );
         }
+        self.ensure_session_runtimes_logged(id).await;
         self.drain_queued_input(id).await;
         Ok(meta)
     }

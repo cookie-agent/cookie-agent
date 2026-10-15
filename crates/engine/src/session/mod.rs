@@ -193,6 +193,8 @@ pub struct SessionProjection {
     pub runs: HashMap<RunId, RunProjection>,
     pub rename_records: HashMap<cookie_agent_protocol::ClientRenameId, SessionRenameRecord>,
     pub permission_overlay: SessionPermissionOverlay,
+    /// The fold of the session's runtime attach and detach events.
+    pub runtime_attachments: cookie_agent_protocol::RuntimeAttachmentFold,
     /// Whether the visible title history still admits an automatic title.
     pub automatic_title_eligible: bool,
     /// What an appended event needs to be folded in place.
@@ -833,6 +835,18 @@ impl SessionStore {
         origin: cookie_agent_protocol::EventOrigin,
         creation: EventPayload,
     ) -> Result<(Arc<EventLog>, bool), SessionError> {
+        self.create_with_initial(session_id, origin, creation, Vec::new())
+    }
+
+    /// [`Self::create_with_status`] that writes `initial` (the session's
+    /// runtime attachments) in the same append as `creation`.
+    pub fn create_with_initial(
+        &self,
+        session_id: SessionId,
+        origin: cookie_agent_protocol::EventOrigin,
+        creation: EventPayload,
+        initial: Vec<EventPayload>,
+    ) -> Result<(Arc<EventLog>, bool), SessionError> {
         let _mutation = self.lock_mutation();
         self.ensure_open()?;
         if let Some(existing) = self
@@ -868,6 +882,7 @@ impl SessionStore {
             session_id,
             origin,
             creation,
+            initial,
             capability,
         )?;
         let result = Arc::new(projection(log.clone())?);

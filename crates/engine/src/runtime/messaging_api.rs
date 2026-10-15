@@ -175,10 +175,9 @@ impl Engine {
         if !visible {
             return Ok(false);
         }
-        let providers = self.inner.runtimes.providers();
-        Ok(providers.iter().any(|source| {
-            source
-                .provider
+        let providers = self.inner.runtimes.base_providers();
+        Ok(providers.iter().any(|provider| {
+            provider
                 .tools_for_session(&cookie_agent_runtime_api::SessionToolContext::new(session))
                 .ok()
                 .is_some_and(|tools| tools.iter().any(|tool| tool.name == "send_message"))

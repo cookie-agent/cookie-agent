@@ -126,6 +126,7 @@ pub(super) fn reduce_event_from(
     // its input window — replay-exact, never render-time wall clock.
     state.event_timestamps.insert(sequence, timestamp);
     state.model_selection.apply(run_id, &payload);
+    state.runtime_attachments.observe(&payload);
     match payload {
         EventPayload::GoalActivated {
             goal_id,
@@ -1578,6 +1579,8 @@ pub(super) fn reduce_event_from(
         | EventPayload::ToolStdinSubmitted { .. }
         | EventPayload::ToolCallLinked { .. }
         | EventPayload::SessionPermissionOverlaySet { .. }
+        | EventPayload::RuntimeAttached { .. }
+        | EventPayload::RuntimeDetached { .. }
         | EventPayload::SkillInvocationNoted { .. } => {}
     }
 }

@@ -195,7 +195,7 @@ impl Engine {
         policy: &FrozenRunPolicy,
         turn_context: Arc<crate::TurnAgentContext>,
     ) -> Vec<PreparedToolCall> {
-        let providers = self.inner.runtimes.providers();
+        let providers = self.session_tool_sources(session_id).unwrap_or_default();
         let session_context = SessionToolContext::new(session_id);
         let mut groups: Vec<(SourcedProvider, Vec<usize>)> = Vec::new();
         for (index, (call, _)) in calls.iter().enumerate() {
@@ -300,7 +300,7 @@ impl Engine {
         let permission_overlay = &session.permission_overlay;
         let grants = self.skill_grants_for_session(session_id);
         let delegate_enabled = !policy.delegate_targets(depth).is_empty();
-        let providers = self.inner.runtimes.providers();
+        let providers = self.session_tool_sources(session_id).unwrap_or_default();
         let current = current_tool(&providers, &SessionToolContext::new(session_id), &call.name);
         let mut provider = match published {
             Some(Some(published))
@@ -310,6 +310,8 @@ impl Engine {
             {
                 Some((
                     SourcedProvider {
+                        attachment: None,
+                        generation: 0,
                         origin: published.origin.clone(),
                         provider: published.provider.clone(),
                     },
@@ -376,7 +378,13 @@ impl Engine {
                     })
             });
         }
-        let Some((SourcedProvider { origin, provider }, tool_spec)) = provider else {
+        let Some((
+            SourcedProvider {
+                origin, provider, ..
+            },
+            tool_spec,
+        )) = provider
+        else {
             return PreparedToolCall {
                 intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
                 prepared: Err(ToolFailure {
@@ -841,7 +849,7 @@ impl Engine {
         let depth = session_depth(&session_projection.meta.origin);
         let delegate_enabled = !policy.delegate_targets(depth).is_empty();
         let mut candidates = Vec::new();
-        for source in self.inner.runtimes.providers() {
+        for source in self.session_tool_sources(session)? {
             for tool in source
                 .provider
                 .tools_for_session(&SessionToolContext::new(session))

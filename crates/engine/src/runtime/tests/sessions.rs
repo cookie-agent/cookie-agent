@@ -590,12 +590,18 @@ async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly(
         disk_events[0].payload,
         EventPayload::SessionCreated { .. }
     ));
+    for attachment in &disk_events[1..3] {
+        assert!(matches!(
+            attachment.payload,
+            EventPayload::RuntimeAttached { .. }
+        ));
+    }
     assert!(matches!(
-        disk_events[1].payload,
+        disk_events[3].payload,
         EventPayload::RunStarted { .. }
     ));
     assert!(matches!(
-        disk_events[2].payload,
+        disk_events[4].payload,
         EventPayload::UserInputSubmitted { .. }
     ));
     assert!(

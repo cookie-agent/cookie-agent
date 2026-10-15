@@ -479,7 +479,7 @@ async fn app_draws_conversation_approval_tree_and_input() {
         origin: None,
         session_id: session.session_id,
         run_id: Some(cookie_agent_protocol::RunId::new_v7()),
-        seq: 2,
+        seq: 4,
         timestamp: Timestamp::now(),
         payload: EventPayload::ApprovalRequested { request },
     });
@@ -488,7 +488,7 @@ async fn app_draws_conversation_approval_tree_and_input() {
         origin: None,
         session_id: session.session_id,
         run_id: Some(cookie_agent_protocol::RunId::new_v7()),
-        seq: 3,
+        seq: 5,
         timestamp: Timestamp::now(),
         payload: EventPayload::ApprovalEscalated {
             approval_id,

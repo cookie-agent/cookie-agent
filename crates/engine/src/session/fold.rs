@@ -32,6 +32,10 @@ pub(super) fn assert_projection_equivalent(
         "permission_overlay"
     );
     assert_eq!(
+        actual.runtime_attachments, expected.runtime_attachments,
+        "runtime_attachments"
+    );
+    assert_eq!(
         actual.automatic_title_eligible, expected.automatic_title_eligible,
         "automatic_title_eligible"
     );
@@ -190,6 +194,7 @@ fn projection_fold_with(
         runs: HashMap::new(),
         rename_records: HashMap::new(),
         permission_overlay: SessionPermissionOverlay::default(),
+        runtime_attachments: cookie_agent_protocol::RuntimeAttachmentFold::default(),
         automatic_title_eligible: AutomaticTitleEligibility::default().eligible(),
         fold: ProjectionFoldState::default(),
         log: log.clone(),
@@ -288,6 +293,9 @@ impl SessionProjection {
         match &envelope.payload {
             EventPayload::SessionPermissionOverlaySet { overlay } => {
                 self.permission_overlay = overlay.clone();
+            }
+            EventPayload::RuntimeAttached { .. } | EventPayload::RuntimeDetached { .. } => {
+                self.runtime_attachments.observe(&envelope.payload);
             }
             EventPayload::SessionTitleCommitted { change, .. } => {
                 let fold = &mut self.fold;

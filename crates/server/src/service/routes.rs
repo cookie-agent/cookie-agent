@@ -46,6 +46,7 @@ impl ServerProtocol for Server {
                 params.selection,
                 params.permission_mode,
                 params.permission_rules,
+                cookie_agent_engine::SessionRuntimes::default(),
             )
             .await
             .map(|session| SessionCreateResult { session })
