@@ -186,3 +186,90 @@ async fn cancelling_the_run_voids_the_queue_instead_of_starting_it() {
     assert!(QueuedInputs::from_events(&projection.log.event_snapshot()).is_empty());
     fixture.engine.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_picked_model_is_the_session_selection_every_later_run_uses() {
+    let (endpoint, _captured, _reached, _release) =
+        scripted_server_with_delayed_response(vec![text_response("from the pick")], usize::MAX)
+            .await;
+    let (fixture, selection) =
+        retry_fixture_with_endpoint(&endpoint, cookie_agent_config::ModelRetryConfig::default())
+            .await;
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    let mut picked = selection.clone();
+    picked.model.model = "custom.test/group/fallback".parse().unwrap();
+
+    assert!(
+        fixture
+            .engine
+            .select_model(session.session_id, picked.clone(), origin("client:tui-a"))
+            .await
+            .expect("pick")
+    );
+    // Picking what the session already has records nothing.
+    assert!(
+        !fixture
+            .engine
+            .select_model(session.session_id, picked.clone(), origin("client:tui-b"))
+            .await
+            .expect("same pick")
+    );
+    let mut missing = selection.clone();
+    missing.model.model = "custom.test/group/missing".parse().unwrap();
+    assert!(
+        fixture
+            .engine
+            .select_model(session.session_id, missing, origin("client:tui-a"))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .session_model_selection(session.session_id)
+            .unwrap(),
+        picked
+    );
+
+    // Another client's message with no selection of its own runs on the pick.
+    let SessionSubmitInputResult::Started { run_id } = fixture
+        .engine
+        .submit_input(
+            submit(
+                session.session_id,
+                "hello",
+                InputDelivery::Steer,
+                "after-pick",
+            ),
+            origin("client:tui-b"),
+        )
+        .await
+        .expect("submit")
+    else {
+        panic!("an idle session starts a run");
+    };
+    let projection = await_projection(
+        &fixture.engine,
+        session.session_id,
+        "run on the picked model",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
+    let events = projection.log.events();
+    let started = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::RunStarted { selection, .. } if event.run_id == Some(run_id) => {
+                Some(selection.clone())
+            }
+            _ => None,
+        })
+        .expect("run started");
+    assert_eq!(started.model, picked.model);
+    let picked_by = events
+        .iter()
+        .find(|event| matches!(event.payload, EventPayload::SessionModelSelected { .. }))
+        .and_then(|event| event.origin.clone());
+    assert_eq!(picked_by, Some(origin("client:tui-a")));
+    fixture.engine.shutdown().await;
+}

@@ -506,6 +506,8 @@ pub(super) fn reduce_event_from(
             // never consulted here.
             state.pending_inputs.pop_back();
         }
+        // The session model state folded it above.
+        EventPayload::SessionModelSelected { .. } => {}
         // The queued lane was folded above, before the payload moved.
         EventPayload::UserInputQueued { .. }
         | EventPayload::UserInputQueueRecalled { .. }

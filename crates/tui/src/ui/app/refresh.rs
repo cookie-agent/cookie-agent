@@ -334,6 +334,10 @@ impl App {
             RpcUpdate::Reconnected { .. } => {
                 // The event loop adopts the client, which needs async work.
             }
+            RpcUpdate::PublishDraft {
+                session_id,
+                generation,
+            } => self.finish_draft_publish(session_id, generation),
             RpcUpdate::RetrySubscription { session_id } => {
                 if self.selected == Some(session_id)
                     && !self.subscriptions.contains_key(&session_id)
@@ -926,6 +930,18 @@ impl App {
         };
         let linked = event
             .is_some_and(|event| matches!(&event.payload, EventPayload::ToolCallLinked { .. }));
+        // Another client picked the viewed session's model: this view's own
+        // unsent pick yields, so the draft follows the latest pick.
+        let foreign_model_pick = event.is_some_and(|event| {
+            matches!(&delivery, ClientDelivery::Live { .. })
+                && matches!(&event.payload, EventPayload::SessionModelSelected { .. })
+                && Some(event.session_id) == self.selected
+                && event.origin != self.client.origin()
+        });
+        if foreign_model_pick {
+            self.set_draft_reset_intent(false);
+            self.draft_publish_generation = self.draft_publish_generation.wrapping_add(1);
+        }
         // A run that ended in a session outside the view no longer needs its
         // live tail: releasing it lets the daemon evict the session.
         let run_ended = event.and_then(|event| {
@@ -1029,6 +1045,15 @@ impl App {
         // projection (a replay could not reproduce that): the transcript
         // splices it in at render time by its durable time instead.
         let outcome = self.store.apply_delivery(delivery);
+        if foreign_model_pick {
+            self.sync_session_model_draft();
+            if let Some(draft) = &self.draft {
+                self.status = format!(
+                    "Model: {} — picked by another client",
+                    super::pickers::draft_title(draft)
+                );
+            }
+        }
         if let Some(session_id) = run_ended
             && !self.is_recently_viewed(session_id)
             && self.is_settled(session_id)

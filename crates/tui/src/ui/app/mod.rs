@@ -586,6 +586,9 @@ pub struct App {
     /// stay subscribed so switching back is instant; older trees' settled
     /// sessions are released so the daemon can evict them.
     pub(super) recent_trees: std::collections::VecDeque<SessionId>,
+    /// Bumped on every draft change; a debounced publish of the draft as the
+    /// session's model selection goes out only if no later change followed.
+    pub(super) draft_publish_generation: u64,
     pub(super) stdin_lanes: Arc<
         tokio::sync::Mutex<HashMap<cookie_agent_protocol::ToolCallId, Arc<tokio::sync::Mutex<()>>>>,
     >,
@@ -777,6 +780,11 @@ pub(in crate::ui) enum RpcUpdate {
     /// The daemon was redialed after the connection dropped.
     Reconnected {
         client: Client,
+    },
+    /// The draft settled: publish it as the session's model selection.
+    PublishDraft {
+        session_id: SessionId,
+        generation: u64,
     },
     /// Subscribe a session afresh once its recovery gave up.
     RetrySubscription {
@@ -1131,6 +1139,7 @@ impl App {
             reconnector: None,
             reconnecting: false,
             recent_trees: std::collections::VecDeque::new(),
+            draft_publish_generation: 0,
             stdin_lanes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             store: StateStore::default(),
             sessions: Vec::new(),

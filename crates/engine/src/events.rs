@@ -2832,6 +2832,11 @@ fn validate_record_incremental(
                 return corrupt(path, "queued-input events must be runless");
             }
         }
+        EventPayload::SessionModelSelected { .. } => {
+            if record.run_id.is_some() {
+                return corrupt(path, "SessionModelSelected must be runless");
+            }
+        }
         EventPayload::GoalActivated { .. }
         | EventPayload::GoalChecklistRevised { .. }
         | EventPayload::GoalLifecycleChanged { .. }

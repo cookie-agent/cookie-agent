@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 37 prepared built-in tools.
+//! Exact cookie-agent protocol 38 prepared built-in tools.
 
 use std::path::{Path, PathBuf};
 

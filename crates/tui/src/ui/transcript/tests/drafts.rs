@@ -982,3 +982,72 @@ async fn ctrl_t_cycles_the_draft_variant_and_explains_a_variantless_model() {
     );
     assert!(app.status.contains("no other variants"), "{}", app.status);
 }
+
+#[tokio::test]
+async fn another_clients_model_pick_moves_this_draft_and_rapid_picks_publish_once() {
+    let (startup_client, _startup) = recording_client();
+    let mut app = App::new(startup_client).await.expect("test app");
+    let (client, recorded, _incoming) = live_recording_client();
+    app.client = client;
+    app.install_initial_runtime(runtime_snapshot(
+        "1",
+        Vec::new(),
+        vec![model_descriptor()],
+        vec![descriptor("primary", true), descriptor("reviewer", true)],
+    ));
+    let session = SessionId::new_v7();
+    app.selected = Some(session);
+    app.store
+        .sessions
+        .insert(session, crate::state::SessionState::default());
+    let primary = RunSelection {
+        agent: agent_id(),
+        model: ModelSelection {
+            model: model_key(),
+            variant: None,
+        },
+        preset: None,
+    };
+    app.draft = Some(primary.clone());
+
+    // Another client picks the reviewer agent for this session.
+    let reviewer = RunSelection {
+        agent: cookie_agent_protocol::AgentId::new("reviewer").unwrap(),
+        ..primary.clone()
+    };
+    let mut picked = event(
+        session,
+        1,
+        run_id(),
+        cookie_agent_protocol::EventPayload::SessionModelSelected {
+            selection: reviewer.clone(),
+        },
+    );
+    picked.run_id = None;
+    picked.origin = Some(cookie_agent_protocol::EventOrigin::new("client:tui-other").unwrap());
+    app.handle_delivery(live_event(picked)).await;
+    assert_eq!(app.draft, Some(reviewer));
+    assert!(
+        app.status.contains("picked by another client"),
+        "{}",
+        app.status
+    );
+
+    // Two quick local changes share only the one the draft settles on.
+    app.draft = Some(primary.clone());
+    app.publish_draft_selection();
+    app.publish_draft_selection();
+    for _ in 0..2 {
+        let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
+            .await
+            .expect("debounced publish")
+            .expect("update");
+        app.handle_rpc_update(update);
+    }
+    wait_for_recorded_request(&recorded, "session.select_model", 1).await;
+    assert_eq!(recorded_method_count(&recorded, "session.select_model"), 1);
+    assert_eq!(
+        last_request_params(&recorded, "session.select_model")["selection"]["agent"],
+        "primary"
+    );
+}

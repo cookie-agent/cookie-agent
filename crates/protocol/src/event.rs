@@ -2149,6 +2149,11 @@ pub enum EventPayload {
     /// The engine voided every queued input without starting a run, for
     /// example because the queued run could not start.
     UserInputQueueVoided {},
+    /// A client picked the session's model selection: later runs use it
+    /// unless a request names its own, and every client's draft follows it.
+    SessionModelSelected {
+        selection: RunSelection,
+    },
     DelegatedContextSeeded {
         invocation_id: InvocationId,
         #[schemars(length(max = 65536))]
@@ -2532,6 +2537,7 @@ impl EventPayload {
                 | Self::UserInputQueued { .. }
                 | Self::UserInputQueueRecalled { .. }
                 | Self::UserInputQueueVoided { .. }
+                | Self::SessionModelSelected { .. }
                 | Self::DelegatedContextSeeded { .. }
                 | Self::DelegateChildTerminated { .. }
         )

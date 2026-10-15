@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// How long the draft must stay unchanged before it is shared.
+const DRAFT_PUBLISH_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+
 impl App {
     /// Root-selectable agents: exactly the descriptors with
     /// `runnable_as_root = true`.
@@ -571,7 +574,54 @@ impl App {
             self.draft = Some(selection);
             self.set_draft_reset_intent(true);
             self.status = self.draft_status("Draft run agent");
+            self.publish_draft_selection();
         }
+    }
+
+    /// Shares the draft as the session's model selection once it settles,
+    /// so every client's draft follows this pick. Cycling through agents or
+    /// variants publishes only where it stops.
+    pub(in crate::ui) fn publish_draft_selection(&mut self) {
+        if self.new_session_draft.is_some() {
+            return;
+        }
+        let Some(session_id) = self.selected else {
+            return;
+        };
+        self.draft_publish_generation = self.draft_publish_generation.wrapping_add(1);
+        let generation = self.draft_publish_generation;
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            tokio::time::sleep(DRAFT_PUBLISH_DELAY).await;
+            let _ = updates.send(RpcUpdate::PublishDraft {
+                session_id,
+                generation,
+            });
+        });
+    }
+
+    pub(super) fn finish_draft_publish(&mut self, session_id: SessionId, generation: u64) {
+        if generation != self.draft_publish_generation || self.selected != Some(session_id) {
+            return;
+        }
+        let Some(selection) = self.draft.clone() else {
+            return;
+        };
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            if let Err(error) = client
+                .select_model(cookie_agent_protocol::SessionSelectModelParams {
+                    session_id,
+                    selection,
+                })
+                .await
+            {
+                let _ = updates.send(RpcUpdate::Status(format!(
+                    "model selection not shared with other clients: {error}"
+                )));
+            }
+        });
     }
 
     pub(in crate::ui) fn set_draft_model(&mut self, model: ModelKey) {
@@ -606,6 +656,7 @@ impl App {
                 self.set_draft_reset_intent(true);
             }
             self.status = self.draft_status("Draft run model");
+            self.publish_draft_selection();
             return;
         }
         // Delegated sessions resolve only against the persisted frozen
@@ -648,6 +699,7 @@ impl App {
             self.set_draft_reset_intent(true);
         }
         self.status = self.draft_status("Draft run model");
+        self.publish_draft_selection();
     }
 
     pub(in crate::ui) fn set_draft_variant(&mut self, variant: Option<VariantId>) {
@@ -685,6 +737,7 @@ impl App {
             self.set_draft_reset_intent(true);
         }
         self.status = self.draft_status("Draft run variant");
+        self.publish_draft_selection();
     }
 
     pub(in crate::ui) fn cycle_draft_variant(&mut self) {

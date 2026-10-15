@@ -442,6 +442,18 @@ impl ServerProtocol for Server {
         Ok(result)
     }
 
+    async fn select_model(
+        &self,
+        params: cookie_agent_protocol::SessionSelectModelParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SessionSelectModelResult> {
+        self.engine
+            .select_model(params.session_id, params.selection, context.client_origin())
+            .await
+            .map(|changed| cookie_agent_protocol::SessionSelectModelResult { changed })
+            .map_err(protocol_fault)
+    }
+
     async fn unsubscribe_events(
         &self,
         params: cookie_agent_protocol::EventsUnsubscribeParams,

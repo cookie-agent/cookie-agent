@@ -60,7 +60,7 @@ origin class. This keeps the origin grammar restricted to `user`, `engine`,
 | Plugins | `plugin_event_added`, `plugin_diagnostic` |
 | Goals | `goal_activated`, `goal_checklist_revised`, `goal_lifecycle_changed` |
 | Producer messaging | `producer_message_accepted`, `producer_message_admitted`, `producer_messages_claimed`, `producer_messages_released`, `producer_message_consumed`, `producer_message_discarded` |
-| User input | `message_injected`, `user_input_admitted`, `user_input_submitted`, `user_input_transformed`, `user_input_recalled`, `user_input_recalled_v2`, `user_input_applied`, `user_input_queued`, `user_input_queue_recalled`, `user_input_queue_voided` |
+| User input | `message_injected`, `user_input_admitted`, `user_input_submitted`, `user_input_transformed`, `user_input_recalled`, `user_input_recalled_v2`, `user_input_applied`, `user_input_queued`, `user_input_queue_recalled`, `user_input_queue_voided`, `session_model_selected` |
 | Run | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_interrupted` |
 | Model | `model_attempt_started`, `model_tools_published`, `model_request_prepared`, `model_output_started`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback`; live-only: `text_delta`, `reasoning_delta` |
 | Tools | `tool_call_started`, `tool_call_terminated`, `tool_output_elided`, `tool_stdin_submitted`, `tool_call_linked`, `delegate_queued`, `delegate_finished`, `delegate_finished_v2`, `delegate_child_terminated`; live-only: `tool_call_progress` |
@@ -412,6 +412,10 @@ Running-resume rollback and `session.recall_input` append
 `user_input_recalled_v2` with the exact `user_input_seq` of its admission.
 Replay removes that specific pending input and preserves the others. Legacy
 `user_input_recalled` continues to recall the newest pending input.
+
+`session_model_selected` (`selection`) is the session-level model pick a client
+made with `session.select_model`; it is runless and its origin names the client.
+Later runs that name no selection of their own use it.
 
 The queued-input lane is session-level, so its events are runless.
 `user_input_queued` holds an input waiting for the running run to complete, with

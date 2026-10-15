@@ -91,6 +91,52 @@ impl Engine {
         Err(EngineError::SessionRunning(session))
     }
 
+    /// Makes `selection` the session's model selection, which later runs use
+    /// unless a request names its own and every client's draft follows.
+    /// Validated as a run start would validate it. Returns false when the
+    /// session already had it.
+    pub async fn select_model(
+        &self,
+        session: SessionId,
+        selection: RunSelection,
+        origin: EventOrigin,
+    ) -> Result<bool, EngineError> {
+        self.ensure_session_owned(session)?;
+        let projection = self.inner.store.get(session)?;
+        match &projection.meta.origin {
+            cookie_agent_protocol::SessionOrigin::Root => {
+                self.freeze_root_selection(&selection, false)?;
+            }
+            cookie_agent_protocol::SessionOrigin::Delegated { .. } => {
+                let (_, frozen) = self.freeze_delegated_selection(
+                    &projection.creation_agent,
+                    projection.meta.creation_selection.preset.as_deref(),
+                    &selection,
+                    crate::policy::ResultLimits::from_config(&self.inner.config.runtime),
+                )?;
+                if frozen != selection {
+                    return Err(EngineError::UnavailableAgentModel {
+                        agent: selection.agent.clone(),
+                        model: selection.model.model.clone(),
+                    });
+                }
+            }
+        }
+        self.on_actor(session, move |engine| {
+            if engine.session_model_selection(session)? == selection {
+                return Ok(false);
+            }
+            engine.append_direct(
+                session,
+                None,
+                origin,
+                Event::SessionModelSelected { selection },
+            )?;
+            Ok(true)
+        })
+        .await
+    }
+
     /// Withdraws `seq`, a pending steered input of the running run or a
     /// queued input, when `origin` submitted it.
     pub async fn recall_input(
@@ -274,15 +320,10 @@ impl Engine {
         Ok(running_run_of(&*self.inner.store.get(session)?))
     }
 
-    /// The selection a run started without one uses: the session's latest,
-    /// or its creation selection before any run.
+    /// The selection a run started without one uses: the session's picked
+    /// or latest, or its creation selection before any run.
     fn current_selection(&self, session: SessionId) -> Result<RunSelection, EngineError> {
-        let projection = self.inner.store.get(session)?;
-        Ok(
-            cookie_agent_protocol::SessionModelState::from_events(&projection.log.event_snapshot())
-                .selection
-                .unwrap_or_else(|| projection.meta.creation_selection.clone()),
-        )
+        self.session_model_selection(session)
     }
 }
 

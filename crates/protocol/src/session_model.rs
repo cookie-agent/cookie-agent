@@ -28,6 +28,14 @@ impl SessionModelState {
             } => {
                 self.selection = Some(creation_selection.clone());
             }
+            // An explicit pick names exactly what the next run starts from,
+            // so a fallback the session had settled on no longer applies.
+            EventPayload::SessionModelSelected { selection }
+                if self.selection.as_ref() != Some(selection) =>
+            {
+                self.selection = Some(selection.clone());
+                self.successful_fallback = false;
+            }
             EventPayload::RunStarted {
                 selection,
                 selected_suffix,
@@ -187,6 +195,40 @@ mod tests {
                 assert_eq!(state.continuation(&a, &initial.chain, false), b);
             }
         }
+    }
+
+    #[test]
+    fn an_explicit_pick_becomes_the_selection_and_drops_a_settled_fallback() {
+        let a = selection("a");
+        let b = selection("b");
+        let run = Some(RunId::new_v7());
+        let mut state = SessionModelState {
+            selection: Some(b.clone()),
+            run,
+            chain: vec![a.model.clone(), b.model.clone()],
+            successful_fallback: true,
+        };
+        // Re-picking the current selection changes nothing.
+        state.apply(
+            None,
+            &EventPayload::SessionModelSelected {
+                selection: b.clone(),
+            },
+        );
+        assert!(state.successful_fallback);
+        // Picking the primary again means start there, not at the fallback.
+        state.apply(
+            None,
+            &EventPayload::SessionModelSelected {
+                selection: a.clone(),
+            },
+        );
+        assert_eq!(state.selection, Some(a.clone()));
+        assert!(!state.successful_fallback);
+        assert_eq!(
+            state.continuation(&a, &[a.model.clone(), b.model.clone()], false),
+            a
+        );
     }
 
     #[test]

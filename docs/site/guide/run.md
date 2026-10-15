@@ -79,7 +79,10 @@ Arrow keys move by character or visual line; Ctrl-Left and Ctrl-Right move by
 word. Ctrl-Backspace and Ctrl-Delete remove a word. Home and End move within a
 line, while Ctrl-Home and Ctrl-End move to the start or end of the whole draft.
 Tab and Shift-Tab cycle the draft agent; Ctrl-T cycles the draft model's
-variants, like clicking the bracketed variant in the composer title. Ctrl-A
+variants, like clicking the bracketed variant in the composer title. In an
+existing session the agent, model, and variant are the session's: once a pick
+settles it is shared with every client attached to the daemon, whose drafts
+follow it and say another client picked it. The latest pick wins. Ctrl-A
 selects the whole draft; typing or pasting over a selection replaces it. The
 composer keeps keyboard focus while you click around the conversation; only a
 panel, the command palette, or an approval on top of it takes focus away.

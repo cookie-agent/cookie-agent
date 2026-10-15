@@ -890,6 +890,21 @@ pub struct RunSteerResult {
     pub user_input_seq: Option<u64>,
 }
 
+pub const SESSION_SELECT_MODEL_METHOD: &str = "session.select_model";
+/// Sets the session's model selection for every client.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSelectModelParams {
+    pub session_id: SessionId,
+    pub selection: RunSelection,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSelectModelResult {
+    /// False when the session already had this selection.
+    pub changed: bool,
+}
+
 pub const EVENTS_UNSUBSCRIBE_METHOD: &str = "events.unsubscribe";
 /// Ends this connection's live tail for a session.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

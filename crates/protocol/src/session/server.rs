@@ -374,6 +374,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         params: RunSteerParams,
         context: &ServerContext,
     ) -> Result<RunSteerResult, ServerFault>;
+    async fn select_model(
+        &self,
+        params: crate::SessionSelectModelParams,
+        context: &ServerContext,
+    ) -> Result<crate::SessionSelectModelResult, ServerFault>;
     async fn unsubscribe_events(
         &self,
         params: crate::EventsUnsubscribeParams,
@@ -684,6 +689,9 @@ async fn dispatch<S: ServerProtocol>(
         "session.fork" => value(server.fork_session(decode(params)?, context).await?),
         "run.start" => value(server.start_run(decode(params)?, context).await?),
         "run.steer" => value(server.steer_run(decode(params)?, context).await?),
+        crate::SESSION_SELECT_MODEL_METHOD => {
+            value(server.select_model(decode(params)?, context).await?)
+        }
         crate::EVENTS_UNSUBSCRIBE_METHOD => {
             value(server.unsubscribe_events(decode(params)?, context).await?)
         }

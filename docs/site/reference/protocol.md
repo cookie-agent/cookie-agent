@@ -1,11 +1,11 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 37 is current-only. A client must call `handshake` before any other
+Protocol 38 is current-only. A client must call `handshake` before any other
 method:
 
 ```json
-{ "protocol_version": 37, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+{ "protocol_version": 38, "client": { "kind": "tui", "instance_id": "<uuid>" } }
 ```
 
 `client.kind` names the client program: a lowercase letter followed by up to 15
@@ -14,7 +14,7 @@ lowercase letters, digits, or hyphens (the shipped clients use `tui` and `cli`).
 across reconnects so it can recognize events it caused. Any number of clients
 may connect to one daemon at once.
 
-The response is `{ "protocol_version": 37, "origin": "client:<kind>-<id>" }`,
+The response is `{ "protocol_version": 38, "origin": "client:<kind>-<id>" }`,
 where `<id>` is the instance id as 32 lowercase hex digits. The daemon stamps
 that origin on every event the connection's requests cause, so each client can
 tell its own actions from another client's. A repeated handshake on the same
@@ -24,12 +24,13 @@ member and the `origin` result. Protocol 35 replaced `run.recall_steer` with
 [Submitting from several clients](#submitting-from-several-clients)), and
 protocol 36 added the `resync` runtime change reason. Protocol 37 made
 `session.revert` require `expected_last_seq` and `session.fork` require
-`client_fork_id`, and added `session.compact.cancel`. Older clients are
+`client_fork_id`, and added `session.compact.cancel`. Protocol 38 added
+`session.select_model` and the `session_model_selected` event. Older clients are
 rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 37.
+members of protocol 38.
 
 ## Error diagnostics
 
@@ -52,7 +53,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 37 alongside independent display and output references. The
+preserved in protocol 38 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -149,6 +150,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.fork` | Session ID, positive `through_seq`, `client_fork_id` | New session ID |
 | `run.start` | Session ID, client run ID, selection, input | Run ID |
 | `run.steer` | Run ID, input | `accepted` boolean, admission `user_input_seq` |
+| `session.select_model` | Session ID, selection | Whether the session's selection changed |
 | `session.submit_input` | Session ID, input, `steer` or `queue` delivery, optional selection, client run ID, optional `reset_fallback` | `started` run ID, `steered` run ID and seq, `queued` seq, or `handled` reason |
 | `session.recall_input` | Session ID, seq of a pending or queued input | `recalled` text, `gone`, or `not_owner` |
 | `run.cancel` | Run ID | `cancelled` boolean |
@@ -254,6 +256,21 @@ no pending input completes the run.
 
 `run.steer` also returns the admission's `user_input_seq`. Terminal run events
 void anything still pending.
+
+### The session's model selection
+
+A session has one model selection (agent, model, variant, preset) that every
+client shares. `session.select_model` validates a selection as a run start would
+and appends a runless `session_model_selected` event under the caller's origin;
+selecting what the session already has records nothing and returns
+`{ "changed": false }`. `cookie_agent_protocol::SessionModelState` folds the
+session's selection from its events: the creation selection, then each run's
+selection and successful fallback, with an explicit pick replacing it and
+dropping any fallback the session had settled on. A run started without a
+selection (`session.submit_input` with `selection` omitted, or a queued input
+queued that way) uses it, and clients keep their drafts at it, so the latest
+pick from any client is what the next message runs on. A request that names its
+own selection still runs on that one.
 
 ### Submitting from several clients
 

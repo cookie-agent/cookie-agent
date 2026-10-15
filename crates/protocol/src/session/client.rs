@@ -574,6 +574,15 @@ impl Client {
         self.call("run.steer", &params).await
     }
 
+    /// Set the session's model selection for every client
+    /// (`session.select_model`).
+    pub async fn select_model(
+        &self,
+        params: crate::SessionSelectModelParams,
+    ) -> Result<crate::SessionSelectModelResult, ClientError> {
+        self.call(crate::SESSION_SELECT_MODEL_METHOD, &params).await
+    }
+
     /// Cancel this session's running manual compaction
     /// (`session.compact.cancel`).
     pub async fn cancel_compaction(
