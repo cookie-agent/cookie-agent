@@ -52,6 +52,7 @@ fn mcp_panel_renders_live_state_and_connection() {
     let mut panel = super::McpPanel::default();
     panel.install(vec![McpServerInfo {
         runtime_id: cookie_agent_protocol::RuntimeId::new("global").unwrap(),
+        workspace: None,
         name: "remote".into(),
         source: McpConfigSource::UserFile,
         definition: McpServerDefinition {
@@ -97,6 +98,7 @@ fn mcp_panel_renders_copyable_oauth_wait() {
     let mut panel = super::McpPanel::default();
     panel.install(vec![McpServerInfo {
         runtime_id: cookie_agent_protocol::RuntimeId::new("global").unwrap(),
+        workspace: None,
         name: "remote".into(),
         source: McpConfigSource::UserFile,
         definition: McpServerDefinition {
@@ -811,4 +813,74 @@ fn runtime_panel_renders_attachments_with_status_and_failure_reason() {
     );
     assert!(text.contains("connection refused"), "{text}");
     assert!(text.contains("a attach | d detach"), "{text}");
+}
+
+#[test]
+fn mcp_panel_lists_runtime_hosted_servers_by_instance_after_global_ones() {
+    let server = |runtime: &str, workspace: Option<&str>, name: &str| McpServerInfo {
+        runtime_id: cookie_agent_protocol::RuntimeId::new(runtime).unwrap(),
+        workspace: workspace.map(str::to_owned),
+        name: name.into(),
+        source: McpConfigSource::UserFile,
+        definition: McpServerDefinition {
+            command: Some("lsp-mcp".into()),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            cwd: None,
+            url: None,
+            headers: BTreeMap::new(),
+            oauth: None,
+            enabled: true,
+            timeout_ms: None,
+        },
+        state: McpServerState::Failed,
+        tool_count: 0,
+        message: Some("exited".into()),
+        auth_in_progress: None,
+    };
+    let mut panel = super::McpPanel::default();
+    panel.install(vec![
+        server("labpc", Some("/srv/web"), "lsp"),
+        server("labpc", Some("/srv/api"), "lsp"),
+        server("global", None, "docs"),
+    ]);
+    let order = panel
+        .servers
+        .iter()
+        .map(|server| (server.runtime_id.to_string(), server.workspace.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        order,
+        [
+            ("global".to_owned(), None),
+            ("labpc".to_owned(), Some("/srv/api".to_owned())),
+            ("labpc".to_owned(), Some("/srv/web".to_owned())),
+        ]
+    );
+    panel.selection.select(Some(1));
+    assert!(
+        panel
+            .selected_editable()
+            .is_err_and(|refusal| refusal.contains("[runtimes.labpc.mcp]"))
+    );
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            super::render_mcp(
+                frame,
+                frame.area(),
+                &mut panel,
+                &crate::theme::Theme::default(),
+            );
+        })
+        .expect("render MCP panel");
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("labpc at /srv/api"), "{text}");
+    assert!(text.contains("labpc at /srv/web"), "{text}");
 }

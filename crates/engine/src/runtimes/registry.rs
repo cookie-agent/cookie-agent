@@ -497,6 +497,42 @@ impl RuntimeRegistry {
             .map(Arc::clone)
     }
 
+    /// The running instance of `runtime_id` whose canonical workspace is
+    /// `workspace`, if it is up.
+    pub(crate) fn instance_at(
+        &self,
+        runtime_id: &str,
+        workspace: Option<&str>,
+    ) -> Option<Arc<RuntimeInstance>> {
+        let key = InstanceKey {
+            runtime_id: runtime_id.to_owned(),
+            workspace: workspace.map(PathBuf::from),
+        };
+        self.slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&key)
+            .and_then(InstanceSlot::published)
+            .map(Arc::clone)
+    }
+
+    /// The MCP servers that running instances host, in instance order.
+    pub(crate) fn hosted_mcp_servers(&self) -> Vec<super::HostedMcpServer> {
+        let instances = self
+            .slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .filter_map(InstanceSlot::published)
+            .map(Arc::clone)
+            .collect::<Vec<_>>();
+        instances
+            .iter()
+            .filter_map(|instance| instance.connection())
+            .flat_map(|connection| connection.mcp_servers())
+            .collect()
+    }
+
     /// The running instance a request for `runtime_id` at `requested`
     /// refers to, if it is up. A template that takes no workspace has one
     /// instance; otherwise `requested` is the canonical workspace or a

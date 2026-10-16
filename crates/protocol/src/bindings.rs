@@ -179,6 +179,7 @@ macro_rules! protocol_roots {
             McpServerAddParams,
             McpServerEditParams,
             McpServerNameParams,
+            McpServerReconnectParams,
             McpServerSetEnabledParams,
             McpServerPersistParams,
             McpServerMutationResult,

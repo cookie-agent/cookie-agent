@@ -1380,10 +1380,16 @@ mod tests;
 
 /// The error row for an MCP server that is unavailable to a session.
 pub(crate) fn mcp_failure_notice(failure: &cookie_agent_protocol::McpServerFailure) -> String {
-    format!(
-        "MCP server `{}` ({} runtime) is unavailable: {}",
-        failure.server, failure.runtime_id, failure.reason
-    )
+    match &failure.workspace {
+        Some(workspace) => format!(
+            "MCP server `{}` ({} runtime at {workspace}) is unavailable: {}",
+            failure.server, failure.runtime_id, failure.reason
+        ),
+        None => format!(
+            "MCP server `{}` ({} runtime) is unavailable: {}",
+            failure.server, failure.runtime_id, failure.reason
+        ),
+    }
 }
 
 /// The error row for a runtime instance that is unavailable to a session.

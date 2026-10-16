@@ -6,17 +6,17 @@ use cookie_agent_protocol::{
     McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult, McpAuthCompleteParams,
     McpAuthCompleteResult, McpServerAddParams, McpServerEditParams, McpServerListParams,
     McpServerListResult, McpServerMutationResult, McpServerNameParams, McpServerPersistParams,
-    McpServerSetEnabledParams, ProviderConnectParams, ProviderConnectResult,
-    ProviderDisconnectParams, ProviderDisconnectResult, RunCancelParams, RunCancelResult,
-    RunStartConflictCode, RunStartParams, RunStartResult, RunSteerParams, RunSteerResult,
-    RunToolStdinParams, RunToolStdinResult, RuntimeSnapshotGetParams, RuntimeSnapshotResult,
-    ServerContext, ServerFault, ServerProtocol, SessionChildrenParams, SessionChildrenResult,
-    SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
-    SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
-    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
-    SessionGoalSetParams, SessionGoalSetResult, SessionListParams, SessionListResult,
-    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
-    SessionPermissionMutationResult, SessionPermissionPreviewParams,
+    McpServerReconnectParams, McpServerSetEnabledParams, ProviderConnectParams,
+    ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, RunCancelParams,
+    RunCancelResult, RunStartConflictCode, RunStartParams, RunStartResult, RunSteerParams,
+    RunSteerResult, RunToolStdinParams, RunToolStdinResult, RuntimeSnapshotGetParams,
+    RuntimeSnapshotResult, ServerContext, ServerFault, ServerProtocol, SessionChildrenParams,
+    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
+    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
+    SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
+    SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionListParams,
+    SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
+    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
     SessionProducersResult, SessionRecallInputParams, SessionRecallInputResult,
     SessionRenameErrorCode, SessionRenameParams, SessionRenameResult, SessionResumeParams,
@@ -671,10 +671,14 @@ impl ServerProtocol for Server {
 
     async fn reconnect_mcp_server(
         &self,
-        params: McpServerNameParams,
+        params: McpServerReconnectParams,
     ) -> Result<McpServerMutationResult> {
+        let runtime_id = params
+            .runtime_id
+            .as_ref()
+            .map_or(cookie_agent_protocol::RuntimeId::GLOBAL, |id| id.as_str());
         self.engine
-            .reconnect_mcp_server(params.name)
+            .reconnect_runtime_mcp_server(runtime_id, params.workspace.as_deref(), params.name)
             .await
             .map(|server| McpServerMutationResult { server })
             .map_err(protocol_fault)

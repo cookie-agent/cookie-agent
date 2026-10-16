@@ -19,15 +19,16 @@ use crate::{
     McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult,
     McpAuthCompleteParams, McpAuthCompleteResult, McpServerAddParams, McpServerEditParams,
     McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
-    McpServerPersistParams, McpServerSetEnabledParams, MessageFrame, ProtocolVersion,
-    RunCancelParams, RunCancelResult, RunStartParams, RunStartResult, RunSteerParams,
-    RunSteerResult, RunToolStdinParams, RunToolStdinResult, ServerHello, SessionChildrenParams,
-    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
-    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
-    SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
-    SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionId,
-    SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
+    McpServerPersistParams, McpServerReconnectParams, McpServerSetEnabledParams, MessageFrame,
+    ProtocolVersion, RunCancelParams, RunCancelResult, RunStartParams, RunStartResult,
+    RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult, ServerHello,
+    SessionChildrenParams, SessionChildrenResult, SessionCompactParams, SessionCompactResult,
+    SessionCreateParams, SessionCreateResult, SessionForkParams, SessionForkResult,
+    SessionGetParams, SessionGetResult, SessionGoalGetParams, SessionGoalGetResult,
+    SessionGoalLifecycleParams, SessionGoalLifecycleResult, SessionGoalSetParams,
+    SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
+    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
+    SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
     SessionProducersResult, SessionRenameParams, SessionRenameResult, SessionResumeParams,
     SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
@@ -732,7 +733,7 @@ impl Client {
 
     pub async fn reconnect_mcp_server(
         &self,
-        params: McpServerNameParams,
+        params: McpServerReconnectParams,
     ) -> Result<McpServerMutationResult, ClientError> {
         self.call("mcp.server.reconnect", &params).await
     }

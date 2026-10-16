@@ -30,7 +30,7 @@ pub mod testing;
 mod usage;
 
 pub use base_tools::base_layer_tool_specs;
-pub use cookie_agent_mcp::{McpRegistry, McpServerFailure, McpServerState, McpServerStatus};
+pub use cookie_agent_mcp::{McpRegistry, McpServerState, McpServerStatus};
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
 pub use plugin::{EngineEvent, PluginRegistry, PluginState, PluginStatus};
@@ -50,8 +50,8 @@ pub use runtime::{
 };
 pub use runtime_snapshot::PublishedRuntime;
 pub use runtimes::{
-    RuntimeFailure, RuntimeInstanceStatus, RuntimeInstanceSummary, RuntimeTemplate,
-    RuntimeTemplateSummary, StartedRuntime, ToolLayer,
+    McpServerFailure, RuntimeFailure, RuntimeInstanceStatus, RuntimeInstanceSummary,
+    RuntimeTemplate, RuntimeTemplateSummary, StartedRuntime, ToolLayer,
 };
 pub use session::TailOwner;
 

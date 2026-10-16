@@ -113,17 +113,23 @@ impl App {
                     }
                 }
             },
-            KeyCode::Char('r') => match self.mcp_panel.selected_editable() {
-                Err(refusal) => self.status = refusal,
-                Ok(server) => {
-                    if let Some(name) = server.map(|server| server.name.clone()) {
-                        self.dispatch_mcp_reconnect(name);
-                    }
+            // Any runtime's server reconnects; the request goes to the
+            // runtime that hosts it.
+            KeyCode::Char('r') => {
+                if let Some(server) = self.mcp_panel.selected() {
+                    let params = McpServerReconnectParams {
+                        name: server.name.clone(),
+                        runtime_id: (!crate::ui::management::is_global(server))
+                            .then(|| server.runtime_id.clone()),
+                        workspace: server.workspace.clone(),
+                    };
+                    self.dispatch_mcp_reconnect(params);
                 }
-            },
+            }
             KeyCode::Char('a') => {
                 if let Some(server) = self.mcp_panel.selected().cloned()
                     && server.state == McpServerState::NeedsAuth
+                    && crate::ui::management::is_global(&server)
                 {
                     self.dispatch_mcp_auth_begin(server.name);
                 }
@@ -378,12 +384,12 @@ impl App {
         });
     }
 
-    pub(super) fn dispatch_mcp_reconnect(&self, name: String) {
+    pub(super) fn dispatch_mcp_reconnect(&self, params: McpServerReconnectParams) {
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
             let result = client
-                .reconnect_mcp_server(McpServerNameParams { name })
+                .reconnect_mcp_server(params)
                 .await
                 .map(|result| result.server)
                 .map_err(|error| error.to_string());

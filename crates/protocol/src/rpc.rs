@@ -1155,6 +1155,9 @@ pub struct McpChangedNotification {
 pub struct McpServerFailure {
     /// The runtime hosting the server; `global` for top-level `[mcp]`.
     pub runtime_id: RuntimeId,
+    /// The hosting instance's workspace, when its runtime has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
     pub server: String,
     pub reason: String,
     /// The affected sessions among those this connection subscribes to.
@@ -1483,6 +1486,10 @@ pub struct McpServerInfo {
     /// The runtime hosting the server; `global` for top-level `[mcp]`
     /// servers, the only ones `mcp.server.*` mutations edit.
     pub runtime_id: RuntimeId,
+    /// The hosting instance's canonical workspace, when its runtime has one;
+    /// it tells instances of one runtime apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
     pub name: String,
     pub source: McpConfigSource,
     pub definition: McpServerDefinition,
@@ -1523,6 +1530,21 @@ pub struct McpServerEditParams {
 #[serde(deny_unknown_fields)]
 pub struct McpServerNameParams {
     pub name: String,
+}
+
+/// `mcp.server.reconnect`: reconnects one server now. A server hosted by a
+/// runtime other than `global` is named with its runtime ID and the
+/// instance's workspace, as `mcp.server.list` reports them.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerReconnectParams {
+    pub name: String,
+    /// The hosting runtime; `global` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<RuntimeId>,
+    /// The hosting instance's workspace, when its runtime has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

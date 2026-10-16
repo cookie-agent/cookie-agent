@@ -159,6 +159,7 @@ async fn connect(
         Some(workspace),
         &settings,
         Duration::from_secs(1),
+        None,
     )
     .await
     .unwrap();
@@ -1004,4 +1005,216 @@ async fn instances_are_keyed_by_the_workspace_the_runtime_reports() {
         Some(canonical.to_string_lossy().as_ref())
     );
     fixture.engine.shutdown().await;
+}
+
+/// `[runtimes.local.mcp]` with the stdio fixture server, which refuses to
+/// start while `refuse` exists.
+fn local_mcp_config(
+    config: &cookie_agent_config::LoadedConfiguration,
+    refuse: &std::path::Path,
+) -> cookie_agent_config::LoadedConfiguration {
+    let mut config = config.clone();
+    let server = cookie_agent_config::McpServerConfig {
+        command: Some(crate::runtime::tests::support::python_command().into()),
+        args: vec![
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../mcp/tests/fixtures/mcp_server.py"
+            )
+            .into(),
+        ],
+        env: std::collections::BTreeMap::from([(
+            "MCP_FIXTURE_REFUSE_FILE".to_owned(),
+            refuse.to_string_lossy().into_owned(),
+        )]),
+        cwd: None,
+        url: None,
+        headers: std::collections::BTreeMap::new(),
+        oauth: cookie_agent_config::McpOAuthConfig::default(),
+        enabled: true,
+        timeout_ms: Some(30_000),
+    };
+    config.runtimes.insert(
+        cookie_agent_identity::RuntimeId::new("local").unwrap(),
+        cookie_agent_config::RuntimeTemplateConfig {
+            command: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            startup_timeout_ms: 10_000,
+            shutdown_grace_ms: 3_000,
+            mcp_servers: std::collections::BTreeMap::from([("fixture".to_owned(), server)]),
+        },
+    );
+    config
+}
+
+async fn open_with_local_mcp(
+    fixture: &crate::runtime::tests::support::Fixture,
+    refuse: &std::path::Path,
+) -> crate::Engine {
+    let directory = fixture._directory.path();
+    crate::Engine::open_async(crate::EngineOptions {
+        data_dir: directory.join("data"),
+        cwd: directory.to_owned(),
+        config: local_mcp_config(&fixture.config, refuse),
+        model_manager: Arc::clone(&fixture.manager),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions {
+            local: cookie_agent_runtime_api::LocalRuntime::Protocol(
+                cookie_agent_coding_runtime::server::in_process_connector_with_options(
+                    ServeOptions {
+                        mcp_reconnect: Some(
+                            cookie_agent_runtime_api::reconnect::ReconnectPolicy::with_delays(
+                                vec![Duration::from_millis(20)],
+                            ),
+                        ),
+                        ..ServeOptions::default()
+                    },
+                ),
+            ),
+            ..cookie_agent_runtime_api::RuntimeOptions::new(directory)
+        },
+    })
+    .await
+    .expect("engine with [runtimes.local.mcp]")
+}
+
+fn hosted_fixture(engine: &crate::Engine) -> cookie_agent_protocol::McpServerInfo {
+    engine
+        .list_mcp_servers()
+        .into_iter()
+        .find(|server| server.runtime_id.as_str() == "local" && server.name == "fixture")
+        .expect("the local runtime's fixture is listed")
+}
+
+#[tokio::test]
+async fn the_local_runtime_hosts_its_template_mcp_servers() {
+    let (fixture, selection) = custom_fixture();
+    fixture.engine.shutdown().await;
+    let refuse = fixture._directory.path().join("refuse");
+    let engine = open_with_local_mcp(&fixture, &refuse).await;
+    let workspace = engine
+        .inner
+        .runtimes
+        .local_workspace_root()
+        .to_string_lossy()
+        .into_owned();
+
+    // The server connected before the engine opened, and its tools are the
+    // local runtime's.
+    let listed = hosted_fixture(&engine);
+    assert_eq!(listed.workspace.as_deref(), Some(workspace.as_str()));
+    assert_eq!(
+        listed.state,
+        cookie_agent_protocol::McpServerState::Connected
+    );
+    assert_eq!(listed.tool_count, 2);
+    assert_eq!(
+        listed.definition.command.as_deref(),
+        Some(crate::runtime::tests::support::python_command())
+    );
+    let session = engine.create_session(selection).unwrap().session_id;
+    let composition = engine.compose_session_tools(session, |_, _| true).unwrap();
+    let echo = composition.get("fixture_echo_text").expect("MCP tool");
+    assert_eq!(
+        echo.source.origin.runtime().map(|runtime| runtime.id()),
+        Some("local")
+    );
+
+    // A reconnect is routed to the local runtime; a failed one reaches
+    // clients with the runtime and workspace.
+    let mut failures = engine.subscribe_mcp_failures();
+    let mut changes = engine.subscribe_mcp_changes();
+    changes.mark_unchanged();
+    std::fs::write(&refuse, "").unwrap();
+    let error = engine
+        .reconnect_runtime_mcp_server("local", Some(&workspace), "fixture".into())
+        .await
+        .expect_err("the fixture refuses to start");
+    assert!(error.to_string().contains("fixture"), "{error}");
+    let failure = tokio::time::timeout(WAIT, failures.recv())
+        .await
+        .expect("the failure is reported")
+        .unwrap();
+    assert_eq!(
+        failure,
+        crate::McpServerFailure {
+            runtime_id: "local".into(),
+            workspace: Some(workspace.clone()),
+            server: "fixture".into(),
+            reason: failure.reason.clone(),
+        }
+    );
+    tokio::time::timeout(WAIT, changes.changed())
+        .await
+        .expect("the change is signalled")
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while hosted_fixture(&engine).state != cookie_agent_protocol::McpServerState::Failed {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never listed failed"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        engine
+            .mcp_failures()
+            .iter()
+            .any(|failure| failure.runtime_id == "local" && failure.server == "fixture")
+    );
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while engine
+        .compose_session_tools(session, |_, _| true)
+        .unwrap()
+        .get("fixture_echo_text")
+        .is_some()
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "tools never dropped"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // Opening a session that uses the runtime retries the failed server,
+    // and its next run waits for the attempt.
+    std::fs::remove_file(&refuse).unwrap();
+    engine.connect_session(session).await;
+    tokio::time::timeout(WAIT, engine.await_session_mcp(session))
+        .await
+        .expect("the retry finishes");
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while engine
+        .compose_session_tools(session, |_, _| true)
+        .unwrap()
+        .get("fixture_echo_text")
+        .is_none()
+    {
+        assert!(tokio::time::Instant::now() < deadline, "tools never back");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        hosted_fixture(&engine).state,
+        cookie_agent_protocol::McpServerState::Connected
+    );
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn local_mcp_servers_need_the_protocol_local_runtime() {
+    let (fixture, _) = custom_fixture();
+    fixture.engine.shutdown().await;
+    let directory = fixture._directory.path();
+    let error = crate::Engine::open(crate::EngineOptions {
+        data_dir: directory.join("data"),
+        cwd: directory.to_owned(),
+        config: local_mcp_config(&fixture.config, &directory.join("refuse")),
+        model_manager: Arc::clone(&fixture.manager),
+        runtimes: cookie_agent_runtime_api::RuntimeOptions::new(directory),
+    })
+    .err()
+    .expect("an in-process local runtime hosts no MCP servers");
+    assert!(
+        error.to_string().contains("[runtimes.local.mcp]"),
+        "{error}"
+    );
 }

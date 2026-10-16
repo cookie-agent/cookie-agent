@@ -241,13 +241,33 @@ impl Engine {
     /// viewing the session through the failure broadcasts.
     pub(crate) async fn connect_session(&self, session: SessionId) {
         self.ensure_session_runtimes_logged(session).await;
-        let attaches_global = self.session_runtimes(session).is_ok_and(|attachments| {
-            attachments
-                .iter()
-                .any(|attachment| attachment.runtime_id.as_str() == RuntimeId::GLOBAL)
-        });
-        if attaches_global {
-            self.retry_global_mcp();
+        for attachment in self.session_runtimes(session).unwrap_or_default() {
+            if attachment.runtime_id.as_str() == RuntimeId::GLOBAL {
+                self.retry_global_mcp();
+            } else if let Some(connection) = self
+                .inner
+                .runtimes
+                .instance(&attachment)
+                .and_then(|instance| instance.connection())
+            {
+                connection.retry_failed_mcp();
+            }
+        }
+    }
+
+    /// Waits until the MCP servers of `session`'s attached runtime instances
+    /// have finished the connection attempts [`Self::connect_session`]
+    /// started, so a run's tool list is not built from a partial snapshot.
+    pub(crate) async fn await_session_mcp(&self, session: SessionId) {
+        for attachment in self.session_runtimes(session).unwrap_or_default() {
+            if let Some(connection) = self
+                .inner
+                .runtimes
+                .instance(&attachment)
+                .and_then(|instance| instance.connection())
+            {
+                connection.mcp_settled().await;
+            }
         }
     }
 
@@ -297,6 +317,8 @@ impl Engine {
             .await?;
         if runtime_id == RuntimeId::GLOBAL {
             self.retry_global_mcp();
+        } else if let Some(connection) = instance.connection() {
+            connection.retry_failed_mcp();
         }
         self.on_actor(session, move |engine| {
             let projection = engine.inner.store.get(session)?;
@@ -426,8 +448,8 @@ impl Engine {
     /// template takes one) now, as `runtimes.reconnect` and the `/runtime`
     /// panel do: a failed instance starts again under a new generation, one
     /// that is not running starts, and a ready or reconnecting one is left as
-    /// it is. Retrying `global` retries its failed MCP servers. Returns the
-    /// instance afterwards.
+    /// it is. Retrying an instance also retries the failed MCP servers it
+    /// hosts. Returns the instance afterwards.
     pub async fn reconnect_runtime(
         &self,
         runtime_id: &str,
@@ -440,6 +462,8 @@ impl Engine {
             .await?;
         if runtime_id == RuntimeId::GLOBAL {
             self.retry_global_mcp();
+        } else if let Some(connection) = instance.connection() {
+            connection.retry_failed_mcp();
         }
         self.inner
             .runtimes
@@ -455,13 +479,13 @@ impl Engine {
         self.inner.runtimes.subscribe_failures()
     }
 
-    /// MCP servers of the global runtime that failed to connect, or dropped
-    /// and did not reconnect, as they happen.
+    /// MCP servers of any runtime that failed to connect, or dropped and did
+    /// not reconnect, as they happen.
     #[must_use]
     pub fn subscribe_mcp_failures(
         &self,
     ) -> tokio::sync::broadcast::Receiver<crate::McpServerFailure> {
-        self.inner.mcp.subscribe_failures()
+        self.inner.mcp_hub.subscribe_failures()
     }
 
     /// Signals every runtime template or instance status change.

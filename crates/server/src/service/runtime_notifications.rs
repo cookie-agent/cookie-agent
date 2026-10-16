@@ -173,19 +173,9 @@ impl Server {
         let sessions = [session];
         let mcp = self
             .engine
-            .mcp_statuses()
+            .mcp_failures()
             .into_iter()
-            .filter(|status| status.state == cookie_agent_engine::McpServerState::Failed)
-            .filter_map(|status| {
-                mcp_failure(
-                    &self.engine,
-                    &sessions,
-                    cookie_agent_engine::McpServerFailure {
-                        server: status.server,
-                        reason: status.message.unwrap_or_default(),
-                    },
-                )
-            })
+            .filter_map(|failure| mcp_failure(&self.engine, &sessions, failure))
             .collect::<Vec<_>>();
         let runtimes = self
             .engine
@@ -290,18 +280,21 @@ fn affected_sessions(
     affected
 }
 
-/// `failure` as a client sees it, when one of `sessions` uses the server.
-/// Top-level MCP servers belong to the global runtime.
+/// `failure` as a client sees it, when one of `sessions` uses the server:
+/// it is attached to the instance that hosts it. Top-level MCP servers
+/// belong to the global runtime.
 fn mcp_failure(
     engine: &Engine,
     sessions: &[SessionId],
     failure: cookie_agent_engine::McpServerFailure,
 ) -> Option<cookie_agent_protocol::McpServerFailure> {
+    let runtime_id = RuntimeId::new(failure.runtime_id.as_str()).ok()?;
     let session_ids = affected_sessions(engine, sessions, |attachment| {
-        attachment.runtime_id.as_str() == RuntimeId::GLOBAL
+        attachment.runtime_id == runtime_id && attachment.workspace == failure.workspace
     });
     (!session_ids.is_empty()).then(|| cookie_agent_protocol::McpServerFailure {
-        runtime_id: RuntimeId::new(RuntimeId::GLOBAL).expect("`global` is a valid runtime ID"),
+        runtime_id: runtime_id.clone(),
+        workspace: failure.workspace,
         server: failure.server,
         reason: failure.reason,
         session_ids,

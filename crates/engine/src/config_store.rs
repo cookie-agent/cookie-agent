@@ -115,6 +115,9 @@ impl ConfigStore {
 }
 
 impl Engine {
+    /// The MCP servers of every runtime: the global runtime's (top-level
+    /// `[mcp]` and runtime-layer entries), then those each running instance
+    /// of another runtime hosts, with the instance's workspace.
     #[must_use]
     pub fn list_mcp_servers(&self) -> Vec<McpServerInfo> {
         let store = self
@@ -150,6 +153,7 @@ impl Engine {
                         cookie_agent_protocol::RuntimeId::GLOBAL,
                     )
                     .expect("`global` is a valid runtime ID"),
+                    workspace: None,
                     name,
                     source: source_to_wire(loaded.source),
                     definition: definition_to_wire(&loaded.config),
@@ -159,7 +163,63 @@ impl Engine {
                     auth_in_progress: status.map(|status| status.auth_in_progress),
                 }
             })
+            .chain(
+                self.inner
+                    .runtimes
+                    .hosted_mcp_servers()
+                    .into_iter()
+                    .filter_map(hosted_to_wire),
+            )
             .collect()
+    }
+
+    /// The MCP servers of every runtime that are failed now, as a client
+    /// that just subscribed to a session should hear about them.
+    #[must_use]
+    pub fn mcp_failures(&self) -> Vec<crate::McpServerFailure> {
+        self.list_mcp_servers()
+            .into_iter()
+            .filter(|server| server.state == WireMcpServerState::Failed)
+            .map(|server| crate::McpServerFailure {
+                runtime_id: server.runtime_id.as_str().to_owned(),
+                workspace: server.workspace,
+                server: server.name,
+                reason: server.message.unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    /// Reconnects the MCP server `name` that the instance of `runtime_id` at
+    /// `workspace` hosts, waiting for the attempt. `runtime_id` `global`
+    /// means a top-level server.
+    pub async fn reconnect_runtime_mcp_server(
+        &self,
+        runtime_id: &str,
+        workspace: Option<&str>,
+        name: String,
+    ) -> Result<Option<McpServerInfo>, EngineError> {
+        if runtime_id == cookie_agent_protocol::RuntimeId::GLOBAL {
+            return self.reconnect_mcp_server(name).await;
+        }
+        let connection = self
+            .inner
+            .runtimes
+            .instance_at(runtime_id, workspace)
+            .and_then(|instance| instance.connection())
+            .ok_or_else(|| {
+                EngineError::Mcp(match workspace {
+                    Some(workspace) => {
+                        format!("runtime `{runtime_id}` at {workspace} is not running")
+                    }
+                    None => format!("runtime `{runtime_id}` is not running"),
+                })
+            })?;
+        connection.reconnect_mcp(&name).await?;
+        Ok(self.list_mcp_servers().into_iter().find(|server| {
+            server.name == name
+                && server.runtime_id.as_str() == runtime_id
+                && server.workspace.as_deref() == workspace
+        }))
     }
 
     pub async fn add_mcp_server(
@@ -307,6 +367,30 @@ impl Engine {
             .into_iter()
             .find(|server| server.name == name))
     }
+}
+
+/// A server a runtime instance hosts, as `mcp.server.list` shows it. Its
+/// definition comes from the runtime's template in the user file.
+fn hosted_to_wire(server: crate::runtimes::HostedMcpServer) -> Option<McpServerInfo> {
+    use cookie_agent_runtime_api::protocol::McpServerState as Hosted;
+    Some(McpServerInfo {
+        runtime_id: cookie_agent_protocol::RuntimeId::new(server.runtime_id.as_str()).ok()?,
+        workspace: server.workspace,
+        name: server.report.name,
+        source: McpConfigSource::UserFile,
+        definition: definition_to_wire(&server.definition),
+        state: match server.report.state {
+            Hosted::Disabled => WireMcpServerState::Disabled,
+            Hosted::Disconnected => WireMcpServerState::Disconnected,
+            Hosted::Connecting => WireMcpServerState::Connecting,
+            Hosted::Connected => WireMcpServerState::Connected,
+            Hosted::Reconnecting => WireMcpServerState::Reconnecting,
+            Hosted::Failed => WireMcpServerState::Failed,
+        },
+        tool_count: u32::try_from(server.report.tools.len()).unwrap_or(u32::MAX),
+        message: server.report.message,
+        auth_in_progress: None,
+    })
 }
 
 fn source_to_wire(source: McpServerSource) -> McpConfigSource {

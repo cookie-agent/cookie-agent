@@ -722,6 +722,8 @@ pub(crate) struct Inner {
     pub(crate) runtimes: Arc<crate::runtimes::RuntimeRegistry>,
     provider_ids: Mutex<HashSet<&'static str>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
+    /// MCP changes and failures of every runtime.
+    pub(crate) mcp_hub: Arc<crate::runtimes::McpHub>,
     pub(crate) plugins: Arc<crate::PluginRegistry>,
     pub(crate) mcp_mutation: tokio::sync::Mutex<()>,
     permissions: PermissionPipeline,
@@ -762,12 +764,27 @@ impl Engine {
                 ));
             }
         };
+        if options.config.runtimes.iter().any(|(id, template)| {
+            id.as_str() == cookie_agent_runtime_api::LOCAL_RUNTIME_ID
+                && !template.mcp_servers.is_empty()
+        }) {
+            return Err(EngineError::Runtime(
+                "the local runtime hosts [runtimes.local.mcp] servers only behind the runtime \
+                 protocol; open the engine with Engine::open_async"
+                    .into(),
+            ));
+        }
         let local_template = Arc::new(crate::runtimes::LocalTemplate::new(
             local_workspace,
             local_tools,
         ));
         let local = local_template.start_now().map_err(EngineError::Runtime)?;
-        Self::open_started(options, local_template, local)
+        Self::open_started(
+            options,
+            local_template,
+            local,
+            crate::runtimes::McpHub::new(),
+        )
     }
 
     /// Opens an engine, first starting its local coding runtime and
@@ -778,26 +795,31 @@ impl Engine {
             return Self::open(options);
         };
         let local_workspace = local_workspace(&options)?;
-        let local_template = Arc::new(crate::runtimes::ProtocolTemplate::local(
-            Arc::clone(connector),
-            local_workspace.root(),
-            crate::runtimes::runtime_settings(
-                &options.config,
-                cookie_agent_runtime_api::LOCAL_RUNTIME_ID,
-            ),
-        ));
+        let mcp_hub = crate::runtimes::McpHub::new();
+        let local_template = Arc::new(
+            crate::runtimes::ProtocolTemplate::local(
+                Arc::clone(connector),
+                local_workspace.root(),
+                crate::runtimes::runtime_settings(
+                    &options.config,
+                    cookie_agent_runtime_api::LOCAL_RUNTIME_ID,
+                ),
+            )
+            .with_mcp_hub(Arc::clone(&mcp_hub)),
+        );
         let local = crate::RuntimeTemplate::start(local_template.as_ref(), None)
             .await
             .map_err(|reason| {
                 EngineError::Runtime(format!("runtime `local` failed to start: {reason}"))
             })?;
-        Self::open_started(options, local_template, local)
+        Self::open_started(options, local_template, local, mcp_hub)
     }
 
     fn open_started(
         options: EngineOptions,
         local_template: Arc<dyn crate::RuntimeTemplate>,
         local: crate::StartedRuntime,
+        mcp_hub: Arc<crate::runtimes::McpHub>,
     ) -> Result<Self, EngineError> {
         let mut provider_ids = HashSet::new();
         for provider in options.runtimes.global_tools.iter().chain(&local.providers) {
@@ -827,7 +849,7 @@ impl Engine {
                 options.config.mcp_servers.clone(),
                 cookie_agent_mcp::McpRegistryOptions {
                     oauth_store: Some(options.data_dir.join("mcp-oauth.json")),
-                    observer: None,
+                    observer: Some(mcp_hub.global_observer()),
                 },
             )
             .map_err(|error| EngineError::ToolFailed(error.to_string()))?,
@@ -856,7 +878,7 @@ impl Engine {
             local,
         ));
         runtimes.watch_builtin();
-        crate::runtimes::register_configured_templates(&runtimes, &options.config)?;
+        crate::runtimes::register_configured_templates(&runtimes, &options.config, &mcp_hub)?;
         let delegation_events = DelegationEventStore::new(Arc::clone(&store));
         let grant_journals = GrantJournals::new(store.workdir_dir_path());
         let (runtime_notifications, _) = broadcast::channel(64);
@@ -892,6 +914,7 @@ impl Engine {
                 runtimes,
                 provider_ids: Mutex::new(provider_ids),
                 mcp,
+                mcp_hub,
                 plugins,
                 mcp_mutation: tokio::sync::Mutex::new(()),
                 permissions: PermissionPipeline::default(),
@@ -988,7 +1011,7 @@ impl Engine {
     /// A counter bumped on every MCP server configuration or status change.
     #[must_use]
     pub fn subscribe_mcp_changes(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.inner.mcp.subscribe_changes()
+        self.inner.mcp_hub.subscribe_changes()
     }
 
     #[cfg(feature = "test-support")]

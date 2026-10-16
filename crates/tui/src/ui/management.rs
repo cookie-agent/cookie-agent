@@ -280,13 +280,20 @@ impl Drop for AuthListener {
 
 impl McpPanel {
     pub(super) fn install(&mut self, mut servers: Vec<McpServerInfo>) {
-        // Grouped by runtime, the editable global servers first.
+        // Grouped by runtime instance, the editable global servers first.
         servers.sort_by(|left, right| {
-            (!is_global(left), left.runtime_id.as_str(), &left.name).cmp(&(
-                !is_global(right),
-                right.runtime_id.as_str(),
-                &right.name,
-            ))
+            (
+                !is_global(left),
+                left.runtime_id.as_str(),
+                &left.workspace,
+                &left.name,
+            )
+                .cmp(&(
+                    !is_global(right),
+                    right.runtime_id.as_str(),
+                    &right.workspace,
+                    &right.name,
+                ))
         });
         self.servers = servers;
         self.refresh_in_flight = false;
@@ -395,7 +402,7 @@ pub(super) fn render_mcp(frame: &mut Frame, area: Rect, panel: &mut McpPanel, th
                 server.name,
                 state,
                 tools.unwrap_or_default(),
-                server.runtime_id,
+                runtime_label(server),
                 source_label(server.source)
             ))
         })
@@ -425,7 +432,9 @@ pub(super) fn render_mcp(frame: &mut Frame, area: Rect, panel: &mut McpPanel, th
             let connection = definition_display(&server.definition);
             let mut text = format!(
                 "{} (runtime {})\n{}",
-                server.name, server.runtime_id, connection
+                server.name,
+                runtime_label(server),
+                connection
             );
             if let Some(message) = &server.message {
                 text.push_str("\n\n");
@@ -1016,7 +1025,16 @@ fn format_cost(cost: Option<f64>) -> String {
     cost.map_or_else(|| "unpriced".to_owned(), format_cost_usd)
 }
 
-fn is_global(server: &McpServerInfo) -> bool {
+/// The runtime hosting `server`, with the instance's workspace when it has
+/// one, so two instances of one runtime read apart.
+fn runtime_label(server: &McpServerInfo) -> String {
+    match &server.workspace {
+        Some(workspace) => format!("{} at {workspace}", server.runtime_id),
+        None => server.runtime_id.to_string(),
+    }
+}
+
+pub(super) fn is_global(server: &McpServerInfo) -> bool {
     server.runtime_id.as_str() == cookie_agent_protocol::RuntimeId::GLOBAL
 }
 

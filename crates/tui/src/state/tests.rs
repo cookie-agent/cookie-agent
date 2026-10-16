@@ -3479,12 +3479,22 @@ fn connection_failures_become_error_rows_in_each_named_session() {
     assert!(matches!(
         store.apply_delivery(ClientDelivery::McpChanged(
             cookie_agent_protocol::McpChangedNotification {
-                failures: vec![cookie_agent_protocol::McpServerFailure {
-                    runtime_id: runtime_id("global"),
-                    server: "docs".into(),
-                    reason: "spawn failed".into(),
-                    session_ids: vec![named, unknown],
-                }],
+                failures: vec![
+                    cookie_agent_protocol::McpServerFailure {
+                        runtime_id: runtime_id("global"),
+                        workspace: None,
+                        server: "docs".into(),
+                        reason: "spawn failed".into(),
+                        session_ids: vec![named, unknown],
+                    },
+                    cookie_agent_protocol::McpServerFailure {
+                        runtime_id: runtime_id("labpc"),
+                        workspace: Some("/srv/api".into()),
+                        server: "lsp".into(),
+                        reason: "exited".into(),
+                        session_ids: vec![named],
+                    },
+                ],
             }
         )),
         DeliveryOutcome::Applied
@@ -3506,6 +3516,7 @@ fn connection_failures_become_error_rows_in_each_named_session() {
         errors(&store, named),
         [
             "MCP server `docs` (global runtime) is unavailable: spawn failed",
+            "MCP server `lsp` (labpc runtime at /srv/api) is unavailable: exited",
             "runtime `labpc` at /srv/api is unavailable: connection refused",
         ]
     );

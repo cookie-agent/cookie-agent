@@ -8,20 +8,26 @@
 //! into the call's capture, and it maps `job/*` onto the engine's background
 //! jobs. When the connection is lost, calls in flight fail with
 //! `runtime_unavailable` and running background jobs complete as failed.
+//! The client also keeps what the runtime reports about the MCP servers it
+//! hosts (`mcp/changed`), forwards their changes and failures to the
+//! [`McpHub`], and asks the runtime to reconnect them (`mcp/reconnect`).
 //!
 //! A runtime in a child process plugs in as another [`RuntimeConnector`]
 //! (`super::process`).
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
 use async_trait::async_trait;
 use base64::Engine as _;
-use cookie_agent_config::{SkillDiscovery, SkillRegistry};
+use cookie_agent_config::{McpServerConfig, SkillDiscovery, SkillRegistry};
 use cookie_agent_protocol::{SessionId, ToolCallId, ToolCallPresentation};
 use cookie_agent_runtime_api::{
     BackgroundJob, BackgroundJobs, BackgroundReport, DiagnosticTail, PreparedDeclaration,
@@ -33,16 +39,17 @@ use cookie_agent_runtime_api::{
     protocol::{
         self, ContextParams, ContextResult, Empty, ExecuteOutcome, ExecuteParams, ExecuteResult,
         InitializeParams, InitializeResult, InlineMedia, JobCompletedParams, JobProgressParams,
-        JobRef, JobStartedParams, Outcome, PrepareOutcome, PrepareParams, PrepareResult,
-        PreparedCall, PreparedRef, RUNTIME_PROTOCOL_VERSION, RuntimeSettings, RuntimeSkills,
-        RuntimeTools, StdinParams, ToolProgressParams, WireBackgroundReport, WireToolCall,
-        error_code, method,
+        JobRef, JobStartedParams, McpChangedParams, McpReconnectParams, McpServerReport, Outcome,
+        PrepareOutcome, PrepareParams, PrepareResult, PreparedCall, PreparedRef,
+        RUNTIME_PROTOCOL_VERSION, RuntimeSettings, RuntimeSkills, RuntimeTools, StdinParams,
+        ToolProgressParams, WireBackgroundReport, WireToolCall, error_code, method,
     },
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
 };
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, oneshot};
 
 use super::{
+    McpHub, McpServerFailure,
     process::ProcessConnector,
     registry::{RuntimeRegistry, RuntimeTemplate, StartedRuntime},
 };
@@ -65,6 +72,8 @@ pub(crate) struct ProtocolTemplate {
     startup_timeout: Option<Duration>,
     /// How long a stopping instance gets to answer `runtime/shutdown`.
     shutdown_grace: Duration,
+    /// Where the MCP servers instances host report to.
+    mcp_hub: Option<Arc<McpHub>>,
 }
 
 /// How long the daemon waits for the in-process `local` runtime to answer
@@ -91,7 +100,14 @@ impl ProtocolTemplate {
             settings,
             startup_timeout: Some(startup_timeout),
             shutdown_grace,
+            mcp_hub: None,
         }
+    }
+
+    /// Reports the MCP servers its instances host to `hub`.
+    pub(crate) fn with_mcp_hub(mut self, hub: Arc<McpHub>) -> Self {
+        self.mcp_hub = Some(hub);
+        self
     }
 
     /// The `local` coding runtime for `workspace`.
@@ -108,6 +124,7 @@ impl ProtocolTemplate {
             settings,
             startup_timeout: None,
             shutdown_grace: LOCAL_SHUTDOWN_GRACE,
+            mcp_hub: None,
         }
     }
 
@@ -125,6 +142,7 @@ impl ProtocolTemplate {
             requested,
             &self.settings,
             self.shutdown_grace,
+            self.mcp_hub.clone(),
         )
         .await?;
         started(client, result)
@@ -203,23 +221,27 @@ pub(crate) fn runtime_settings(
 pub(crate) fn register_configured_templates(
     registry: &RuntimeRegistry,
     config: &cookie_agent_config::LoadedConfiguration,
+    mcp_hub: &Arc<McpHub>,
 ) -> Result<(), EngineError> {
     for (runtime_id, template) in &config.runtimes {
         if runtime_id.is_reserved() {
             continue;
         }
-        registry.register_template(Arc::new(ProtocolTemplate::new(
-            runtime_id.as_str(),
-            template.takes_workspace(),
-            Arc::new(ProcessConnector::new(
-                template.command.clone(),
-                template.env.clone(),
+        registry.register_template(Arc::new(
+            ProtocolTemplate::new(
+                runtime_id.as_str(),
+                template.takes_workspace(),
+                Arc::new(ProcessConnector::new(
+                    template.command.clone(),
+                    template.env.clone(),
+                    template.shutdown_grace(),
+                )),
+                runtime_settings(config, runtime_id.as_str()),
+                template.startup_timeout(),
                 template.shutdown_grace(),
-            )),
-            runtime_settings(config, runtime_id.as_str()),
-            template.startup_timeout(),
-            template.shutdown_grace(),
-        )))?;
+            )
+            .with_mcp_hub(Arc::clone(mcp_hub)),
+        ))?;
     }
     Ok(())
 }
@@ -237,7 +259,8 @@ struct ClientInner {
     diagnostics: Option<DiagnosticTail>,
     /// How long [`RuntimeClient::shutdown`] waits for the runtime.
     shutdown_grace: Duration,
-    tools: Mutex<Arc<DeclaredTools>>,
+    /// `None` until the initialize reply or the first `tools_changed`.
+    tools: Mutex<Option<Arc<DeclaredTools>>>,
     /// Executing calls by prepared ID: the host services their progress and
     /// background jobs reach.
     executions: Mutex<HashMap<u64, ExecutionHost>>,
@@ -245,6 +268,33 @@ struct ClientInner {
     jobs: Mutex<HashMap<u64, DaemonJob>>,
     /// Presentations of calls that failed to prepare, by call.
     presentations: Mutex<VecDeque<(ToolCallId, ToolCallPresentation)>>,
+    /// The MCP servers the runtime hosts.
+    mcp: Mutex<HostedMcp>,
+    mcp_hub: Option<Arc<McpHub>>,
+    /// `mcp/reconnect` retries in flight; a run waits for them.
+    mcp_retries: AtomicUsize,
+    mcp_settled: Notify,
+}
+
+/// What the daemon knows about the MCP servers a runtime hosts.
+#[derive(Default)]
+struct HostedMcp {
+    /// The instance's workspace, once initialized.
+    workspace: Option<String>,
+    /// The template's definitions, by server name.
+    definitions: BTreeMap<String, McpServerConfig>,
+    /// Their last reported status; `None` before the initialize reply or
+    /// the first report.
+    servers: Option<Vec<McpServerReport>>,
+}
+
+/// One MCP server a runtime hosts, as `mcp.server.list` shows it.
+#[derive(Clone, Debug)]
+pub(crate) struct HostedMcpServer {
+    pub(crate) runtime_id: String,
+    pub(crate) workspace: Option<String>,
+    pub(crate) definition: McpServerConfig,
+    pub(crate) report: McpServerReport,
 }
 
 impl Drop for ClientInner {
@@ -293,6 +343,17 @@ struct DaemonJob {
     completion: Option<oneshot::Sender<WireBackgroundReport>>,
 }
 
+/// One `mcp/reconnect` retry in flight.
+struct McpRetry(Arc<ClientInner>);
+
+impl Drop for McpRetry {
+    fn drop(&mut self) {
+        if self.0.mcp_retries.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.mcp_settled.notify_waiters();
+        }
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
@@ -308,8 +369,18 @@ impl RuntimeClient {
         workspace: Option<&Path>,
         settings: &RuntimeSettings,
         shutdown_grace: Duration,
+        mcp_hub: Option<Arc<McpHub>>,
     ) -> Result<(Self, InitializeResult), String> {
         let (peer, incoming) = Peer::start(connection.transport);
+        let definitions = settings
+            .mcp_servers
+            .iter()
+            .filter_map(|server| {
+                serde_json::from_value(server.config.clone())
+                    .ok()
+                    .map(|config| (server.name.clone(), config))
+            })
+            .collect();
         let inner = Arc::new(ClientInner {
             peer,
             runtime_id: runtime_id.to_owned(),
@@ -319,6 +390,13 @@ impl RuntimeClient {
             executions: Mutex::default(),
             jobs: Mutex::default(),
             presentations: Mutex::default(),
+            mcp: Mutex::new(HostedMcp {
+                definitions,
+                ..HostedMcp::default()
+            }),
+            mcp_hub,
+            mcp_retries: AtomicUsize::new(0),
+            mcp_settled: Notify::new(),
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
         let result: InitializeResult = inner
@@ -341,8 +419,113 @@ impl RuntimeClient {
                 result.version
             ));
         }
-        *lock(&inner.tools) = Arc::new(result.tools.clone().into());
+        protocol::check_mcp_hosting(result.kind, settings)?;
+        // A notification the runtime sent after its reply may already have
+        // been handled; it is newer than the reply.
+        lock(&inner.tools).get_or_insert_with(|| Arc::new(result.tools.clone().into()));
+        let failed = {
+            let mut mcp = lock(&inner.mcp);
+            mcp.workspace.clone_from(&result.workspace);
+            let servers = mcp
+                .servers
+                .get_or_insert_with(|| result.mcp_servers.clone());
+            servers
+                .iter()
+                .filter(|server| server.state == protocol::McpServerState::Failed)
+                .map(|server| {
+                    (
+                        server.name.clone(),
+                        server.message.clone().unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        if let Some(hub) = &inner.mcp_hub {
+            for (server, reason) in failed {
+                hub.failed(inner.mcp_failure(server, reason));
+            }
+            if !result.mcp_servers.is_empty() {
+                hub.changed();
+            }
+        }
         Ok((Self { inner }, result))
+    }
+
+    /// The MCP servers the runtime hosts, with their last reported status.
+    pub(crate) fn mcp_servers(&self) -> Vec<HostedMcpServer> {
+        let mcp = lock(&self.inner.mcp);
+        mcp.servers
+            .iter()
+            .flatten()
+            .filter_map(|report| {
+                Some(HostedMcpServer {
+                    runtime_id: self.inner.runtime_id.clone(),
+                    workspace: mcp.workspace.clone(),
+                    definition: mcp.definitions.get(&report.name)?.clone(),
+                    report: report.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Asks the runtime to reconnect its MCP server `server` now and waits
+    /// for the attempt.
+    pub(crate) async fn reconnect_mcp(&self, server: &str) -> Result<(), EngineError> {
+        let outcome: Outcome = self
+            .inner
+            .peer
+            .request(
+                method::MCP_RECONNECT,
+                &McpReconnectParams {
+                    server: Some(server.to_owned()),
+                },
+            )
+            .await
+            .map_err(|error| {
+                EngineError::Mcp(format!("runtime `{}`: {error}", self.inner.runtime_id))
+            })?;
+        outcome
+            .into_result()
+            .map_err(|error| EngineError::Mcp(error.to_string()))
+    }
+
+    /// Asks the runtime to retry its failed MCP servers, as when a session
+    /// that uses it is created or opened; [`Self::mcp_settled`] waits for
+    /// the attempts.
+    pub(crate) fn retry_failed_mcp(&self) {
+        let any_failed = lock(&self.inner.mcp)
+            .servers
+            .iter()
+            .flatten()
+            .any(|server| server.state == protocol::McpServerState::Failed);
+        if !any_failed {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        self.inner.mcp_retries.fetch_add(1, Ordering::AcqRel);
+        let retry = McpRetry(Arc::clone(&self.inner));
+        handle.spawn(async move {
+            let _ = retry
+                .0
+                .peer
+                .request::<_, Outcome>(method::MCP_RECONNECT, &McpReconnectParams::default())
+                .await;
+            drop(retry);
+        });
+    }
+
+    /// Waits until every retry [`Self::retry_failed_mcp`] started has
+    /// finished, or the connection ended.
+    pub(crate) async fn mcp_settled(&self) {
+        while self.inner.mcp_retries.load(Ordering::Acquire) != 0 {
+            let notified = self.inner.mcp_settled.notified();
+            if self.inner.mcp_retries.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            notified.await;
+        }
     }
 
     /// Whether the connection has ended.
@@ -517,6 +700,15 @@ async fn handle_incoming(
 }
 
 impl ClientInner {
+    fn mcp_failure(&self, server: String, reason: String) -> McpServerFailure {
+        McpServerFailure {
+            runtime_id: self.runtime_id.clone(),
+            workspace: lock(&self.mcp).workspace.clone(),
+            server,
+            reason,
+        }
+    }
+
     fn unavailable(&self, error: &RpcError) -> ToolError {
         match error {
             RpcError::Closed(reason) => ToolError::runtime_unavailable(format!(
@@ -547,7 +739,18 @@ impl ClientInner {
         match notification.method.as_str() {
             method::TOOLS_CHANGED => {
                 if let Ok(tools) = notification.params::<RuntimeTools>() {
-                    *lock(&self.tools) = Arc::new(tools.into());
+                    *lock(&self.tools) = Some(Arc::new(tools.into()));
+                }
+            }
+            method::MCP_CHANGED => {
+                if let Ok(McpChangedParams { servers, failures }) = notification.params() {
+                    lock(&self.mcp).servers = Some(servers);
+                    if let Some(hub) = &self.mcp_hub {
+                        hub.changed();
+                        for failure in failures {
+                            hub.failed(self.mcp_failure(failure.server, failure.reason));
+                        }
+                    }
                 }
             }
             method::JOB_COMPLETED => {
@@ -963,11 +1166,17 @@ impl ToolProvider for RemoteToolProvider {
     }
 
     fn prompt_sections(&self, _ctx: &SessionToolContext) -> Result<Vec<PromptSection>, ToolError> {
-        Ok(lock(&self.client.inner.tools).prompt_sections.clone())
+        Ok(lock(&self.client.inner.tools)
+            .as_ref()
+            .map(|tools| tools.prompt_sections.clone())
+            .unwrap_or_default())
     }
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
-        Ok(lock(&self.client.inner.tools).specs.clone())
+        Ok(lock(&self.client.inner.tools)
+            .as_ref()
+            .map(|tools| tools.specs.clone())
+            .unwrap_or_default())
     }
 
     fn get_permission_name(_tool_name: &str) -> Result<&'static str, ToolError>

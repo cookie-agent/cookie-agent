@@ -354,7 +354,7 @@ impl ServerProtocol for StubServer {
     }
     async fn reconnect_mcp_server(
         &self,
-        _: crate::McpServerNameParams,
+        _: crate::McpServerReconnectParams,
     ) -> Result<crate::McpServerMutationResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
