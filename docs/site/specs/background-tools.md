@@ -1,6 +1,7 @@
 # Background Tool Calls
 
-Status: **phase 1 implemented; phases 2 and 3 pending** (decisions of 2026-10-16). This document is the
+Status: **implemented** (decisions of 2026-10-16; all three phases landed 2026-10-16).
+Sections 1, 7.1, and the "today" notes describe the design this replaced. This document is the
 governing specification for running supported tool calls in the background,
 whether the model asks for it or the user moves a running call there.
 Section [Decisions](#11-decisions) records what review settled.
@@ -292,11 +293,18 @@ than stopping a running one.
 
 Per-invocation completion tracking (`DelegateFinishedV2`, the background
 monitors, slots, and the queue) stays for admission and concurrency. What
-changes is delivery: the per-invocation `<subagent_notification>` and its
-`Delegation { invocation_id }` producer are replaced by the per-run report of
-7.2, raised wherever the engine ends a run of a delegated session. History
-replay renders legacy `<subagent_notification>` messages as they were
-recorded.
+changes is delivery: the engine raises the per-run report of 7.2 wherever it
+appends the end of a run of a delegated session
+(`engine/src/runtime/subagent_reports.rs`). One run reports elsewhere, with
+the same `<subagent_report>` body: the first run of a delegation started with
+`background: true` still reports through its invocation's completion, owned by
+`Delegation { invocation_id }`, so its queue, slot, and restart recovery stay
+as they were. A run reports through the `Subagent` owner unless that
+invocation path or a foreground call's tool result already carries it. A
+foreground call the parent stops waiting for, by detach or by its run being
+cancelled, hands its child to a background monitor that counts toward
+`max_concurrency` as 7.3 says. History replay renders legacy
+`<subagent_notification>` messages as they were recorded.
 
 ## 8. `bash`, stdin, and the runtime protocol
 

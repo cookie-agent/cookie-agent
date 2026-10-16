@@ -210,6 +210,7 @@ a notification.
 |---|---|
 | `prepared_id` | The call to run; executing consumes it. |
 | `session`, `run`, `turn` | As for prepare. |
+| `background` | `true` when the model started the call in the background; omitted otherwise. A tool may use it to word its own results; it detaches the same way either way. |
 
 The result's `outcome` is tagged by `status`: `completed` with the terminal
 `output` (single or streamed), the persisted `result`, and `failed`; or
@@ -237,14 +238,22 @@ right after execute reaches it.
 The daemon owns the background (see the [background tool calls
 spec](../specs/background-tools.md)); a runtime only says when a call may be
 detached. When an executing call of a tool declared with `background` reaches
-its detach point, the runtime sends `tool/detachable` (`prepared_id`, and an
-optional `note` for the immediate result, such as a process ID). The daemon
+its detach point, the runtime sends `tool/detachable` (`prepared_id`, an
+optional `note` for the immediate result, such as a process ID, and
+`reports_itself`, omitted when `false`). The daemon
 may then detach the call: it commits an immediate result for it and keeps
 waiting for its `tool/execute` reply, whose result it reports to the session
 as a `<background_result>`. Nothing changes for the runtime: the call keeps
 running, its progress keeps arriving with `tool/progress`, and `tool/cancel`
 stops it, which is how a revert, a deleted session, or `stop_background`
 reaches it. A detached call does not outlive the runtime's connection.
+
+A call whose work reports its own results once detached sets
+`reports_itself` (the daemon's `delegate_subagent` does, since its subagent
+reports every turn). The daemon then only stops waiting: it drops the call
+instead of awaiting its reply and sends no `<background_result>`, and
+cancelling the run that waited for it ends the call without cancelling the
+work.
 
 ## Errors
 
