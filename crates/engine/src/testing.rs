@@ -25,7 +25,6 @@ pub fn tool_execution_context(
         run: RunId::new_v7(),
         progress: ProgressSink::new(progress),
         cancellation: CancellationToken::new(),
-        stdin: None,
         turn_context,
         artifacts: ArtifactRouter::open_flat(artifact_directory.into())
             .map_err(|error| ToolError::execution(error.to_string()))?,

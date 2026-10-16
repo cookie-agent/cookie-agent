@@ -23,7 +23,7 @@ use cookie_agent_protocol::{OutputStream, SafeDisplayText, ToolCallId};
 use cookie_agent_runtime_api::ToolProgress;
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError,
-    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec, ToolStdin,
+    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
 #[cfg(windows)]
 use process_wrap::tokio::{CommandWrap, JobObject as ProcessJobObject, KillOnDrop};
@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use tokio::process::Child;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt},
     process::Command,
     sync::Mutex,
 };
@@ -53,8 +53,6 @@ struct BashArgs {
     /// Milliseconds before the command is killed; 0 never times out.
     #[serde(default = "default_timeout")]
     timeout: u64,
-    #[serde(default)]
-    interactive: bool,
     /// Run in the background: return at once and get a notification when it exits.
     #[serde(default)]
     background: bool,
@@ -405,11 +403,6 @@ impl ToolProvider for BashTool {
         if args.command.trim().is_empty() {
             return Err(ToolError::execution("command must not be empty"));
         }
-        if args.interactive && args.background {
-            return Err(ToolError::execution(
-                "interactive and background cannot be combined",
-            ));
-        }
         let cwd_path = self.workspace.clone();
         let (executable_path, executable, cwd) = crate::blocking(move || {
             let executable_path = resolve_executable("bash")?;
@@ -537,7 +530,6 @@ struct SpawnedShell {
     tree: ProcessTree,
     stdout: tokio::process::ChildStdout,
     stderr: tokio::process::ChildStderr,
-    stdin: Option<tokio::process::ChildStdin>,
 }
 
 /// Waits for `future`, giving up after `timeout_ms`; 0 waits indefinitely.
@@ -552,22 +544,18 @@ async fn within_timeout<F: std::future::Future>(timeout_ms: u64, future: F) -> O
 }
 
 impl BashExecutor {
-    fn spawn(&self, interactive: bool) -> Result<SpawnedShell, ToolError> {
+    fn spawn(&self) -> Result<SpawnedShell, ToolError> {
         let mut command = Command::new(self.executable.proc_fd_path());
         command
             .arg("-c")
             .arg(&self.args.command)
             .current_dir(self.cwd.proc_fd_path())
-            .stdin(if interactive {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         #[cfg(unix)]
-        let (tree, stdout, stderr, stdin) = {
+        let (tree, stdout, stderr) = {
             unsafe {
                 command.pre_exec(|| {
                     if libc::setsid() == -1 {
@@ -584,17 +572,16 @@ impl BashExecutor {
                 .id()
                 .and_then(|id| i32::try_from(id).ok())
                 .ok_or_else(|| ToolError::execution("prepared bash child has no process id"))?;
-            let (stdout, stderr, stdin) =
-                (child.stdout.take(), child.stderr.take(), child.stdin.take());
+            let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
             let tree = ProcessGroupChild {
                 child: Some(child),
                 process_group,
                 complete: false,
             };
-            (tree, stdout, stderr, stdin)
+            (tree, stdout, stderr)
         };
         #[cfg(windows)]
-        let (tree, stdout, stderr, stdin) = {
+        let (tree, stdout, stderr) = {
             let mut wrapped = CommandWrap::from(command);
             wrapped.wrap(ProcessJobObject).wrap(KillOnDrop);
             // ProcessJobObject adds CREATE_SUSPENDED, assigns the process to the
@@ -602,26 +589,17 @@ impl BashExecutor {
             let mut child = wrapped
                 .spawn()
                 .map_err(|error| ToolError::execution(error.to_string()))?;
-            let (stdout, stderr, stdin) = (
-                child.stdout().take(),
-                child.stderr().take(),
-                child.stdin().take(),
-            );
+            let (stdout, stderr) = (child.stdout().take(), child.stderr().take());
             let tree = JobChild {
                 child: Some(child),
                 complete: false,
             };
-            (tree, stdout, stderr, stdin)
+            (tree, stdout, stderr)
         };
         Ok(SpawnedShell {
             tree,
             stdout: stdout.ok_or_else(|| ToolError::execution("bash stdout pipe missing"))?,
             stderr: stderr.ok_or_else(|| ToolError::execution("bash stderr pipe missing"))?,
-            stdin: if interactive {
-                Some(stdin.ok_or_else(|| ToolError::execution("bash stdin pipe missing"))?)
-            } else {
-                None
-            },
         })
     }
 
@@ -629,7 +607,6 @@ impl BashExecutor {
         self,
         progress: ProgressSink,
         cancellation: CancellationToken,
-        stdin: Option<ToolStdin>,
     ) -> Result<ToolResult, ToolError> {
         if cancellation.is_cancelled() {
             return Err(ToolError::execution("prepared bash cancelled"));
@@ -638,8 +615,7 @@ impl BashExecutor {
             mut tree,
             stdout,
             stderr,
-            stdin: child_stdin,
-        } = self.spawn(self.args.interactive)?;
+        } = self.spawn()?;
         let merged = Arc::new(Mutex::new(MergedOutput::default()));
         let stdout_task = tokio::spawn(read_output(
             stdout,
@@ -655,23 +631,6 @@ impl BashExecutor {
             self.tool_call_id,
             Some(merged.clone()),
         ));
-        let stdin_task = if let Some(mut child_stdin) = child_stdin {
-            let mut writes = stdin
-                .ok_or_else(|| ToolError::execution("interactive bash stdin channel missing"))?;
-            Some(tokio::spawn(async move {
-                while let Some(write) = writes.recv().await {
-                    child_stdin.write_all(&write.data).await?;
-                    child_stdin.flush().await?;
-                    if write.eof {
-                        child_stdin.shutdown().await?;
-                        break;
-                    }
-                }
-                Ok::<(), std::io::Error>(())
-            }))
-        } else {
-            None
-        };
         enum WaitOutcome {
             Finished(std::io::Result<std::process::ExitStatus>),
             TimedOut,
@@ -695,9 +654,6 @@ impl BashExecutor {
             }
             WaitOutcome::TimedOut | WaitOutcome::Cancelled => {
                 tree.kill_and_reap().await;
-                if let Some(task) = &stdin_task {
-                    task.abort();
-                }
                 let _ = stdout_task.await;
                 let _ = stderr_task.await;
                 return Err(ToolError::execution(
@@ -709,9 +665,6 @@ impl BashExecutor {
                 ));
             }
         };
-        if let Some(task) = &stdin_task {
-            task.abort();
-        }
         stdout_task
             .await
             .map_err(|error| ToolError::execution(error.to_string()))??;
@@ -750,8 +703,7 @@ impl BashExecutor {
             mut tree,
             stdout,
             stderr,
-            ..
-        } = self.spawn(false)?;
+        } = self.spawn()?;
         let pid = tree.pid();
         let progress = job.progress();
         let stdout_task = tokio::spawn(read_output(
@@ -824,7 +776,7 @@ impl PreparedExecutor for BashExecutor {
             return self.execute_background(&context).await;
         }
         let result: Result<ToolResult, ToolError> = async move {
-            self.execute_process(context.progress, context.cancellation, context.stdin)
+            self.execute_process(context.progress, context.cancellation)
                 .await
         }
         .await;

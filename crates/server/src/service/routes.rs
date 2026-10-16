@@ -9,14 +9,14 @@ use cookie_agent_protocol::{
     McpServerReconnectParams, McpServerSetEnabledParams, ProviderConnectParams,
     ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, RunCancelParams,
     RunCancelResult, RunStartConflictCode, RunStartParams, RunStartResult, RunSteerParams,
-    RunSteerResult, RunToolStdinParams, RunToolStdinResult, RuntimeSnapshotGetParams,
-    RuntimeSnapshotResult, ServerContext, ServerFault, ServerProtocol, SessionChildrenParams,
-    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
-    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
-    SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
-    SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionListParams,
-    SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
+    RunSteerResult, RuntimeSnapshotGetParams, RuntimeSnapshotResult, ServerContext, ServerFault,
+    ServerProtocol, SessionChildrenParams, SessionChildrenResult, SessionCompactParams,
+    SessionCompactResult, SessionCreateParams, SessionCreateResult, SessionForkParams,
+    SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
+    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
+    SessionGoalSetParams, SessionGoalSetResult, SessionListParams, SessionListResult,
+    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
+    SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
     SessionProducersResult, SessionRecallInputParams, SessionRecallInputResult,
     SessionRenameErrorCode, SessionRenameParams, SessionRenameResult, SessionResumeParams,
@@ -414,17 +414,6 @@ impl ServerProtocol for Server {
     ) -> Result<RunCancelResult> {
         self.engine
             .cancel_run(params.run_id, context.client_origin())
-            .await
-            .map_err(protocol_fault)
-    }
-
-    async fn tool_stdin(
-        &self,
-        params: RunToolStdinParams,
-        context: &ServerContext,
-    ) -> Result<RunToolStdinResult> {
-        self.engine
-            .tool_stdin(params, context.client_origin())
             .await
             .map_err(protocol_fault)
     }

@@ -21,12 +21,11 @@ use crate::{
     McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
     McpServerPersistParams, McpServerReconnectParams, McpServerSetEnabledParams, MessageFrame,
     ProtocolVersion, RunCancelParams, RunCancelResult, RunStartParams, RunStartResult,
-    RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult, ServerHello,
-    SessionChildrenParams, SessionChildrenResult, SessionCompactParams, SessionCompactResult,
-    SessionCreateParams, SessionCreateResult, SessionForkParams, SessionForkResult,
-    SessionGetParams, SessionGetResult, SessionGoalGetParams, SessionGoalGetResult,
-    SessionGoalLifecycleParams, SessionGoalLifecycleResult, SessionGoalSetParams,
-    SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
+    RunSteerParams, RunSteerResult, ServerHello, SessionChildrenParams, SessionChildrenResult,
+    SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
+    SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
+    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
+    SessionGoalSetParams, SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
     SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
     SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
@@ -623,13 +622,6 @@ impl Client {
         params: RunCancelParams,
     ) -> Result<RunCancelResult, ClientError> {
         self.call("run.cancel", &params).await
-    }
-
-    pub async fn tool_stdin(
-        &self,
-        params: RunToolStdinParams,
-    ) -> Result<RunToolStdinResult, ClientError> {
-        self.call("run.tool_stdin", &params).await
     }
 
     pub async fn respond_approval(

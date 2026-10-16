@@ -85,7 +85,6 @@ pub struct ToolExecutionContext {
     pub run: RunId,
     pub progress: ProgressSink,
     pub cancellation: CancellationToken,
-    pub stdin: Option<ToolStdin>,
     /// Static agent/model context shared with preparation for this batch.
     pub turn_context: Arc<TurnAgentContext>,
     /// The session tree's artifact store.
@@ -302,36 +301,6 @@ impl ProgressSink {
         }
         Ok(())
     }
-}
-
-#[derive(Debug)]
-pub struct ToolStdin {
-    receiver: mpsc::Receiver<StdinWrite>,
-}
-
-impl ToolStdin {
-    /// Builds the sender/receiver pair used by interactive tool tests and by
-    /// the engine's per-call stdin registry.
-    #[must_use]
-    pub fn channel(capacity: usize) -> (mpsc::Sender<StdinWrite>, Self) {
-        let (sender, receiver) = mpsc::channel(capacity);
-        (sender, Self { receiver })
-    }
-
-    #[must_use]
-    pub fn from_receiver(receiver: mpsc::Receiver<StdinWrite>) -> Self {
-        Self { receiver }
-    }
-
-    pub async fn recv(&mut self) -> Option<StdinWrite> {
-        self.receiver.recv().await
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct StdinWrite {
-    pub data: Vec<u8>,
-    pub eof: bool,
 }
 
 /// Lets one executing call reserve background jobs. The host owns each job's

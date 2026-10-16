@@ -60,7 +60,7 @@ pub(crate) use cookie_agent_runtime_api::{
     PreparedSerializationKey, PreparedTool, ProgressSink, PromptSection, SessionToolContext,
     ToolCall, ToolCompletion, ToolConcurrency, ToolError, ToolExecutionContext, ToolOrigin,
     ToolPreparationContext, ToolProgress, ToolProvider, ToolResultTruncationPolicy, ToolSpec,
-    ToolStdin, TurnAgentContext, WorkspaceContext,
+    TurnAgentContext, WorkspaceContext,
 };
 
 #[cfg(test)]

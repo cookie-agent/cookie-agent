@@ -399,7 +399,6 @@ async fn calls_are_prepared_executed_and_released_by_prepared_id() {
         session,
         run,
         turn: turn(),
-        stdin: false,
         background: false,
     };
     let result: ExecuteResult = harness

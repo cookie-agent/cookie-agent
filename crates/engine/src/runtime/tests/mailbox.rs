@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-
 use cookie_agent_protocol::{
-    ClientRunId, EventPayload, PermissionMode, RunStartParams, RunToolStdinParams,
-    ToolTerminationOutcome,
+    ClientRunId, EventPayload, PermissionMode, RunStartParams, ToolTerminationOutcome,
 };
 
 use super::support::*;
@@ -278,30 +275,30 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
 }
 
 #[tokio::test]
-async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
+async fn cancelling_a_stream_drains_chunks_before_tool_termination() {
     let (endpoint, responses, captured) = scripted_channel_server(1).await;
     responses
         .send(MatchedScriptedResponse::last_message_role(
             "user",
             scripted_tool_body(
-                "interactive-cancel",
+                "stream-cancel",
                 "bash",
-                serde_json::json!({"command":"stream", "interactive":true}),
+                serde_json::json!({"command":"stream"}),
             ),
         ))
         .expect("scripted tool response");
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\ndescription: Streaming cancellation test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: allow\n---\nTest interactive streaming cancellation.\n",
+        "---\ndescription: Streaming cancellation test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: allow\n---\nTest streaming cancellation.\n",
     );
     let output_started = Arc::new(tokio::sync::Notify::new());
-    let stdin_received = Arc::new(tokio::sync::Notify::new());
+    let awaiting_cancellation = Arc::new(tokio::sync::Notify::new());
     let cleanup_progress_sent = Arc::new(tokio::sync::Notify::new());
     fixture.engine.register_tool_provider(
         crate::ToolLayer::Local,
         Arc::new(TestStreamingBashProvider {
             output_started: Arc::clone(&output_started),
-            stdin_received: Arc::clone(&stdin_received),
+            awaiting_cancellation: Arc::clone(&awaiting_cancellation),
             cleanup_progress_sent,
         }),
     );
@@ -324,10 +321,9 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
             RunStartParams {
                 reset_fallback: false,
                 session_id: session.session_id,
-                client_run_id: ClientRunId::new("interactive-stream-cancel")
-                    .expect("client run id"),
+                client_run_id: ClientRunId::new("stream-cancel").expect("client run id"),
                 selection,
-                input: "start interactive stream".into(),
+                input: "start stream".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -366,22 +362,9 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
             _ => None,
         })
         .expect("started tool call");
-    fixture
-        .engine
-        .tool_stdin(
-            RunToolStdinParams {
-                run_id: run,
-                call_id,
-                data: Some(STANDARD.encode(b"input\n")),
-                eof: false,
-            },
-            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
-        )
+    tokio::time::timeout(test_timeout(2), awaiting_cancellation.notified())
         .await
-        .expect("interactive stdin accepted");
-    tokio::time::timeout(test_timeout(2), stdin_received.notified())
-        .await
-        .expect("executor received stdin");
+        .expect("executor awaits cancellation");
     fixture
         .engine
         .cancel_run(
@@ -447,11 +430,6 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
         live_progress_chunks(&live, call_id).await,
         ["before cancellation", "during cancellation cleanup"]
     );
-    assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::ToolStdinSubmitted { tool_call_id, byte_count }
-            if tool_call_id == call_id && byte_count == 6
-    )));
 
     assert_eq!(
         with_watchdog("captured fixture completion", captured)
@@ -466,24 +444,11 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
 #[tokio::test]
 async fn cancelling_non_delegate_with_session_shaped_metadata_stays_generic() {
     for command in ["session-shaped", "null-session-shaped"] {
-        let (fixture, session_id, run_id, call_id, stdin_received, _, captured, _) =
-            start_streaming_bash_test_run(command, true).await;
-        fixture
-            .engine
-            .tool_stdin(
-                RunToolStdinParams {
-                    run_id,
-                    call_id,
-                    data: Some(STANDARD.encode(b"input\n")),
-                    eof: false,
-                },
-                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
-            )
+        let (fixture, session_id, run_id, call_id, awaiting_cancellation, _, captured, _) =
+            start_streaming_bash_test_run(command).await;
+        tokio::time::timeout(test_timeout(2), awaiting_cancellation.notified())
             .await
-            .expect("stdin accepted");
-        tokio::time::timeout(test_timeout(2), stdin_received.notified())
-            .await
-            .expect("executor received stdin");
+            .expect("executor awaits cancellation");
         fixture
             .engine
             .cancel_run(
@@ -529,24 +494,19 @@ async fn cancelling_non_delegate_with_session_shaped_metadata_stays_generic() {
 async fn cancellation_deadline_bounds_a_wedged_tool_without_hanging() {
     use futures_util::FutureExt as _;
 
-    let (fixture, session_id, run_id, call_id, stdin_received, cleanup_progress_sent, captured, _) =
-        start_streaming_bash_test_run("wedge", true).await;
-    fixture
-        .engine
-        .tool_stdin(
-            RunToolStdinParams {
-                run_id,
-                call_id,
-                data: Some(STANDARD.encode(b"input\n")),
-                eof: false,
-            },
-            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
-        )
+    let (
+        fixture,
+        session_id,
+        run_id,
+        call_id,
+        awaiting_cancellation,
+        cleanup_progress_sent,
+        captured,
+        _,
+    ) = start_streaming_bash_test_run("wedge").await;
+    tokio::time::timeout(test_timeout(2), awaiting_cancellation.notified())
         .await
-        .expect("interactive stdin accepted");
-    tokio::time::timeout(test_timeout(2), stdin_received.notified())
-        .await
-        .expect("executor received stdin");
+        .expect("executor awaits cancellation");
     // Hold the blocking job after it enqueues progress but before send().await can
     // resume. Progress receipt, not the producer's continuation, proves acceptance.
     let (delivery_enqueued, release_delivery) = crate::runtime::block_artifact_io_for_test(

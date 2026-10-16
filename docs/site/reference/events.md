@@ -63,7 +63,7 @@ origin class. This keeps the origin grammar restricted to `user`, `engine`,
 | User input | `message_injected`, `user_input_admitted`, `user_input_submitted`, `user_input_transformed`, `user_input_recalled`, `user_input_recalled_v2`, `user_input_applied`, `user_input_queued`, `user_input_queue_recalled`, `user_input_queue_voided`, `session_model_selected` |
 | Run | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_interrupted` |
 | Model | `model_attempt_started`, `model_tools_published`, `model_request_prepared`, `model_output_started`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback`; live-only: `text_delta`, `reasoning_delta` |
-| Tools | `tool_call_started`, `tool_call_terminated`, `tool_output_elided`, `tool_stdin_submitted`, `tool_call_linked`, `delegate_queued`, `delegate_finished`, `delegate_finished_v2`, `delegate_child_terminated`; live-only: `tool_call_progress` |
+| Tools | `tool_call_started`, `tool_call_terminated`, `tool_output_elided`, `tool_stdin_submitted` (historical: tools no longer take stdin, so it is never written), `tool_call_linked`, `delegate_queued`, `delegate_finished`, `delegate_finished_v2`, `delegate_child_terminated`; live-only: `tool_call_progress` |
 | Delegation durability | `delegation_reserved`, `delegation_started`, `delegation_run_started`, `delegation_run_attached`, `delegation_finished` |
 | Approvals | `approval_requested`, `approval_evaluated`, `approval_escalated`, `approval_user_decision_recorded`, `approval_finalized`, `approval_cancelled`, `approval_doom_loop_detected`, `tree_approval_grant_committed` |
 | Internal agents | `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_completed`, `internal_agent_failed`, `internal_agent_cancelled`, `internal_agent_interrupted`, `internal_agent_fallback`; live-only: `internal_agent_text_delta` |
@@ -406,7 +406,7 @@ For a batch of tool calls from one model turn, `tool_call_started` events are
 written in model content order before execution begins. Calls may then execute
 in parallel, so progress and `tool_call_terminated` events from different calls
 may interleave, and terminations commit in completion order. The ordering
-guarantee is per call: its start precedes all of its progress and stdin events,
+guarantee is per call: its start precedes all of its progress events,
 which precede its single termination. Consumers must correlate calls by
 `tool_call_id` rather than cross-call event position. A failed termination
 carries one of the [tool failure codes](tools.md#tool-call-failures).

@@ -156,8 +156,6 @@ macro_rules! protocol_roots {
             SessionRecallInputResult,
             RunCancelParams,
             RunCancelResult,
-            RunToolStdinParams,
-            RunToolStdinResult,
             SessionRenameParams,
             SessionRenameResult,
             SessionRenameError,

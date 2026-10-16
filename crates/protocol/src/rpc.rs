@@ -1263,20 +1263,6 @@ pub struct RunCancelParams {
 pub struct RunCancelResult {
     pub cancelled: bool,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunToolStdinParams {
-    pub run_id: RunId,
-    pub call_id: ToolCallId,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<String>,
-    pub eof: bool,
-}
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunToolStdinResult {
-    pub accepted: bool,
-}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

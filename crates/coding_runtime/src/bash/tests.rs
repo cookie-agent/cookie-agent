@@ -260,31 +260,6 @@ fn fake_path_swap_cannot_change_prepared_executable() {
 }
 
 #[tokio::test]
-async fn interactive_is_prepared_for_runtime_stdin() {
-    let root = tempfile::tempdir().expect("root");
-    let tool = BashTool::new(&crate::test_workspace(root.path()));
-    let result = tool
-        .prepare(
-            cookie_agent_runtime_api::ToolPreparationContext {
-                session: SessionId::new_v7(),
-                run: RunId::new_v7(),
-                origin: crate::test_coding_origin(root.path()),
-                turn_context: crate::test_turn_context(),
-            },
-            cookie_agent_runtime_api::ToolCall {
-                id: ToolCallId::new_v7(),
-                name: "bash".into(),
-                arguments: serde_json::json!({
-                    "command": "echo unsafe",
-                    "interactive": true
-                }),
-            },
-        )
-        .await;
-    assert!(result.is_ok());
-}
-
-#[tokio::test]
 async fn output_reader_preserves_utf8_across_pipe_reads_and_flushes() {
     let root = tempfile::tempdir().unwrap();
     let call_id = ToolCallId::new_v7();
@@ -400,7 +375,6 @@ async fn real_bash_completion_keeps_read_order_and_nonzero_exits_are_data() {
                     "for i in 1 2 3; do printf 'stdout %s\\n' \"$i\"; sleep 0.04; printf 'stderr %s é\\n' \"$i\" >&2; sleep 0.04; done; exit {status}"
                 ),
                 timeout: 2_000,
-                interactive: false,
                 background: false,
             },
             cwd: crate::fs_cap::prepare_existing(Path::new("/"), root.path()).unwrap(),
@@ -496,7 +470,6 @@ async fn real_bash_timeout_drains_progress_before_terminal_completion() {
             args: BashArgs {
                 command: "printf 'ready\\n'; sleep 10".into(),
                 timeout: 2_000,
-                interactive: false,
                 background: false,
             },
             cwd: crate::fs_cap::prepare_existing(Path::new("/"), root.path())
@@ -516,7 +489,7 @@ async fn real_bash_timeout_drains_progress_before_terminal_completion() {
         .await
         .unwrap();
         let execute =
-            executor.execute_process(progress, tokio_util::sync::CancellationToken::new(), None);
+            executor.execute_process(progress, tokio_util::sync::CancellationToken::new());
         tokio::pin!(execute);
         let mut event_order = Vec::new();
         let mut progress_open = true;
@@ -631,19 +604,6 @@ async fn prepare_arguments(
 }
 
 #[tokio::test]
-async fn background_cannot_be_interactive() {
-    let root = tempfile::tempdir().unwrap();
-    let error = prepare_arguments(
-        root.path(),
-        serde_json::json!({"command":"cat","interactive":true,"background":true}),
-    )
-    .await
-    .err()
-    .expect("interactive background is rejected");
-    assert!(error.to_string().contains("cannot be combined"), "{error}");
-}
-
-#[tokio::test]
 async fn background_needs_an_engine_run() {
     let root = tempfile::tempdir().unwrap();
     let artifacts = tempfile::tempdir().unwrap();
@@ -679,7 +639,6 @@ async fn zero_timeout_never_times_out() {
         args: BashArgs {
             command: "sleep 0.2; exit 3".into(),
             timeout: 0,
-            interactive: false,
             background: false,
         },
         cwd: crate::fs_cap::prepare_existing(Path::new("/"), root.path()).unwrap(),

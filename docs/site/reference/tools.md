@@ -175,11 +175,10 @@ accepts. The effective model must also declare the modality and limits.
 ## Bash
 
 `bash` accepts a complete `command`, an optional `timeout` in milliseconds
-(default 120000; `0` never times out), `interactive` (default `false`), and
-`background` (default `false`). Interactive calls can receive bytes or EOF
-through the `run.tool_stdin` RPC while the call is active. Standard output and
-standard error are streamed separately during execution and retained as
-separate artifacts for the terminal result.
+(default 120000; `0` never times out), and `background` (default `false`).
+The command's standard input is empty: tools take no input while they run.
+Standard output and standard error are streamed separately during execution
+and retained as separate artifacts for the terminal result.
 
 The command runs in its own session and process group (a job object on
 Windows). When the shell exits, whatever it left in that group is killed, so
@@ -197,8 +196,7 @@ exactly like a tool result: the first and last lines of each stream, with a
 `read_artifact` hint into the retained artifact for anything omitted. The job reports only after its
 starting call is committed as completed. It is killed without a report if that
 call is cancelled before it commits, if a revert removes the call, if its
-session is deleted, or when the daemon stops. `background` cannot be combined
-with `interactive`.
+session is deleted, or when the daemon stops.
 
 ## Retained tool output
 

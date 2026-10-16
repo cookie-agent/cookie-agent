@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProgress, ToolProvider, ToolStdin,
+    ToolPreparationContext, ToolProgress, ToolProvider,
     events::OutputHub,
     permissions::{PermissionDecision, PermissionPipeline, PermissionScope},
     policy::FrozenRunPolicy,
@@ -692,12 +692,6 @@ impl Engine {
                 .entry(call.id)
                 .or_insert_with(|| OutputHub::new(call.id, 64 * 1024))
                 .clone();
-            let interactive = call.name == "bash"
-                && call
-                    .arguments
-                    .get("interactive")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
             let capture = if retain_output
                 && result_truncation != crate::ToolResultTruncationPolicy::OptOut
             {
@@ -723,14 +717,6 @@ impl Engine {
                     .unwrap_or_else(|p| p.into_inner())
                     .insert(call.id, capture.clone());
             }
-            let (stdin_tx, stdin) = ToolStdin::channel(64);
-            if interactive {
-                active
-                    .stdin
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert(call.id, stdin_tx);
-            }
             let tool_cancellation = active.cancellation.child_token();
             let invoke = std::panic::AssertUnwindSafe(executor.execute(ToolExecutionContext {
                 session: active.session,
@@ -744,7 +730,6 @@ impl Engine {
                     _ => ProgressSink::new(progress_tx.clone()),
                 },
                 cancellation: tool_cancellation.clone(),
-                stdin: interactive.then_some(stdin),
                 turn_context,
                 artifacts: engine.inner.artifacts.clone(),
                 background: Some(Arc::new(super::background_tasks::BackgroundCapability {
@@ -761,11 +746,6 @@ impl Engine {
             loop {
                 tokio::select! {
                     result = &mut invoke => {
-                        active
-                            .stdin
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .remove(&call.id);
                         while let Ok(progress) = progress_rx.try_recv() {
                             publish_tool_progress(&engine, active.session, run, &progress);
                         }
@@ -803,11 +783,6 @@ impl Engine {
                     }
                     _ = active.cancellation.cancelled() => {
                         tool_cancellation.cancel();
-                        active
-                            .stdin
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .remove(&call.id);
                         let cleanup_deadline =
                             tokio::time::Instant::now() + TOOL_CANCELLATION_CLEANUP_TIMEOUT;
                         let cleanup = tokio::time::sleep_until(cleanup_deadline);

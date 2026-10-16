@@ -2348,6 +2348,8 @@ pub enum EventPayload {
         original_bytes: u64,
         retained: ArtifactReference,
     },
+    /// Historical: stdin written to an interactive call. Tools no longer take
+    /// stdin, so this is never written; older logs still read.
     ToolStdinSubmitted {
         tool_call_id: ToolCallId,
         byte_count: u64,

@@ -1129,11 +1129,11 @@ async fn bash_internal_timeout_commits_all_chunks_before_terminal_event() {
         session_id,
         _run_id,
         call_id,
-        _stdin_received,
+        _awaiting_cancellation,
         _cleanup_progress_sent,
         captured,
         live,
-    ) = start_streaming_bash_test_run("timeout", false).await;
+    ) = start_streaming_bash_test_run("timeout").await;
     await_event(
         &fixture.engine,
         session_id,

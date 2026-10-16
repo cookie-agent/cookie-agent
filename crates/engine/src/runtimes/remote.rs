@@ -34,15 +34,15 @@ use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, ProgressSink, PromptSection,
     RuntimeConnection, RuntimeConnector, RuntimeInfo, SessionToolContext, ToolArtifacts, ToolCall,
     ToolCompletion, ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider,
-    ToolSpec, ToolStdin, WorkspaceContext,
+    ToolSpec, WorkspaceContext,
     context::AgentMdContext,
     protocol::{
         self, ContextParams, ContextResult, Empty, ExecuteOutcome, ExecuteParams, ExecuteResult,
         InitializeParams, InitializeResult, InlineMedia, JobCompletedParams, JobProgressParams,
         JobRef, JobStartedParams, McpChangedParams, McpReconnectParams, McpServerReport, Outcome,
         PrepareOutcome, PrepareParams, PrepareResult, PreparedCall, PreparedRef,
-        RUNTIME_PROTOCOL_VERSION, RuntimeSettings, RuntimeSkills, RuntimeTools, StdinParams,
-        ToolProgressParams, WireBackgroundReport, WireToolCall, error_code, method,
+        RUNTIME_PROTOCOL_VERSION, RuntimeSettings, RuntimeSkills, RuntimeTools, ToolProgressParams,
+        WireBackgroundReport, WireToolCall, error_code, method,
     },
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
 };
@@ -843,7 +843,6 @@ impl ClientInner {
             run,
             progress,
             cancellation,
-            stdin,
             turn_context,
             artifacts,
             background,
@@ -853,7 +852,6 @@ impl ClientInner {
             session,
             run,
             turn: turn_context.as_ref().into(),
-            stdin: stdin.is_some(),
             background: background.is_some(),
         };
         lock(&self.executions).insert(
@@ -873,9 +871,6 @@ impl ClientInner {
             .peer
             .request::<_, ExecuteResult>(method::TOOL_EXECUTE, &params);
         tokio::pin!(request);
-        let mut stdin_open = stdin.is_some();
-        let forward = self.forward_stdin(prepared_id, stdin);
-        tokio::pin!(forward);
         let mut cancel_sent = false;
         let reply = loop {
             tokio::select! {
@@ -884,7 +879,6 @@ impl ClientInner {
                     cancel_sent = true;
                     let _ = self.peer.notify(method::TOOL_CANCEL, &PreparedRef { prepared_id }).await;
                 }
-                () = &mut forward, if stdin_open => stdin_open = false,
             }
         };
         guard.finished = true;
@@ -908,48 +902,6 @@ impl ClientInner {
         };
         retain_media(artifacts.as_ref(), session, reply.media, &completion)?;
         Ok(completion)
-    }
-
-    /// Forwards the call's stdin until it ends or the runtime stops taking
-    /// it.
-    async fn forward_stdin(&self, prepared_id: u64, stdin: Option<ToolStdin>) {
-        let Some(mut stdin) = stdin else {
-            return;
-        };
-        while let Some(write) = stdin.recv().await {
-            let mut chunks = write
-                .data
-                .chunks(protocol::MAX_STDIN_WRITE_BYTES)
-                .peekable();
-            let mut sent = false;
-            while let Some(chunk) = chunks.next() {
-                if !self
-                    .send_stdin(prepared_id, chunk, write.eof && chunks.peek().is_none())
-                    .await
-                {
-                    return;
-                }
-                sent = true;
-            }
-            if !sent && !self.send_stdin(prepared_id, &[], write.eof).await {
-                return;
-            }
-        }
-    }
-
-    async fn send_stdin(&self, prepared_id: u64, data: &[u8], eof: bool) -> bool {
-        let outcome: Result<Outcome, RpcError> = self
-            .peer
-            .request(
-                method::TOOL_STDIN,
-                &StdinParams {
-                    prepared_id,
-                    data: base64::engine::general_purpose::STANDARD.encode(data),
-                    eof,
-                },
-            )
-            .await;
-        matches!(outcome, Ok(Outcome { error: None }))
     }
 
     /// Launches the jobs the call reserved that the runtime launched, and

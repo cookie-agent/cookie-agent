@@ -34,11 +34,13 @@ engine's `runtimes::remote` module.
 
 ## Version
 
-The protocol version is an integer, currently **2**
+The protocol version is an integer, currently **3**
 (`protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its version in
 `runtime/initialize`; a runtime that speaks another version fails the request
 with code `-32010` and a message naming both versions, and the daemon checks
 the version in the reply the same way. There is no negotiation.
+Version 3 removed `tool/stdin` and the `stdin` flag of `tool/execute`: tools
+no longer take input while they run.
 
 ## Lifecycle
 
@@ -89,7 +91,6 @@ transparently.
 | `tool/execute` | daemon → runtime | request | Run a prepared call; returns its terminal result |
 | `tool/release` | daemon → runtime | notification | Discard a prepared call that will not run |
 | `tool/progress` | runtime → daemon | request | Display and output deltas of an executing call |
-| `tool/stdin` | daemon → runtime | request | Bytes for an interactive call's stdin |
 | `tool/cancel` | daemon → runtime | notification | Cancel an executing call |
 | `job/started` | runtime → daemon | request | An executing call reserves a background job |
 | `job/progress` | runtime → daemon | request | Output of a background job |
@@ -209,7 +210,6 @@ a notification.
 |---|---|
 | `prepared_id` | The call to run; executing consumes it. |
 | `session`, `run`, `turn` | As for prepare. |
-| `stdin` | The daemon forwards stdin with `tool/stdin`. |
 | `background` | The call may start background jobs. |
 
 The result's `outcome` is tagged by `status`: `completed` with the terminal
@@ -231,10 +231,9 @@ each answer, so output reaches the daemon's capture in order, the daemon's
 capture limits reach the tool, and every chunk precedes the execute reply.
 The daemon owns capture, previews, and artifact retention.
 
-`tool/stdin` carries `prepared_id`, base64 `data` (at most 1 MiB decoded), and
-`eof`. `tool/cancel` cancels the call; it still answers its execute request.
-The runtime registers an execution as the request arrives, so stdin and
-cancellation sent right after execute reach it.
+`tool/cancel` cancels the call; it still answers its execute request. The
+runtime registers an execution as the request arrives, so a cancellation sent
+right after execute reaches it.
 
 ### Background jobs
 

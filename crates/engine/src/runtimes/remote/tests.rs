@@ -15,9 +15,9 @@ use cookie_agent_protocol::{
 use cookie_agent_runtime_api::{
     BackgroundJob, BackgroundJobs, BackgroundLauncher, BackgroundReport, BackgroundTask,
     CodingToolsFactory, PreparedExecutor, PreparedTool, ProgressCapture, ProgressSink,
-    RuntimeConnector, SessionToolContext, StdinWrite, ToolArtifacts, ToolCall, ToolCompletion,
-    ToolError, ToolExecutionContext, ToolOrigin, ToolPreparationContext, ToolProgress,
-    ToolProvider, ToolSpec, ToolStdin, TurnAgentContext, authoring,
+    RuntimeConnector, SessionToolContext, ToolArtifacts, ToolCall, ToolCompletion, ToolError,
+    ToolExecutionContext, ToolOrigin, ToolPreparationContext, ToolProgress, ToolProvider, ToolSpec,
+    TurnAgentContext, authoring,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -315,7 +315,6 @@ struct Call {
 
 fn call_context(
     cancellation: CancellationToken,
-    stdin: Option<ToolStdin>,
     background: Option<Arc<dyn BackgroundJobs>>,
 ) -> Call {
     let capture = Arc::new(RecordingCapture::default());
@@ -327,7 +326,6 @@ fn call_context(
             run: RunId::new_v7(),
             progress: ProgressSink::with_capture(sender, capture.clone()),
             cancellation,
-            stdin,
             turn_context: turn_context(),
             artifacts: artifacts.clone(),
             background,
@@ -350,7 +348,7 @@ async fn execute(
 }
 
 #[tokio::test]
-async fn streamed_output_and_stdin_cross_the_protocol() {
+async fn streamed_output_crosses_the_protocol() {
     let workspace = private_tempdir();
     let connector = TestConnector::builtin();
     let (started, provider) = connect(&connector, workspace.path()).await;
@@ -366,8 +364,7 @@ async fn streamed_output_and_stdin_cross_the_protocol() {
         &started,
         "bash",
         serde_json::json!({
-            "command": "read line; echo \"got:$line\"; echo diagnostics >&2",
-            "interactive": true,
+            "command": "echo got:hello; echo diagnostics >&2",
         }),
     )
     .await;
@@ -375,7 +372,7 @@ async fn streamed_output_and_stdin_cross_the_protocol() {
     assert_eq!(declaration.permission_name, "bash");
     assert_eq!(
         declaration.permission_resource.as_deref(),
-        Some("read line; echo \"got:$line\"; echo diagnostics >&2")
+        Some("echo got:hello; echo diagnostics >&2")
     );
     assert_eq!(declaration.presentation.title.as_str(), "bash");
     assert_eq!(
@@ -389,15 +386,7 @@ async fn streamed_output_and_stdin_cross_the_protocol() {
             .is_err()
     );
 
-    let (stdin, input) = ToolStdin::channel(4);
-    let call = call_context(CancellationToken::new(), Some(input), None);
-    stdin
-        .send(StdinWrite {
-            data: b"hello\n".to_vec(),
-            eof: true,
-        })
-        .await
-        .unwrap();
+    let call = call_context(CancellationToken::new(), None);
     let completion = execute(prepared, call.context).await.unwrap();
     assert!(!completion.failed);
     assert_eq!(call.capture.stream("stdout"), "got:hello\n");
@@ -418,7 +407,7 @@ async fn cancellation_reaches_the_call_in_the_runtime() {
     )
     .await;
     let cancellation = CancellationToken::new();
-    let call = call_context(cancellation.clone(), None, None);
+    let call = call_context(cancellation.clone(), None);
     let capture = Arc::clone(&call.capture);
     let started_at = std::time::Instant::now();
     let execution = tokio::spawn(execute(prepared, call.context));
@@ -555,7 +544,7 @@ async fn retained_media_travels_inline_and_lands_in_the_daemon_store() {
             b"snapshot".to_vec()
         ))
     );
-    let call = call_context(CancellationToken::new(), None, None);
+    let call = call_context(CancellationToken::new(), None);
     let completion = execute(prepared, call.context).await.unwrap();
     assert_eq!(call.artifacts.retained.lock().unwrap().as_slice(), [PIXEL]);
     let attachment = &completion.result.attachments[0];
@@ -590,7 +579,7 @@ async fn a_background_bash_job_reports_through_the_daemon() {
         reports,
         display: Mutex::default(),
     });
-    let call = call_context(CancellationToken::new(), None, Some(jobs));
+    let call = call_context(CancellationToken::new(), Some(jobs));
     let completion = execute(prepared, call.context).await.unwrap();
     assert_eq!(completion.result.metadata["background"], true);
     let report = tokio::time::timeout(WAIT, reported.recv())
@@ -625,7 +614,7 @@ async fn transport_loss_fails_calls_and_jobs_in_flight() {
         reports,
         display: Mutex::default(),
     });
-    let call = call_context(CancellationToken::new(), None, Some(jobs));
+    let call = call_context(CancellationToken::new(), Some(jobs));
     execute(job, call.context).await.unwrap();
 
     let running = prepare(
@@ -635,7 +624,7 @@ async fn transport_loss_fails_calls_and_jobs_in_flight() {
         serde_json::json!({"command": "echo started; sleep 30"}),
     )
     .await;
-    let call = call_context(CancellationToken::new(), None, None);
+    let call = call_context(CancellationToken::new(), None);
     let capture = Arc::clone(&call.capture);
     let execution = tokio::spawn(execute(running, call.context));
     while capture.stream("stdout").is_empty() {

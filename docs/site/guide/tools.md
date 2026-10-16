@@ -181,7 +181,7 @@ Replace oldString with newString in a file, atomically.
 ## `bash`
 
 ```text
-bash(background?: boolean, command: string, interactive?: boolean, timeout?: integer)
+bash(background?: boolean, command: string, timeout?: integer)
 ```
 
 Description sent to the model on Linux and macOS:
@@ -200,7 +200,6 @@ Execute one prepared Git Bash command. Single-quote native Windows paths (for ex
 |---|---|---|---|
 | `background` | `boolean` | no | Run in the background: return at once and get a notification when it exits. Default: `false`. |
 | `command` | `string` | yes |  |
-| `interactive` | `boolean` | no | Default: `false`. |
 | `timeout` | `integer` | no | Milliseconds before the command is killed; 0 never times out. Default: `120000`. |
 
 ??? note "Parameters JSON Schema"
@@ -216,10 +215,6 @@ Execute one prepared Git Bash command. Single-quote native Windows paths (for ex
         },
         "command": {
           "type": "string"
-        },
-        "interactive": {
-          "default": false,
-          "type": "boolean"
         },
         "timeout": {
           "default": 120000,

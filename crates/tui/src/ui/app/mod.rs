@@ -35,7 +35,6 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt::Write as _,
     io::{self, Write as _},
-    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -52,11 +51,11 @@ use cookie_agent_protocol::{
     McpServerSetEnabledParams, McpServerState, ModelKey, ModelSelection, PermissionAction,
     PermissionEffect, PermissionMode, PermissionRule, PermissionRuleSource, ProviderConnectParams,
     ProviderDescriptor, ProviderDisconnectParams, RunCancelParams, RunSelection,
-    RunToolStdinParams, SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE, SafeDisplayText,
-    SessionCompactParams, SessionCreateParams, SessionForkParams, SessionId, SessionListParams,
-    SessionMeta, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionPreviewParams, SessionPermissionSetParams,
-    SessionRecallInputParams, SessionRecallInputResult, SessionResumeParams, SessionRevertParams,
+    SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE, SafeDisplayText, SessionCompactParams,
+    SessionCreateParams, SessionForkParams, SessionId, SessionListParams, SessionMeta,
+    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
+    SessionPermissionPreviewParams, SessionPermissionSetParams, SessionRecallInputParams,
+    SessionRecallInputResult, SessionResumeParams, SessionRevertParams,
     SessionSetPermissionModeParams, SessionStatus, SessionSubmitInputParams,
     SessionSubmitInputResult, SessionTitle, SessionTitleChange, SessionTree, SessionTreeParams,
     SessionTreeUsageResult, SessionUsageParams, SessionUsageResult, StoredEvent, VariantId,
@@ -200,7 +199,7 @@ pub(super) enum ClipboardSink {
     #[default]
     Osc52,
     #[cfg(test)]
-    Capture(Arc<std::sync::Mutex<Vec<String>>>),
+    Capture(std::sync::Arc<std::sync::Mutex<Vec<String>>>),
 }
 
 /// The user-message action the menu/confirm guard acts on. The message's
@@ -591,9 +590,6 @@ pub struct App {
     /// Bumped on every draft change; a debounced publish of the draft as the
     /// session's model selection goes out only if no later change followed.
     pub(super) draft_publish_generation: u64,
-    pub(super) stdin_lanes: Arc<
-        tokio::sync::Mutex<HashMap<cookie_agent_protocol::ToolCallId, Arc<tokio::sync::Mutex<()>>>>,
-    >,
     pub store: StateStore,
     pub(super) sessions: Vec<SessionMeta>,
     sessions_revision: u64,
@@ -712,7 +708,6 @@ pub struct App {
     pub(super) last_quit_press: Option<Instant>,
     pub(super) input: InputState,
     pub(super) modal: Modal,
-    pub(super) stdin_target: Option<cookie_agent_protocol::ToolCallId>,
     pub(super) status: String,
     session_errors: SessionErrorSummary,
     pub(super) should_quit: bool,
@@ -1033,7 +1028,6 @@ const TREE_REFRESH_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long selecting a session waits inline for its replay before letting
 /// the UI run again. The replay itself is not cancelled.
 const SELECT_SUBSCRIPTION_WAIT: Duration = Duration::from_secs(6);
-const STDIN_RPC_TIMEOUT: Duration = Duration::from_secs(1);
 const SESSION_COST_DEBOUNCE: Duration = Duration::from_millis(250);
 impl App {
     #[cfg(test)]
@@ -1150,7 +1144,6 @@ impl App {
             reconnecting: false,
             recent_trees: std::collections::VecDeque::new(),
             draft_publish_generation: 0,
-            stdin_lanes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             store: StateStore::default(),
             sessions: Vec::new(),
             sessions_revision: 0,
@@ -1239,7 +1232,6 @@ impl App {
             last_quit_press: None,
             input: InputState::default(),
             modal: Modal::None,
-            stdin_target: None,
             status: "Connected. Press / or Ctrl-P for commands.".into(),
             session_errors: SessionErrorSummary::default(),
             should_quit: false,

@@ -5,7 +5,7 @@ Protocol 40 is current-only. A client must call `handshake` before any other
 method:
 
 ```json
-{ "protocol_version": 41, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+{ "protocol_version": 42, "client": { "kind": "tui", "instance_id": "<uuid>" } }
 ```
 
 `client.kind` names the client program: a lowercase letter followed by up to 15
@@ -14,7 +14,7 @@ lowercase letters, digits, or hyphens (the shipped clients use `tui` and `cli`).
 across reconnects so it can recognize events it caused. Any number of clients
 may connect to one daemon at once.
 
-The response is `{ "protocol_version": 41, "origin": "client:<kind>-<id>" }`,
+The response is `{ "protocol_version": 42, "origin": "client:<kind>-<id>" }`,
 where `<id>` is the instance id as 32 lowercase hex digits. The daemon stamps
 that origin on every event the connection's requests cause, so each client can
 tell its own actions from another client's. A repeated handshake on the same
@@ -48,11 +48,12 @@ state and their hosting `runtime_id` and `workspace` in `mcp.server.list`,
 rules, overlays, grants, approval requests, and `session.permission.get` can
 name a runtime's own actions; `session.permission.get` lists the built-in
 actions, then the actions of the session's tools, then any other action a rule
-names. Older clients are rejected.
+names. Protocol 42 removed `run.tool_stdin`: tools no longer take input while
+they run. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 41.
+members of protocol 42.
 
 ## Error diagnostics
 
@@ -75,7 +76,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 41 alongside independent display and output references. The
+preserved in protocol 42 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -180,7 +181,6 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.submit_input` | Session ID, input, `steer` or `queue` delivery, optional selection, client run ID, optional `reset_fallback` | `started` run ID, `steered` run ID and seq, `queued` seq, or `handled` reason |
 | `session.recall_input` | Session ID, seq of a pending or queued input | `recalled` text, `gone`, or `not_owner` |
 | `run.cancel` | Run ID | `cancelled` boolean |
-| `run.tool_stdin` | Run ID, tool call ID, optional data, EOF flag | `accepted` boolean |
 | `events.subscribe` | Session ID, optional cursor and `cursor_timestamp`, optional `limit` | Stored events after the cursor, or `stale_cursor`; starts notifications on the final page (see [Subscriptions](events.md#subscriptions)) |
 | `events.unsubscribe` | Session ID | Whether this connection had a live tail for it |
 | `approval.list` | Root session ID, optional status | Approval records and tree grants |

@@ -336,7 +336,6 @@ async fn execute(
             run: RunId::new_v7(),
             progress: ProgressSink::new(progress),
             cancellation,
-            stdin: None,
             turn_context: turn_context(),
             artifacts: crate::ArtifactRouter::open_flat(harness.directory.path().join("artifacts"))
                 .expect("artifact store"),

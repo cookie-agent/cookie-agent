@@ -30,7 +30,7 @@ pub(crate) fn test_turn_context() -> Arc<TurnAgentContext> {
 #[derive(Clone)]
 pub(crate) struct TestStreamingBashProvider {
     pub(crate) output_started: Arc<tokio::sync::Notify>,
-    pub(crate) stdin_received: Arc<tokio::sync::Notify>,
+    pub(crate) awaiting_cancellation: Arc<tokio::sync::Notify>,
     pub(crate) cleanup_progress_sent: Arc<tokio::sync::Notify>,
 }
 
@@ -38,7 +38,7 @@ pub(crate) struct TestStreamingBashExecutor {
     pub(crate) call_id: ToolCallId,
     pub(crate) command: String,
     pub(crate) output_started: Arc<tokio::sync::Notify>,
-    pub(crate) stdin_received: Arc<tokio::sync::Notify>,
+    pub(crate) awaiting_cancellation: Arc<tokio::sync::Notify>,
     pub(crate) cleanup_progress_sent: Arc<tokio::sync::Notify>,
 }
 
@@ -61,10 +61,9 @@ impl ToolProvider for TestStreamingBashProvider {
                 "type":"object",
                 "additionalProperties":false,
                 "properties":{
-                    "command":{"type":"string"},
-                    "interactive":{"type":"boolean"}
+                    "command":{"type":"string"}
                 },
-                "required":["command","interactive"]
+                "required":["command"]
             }),
         }])
     }
@@ -143,7 +142,7 @@ impl ToolProvider for TestStreamingBashProvider {
                 call_id: call.id,
                 command: command.clone(),
                 output_started: Arc::clone(&self.output_started),
-                stdin_received: Arc::clone(&self.stdin_received),
+                awaiting_cancellation: Arc::clone(&self.awaiting_cancellation),
                 cleanup_progress_sent: Arc::clone(&self.cleanup_progress_sent),
             }),
         )?
@@ -188,17 +187,7 @@ output: vec![cookie_agent_protocol::ToolOutputChunk { stream: None, text: "autho
                 .await?;
             return Err(ToolError::execution("bash timed out"));
         }
-        let mut stdin = context
-            .stdin
-            .ok_or_else(|| ToolError::execution("interactive stdin missing"))?;
-        let write = stdin
-            .recv()
-            .await
-            .ok_or_else(|| ToolError::execution("interactive stdin closed"))?;
-        if write.data != b"input\n" || write.eof {
-            return Err(ToolError::execution("unexpected interactive stdin"));
-        }
-        self.stdin_received.notify_one();
+        self.awaiting_cancellation.notify_one();
         context.cancellation.cancelled().await;
         if self.command == "wedge" {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;

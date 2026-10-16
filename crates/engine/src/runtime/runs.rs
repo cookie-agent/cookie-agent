@@ -1,9 +1,8 @@
 use std::{collections::HashSet, sync::Arc};
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
     ApprovalStatus, EventOrigin, RunCancelResult, RunId, RunStartParams, RunStartResult,
-    RunSteerResult, RunToolStdinParams, RunToolStdinResult, SessionId, SessionStatus,
+    RunSteerResult, SessionId, SessionStatus,
 };
 
 use super::{
@@ -11,7 +10,6 @@ use super::{
     approval_projection::{approval_records, approval_run_id},
     helpers::safe_error,
 };
-use cookie_agent_runtime_api::StdinWrite;
 
 impl Engine {
     pub async fn start_run(
@@ -234,11 +232,6 @@ impl Engine {
             );
         };
         active.cancellation.cancel();
-        active
-            .stdin
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
         let origin = active.cancel_origin();
         let mut committed = active
             .cancelled_committed
@@ -352,64 +345,6 @@ impl Engine {
             }))
     }
 
-    pub async fn tool_stdin(
-        &self,
-        params: RunToolStdinParams,
-        origin: EventOrigin,
-    ) -> Result<RunToolStdinResult, EngineError> {
-        let active = self
-            .inner
-            .sessions
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&params.run_id)
-            .cloned()
-            .ok_or(EngineError::MissingRun(params.run_id))?;
-        let session = active.session;
-        // Stdin forwards bytes to a running tool and appends only
-        // `ToolStdinSubmitted`, which producer reconciliation never reads.
-        self.on_actor_unreconciled(session, move |engine| {
-            let active = engine.active_run_in(session, params.run_id)?;
-            let data = params
-                .data
-                .map(|encoded| STANDARD.decode(encoded))
-                .transpose()?
-                .unwrap_or_default();
-            let sender = active
-                .stdin
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(&params.call_id)
-                .cloned()
-                .ok_or(EngineError::StdinUnavailable)?;
-            sender
-                .try_send(StdinWrite {
-                    data: data.clone(),
-                    eof: params.eof,
-                })
-                .map_err(|_| EngineError::StdinUnavailable)?;
-            if params.eof {
-                active
-                    .stdin
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .remove(&params.call_id);
-            }
-            engine.append_direct(
-                session,
-                Some(params.run_id),
-                origin,
-                Event::ToolStdinSubmitted {
-                    tool_call_id: params.call_id,
-                    byte_count: data.len() as u64,
-                },
-            )?;
-            Ok(RunToolStdinResult { accepted: true })
-        })
-        .await
-    }
-
     /// The active run `run` when it belongs to `session`.
     pub(super) fn active_run_in(
         &self,
@@ -442,8 +377,8 @@ impl Engine {
             .is_some_and(|run| run.status == SessionStatus::Running))
     }
 
-    /// Cancels `run` on `session`'s actor: trips its cancellation, drops its
-    /// stdin channels, and cancels the approvals it still has pending.
+    /// Cancels `run` on `session`'s actor: trips its cancellation and cancels
+    /// the approvals it still has pending.
     async fn cancel_on_actor(
         &self,
         session: SessionId,
@@ -458,11 +393,6 @@ impl Engine {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .get_or_insert(origin);
             active.cancellation.cancel();
-            active
-                .stdin
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clear();
             let events = engine.inner.store.log(session)?.event_snapshot();
             let pending = approval_records(session, &events)
                 .into_values()

@@ -571,7 +571,6 @@ impl Engine {
             cancellation: CancellationToken::new(),
             cancelled_committed: Mutex::new(false),
             cancelled_by: Mutex::new(None),
-            stdin: Mutex::new(HashMap::new()),
             fallback_index: AtomicU64::new(0),
             auto_compaction_failures: AtomicU8::new(0),
             auto_compaction_diagnostic_emitted: AtomicBool::new(false),

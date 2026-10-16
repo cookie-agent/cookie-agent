@@ -947,51 +947,6 @@ impl App {
             render_confirm_panel(frame, screen, "Revert conversation", body, theme);
     }
 
-    pub async fn send_stdin(&mut self, input: String, eof: bool) {
-        let Some((run_id, call_id)) = self.selected_running_tool() else {
-            self.status = "no running interactive tool".into();
-            return;
-        };
-        let data = (!input.is_empty()).then(|| STANDARD.encode(input.as_bytes()));
-        let client = self.client.clone();
-        let updates = self.rpc_updates_tx.clone();
-        let lane = {
-            let mut lanes = self.stdin_lanes.lock().await;
-            lanes
-                .entry(call_id)
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone()
-        };
-        self.spawn_rpc(async move {
-            let _guard = lane.lock().await;
-            let update = match tokio::time::timeout(
-                STDIN_RPC_TIMEOUT,
-                client.tool_stdin(RunToolStdinParams {
-                    run_id,
-                    call_id,
-                    data,
-                    eof,
-                }),
-            )
-            .await
-            {
-                Err(_) => RpcUpdate::Status("stdin request timed out".into()),
-                Ok(Ok(result)) if !result.accepted => {
-                    RpcUpdate::Status("stdin was rejected by the tool".into())
-                }
-                Ok(Ok(_)) => {
-                    if eof {
-                        RpcUpdate::Notice("tool stdin closed".into())
-                    } else {
-                        RpcUpdate::Notice("stdin sent".into())
-                    }
-                }
-                Ok(Err(error)) => RpcUpdate::Status(error.to_string()),
-            };
-            let _ = updates.send(update);
-        });
-    }
-
     pub(in crate::ui) async fn run_command(&mut self, command: SlashCommand) {
         match command {
             SlashCommand::Quit => self.should_quit = true,

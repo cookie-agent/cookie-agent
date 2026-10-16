@@ -31,8 +31,8 @@ mod runtime;
 pub use error::ToolError;
 pub use execution::{
     AdapterFamily, ArtifactReadPage, BackgroundJob, BackgroundJobs, BackgroundLauncher,
-    BackgroundReport, BackgroundTask, ProgressCapture, ProgressSink, StdinWrite, ToolArtifacts,
-    ToolExecutionContext, ToolPreparationContext, ToolProgress, ToolStdin, TurnAgentContext,
+    BackgroundReport, BackgroundTask, ProgressCapture, ProgressSink, ToolArtifacts,
+    ToolExecutionContext, ToolPreparationContext, ToolProgress, TurnAgentContext,
 };
 pub use prepared::{
     PreparedDeclaration, PreparedExecutor, PreparedExecutorCell, PreparedSerializationKey,

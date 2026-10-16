@@ -24,7 +24,7 @@ use crate::{
 };
 
 /// The runtime protocol version. Both ends must speak exactly this version.
-pub const RUNTIME_PROTOCOL_VERSION: u32 = 2;
+pub const RUNTIME_PROTOCOL_VERSION: u32 = 3;
 
 /// The largest frame either end sends or accepts. It fits an `execute`
 /// reply carrying [`MAX_INLINE_MEDIA_BYTES`] of base64 media next to a full
@@ -37,9 +37,6 @@ pub const MAX_INLINE_MEDIA_BYTES: u64 = crate::media::MAX_VIDEO_ATTACHMENT_BYTES
 
 /// The most calls one `tool/prepare` request carries.
 pub const MAX_PREPARE_BATCH: usize = 256;
-
-/// The most bytes one `tool/stdin` request carries, before base64.
-pub const MAX_STDIN_WRITE_BYTES: usize = 1024 * 1024;
 
 /// Method names.
 pub mod method {
@@ -62,8 +59,6 @@ pub mod method {
     pub const TOOL_RELEASE: &str = "tool/release";
     /// runtime → daemon: display and output of an executing call.
     pub const TOOL_PROGRESS: &str = "tool/progress";
-    /// daemon → runtime: bytes for an interactive call's stdin.
-    pub const TOOL_STDIN: &str = "tool/stdin";
     /// daemon → runtime (notification): cancel an executing call.
     pub const TOOL_CANCEL: &str = "tool/cancel";
     /// runtime → daemon: an executing call reserves a background job.
@@ -529,8 +524,6 @@ pub struct ExecuteParams {
     pub session: SessionId,
     pub run: RunId,
     pub turn: WireTurnContext,
-    /// The daemon forwards stdin with `tool/stdin`.
-    pub stdin: bool,
     /// The call may start background jobs.
     pub background: bool,
 }
@@ -583,7 +576,7 @@ pub fn artifact_reference(sha256: &str) -> cookie_agent_protocol::ArtifactRefere
     }
 }
 
-// --- tool/progress, tool/stdin --------------------------------------------------
+// --- tool/progress ---------------------------------------------------------------
 
 /// Display and output deltas, bounded like in-process progress.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -624,15 +617,6 @@ impl From<WireProgress> for ToolProgress {
 pub struct ToolProgressParams {
     pub prepared_id: u64,
     pub progress: WireProgress,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct StdinParams {
-    pub prepared_id: u64,
-    /// Standard base64, at most [`MAX_STDIN_WRITE_BYTES`] decoded.
-    pub data: String,
-    pub eof: bool,
 }
 
 // --- job/* ---------------------------------------------------------------------

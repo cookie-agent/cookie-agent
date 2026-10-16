@@ -2003,7 +2003,6 @@ pub(crate) async fn live_progress_chunks(
 
 pub(crate) async fn start_streaming_bash_test_run(
     command: &str,
-    interactive: bool,
 ) -> (
     Fixture,
     SessionId,
@@ -2021,7 +2020,7 @@ pub(crate) async fn start_streaming_bash_test_run(
             scripted_tool_body(
                 "streaming-test-call",
                 "bash",
-                serde_json::json!({"command":command, "interactive":interactive}),
+                serde_json::json!({"command":command}),
             ),
         ))
         .expect("scripted tool response");
@@ -2030,13 +2029,13 @@ pub(crate) async fn start_streaming_bash_test_run(
         "---\ndescription: Streaming timeout test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: allow\n---\nTest streaming timeout ordering.\n",
     );
     let output_started = Arc::new(tokio::sync::Notify::new());
-    let stdin_received = Arc::new(tokio::sync::Notify::new());
+    let awaiting_cancellation = Arc::new(tokio::sync::Notify::new());
     let cleanup_progress_sent = Arc::new(tokio::sync::Notify::new());
     fixture.engine.register_tool_provider(
         crate::ToolLayer::Local,
         Arc::new(TestStreamingBashProvider {
             output_started: Arc::clone(&output_started),
-            stdin_received: Arc::clone(&stdin_received),
+            awaiting_cancellation: Arc::clone(&awaiting_cancellation),
             cleanup_progress_sent: Arc::clone(&cleanup_progress_sent),
         }),
     );
@@ -2086,7 +2085,7 @@ pub(crate) async fn start_streaming_bash_test_run(
         session_id,
         run_id,
         call_id,
-        stdin_received,
+        awaiting_cancellation,
         cleanup_progress_sent,
         captured,
         live,

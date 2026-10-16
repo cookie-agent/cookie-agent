@@ -1116,43 +1116,6 @@ impl App {
         }
     }
 
-    pub(in crate::ui) fn selected_running_tool(
-        &mut self,
-    ) -> Option<(
-        cookie_agent_protocol::RunId,
-        cookie_agent_protocol::ToolCallId,
-    )> {
-        let session_id = self.selected?;
-        let run_id = self.store.sessions.get(&session_id)?.active_run?;
-        let running = self.running_tool_ids();
-        if !self
-            .stdin_target
-            .is_some_and(|call_id| running.contains(&call_id))
-        {
-            self.stdin_target = running.first().copied();
-        }
-        let call_id = self.stdin_target?;
-        let state = self.store.sessions.get(&session_id)?;
-        (state.tools.get(&call_id)?.status == ToolStatus::Running).then_some((run_id, call_id))
-    }
-
-    pub(in crate::ui) fn running_tool_ids(&self) -> Vec<cookie_agent_protocol::ToolCallId> {
-        let Some(session_id) = self.selected else {
-            return Vec::new();
-        };
-        let Some(state) = self.store.sessions.get(&session_id) else {
-            return Vec::new();
-        };
-        let mut ids = state
-            .tools
-            .values()
-            .filter(|tool| tool.status == ToolStatus::Running)
-            .map(|tool| tool.id)
-            .collect::<Vec<_>>();
-        ids.sort_by_key(ToString::to_string);
-        ids
-    }
-
     /// The selected session's running run, if any: what Ctrl-C interrupts.
     pub(in crate::ui) fn selected_active_run(&self) -> Option<cookie_agent_protocol::RunId> {
         self.selected

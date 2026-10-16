@@ -5,9 +5,8 @@
 //! `runtime/context` with the workspace's `AGENTS.md`, and prepares and
 //! executes calls. It keeps each prepared call under its prepared ID until
 //! the daemon executes or releases it, runs executions concurrently, sends
-//! their progress back with `tool/progress`, feeds `tool/stdin` to
-//! interactive calls, and runs background jobs locally, reporting them with
-//! `job/*`. It hosts the template's MCP servers (`docs/site/specs/runtimes.md`
+//! their progress back with `tool/progress`, and runs background jobs
+//! locally, reporting them with `job/*`. It hosts the template's MCP servers (`docs/site/specs/runtimes.md`
 //! section 3): it connects them before it answers `runtime/initialize`,
 //! declares their tools next to its built-in ones, reconnects dropped ones
 //! with the shared reconnect policy, and reports their status with
@@ -37,8 +36,8 @@ use cookie_agent_protocol::{SessionId, Transport};
 use cookie_agent_runtime_api::{
     BackgroundJob, BackgroundJobs, BackgroundLauncher, BackgroundTask, CodingToolsFactory,
     ProgressCapture, ProgressSink, RuntimeConnection, RuntimeConnector, RuntimeInfo,
-    SessionToolContext, StdinWrite, ToolArtifacts, ToolCall, ToolError, ToolExecutionContext,
-    ToolOrigin, ToolPreparationContext, ToolProgress, ToolProvider, ToolStdin, WorkspaceContext,
+    SessionToolContext, ToolArtifacts, ToolCall, ToolError, ToolExecutionContext, ToolOrigin,
+    ToolPreparationContext, ToolProgress, ToolProvider, WorkspaceContext,
     context::{AGENT_MD_MAX_BYTES, load_agent_md},
     protocol::{
         self, ContextParams, ContextResult, Empty, ExecuteOutcome, ExecuteParams, ExecuteResult,
@@ -47,7 +46,7 @@ use cookie_agent_runtime_api::{
         McpServerReport, McpServerSettings, Outcome, PrepareOutcome, PrepareParams, PrepareResult,
         PreparedCall, PreparedRef, PromptSectionDeclaration, RUNTIME_PROTOCOL_VERSION,
         RuntimeSettings, RuntimeSkills, RuntimeTools, SkillDeclaration, SkillDiscoveryDeclaration,
-        StdinParams, ToolDeclaration, ToolProgressParams, WireToolError, error_code, method,
+        ToolDeclaration, ToolProgressParams, WireToolError, error_code, method,
     },
     reconnect::ReconnectPolicy,
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
@@ -180,7 +179,7 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
                 None => break,
                 Some(Incoming::Request(request)) => {
                     // An execution is registered in arrival order, so a
-                    // `tool/stdin` or `tool/cancel` sent after it finds it.
+                    // `tool/cancel` sent after it finds it.
                     let admitted = server.admit_execution(&request);
                     let server = Arc::clone(&server);
                     tokio::spawn(async move { server.handle_request(request, admitted).await });
@@ -251,14 +250,12 @@ impl Initialized {
 
 struct Execution {
     cancel: CancellationToken,
-    stdin: Option<mpsc::Sender<StdinWrite>>,
 }
 
 /// An execute request registered before its handler runs.
 struct AdmittedExecution {
     params: ExecuteParams,
     cancel: CancellationToken,
-    stdin: Option<ToolStdin>,
 }
 
 fn unknown_handle(what: &str, id: u64) -> RpcError {
@@ -273,24 +270,13 @@ impl Server {
         }
         let params: ExecuteParams = request.params().ok()?;
         let cancel = self.stop.child_token();
-        let (stdin_sender, stdin) = if params.stdin {
-            let (sender, stdin) = ToolStdin::channel(64);
-            (Some(sender), Some(stdin))
-        } else {
-            (None, None)
-        };
         lock(&self.executions).insert(
             params.prepared_id,
             Execution {
                 cancel: cancel.clone(),
-                stdin: stdin_sender,
             },
         );
-        Some(AdmittedExecution {
-            params,
-            cancel,
-            stdin,
-        })
+        Some(AdmittedExecution { params, cancel })
     }
 
     async fn handle_request(
@@ -357,10 +343,6 @@ impl Server {
                         RpcError::remote(-32603, "the execution was not admitted")
                     })),
                 };
-                reply(request, result).await;
-            }
-            method::TOOL_STDIN => {
-                let result = self.stdin(&request).await;
                 reply(request, result).await;
             }
             method::MCP_RECONNECT => {
@@ -763,11 +745,7 @@ impl Server {
         self: &Arc<Self>,
         admitted: AdmittedExecution,
     ) -> Result<ExecuteResult, RpcError> {
-        let AdmittedExecution {
-            params,
-            cancel,
-            stdin,
-        } = admitted;
+        let AdmittedExecution { params, cancel } = admitted;
         let prepared_id = params.prepared_id;
         let prepared = lock(&self.prepared)
             .remove(&prepared_id)
@@ -790,7 +768,6 @@ impl Server {
             run: params.run,
             progress: RemoteProgress::sink(self.peer.clone(), ProgressTarget::Call(prepared_id)),
             cancellation: cancel,
-            stdin,
             turn_context: Arc::new(params.turn.into()),
             artifacts: artifacts.clone(),
             background: params.background.then(|| {
@@ -821,44 +798,6 @@ impl Server {
             media: artifacts.take(),
             launched_jobs,
         })
-    }
-
-    async fn stdin(&self, request: &IncomingRequest) -> Result<Outcome, RpcError> {
-        let params: StdinParams = request.params()?;
-        let data = base64::engine::general_purpose::STANDARD
-            .decode(&params.data)
-            .map_err(|error| {
-                RpcError::remote(
-                    error_code::INVALID_PARAMS,
-                    format!("invalid stdin data: {error}"),
-                )
-            })?;
-        if data.len() > protocol::MAX_STDIN_WRITE_BYTES {
-            return Err(RpcError::remote(
-                error_code::INVALID_PARAMS,
-                format!(
-                    "a stdin write carries at most {} bytes",
-                    protocol::MAX_STDIN_WRITE_BYTES
-                ),
-            ));
-        }
-        let sender = lock(&self.executions)
-            .get(&params.prepared_id)
-            .and_then(|execution| execution.stdin.clone());
-        let Some(sender) = sender else {
-            return Ok(Outcome::of(Err(ToolError::execution(
-                "the call is not running or takes no stdin",
-            ))));
-        };
-        Ok(Outcome::of(
-            sender
-                .send(StdinWrite {
-                    data,
-                    eof: params.eof,
-                })
-                .await
-                .map_err(|_| ToolError::execution("the call no longer reads stdin")),
-        ))
     }
 }
 

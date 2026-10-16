@@ -258,13 +258,6 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::RunCancelResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
-    async fn tool_stdin(
-        &self,
-        _: crate::RunToolStdinParams,
-        _context: &ServerContext,
-    ) -> Result<crate::RunToolStdinResult, ServerFault> {
-        Err(ServerFault::method_not_found())
-    }
     async fn respond_approval(
         &self,
         _: crate::ApprovalRespondParams,

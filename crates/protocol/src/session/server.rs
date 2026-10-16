@@ -23,14 +23,13 @@ use crate::{
     Notification, NotificationRef, ProviderConnectParams, ProviderConnectResult,
     ProviderDisconnectParams, ProviderDisconnectResult, Request, Response, RunCancelParams,
     RunCancelResult, RunStartParams, RunStartResult, RunSteerParams, RunSteerResult,
-    RunToolStdinParams, RunToolStdinResult, RuntimeSnapshotGetParams, RuntimeSnapshotResult,
-    ServerHello, SessionChildrenParams, SessionChildrenResult, SessionCompactParams,
-    SessionCompactResult, SessionCreateParams, SessionCreateResult, SessionForkParams,
-    SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
-    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
-    SessionGoalSetParams, SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
-    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
-    SessionPermissionMutationResult, SessionPermissionPreviewParams,
+    RuntimeSnapshotGetParams, RuntimeSnapshotResult, ServerHello, SessionChildrenParams,
+    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
+    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
+    SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
+    SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionId,
+    SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
+    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
     SessionProducersResult, SessionRenameChange, SessionRenameError, SessionRenameErrorCode,
     SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
@@ -411,11 +410,6 @@ pub trait ServerProtocol: Send + Sync + 'static {
         params: RunCancelParams,
         context: &ServerContext,
     ) -> Result<RunCancelResult, ServerFault>;
-    async fn tool_stdin(
-        &self,
-        params: RunToolStdinParams,
-        context: &ServerContext,
-    ) -> Result<RunToolStdinResult, ServerFault>;
     async fn subscribe_events(
         &self,
         params: EventsSubscribeParams,
@@ -736,7 +730,6 @@ async fn dispatch<S: ServerProtocol>(
             value(server.recall_input(decode(params)?, context).await?)
         }
         "run.cancel" => value(server.cancel_run(decode(params)?, context).await?),
-        "run.tool_stdin" => value(server.tool_stdin(decode(params)?, context).await?),
         "events.subscribe" => value(server.subscribe_events(decode(params)?, context).await?),
         "approval.respond" => value(server.respond_approval(decode(params)?, context).await?),
         "approval.list" => value(server.list_approvals(decode(params)?).await?),

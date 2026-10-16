@@ -17,14 +17,14 @@ use cookie_agent_protocol::{
     ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
     ProviderDisconnectResult, RunId, RunStartParams, RunStartResult, RuntimeChangeReason,
     RuntimeChangedNotification, RuntimeSnapshotResult, SafeCode, SessionId, SessionMeta,
-    ToolCallId, ToolCallPresentation,
+    ToolCallPresentation,
 };
 use oven_sdk::{ModelError, ToolDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use tokio::{
-    sync::{broadcast, mpsc, oneshot},
+    sync::{broadcast, oneshot},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
@@ -127,8 +127,8 @@ pub(crate) use test_hooks::*;
 pub(crate) const CANCELLED_AFTER_COMPLETION: &str = "cancelled_after_completion";
 
 use cookie_agent_runtime_api::{
-    PreparedSerializationKey, PreparedTool, StdinWrite, ToolCall, ToolConcurrency, ToolError,
-    ToolProvider, ToolSpec, TurnAgentContext,
+    PreparedSerializationKey, PreparedTool, ToolCall, ToolConcurrency, ToolError, ToolProvider,
+    ToolSpec, TurnAgentContext,
 };
 
 #[derive(Clone)]
@@ -205,8 +205,6 @@ pub enum EngineError {
     SessionOperationBlocked(String),
     #[error("compaction cancelled by plugin: {0}")]
     CompactionCancelled(String),
-    #[error("tool call is not running or is not interactive")]
-    StdinUnavailable,
     #[error("approval `{approval_id}` is not pending for session {session_id}")]
     ApprovalNotPending {
         session_id: SessionId,
@@ -218,8 +216,6 @@ pub enum EngineError {
     ApprovalResponse(Box<ApprovalRespondFailure>),
     #[error("client rename id conflicts with a durable rename operation")]
     RenameConflict,
-    #[error("invalid base64 stdin: {0}")]
-    Base64(#[from] base64::DecodeError),
     #[error("model failure: {0}")]
     Model(Box<ModelError>),
     #[error("model history failure: {0}")]
@@ -318,7 +314,6 @@ struct ActiveRun {
     /// Who cancelled the run through [`Engine::cancel_run`]; the engine
     /// itself when unset.
     cancelled_by: Mutex<Option<cookie_agent_protocol::EventOrigin>>,
-    stdin: Mutex<HashMap<ToolCallId, mpsc::Sender<StdinWrite>>>,
     fallback_index: AtomicU64,
     auto_compaction_failures: AtomicU8,
     auto_compaction_diagnostic_emitted: AtomicBool,
