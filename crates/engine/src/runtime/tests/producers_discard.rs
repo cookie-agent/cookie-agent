@@ -11,8 +11,8 @@ use crate::{Engine, runtime::ModelRetrySleepMode};
 use super::support::*;
 
 use cookie_agent_protocol::{
-    EventOrigin, GoalId, PluginRecoveryStatus, ProducerIdempotencyKey, ProducerMessageId,
-    ProducerOwner, SessionProducersParams,
+    EventOrigin, GoalId, ProducerIdempotencyKey, ProducerMessageId, ProducerOwner,
+    ProducerSourceStatus, SessionProducersParams,
 };
 
 use crate::runtime::producers::ProducerAuthority;
@@ -35,17 +35,17 @@ for line in sys.stdin:
     method = frame.get('method')
     request_id = frame.get('id')
     if method == 'plugin/initialize':
-        assert frame['params']['protocol_version'] == '0.0.7'
+        assert frame['params']['protocol_version'] == '0.0.8'
         assert frame['params']['capabilities']['producer_messaging'] is True
         send({'jsonrpc':'2.0','id':request_id,'result':{
-            'protocol_version':'0.0.7','name':'discard_callback','version':'1',
+            'protocol_version':'0.0.8','name':'discard_callback','version':'1',
             'capabilities':{'producer_messaging':True,'tools':False,'resources':False,
                 'subscribe_events':True,'subscribe_bus':False,'publish_bus':False,
                 'publish_session_events':False,'intercept':[]},'tools':[]}})
     elif method == 'plugin/recovery/start':
         assert 'id' not in frame and frame['params'] == {}
         send({'jsonrpc':'2.0','id':'register','method':'plugin/producer/register',
-            'params':{'session_id':session}})
+            'params':{'session_id':session,'name':'default'}})
     elif request_id == 'register':
         producer_id = frame['result']['producer_id']
     elif method == 'plugin/event':
@@ -806,9 +806,10 @@ async fn installed_plugin_callback_discards_after_unregister_and_repeats_success
                 .expect("plugin registration before user run");
             if inspection.producers.iter().any(|registration| {
                 registration.producer_owner
-                    == ProducerOwner::Plugin {
-                        plugin: "discard_callback".into(),
-                    }
+                    == ProducerOwner::external(
+                        cookie_agent_protocol::ProducerSource::plugin("discard_callback").unwrap(),
+                        cookie_agent_protocol::ProducerName::default_name(),
+                    )
             }) {
                 break;
             }
@@ -858,9 +859,10 @@ async fn installed_plugin_callback_discards_after_unregister_and_repeats_success
         .expect("plugin receipt message ID")
         .parse()
         .expect("valid plugin receipt message ID");
-    let plugin_owner = ProducerOwner::Plugin {
-        plugin: "discard_callback".into(),
-    };
+    let plugin_owner = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("discard_callback").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let events = discard_events(&engine, session_id);
     let accepted = events
         .iter()
@@ -899,11 +901,8 @@ async fn installed_plugin_callback_discards_after_unregister_and_repeats_success
         .await
         .expect("plugin state after discard callback");
     assert!(inspection.producers.is_empty());
-    assert_eq!(inspection.plugin_recovery.len(), 1);
-    assert_eq!(
-        inspection.plugin_recovery[0].status,
-        PluginRecoveryStatus::Ready
-    );
+    assert_eq!(inspection.sources.len(), 1);
+    assert_eq!(inspection.sources[0].status, ProducerSourceStatus::Ready);
     assert!(
         !events.iter().any(|event| {
             event.run_id == Some(run)

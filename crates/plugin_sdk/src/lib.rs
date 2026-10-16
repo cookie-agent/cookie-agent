@@ -28,8 +28,8 @@ pub use cookie_agent_protocol::{
     ExtensionToolAfterResultParams, ExtensionToolAfterResultResult, ExtensionToolBeforeCallAction,
     ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult, ExtensionToolCallParams,
     ExtensionUserBeforeInputAction, ExtensionUserBeforeInputParams, ExtensionUserBeforeInputResult,
-    ProducerDeliveryMode, ProducerId, ProducerIdempotencyKey, ProducerMessageId, SessionId,
-    ToolCompletionOutput, ToolOutputChunk, ToolOutputDeclaration,
+    ProducerDeliveryMode, ProducerId, ProducerIdempotencyKey, ProducerMessageId, ProducerName,
+    SessionId, ToolCompletionOutput, ToolOutputChunk, ToolOutputDeclaration,
 };
 pub use error::{PluginError, ToolFailure};
 pub use server::{

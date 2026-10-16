@@ -510,9 +510,10 @@ fn retry_started_before_input_promotion_rebinds_without_losing_committed_tools()
                 session,
                 12,
                 plugin,
-                ProducerOwner::Plugin {
-                    plugin: "test".into(),
-                },
+                ProducerOwner::external(
+                    cookie_agent_protocol::ProducerSource::plugin("test").unwrap(),
+                    cookie_agent_protocol::ProducerName::default_name(),
+                ),
                 ProducerDeliveryMode::Steer,
                 "plugin steering",
                 None,
@@ -756,7 +757,7 @@ fn retry_started_before_input_promotion_rebinds_without_losing_committed_tools()
             "before steering",
             "◇ ▸ goal control · steer",
             "user steering",
-            "◇ ▸ plugin test · steer",
+            "◇ ▸ plugin:test · default · steer",
             "after steering",
             "latest response",
         ] {
@@ -795,9 +796,10 @@ fn input_boundary_does_not_relocate_an_already_streaming_attempt() {
             session,
             5,
             message_id,
-            ProducerOwner::Plugin {
-                plugin: "test".into(),
-            },
+            ProducerOwner::external(
+                cookie_agent_protocol::ProducerSource::plugin("test").unwrap(),
+                cookie_agent_protocol::ProducerName::default_name(),
+            ),
             ProducerDeliveryMode::Steer,
             "late input",
             None,

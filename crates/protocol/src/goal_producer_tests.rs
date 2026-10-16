@@ -62,7 +62,7 @@ fn session_goal_and_inspection_rpcs_reject_unknown_missing_and_wrong_fields() {
         );
     }
     strict::<SessionProducersParams>(json!({"session_id": session_id}));
-    strict::<SessionProducersResult>(json!({"producers": [], "plugin_recovery": []}));
+    strict::<SessionProducersResult>(json!({"producers": [], "sources": []}));
     assert!(serde_json::from_value::<SessionGoalLifecycleParams>(json!({"session_id": session_id, "goal_id": goal_id, "expected_revision": -1, "action": "pause"})).is_err());
     assert!(
         serde_json::from_value::<SessionGoalSetParams>(
@@ -87,10 +87,8 @@ fn session_goal_and_inspection_rpcs_reject_unknown_missing_and_wrong_fields() {
         .is_err()
     );
     assert!(
-        serde_json::from_value::<SessionProducersResult>(
-            json!({"producers": null, "plugin_recovery": []})
-        )
-        .is_err()
+        serde_json::from_value::<SessionProducersResult>(json!({"producers": null, "sources": []}))
+            .is_err()
     );
 }
 
@@ -335,9 +333,10 @@ fn durable_goal_and_message_events_round_trip_with_correct_run_scope() {
 #[test]
 fn producer_claim_and_discard_writer_validation_is_strict() {
     let message_id = ProducerMessageId::new_v7();
-    let owner = ProducerOwner::Plugin {
-        plugin: "issues".into(),
-    };
+    let owner = ProducerOwner::external(
+        crate::ProducerSource::plugin("issues").unwrap(),
+        crate::ProducerName::default_name(),
+    );
     let real_discard = EventPayload::ProducerMessageDiscarded {
         message_id,
         reminder: None,
@@ -500,7 +499,22 @@ fn historical_checklist_item_ids_are_ignored_only_by_event_history_decoding() {
 fn producer_identity_and_send_contracts_are_strict() {
     let session_id = SessionId::new_v7();
     let producer_id = ProducerId::new_v7();
-    strict::<ExtensionProducerRegisterParams>(json!({"session_id":session_id}));
+    strict::<ExtensionProducerRegisterParams>(json!({"session_id":session_id,"name":"ci-watcher"}));
+    for name in [
+        json!(null),
+        json!(""),
+        json!("CI"),
+        json!("-ci"),
+        json!("a".repeat(65)),
+    ] {
+        assert!(
+            serde_json::from_value::<ExtensionProducerRegisterParams>(
+                json!({"session_id":session_id,"name":name})
+            )
+            .is_err(),
+            "{name}"
+        );
+    }
     strict::<ExtensionProducerRegisterResult>(json!({"producer_id":producer_id}));
     strict::<ExtensionProducerUnregisterParams>(
         json!({"session_id":session_id,"producer_id":producer_id}),
@@ -547,9 +561,10 @@ fn producer_identity_and_send_contracts_are_strict() {
         assert!(serde_json::from_value::<ExtensionProducerSendParams>(wrong).is_err());
     }
     for owner in [
-        ProducerOwner::Plugin {
-            plugin: "issues".into(),
-        },
+        ProducerOwner::external(
+            crate::ProducerSource::plugin("issues").unwrap(),
+            crate::ProducerName::default_name(),
+        ),
         ProducerOwner::Delegation {
             invocation_id: InvocationId::new_v7(),
         },
@@ -678,9 +693,10 @@ fn reminder_kind_round_trips_and_legacy_events_default_to_continuation() {
 fn producer_description_round_trips_and_legacy_events_default_to_empty() {
     let payload = EventPayload::ProducerMessageAccepted {
         message_id: ProducerMessageId::new_v7(),
-        producer_owner: ProducerOwner::Plugin {
-            plugin: "jobs".into(),
-        },
+        producer_owner: ProducerOwner::external(
+            crate::ProducerSource::plugin("jobs").unwrap(),
+            crate::ProducerName::default_name(),
+        ),
         mode: ProducerDeliveryMode::Queue,
         idempotency_key: ProducerIdempotencyKey::new("legacy-description").unwrap(),
         description: SafeDisplayText::new("External work completed").unwrap(),
@@ -793,17 +809,17 @@ fn recovery_handshake_has_only_explicit_completion_outcomes_and_exact_version() 
         );
     }
     for status in [
-        PluginRecoveryStatus::Starting,
-        PluginRecoveryStatus::Ready,
-        PluginRecoveryStatus::Failed,
-        PluginRecoveryStatus::Disabled,
+        ProducerSourceStatus::Starting,
+        ProducerSourceStatus::Ready,
+        ProducerSourceStatus::Failed,
+        ProducerSourceStatus::Disabled,
     ] {
-        round_trip(PluginRecoveryState {
-            plugin: "issues".into(),
+        round_trip(ProducerSourceState {
+            source: crate::ProducerSource::plugin("issues").unwrap(),
             status,
         });
     }
-    assert_eq!(EXTENSION_PROTOCOL_VERSION, "0.0.7");
+    assert_eq!(EXTENSION_PROTOCOL_VERSION, "0.0.8");
     round_trip(ExtensionProtocolVersion::current());
     assert!(serde_json::from_value::<ExtensionProtocolVersion>(json!("0.0.4")).is_err());
     let params: ExtensionInitializeParams =

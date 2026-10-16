@@ -1,13 +1,16 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{GoalId, InvocationId, ProducerId, SessionId, ToolCallId};
+use crate::{
+    GoalId, InvocationId, ProducerId, ProducerName, ProducerSource, SessionId, ToolCallId,
+};
 
 /// Stable identity used with session + idempotency key for durable deduplication.
-/// Plugin connection authorization is runtime-only; the engine derives `plugin`
-/// from the authenticated configured plugin name, never from send parameters.
-/// The transport supplies name + connection epoch for live authority separately;
-/// the epoch is never part of this durable owner or the deduplication key.
+/// External identifies a producer outside the daemon, a plugin or a runtime:
+/// the engine derives `source` from the authenticated connection, never from
+/// send parameters, and the sender chooses `name` when it registers. The
+/// connection epoch that authorizes live sends is runtime-only and never part
+/// of this durable owner or the deduplication key.
 /// GoalControl identifies engine-authored lifecycle steering, not a continuation
 /// reminder; its accepted messages survive goal-controller teardown.
 /// Agent identifies an in-tree agent mail sender; the session identity is
@@ -18,11 +21,15 @@ use crate::{GoalId, InvocationId, ProducerId, SessionId, ToolCallId};
 /// Subagent identifies a delegated session reporting its finished turns to
 /// its parent.
 /// The owner is durable and participates in `(session, owner, key)` dedup.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+/// A stored `plugin { plugin }` owner, from before external owners, decodes
+/// as `external { source: "plugin:<plugin>", name: "default" }`.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProducerOwner {
-    Plugin {
-        plugin: String,
+    /// A plugin's or a runtime's named producer.
+    External {
+        source: ProducerSource,
+        name: ProducerName,
     },
     Delegation {
         invocation_id: InvocationId,
@@ -45,6 +52,89 @@ pub enum ProducerOwner {
     },
 }
 
+impl ProducerOwner {
+    /// The external owner `name` of `source`.
+    #[must_use]
+    pub fn external(source: ProducerSource, name: ProducerName) -> Self {
+        Self::External { source, name }
+    }
+
+    /// The source of an external owner.
+    #[must_use]
+    pub fn source(&self) -> Option<&ProducerSource> {
+        match self {
+            Self::External { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+/// [`ProducerOwner`] as stored, including the owner kinds it replaced. Its
+/// schema is the owner's: everything a stored event may carry.
+#[derive(Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum StoredProducerOwner {
+    /// Before external owners; decodes as `external` with name `default`.
+    /// Never written.
+    Plugin {
+        plugin: String,
+    },
+    /// A plugin's or a runtime's named producer.
+    External {
+        source: ProducerSource,
+        name: ProducerName,
+    },
+    Delegation {
+        invocation_id: InvocationId,
+    },
+    Goal {
+        goal_id: GoalId,
+    },
+    GoalControl {
+        goal_id: GoalId,
+    },
+    Agent {
+        session_id: SessionId,
+    },
+    Tool {
+        tool_call_id: ToolCallId,
+    },
+    Subagent {
+        session_id: SessionId,
+    },
+}
+
+impl JsonSchema for ProducerOwner {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("ProducerOwner")
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        StoredProducerOwner::json_schema(generator)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProducerOwner {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(match StoredProducerOwner::deserialize(deserializer)? {
+            StoredProducerOwner::Plugin { plugin } => Self::External {
+                source: ProducerSource::plugin(&plugin).map_err(serde::de::Error::custom)?,
+                name: ProducerName::default_name(),
+            },
+            StoredProducerOwner::External { source, name } => Self::External { source, name },
+            StoredProducerOwner::Delegation { invocation_id } => Self::Delegation { invocation_id },
+            StoredProducerOwner::Goal { goal_id } => Self::Goal { goal_id },
+            StoredProducerOwner::GoalControl { goal_id } => Self::GoalControl { goal_id },
+            StoredProducerOwner::Agent { session_id } => Self::Agent { session_id },
+            StoredProducerOwner::Tool { tool_call_id } => Self::Tool { tool_call_id },
+            StoredProducerOwner::Subagent { session_id } => Self::Subagent { session_id },
+        })
+    }
+}
+
 /// Per-send mode. Queue remains accepted-but-deferred during an active run;
 /// steer joins the next safe request without interrupting an in-flight request.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -65,20 +155,94 @@ pub struct ProducerRegistration {
     pub age_ms: u64,
 }
 
+/// The recovery state of a producer source: whether it has restored the
+/// external work it tracks since it connected.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PluginRecoveryStatus {
+pub enum ProducerSourceStatus {
     Starting,
     Ready,
     Failed,
     Disabled,
 }
 
-/// Runtime startup readiness, not a durable producer record or recovery blob.
+/// Runtime startup readiness of a producer source (a producer-capable plugin
+/// or runtime), not a durable producer record or recovery blob.
 /// Failed/disabled means external work is unknown, not that work is complete.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct PluginRecoveryState {
-    pub plugin: String,
-    pub status: PluginRecoveryStatus,
+pub struct ProducerSourceState {
+    pub source: ProducerSource,
+    pub status: ProducerSourceStatus,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn external_owners_round_trip_with_their_source_and_name() {
+        let owner = ProducerOwner::external(
+            ProducerSource::runtime("local").unwrap(),
+            ProducerName::new("ci-watcher").unwrap(),
+        );
+        let wire = serde_json::to_value(&owner).unwrap();
+        assert_eq!(
+            wire,
+            json!({"type": "external", "source": "runtime:local", "name": "ci-watcher"})
+        );
+        assert_eq!(
+            serde_json::from_value::<ProducerOwner>(wire).unwrap(),
+            owner
+        );
+    }
+
+    #[test]
+    fn stored_plugin_owners_decode_as_the_plugins_default_producer() {
+        let owner: ProducerOwner =
+            serde_json::from_value(json!({"type": "plugin", "plugin": "jobs"})).unwrap();
+        assert_eq!(
+            owner,
+            ProducerOwner::external(
+                ProducerSource::plugin("jobs").unwrap(),
+                ProducerName::default_name()
+            )
+        );
+        assert!(
+            serde_json::from_value::<ProducerOwner>(json!({"type": "plugin", "plugin": ""}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn producer_names_and_sources_are_bounded_labels() {
+        for valid in ["default", "ci-watcher", "a", "0.watch_1", &"a".repeat(64)] {
+            assert!(ProducerName::new(valid).is_ok(), "{valid}");
+        }
+        for invalid in ["", "CI", "-ci", ".ci", "ci watcher", &"a".repeat(65)] {
+            assert!(ProducerName::new(invalid).is_err(), "{invalid}");
+        }
+        assert_eq!(
+            ProducerSource::plugin("jobs").unwrap().plugin_name(),
+            Some("jobs")
+        );
+        assert_eq!(
+            ProducerSource::runtime("local")
+                .unwrap()
+                .runtime_attachment(),
+            Some("local")
+        );
+        for invalid in [
+            "plugin",
+            "plugin:",
+            "plugin: ",
+            ":jobs",
+            "Plugin:jobs",
+            "plugin:a\nb",
+        ] {
+            assert!(ProducerSource::new(invalid).is_err(), "{invalid}");
+        }
+    }
 }

@@ -54,7 +54,7 @@ for line in sys.stdin:
             "jsonrpc": "2.0",
             "id": request_id,
             "result": {
-                "protocol_version": os.environ.get("FIXTURE_PROTOCOL_VERSION", "0.0.7"),
+                "protocol_version": os.environ.get("FIXTURE_PROTOCOL_VERSION", "0.0.8"),
                 "name": os.environ.get("FIXTURE_NAME", "fixture"),
                 "version": "1.0.0",
                 "capabilities": json.loads(os.environ.get(

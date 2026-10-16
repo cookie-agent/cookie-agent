@@ -1077,9 +1077,10 @@ fn producer_queue_survives_terminal_and_consumption_updates_one_non_user_row() {
     let first_run = RunId::new_v7();
     let second_run = RunId::new_v7();
     let message_id = ProducerMessageId::new_v7();
-    let owner = ProducerOwner::Plugin {
-        plugin: "build-monitor".into(),
-    };
+    let owner = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("build-monitor").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let mut state = SessionState::default();
 
     for event in [
@@ -1192,9 +1193,10 @@ fn input_rows_follow_application_order_without_changing_queue_identity() {
     let run_id = RunId::new_v7();
     let first = ProducerMessageId::new_v7();
     let second = ProducerMessageId::new_v7();
-    let owner = ProducerOwner::Plugin {
-        plugin: "test".into(),
-    };
+    let owner = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("test").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let events = [
         accepted_message(first, owner.clone(), "first", None),
         accepted_message(second, owner, "second", None),
@@ -1273,9 +1275,10 @@ fn valid_producer_admission_marks_initial_input_and_promotes_pending_user_input(
             None,
             accepted_message(
                 message_id,
-                ProducerOwner::Plugin {
-                    plugin: "scheduler".into(),
-                },
+                ProducerOwner::external(
+                    cookie_agent_protocol::ProducerSource::plugin("scheduler").unwrap(),
+                    cookie_agent_protocol::ProducerName::default_name(),
+                ),
                 "initial-producer-input",
                 None,
             ),
@@ -1314,9 +1317,10 @@ fn valid_producer_admission_marks_initial_input_and_promotes_pending_user_input(
 #[test]
 fn invalid_producer_admissions_do_not_mark_initial_input() {
     let session_id = SessionId::new_v7();
-    let owner = ProducerOwner::Plugin {
-        plugin: "scheduler".into(),
-    };
+    let owner = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("scheduler").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let mut state = SessionState::default();
     let mut seq = 0;
     let apply =
@@ -1763,9 +1767,10 @@ fn claims_validate_atomically_and_support_multiple_tokens_per_message() {
             1,
             accepted_message(
                 first,
-                ProducerOwner::Plugin {
-                    plugin: "worker".into(),
-                },
+                ProducerOwner::external(
+                    cookie_agent_protocol::ProducerSource::plugin("worker").unwrap(),
+                    cookie_agent_protocol::ProducerName::default_name(),
+                ),
                 "first-claim",
                 None,
             ),
@@ -1774,9 +1779,10 @@ fn claims_validate_atomically_and_support_multiple_tokens_per_message() {
             2,
             accepted_message(
                 second,
-                ProducerOwner::Plugin {
-                    plugin: "worker".into(),
-                },
+                ProducerOwner::external(
+                    cookie_agent_protocol::ProducerSource::plugin("worker").unwrap(),
+                    cookie_agent_protocol::ProducerName::default_name(),
+                ),
                 "second-claim",
                 None,
             ),
@@ -1945,9 +1951,10 @@ fn release_requires_claim_owner_and_only_last_release_unclaims_message() {
 fn claimed_message_rejects_discard_until_explicit_release() {
     let session_id = SessionId::new_v7();
     let run_id = RunId::new_v7();
-    let owner = ProducerOwner::Plugin {
-        plugin: "jobs".into(),
-    };
+    let owner = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let message_id = ProducerMessageId::new_v7();
     let mut state = SessionState::default();
     for (seq, event_run, payload) in [
@@ -2011,9 +2018,10 @@ fn generic_and_legacy_discards_require_exact_durable_identity() {
         revision: 8,
         kind: cookie_agent_protocol::GoalReminderKind::Continuation,
     };
-    let plugin = ProducerOwner::Plugin {
-        plugin: "jobs".into(),
-    };
+    let plugin = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let delegation = ProducerOwner::Delegation {
         invocation_id: cookie_agent_protocol::InvocationId::new_v7(),
     };
@@ -2103,9 +2111,10 @@ fn generic_and_legacy_discards_require_exact_durable_identity() {
 fn release_does_not_resurrect_consumed_or_discarded_messages() {
     let session_id = SessionId::new_v7();
     let run_id = RunId::new_v7();
-    let owner = ProducerOwner::Plugin {
-        plugin: "jobs".into(),
-    };
+    let owner = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let consumed = ProducerMessageId::new_v7();
     let discarded = ProducerMessageId::new_v7();
     let mut state = SessionState::default();
@@ -2198,9 +2207,10 @@ fn replay_and_revert_preserve_terminal_claim_until_explicit_recovery_release() {
             1,
             accepted_message(
                 message_id,
-                ProducerOwner::Plugin {
-                    plugin: "worker".into(),
-                },
+                ProducerOwner::external(
+                    cookie_agent_protocol::ProducerSource::plugin("worker").unwrap(),
+                    cookie_agent_protocol::ProducerName::default_name(),
+                ),
                 "terminal-recovery",
                 None,
             ),
@@ -2282,9 +2292,10 @@ fn producer_can_be_readmitted_after_interruption_but_not_to_terminal_run() {
             EventPayload::ProducerMessageAccepted {
                 description: Default::default(),
                 message_id,
-                producer_owner: ProducerOwner::Plugin {
-                    plugin: "worker".into(),
-                },
+                producer_owner: ProducerOwner::external(
+                    cookie_agent_protocol::ProducerSource::plugin("worker").unwrap(),
+                    cookie_agent_protocol::ProducerName::default_name(),
+                ),
                 mode: ProducerDeliveryMode::Queue,
                 idempotency_key: ProducerIdempotencyKey::new("retry").expect("key"),
                 body: "result".into(),
@@ -2375,9 +2386,10 @@ fn sequenced_projection_rows_use_transcript_allocator_ids() {
             EventPayload::ProducerMessageAccepted {
                 description: Default::default(),
                 message_id,
-                producer_owner: ProducerOwner::Plugin {
-                    plugin: "worker".into(),
-                },
+                producer_owner: ProducerOwner::external(
+                    cookie_agent_protocol::ProducerSource::plugin("worker").unwrap(),
+                    cookie_agent_protocol::ProducerName::default_name(),
+                ),
                 mode: ProducerDeliveryMode::Queue,
                 idempotency_key: ProducerIdempotencyKey::new("unique-row").expect("key"),
                 body: "message".into(),
@@ -2421,9 +2433,10 @@ fn producer_queue_identity_survives_admission_reordering_timing_pruning_and_repl
             EventPayload::ProducerMessageAccepted {
                 description: Default::default(),
                 message_id: first_message_id,
-                producer_owner: ProducerOwner::Plugin {
-                    plugin: "worker".into(),
-                },
+                producer_owner: ProducerOwner::external(
+                    cookie_agent_protocol::ProducerSource::plugin("worker").unwrap(),
+                    cookie_agent_protocol::ProducerName::default_name(),
+                ),
                 mode: ProducerDeliveryMode::Queue,
                 idempotency_key: ProducerIdempotencyKey::new("first").expect("key"),
                 body: "first".into(),

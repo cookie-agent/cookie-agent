@@ -681,7 +681,8 @@ pub struct SessionProducersParams {
 #[serde(deny_unknown_fields)]
 pub struct SessionProducersResult {
     pub producers: Vec<ProducerRegistration>,
-    pub plugin_recovery: Vec<PluginRecoveryState>,
+    /// The recovery state of every producer source the session can hear from.
+    pub sources: Vec<ProducerSourceState>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]

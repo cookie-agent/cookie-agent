@@ -143,9 +143,10 @@ fn goal_replay_quarantines_invalid_events_without_mutating_state() {
 
 #[test]
 fn producer_replay_deduplicates_and_uses_commit_coverage_as_consumption() {
-    let owner = ProducerOwner::Plugin {
-        plugin: "jobs".into(),
-    };
+    let owner = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let message_id = ProducerMessageId::new_v7();
     let run = RunId::new_v7();
     let events = vec![
@@ -198,9 +199,10 @@ fn producer_replay_deduplicates_and_uses_commit_coverage_as_consumption() {
 
 #[test]
 fn interrupted_admission_is_replaced_but_committed_admission_is_final() {
-    let owner = ProducerOwner::Plugin {
-        plugin: "jobs".into(),
-    };
+    let owner = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let message_id = ProducerMessageId::new_v7();
     let first = RunId::new_v7();
     let retry = RunId::new_v7();
@@ -271,9 +273,10 @@ fn legacy_goal_discard_matches_the_accepted_reminder() {
 
 #[test]
 fn real_discard_requires_the_accepted_owner_and_is_idempotent() {
-    let owner = ProducerOwner::Plugin {
-        plugin: "jobs".into(),
-    };
+    let owner = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let message_id = ProducerMessageId::new_v7();
     let events = vec![
         accepted(1, message_id, owner.clone(), "job:3", "result", None),
@@ -283,9 +286,10 @@ fn real_discard_requires_the_accepted_owner_and_is_idempotent() {
             EventPayload::ProducerMessageDiscarded {
                 message_id,
                 reminder: None,
-                producer_owner: Some(ProducerOwner::Plugin {
-                    plugin: "other".into(),
-                }),
+                producer_owner: Some(ProducerOwner::external(
+                    cookie_agent_protocol::ProducerSource::plugin("other").unwrap(),
+                    cookie_agent_protocol::ProducerName::default_name(),
+                )),
             },
         ),
         event(
@@ -330,9 +334,10 @@ fn real_discard_requires_the_accepted_owner_and_is_idempotent() {
 
 #[test]
 fn claim_blocks_discard_until_matching_release() {
-    let owner = ProducerOwner::Plugin {
-        plugin: "jobs".into(),
-    };
+    let owner = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let message_id = ProducerMessageId::new_v7();
     let run = RunId::new_v7();
     let events = vec![
@@ -392,9 +397,10 @@ fn terminal_run_does_not_clear_recovered_claim_state() {
         accepted(
             1,
             message_id,
-            ProducerOwner::Plugin {
-                plugin: "jobs".into(),
-            },
+            ProducerOwner::external(
+                cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+                cookie_agent_protocol::ProducerName::default_name(),
+            ),
             "job:5",
             "result",
             None,
@@ -422,9 +428,10 @@ fn terminal_run_does_not_clear_recovered_claim_state() {
 
 #[test]
 fn discard_before_commit_coverage_is_not_resurrected() {
-    let owner = ProducerOwner::Plugin {
-        plugin: "jobs".into(),
-    };
+    let owner = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let message_id = ProducerMessageId::new_v7();
     let run = RunId::new_v7();
     let events = vec![
@@ -577,7 +584,10 @@ fn agent_hop_round_trips_and_invalid_owner_is_quarantined() {
     let mut invalid = accepted(
         2,
         ProducerMessageId::new_v7(),
-        ProducerOwner::Plugin { plugin: "x".into() },
+        ProducerOwner::external(
+            cookie_agent_protocol::ProducerSource::plugin("x").unwrap(),
+            cookie_agent_protocol::ProducerName::default_name(),
+        ),
         "bad",
         "mail",
         None,
@@ -620,9 +630,10 @@ fn agent_hop_increments_only_for_the_run_that_observed_agent_mail() {
         accepted(
             6,
             tool_result,
-            ProducerOwner::Plugin {
-                plugin: "mcp".into(),
-            },
+            ProducerOwner::external(
+                cookie_agent_protocol::ProducerSource::plugin("mcp").unwrap(),
+                cookie_agent_protocol::ProducerName::default_name(),
+            ),
             "plugin",
             "tool result",
             None,

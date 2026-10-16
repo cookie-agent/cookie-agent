@@ -46,6 +46,35 @@ pub(crate) struct ProducerAuthority {
     pub connection_epoch: Option<u64>,
 }
 
+/// An external sender's connection: the source the daemon derived for it and
+/// the epoch of the live connection. Every external producer operation
+/// arrives with one, whatever kind of connection carried it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExternalConnection {
+    pub source: ProducerSource,
+    pub epoch: u64,
+}
+
+impl ExternalConnection {
+    /// The authority of this connection's producer `name`.
+    fn authority(&self, name: ProducerName) -> ProducerAuthority {
+        ProducerAuthority {
+            owner: ProducerOwner::external(self.source.clone(), name),
+            connection_epoch: Some(self.epoch),
+        }
+    }
+}
+
+/// Whether a caller acting as `caller` may discard a message of `message`:
+/// an external sender owns every message of its source, whatever the
+/// producer name; any other owner only its own.
+fn owns_message(caller: &ProducerOwner, message: &ProducerOwner) -> bool {
+    match (caller.source(), message.source()) {
+        (Some(caller), Some(message)) => caller == message,
+        _ => caller == message,
+    }
+}
+
 struct Registration {
     id: ProducerId,
     authority: ProducerAuthority,
@@ -118,55 +147,196 @@ impl Engine {
         request: crate::plugin::PluginProducerRequest,
     ) -> Result<crate::plugin::PluginProducerResponse, JsonRpcError> {
         use crate::plugin::{PluginProducerRequest as Request, PluginProducerResponse as Response};
-        let authority = ProducerAuthority {
-            owner: ProducerOwner::Plugin {
-                plugin: authenticated.plugin.clone(),
-            },
-            connection_epoch: Some(authenticated.connection_epoch),
+        let connection = ExternalConnection {
+            source: ProducerSource::plugin(&authenticated.plugin)
+                .map_err(|error| producer_fault(EngineError::Producer(error.to_string())))?,
+            epoch: authenticated.connection_epoch,
         };
-        self.validate_producer_authority(&authority)
-            .map_err(producer_fault)?;
-        match request {
-            Request::Register(params) => self
-                .register_producer(params.session_id, authority)
-                .await
-                .map(|producer_id| {
-                    Response::Register(ExtensionProducerRegisterResult { producer_id })
-                })
-                .map_err(producer_fault),
-            Request::Send(params) => self
-                .send_producer_message(
-                    params.session_id,
-                    authority,
-                    params.producer_id,
-                    params.mode,
-                    params.idempotency_key,
-                    params.description,
-                    params.body,
-                )
-                .await
-                .map(|message_id| Response::Send(ExtensionProducerSendResult { message_id }))
-                .map_err(producer_fault),
-            Request::Unregister(params) => self
-                .unregister_producer(params.session_id, authority, params.producer_id)
-                .await
-                .map(|()| Response::Unregister(ExtensionProducerUnregisterResult {}))
-                .map_err(producer_fault),
-            Request::Discard(params) => self
-                .discard_producer_message(params.session_id, authority, params.message_id)
-                .await
-                .map(|()| Response::Discard(ExtensionProducerDiscardResult {}))
-                .map_err(producer_fault),
+        let operation = match request {
+            Request::Register(params) => ExternalProducerOperation::Register(params),
+            Request::Send(params) => ExternalProducerOperation::Send(params),
+            Request::Unregister(params) => ExternalProducerOperation::Unregister(params),
+            Request::Discard(params) => ExternalProducerOperation::Discard(params),
             Request::RecoveryComplete(params) => {
                 self.inner
                     .plugins
                     .complete_producer_recovery(&authenticated, &params.outcome)?;
                 self.reconcile_plugin_producer_sessions().await;
-                Ok(Response::RecoveryComplete(
+                return Ok(Response::RecoveryComplete(
                     ExtensionRecoveryCompleteResult {},
+                ));
+            }
+        };
+        Ok(
+            match self
+                .dispatch_external_producer(connection, operation)
+                .await
+                .map_err(producer_fault)?
+            {
+                ExternalProducerResult::Register(result) => Response::Register(result),
+                ExternalProducerResult::Send(result) => Response::Send(result),
+                ExternalProducerResult::Unregister(result) => Response::Unregister(result),
+                ExternalProducerResult::Discard(result) => Response::Discard(result),
+            },
+        )
+    }
+
+    /// One producer operation of an external sender, whatever connection
+    /// carried it.
+    pub(crate) async fn dispatch_external_producer(
+        &self,
+        connection: ExternalConnection,
+        operation: ExternalProducerOperation,
+    ) -> Result<ExternalProducerResult, EngineError> {
+        self.validate_external_connection(&connection)?;
+        match operation {
+            ExternalProducerOperation::Register(params) => {
+                self.ensure_external_scope(&connection, params.session_id)?;
+                let producer_id = self
+                    .register_producer(params.session_id, connection.authority(params.name))
+                    .await?;
+                Ok(ExternalProducerResult::Register(
+                    ExtensionProducerRegisterResult { producer_id },
+                ))
+            }
+            ExternalProducerOperation::Send(params) => {
+                self.ensure_external_scope(&connection, params.session_id)?;
+                let limit = self.inner.config.runtime.producers.max_body_bytes;
+                if params.body.is_empty() || params.body.len() > limit {
+                    return Err(EngineError::Producer(format!(
+                        "body must be 1 to {limit} bytes ([producers] max_body_bytes)"
+                    )));
+                }
+                let authority = self.external_registration_authority(
+                    params.session_id,
+                    params.producer_id,
+                    &connection,
+                )?;
+                let message_id = self
+                    .send_producer_message(
+                        params.session_id,
+                        authority,
+                        params.producer_id,
+                        params.mode,
+                        params.idempotency_key,
+                        params.description,
+                        params.body,
+                    )
+                    .await?;
+                Ok(ExternalProducerResult::Send(ExtensionProducerSendResult {
+                    message_id,
+                }))
+            }
+            ExternalProducerOperation::Unregister(params) => {
+                self.ensure_external_scope(&connection, params.session_id)?;
+                let authority = self.external_registration_authority(
+                    params.session_id,
+                    params.producer_id,
+                    &connection,
+                )?;
+                self.unregister_producer(params.session_id, authority, params.producer_id)
+                    .await?;
+                Ok(ExternalProducerResult::Unregister(
+                    ExtensionProducerUnregisterResult {},
+                ))
+            }
+            ExternalProducerOperation::Discard(params) => {
+                self.ensure_external_scope(&connection, params.session_id)?;
+                // Discard addresses a message of the source, whatever its
+                // producer name; the name here only fills the owner shape.
+                let authority = connection.authority(ProducerName::default_name());
+                self.discard_producer_message(params.session_id, authority, params.message_id)
+                    .await?;
+                Ok(ExternalProducerResult::Discard(
+                    ExtensionProducerDiscardResult {},
                 ))
             }
         }
+    }
+
+    /// The authority of `connection`'s registration `producer_id` in
+    /// `session`: the registration's own owner, when the connection holds it.
+    fn external_registration_authority(
+        &self,
+        session: SessionId,
+        producer_id: ProducerId,
+        connection: &ExternalConnection,
+    ) -> Result<ProducerAuthority, EngineError> {
+        self.inner
+            .sessions
+            .producers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&session)
+            .and_then(|state| {
+                state
+                    .registrations
+                    .iter()
+                    .find(|registration| registration.id == producer_id)
+                    .map(|registration| registration.authority.clone())
+            })
+            .filter(|authority| {
+                authority.owner.source() == Some(&connection.source)
+                    && authority.connection_epoch == Some(connection.epoch)
+            })
+            .ok_or_else(|| {
+                EngineError::Producer("closed, foreign, or wrong-session registration".into())
+            })
+    }
+
+    /// Whether `connection`'s source may produce for `session`. A plugin may
+    /// reach any session; a runtime only the sessions attached to it.
+    fn ensure_external_scope(
+        &self,
+        connection: &ExternalConnection,
+        session: SessionId,
+    ) -> Result<(), EngineError> {
+        if connection.source.runtime_attachment().is_some()
+            && !self.runtime_source_attached(&connection.source, session)
+        {
+            return Err(EngineError::Producer(format!(
+                "{} is not attached to session {session}",
+                connection.source
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_external_connection(
+        &self,
+        connection: &ExternalConnection,
+    ) -> Result<(), EngineError> {
+        if self.external_connection_is_current(&connection.source, connection.epoch) {
+            Ok(())
+        } else {
+            Err(EngineError::Producer(format!(
+                "{} connection is no longer live",
+                connection.source
+            )))
+        }
+    }
+
+    /// Whether `epoch` is the live connection of `source`.
+    fn external_connection_is_current(&self, source: &ProducerSource, epoch: u64) -> bool {
+        if let Some(plugin) = source.plugin_name() {
+            return self
+                .inner
+                .plugins
+                .producer_connection_is_current(plugin, &epoch);
+        }
+        if source.runtime_attachment().is_some() {
+            return self.runtime_source_is_current(source, epoch);
+        }
+        false
+    }
+
+    /// The recovery state of every producer source `session` can hear from:
+    /// every producer-capable plugin, and every producer-capable runtime
+    /// attached to it.
+    pub(super) fn producer_source_states(&self, session: SessionId) -> Vec<ProducerSourceState> {
+        let mut states = self.inner.plugins.producer_recovery_states();
+        states.extend(self.runtime_producer_source_states(session));
+        states
     }
 
     async fn reconcile_plugin_producer_sessions(&self) {
@@ -223,11 +393,11 @@ impl Engine {
                 .or_default()
                 .registrations
                 .retain(|record| match &record.authority.owner {
-                    ProducerOwner::Plugin { plugin } => {
+                    ProducerOwner::External { source, .. } => {
                         record.authority.connection_epoch.is_some_and(|epoch| {
-                            self.inner
-                                .plugins
-                                .producer_connection_is_current(plugin, &epoch)
+                            self.external_connection_is_current(source, epoch)
+                                && (source.runtime_attachment().is_none()
+                                    || self.runtime_source_attached(source, session))
                         })
                     }
                     // Agent registrations are runtime-only sender slots for tree
@@ -378,7 +548,7 @@ impl Engine {
     }
 
     fn ready_goal_producer(&self, session: SessionId, goal_id: GoalId) -> Option<ProducerId> {
-        if !self.plugin_goals_ready() {
+        if !self.producer_sources_ready(session) {
             return None;
         }
         if self
@@ -628,13 +798,13 @@ impl Engine {
     }
 
     fn record_recovery_diagnostics(&self, session: SessionId) -> Result<(), EngineError> {
-        for state in self.inner.plugins.producer_recovery_states() {
+        for state in self.producer_source_states(session) {
             let kind = match state.status {
-                PluginRecoveryStatus::Failed => PluginDiagnosticKind::RecoveryFailed,
-                PluginRecoveryStatus::Disabled => PluginDiagnosticKind::RecoveryDisabled,
+                ProducerSourceStatus::Failed => ProducerDiagnosticKind::RecoveryFailed,
+                ProducerSourceStatus::Disabled => ProducerDiagnosticKind::RecoveryDisabled,
                 _ => continue,
             };
-            let key = format!("{}:{:?}", state.plugin, state.status);
+            let key = format!("{}:{:?}", state.source, state.status);
             if self
                 .inner
                 .sessions
@@ -648,7 +818,7 @@ impl Engine {
             {
                 continue;
             }
-            self.append_direct(session, None, event_origin("engine:plugin-host"), Event::PluginDiagnostic { plugin: state.plugin, kind, message: "Producer recovery is unavailable; external work is unknown and goal continuation is held.".into(), count: 1 })?;
+            self.append_direct(session, None, event_origin("engine:plugin-host"), Event::ProducerDiagnostic { source: state.source, kind, message: "Producer recovery is unavailable; external work is unknown and goal continuation is held.".into() })?;
             self.inner
                 .sessions
                 .producers
@@ -728,7 +898,7 @@ impl Engine {
                 .collect();
             Ok(SessionProducersResult {
                 producers,
-                plugin_recovery: engine.inner.plugins.producer_recovery_states(),
+                sources: engine.producer_source_states(session),
             })
         })
         .await
@@ -1197,20 +1367,16 @@ impl Engine {
         &self,
         authority: &ProducerAuthority,
     ) -> Result<(), EngineError> {
-        if let ProducerOwner::Plugin { plugin } = &authority.owner {
+        if let ProducerOwner::External { source, .. } = &authority.owner {
             let Some(connection_epoch) = authority.connection_epoch else {
                 return Err(EngineError::Producer(
-                    "missing plugin connection epoch".into(),
+                    "missing producer connection epoch".into(),
                 ));
             };
-            if !self
-                .inner
-                .plugins
-                .producer_connection_is_current(plugin, &connection_epoch)
-            {
-                return Err(EngineError::Producer(
-                    "plugin connection is no longer live".into(),
-                ));
+            if !self.external_connection_is_current(source, connection_epoch) {
+                return Err(EngineError::Producer(format!(
+                    "{source} connection is no longer live"
+                )));
             }
         }
         Ok(())
@@ -1615,12 +1781,12 @@ impl Engine {
         Ok(())
     }
 
-    fn plugin_goals_ready(&self) -> bool {
-        self.inner
-            .plugins
-            .producer_recovery_states()
+    /// Whether every producer source `session` can hear from has recovered,
+    /// so no external work it tracks is unknown.
+    fn producer_sources_ready(&self, session: SessionId) -> bool {
+        self.producer_source_states(session)
             .iter()
-            .all(|state| state.status == PluginRecoveryStatus::Ready)
+            .all(|state| state.status == ProducerSourceStatus::Ready)
     }
 
     pub(super) fn reconcile_goal_registration(
@@ -1631,7 +1797,7 @@ impl Engine {
         let is_root = matches!(self.inner.store.origin(session)?, SessionOrigin::Root);
         let projection = self.harvested_or_folded(session, harvested)?;
         let active = projection.goal.as_ref().filter(|goal| {
-            is_root && goal.status == GoalStatus::Active && self.plugin_goals_ready()
+            is_root && goal.status == GoalStatus::Active && self.producer_sources_ready(session)
         });
         let mut registry = self
             .inner
@@ -1763,7 +1929,7 @@ impl Engine {
             .iter()
             .find(|message| message.message_id == message_id)
             .ok_or_else(|| EngineError::Producer("message not found".into()))?;
-        if message.producer_owner != authority.owner {
+        if !owns_message(&authority.owner, &message.producer_owner) {
             return Err(EngineError::Producer(
                 "message belongs to another producer owner".into(),
             ));
@@ -1781,7 +1947,7 @@ impl Engine {
                 Event::ProducerMessageDiscarded {
                     message_id,
                     reminder: message.reminder,
-                    producer_owner: Some(authority.owner.clone()),
+                    producer_owner: Some(message.producer_owner.clone()),
                 },
             )?;
         }
@@ -1941,6 +2107,24 @@ pub(crate) fn agent_message_guard(
         }
     }
     Ok(())
+}
+
+/// A producer operation an external sender requests.
+#[derive(Clone, Debug)]
+pub(crate) enum ExternalProducerOperation {
+    Register(ExtensionProducerRegisterParams),
+    Send(ExtensionProducerSendParams),
+    Unregister(ExtensionProducerUnregisterParams),
+    Discard(ExtensionProducerDiscardParams),
+}
+
+/// The answer to an [`ExternalProducerOperation`].
+#[derive(Clone, Debug)]
+pub(crate) enum ExternalProducerResult {
+    Register(ExtensionProducerRegisterResult),
+    Send(ExtensionProducerSendResult),
+    Unregister(ExtensionProducerUnregisterResult),
+    Discard(ExtensionProducerDiscardResult),
 }
 
 fn producer_fault(error: EngineError) -> JsonRpcError {

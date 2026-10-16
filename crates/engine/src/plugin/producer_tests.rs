@@ -21,7 +21,7 @@ fn activate(registry: &PluginRegistry, epoch: u64) -> Arc<PluginRuntime> {
     *runtime.producer_connection.lock().unwrap() = ProducerConnection {
         epoch: Some(epoch),
         live: true,
-        recovery: Some(PluginRecoveryStatus::Starting),
+        recovery: Some(ProducerSourceStatus::Starting),
         outcome: None,
     };
     runtime
@@ -43,7 +43,7 @@ fn producer_methods_decode_strictly_and_serialize_only_matching_inner_results() 
     let cases = [
         (
             PLUGIN_PRODUCER_REGISTER_METHOD,
-            json!({"session_id": session}),
+            json!({"session_id": session, "name": "default"}),
             PluginProducerResponse::Register(ExtensionProducerRegisterResult {
                 producer_id: producer,
             }),
@@ -117,7 +117,7 @@ async fn producer_capability_absent_handler_and_overload_fail_explicitly() {
     let register = || {
         request(
             PLUGIN_PRODUCER_REGISTER_METHOD,
-            json!({"session_id": SessionId::new_v7()}),
+            json!({"session_id": SessionId::new_v7(), "name": "default"}),
         )
     };
     assert!(matches!(
@@ -247,7 +247,7 @@ async fn producer_readiness_is_epoch_bound_idempotent_and_watched_without_deadli
     tokio::time::advance(Duration::from_secs(86_400)).await;
     assert_eq!(
         registry.producer_recovery_states()[0].status,
-        PluginRecoveryStatus::Starting
+        ProducerSourceStatus::Starting
     );
     registry
         .complete_producer_recovery(&authority, &ExtensionRecoveryOutcome::Ready)
@@ -260,7 +260,7 @@ async fn producer_readiness_is_epoch_bound_idempotent_and_watched_without_deadli
     tokio::time::advance(Duration::from_secs(86_400)).await;
     assert_eq!(
         registry.producer_recovery_states()[0].status,
-        PluginRecoveryStatus::Ready
+        ProducerSourceStatus::Ready
     );
     let failed = ExtensionRecoveryOutcome::Failed {
         message: cookie_agent_protocol::SafeErrorMessage::new("lost work").unwrap(),
@@ -275,7 +275,7 @@ async fn producer_readiness_is_epoch_bound_idempotent_and_watched_without_deadli
     assert!(!registry.producer_connection_is_current("owner", &9));
     assert_eq!(
         registry.producer_recovery_states()[0].status,
-        PluginRecoveryStatus::Failed
+        ProducerSourceStatus::Failed
     );
     assert!(
         registry
@@ -296,7 +296,7 @@ async fn producer_readiness_is_epoch_bound_idempotent_and_watched_without_deadli
         .unwrap();
     assert_eq!(
         registry.producer_recovery_states()[0].status,
-        PluginRecoveryStatus::Failed
+        ProducerSourceStatus::Failed
     );
     assert_eq!(registry.statuses()[0].reason.as_deref(), Some("lost work"));
     assert!(
@@ -307,7 +307,7 @@ async fn producer_readiness_is_epoch_bound_idempotent_and_watched_without_deadli
     let (_directory, disabled) = self::registry(false, true, "");
     assert_eq!(
         disabled.producer_recovery_states()[0].status,
-        PluginRecoveryStatus::Disabled
+        ProducerSourceStatus::Disabled
     );
 }
 
@@ -326,7 +326,7 @@ for line in sys.stdin:
         send({'jsonrpc':'2.0','id':frame['id'],'result':{
             'protocol_version':frame['params']['protocol_version'],'name':'owner','version':'1',
             'capabilities':{'producer_messaging':capable,'tools':False,'resources':False,'subscribe_events':False,'subscribe_bus':False,'publish_bus':False,'publish_session_events':False,'intercept':[]},'tools':[]}})
-        send({'jsonrpc':'2.0','id':'register','method':'plugin/producer/register','params':{'session_id':'01900000-0000-7000-8000-000000000001'}})
+        send({'jsonrpc':'2.0','id':'register','method':'plugin/producer/register','params':{'session_id':'01900000-0000-7000-8000-000000000001','name':'default'}})
     elif frame.get('id') == 'register':
         assert 'error' in frame
         rejected = True
@@ -351,7 +351,7 @@ for line in sys.stdin:
         registry.ping("owner").await.unwrap();
         assert_eq!(
             registry.producer_recovery_states()[0].status,
-            PluginRecoveryStatus::Disabled
+            ProducerSourceStatus::Disabled
         );
         registry.shutdown().await;
     }
@@ -392,7 +392,7 @@ async fn producer_handler_replies_wait_for_control_capacity_and_recheck_epoch() 
             .dispatch_producer_request(
                 request(
                     PLUGIN_PRODUCER_REGISTER_METHOD,
-                    json!({"session_id": SessionId::new_v7()})
+                    json!({"session_id": SessionId::new_v7(), "name": "default"})
                 ),
                 &mut tasks
             )
@@ -431,7 +431,7 @@ for line in sys.stdin:
             'capabilities':{'producer_messaging':True,'tools':False,'resources':False,'subscribe_events':False,'subscribe_bus':True,'publish_bus':False,'publish_session_events':False,'intercept':[]},'tools':[]}})
     elif method == 'plugin/recovery/start':
         assert 'id' not in frame and frame['params'] == {}
-        send({'jsonrpc':'2.0','id':'register','method':'plugin/producer/register','params':{'session_id':session}})
+        send({'jsonrpc':'2.0','id':'register','method':'plugin/producer/register','params':{'session_id':session,'name':'default'}})
     elif method == 'plugin/bus_event':
         notice = True
     elif method == 'plugin/ping':
@@ -461,7 +461,7 @@ for line in sys.stdin:
                 PluginProducerRequest::Register(params) => {
                     assert_eq!(
                         registry.producer_recovery_states()[0].status,
-                        PluginRecoveryStatus::Starting
+                        ProducerSourceStatus::Starting
                     );
                     let control = registry.inner.plugins["owner"]
                         .control
@@ -503,11 +503,11 @@ for line in sys.stdin:
     }));
     registry.start_eager(&tokio::runtime::Handle::current());
     tokio::time::timeout(Duration::from_secs(5), async {
-        while registry.producer_recovery_states()[0].status != PluginRecoveryStatus::Ready {
+        while registry.producer_recovery_states()[0].status != ProducerSourceStatus::Ready {
             changes.changed().await.unwrap();
             assert_ne!(
                 registry.producer_recovery_states()[0].status,
-                PluginRecoveryStatus::Failed
+                ProducerSourceStatus::Failed
             );
         }
     })
@@ -517,6 +517,6 @@ for line in sys.stdin:
     registry.shutdown().await;
     assert_eq!(
         registry.producer_recovery_states()[0].status,
-        PluginRecoveryStatus::Failed
+        ProducerSourceStatus::Failed
     );
 }

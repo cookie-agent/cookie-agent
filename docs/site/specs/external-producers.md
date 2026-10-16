@@ -152,9 +152,11 @@ agent mail (`[messaging] max_body_bytes`) keep their own bounds.
 - `session.producers` returns `sources`: the state of every producer-capable
   plugin, and of every producer-capable runtime attached to the session.
 - A goal's reminders wait until every source in that list is `ready`, where
-  today they wait for every producer-capable plugin. A plugin's or runtime's
-  failure emits the existing `plugin_diagnostic`, renamed
-  `producer_diagnostic` with the `source`.
+  today they wait for every producer-capable plugin. A source that fails or
+  is disabled records a runless `producer_diagnostic { source, kind, message }`
+  (`recovery_failed` or `recovery_disabled`), once per session. The
+  `plugin_diagnostic` event stays for the plugin host's other diagnostics; its
+  `recovery_failed` and `recovery_disabled` kinds are no longer written.
 - A live external registration in a session still holds back goal reminders,
   as a plugin registration does today.
 - External messages stay outside the agent-mail caps (`max_pending_per_session`,
@@ -166,7 +168,7 @@ agent mail (`[messaging] max_body_bytes`) keep their own bounds.
 |---|---|
 | Changed | `ProducerOwner`: `plugin { plugin }` replaced by `external { source, name }`. |
 | Changed | `session.producers` result: `plugin_recovery` replaced by `sources` (`ProducerSourceState`). |
-| Changed | `plugin_diagnostic` event renamed `producer_diagnostic`, `plugin` replaced by `source`. |
+| Added | `producer_diagnostic { source, kind, message }` event for a producer source's failed or disabled recovery. |
 
 Client protocol 43. The TUI labels an external producer `<source> · <name>`
 and its notices name the source.

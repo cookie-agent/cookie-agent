@@ -35,9 +35,10 @@ pub use prompt_template::{
 pub use runtime::{
     AgentMdConfig, ApprovalConfig, ContextCompactionConfig, ContextCompactionTrigger,
     DelegationConfig, EngineConfig, LoopWarningConfig, McpConfig, McpOAuthConfig, McpOAuthSettings,
-    McpServerConfig, MessagingConfig, ModelPricing, ModelRetryConfig, PicoUsdPerMillion,
-    PluginConfig, PluginsConfig, PricingConfig, SUBAGENT_OUTPUT_MAX_BYTES, ServerConfig,
-    SessionTitleConfig, SubagentOutputConfig, ToolOutputConfig,
+    McpServerConfig, MessagingConfig, ModelPricing, ModelRetryConfig, PRODUCER_MAX_BODY_BYTES,
+    PicoUsdPerMillion, PluginConfig, PluginsConfig, PricingConfig, ProducersConfig,
+    SUBAGENT_OUTPUT_MAX_BYTES, ServerConfig, SessionTitleConfig, SubagentOutputConfig,
+    ToolOutputConfig,
 };
 pub use runtime_templates::{RuntimeTemplateConfig, WORKSPACE_PLACEHOLDER};
 pub use skills::{

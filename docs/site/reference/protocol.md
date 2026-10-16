@@ -56,11 +56,19 @@ producer owner of the `<subagent_report>` a subagent sends its parent after
 every turn. It also made tool permissions optional: a tool may declare no
 permission, so it is always published and every call allowed, and the
 `permission_name` the `tool_before_call` plugin hook receives is `null` for
-such a tool. Older clients are rejected.
+such a tool. Protocol 43 replaced the `plugin { plugin }` producer owner
+with `external { source, name }`: `source` is `plugin:<name>` or
+`runtime:<attachment name>`, and `name` is the producer's own label, so a
+plugin or runtime may run any number of named producers (see the [external
+producers spec](../specs/external-producers.md)). Stored `plugin` owners
+decode as `external` with name `default`. `session.producers` returns
+`sources` (the recovery state of each producer source) in place of
+`plugin_recovery`, and a source that cannot recover records a
+`producer_diagnostic` event. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 42.
+members of protocol 43.
 
 ## Error diagnostics
 
@@ -83,7 +91,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 42 alongside independent display and output references. The
+preserved in protocol 43 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -161,7 +169,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.goal.get` | Session ID | Required nullable `goal: GoalState` |
 | `session.goal.set` | Session ID, objective, optional `selection: RunSelection` | Activated `goal: GoalState` |
 | `session.goal.lifecycle` | Session ID, goal ID, expected revision, pause/resume/cancel action, optional `selection` for resume only | Updated `goal: GoalState` |
-| `session.producers` | Session ID | Runtime `producers` and `plugin_recovery` inspection |
+| `session.producers` | Session ID | Runtime `producers` and `sources` (producer source recovery) inspection |
 | `session.usage` | Session ID | Token/request rollup, cache hit rate, optional estimated cost, and per-model breakdown |
 | `session.children` | Session ID | Direct child summaries |
 | `session.tree` | Session ID | Recursive session tree |
@@ -278,7 +286,7 @@ The engine implements these methods through its per-session actor. Goal mutation
 are root-only; producer inspection is available for any owned session.
 Goal/producer request shapes remain unchanged. Session protocol 18 added declared
 tool-output channels, terminal output
-references, and independent UI display. Plugin extension `0.0.7` uses typed
+references, and independent UI display. Plugin extension `0.0.8` uses typed
 terminal single/named output and final display; package versions are unchanged.
 
 | Surface | Public contract | Implementation owner |
@@ -288,7 +296,7 @@ terminal single/named output and final display; package versions are unchanged.
 | Activation | `SessionGoalSetParams/Result`, `set_session_goal` | User-only root command, rejects active/paused goal |
 | Lifecycle | `SessionGoalLifecycleParams/Result`, `change_session_goal_lifecycle`, `GoalLifecycleAction` | User-only root pause/resume/cancel; reject stale/terminal goal |
 | Model tools | `GoalGetParams/Result`, `GoalUpdateParams/Result` | Root-only `goal_get`/`goal_update`, frozen at run admission |
-| Runtime inspection | `SessionProducersParams/Result`, `session_producers`, `ProducerRegistration`, `PluginRecoveryState` | Session runtime snapshot, not global catalog snapshot or persistence |
+| Runtime inspection | `SessionProducersParams/Result`, `session_producers`, `ProducerRegistration`, `ProducerSourceState` | Session runtime snapshot, not global catalog snapshot or persistence |
 | Plugin messaging | `ExtensionProducer{Register,Send,Discard,Unregister}Params/Result` | Engine request handlers; SDK mirrors register/send/discard/unregister |
 | Recovery handshake | `ExtensionRecoveryStartParams`, `ExtensionRecoveryCompleteParams/Result`, `ExtensionRecoveryOutcome` | `plugin/recovery/start` engine notification (no deadline/response); plugin completion request |
 

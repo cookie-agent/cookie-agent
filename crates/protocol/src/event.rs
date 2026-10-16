@@ -2058,6 +2058,15 @@ pub enum EventPayload {
         message: String,
         count: u64,
     },
+    /// A producer source (a plugin or a runtime) could not restore the
+    /// external work it tracks: that work is unknown, and goal continuation
+    /// is held. Plugin sources written before this event recorded it as a
+    /// `plugin_diagnostic` of kind `recovery_failed` or `recovery_disabled`.
+    ProducerDiagnostic {
+        source: crate::ProducerSource,
+        kind: ProducerDiagnosticKind,
+        message: String,
+    },
     GoalActivated {
         goal_id: GoalId,
         objective: String,
@@ -2571,6 +2580,7 @@ impl EventPayload {
                 | Self::SkillInvocationNoted { .. }
                 | Self::PluginEventAdded { .. }
                 | Self::PluginDiagnostic { .. }
+                | Self::ProducerDiagnostic { .. }
                 | Self::GoalActivated { .. }
                 | Self::GoalChecklistRevised { .. }
                 | Self::GoalLifecycleChanged { .. }
@@ -2610,8 +2620,7 @@ impl EventPayload {
                 retained_output,
                 ..
             } => {
-                if matches!(producer_owner, ProducerOwner::Plugin { plugin } if plugin.trim().is_empty())
-                    || reminder.as_ref().is_some_and(|identity| {
+                if reminder.as_ref().is_some_and(|identity| {
                         !matches!(producer_owner, ProducerOwner::Goal { goal_id } if *goal_id == identity.goal_id)
                     })
                 {
@@ -2989,6 +2998,17 @@ pub enum PluginDiagnosticKind {
     ContextMismatch,
     RateLimited,
     RecoveryFailed,
+    RecoveryDisabled,
+}
+
+/// Why a producer source is unavailable.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProducerDiagnosticKind {
+    /// The source reported that its recovery failed.
+    RecoveryFailed,
+    /// The source is configured off, or lost its connection before
+    /// recovering.
     RecoveryDisabled,
 }
 

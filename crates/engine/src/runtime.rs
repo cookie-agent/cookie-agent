@@ -53,6 +53,7 @@ mod artifact_reads;
 pub(crate) mod artifacts;
 pub(crate) mod attachments;
 pub(crate) mod background_tasks;
+mod runtime_producers;
 mod subagent_reports;
 pub(crate) use background_tasks::{BackgroundActor, Stopped};
 mod blocking_io;

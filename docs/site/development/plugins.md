@@ -129,7 +129,7 @@ and hook-chaining details.
 
 ## Protocol
 
-The extension protocol version is the semantic-version string `0.0.7`. Before version 1.0,
+The extension protocol version is the semantic-version string `0.0.8`. Before version 1.0,
 cookie agent requires an exact version match: additive method or schema changes bump the patch
 version, and plugins must update before connecting to the new engine. A plugin reporting any
 other value is refused and its status contains the reported mismatch.
@@ -167,12 +167,19 @@ capabilities. Capabilities are fixed for the process lifetime.
 
 Producer messaging requires explicit plugin capability opt-in and
 `plugins.<name>.producer_messaging = true` in configuration, both off by default.
-The engine derives the stable owner from the configured plugin name and checks
-the live connection's ownership; senders cannot choose or impersonate an owner.
+A plugin produces under `external { source, name }` owners (see the [external
+producers spec](../specs/external-producers.md)): the engine derives `source`,
+`plugin:<configured name>`, from the connection and checks the live
+connection's ownership, so senders cannot choose or impersonate a source. The
+plugin names each producer it registers (`[a-z0-9][a-z0-9_.-]{0,63}`), so one
+plugin may run any number of producers, each with its own idempotency keys.
+The SDK's `register_producer` registers under `default`;
+`register_named_producer` takes a name. A body must be non-empty and at most
+[`[producers] max_body_bytes`](../engine/producers.md).
 
 | Wire method | Direction | Parameters | Result |
 |---|---|---|---|
-| `plugin/producer/register` | Plugin to engine | `ExtensionProducerRegisterParams { session_id }` | `ExtensionProducerRegisterResult { producer_id }` |
+| `plugin/producer/register` | Plugin to engine | `ExtensionProducerRegisterParams { session_id, name }` | `ExtensionProducerRegisterResult { producer_id }` |
 | `plugin/producer/send` | Plugin to engine | `ExtensionProducerSendParams { session_id, producer_id, mode, idempotency_key, description, body }` | `ExtensionProducerSendResult { message_id }` |
 | `plugin/producer/unregister` | Plugin to engine | `ExtensionProducerUnregisterParams { session_id, producer_id }` | `ExtensionProducerUnregisterResult {}` |
 | `plugin/producer/discard` | Plugin to engine | `ExtensionProducerDiscardParams { session_id, message_id }` | `ExtensionProducerDiscardResult {}` |
@@ -197,8 +204,8 @@ required even for retries; closed/foreign registrations and closing sessions rej
 sends. Zero-send unregister is valid and unregister never removes accepted messages.
 
 Discard addresses a message receipt, not a registration. It requires a live,
-producer-capable connection, but the message belongs to the stable plugin owner
-in that session. The original registration may already be closed, and the current
+producer-capable connection, and the message must belong to the plugin's source
+in that session, under any of its producer names. The original registration may already be closed, and the current
 connection epoch need not match the epoch that accepted the message. Runtime
 rejects foreign-owner or wrong-session receipts and consumed messages. A durable
 claim by the session actor reserves a message and removes it from waiting before
@@ -215,10 +222,10 @@ The ACK follows durable acceptance only. Identical retries scoped to
 different description, body, or mode rejects key reuse. Missing ACKs are commit-uncertain. These
 contracts make no exactly-once claim about model calls or external effects.
 
-`PluginRecoveryStatus` has exactly `starting`, `ready`, `failed`, `disabled`.
-Readiness inspection is runtime-only through `session.producers`. Failed/disabled
-plugins require `plugin_diagnostic` (`recovery_failed`/`recovery_disabled`) and a
-TUI notice; unrecovered external work remains unknown, not completed. Accepted
+`ProducerSourceStatus` has exactly `starting`, `ready`, `failed`, `disabled`.
+Readiness inspection is runtime-only through `session.producers` (`sources`).
+Failed/disabled sources record a `producer_diagnostic` (`recovery_failed`/
+`recovery_disabled`) and a TUI notice; unrecovered external work remains unknown, not completed. Accepted
 messages recover independently of registration or plugin readiness. The engine
 cannot distinguish no pending work from lost plugin state.
 
@@ -270,10 +277,10 @@ fresh, non-reused epoch per connection within its lifetime. Neither value is
 accepted from request parameters. Bind registrations and recovery readiness to
 name + epoch; reject stale-connection sends/completions. A disconnect must revoke
 only that epoch's registrations, not a replacement connection's registrations.
-Durable deduplication uses `ProducerOwner::Plugin { plugin }` with session and
-idempotency key, never the connection epoch. Mode remains per send.
+Durable deduplication uses `ProducerOwner::External { source, name }` with
+session and idempotency key, never the connection epoch. Mode remains per send.
 For `Discard`, runtime checks the current authenticated epoch and the message's
-stable owner and session, not an active producer registration or its original epoch.
+source and session, not an active producer registration or its original epoch.
 
 Decode each method into its exact protocol parameters, invoke the handler without
 blocking the transport reader, and correlate the matching typed response with the
@@ -288,7 +295,7 @@ Runtime integration helpers in `PluginRegistry` (transport implementation):
 
 - `set_producer_handler(PluginProducerHandler)` installs the exact callback above;
   absent handlers reject requests, including recovery completion.
-- `producer_recovery_states() -> Vec<PluginRecoveryState>` returns configured or
+- `producer_recovery_states() -> Vec<ProducerSourceState>` returns configured or
   declared producer plugins, including disabled/failed entries.
 - `producer_connection_is_current(plugin: &str, epoch: &u64) -> bool` checks live
   capability-authorized connection ownership. Check it inside actor operations,
@@ -302,7 +309,7 @@ Runtime integration helpers in `PluginRegistry` (transport implementation):
   cancellation. Subscribe before starting plugins and reconcile the initial snapshot
   as well as every change. Runtime must inspect current recovery states, revoke
   registrations whose owner name/epoch is no longer current, reconcile loaded
-  sessions, and emit `recovery_failed`/`recovery_disabled` diagnostics. This is a
+  sessions, and emit `producer_diagnostic` events. This is a
   state watch, not an event log; no engine event enum or callback variants change.
 
 Producer handlers run in at most 32 concurrent tasks per connection. Overload
@@ -337,7 +344,7 @@ by chunk, ordinary, or terminal class in their diagnostic message.
 This stream is observational and not durable. Each plugin has an independent bounded 1024-message
 queue. A full queue drops delivery for that plugin, increments its dropped-event status counter,
 and records a session diagnostic. It cannot delay session persistence, another plugin, or the
-engine. There is no event-type filter in protocol 0.0.7; replay and filtered subscriptions remain
+engine. There is no event-type filter in protocol 0.0.8; replay and filtered subscriptions remain
 future work.
 
 Plugins with `subscribe_bus: true` also receive non-durable `plugin/bus_event` notifications.
@@ -383,7 +390,7 @@ receive it normally.
 
 ## Interception
 
-Plugins register hook names in `capabilities.intercept`. The complete 0.0.7 set is
+Plugins register hook names in `capabilities.intercept`. The complete 0.0.8 set is
 `tool_before_call`, `tool_after_result`, `agent_before_start`, `session_before_compact`,
 `user_before_input`, `model_before_request`, `provider_before_headers`,
 `provider_before_request`, `provider_after_response`, `message_end`, `model_before_select`,
@@ -427,7 +434,7 @@ validation before later plugins see them. Parameter adjustments apply with eithe
 `replace`; `replace` requires a complete message list. Prompt-cache markers are placed only after
 the final validated model-hook result.
 
-Pinned Oven adapters in 0.0.7 do not expose their adapter-assembled HTTP headers or raw provider
+Pinned Oven adapters in 0.0.8 do not expose their adapter-assembled HTTP headers or raw provider
 JSON. Accordingly, `provider_before_headers` receives an empty map; requesting a non-empty `set` or
 `delete` mutation records an `unsupported_capability` diagnostic and does not mutate the HTTP
 request. `provider_before_request` operates on Oven's normalized request JSON, not the adapter's raw
@@ -523,5 +530,5 @@ terminates the process if needed. Shutdown remains bounded when initialization i
 
 ## Current limitation
 
-Plugin resource methods remain deferred. Protocol 0.0.7 event subscriptions have no replay or
+Plugin resource methods remain deferred. Protocol 0.0.8 event subscriptions have no replay or
 per-event-type filters.

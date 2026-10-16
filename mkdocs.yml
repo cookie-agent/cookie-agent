@@ -91,6 +91,7 @@ nav:
       - 'Session Title [session_title]': engine/session_title.md
       - 'Delegation [delegation]': engine/delegation.md
       - 'Agent Messaging [messaging]': engine/messaging.md
+      - 'External Producers [producers]': engine/producers.md
       - 'Request Header [headers]': engine/headers.md
       - 'Providers [providers]': guide/providers.md
       - 'MCP [mcp]': guide/mcp.md

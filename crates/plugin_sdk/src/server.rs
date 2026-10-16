@@ -44,7 +44,8 @@ use cookie_agent_protocol::{
     PLUGIN_PRODUCER_SEND_METHOD, PLUGIN_PRODUCER_UNREGISTER_METHOD,
     PLUGIN_RECOVERY_COMPLETE_METHOD, PLUGIN_RECOVERY_START_METHOD, PLUGIN_SHUTDOWN_METHOD,
     PLUGIN_TOOLS_CALL_METHOD, ProducerDeliveryMode, ProducerId, ProducerIdempotencyKey,
-    ProducerMessageId, Request, Response, SafeErrorMessage, SessionId, SuccessResponse,
+    ProducerMessageId, ProducerName, Request, Response, SafeErrorMessage, SessionId,
+    SuccessResponse,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -726,7 +727,8 @@ impl PluginContext {
         Ok(result.bus)
     }
 
-    /// Registers a long-lived producer for one session.
+    /// Registers a long-lived producer for one session under the name
+    /// `default`; see [`Self::register_named_producer`].
     ///
     /// The returned handle has no `Drop` cleanup. Call [`ProducerHandle::unregister`] explicitly,
     /// including when no messages were sent.
@@ -734,13 +736,28 @@ impl PluginContext {
         &self,
         session_id: SessionId,
     ) -> Result<ProducerHandle, PluginError> {
+        self.register_named_producer(session_id, ProducerName::default_name())
+            .await
+    }
+
+    /// Registers a long-lived producer named `name` for one session. A
+    /// plugin may run any number of named producers; each name keeps its own
+    /// idempotency keys, and the session shows it as `plugin:<plugin> · <name>`.
+    ///
+    /// The returned handle has no `Drop` cleanup. Call [`ProducerHandle::unregister`] explicitly,
+    /// including when no messages were sent.
+    pub async fn register_named_producer(
+        &self,
+        session_id: SessionId,
+        name: ProducerName,
+    ) -> Result<ProducerHandle, PluginError> {
         if !self.state.producers {
             return Err(PluginError::ProducerMessagingNotEnabled);
         }
         let result: ExtensionProducerRegisterResult = context_request(
             self,
             PLUGIN_PRODUCER_REGISTER_METHOD,
-            ExtensionProducerRegisterParams { session_id },
+            ExtensionProducerRegisterParams { session_id, name },
         )
         .await?;
         Ok(ProducerHandle {

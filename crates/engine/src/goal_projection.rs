@@ -436,9 +436,6 @@ fn valid_lifecycle_change(goal: &GoalState, status: GoalStatus) -> bool {
 }
 
 fn valid_reminder_owner(owner: &ProducerOwner, reminder: Option<&GoalReminderIdentity>) -> bool {
-    if matches!(owner, ProducerOwner::Plugin { plugin } if plugin.trim().is_empty()) {
-        return false;
-    }
     match (owner, reminder) {
         (ProducerOwner::Goal { goal_id }, Some(reminder)) => *goal_id == reminder.goal_id,
         (ProducerOwner::Goal { .. }, None) | (_, Some(_)) => false,

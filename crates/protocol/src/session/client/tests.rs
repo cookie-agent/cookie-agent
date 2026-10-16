@@ -306,7 +306,7 @@ async fn goal_and_producer_calls_use_the_public_wire_contracts() {
         .send(MessageFrame::Value(serde_json::json!({
             "jsonrpc": "2.0",
             "id": request["id"],
-            "result": { "producers": [], "plugin_recovery": [] },
+            "result": { "producers": [], "sources": [] },
         })))
         .expect("session producers response");
     let result = producers
@@ -314,7 +314,7 @@ async fn goal_and_producer_calls_use_the_public_wire_contracts() {
         .expect("session producers task")
         .expect("session producers");
     assert!(result.producers.is_empty());
-    assert!(result.plugin_recovery.is_empty());
+    assert!(result.sources.is_empty());
 }
 
 #[tokio::test]

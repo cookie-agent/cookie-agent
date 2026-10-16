@@ -307,6 +307,8 @@ pub struct EngineConfig {
     pub delegation: DelegationConfig,
     #[serde(default)]
     pub messaging: MessagingConfig,
+    #[serde(default)]
+    pub producers: ProducersConfig,
     #[serde(skip)]
     pub pricing: PricingConfig,
     #[serde(default, deserialize_with = "deserialize_headers")]
@@ -329,6 +331,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) session_title: Option<SessionTitleConfig>,
     pub(crate) delegation: Option<DelegationConfig>,
     pub(crate) messaging: Option<MessagingConfig>,
+    pub(crate) producers: Option<ProducersConfig>,
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_optional_headers")]
     pub(crate) headers: Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>,
@@ -631,6 +634,29 @@ impl Default for MessagingConfig {
         }
     }
 }
+/// `[producers]`: bounds on what external producers (plugins and runtimes)
+/// may send.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProducersConfig {
+    /// Largest body an external producer may send, in UTF-8 bytes.
+    #[serde(default = "default_producer_max_body_bytes")]
+    pub max_body_bytes: usize,
+}
+impl Default for ProducersConfig {
+    fn default() -> Self {
+        Self {
+            max_body_bytes: default_producer_max_body_bytes(),
+        }
+    }
+}
+const fn default_producer_max_body_bytes() -> usize {
+    64 * 1024
+}
+/// The ceiling of `[producers] max_body_bytes`: the 4 MiB frame a plugin
+/// message travels in.
+pub const PRODUCER_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+
 const fn default_messaging_enabled() -> bool {
     true
 }
@@ -819,6 +845,9 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     if let Some(value) = &layer.messaging {
         runtime.messaging = value.clone();
     }
+    if let Some(value) = &layer.producers {
+        runtime.producers = value.clone();
+    }
     if let Some(values) = &layer.headers {
         for (name, value) in values {
             if value.as_str().is_empty() {
@@ -872,6 +901,11 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
         (
             runtime.subagent_output.max_lines == 0,
             "subagent_output.max_lines must be positive",
+        ),
+        (
+            runtime.producers.max_body_bytes == 0
+                || runtime.producers.max_body_bytes > PRODUCER_MAX_BODY_BYTES,
+            "producers.max_body_bytes must be 1..=4194304",
         ),
         (
             runtime.subagent_output.max_bytes == 0

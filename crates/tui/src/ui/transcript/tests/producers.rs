@@ -23,9 +23,10 @@ fn producer_rows_collapse_to_summary_and_expand_to_model_body() {
             session,
             seq,
             message_id,
-            ProducerOwner::Plugin {
-                plugin: "build".into(),
-            },
+            ProducerOwner::external(
+                cookie_agent_protocol::ProducerSource::plugin("build").unwrap(),
+                cookie_agent_protocol::ProducerName::default_name(),
+            ),
             ProducerDeliveryMode::Queue,
             &format!("ACTUAL MODEL BODY\n{}", "bounded content\n".repeat(1000)),
             None,
@@ -85,7 +86,7 @@ fn producer_rows_collapse_to_summary_and_expand_to_model_body() {
     );
     let text = snapshot_lines(&cache.layout.lines.to_vec());
     assert!(text.starts_with(
-        "◇ ▾ Build completed: parser\n· plugin build · queue · consumed\n· ACTUAL MODEL BODY"
+        "◇ ▾ Build completed: parser\n· plugin:build · default · queue · consumed\n· ACTUAL MODEL BODY"
     ));
     assert_eq!(text.matches("ACTUAL MODEL BODY").count(), 1);
     let region = cache
@@ -401,9 +402,10 @@ fn goal_and_producer_rows_fit_narrow_viewports() {
             seq: 2,
             accepted_at: Timestamp::now(),
             message_id: ProducerMessageId::new_v7(),
-            producer_owner: ProducerOwner::Plugin {
-                plugin: "build-monitor".to_owned(),
-            },
+            producer_owner: ProducerOwner::external(
+                cookie_agent_protocol::ProducerSource::plugin("build-monitor").unwrap(),
+                cookie_agent_protocol::ProducerName::default_name(),
+            ),
             mode: ProducerDeliveryMode::Queue,
             body: "A producer body that wraps instead of widening the pane".to_owned(),
             reminder: None,
@@ -578,9 +580,10 @@ fn producer_lifecycle_renders_claimed_and_consumed_content_and_debug_discard_dia
     }
 
     for producer_owner in [
-        ProducerOwner::Plugin {
-            plugin: "ci".to_owned(),
-        },
+        ProducerOwner::external(
+            cookie_agent_protocol::ProducerSource::plugin("ci").unwrap(),
+            cookie_agent_protocol::ProducerName::default_name(),
+        ),
         ProducerOwner::Delegation {
             invocation_id: InvocationId::new_v7(),
         },
@@ -622,9 +625,10 @@ fn cached_producer_layout_stays_hidden_until_consumed_then_stabilizes() {
             seq: 9,
             accepted_at: Timestamp::now(),
             message_id: ProducerMessageId::new_v7(),
-            producer_owner: ProducerOwner::Plugin {
-                plugin: "ci".to_owned(),
-            },
+            producer_owner: ProducerOwner::external(
+                cookie_agent_protocol::ProducerSource::plugin("ci").unwrap(),
+                cookie_agent_protocol::ProducerName::default_name(),
+            ),
             mode: ProducerDeliveryMode::Queue,
             body: "cached payload".to_owned(),
             reminder: None,
@@ -660,7 +664,9 @@ fn cached_producer_layout_stays_hidden_until_consumed_then_stabilizes() {
     assert_eq!(*id, 41);
     *status = crate::state::ProducerMessageStatus::Consumed;
     assert!(!render(&mut cache, &state));
-    assert!(snapshot_lines(&cache.layout.lines.to_vec()).contains("◇ ▸ plugin ci · queue"));
+    assert!(
+        snapshot_lines(&cache.layout.lines.to_vec()).contains("◇ ▸ plugin:ci · default · queue")
+    );
     assert!(!snapshot_lines(&cache.layout.lines.to_vec()).contains("cached payload"));
     assert_eq!(cache.item_layout_passes, 2);
     assert!(render(&mut cache, &state));

@@ -59,7 +59,7 @@ origin class. This keeps the origin grammar restricted to `user`, `engine`,
 | AGENTS.md context | `agent_md_loaded`, `agent_md_skipped` |
 | Plugins | `plugin_event_added`, `plugin_diagnostic` |
 | Goals | `goal_activated`, `goal_checklist_revised`, `goal_lifecycle_changed` |
-| Producer messaging | `producer_message_accepted`, `producer_message_admitted`, `producer_messages_claimed`, `producer_messages_released`, `producer_message_consumed`, `producer_message_discarded` |
+| Producer messaging | `producer_message_accepted`, `producer_diagnostic`, `producer_message_admitted`, `producer_messages_claimed`, `producer_messages_released`, `producer_message_consumed`, `producer_message_discarded` |
 | User input | `message_injected`, `user_input_admitted`, `user_input_submitted`, `user_input_transformed`, `user_input_recalled`, `user_input_recalled_v2`, `user_input_applied`, `user_input_queued`, `user_input_queue_recalled`, `user_input_queue_voided`, `session_model_selected` |
 | Run | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_interrupted` |
 | Model | `model_attempt_started`, `model_tools_published`, `model_request_prepared`, `model_output_started`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback`; live-only: `text_delta`, `reasoning_delta` |
@@ -152,7 +152,9 @@ Handling of older stored checklist items containing an `id` is pending core
 implementation verification. No specific compatibility decoder or migration is
 promised here; the versionless best-effort session-history contract still applies.
 
-`ProducerOwner` is tagged by `type`: `plugin { plugin }`,
+`ProducerOwner` is tagged by `type`: `external { source, name }` (a plugin's
+or a runtime's named producer; a stored `plugin { plugin }` decodes as
+`external { source: "plugin:<plugin>", name: "default" }`),
 `delegation { invocation_id }`, `goal { goal_id }`,
 `goal_control { goal_id }`, `agent { session_id }`, `tool { tool_call_id }`, or
 `subagent { session_id }` (a child's `<subagent_report>`, keyed by its run ID). It identifies a specific
@@ -235,8 +237,10 @@ invariants, not properties a single-event decoder can verify.
 
 Goal state and unconsumed messages must survive compaction. Fork copies durable
 branch data, never registrations; revert reconciles only the visible branch.
-Failed/disabled recovery notices use the additive `PluginDiagnosticKind` values
-`recovery_failed` and `recovery_disabled`, not persisted readiness/registration records.
+Failed/disabled recovery notices are runless `producer_diagnostic { source, kind,
+message }` events with `kind` `recovery_failed` or `recovery_disabled`, not
+persisted readiness/registration records. Logs from before external producers
+record them as `plugin_diagnostic` events of those kinds.
 
 ### Existing event behavior
 

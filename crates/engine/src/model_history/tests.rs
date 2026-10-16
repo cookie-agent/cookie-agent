@@ -707,9 +707,10 @@ fn producer_body_materializes_only_at_the_effective_admission() {
     let accepted = producer_accepted_event(
         1,
         message_id,
-        ProducerOwner::Plugin {
-            plugin: "jobs".into(),
-        },
+        ProducerOwner::external(
+            cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+            cookie_agent_protocol::ProducerName::default_name(),
+        ),
         "job:7",
         "durable producer result",
     );
@@ -756,9 +757,10 @@ fn pending_producer_body_requires_admission_to_the_current_run() {
         producer_accepted_event(
             1,
             message_id,
-            ProducerOwner::Plugin {
-                plugin: "jobs".into(),
-            },
+            ProducerOwner::external(
+                cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+                cookie_agent_protocol::ProducerName::default_name(),
+            ),
             "job:run-boundary",
             "pending producer body",
         ),
@@ -805,9 +807,10 @@ fn pending_producer_body_requires_admission_to_the_current_run() {
 fn discarded_producer_body_is_absent_from_history() {
     let message_id = ProducerMessageId::new_v7();
     let run = RunId::new_v7();
-    let owner = ProducerOwner::Plugin {
-        plugin: "jobs".into(),
-    };
+    let owner = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let accepted = producer_accepted_event(
         1,
         message_id,
@@ -850,9 +853,10 @@ fn claimed_snapshot_retains_covered_producer_input() {
         producer_accepted_event(
             1,
             message_id,
-            ProducerOwner::Plugin {
-                plugin: "jobs".into(),
-            },
+            ProducerOwner::external(
+                cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+                cookie_agent_protocol::ProducerName::default_name(),
+            ),
             "job:claimed",
             "claimed producer body",
         ),
@@ -991,9 +995,10 @@ fn compaction_preserves_goal_projection_and_unconsumed_producer_input() {
         producer_accepted_event(
             3,
             message_id,
-            ProducerOwner::Plugin {
-                plugin: "jobs".into(),
-            },
+            ProducerOwner::external(
+                cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+                cookie_agent_protocol::ProducerName::default_name(),
+            ),
             "pending-before-checkpoint",
             "Exact unconsumed producer evidence",
         ),
@@ -1868,9 +1873,10 @@ fn native_checkpoint_does_not_reappend_covered_pending_producer_input() {
         producer_accepted_event(
             2,
             covered_id,
-            ProducerOwner::Plugin {
-                plugin: "jobs".into(),
-            },
+            ProducerOwner::external(
+                cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+                cookie_agent_protocol::ProducerName::default_name(),
+            ),
             "covered",
             "producer body covered by native window",
         ),
@@ -1937,9 +1943,10 @@ fn native_checkpoint_does_not_reappend_covered_pending_producer_input() {
         producer_accepted_event(
             6,
             post_boundary_id,
-            ProducerOwner::Plugin {
-                plugin: "jobs".into(),
-            },
+            ProducerOwner::external(
+                cookie_agent_protocol::ProducerSource::plugin("jobs").unwrap(),
+                cookie_agent_protocol::ProducerName::default_name(),
+            ),
             "post-boundary",
             "producer body after native boundary",
         ),

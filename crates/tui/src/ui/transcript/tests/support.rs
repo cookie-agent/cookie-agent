@@ -121,6 +121,7 @@ pub(crate) fn production_provider_harness(
             session_title: SessionTitleConfig::default(),
             delegation: cookie_agent_config::DelegationConfig::default(),
             messaging: cookie_agent_config::MessagingConfig::default(),
+            producers: cookie_agent_config::ProducersConfig::default(),
             pricing: cookie_agent_config::PricingConfig::default(),
             headers: BTreeMap::new(),
             providers: BTreeMap::new(),
@@ -2090,9 +2091,10 @@ pub(crate) async fn expansion_scroll_app(kind: &str) -> (App, SessionId, BlockId
                         session,
                         1,
                         ProducerMessageId::new_v7(),
-                        ProducerOwner::Plugin {
-                            plugin: "build".into(),
-                        },
+                        ProducerOwner::external(
+                            cookie_agent_protocol::ProducerSource::plugin("build").unwrap(),
+                            cookie_agent_protocol::ProducerName::default_name(),
+                        ),
                         ProducerDeliveryMode::Queue,
                         &body,
                         None,

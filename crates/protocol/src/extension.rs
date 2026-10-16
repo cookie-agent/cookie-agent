@@ -4,7 +4,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const EXTENSION_PROTOCOL_VERSION: &str = "0.0.7";
+pub const EXTENSION_PROTOCOL_VERSION: &str = "0.0.8";
 pub const PLUGIN_PRODUCER_REGISTER_METHOD: &str = "plugin/producer/register";
 pub const PLUGIN_PRODUCER_SEND_METHOD: &str = "plugin/producer/send";
 pub const PLUGIN_PRODUCER_UNREGISTER_METHOD: &str = "plugin/producer/unregister";
@@ -86,7 +86,7 @@ impl JsonSchema for ExtensionProtocolVersion {
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"string","const":"0.0.7"})
+        json_schema!({"type":"string","const":"0.0.8"})
     }
 }
 
@@ -178,12 +178,14 @@ pub struct ExtensionPingResult {}
 #[serde(deny_unknown_fields)]
 pub struct ExtensionShutdownParams {}
 
-/// Plugin-to-engine request; the connection supplies the stable plugin owner.
-/// Registration is allowed during recovery and does not wait for goal readiness.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+/// Sender-to-engine request; the connection supplies the producer's source,
+/// and `name` labels this producer among the source's others. Registration is
+/// allowed during recovery and does not wait for goal readiness.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProducerRegisterParams {
     pub session_id: crate::SessionId,
+    pub name: crate::ProducerName,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -241,7 +243,8 @@ pub struct ExtensionProducerUnregisterParams {
 pub struct ExtensionProducerUnregisterResult {}
 
 /// Discard an owned message only while it remains waiting. Authority is the live
-/// connection's stable plugin owner and session, not a registration.
+/// connection's source and the session, not a registration: any message of the
+/// source, whatever its producer name.
 ///
 /// A durable actor claim reserves the message and removes it from waiting before
 /// request preparation and hooks. Discard rejects until that claim is released,

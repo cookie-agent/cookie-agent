@@ -459,6 +459,7 @@ pub(crate) fn fixture() -> Fixture {
             session_title: SessionTitleConfig::default(),
             delegation: cookie_agent_config::DelegationConfig::default(),
             messaging: cookie_agent_config::MessagingConfig::default(),
+            producers: cookie_agent_config::ProducersConfig::default(),
             pricing: cookie_agent_config::PricingConfig::default(),
             headers: BTreeMap::new(),
             providers: BTreeMap::new(),

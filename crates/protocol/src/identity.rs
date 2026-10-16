@@ -160,6 +160,105 @@ bounded_control_free_type!(
 );
 bounded_control_free_type!(ProviderItemId, 512, "Bounded provider item identity.");
 bounded_control_free_type!(CwdIdentity, 4096, "Opaque canonical workspace identity.");
+/// A producer's label, chosen by its sender at registration.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ProducerName(String);
+string_wire_impl!(
+    ProducerName,
+    64,
+    "^[a-z0-9][a-z0-9_.-]{0,63}$",
+    "A producer's label, chosen by its sender at registration.",
+    validate_producer_name
+);
+
+impl ProducerName {
+    /// The name a sender that names nothing registers under, and the name
+    /// stored `plugin` owners decode with.
+    pub const DEFAULT: &'static str = "default";
+
+    /// [`Self::DEFAULT`].
+    #[must_use]
+    pub fn default_name() -> Self {
+        Self(Self::DEFAULT.to_owned())
+    }
+}
+
+fn validate_producer_name(value: &str) -> Result<(), WireStringError> {
+    validate_bounded(value, ProducerName::MAX_BYTES)?;
+    let mut characters = value.chars();
+    let valid = characters
+        .next()
+        .is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
+        && characters.all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '_' | '.' | '-')
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(WireStringError::Invalid(
+            "must start with a lowercase letter or digit and contain only lowercase letters, digits, `_`, `.`, and `-`",
+        ))
+    }
+}
+
+/// Who produces from outside the daemon, derived by the daemon from the
+/// sender's connection: `plugin:<configured plugin name>` or
+/// `runtime:<attachment name>`.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ProducerSource(String);
+string_wire_impl!(
+    ProducerSource,
+    512,
+    "^[a-z]+:[^\\p{Cc}\\p{Cf}]+$",
+    "Who produces from outside the daemon: `plugin:<name>` or `runtime:<attachment name>`.",
+    validate_producer_source
+);
+
+impl ProducerSource {
+    const PLUGIN: &'static str = "plugin:";
+    const RUNTIME: &'static str = "runtime:";
+
+    /// The source of the configured plugin `plugin`.
+    pub fn plugin(plugin: &str) -> Result<Self, WireStringError> {
+        Self::new(format!("{}{plugin}", Self::PLUGIN))
+    }
+
+    /// The source of the runtime attached as `attachment`.
+    pub fn runtime(attachment: &str) -> Result<Self, WireStringError> {
+        Self::new(format!("{}{attachment}", Self::RUNTIME))
+    }
+
+    /// The configured plugin name, for a plugin source.
+    #[must_use]
+    pub fn plugin_name(&self) -> Option<&str> {
+        self.0.strip_prefix(Self::PLUGIN)
+    }
+
+    /// The attachment name, for a runtime source.
+    #[must_use]
+    pub fn runtime_attachment(&self) -> Option<&str> {
+        self.0.strip_prefix(Self::RUNTIME)
+    }
+}
+
+fn validate_producer_source(value: &str) -> Result<(), WireStringError> {
+    validate_control_free(value, ProducerSource::MAX_BYTES)?;
+    match value.split_once(':') {
+        Some((kind, rest))
+            if !kind.is_empty()
+                && kind.chars().all(|character| character.is_ascii_lowercase())
+                && !rest.trim().is_empty() =>
+        {
+            Ok(())
+        }
+        _ => Err(WireStringError::Invalid(
+            "must be `<kind>:<name>` with a lowercase kind and a non-blank name",
+        )),
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SafeDisplayText(String);
 string_wire_impl!(

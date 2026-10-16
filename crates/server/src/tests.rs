@@ -159,6 +159,7 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
             session_title: SessionTitleConfig::default(),
             delegation: cookie_agent_config::DelegationConfig::default(),
             messaging: cookie_agent_config::MessagingConfig::default(),
+            producers: cookie_agent_config::ProducersConfig::default(),
             pricing: cookie_agent_config::PricingConfig::default(),
             headers: BTreeMap::new(),
             providers: BTreeMap::new(),
@@ -396,6 +397,7 @@ fn harness_with_catalog_and_mcp(
             session_title: SessionTitleConfig::default(),
             delegation: cookie_agent_config::DelegationConfig::default(),
             messaging: cookie_agent_config::MessagingConfig::default(),
+            producers: cookie_agent_config::ProducersConfig::default(),
             pricing: cookie_agent_config::PricingConfig::default(),
             headers: BTreeMap::new(),
             providers: BTreeMap::new(),
@@ -757,7 +759,7 @@ async fn goal_and_producer_inspection_are_reachable_through_rpc() {
     )
     .await;
     assert_eq!(producers["result"]["producers"], json!([]));
-    assert_eq!(producers["result"]["plugin_recovery"], json!([]));
+    assert_eq!(producers["result"]["sources"], json!([]));
 
     harness.server.shutdown();
     harness.engine.shutdown().await;

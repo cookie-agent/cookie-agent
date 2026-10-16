@@ -47,6 +47,7 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | `session_title` | [Session Title](../engine/session_title.md) |
 | `delegation` | [Delegation](../engine/delegation.md) |
 | `messaging` | [Agent Messaging](../engine/messaging.md) |
+| `producers` | [External Producers](../engine/producers.md) |
 | `headers` | [Request Header](../engine/headers.md) |
 | `providers` | [Providers](providers.md) |
 | `mcp` | [MCP](mcp.md) |

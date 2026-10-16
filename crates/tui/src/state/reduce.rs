@@ -1464,6 +1464,14 @@ pub(super) fn reduce_event_from(
             },
             timestamp,
         ),
+        EventPayload::ProducerDiagnostic {
+            source, message, ..
+        } => push_event(
+            state,
+            EventLevel::Warning,
+            format!("producer {source}: {message}"),
+            timestamp,
+        ),
         EventPayload::SessionTitleCommitted { change, .. } => {
             push_event(
                 state,
@@ -1661,9 +1669,6 @@ pub(super) fn valid_producer_reminder_owner(
     owner: &ProducerOwner,
     reminder: Option<&GoalReminderIdentity>,
 ) -> bool {
-    if matches!(owner, ProducerOwner::Plugin { plugin } if plugin.trim().is_empty()) {
-        return false;
-    }
     match (owner, reminder) {
         (ProducerOwner::Goal { goal_id }, Some(reminder)) => *goal_id == reminder.goal_id,
         (ProducerOwner::Goal { .. }, None) | (_, Some(_)) => false,

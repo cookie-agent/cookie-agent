@@ -32,8 +32,8 @@ use cookie_agent_protocol::{
     ExtensionProducerUnregisterResult, ExtensionRecoveryCompleteParams,
     ExtensionRecoveryCompleteResult, ExtensionRecoveryOutcome, PLUGIN_PRODUCER_DISCARD_METHOD,
     PLUGIN_PRODUCER_REGISTER_METHOD, PLUGIN_PRODUCER_SEND_METHOD,
-    PLUGIN_PRODUCER_UNREGISTER_METHOD, PLUGIN_RECOVERY_COMPLETE_METHOD, PluginRecoveryState,
-    PluginRecoveryStatus, extension_recovery_start_notification,
+    PLUGIN_PRODUCER_UNREGISTER_METHOD, PLUGIN_RECOVERY_COMPLETE_METHOD, ProducerSource,
+    ProducerSourceState, ProducerSourceStatus, extension_recovery_start_notification,
 };
 use futures_util::StreamExt as _;
 use indexmap::IndexMap;
@@ -162,7 +162,7 @@ pub(crate) type PluginProducerHandler = Arc<
 struct ProducerConnection {
     epoch: Option<u64>,
     live: bool,
-    recovery: Option<PluginRecoveryStatus>,
+    recovery: Option<ProducerSourceStatus>,
     outcome: Option<ExtensionRecoveryOutcome>,
 }
 
@@ -183,9 +183,9 @@ impl Drop for ProducerConnectionLease {
         connection.live = false;
         if connection
             .recovery
-            .is_some_and(|status| status != PluginRecoveryStatus::Disabled)
+            .is_some_and(|status| status != ProducerSourceStatus::Disabled)
         {
-            connection.recovery = Some(PluginRecoveryStatus::Failed);
+            connection.recovery = Some(ProducerSourceStatus::Failed);
         }
         drop(connection);
         self.0
@@ -511,9 +511,9 @@ impl PluginRegistry {
                         epoch: None,
                         live: false,
                         recovery: config.producer_messaging.then_some(if config.enabled {
-                            PluginRecoveryStatus::Starting
+                            ProducerSourceStatus::Starting
                         } else {
-                            PluginRecoveryStatus::Disabled
+                            ProducerSourceStatus::Disabled
                         }),
                         outcome: None,
                     }),
@@ -695,7 +695,7 @@ impl PluginRegistry {
     /// Snapshot of configured or declared producer plugins, including unavailable
     /// ones. Failed/disabled external work is unknown, never proof of completion.
     #[must_use]
-    pub fn producer_recovery_states(&self) -> Vec<PluginRecoveryState> {
+    pub fn producer_recovery_states(&self) -> Vec<ProducerSourceState> {
         self.inner
             .plugins
             .values()
@@ -704,8 +704,9 @@ impl PluginRegistry {
                     .producer_connection
                     .lock()
                     .unwrap_or_else(|p| p.into_inner());
-                connection.recovery.map(|status| PluginRecoveryState {
-                    plugin: plugin.name.clone(),
+                let status = connection.recovery?;
+                Some(ProducerSourceState {
+                    source: ProducerSource::plugin(&plugin.name).ok()?,
                     status,
                 })
             })
@@ -750,8 +751,8 @@ impl PluginRegistry {
             };
         }
         connection.recovery = Some(match outcome {
-            ExtensionRecoveryOutcome::Ready => PluginRecoveryStatus::Ready,
-            ExtensionRecoveryOutcome::Failed { .. } => PluginRecoveryStatus::Failed,
+            ExtensionRecoveryOutcome::Ready => ProducerSourceStatus::Ready,
+            ExtensionRecoveryOutcome::Failed { .. } => ProducerSourceStatus::Failed,
         });
         connection.outcome = Some(outcome.clone());
         drop(connection);
@@ -1734,11 +1735,11 @@ impl PluginRuntime {
                         capable && self.config.producer_messaging && handler_available;
                     if capable || self.config.producer_messaging {
                         connection.recovery = Some(if connection.live {
-                            PluginRecoveryStatus::Starting
+                            ProducerSourceStatus::Starting
                         } else if capable && self.config.producer_messaging {
-                            PluginRecoveryStatus::Failed
+                            ProducerSourceStatus::Failed
                         } else {
-                            PluginRecoveryStatus::Disabled
+                            ProducerSourceStatus::Disabled
                         });
                     }
                 }

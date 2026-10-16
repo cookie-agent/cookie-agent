@@ -880,8 +880,11 @@ async fn recover_events(
 }
 
 fn event_belongs_to_run(event: &StoredEvent, session_id: SessionId, run_id: RunId) -> bool {
-    let session_diagnostic =
-        event.run_id.is_none() && matches!(&event.payload, EventPayload::PluginDiagnostic { .. });
+    let session_diagnostic = event.run_id.is_none()
+        && matches!(
+            &event.payload,
+            EventPayload::PluginDiagnostic { .. } | EventPayload::ProducerDiagnostic { .. }
+        );
     event.session_id == session_id && (event.run_id == Some(run_id) || session_diagnostic)
 }
 
@@ -1025,6 +1028,15 @@ async fn process_event(
             writeln!(
                 stderr,
                 "cookie plugin {plugin}: {}",
+                cookie_agent_protocol::diagnostics::detail(&message)
+            )?;
+        }
+        EventPayload::ProducerDiagnostic {
+            source, message, ..
+        } => {
+            writeln!(
+                stderr,
+                "cookie producer {source}: {}",
                 cookie_agent_protocol::diagnostics::detail(&message)
             )?;
         }

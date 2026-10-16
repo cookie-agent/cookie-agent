@@ -74,9 +74,10 @@ async fn producer_started_tool_loop_promotes_steers_without_composer_restore_and
     let first_attempt = AttemptId::new_v7();
     let second_attempt = AttemptId::new_v7();
     let tool_call_id = ToolCallId::new_v7();
-    let producer_owner = ProducerOwner::Plugin {
-        plugin: "goal-scheduler".into(),
-    };
+    let producer_owner = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("goal-scheduler").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let mut first_commit = turn_committed(
         session,
         8,
@@ -455,9 +456,10 @@ async fn selected_queue_entries_merge_users_and_all_producer_sources_by_sequence
         session,
         2,
         plugin_id,
-        ProducerOwner::Plugin {
-            plugin: "watcher".to_owned(),
-        },
+        ProducerOwner::external(
+            cookie_agent_protocol::ProducerSource::plugin("watcher").unwrap(),
+            cookie_agent_protocol::ProducerName::default_name()
+        ),
         ProducerDeliveryMode::Steer,
         "plugin body",
         None,
@@ -518,7 +520,7 @@ async fn selected_queue_entries_merge_users_and_all_producer_sources_by_sequence
     assert_eq!(entries[4].kind, QueueEntryKind::Producer(control_id));
     assert_eq!(entries[5].kind, QueueEntryKind::User);
     assert_eq!(entries[0].preview, "user first");
-    assert_eq!(entries[1].preview, "plugin watcher · steer");
+    assert_eq!(entries[1].preview, "plugin:watcher · default · steer");
     assert_eq!(
         entries[2].preview,
         format!("delegation {invocation_id} · queue")
@@ -540,7 +542,7 @@ async fn selected_queue_entries_merge_users_and_all_producer_sources_by_sequence
         crate::state::ProducerMessageStatus::Consumed,
     );
     let frame = rendered_frame(&mut app, 120, 24);
-    assert!(frame.contains("plugin watcher · steer"));
+    assert!(frame.contains("plugin:watcher · default · steer"));
     assert!(frame.contains(&format!("delegation {invocation_id} · queue")));
     assert!(frame.contains("goal controller · queue"));
     assert!(!frame.contains("NOISY REMINDER BODY"));
@@ -551,9 +553,10 @@ async fn producer_claims_hide_waiting_rows_and_release_restores_acceptance_order
     let (mut app, session, run) = app_with_active_run().await;
     let plugin_id = ProducerMessageId::new_v7();
     let control_id = ProducerMessageId::new_v7();
-    let plugin = ProducerOwner::Plugin {
-        plugin: "claim-test".into(),
-    };
+    let plugin = ProducerOwner::external(
+        cookie_agent_protocol::ProducerSource::plugin("claim-test").unwrap(),
+        cookie_agent_protocol::ProducerName::default_name(),
+    );
     let cancelled = test_goal(GoalStatus::Cancelled, Vec::new());
     let control = ProducerOwner::GoalControl {
         goal_id: cancelled.goal_id,
@@ -720,9 +723,10 @@ async fn consumed_and_discarded_producers_leave_the_queue_and_producer_only_stri
             session,
             seq,
             message_id,
-            ProducerOwner::Plugin {
-                plugin: "queue-test".to_owned(),
-            },
+            ProducerOwner::external(
+                cookie_agent_protocol::ProducerSource::plugin("queue-test").unwrap(),
+                cookie_agent_protocol::ProducerName::default_name()
+            ),
             ProducerDeliveryMode::Queue,
             body,
             None,
@@ -754,9 +758,10 @@ async fn consumed_and_discarded_producers_leave_the_queue_and_producer_only_stri
         5,
         EventPayload::ProducerMessageDiscarded {
             message_id: discarded,
-            producer_owner: Some(ProducerOwner::Plugin {
-                plugin: "queue-test".into()
-            }),
+            producer_owner: Some(ProducerOwner::external(
+                cookie_agent_protocol::ProducerSource::plugin("queue-test").unwrap(),
+                cookie_agent_protocol::ProducerName::default_name()
+            )),
             reminder: None,
         }
     )));
@@ -793,9 +798,10 @@ async fn producer_queue_rows_are_passive_with_a_real_user_entry_present() {
         session,
         1,
         producer_id,
-        ProducerOwner::Plugin {
-            plugin: "watcher".to_owned(),
-        },
+        ProducerOwner::external(
+            cookie_agent_protocol::ProducerSource::plugin("watcher").unwrap(),
+            cookie_agent_protocol::ProducerName::default_name()
+        ),
         ProducerDeliveryMode::Steer,
         "do not recall",
         None,
@@ -833,9 +839,10 @@ async fn pending_producer_survives_run_terminal_and_cramped_frames_do_not_overla
         session,
         1,
         producer_id,
-        ProducerOwner::Plugin {
-            plugin: "terminal".to_owned(),
-        },
+        ProducerOwner::external(
+            cookie_agent_protocol::ProducerSource::plugin("terminal").unwrap(),
+            cookie_agent_protocol::ProducerName::default_name()
+        ),
         ProducerDeliveryMode::Queue,
         "survives terminal",
         None,
@@ -1620,9 +1627,10 @@ async fn queue_strip_renders_mixed_sources() {
         session,
         2,
         ProducerMessageId::new_v7(),
-        ProducerOwner::Plugin {
-            plugin: "build".into()
-        },
+        ProducerOwner::external(
+            cookie_agent_protocol::ProducerSource::plugin("build").unwrap(),
+            cookie_agent_protocol::ProducerName::default_name()
+        ),
         ProducerDeliveryMode::Queue,
         "Build finished successfully",
         None,
@@ -1647,7 +1655,7 @@ async fn queue_strip_renders_mixed_sources() {
         entries.iter().map(|entry| entry.preview.as_str()).collect::<Vec<_>>().join("\n"),
         @"
         User follow-up
-        plugin build · queue
+        plugin:build · default · queue
         goal control · steer
         "
     );

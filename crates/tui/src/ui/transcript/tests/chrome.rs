@@ -197,9 +197,10 @@ async fn bottom_bar_working_indicator_tracks_running_queued_and_idle_states() {
             session,
             seq,
             id,
-            ProducerOwner::Plugin {
-                plugin: "ci".into(),
-            },
+            ProducerOwner::external(
+                cookie_agent_protocol::ProducerSource::plugin("ci").unwrap(),
+                cookie_agent_protocol::ProducerName::default_name(),
+            ),
             ProducerDeliveryMode::Queue,
             "raw body stays hidden",
             None,
@@ -241,9 +242,10 @@ async fn animation_active_covers_active_runs_and_pending_producers() {
         session,
         1,
         id,
-        ProducerOwner::Plugin {
-            plugin: "ci".into()
-        },
+        ProducerOwner::external(
+            cookie_agent_protocol::ProducerSource::plugin("ci").unwrap(),
+            cookie_agent_protocol::ProducerName::default_name()
+        ),
         ProducerDeliveryMode::Queue,
         "body",
         None

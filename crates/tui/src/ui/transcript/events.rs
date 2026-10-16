@@ -61,7 +61,7 @@ pub(in crate::ui) fn producer_summary(
 
 pub(super) fn producer_owner_label(owner: &ProducerOwner) -> String {
     match owner {
-        ProducerOwner::Plugin { plugin } => format!("plugin {plugin}"),
+        ProducerOwner::External { source, name } => format!("{source} · {name}"),
         ProducerOwner::Delegation { invocation_id } => format!("delegation {invocation_id}"),
         ProducerOwner::Goal { .. } => "goal controller".to_owned(),
         ProducerOwner::GoalControl { .. } => "goal control".to_owned(),
