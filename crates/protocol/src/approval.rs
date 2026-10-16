@@ -702,10 +702,7 @@ impl ApprovalRequest {
         if constraints.allow_tree_grant
             && operation.resources().iter().any(|resource| {
                 resource.binding_lifetime == PreparedBindingLifetime::ProcessLocal
-                    || matches!(
-                        resource.capability,
-                        PermissionAction::Read | PermissionAction::Write
-                    )
+                    || resource.capability.is_path()
             })
         {
             return Err(ApprovalSchemaError::InvalidTreeGrantConstraint);
@@ -832,12 +829,11 @@ impl TreeApprovalGrant {
         {
             return Err(ApprovalSchemaError::ProcessLocalTreeGrant);
         }
-        if self.resources.iter().any(|resource| {
-            matches!(
-                resource.capability,
-                PermissionAction::Read | PermissionAction::Write
-            )
-        }) {
+        if self
+            .resources
+            .iter()
+            .any(|resource| resource.capability.is_path())
+        {
             return Err(ApprovalSchemaError::FilesystemTreeGrant);
         }
         if self.resources.iter().any(|resource| {

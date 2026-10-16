@@ -108,7 +108,7 @@ impl EditTool {
         target: fs_cap::PreparedExisting,
     ) -> Result<PreparedTool, ToolError> {
         let (resources, policy_labels) = prepared_path_resources(
-            PermissionAction::Write,
+            PermissionAction::WRITE,
             "file",
             &target.display_path,
             &self.workspace,
@@ -118,7 +118,7 @@ impl EditTool {
         let operation = prepared_operation(
             "edit",
             &args,
-            vec![(PermissionAction::Write, "edit")],
+            vec![(PermissionAction::WRITE, "edit")],
             resources,
             &context,
         )?;
@@ -505,7 +505,7 @@ mod tests {
             crate::assert_workspace_rule_allows(
                 &prepared,
                 &workspace,
-                cookie_agent_protocol::PermissionAction::Write,
+                cookie_agent_protocol::PermissionAction::WRITE,
                 "routes/*",
             );
             prepared

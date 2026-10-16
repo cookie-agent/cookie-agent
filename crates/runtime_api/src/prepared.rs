@@ -326,12 +326,12 @@ mod tests {
         PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(b"arguments"),
             vec![cookie_agent_protocol::ApprovalCapability {
-                action: cookie_agent_protocol::PermissionAction::Bash,
+                action: cookie_agent_protocol::PermissionAction::BASH,
                 operation: cookie_agent_protocol::PreparedCapabilityOperation::new("bash:execute")
                     .expect("capability operation"),
             }],
             vec![cookie_agent_protocol::PreparedApprovalResource {
-                capability: cookie_agent_protocol::PermissionAction::Bash,
+                capability: cookie_agent_protocol::PermissionAction::BASH,
                 canonical: cookie_agent_protocol::PreparedResourceIdentity::new(format!(
                     "command:{}",
                     Sha256Digest::of_bytes(label.as_bytes())

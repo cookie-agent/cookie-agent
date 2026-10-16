@@ -27,12 +27,12 @@ fn config_agent_wire_types_match_protocol() {
         assert_same_json(&config, &protocol);
     }
     for (config, protocol) in [
-        (ConfigPermissionAction::Read, PermissionAction::Read),
-        (ConfigPermissionAction::Write, PermissionAction::Write),
-        (ConfigPermissionAction::Bash, PermissionAction::Bash),
-        (ConfigPermissionAction::Delegate, PermissionAction::Delegate),
-        (ConfigPermissionAction::Mcp, PermissionAction::Mcp),
-        (ConfigPermissionAction::Plugin, PermissionAction::Plugin),
+        (ConfigPermissionAction::READ, PermissionAction::READ),
+        (ConfigPermissionAction::WRITE, PermissionAction::WRITE),
+        (ConfigPermissionAction::BASH, PermissionAction::BASH),
+        (ConfigPermissionAction::DELEGATE, PermissionAction::DELEGATE),
+        (ConfigPermissionAction::MCP, PermissionAction::MCP),
+        (ConfigPermissionAction::PLUGIN, PermissionAction::PLUGIN),
     ] {
         assert_same_json(&config, &protocol);
     }
@@ -53,13 +53,13 @@ fn config_agent_wire_types_match_protocol() {
     let resource = WildcardPattern::new("${workspace_dir}/src/*").unwrap();
     assert_same_json(
         &ConfigPermissionRule {
-            action: ConfigPermissionAction::Read,
+            action: ConfigPermissionAction::READ,
             runtime: None,
             resource: resource.clone(),
             effect: ConfigPermissionEffect::Allow,
         },
         &PermissionRule {
-            action: PermissionAction::Read,
+            action: PermissionAction::READ,
             runtime: None,
             resource,
             effect: PermissionEffect::Allow,

@@ -121,12 +121,12 @@ impl ToolProvider for BackgroundJobProvider {
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(command.as_bytes()),
             vec![ApprovalCapability {
-                action: PermissionAction::Bash,
+                action: PermissionAction::BASH,
                 operation: PreparedCapabilityOperation::new("bash:execute")
                     .map_err(|error| ToolError::execution(error.to_string()))?,
             }],
             vec![PreparedApprovalResource {
-                capability: PermissionAction::Bash,
+                capability: PermissionAction::BASH,
                 canonical: PreparedResourceIdentity::new(format!(
                     "command:{}",
                     Sha256Digest::of_bytes(command.as_bytes())

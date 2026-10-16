@@ -66,7 +66,7 @@ output: Default::default(),
     ) -> Result<PreparedOperationIdentity, ToolError> {
         let binding = serde_json::to_vec(&(session, params)).map_err(tool_error)?;
         let resource = prepared_resource(
-            PermissionAction::Write,
+            PermissionAction::WRITE,
             "goal",
             b"goal:current",
             &binding,
@@ -76,7 +76,7 @@ output: Default::default(),
         prepared_operation(
             "goal_update",
             params,
-            vec![(PermissionAction::Write, "replace_checklist")],
+            vec![(PermissionAction::WRITE, "replace_checklist")],
             vec![resource],
             session.to_string().as_bytes(),
         )
@@ -147,7 +147,7 @@ impl ToolProvider for GoalTools {
                 let params: GoalGetParams = parse_args(&call.name, call.arguments)?;
                 let label = "goal:current".to_owned();
                 let resource = prepared_resource(
-                    PermissionAction::Read,
+                    PermissionAction::READ,
                     "goal",
                     label.as_bytes(),
                     ctx.session.to_string().as_bytes(),
@@ -157,7 +157,7 @@ impl ToolProvider for GoalTools {
                 let operation = prepared_operation(
                     "goal_get",
                     &params,
-                    vec![(PermissionAction::Read, "get")],
+                    vec![(PermissionAction::READ, "get")],
                     vec![resource],
                     ctx.session.to_string().as_bytes(),
                 )?;
@@ -408,7 +408,7 @@ mod tests {
         );
         assert_eq!(
             operation.resources()[0].capability,
-            cookie_agent_protocol::PermissionAction::Write
+            cookie_agent_protocol::PermissionAction::WRITE
         );
     }
 }

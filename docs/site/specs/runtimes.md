@@ -284,8 +284,15 @@ the existing `OperationChanged` path.
   specific than an unqualified one at the same resource specificity.
 - The selector matches the runtime ID, not the attachment name, so it is
   stable across sessions.
-- Permission actions stay the fixed `PermissionAction` enum. Runtime tools
-  declare one of them; the runtime protocol carries the enum.
+- Permission actions are free-form labels a tool declares
+  (`[a-z][a-z0-9_]{0,31}`), so a runtime can introduce its own, such as
+  `browse`. An action no rule names is denied, so a new runtime's tools stay
+  hidden until an agent or the session overlay grants their action. The daemon
+  gives meaning only to the actions of its own tools: `read` and `write` take
+  file paths (`${workspace_dir}`, workspace-relative resources), and
+  `delegate`, `message`, and `skill` belong to the base layer. Every other
+  action matches plain wildcard patterns. `unconditional` is reserved: no
+  runtime may declare it.
 - `${workspace_dir}` and relative resources resolve against the workspace of
   the runtime that prepared the call. Base layer and global tools have no
   workspace; path-relative patterns never match them.

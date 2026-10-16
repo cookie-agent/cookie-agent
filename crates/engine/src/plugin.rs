@@ -2151,7 +2151,7 @@ impl ToolProvider for PluginRegistry {
         let permission_label =
             permission_resource(&declaration.permission_name, primary.as_deref());
         let resource = PreparedApprovalResource {
-            capability: PermissionAction::Plugin,
+            capability: PermissionAction::PLUGIN,
             canonical: PreparedResourceIdentity::new(format!(
                 "plugin-tool:{}",
                 Sha256Digest::of_bytes(permission_label.as_bytes())
@@ -2167,7 +2167,7 @@ impl ToolProvider for PluginRegistry {
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(&argument_bytes),
             vec![ApprovalCapability {
-                action: PermissionAction::Plugin,
+                action: PermissionAction::PLUGIN,
                 operation: PreparedCapabilityOperation::new(format!(
                     "{}:call",
                     declaration.permission_name

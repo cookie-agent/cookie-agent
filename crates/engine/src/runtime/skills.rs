@@ -265,12 +265,7 @@ impl Engine {
                             match (&grant.attachment, attachment) {
                                 (None, _) => true,
                                 (Some(owner), Some(attachment)) => owner == attachment,
-                                (Some(_), None) => matches!(
-                                    rule.action,
-                                    PermissionAction::Skill
-                                        | PermissionAction::Delegate
-                                        | PermissionAction::Message
-                                ),
+                                (Some(_), None) => rule.action.is_base_layer(),
                             }
                         })
                     })
@@ -330,7 +325,7 @@ impl Engine {
         let effect = permissions::effective_permission_with_overlay(
             &policy,
             Some(&projection.permission_overlay),
-            PermissionAction::Skill,
+            &PermissionAction::SKILL,
             name,
             skill.workspace.as_deref(),
         )
@@ -424,7 +419,7 @@ impl Engine {
         let effect = permissions::effective_permission_with_overlay(
             &policy,
             Some(&projection.permission_overlay),
-            PermissionAction::Skill,
+            &PermissionAction::SKILL,
             name,
             skill.workspace.as_deref(),
         )
@@ -906,7 +901,7 @@ fn model_skill_visibility(
     let effect = permissions::effective_permission_with_overlay(
         policy,
         Some(overlay),
-        PermissionAction::Skill,
+        &PermissionAction::SKILL,
         name,
         workspace,
     )
@@ -951,7 +946,7 @@ fn prepared_skill_invocation(
             .allowed_tools
             .iter()
             .map(|grant| PermissionRule {
-                action: grant.action,
+                action: grant.action.clone(),
                 runtime: None,
                 resource: grant.pattern.clone(),
                 effect: PermissionEffect::Allow,

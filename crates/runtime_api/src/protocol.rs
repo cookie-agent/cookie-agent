@@ -296,7 +296,7 @@ impl ToolDeclaration {
         ToolSpec {
             name: self.name,
             collision: self.collision,
-            permission_name: permission_name(self.permission).to_owned(),
+            permission_name: self.permission.as_str().to_owned(),
             description: self.description,
             parameters: self.parameters,
             concurrency: self.concurrency,
@@ -306,37 +306,12 @@ impl ToolDeclaration {
     }
 }
 
-/// The permission name of `action`, as tool specs spell it.
-#[must_use]
-pub const fn permission_name(action: PermissionAction) -> &'static str {
-    match action {
-        PermissionAction::Read => "read",
-        PermissionAction::Write => "write",
-        PermissionAction::Bash => "bash",
-        PermissionAction::Delegate => "delegate",
-        PermissionAction::Message => "message",
-        PermissionAction::Mcp => "mcp",
-        PermissionAction::Plugin => "plugin",
-        PermissionAction::Skill => "skill",
-        PermissionAction::Webfetch => "webfetch",
-    }
-}
-
-/// The permission action a tool spec's permission name spells.
+/// The permission action a tool spec's permission name spells: any valid
+/// action label. `plugin:<name>` and the reserved unconditional name are not
+/// actions, so no runtime can declare them.
 #[must_use]
 pub fn permission_action(name: &str) -> Option<PermissionAction> {
-    Some(match name {
-        "read" => PermissionAction::Read,
-        "write" => PermissionAction::Write,
-        "bash" => PermissionAction::Bash,
-        "delegate" => PermissionAction::Delegate,
-        "message" => PermissionAction::Message,
-        "mcp" => PermissionAction::Mcp,
-        "plugin" => PermissionAction::Plugin,
-        "skill" => PermissionAction::Skill,
-        "webfetch" => PermissionAction::Webfetch,
-        _ => return None,
-    })
+    PermissionAction::new(name).ok()
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

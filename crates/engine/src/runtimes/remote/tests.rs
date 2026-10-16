@@ -495,7 +495,7 @@ impl ToolProvider for MediaTool {
         _call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
         let resource = authoring::prepared_resource(
-            cookie_agent_protocol::PermissionAction::Read,
+            cookie_agent_protocol::PermissionAction::READ,
             "snapshot",
             b"snapshot",
             b"snapshot",
@@ -505,7 +505,7 @@ impl ToolProvider for MediaTool {
         let operation = authoring::prepared_operation(
             "snapshot",
             &serde_json::json!({}),
-            vec![(cookie_agent_protocol::PermissionAction::Read, "snapshot")],
+            vec![(cookie_agent_protocol::PermissionAction::READ, "snapshot")],
             vec![resource],
             &ctx.context_bytes(),
         )?;
@@ -1219,46 +1219,85 @@ async fn local_mcp_servers_need_the_protocol_local_runtime() {
     );
 }
 
-/// A runtime of any kind, written in any language, needs only to speak the
-/// protocol: the daemon takes its self-declared kind as a label and its
-/// workspace and platform as optional.
-#[tokio::test]
-async fn a_runtime_of_any_kind_without_a_workspace_starts() {
+/// Initializes against a fake runtime, as one written in any language would
+/// be, that answers `runtime/initialize` with `result` plus the current
+/// protocol version.
+async fn initialize_fake(mut result: serde_json::Value) -> Result<crate::StartedRuntime, String> {
+    result["version"] = cookie_agent_runtime_api::protocol::RUNTIME_PROTOCOL_VERSION.into();
     let (daemon, mut runtime) = in_process_pair(8);
     let fake = tokio::spawn(async move {
         let request = runtime.recv().await.unwrap().unwrap().into_text().unwrap();
         let request: serde_json::Value = serde_json::from_str(&request).unwrap();
         assert_eq!(request["method"], "runtime/initialize");
-        let reply = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": request["id"],
-            "result": {
-                "version": cookie_agent_runtime_api::protocol::RUNTIME_PROTOCOL_VERSION,
-                "kind": "browser",
-                "attachment_name": "browser",
-                "tools": { "tools": [] },
-                "skills": { "skills": [], "discoveries": [] },
-            },
-        });
+        let reply = serde_json::json!({ "jsonrpc": "2.0", "id": request["id"], "result": result });
         runtime
             .send(MessageFrame::Text(reply.to_string()))
             .await
             .unwrap();
         runtime
     });
-    let settings = runtime_settings(&custom_fixture().0.config, "browser");
-    let (client, result) = RuntimeClient::initialize(
+    let settings = runtime_settings(&custom_fixture().0.config, "fake");
+    let initialized = RuntimeClient::initialize(
         cookie_agent_runtime_api::RuntimeConnection::new(Box::new(daemon)),
-        "browser",
+        "fake",
         None,
         &settings,
         Duration::from_secs(1),
         None,
     )
     .await
+    .map_err(|error| error.to_string());
+    drop(fake.await.unwrap());
+    let (client, result) = initialized?;
+    started(client, result)
+}
+
+fn fake_result(tools: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "browser",
+        "attachment_name": "browser",
+        "tools": { "tools": tools },
+        "skills": { "skills": [], "discoveries": [] },
+    })
+}
+
+/// A runtime of any kind needs only to speak the protocol: the daemon takes
+/// its self-declared kind as a label, its workspace and platform as
+/// optional, and its tools' permission actions as labels of its own.
+#[tokio::test]
+async fn a_runtime_of_any_kind_declares_its_own_permission_actions() {
+    let started = initialize_fake(fake_result(serde_json::json!([{
+        "name": "open_page",
+        "permission": "browse",
+        "description": "Open a page.",
+        "parameters": { "type": "object" },
+    }])))
+    .await
     .unwrap();
-    let started = started(client, result).unwrap();
     assert_eq!(started.info.kind().as_str(), "browser");
     assert!(started.info.workspace().is_none());
-    drop(fake.await.unwrap());
+    let tools = started.providers[0]
+        .tools_for_session(&cookie_agent_runtime_api::SessionToolContext::new(
+            SessionId::new_v7(),
+        ))
+        .unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].permission_name, "browse");
+}
+
+/// The unconditional permission name skips every check, so no runtime may
+/// declare it.
+#[tokio::test]
+async fn a_runtime_cannot_declare_an_unconditional_tool() {
+    let Err(error) = initialize_fake(fake_result(serde_json::json!([{
+        "name": "escape",
+        "permission": "unconditional",
+        "description": "Run anything.",
+        "parameters": { "type": "object" },
+    }])))
+    .await
+    else {
+        panic!("an unconditional tool was accepted");
+    };
+    assert!(error.contains("reserved"), "{error}");
 }

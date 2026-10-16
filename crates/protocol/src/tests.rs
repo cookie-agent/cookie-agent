@@ -1168,7 +1168,7 @@ fn session_revert_reduces_visible_branch_and_rpc_types_round_trip() {
 
 fn test_resource(binding: &[u8]) -> PreparedApprovalResource {
     PreparedApprovalResource {
-        capability: PermissionAction::Read,
+        capability: PermissionAction::READ,
         canonical: PreparedResourceIdentity::new(format!(
             "file:{}",
             Sha256Digest::of_bytes(binding)
@@ -1184,7 +1184,7 @@ fn test_resource(binding: &[u8]) -> PreparedApprovalResource {
 #[test]
 fn prepared_operation_wire_requires_nonempty_resources_and_accepts_multiple() {
     let capability = ApprovalCapability {
-        action: PermissionAction::Read,
+        action: PermissionAction::READ,
         operation: PreparedCapabilityOperation::new("read:file").expect("capability operation"),
     };
     let operation = PreparedOperationIdentity::new(
@@ -1223,7 +1223,7 @@ fn test_evaluation(binding: &[u8]) -> ApprovalEvaluation {
         resource_digest: resource.binding_digest,
         effect: PermissionEffect::Ask,
         trace: DecisionTrace {
-            action: PermissionAction::Read,
+            action: PermissionAction::READ,
             normalized_resource: "README.md".into(),
             candidates: Vec::new(),
             effect: PermissionEffect::Ask,
@@ -1239,7 +1239,7 @@ fn approval_wire_requires_nonempty_evaluations_and_accepts_multiple() {
     let operation = PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"arguments"),
         vec![ApprovalCapability {
-            action: PermissionAction::Read,
+            action: PermissionAction::READ,
             operation: PreparedCapabilityOperation::new("read:file").expect("capability operation"),
         }],
         vec![test_resource(first), test_resource(second)],
@@ -2144,7 +2144,7 @@ fn session_create_permission_settings_are_optional_and_strict() {
     assert_eq!(configured.permission_mode, Some(PermissionMode::Ask));
     assert_eq!(
         configured.permission_rules[0].action,
-        PermissionAction::Bash
+        PermissionAction::BASH
     );
 
     assert!(

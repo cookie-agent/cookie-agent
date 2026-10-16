@@ -912,7 +912,7 @@ mod tests {
             b"projection-test-binding",
         );
         let resource = PreparedApprovalResource {
-            capability: cookie_agent_protocol::PermissionAction::Bash,
+            capability: cookie_agent_protocol::PermissionAction::BASH,
             canonical: cookie_agent_protocol::PreparedResourceIdentity::new("command:test")
                 .expect("prepared resource identity"),
             binding_digest: binding.clone(),
@@ -923,7 +923,7 @@ mod tests {
         let operation = cookie_agent_protocol::PreparedOperationIdentity::new(
             cookie_agent_protocol::Sha256Digest::of_bytes(b"projection-test-args"),
             vec![cookie_agent_protocol::ApprovalCapability {
-                action: cookie_agent_protocol::PermissionAction::Bash,
+                action: cookie_agent_protocol::PermissionAction::BASH,
                 operation: cookie_agent_protocol::PreparedCapabilityOperation::new("bash:execute")
                     .expect("capability"),
             }],
@@ -940,7 +940,7 @@ mod tests {
                 resource_digest: binding,
                 effect: cookie_agent_protocol::PermissionEffect::Ask,
                 trace: DecisionTrace {
-                    action: cookie_agent_protocol::PermissionAction::Bash,
+                    action: cookie_agent_protocol::PermissionAction::BASH,
                     normalized_resource: "command:test".into(),
                     candidates: Vec::new(),
                     effect: cookie_agent_protocol::PermissionEffect::Ask,

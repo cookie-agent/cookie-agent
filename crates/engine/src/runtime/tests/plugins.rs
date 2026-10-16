@@ -17,7 +17,7 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
         .engine
         .set_session_permission(
             session.session_id,
-            PermissionAction::Read,
+            &PermissionAction::READ,
             None,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Allow,
@@ -280,7 +280,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
             .engine
             .set_session_permission(
                 session_id,
-                PermissionAction::Read,
+                &PermissionAction::READ,
                 None,
                 WildcardPattern::new("*").expect("wildcard"),
                 PermissionEffect::Allow,
@@ -451,7 +451,7 @@ async fn plugin_diagnostic_coalescing_is_exact_and_shutdown_drains() {
         .engine
         .set_session_permission(
             session.session_id,
-            PermissionAction::Read,
+            &PermissionAction::READ,
             None,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Allow,
@@ -556,7 +556,7 @@ async fn plugin_diagnostic_wedge_does_not_block_shutdown() {
         .engine
         .set_session_permission(
             session.session_id,
-            PermissionAction::Read,
+            &PermissionAction::READ,
             None,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Allow,

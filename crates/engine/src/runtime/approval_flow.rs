@@ -139,7 +139,7 @@ impl Engine {
                 .iter()
                 .zip(input.policy_labels)
                 .map(|(resource, label)| cookie_agent_protocol::DecisionTrace {
-                    action: resource.capability,
+                    action: resource.capability.clone(),
                     normalized_resource: label
                         .clone()
                         .unwrap_or_else(|| UNSCOPED_PERMISSION_RESOURCE_DISPLAY.to_owned()),
@@ -469,7 +469,7 @@ impl Engine {
             .operation()
             .capabilities()
             .iter()
-            .map(|capability| capability.action)
+            .map(|capability| capability.action.clone())
             .collect::<Vec<_>>();
         let tree_events = self
             .inner
@@ -790,11 +790,11 @@ mod tests {
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(resource.as_bytes()),
             vec![ApprovalCapability {
-                action,
+                action: action.clone(),
                 operation: PreparedCapabilityOperation::new("op:test").unwrap(),
             }],
             vec![PreparedApprovalResource {
-                capability: action,
+                capability: action.clone(),
                 canonical: PreparedResourceIdentity::new("file:test").unwrap(),
                 binding_digest: binding_digest.clone(),
                 binding_lifetime: PreparedBindingLifetime::ProcessLocal,
@@ -875,7 +875,7 @@ mod tests {
         for index in 0..4 {
             root.extend(decided(
                 10 + index * 10,
-                PermissionAction::Write,
+                PermissionAction::WRITE,
                 &format!("/root/{index}"),
                 ApprovalFinalOutcome::Approved,
                 ApprovalDecisionSource::InternalAgent,
@@ -883,7 +883,7 @@ mod tests {
         }
         root.extend(decided(
             100,
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "git push",
             ApprovalFinalOutcome::Approved,
             ApprovalDecisionSource::User,
@@ -891,14 +891,14 @@ mod tests {
         let mut child = Vec::new();
         child.extend(decided(
             15,
-            PermissionAction::Write,
+            PermissionAction::WRITE,
             "/child/early",
             ApprovalFinalOutcome::Rejected,
             ApprovalDecisionSource::User,
         ));
         child.extend(decided(
             55,
-            PermissionAction::Write,
+            PermissionAction::WRITE,
             "/child/late",
             ApprovalFinalOutcome::Rejected,
             ApprovalDecisionSource::InternalAgent,
@@ -906,7 +906,7 @@ mod tests {
 
         let prior = prior_approval_decisions(
             [root.as_slice(), child.as_slice()],
-            &[PermissionAction::Write],
+            &[PermissionAction::WRITE],
         );
 
         let resources = prior
@@ -931,28 +931,28 @@ mod tests {
         let mut events = Vec::new();
         events.extend(decided(
             10,
-            PermissionAction::Write,
+            PermissionAction::WRITE,
             "/policy",
             ApprovalFinalOutcome::Rejected,
             ApprovalDecisionSource::Policy,
         ));
         events.extend(decided(
             20,
-            PermissionAction::Write,
+            PermissionAction::WRITE,
             "/cancelled",
             ApprovalFinalOutcome::Cancelled,
             ApprovalDecisionSource::User,
         ));
         events.extend(decided(
             30,
-            PermissionAction::Write,
+            PermissionAction::WRITE,
             "/kept",
             ApprovalFinalOutcome::Approved,
             ApprovalDecisionSource::TreeGrant,
         ));
-        events.push(requested(40, pending, PermissionAction::Write, "/pending"));
+        events.push(requested(40, pending, PermissionAction::WRITE, "/pending"));
 
-        let prior = prior_approval_decisions([events.as_slice()], &[PermissionAction::Write]);
+        let prior = prior_approval_decisions([events.as_slice()], &[PermissionAction::WRITE]);
 
         assert_eq!(prior.len(), 1);
         assert_eq!(prior[0].resources, ["/kept"]);
@@ -962,7 +962,7 @@ mod tests {
     fn prior_decisions_carry_user_rejection_feedback() {
         let id = ApprovalId::new_v7();
         let events = [
-            requested(10, id, PermissionAction::Write, "/etc/hosts"),
+            requested(10, id, PermissionAction::WRITE, "/etc/hosts"),
             finalized(
                 11,
                 id,
@@ -972,7 +972,7 @@ mod tests {
             ),
         ];
 
-        let prior = prior_approval_decisions([events.as_slice()], &[PermissionAction::Write]);
+        let prior = prior_approval_decisions([events.as_slice()], &[PermissionAction::WRITE]);
 
         assert_eq!(
             render_prior_decisions(&prior),

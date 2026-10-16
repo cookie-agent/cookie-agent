@@ -62,7 +62,7 @@ fn assert_permission(
     allowed: &str,
     effect: PermissionEffect,
 ) {
-    let action = prepared.operation().capabilities()[0].action;
+    let action = prepared.operation().capabilities()[0].action.clone();
     let policy = AgentSnapshot {
         agent: AgentId::new("test").unwrap(),
         schema: AgentSchemaVersion::current(),
@@ -76,7 +76,7 @@ fn assert_permission(
         permissions: vec![
             PermissionRule {
                 runtime: None,
-                action,
+                action: action.clone(),
                 resource: WildcardPattern::new("*").unwrap(),
                 effect: PermissionEffect::Deny,
             },
@@ -247,9 +247,9 @@ async fn home_path_subprocess_helper() {
             &prepared,
             &workspace,
             if *name == "read" {
-                PermissionAction::Read
+                PermissionAction::READ
             } else {
-                PermissionAction::Write
+                PermissionAction::WRITE
             },
             "link",
         );

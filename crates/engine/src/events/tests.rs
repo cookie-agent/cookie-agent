@@ -3137,7 +3137,7 @@ fn event_log_rejects_cross_run_approval_lifecycle() {
     let binding =
         cookie_agent_protocol::PreparedResourceDigest::from_canonical_binding_bytes(b"binding");
     let resource = cookie_agent_protocol::PreparedApprovalResource {
-        capability: PermissionAction::Bash,
+        capability: PermissionAction::BASH,
         canonical: cookie_agent_protocol::PreparedResourceIdentity::new("command:test")
             .expect("identity"),
         binding_digest: binding.clone(),
@@ -3148,7 +3148,7 @@ fn event_log_rejects_cross_run_approval_lifecycle() {
     let operation = cookie_agent_protocol::PreparedOperationIdentity::new(
         cookie_agent_protocol::Sha256Digest::of_bytes(b"args"),
         vec![cookie_agent_protocol::ApprovalCapability {
-            action: PermissionAction::Bash,
+            action: PermissionAction::BASH,
             operation: cookie_agent_protocol::PreparedCapabilityOperation::new("bash:execute")
                 .expect("operation"),
         }],
@@ -3165,7 +3165,7 @@ fn event_log_rejects_cross_run_approval_lifecycle() {
             resource_digest: binding,
             effect: PermissionEffect::Ask,
             trace: cookie_agent_protocol::DecisionTrace {
-                action: PermissionAction::Bash,
+                action: PermissionAction::BASH,
                 normalized_resource: "command:test".into(),
                 candidates: Vec::new(),
                 effect: PermissionEffect::Ask,

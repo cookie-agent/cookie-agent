@@ -163,7 +163,7 @@ impl ToolProvider for ReadTool {
             let target =
                 fs_cap::prepare_existing(&workspace, std::path::Path::new(&args.file_path))?;
             let (resources, policy_labels) = prepared_path_resources(
-                PermissionAction::Read,
+                PermissionAction::READ,
                 if target.directory {
                     "directory"
                 } else {
@@ -177,7 +177,7 @@ impl ToolProvider for ReadTool {
             let operation = prepared_operation(
                 "read",
                 &args,
-                vec![(PermissionAction::Read, "read")],
+                vec![(PermissionAction::READ, "read")],
                 resources,
                 &context,
             )?;

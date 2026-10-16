@@ -12,7 +12,7 @@ use ratatui::{Terminal, backend::TestBackend};
 fn permission_rows_keep_action_defaults_and_sources() {
     let result = SessionPermissionGetResult {
         permissions: vec![EffectivePermissionAction {
-            action: PermissionAction::Bash,
+            action: PermissionAction::BASH,
             effect: PermissionEffect::Deny,
             source: PermissionRuleSource::SessionOverlay,
             patterns: Vec::new(),
@@ -22,7 +22,7 @@ fn permission_rows_keep_action_defaults_and_sources() {
     assert_eq!(
         super::permission_rows(&result),
         vec![super::PermissionRow {
-            action: PermissionAction::Bash,
+            action: PermissionAction::BASH,
             resource: "*".into(),
             effect: PermissionEffect::Deny,
             source: PermissionRuleSource::SessionOverlay,
@@ -220,17 +220,20 @@ fn permission_panel_shows_loading_until_the_result_lands() {
 
 #[test]
 fn permission_form_offers_every_action_and_effects_stop_at_the_ends() {
-    let mut form = super::PermissionForm::new(PermissionAction::Read);
-    let mut seen = vec![form.action];
-    for _ in 1..9 {
-        form.cycle_action(false);
-        seen.push(form.action);
+    // The actions the daemon reports, including a runtime's own action.
+    let mut actions = PermissionAction::BUILT_IN.to_vec();
+    actions.push(PermissionAction::new("browse").unwrap());
+    let mut form = super::PermissionForm::new(PermissionAction::READ);
+    let mut seen = vec![form.action.clone()];
+    for _ in 1..actions.len() {
+        form.cycle_action(&actions, false);
+        seen.push(form.action.clone());
     }
-    form.cycle_action(false);
-    assert_eq!(form.action, PermissionAction::Read);
-    seen.sort_by_key(|action| format!("{action:?}"));
-    seen.dedup();
-    assert_eq!(seen.len(), 9);
+    assert_eq!(seen, actions);
+    form.cycle_action(&actions, false);
+    assert_eq!(form.action, PermissionAction::READ);
+    form.cycle_action(&actions, true);
+    assert_eq!(form.action.as_str(), "browse");
 
     assert_eq!(
         super::step_effect(PermissionEffect::Allow, true),
@@ -270,7 +273,7 @@ fn permission_panel_is_noninteractive_while_another_session_loads() {
     let mut panel = super::PermissionPanel::default();
     panel.install(SessionPermissionGetResult {
         permissions: vec![EffectivePermissionAction {
-            action: PermissionAction::Write,
+            action: PermissionAction::WRITE,
             effect: PermissionEffect::Deny,
             source: PermissionRuleSource::SessionOverlay,
             patterns: Vec::new(),

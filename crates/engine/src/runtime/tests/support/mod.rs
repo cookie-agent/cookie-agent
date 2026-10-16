@@ -2228,7 +2228,7 @@ pub(crate) fn resume_sweep_test_request() -> cookie_agent_protocol::ApprovalRequ
         b"resume-sweep-binding",
     );
     let resource = PreparedApprovalResource {
-        capability: PermissionAction::Bash,
+        capability: PermissionAction::BASH,
         canonical: PreparedResourceIdentity::new("command:test")
             .expect("prepared resource identity"),
         binding_digest: binding.clone(),
@@ -2239,7 +2239,7 @@ pub(crate) fn resume_sweep_test_request() -> cookie_agent_protocol::ApprovalRequ
     let operation = PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"resume-sweep-args"),
         vec![ApprovalCapability {
-            action: PermissionAction::Bash,
+            action: PermissionAction::BASH,
             operation: PreparedCapabilityOperation::new("bash:execute").expect("capability"),
         }],
         vec![resource],
@@ -2255,7 +2255,7 @@ pub(crate) fn resume_sweep_test_request() -> cookie_agent_protocol::ApprovalRequ
             resource_digest: binding,
             effect: PermissionEffect::Ask,
             trace: cookie_agent_protocol::DecisionTrace {
-                action: PermissionAction::Bash,
+                action: PermissionAction::BASH,
                 normalized_resource: "command:test".into(),
                 candidates: Vec::new(),
                 effect: PermissionEffect::Ask,

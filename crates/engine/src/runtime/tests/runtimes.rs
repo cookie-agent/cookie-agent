@@ -933,7 +933,7 @@ async fn same_named_project_skills_of_two_attachments_are_prefixed() {
         .engine
         .set_session_permission(
             session,
-            cookie_agent_protocol::PermissionAction::Skill,
+            &cookie_agent_protocol::PermissionAction::SKILL,
             None,
             cookie_agent_protocol::WildcardPattern::new("*").unwrap(),
             cookie_agent_protocol::PermissionEffect::Allow,

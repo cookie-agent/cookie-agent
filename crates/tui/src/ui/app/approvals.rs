@@ -153,7 +153,7 @@ pub(in crate::ui) fn approval_content(approval: &ApprovalState) -> String {
     for (index, capability) in approval.capabilities.iter().enumerate() {
         writeln!(
             content,
-            "{}. action: {:?}\n   operation: {}\n   lifetime: {:?}",
+            "{}. action: {}\n   operation: {}\n   lifetime: {:?}",
             index + 1,
             capability.action,
             capability.operation.as_str(),
@@ -175,7 +175,7 @@ pub(in crate::ui) fn approval_content(approval: &ApprovalState) -> String {
             .as_str();
         writeln!(
             content,
-            "{}. action: {:?}\n   normalized identity: {}\n   canonical identity: {}\n   binding digest: {}\n   boundary: {}\n   binding lifetime: {:?}\n   source: {:?}",
+            "{}. action: {}\n   normalized identity: {}\n   canonical identity: {}\n   binding digest: {}\n   boundary: {}\n   binding lifetime: {:?}\n   source: {:?}",
             index + 1,
             resource.capability,
             normalized,
@@ -193,7 +193,7 @@ pub(in crate::ui) fn approval_content(approval: &ApprovalState) -> String {
     for (index, evaluation) in approval.evaluations.iter().enumerate() {
         writeln!(
             content,
-            "{}. resource binding digest: {}\n   result effect: {:?}\n   trace action: {:?}\n   trace normalized resource: {}\n   trace effect: {:?}\n   precedence reason: {}\n   candidate rules ({}):",
+            "{}. resource binding digest: {}\n   result effect: {:?}\n   trace action: {}\n   trace normalized resource: {}\n   trace effect: {:?}\n   precedence reason: {}\n   candidate rules ({}):",
             index + 1,
             evaluation.resource_digest.digest(),
             evaluation.effect,
@@ -210,7 +210,7 @@ pub(in crate::ui) fn approval_content(approval: &ApprovalState) -> String {
             for (candidate_index, candidate) in evaluation.trace.candidates.iter().enumerate() {
                 writeln!(
                     content,
-                    "      {}. action: {:?} · resource: {} · source layer: {} · effect: {:?}",
+                    "      {}. action: {} · resource: {} · source layer: {} · effect: {:?}",
                     candidate_index + 1,
                     candidate.action,
                     candidate.resource,
@@ -366,7 +366,7 @@ fn decision_effect(decision: ApprovalUserDecision, approval: &ApprovalState) -> 
                     }
                     cookie_agent_protocol::ApprovalBoundary::Exact => format!(
                         "this exact {} target",
-                        crate::ui::management::action_label(resource.capability)
+                        crate::ui::management::action_label(&resource.capability)
                     ),
                     cookie_agent_protocol::ApprovalBoundary::DelegationTree { .. } => {
                         "this delegation tree".into()
@@ -402,7 +402,7 @@ fn approval_reason(approval: &ApprovalState) -> String {
         ApprovalTrigger::DoomLoop => "the agent keeps repeating this exact call".into(),
         ApprovalTrigger::InternalAgent => "an internal agent asked for your decision".into(),
         ApprovalTrigger::PermissionPolicy => {
-            let action = crate::ui::management::action_label(first.trace.action);
+            let action = crate::ui::management::action_label(&first.trace.action);
             let rule = first
                 .trace
                 .candidates
@@ -464,7 +464,7 @@ fn approval_body(
     theme: &Theme,
 ) -> (Vec<ApprovalPreviewRow>, usize) {
     let mut rows = Vec::new();
-    let first_action = approval.resources[0].capability;
+    let first_action = &approval.resources[0].capability;
     let title = tool.map_or_else(
         || crate::ui::management::action_label(first_action).to_owned(),
         |tool| tool.presentation.title.as_str().to_owned(),
@@ -506,7 +506,7 @@ fn approval_body(
             let label = Span::styled(
                 format!(
                     " {}",
-                    crate::ui::management::action_label(resource.capability)
+                    crate::ui::management::action_label(&resource.capability)
                 ),
                 theme.code_gutter(),
             );

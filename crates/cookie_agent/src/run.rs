@@ -73,13 +73,13 @@ pub enum AllowedTool {
 impl AllowedTool {
     const fn action(&self) -> PermissionAction {
         match self {
-            Self::Read => PermissionAction::Read,
-            Self::Write => PermissionAction::Write,
-            Self::Bash => PermissionAction::Bash,
-            Self::Delegate => PermissionAction::Delegate,
-            Self::Mcp => PermissionAction::Mcp,
-            Self::Plugin | Self::PluginPermission(_) => PermissionAction::Plugin,
-            Self::Skill(_) => PermissionAction::Skill,
+            Self::Read => PermissionAction::READ,
+            Self::Write => PermissionAction::WRITE,
+            Self::Bash => PermissionAction::BASH,
+            Self::Delegate => PermissionAction::DELEGATE,
+            Self::Mcp => PermissionAction::MCP,
+            Self::Plugin | Self::PluginPermission(_) => PermissionAction::PLUGIN,
+            Self::Skill(_) => PermissionAction::SKILL,
         }
     }
 
@@ -727,7 +727,7 @@ async fn apply_allowed_tools(
         engine
             .set_session_permission(
                 session_id,
-                action,
+                &action,
                 None,
                 WildcardPattern::new(resource).context("parse allowed-tools resource")?,
                 PermissionEffect::Allow,

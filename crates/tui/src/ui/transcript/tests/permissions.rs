@@ -106,7 +106,7 @@ async fn new_rule_form_validates_inline_and_adds_the_rule() {
     app.handle_key(key(KeyCode::Char('n'))).await;
     let form = app.permission_panel.form.as_ref().expect("form");
     // The form starts on the selected row's action, at the pattern.
-    assert_eq!(form.action, cookie_agent_protocol::PermissionAction::Bash);
+    assert_eq!(form.action, cookie_agent_protocol::PermissionAction::BASH);
     assert_eq!(form.focus, PermissionFormFocus::Pattern);
 
     // An empty pattern is refused in the form, not the status line.

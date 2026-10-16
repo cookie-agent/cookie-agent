@@ -314,7 +314,7 @@ fn build_in_process_server(
     let mut agent = test_agent_document(&agent_id);
     if with_skills {
         agent.frontmatter.permissions.insert(
-            PermissionAction::Skill.into(),
+            PermissionAction::SKILL.into(),
             cookie_agent_config::PermissionValue::Effect(PermissionEffect::Ask),
         );
     }
@@ -360,7 +360,7 @@ fn build_in_process_server(
 
 fn approval_request() -> ApprovalRequest {
     let resource = PreparedApprovalResource {
-        capability: PermissionAction::Bash,
+        capability: PermissionAction::BASH,
         canonical: PreparedResourceIdentity::new("command:git-status")
             .expect("prepared resource identity"),
         binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"git status"),
@@ -374,7 +374,7 @@ fn approval_request() -> ApprovalRequest {
     let operation = PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"normalized arguments"),
         vec![ApprovalCapability {
-            action: PermissionAction::Bash,
+            action: PermissionAction::BASH,
             operation: PreparedCapabilityOperation::new("execute")
                 .expect("prepared capability operation"),
         }],
@@ -391,12 +391,12 @@ fn approval_request() -> ApprovalRequest {
             resource_digest,
             effect: PermissionEffect::Ask,
             trace: DecisionTrace {
-                action: PermissionAction::Bash,
+                action: PermissionAction::BASH,
                 normalized_resource: "git status".into(),
                 candidates: vec![MatchedPermissionRule {
                     runtime: None,
                     source_layer: SafeCode::new("test").expect("safe code"),
-                    action: PermissionAction::Bash,
+                    action: PermissionAction::BASH,
                     resource: cookie_agent_protocol::WildcardPattern::new("git status")
                         .expect("wildcard"),
                     effect: PermissionEffect::Ask,

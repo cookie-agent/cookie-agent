@@ -263,7 +263,8 @@ If no authored agent is runnable as a root, the engine synthesizes the built-in
 `default` coding agent bound to the first available model selection. Its prompt
 and explicit permission map are fixed by the engine: read is allowed with
 additional asks and secret-file denies, while write, bash, and delegate ask by
-default. MCP, `webfetch`, and every other undeclared action stay hidden. User
+default. MCP, `webfetch`, every runtime's own actions, and every other
+undeclared action stay hidden. User
 agents do not inherit this list and must declare their own tool permissions.
 
 ## Agent presets
@@ -482,8 +483,15 @@ built-in `default` agent is used.
 
 ## Permissions
 
-Agent documents define an ordered permission map for `read`, `write`, `bash`,
-`delegate`, `message`, `mcp`, `plugin`, `skill`, and `webfetch`. Each action is either one bare effect or a resource-pattern map:
+Agent documents define an ordered permission map keyed by permission action.
+The tools cookie agent ships use `read`, `write`, `bash`, `delegate`,
+`message`, `mcp`, `plugin`, `skill`, and `webfetch`; a runtime's tools may
+declare actions of their own, such as `browse`, which rules name the same way.
+An action is a lowercase ASCII letter followed by up to 31 lowercase letters,
+digits, or underscores; `unconditional` is reserved and rejected. A key that
+names no tool's action is accepted and simply governs nothing, and `/permissions`
+lists it as its own row. Each action is either one bare effect or a
+resource-pattern map:
 
 ```yaml
 permissions:

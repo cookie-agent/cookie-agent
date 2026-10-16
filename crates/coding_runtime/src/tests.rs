@@ -231,11 +231,11 @@ fn fixed_identity_v7_fingerprint_is_golden_and_deterministic() {
     let operation = PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"normalized arguments without raw paths"),
         vec![ApprovalCapability {
-            action: PermissionAction::Bash,
+            action: PermissionAction::BASH,
             operation: PreparedCapabilityOperation::new("execute").expect("operation"),
         }],
         vec![PreparedApprovalResource {
-            capability: PermissionAction::Bash,
+            capability: PermissionAction::BASH,
             canonical: PreparedResourceIdentity::new("command:git-status").expect("identity"),
             binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
                 b"executable-content-and-open-directory-binding",
@@ -367,7 +367,7 @@ async fn windows_short_workspace_spelling_roundtrips_prepared_resources() {
         .expect("prepare through short cwd");
     assert_eq!(prepared.operation().resources().len(), 1);
     assert_eq!(prepared.policy_labels(), [Some("value.txt".into())]);
-    super::assert_workspace_rule_allows(&prepared, &long, PermissionAction::Read, "value.txt");
+    super::assert_workspace_rule_allows(&prepared, &long, PermissionAction::READ, "value.txt");
     assert_eq!(
         tool.get_permission_resource("read", prepared.normalized_arguments())
             .unwrap(),
@@ -459,11 +459,11 @@ fn absent_write_v7_fingerprint_is_golden() {
     let operation = PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"write arguments with content digest"),
         vec![ApprovalCapability {
-            action: PermissionAction::Write,
+            action: PermissionAction::WRITE,
             operation: PreparedCapabilityOperation::new("write:replace").expect("operation"),
         }],
         vec![PreparedApprovalResource {
-            capability: PermissionAction::Write,
+            capability: PermissionAction::WRITE,
             canonical: PreparedResourceIdentity::new("file:expected-absent").expect("identity"),
             binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
                 b"anchor-identity\0parent-identity\0basename\0expected-absent\0new-content",

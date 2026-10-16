@@ -1174,11 +1174,11 @@ fn operation() -> PreparedOperationIdentity {
     PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"args"),
         vec![cookie_agent_protocol::ApprovalCapability {
-            action: PermissionAction::Read,
+            action: PermissionAction::READ,
             operation: PreparedCapabilityOperation::new("read:read").expect("operation"),
         }],
         vec![PreparedApprovalResource {
-            capability: PermissionAction::Read,
+            capability: PermissionAction::READ,
             canonical: PreparedResourceIdentity::new("file:readme").expect("identity"),
             binding_digest: digest,
             binding_lifetime: PreparedBindingLifetime::ProcessLocal,

@@ -147,7 +147,7 @@ impl ToolProvider for ReadArtifactTool {
         let label = args.label();
         let binding = serde_json::to_vec(&args).map_err(tool_error)?;
         let resource = prepared_resource(
-            PermissionAction::Read,
+            PermissionAction::READ,
             "artifact",
             label.as_bytes(),
             &binding,
@@ -157,7 +157,7 @@ impl ToolProvider for ReadArtifactTool {
         let operation = prepared_operation(
             TOOL_NAME,
             &args,
-            vec![(PermissionAction::Read, "read")],
+            vec![(PermissionAction::READ, "read")],
             vec![resource],
             ctx.session.to_string().as_bytes(),
         )?;

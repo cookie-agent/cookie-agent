@@ -936,7 +936,7 @@ async fn headless_outputs_prompt_sources_selection_and_verbose_tool_output() {
         .expect("session permissions")
         .permissions
         .into_iter()
-        .find(|permission| permission.action == PermissionAction::Write)
+        .find(|permission| permission.action == PermissionAction::WRITE)
         .expect("write permission");
     assert_eq!(write.effect, PermissionEffect::Ask);
 
@@ -1139,7 +1139,7 @@ async fn webfetch_admission_visibility_and_fail_closed_permission_pipeline() {
             .engine
             .set_session_permission(
                 session_id,
-                PermissionAction::Webfetch,
+                &PermissionAction::WEBFETCH,
                 None,
                 cookie_agent_protocol::WildcardPattern::new("http://127.0.0.1:1/allowed?key=given")
                     .unwrap(),

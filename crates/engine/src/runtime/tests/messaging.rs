@@ -497,10 +497,7 @@ fn ac7_delegate_tool_surface_has_no_steer_subagent() {
 
 #[test]
 fn ac8_agent_owner_events_are_supported_by_the_protocol_projection() {
-    assert!(matches!(
-        PermissionAction::Message,
-        PermissionAction::Message
-    ));
+    assert_eq!(PermissionAction::MESSAGE.as_str(), "message");
 }
 
 #[test]

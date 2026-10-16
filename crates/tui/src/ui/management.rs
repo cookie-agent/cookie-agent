@@ -1078,18 +1078,8 @@ fn mcp_state_label(state: cookie_agent_protocol::McpServerState) -> &'static str
     }
 }
 
-pub(super) fn action_label(action: PermissionAction) -> &'static str {
-    match action {
-        PermissionAction::Read => "read",
-        PermissionAction::Write => "write",
-        PermissionAction::Bash => "bash",
-        PermissionAction::Delegate => "delegate",
-        PermissionAction::Message => "message",
-        PermissionAction::Mcp => "mcp",
-        PermissionAction::Plugin => "plugin",
-        PermissionAction::Skill => "skill",
-        PermissionAction::Webfetch => "webfetch",
-    }
+pub(super) fn action_label(action: &PermissionAction) -> &str {
+    action.as_str()
 }
 
 mod runtimes;
@@ -1100,7 +1090,7 @@ pub(super) use runtimes::{
 mod permissions;
 pub(super) use permissions::{
     PermissionForm, PermissionFormFocus, PermissionHits, PermissionPanel, PermissionRow,
-    render_permissions, step_effect,
+    permission_actions, render_permissions, step_effect,
 };
 #[cfg(test)]
 pub(super) use permissions::{permission_rows, sample_permissions};

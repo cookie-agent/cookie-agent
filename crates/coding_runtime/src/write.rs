@@ -121,7 +121,7 @@ fn prepare_write(workspace: &std::path::Path, args: WriteArgs) -> Result<Prepare
         ));
     }
     let (resources, policy_labels) = prepared_path_resources(
-        PermissionAction::Write,
+        PermissionAction::WRITE,
         "file",
         target.display_path(),
         workspace,
@@ -131,7 +131,7 @@ fn prepare_write(workspace: &std::path::Path, args: WriteArgs) -> Result<Prepare
     let operation = prepared_operation(
         "write",
         &args,
-        vec![(PermissionAction::Write, "replace")],
+        vec![(PermissionAction::WRITE, "replace")],
         resources,
         &context,
     )?;
@@ -302,7 +302,7 @@ mod tests {
         assert!(!root.path().join("a").exists());
         assert_eq!(
             prepared.operation().resources()[0].capability,
-            PermissionAction::Write
+            PermissionAction::WRITE
         );
     }
 
@@ -391,7 +391,7 @@ mod tests {
             crate::assert_workspace_rule_allows(
                 &prepared,
                 &workspace,
-                PermissionAction::Write,
+                PermissionAction::WRITE,
                 "routes/*",
             );
             prepared

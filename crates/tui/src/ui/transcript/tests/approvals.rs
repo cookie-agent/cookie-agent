@@ -53,7 +53,7 @@ async fn app_with_linked_bash() -> App {
 /// An edit to `src/lib.rs` that the session's `write *` rule asks about.
 fn edit_approval(session_id: SessionId) -> ApprovalState {
     let resource = PreparedApprovalResource {
-        capability: PermissionAction::Write,
+        capability: PermissionAction::WRITE,
         canonical: PreparedResourceIdentity::new("path:src-lib.rs").expect("identity"),
         binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"src/lib.rs"),
         binding_lifetime: PreparedBindingLifetime::ProcessLocal,
@@ -64,7 +64,7 @@ fn edit_approval(session_id: SessionId) -> ApprovalState {
     let operation = PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"edit arguments"),
         vec![ApprovalCapability {
-            action: PermissionAction::Write,
+            action: PermissionAction::WRITE,
             operation: PreparedCapabilityOperation::new("edit").expect("operation"),
         }],
         vec![resource],
@@ -80,12 +80,12 @@ fn edit_approval(session_id: SessionId) -> ApprovalState {
             resource_digest,
             effect: PermissionEffect::Ask,
             trace: DecisionTrace {
-                action: PermissionAction::Write,
+                action: PermissionAction::WRITE,
                 normalized_resource: "src/lib.rs".into(),
                 candidates: vec![MatchedPermissionRule {
                     runtime: None,
                     source_layer: SafeCode::new("agent_document").expect("layer"),
-                    action: PermissionAction::Write,
+                    action: PermissionAction::WRITE,
                     resource: WildcardPattern::new("*").expect("pattern"),
                     effect: PermissionEffect::Ask,
                 }],

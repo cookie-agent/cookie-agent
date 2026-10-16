@@ -116,7 +116,7 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
         .skill_grants_for_session(child_id, None)
         .expect("reconstructed child grants");
     assert!(grants.rules.iter().any(|rule| {
-        rule.action == PermissionAction::Bash && rule.resource.as_str() == "git *"
+        rule.action == PermissionAction::BASH && rule.resource.as_str() == "git *"
     }));
     let requests = with_watchdog("server fixture completion", server)
         .await
@@ -151,8 +151,8 @@ fn project_skill_grants_apply_to_the_contributing_attachment_only() {
         "deploy",
         Some(labpc.clone()),
         vec![
-            grant(cookie_agent_protocol::PermissionAction::Bash, "make *"),
-            grant(cookie_agent_protocol::PermissionAction::Skill, "release"),
+            grant(cookie_agent_protocol::PermissionAction::BASH, "make *"),
+            grant(cookie_agent_protocol::PermissionAction::SKILL, "release"),
         ],
     );
     fixture.engine.install_skill_grants_for_test(
@@ -160,7 +160,7 @@ fn project_skill_grants_apply_to_the_contributing_attachment_only() {
         "user-notes",
         None,
         vec![grant(
-            cookie_agent_protocol::PermissionAction::Bash,
+            cookie_agent_protocol::PermissionAction::BASH,
             "notes *",
         )],
     );

@@ -177,7 +177,7 @@ impl Harness {
         };
         assert_eq!(
             call.permission,
-            cookie_agent_protocol::PermissionAction::Mcp
+            cookie_agent_protocol::PermissionAction::MCP
         );
         assert_eq!(call.permission_resource.as_deref(), Some(name));
         tokio::time::timeout(
@@ -264,7 +264,7 @@ async fn template_servers_publish_their_tools_and_answer_calls_with_media() {
     let echo = &result.tools.tools[5];
     assert_eq!(
         echo.permission,
-        cookie_agent_protocol::PermissionAction::Mcp
+        cookie_agent_protocol::PermissionAction::MCP
     );
     assert!(
         echo.description.contains("untrusted MCP output"),

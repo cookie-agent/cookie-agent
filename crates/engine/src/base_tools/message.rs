@@ -141,9 +141,9 @@ impl ToolProvider for MessageToolProvider {
         let operation = prepared_operation(
             "send_message",
             &args,
-            vec![(PermissionAction::Message, relationship)],
+            vec![(PermissionAction::MESSAGE, relationship)],
             vec![prepared_resource(
-                PermissionAction::Message,
+                PermissionAction::MESSAGE,
                 relationship,
                 relationship.as_bytes(),
                 relationship.as_bytes(),

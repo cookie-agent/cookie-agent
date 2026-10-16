@@ -311,50 +311,50 @@ fn built_in_default_permissions()
 -> Result<IndexMap<cookie_agent_config::PermissionKey, PermissionValue>, EngineError> {
     let definitions = [
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "tool_result:*",
             PermissionEffect::Allow,
         ),
-        (PermissionAction::Read, "*?*", PermissionEffect::Allow),
-        (PermissionAction::Write, "*", PermissionEffect::Ask),
-        (PermissionAction::Bash, "*", PermissionEffect::Ask),
-        (PermissionAction::Delegate, "*", PermissionEffect::Ask),
-        (PermissionAction::Read, "/*", PermissionEffect::Ask),
-        (PermissionAction::Read, ".env", PermissionEffect::Deny),
-        (PermissionAction::Read, "*/.env", PermissionEffect::Deny),
-        (PermissionAction::Read, ".env.*", PermissionEffect::Deny),
-        (PermissionAction::Read, "*/.env.*", PermissionEffect::Deny),
+        (PermissionAction::READ, "*?*", PermissionEffect::Allow),
+        (PermissionAction::WRITE, "*", PermissionEffect::Ask),
+        (PermissionAction::BASH, "*", PermissionEffect::Ask),
+        (PermissionAction::DELEGATE, "*", PermissionEffect::Ask),
+        (PermissionAction::READ, "/*", PermissionEffect::Ask),
+        (PermissionAction::READ, ".env", PermissionEffect::Deny),
+        (PermissionAction::READ, "*/.env", PermissionEffect::Deny),
+        (PermissionAction::READ, ".env.*", PermissionEffect::Deny),
+        (PermissionAction::READ, "*/.env.*", PermissionEffect::Deny),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             ".env.example",
             PermissionEffect::Allow,
         ),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "*/.env.example",
             PermissionEffect::Allow,
         ),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "store-v3.json",
             PermissionEffect::Deny,
         ),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "*/store-v3.json",
             PermissionEffect::Deny,
         ),
-        (PermissionAction::Read, "id_*", PermissionEffect::Deny),
-        (PermissionAction::Read, "*/id_*", PermissionEffect::Deny),
-        (PermissionAction::Read, ".netrc", PermissionEffect::Deny),
-        (PermissionAction::Read, "*/.netrc", PermissionEffect::Deny),
+        (PermissionAction::READ, "id_*", PermissionEffect::Deny),
+        (PermissionAction::READ, "*/id_*", PermissionEffect::Deny),
+        (PermissionAction::READ, ".netrc", PermissionEffect::Deny),
+        (PermissionAction::READ, "*/.netrc", PermissionEffect::Deny),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "application_default_credentials.json",
             PermissionEffect::Deny,
         ),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "*/application_default_credentials.json",
             PermissionEffect::Deny,
         ),
@@ -398,7 +398,7 @@ pub(crate) fn delegation_targets(
     };
     let mut targets = Vec::new();
     match permissions.get(&cookie_agent_config::PermissionKey::any(
-        PermissionAction::Delegate,
+        PermissionAction::DELEGATE,
     )) {
         // Scalar effects are documented as equivalent to a `"*"` mapping:
         // expand them over every eligible subagent like any wildcard rule.
@@ -468,7 +468,7 @@ mod tests {
             PermissionEffect::Ask,
         );
         let permissions = IndexMap::from([(
-            cookie_agent_config::PermissionKey::any(PermissionAction::Delegate),
+            cookie_agent_config::PermissionKey::any(PermissionAction::DELEGATE),
             PermissionValue::Resources(resources),
         )]);
         assert_eq!(
@@ -483,7 +483,7 @@ mod tests {
             built_in_default_permissions().expect("built-in default permissions");
         assert!(
             default_permissions
-                .get(&PermissionAction::Message)
+                .get(&PermissionAction::MESSAGE)
                 .is_none(),
             "built-in default agent must not grant message authority"
         );
@@ -495,7 +495,7 @@ mod tests {
                 document
                     .frontmatter
                     .permissions
-                    .get(&PermissionAction::Message)
+                    .get(&PermissionAction::MESSAGE)
                     .is_none(),
                 "internal agent `{}` must not grant message authority",
                 document.id
@@ -615,7 +615,7 @@ mod tests {
             PermissionEffect::Allow,
         );
         let permissions = IndexMap::from([(
-            cookie_agent_config::PermissionKey::any(PermissionAction::Delegate),
+            cookie_agent_config::PermissionKey::any(PermissionAction::DELEGATE),
             PermissionValue::Resources(resources),
         )]);
         // Disabled and non-subagent matches are excluded; concrete and
@@ -631,7 +631,7 @@ mod tests {
         // A scalar `delegate: allow` is equivalent to a `"*"` mapping and
         // expands over every eligible subagent.
         let scalar = IndexMap::from([(
-            cookie_agent_config::PermissionKey::any(PermissionAction::Delegate),
+            cookie_agent_config::PermissionKey::any(PermissionAction::DELEGATE),
             PermissionValue::Effect(PermissionEffect::Allow),
         )]);
         assert_eq!(
@@ -642,7 +642,7 @@ mod tests {
             ]
         );
         let scalar_deny = IndexMap::from([(
-            cookie_agent_config::PermissionKey::any(PermissionAction::Delegate),
+            cookie_agent_config::PermissionKey::any(PermissionAction::DELEGATE),
             PermissionValue::Effect(PermissionEffect::Deny),
         )]);
         assert!(delegation_targets(&scalar_deny, &known).is_empty());

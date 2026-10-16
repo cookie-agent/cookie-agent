@@ -1145,7 +1145,7 @@ impl RemoteToolProvider {
         )?
         .with_reported_policy_labels(call.policy_labels)?
         .with_declaration(PreparedDeclaration {
-            permission_name: protocol::permission_name(call.permission).to_owned(),
+            permission_name: call.permission.as_str().to_owned(),
             permission_resource: call.permission_resource,
             presentation: call.presentation,
         }))

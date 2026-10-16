@@ -60,8 +60,8 @@ fn rule(action: PermissionAction, resource: &str, effect: PermissionEffect) -> P
 async fn preview_matches_the_session_a_create_with_the_same_rules_produces() {
     let (fixture, selection) = custom_fixture();
     let rules = vec![
-        rule(PermissionAction::Bash, "git log*", PermissionEffect::Allow),
-        rule(PermissionAction::Webfetch, "*", PermissionEffect::Deny),
+        rule(PermissionAction::BASH, "git log*", PermissionEffect::Allow),
+        rule(PermissionAction::WEBFETCH, "*", PermissionEffect::Deny),
     ];
     let preview = fixture
         .engine
@@ -69,7 +69,7 @@ async fn preview_matches_the_session_a_create_with_the_same_rules_produces() {
         .expect("preview");
     let bash = preview
         .iter()
-        .find(|permission| permission.action == PermissionAction::Bash)
+        .find(|permission| permission.action == PermissionAction::BASH)
         .expect("bash");
     assert!(bash.patterns.iter().any(|pattern| {
         pattern.resource.as_str() == "git log*"
@@ -119,8 +119,8 @@ async fn preview_matches_the_session_a_create_with_the_same_rules_produces() {
 async fn invalid_initial_rules_fail_before_a_session_exists() {
     let (fixture, selection) = custom_fixture();
     let duplicate = vec![
-        rule(PermissionAction::Bash, "git*", PermissionEffect::Allow),
-        rule(PermissionAction::Bash, "git*", PermissionEffect::Deny),
+        rule(PermissionAction::BASH, "git*", PermissionEffect::Allow),
+        rule(PermissionAction::BASH, "git*", PermissionEffect::Deny),
     ];
     assert!(
         fixture
@@ -172,7 +172,7 @@ async fn session_permission_overlay_is_durable_and_evaluated_after_restart() {
         .engine
         .set_session_permission(
             session.session_id,
-            PermissionAction::Bash,
+            &PermissionAction::BASH,
             None,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Deny,
@@ -195,13 +195,13 @@ async fn session_permission_overlay_is_durable_and_evaluated_after_restart() {
     let bash = view
         .permissions
         .iter()
-        .find(|permission| permission.action == PermissionAction::Bash)
+        .find(|permission| permission.action == PermissionAction::BASH)
         .expect("bash permission");
     assert_eq!(bash.effect, PermissionEffect::Deny);
     assert_eq!(bash.source, PermissionRuleSource::SessionOverlay);
 
     let resource = PreparedApprovalResource {
-        capability: PermissionAction::Bash,
+        capability: PermissionAction::BASH,
         canonical: PreparedResourceIdentity::new("command:git-status").expect("identity"),
         binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"git status"),
         binding_lifetime: PreparedBindingLifetime::RestartStable,
@@ -213,7 +213,7 @@ async fn session_permission_overlay_is_durable_and_evaluated_after_restart() {
     let operation = PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"args"),
         vec![ApprovalCapability {
-            action: PermissionAction::Bash,
+            action: PermissionAction::BASH,
             operation: PreparedCapabilityOperation::new("bash:execute").expect("operation"),
         }],
         vec![resource],
@@ -239,7 +239,7 @@ async fn tightening_overlay_invalidates_tree_grants_durably() {
         .engine
         .set_session_permission(
             session.session_id,
-            PermissionAction::Bash,
+            &PermissionAction::BASH,
             None,
             WildcardPattern::new("*").unwrap(),
             PermissionEffect::Ask,
@@ -248,7 +248,7 @@ async fn tightening_overlay_invalidates_tree_grants_durably() {
         .await
         .expect("explicit ask before tightening");
     let resource = PreparedApprovalResource {
-        capability: PermissionAction::Bash,
+        capability: PermissionAction::BASH,
         canonical: PreparedResourceIdentity::new("command:git-status").expect("identity"),
         binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"git status"),
         binding_lifetime: PreparedBindingLifetime::RestartStable,
@@ -258,7 +258,7 @@ async fn tightening_overlay_invalidates_tree_grants_durably() {
         source: ApprovalResourceSource::PrimaryOperation,
     };
     let capabilities = vec![ApprovalCapability {
-        action: PermissionAction::Bash,
+        action: PermissionAction::BASH,
         operation: PreparedCapabilityOperation::new("bash:execute").expect("operation"),
     }];
     let operation = PreparedOperationIdentity::new(
@@ -289,7 +289,7 @@ async fn tightening_overlay_invalidates_tree_grants_durably() {
         .engine
         .set_session_permission(
             session.session_id,
-            PermissionAction::Bash,
+            &PermissionAction::BASH,
             None,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Deny,
@@ -339,7 +339,7 @@ async fn clearing_allow_overlay_to_default_deny_invalidates_tree_grants() {
         .engine
         .set_session_permission(
             session.session_id,
-            PermissionAction::Bash,
+            &PermissionAction::BASH,
             None,
             wildcard.clone(),
             PermissionEffect::Allow,
@@ -348,7 +348,7 @@ async fn clearing_allow_overlay_to_default_deny_invalidates_tree_grants() {
         .await
         .expect("allow overlay");
     let resource = PreparedApprovalResource {
-        capability: PermissionAction::Bash,
+        capability: PermissionAction::BASH,
         canonical: PreparedResourceIdentity::new("command:git-status").expect("identity"),
         binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"git status"),
         binding_lifetime: PreparedBindingLifetime::RestartStable,
@@ -360,7 +360,7 @@ async fn clearing_allow_overlay_to_default_deny_invalidates_tree_grants() {
     let operation = PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"args"),
         vec![ApprovalCapability {
-            action: PermissionAction::Bash,
+            action: PermissionAction::BASH,
             operation: PreparedCapabilityOperation::new("bash:execute").expect("operation"),
         }],
         vec![resource.clone()],
@@ -389,7 +389,7 @@ async fn clearing_allow_overlay_to_default_deny_invalidates_tree_grants() {
         .engine
         .clear_session_permission(
             session.session_id,
-            PermissionAction::Bash,
+            &PermissionAction::BASH,
             None,
             &wildcard,
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
@@ -422,7 +422,7 @@ async fn clearing_allow_overlay_to_default_deny_invalidates_tree_grants() {
         .expect("permission view")
         .permissions
         .into_iter()
-        .find(|permission| permission.action == PermissionAction::Bash)
+        .find(|permission| permission.action == PermissionAction::BASH)
         .expect("bash permission");
     assert_eq!(bash.effect, PermissionEffect::Deny);
     assert_eq!(bash.source, PermissionRuleSource::Default);
@@ -499,7 +499,7 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
     );
 
     let resource = |lifetime| PreparedApprovalResource {
-        capability: PermissionAction::Bash,
+        capability: PermissionAction::BASH,
         canonical: PreparedResourceIdentity::new("command:git-status").expect("identity"),
         binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"git status"),
         binding_lifetime: lifetime,
@@ -509,7 +509,7 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
         source: ApprovalResourceSource::PrimaryOperation,
     };
     let capabilities = vec![ApprovalCapability {
-        action: PermissionAction::Bash,
+        action: PermissionAction::BASH,
         operation: PreparedCapabilityOperation::new("bash:execute").expect("operation"),
     }];
     let commit_grant = |engine: &Engine, grant_id| {
@@ -539,7 +539,7 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
                             resource_digest: resources[0].binding_digest.clone(),
                             effect: PermissionEffect::Ask,
                             trace: DecisionTrace {
-                                action: PermissionAction::Bash,
+                                action: PermissionAction::BASH,
                                 normalized_resource: "git status".into(),
                                 candidates: Vec::new(),
                                 effect: PermissionEffect::Ask,

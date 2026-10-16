@@ -174,7 +174,7 @@ impl ToolProvider for SkillTool {
                 .map_err(tool_error)?;
         }
         let resource = prepared_resource(
-            PermissionAction::Skill,
+            PermissionAction::SKILL,
             "skill",
             args.name.as_bytes(),
             args.name.as_bytes(),
@@ -184,7 +184,7 @@ impl ToolProvider for SkillTool {
         let operation = prepared_operation(
             "skill",
             &args,
-            vec![(PermissionAction::Skill, "load")],
+            vec![(PermissionAction::SKILL, "load")],
             vec![resource],
             &ctx.context_bytes(),
         )?;

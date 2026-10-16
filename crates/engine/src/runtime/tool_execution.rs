@@ -104,11 +104,7 @@ impl Engine {
                 let allow_tree_grant = prepared.operation().resources().iter().all(|resource| {
                     resource.binding_lifetime
                         == cookie_agent_protocol::PreparedBindingLifetime::RestartStable
-                        && !matches!(
-                            resource.capability,
-                            cookie_agent_protocol::PermissionAction::Read
-                                | cookie_agent_protocol::PermissionAction::Write
-                        )
+                        && !resource.capability.is_path()
                 });
                 let request = ApprovalRequest::new(
                     ApprovalId::new_v7(),
@@ -1008,12 +1004,12 @@ pub(super) fn fallback_operation_fingerprint(
     let action = permission_name
         .or_else(|| fallback_permission_name(&call.name))
         .and_then(|name| PermissionPipeline::action_for_permission_name(name).ok())
-        .unwrap_or(cookie_agent_protocol::PermissionAction::Read);
+        .unwrap_or(cookie_agent_protocol::PermissionAction::READ);
     let binding = serde_json::to_vec(&call.arguments).expect("tool arguments serialize");
     let operation = PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(&binding),
         vec![cookie_agent_protocol::ApprovalCapability {
-            action,
+            action: action.clone(),
             operation: cookie_agent_protocol::PreparedCapabilityOperation::new(format!(
                 "{}:prepare",
                 call.name

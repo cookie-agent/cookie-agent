@@ -152,11 +152,8 @@ fn parse_allowed_tools(value: &str) -> Result<Vec<SkillAllowedTool>, String> {
         } else {
             "*"
         };
-        let action = tool_action(name).ok_or_else(|| {
-            format!(
-                "unknown allowed-tools tool `{name}`; valid values are Read, Write, Edit, Bash, Delegate, Skill, Mcp, and Plugin"
-            )
-        })?;
+        let action = tool_action(name)
+            .map_err(|error| format!("invalid allowed-tools tool `{name}`: {error}"))?;
         if let Some(prefix) = pattern.strip_suffix(":*") {
             if prefix.is_empty() {
                 return Err(format!(
@@ -167,7 +164,10 @@ fn parse_allowed_tools(value: &str) -> Result<Vec<SkillAllowedTool>, String> {
                 let pattern = WildcardPattern::new(expanded).map_err(|error| {
                     format!("invalid allowed-tools prefix for `{name}`: {error}")
                 })?;
-                parsed.push(SkillAllowedTool { action, pattern });
+                parsed.push(SkillAllowedTool {
+                    action: action.clone(),
+                    pattern,
+                });
             }
         } else {
             let pattern = WildcardPattern::new(pattern)
@@ -181,26 +181,17 @@ fn parse_allowed_tools(value: &str) -> Result<Vec<SkillAllowedTool>, String> {
     Ok(parsed)
 }
 
-fn tool_action(name: &str) -> Option<PermissionAction> {
-    if name.eq_ignore_ascii_case("read") {
-        Some(PermissionAction::Read)
-    } else if name.eq_ignore_ascii_case("write") || name.eq_ignore_ascii_case("edit") {
-        Some(PermissionAction::Write)
-    } else if name.eq_ignore_ascii_case("bash") {
-        Some(PermissionAction::Bash)
-    } else if name.eq_ignore_ascii_case("delegate") {
-        Some(PermissionAction::Delegate)
-    } else if name.eq_ignore_ascii_case("skill") {
-        Some(PermissionAction::Skill)
-    } else if name.eq_ignore_ascii_case("webfetch") {
-        Some(PermissionAction::Webfetch)
-    } else if name.eq_ignore_ascii_case("mcp") {
-        Some(PermissionAction::Mcp)
-    } else if name.eq_ignore_ascii_case("plugin") {
-        Some(PermissionAction::Plugin)
-    } else {
-        None
+/// The permission action an `allowed-tools` name grants. The names of the
+/// tools cookie agent ships map case-insensitively (`Edit` grants `write`);
+/// any other name is the action itself, lowercased, so a skill can grant a
+/// runtime's own action.
+fn tool_action(
+    name: &str,
+) -> Result<PermissionAction, cookie_agent_protocol::PermissionActionError> {
+    if name.eq_ignore_ascii_case("edit") {
+        return Ok(PermissionAction::WRITE);
     }
+    PermissionAction::new(name.to_ascii_lowercase())
 }
 
 #[derive(Clone, Debug)]
@@ -716,12 +707,12 @@ mod tests {
     fn parses_agentskills_allowed_tools_format() {
         let parsed = parse_allowed_tools("Bash(git:*) Bash(jq:*) Read").expect("spec example");
         assert_eq!(parsed.len(), 5);
-        assert_eq!(parsed[0].action, PermissionAction::Bash);
+        assert_eq!(parsed[0].action, PermissionAction::BASH);
         assert_eq!(parsed[0].pattern.as_str(), "git");
         assert_eq!(parsed[1].pattern.as_str(), "git *");
         assert_eq!(parsed[2].pattern.as_str(), "jq");
         assert_eq!(parsed[3].pattern.as_str(), "jq *");
-        assert_eq!(parsed[4].action, PermissionAction::Read);
+        assert_eq!(parsed[4].action, PermissionAction::READ);
         assert_eq!(parsed[4].pattern.as_str(), "*");
         for command in ["git", "git status", "git commit -m x"] {
             assert!(
@@ -741,19 +732,19 @@ mod tests {
             "read READ ReAd edit EDIT Write BASH(git commit -m *) McP(api(call *)) Webfetch(https://example.org/*) WEBFETCH",
         )
         .expect("case variants and patterns with spaces/parens");
-        assert_eq!(parsed[0].action, PermissionAction::Read);
-        assert_eq!(parsed[1].action, PermissionAction::Read);
-        assert_eq!(parsed[2].action, PermissionAction::Read);
-        assert_eq!(parsed[3].action, PermissionAction::Write);
-        assert_eq!(parsed[4].action, PermissionAction::Write);
-        assert_eq!(parsed[5].action, PermissionAction::Write);
-        assert_eq!(parsed[6].action, PermissionAction::Bash);
+        assert_eq!(parsed[0].action, PermissionAction::READ);
+        assert_eq!(parsed[1].action, PermissionAction::READ);
+        assert_eq!(parsed[2].action, PermissionAction::READ);
+        assert_eq!(parsed[3].action, PermissionAction::WRITE);
+        assert_eq!(parsed[4].action, PermissionAction::WRITE);
+        assert_eq!(parsed[5].action, PermissionAction::WRITE);
+        assert_eq!(parsed[6].action, PermissionAction::BASH);
         assert_eq!(parsed[6].pattern.as_str(), "git commit -m *");
-        assert_eq!(parsed[7].action, PermissionAction::Mcp);
+        assert_eq!(parsed[7].action, PermissionAction::MCP);
         assert_eq!(parsed[7].pattern.as_str(), "api(call *)");
-        assert_eq!(parsed[8].action, PermissionAction::Webfetch);
+        assert_eq!(parsed[8].action, PermissionAction::WEBFETCH);
         assert_eq!(parsed[8].pattern.as_str(), "https://example.org/*");
-        assert_eq!(parsed[9].action, PermissionAction::Webfetch);
+        assert_eq!(parsed[9].action, PermissionAction::WEBFETCH);
         assert_eq!(parsed[9].pattern.as_str(), "*");
 
         let passthrough =
@@ -764,9 +755,17 @@ mod tests {
 
     #[test]
     fn rejects_unknown_and_malformed_allowed_tools_tokens() {
-        let unknown = parse_allowed_tools("Unknown").unwrap_err();
-        assert!(unknown.contains("unknown allowed-tools tool `Unknown`"));
-        assert!(unknown.contains("Read, Write, Edit, Bash, Delegate, Skill, Mcp, and Plugin"));
+        // A name that is no built-in tool is a runtime's own action.
+        let custom = parse_allowed_tools("Browse(https://*)").unwrap();
+        assert_eq!(custom[0].action.as_str(), "browse");
+        assert_eq!(custom[0].pattern.as_str(), "https://*");
+        for invalid in ["Web-Fetch", "Unconditional", "plugin:x"] {
+            let error = parse_allowed_tools(invalid).unwrap_err();
+            assert!(
+                error.contains(&format!("invalid allowed-tools tool `{invalid}`")),
+                "{error}"
+            );
+        }
 
         for malformed in ["", "Bash(", "Bash()", "Bash(:*)", "(git:*)", "Bash(git:*))"] {
             assert!(

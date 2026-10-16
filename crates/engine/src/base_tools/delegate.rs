@@ -176,7 +176,7 @@ impl DelegateToolProvider {
         agent_type: &AgentId,
     ) -> Result<PreparedToolParts, ToolError> {
         let resource = prepared_resource(
-            PermissionAction::Delegate,
+            PermissionAction::DELEGATE,
             "agent",
             agent_type.as_str().as_bytes(),
             agent_type.as_str().as_bytes(),
@@ -188,7 +188,7 @@ impl DelegateToolProvider {
             operation: prepared_operation(
                 name,
                 args,
-                vec![(PermissionAction::Delegate, operation_name)],
+                vec![(PermissionAction::DELEGATE, operation_name)],
                 vec![resource],
                 &cwd,
             )?,
@@ -556,7 +556,7 @@ mod tests {
                 .expect("current agent-scoped operation")
                 .operation;
         let old_resource = crate::base_tools::prepared_resource(
-            PermissionAction::Delegate,
+            PermissionAction::DELEGATE,
             old_resource_kind,
             old_binding,
             old_binding,
@@ -568,7 +568,7 @@ mod tests {
         let old = crate::base_tools::prepared_operation(
             name,
             args,
-            vec![(PermissionAction::Delegate, operation_name)],
+            vec![(PermissionAction::DELEGATE, operation_name)],
             vec![old_resource],
             &cwd,
         )

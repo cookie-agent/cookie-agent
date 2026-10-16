@@ -114,12 +114,12 @@ impl ToolProvider for TestStreamingBashProvider {
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(command.as_bytes()),
             vec![ApprovalCapability {
-                action: PermissionAction::Bash,
+                action: PermissionAction::BASH,
                 operation: PreparedCapabilityOperation::new("bash:execute")
                     .map_err(|error| ToolError::execution(error.to_string()))?,
             }],
             vec![PreparedApprovalResource {
-                capability: PermissionAction::Bash,
+                capability: PermissionAction::BASH,
                 canonical: PreparedResourceIdentity::new(format!(
                     "command:{}",
                     Sha256Digest::of_bytes(command.as_bytes())
@@ -338,9 +338,9 @@ pub(crate) fn parallel_tool_permission(
     name: &str,
 ) -> Result<(&'static str, PermissionAction), ToolError> {
     match name {
-        "parallel_read" => Ok(("read", PermissionAction::Read)),
-        "parallel_bash" => Ok(("bash", PermissionAction::Bash)),
-        "parallel_write" | "parallel_edit" => Ok(("write", PermissionAction::Write)),
+        "parallel_read" => Ok(("read", PermissionAction::READ)),
+        "parallel_bash" => Ok(("bash", PermissionAction::BASH)),
+        "parallel_write" | "parallel_edit" => Ok(("write", PermissionAction::WRITE)),
         _ => Err(ToolError::execution(
             "parallel test provider received another tool",
         )),
@@ -448,7 +448,7 @@ impl ToolProvider for TestParallelToolProvider {
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(call.arguments.to_string().as_bytes()),
             vec![ApprovalCapability {
-                action,
+                action: action.clone(),
                 operation: PreparedCapabilityOperation::new(format!("{}:execute", call.name))
                     .map_err(|error| ToolError::execution(error.to_string()))?,
             }],
@@ -682,12 +682,12 @@ impl ToolProvider for TestDelegateProvider {
                     .map_err(|error| ToolError::execution(error.to_string()))?,
             ),
             vec![ApprovalCapability {
-                action: PermissionAction::Delegate,
+                action: PermissionAction::DELEGATE,
                 operation: PreparedCapabilityOperation::new("delegate_subagent:spawn")
                     .map_err(|error| ToolError::execution(error.to_string()))?,
             }],
             vec![PreparedApprovalResource {
-                capability: PermissionAction::Delegate,
+                capability: PermissionAction::DELEGATE,
                 canonical: PreparedResourceIdentity::new(format!("agent:{label_digest}"))
                     .map_err(|error| ToolError::execution(error.to_string()))?,
                 binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
@@ -745,7 +745,7 @@ impl PreparedExecutor for TestDelegateExecutor {
                         supporting_files: Vec::new(),
                         grants: vec![cookie_agent_protocol::PermissionRule {
                             runtime: None,
-                            action: PermissionAction::Bash,
+                            action: PermissionAction::BASH,
                             resource: WildcardPattern::new("git *").expect("grant"),
                             effect: PermissionEffect::Allow,
                         }],
@@ -870,12 +870,12 @@ impl ToolProvider for TestWriteProvider {
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(b"approval test write arguments"),
             vec![ApprovalCapability {
-                action: PermissionAction::Write,
+                action: PermissionAction::WRITE,
                 operation: PreparedCapabilityOperation::new("write:file")
                     .map_err(|error| ToolError::execution(error.to_string()))?,
             }],
             vec![PreparedApprovalResource {
-                capability: PermissionAction::Write,
+                capability: PermissionAction::WRITE,
                 canonical: PreparedResourceIdentity::new(label)
                     .map_err(|error| ToolError::execution(error.to_string()))?,
                 binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
@@ -1039,12 +1039,12 @@ impl ToolProvider for TestAliasProvider {
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(b"alias test arguments"),
             vec![ApprovalCapability {
-                action: PermissionAction::Write,
+                action: PermissionAction::WRITE,
                 operation: PreparedCapabilityOperation::new("alias:execute")
                     .map_err(|error| ToolError::execution(error.to_string()))?,
             }],
             vec![PreparedApprovalResource {
-                capability: PermissionAction::Write,
+                capability: PermissionAction::WRITE,
                 canonical: PreparedResourceIdentity::new(label)
                     .map_err(|error| ToolError::execution(error.to_string()))?,
                 binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
@@ -1173,11 +1173,11 @@ impl ToolProvider for TestMediaReadProvider {
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(display.as_bytes()),
             vec![ApprovalCapability {
-                action: PermissionAction::Read,
+                action: PermissionAction::READ,
                 operation: PreparedCapabilityOperation::new("read:file").unwrap(),
             }],
             vec![PreparedApprovalResource {
-                capability: PermissionAction::Read,
+                capability: PermissionAction::READ,
                 canonical: PreparedResourceIdentity::new(display).unwrap(),
                 binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
                     display.as_bytes(),
@@ -1501,11 +1501,11 @@ impl ToolProvider for NamedOutputProvider {
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(b"named-output"),
             vec![ApprovalCapability {
-                action: PermissionAction::Read,
+                action: PermissionAction::READ,
                 operation: PreparedCapabilityOperation::new("test:named-output").unwrap(),
             }],
             vec![PreparedApprovalResource {
-                capability: PermissionAction::Read,
+                capability: PermissionAction::READ,
                 canonical: PreparedResourceIdentity::new(format!(
                     "test:{}",
                     Sha256Digest::of_bytes(b"named_output")
@@ -1653,12 +1653,12 @@ impl ToolProvider for DivergentReadProvider {
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(prepared_path.as_bytes()),
             vec![ApprovalCapability {
-                action: PermissionAction::Read,
+                action: PermissionAction::READ,
                 operation: PreparedCapabilityOperation::new("read:file")
                     .map_err(|error| ToolError::execution(error.to_string()))?,
             }],
             vec![PreparedApprovalResource {
-                capability: PermissionAction::Read,
+                capability: PermissionAction::READ,
                 canonical: PreparedResourceIdentity::new(format!(
                     "file:{}",
                     Sha256Digest::of_bytes(b"divergent-raw")

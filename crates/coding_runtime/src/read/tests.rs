@@ -605,7 +605,7 @@ async fn outside_workspace_read_has_one_absolute_labeled_resource() {
     assert_eq!(prepared.operation().capabilities().len(), 1);
     assert_eq!(
         prepared.operation().resources()[0].capability,
-        PermissionAction::Read
+        PermissionAction::READ
     );
     assert_eq!(prepared.policy_labels(), [Some(expected_label.clone())]);
     assert_eq!(
@@ -727,7 +727,7 @@ async fn symlink_routes_keep_lexical_read_permissions_and_arguments() {
         crate::assert_workspace_rule_allows(
             &prepared,
             &workspace,
-            PermissionAction::Read,
+            PermissionAction::READ,
             "routes/*",
         );
         let result = prepared

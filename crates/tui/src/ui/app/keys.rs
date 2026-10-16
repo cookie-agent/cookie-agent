@@ -543,7 +543,12 @@ impl App {
             KeyCode::Left | KeyCode::Right => {
                 let backward = key.code == KeyCode::Left;
                 match form.focus {
-                    PermissionFormFocus::Action => form.cycle_action(backward),
+                    PermissionFormFocus::Action => form.cycle_action(
+                        &crate::ui::management::permission_actions(
+                            self.permission_panel.result.as_ref(),
+                        ),
+                        backward,
+                    ),
                     PermissionFormFocus::Effect => form.effect = step_effect(form.effect, backward),
                     PermissionFormFocus::Pattern => edit_plain_input(&mut form.pattern, key),
                 }
@@ -561,7 +566,7 @@ impl App {
         let action = self
             .permission_panel
             .selected()
-            .map_or(PermissionAction::Bash, |row| row.action);
+            .map_or(PermissionAction::BASH, |row| row.action.clone());
         self.permission_panel.form = Some(PermissionForm::new(action));
     }
 
@@ -571,7 +576,7 @@ impl App {
         if row.effect == effect {
             return;
         }
-        self.dispatch_permission_set(row.action, row.resource.clone(), effect);
+        self.dispatch_permission_set(row.action.clone(), row.resource.clone(), effect);
     }
 
     fn remove_selected_permission(&mut self) {
@@ -645,7 +650,7 @@ impl App {
         };
         if self.permission_panel.draft {
             self.draft_permissions
-                .remove(previous_action, &previous_resource);
+                .remove(&previous_action, &previous_resource);
             self.draft_permissions.set(PermissionRule {
                 runtime: None,
                 action,
@@ -770,7 +775,7 @@ impl App {
     pub(super) fn dispatch_permission_clear(&mut self, action: PermissionAction, resource: String) {
         if self.permission_panel.draft {
             if let Ok(resource) = cookie_agent_protocol::WildcardPattern::new(resource) {
-                self.draft_permissions.remove(action, &resource);
+                self.draft_permissions.remove(&action, &resource);
                 self.load_permission_preview();
             }
             return;

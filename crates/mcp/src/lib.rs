@@ -1841,7 +1841,7 @@ impl ToolProvider for McpRegistry {
             .map_err(|error| ToolError::execution(error.to_string()))?;
         let label = call.name.clone();
         let resource = PreparedApprovalResource {
-            capability: PermissionAction::Mcp,
+            capability: PermissionAction::MCP,
             canonical: PreparedResourceIdentity::new(format!(
                 "mcp-tool:{}",
                 Sha256Digest::of_bytes(label.as_bytes())
@@ -1855,7 +1855,7 @@ impl ToolProvider for McpRegistry {
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(&argument_bytes),
             vec![ApprovalCapability {
-                action: PermissionAction::Mcp,
+                action: PermissionAction::MCP,
                 operation: PreparedCapabilityOperation::new(format!("{}:call", call.name))
                     .map_err(|error| ToolError::execution(error.to_string()))?,
             }],

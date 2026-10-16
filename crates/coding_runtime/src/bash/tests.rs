@@ -109,7 +109,7 @@ async fn whole_command_label_is_one_resource() {
     );
     assert_eq!(
         prepared.operation().resources()[0].capability,
-        PermissionAction::Bash
+        PermissionAction::BASH
     );
     assert_eq!(
         prepared.normalized_arguments(),
@@ -129,15 +129,15 @@ async fn bash_never_produces_read_or_write_resources() {
         let prepared = prepare(root.path(), command).await;
         assert_eq!(
             prepared.operation().resources()[0].capability,
-            PermissionAction::Bash
+            PermissionAction::BASH
         );
     }
     let env = prepare(root.path(), "cat .env").await;
     assert_eq!(env.policy_labels(), [Some("cat .env".into())]);
     let decision = PermissionPipeline::default().decide_operation(
         &policy(vec![
-            rule(PermissionAction::Bash, "*", PermissionEffect::Allow),
-            rule(PermissionAction::Bash, "cat *", PermissionEffect::Deny),
+            rule(PermissionAction::BASH, "*", PermissionEffect::Allow),
+            rule(PermissionAction::BASH, "cat *", PermissionEffect::Deny),
         ]),
         env.operation(),
         env.policy_labels(),
@@ -166,7 +166,7 @@ async fn git_star_matches_a_compound_command_by_wildcard_rules() {
     let prepared = prepare(root.path(), "git status && rm -rf x").await;
     let decision = PermissionPipeline::default().decide_operation(
         &policy(vec![rule(
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "git *",
             PermissionEffect::Allow,
         )]),
@@ -183,8 +183,8 @@ async fn prefix_rm_star_does_not_match_a_compound_git_command() {
     let prepared = prepare(root.path(), "git status && rm -rf x").await;
     let decision = PermissionPipeline::default().decide_operation(
         &policy(vec![
-            rule(PermissionAction::Bash, "*", PermissionEffect::Allow),
-            rule(PermissionAction::Bash, "rm *", PermissionEffect::Deny),
+            rule(PermissionAction::BASH, "*", PermissionEffect::Allow),
+            rule(PermissionAction::BASH, "rm *", PermissionEffect::Deny),
         ]),
         prepared.operation(),
         prepared.policy_labels(),
@@ -199,8 +199,8 @@ async fn containment_rm_denies_a_compound_command() {
     let prepared = prepare(root.path(), "git status && rm -rf x").await;
     let decision = PermissionPipeline::default().decide_operation(
         &policy(vec![
-            rule(PermissionAction::Bash, "*", PermissionEffect::Allow),
-            rule(PermissionAction::Bash, "*rm*", PermissionEffect::Deny),
+            rule(PermissionAction::BASH, "*", PermissionEffect::Allow),
+            rule(PermissionAction::BASH, "*rm*", PermissionEffect::Deny),
         ]),
         prepared.operation(),
         prepared.policy_labels(),
@@ -216,7 +216,7 @@ async fn simple_command_is_matched_as_itself() {
     assert_eq!(prepared.policy_labels(), [Some("pwd".into())]);
     let decision = PermissionPipeline::default().decide_operation(
         &policy(vec![rule(
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "pwd",
             PermissionEffect::Allow,
         )]),
@@ -234,7 +234,7 @@ async fn complex_shell_constructs_keep_every_resource_on_bash() {
         let prepared = prepare(root.path(), command).await;
         assert_eq!(
             prepared.operation().resources()[0].capability,
-            PermissionAction::Bash
+            PermissionAction::BASH
         );
     }
 }

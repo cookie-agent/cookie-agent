@@ -788,12 +788,12 @@ pub(crate) fn operation_fingerprint() -> OperationFingerprint {
         &PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(b"arguments"),
             vec![ApprovalCapability {
-                action: PermissionAction::Bash,
+                action: PermissionAction::BASH,
                 operation: PreparedCapabilityOperation::new("execute")
                     .expect("capability operation"),
             }],
             vec![PreparedApprovalResource {
-                capability: PermissionAction::Bash,
+                capability: PermissionAction::BASH,
                 canonical: PreparedResourceIdentity::new("command:test")
                     .expect("resource identity"),
                 binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"test"),
@@ -933,7 +933,7 @@ pub(crate) fn titled_meta(session_id: SessionId, title: &str, title_seq: u64) ->
 
 pub(crate) fn approval_request(trigger: ApprovalTrigger) -> ApprovalRequest {
     let resource = PreparedApprovalResource {
-        capability: PermissionAction::Bash,
+        capability: PermissionAction::BASH,
         canonical: PreparedResourceIdentity::new("command:git-status")
             .expect("prepared resource identity"),
         binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"git status"),
@@ -947,7 +947,7 @@ pub(crate) fn approval_request(trigger: ApprovalTrigger) -> ApprovalRequest {
     let operation = PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"normalized arguments"),
         vec![ApprovalCapability {
-            action: PermissionAction::Bash,
+            action: PermissionAction::BASH,
             operation: PreparedCapabilityOperation::new("execute")
                 .expect("prepared capability operation"),
         }],
@@ -964,7 +964,7 @@ pub(crate) fn approval_request(trigger: ApprovalTrigger) -> ApprovalRequest {
             resource_digest,
             effect: PermissionEffect::Ask,
             trace: DecisionTrace {
-                action: PermissionAction::Bash,
+                action: PermissionAction::BASH,
                 normalized_resource: "git status".into(),
                 candidates: Vec::new(),
                 effect: PermissionEffect::Ask,

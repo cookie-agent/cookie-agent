@@ -23,18 +23,22 @@ use super::super::{
 };
 use super::action_label;
 
-/// Every action in table order, which is also the order the engine reports.
-pub(in crate::ui) const PERMISSION_ACTIONS: [PermissionAction; 9] = [
-    PermissionAction::Read,
-    PermissionAction::Write,
-    PermissionAction::Bash,
-    PermissionAction::Delegate,
-    PermissionAction::Message,
-    PermissionAction::Mcp,
-    PermissionAction::Plugin,
-    PermissionAction::Skill,
-    PermissionAction::Webfetch,
-];
+/// The actions a rule can name, in table order: the ones the daemon reports
+/// for the session, or the built-in actions until it has.
+pub(in crate::ui) fn permission_actions(
+    result: Option<&SessionPermissionGetResult>,
+) -> Vec<PermissionAction> {
+    result.map_or_else(
+        || PermissionAction::BUILT_IN.to_vec(),
+        |result| {
+            result
+                .permissions
+                .iter()
+                .map(|action| action.action.clone())
+                .collect()
+        },
+    )
+}
 
 const EFFECTS: [PermissionEffect; 3] = [
     PermissionEffect::Allow,
@@ -56,13 +60,13 @@ pub(in crate::ui) fn permission_rows(result: &SessionPermissionGetResult) -> Vec
         .iter()
         .flat_map(|action| {
             std::iter::once(PermissionRow {
-                action: action.action,
+                action: action.action.clone(),
                 resource: "*".into(),
                 effect: action.effect,
                 source: action.source,
             })
             .chain(action.patterns.iter().map(|rule| PermissionRow {
-                action: action.action,
+                action: action.action.clone(),
                 resource: rule.resource.as_str().to_owned(),
                 effect: rule.effect,
                 source: rule.source,
@@ -106,11 +110,11 @@ impl PermissionForm {
         let mut pattern = InputState::default();
         pattern.set_buffer(row.resource.clone());
         Self {
-            action: row.action,
+            action: row.action.clone(),
             pattern,
             effect: row.effect,
             focus: PermissionFormFocus::Pattern,
-            editing: Some((row.action, row.resource.clone())),
+            editing: Some((row.action.clone(), row.resource.clone())),
             error: None,
         }
     }
@@ -124,17 +128,22 @@ impl PermissionForm {
         };
     }
 
-    pub(in crate::ui) fn cycle_action(&mut self, backward: bool) {
-        let index = PERMISSION_ACTIONS
+    /// Steps to the next or previous of `actions`.
+    pub(in crate::ui) fn cycle_action(&mut self, actions: &[PermissionAction], backward: bool) {
+        if actions.is_empty() {
+            return;
+        }
+        let index = actions
             .iter()
             .position(|action| *action == self.action)
             .unwrap_or(0);
-        let len = PERMISSION_ACTIONS.len();
-        self.action = PERMISSION_ACTIONS[if backward {
+        let len = actions.len();
+        self.action = actions[if backward {
             (index + len - 1) % len
         } else {
             (index + 1) % len
-        }];
+        }]
+        .clone();
     }
 }
 
@@ -281,27 +290,36 @@ fn source_style(source: PermissionRuleSource, theme: &Theme) -> Style {
 }
 
 /// The transcript's tool icon for the tools an action gates.
-fn action_icon(action: PermissionAction) -> &'static str {
-    approval_tool_icon(match action {
-        PermissionAction::Delegate => "delegate_subagent",
-        PermissionAction::Message => "send_message",
-        other => action_label(other),
+fn action_icon(action: &PermissionAction) -> &'static str {
+    approval_tool_icon(if *action == PermissionAction::DELEGATE {
+        "delegate_subagent"
+    } else if *action == PermissionAction::MESSAGE {
+        "send_message"
+    } else {
+        action_label(action)
     })
 }
 
 /// What an action's resource pattern matches, for the explanation line.
-fn resource_noun(action: PermissionAction) -> &'static str {
-    match action {
-        PermissionAction::Read => "reads of paths",
-        PermissionAction::Write => "writes to paths",
-        PermissionAction::Bash => "bash commands",
-        PermissionAction::Delegate => "delegations to agents",
-        PermissionAction::Message => "messages to sessions",
-        PermissionAction::Mcp => "MCP tools",
-        PermissionAction::Plugin => "plugin tools",
-        PermissionAction::Skill => "skills",
-        PermissionAction::Webfetch => "fetches of URLs",
-    }
+fn resource_noun(action: &PermissionAction) -> std::borrow::Cow<'static, str> {
+    let known = [
+        (PermissionAction::READ, "reads of paths"),
+        (PermissionAction::WRITE, "writes to paths"),
+        (PermissionAction::BASH, "bash commands"),
+        (PermissionAction::DELEGATE, "delegations to agents"),
+        (PermissionAction::MESSAGE, "messages to sessions"),
+        (PermissionAction::MCP, "MCP tools"),
+        (PermissionAction::PLUGIN, "plugin tools"),
+        (PermissionAction::SKILL, "skills"),
+        (PermissionAction::WEBFETCH, "fetches of URLs"),
+    ];
+    known
+        .into_iter()
+        .find(|(known, _)| known == action)
+        .map_or_else(
+            || format!("uses of `{action}` tools").into(),
+            |(_, noun)| noun.into(),
+        )
 }
 
 fn effect_phrase(effect: PermissionEffect) -> &'static str {
@@ -315,7 +333,7 @@ fn effect_phrase(effect: PermissionEffect) -> &'static str {
 /// The selected row in plain words: what it matches, what happens, where
 /// it comes from, and what editing it does.
 fn row_explanation(row: &PermissionRow, has_patterns: bool, draft: bool) -> String {
-    let noun = resource_noun(row.action);
+    let noun = resource_noun(&row.action);
     let matched = if row.resource == "*" {
         if has_patterns {
             format!("Other {noun} (no pattern below matches)")
@@ -323,7 +341,7 @@ fn row_explanation(row: &PermissionRow, has_patterns: bool, draft: bool) -> Stri
             format!("All {noun}")
         }
     } else {
-        format!("{} matching `{}`", capitalized(noun), row.resource)
+        format!("{} matching `{}`", capitalized(&noun), row.resource)
     };
     let effect = effect_phrase(row.effect);
     // A draft's overrides wait for the session that the first prompt creates.
@@ -592,12 +610,12 @@ pub(in crate::ui) fn render_permissions(
             .is_none_or(|next| next.action != row.action);
         let mut spans = if first_of_action {
             vec![
-                Span::raw(action_icon(row.action)),
+                Span::raw(action_icon(&row.action)),
                 Span::raw(" "),
                 Span::styled(
                     format!(
                         "{:<width$}",
-                        action_label(row.action),
+                        action_label(&row.action),
                         width = ACTION_COLUMNS - 3
                     ),
                     theme.heading(),
@@ -767,9 +785,9 @@ fn render_form(
                 };
                 spans.extend([
                     Span::styled("‹ ", arrows),
-                    Span::raw(action_icon(form.action)),
+                    Span::raw(action_icon(&form.action)),
                     Span::raw(" "),
-                    Span::styled(action_label(form.action), theme.heading()),
+                    Span::styled(action_label(&form.action), theme.heading()),
                     Span::styled(" ›", arrows),
                 ]);
             }
@@ -777,13 +795,18 @@ fn render_form(
                 let text = form.pattern.as_str();
                 if text.is_empty() {
                     spans.push(Span::styled(
-                        match form.action {
-                            PermissionAction::Bash => "e.g. git log*",
-                            PermissionAction::Webfetch => "e.g. https://docs.rs/*",
-                            PermissionAction::Delegate | PermissionAction::Message => {
-                                "e.g. explore"
-                            }
-                            _ => "e.g. src/** or *",
+                        if form.action == PermissionAction::BASH {
+                            "e.g. git log*"
+                        } else if form.action == PermissionAction::WEBFETCH {
+                            "e.g. https://docs.rs/*"
+                        } else if form.action == PermissionAction::DELEGATE
+                            || form.action == PermissionAction::MESSAGE
+                        {
+                            "e.g. explore"
+                        } else if form.action.is_path() {
+                            "e.g. src/** or *"
+                        } else {
+                            "e.g. *"
                         },
                         theme.internal(),
                     ));
@@ -836,7 +859,7 @@ pub(in crate::ui) fn sample_permissions() -> SessionPermissionGetResult {
     SessionPermissionGetResult {
         permissions: vec![
             action(
-                PermissionAction::Read,
+                PermissionAction::READ,
                 Allow,
                 AgentDocument,
                 vec![
@@ -845,13 +868,13 @@ pub(in crate::ui) fn sample_permissions() -> SessionPermissionGetResult {
                 ],
             ),
             action(
-                PermissionAction::Write,
+                PermissionAction::WRITE,
                 Ask,
                 AgentDocument,
                 vec![rule("docs/*", Allow, SessionOverlay)],
             ),
             action(
-                PermissionAction::Bash,
+                PermissionAction::BASH,
                 Ask,
                 AgentDocument,
                 vec![
@@ -860,12 +883,12 @@ pub(in crate::ui) fn sample_permissions() -> SessionPermissionGetResult {
                     rule("rm -rf *", Deny, AgentDocument),
                 ],
             ),
-            action(PermissionAction::Delegate, Allow, AgentDocument, vec![]),
-            action(PermissionAction::Message, Deny, Default, vec![]),
-            action(PermissionAction::Mcp, Ask, AgentDocument, vec![]),
-            action(PermissionAction::Plugin, Deny, Default, vec![]),
-            action(PermissionAction::Skill, Allow, AgentDocument, vec![]),
-            action(PermissionAction::Webfetch, Ask, SessionOverlay, vec![]),
+            action(PermissionAction::DELEGATE, Allow, AgentDocument, vec![]),
+            action(PermissionAction::MESSAGE, Deny, Default, vec![]),
+            action(PermissionAction::MCP, Ask, AgentDocument, vec![]),
+            action(PermissionAction::PLUGIN, Deny, Default, vec![]),
+            action(PermissionAction::SKILL, Allow, AgentDocument, vec![]),
+            action(PermissionAction::WEBFETCH, Ask, SessionOverlay, vec![]),
         ],
         current_mode: None,
     }

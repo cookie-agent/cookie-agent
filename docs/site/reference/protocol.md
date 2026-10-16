@@ -43,7 +43,12 @@ state and their hosting `runtime_id` and `workspace` in `mcp.server.list`,
 `mcp.changed` and `runtimes.changed` gained `failures` (see
 [Connection failures](#connection-failures)). Protocol 41 made a runtime's
 `kind` a free-form label the runtime declares instead of `global` or
-`coding`. Older clients are rejected.
+`coding`, and made `PermissionAction` a free-form label (`[a-z][a-z0-9_]{0,31}`,
+`unconditional` reserved) instead of the nine built-in actions, so permission
+rules, overlays, grants, approval requests, and `session.permission.get` can
+name a runtime's own actions; `session.permission.get` lists the built-in
+actions, then the actions of the session's tools, then any other action a rule
+names. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility

@@ -28,11 +28,14 @@ fn policy(rules: Vec<PermissionRule>) -> AgentSnapshot {
 
 #[test]
 fn effective_permission_view_reports_message_with_default_deny() {
-    let view =
-        super::effective_permission_view(&policy(Vec::new()), &SessionPermissionOverlay::empty());
+    let view = super::effective_permission_view(
+        &policy(Vec::new()),
+        &SessionPermissionOverlay::empty(),
+        &[],
+    );
     let message = view
         .iter()
-        .find(|entry| entry.action == PermissionAction::Message)
+        .find(|entry| entry.action == PermissionAction::MESSAGE)
         .expect("message action is reported");
     assert_eq!(message.effect, PermissionEffect::Deny);
     assert_eq!(message.source, PermissionRuleSource::Default);
@@ -40,56 +43,75 @@ fn effective_permission_view_reports_message_with_default_deny() {
 }
 
 #[test]
-fn message_permission_name_maps_and_unknown_names_still_fail() {
+fn permission_names_map_to_actions_and_invalid_names_fail() {
     assert_eq!(
         PermissionPipeline::action_for_permission_name("message").expect("message action"),
-        PermissionAction::Message
+        PermissionAction::MESSAGE
     );
-    assert!(PermissionPipeline::action_for_permission_name("messaging").is_err());
-    assert!(PermissionPipeline::action_for_permission_name("send_message").is_err());
+    assert_eq!(
+        PermissionPipeline::action_for_permission_name("plugin:lint").expect("plugin tool"),
+        PermissionAction::PLUGIN
+    );
+    assert_eq!(
+        PermissionPipeline::action_for_permission_name("browse")
+            .expect("a runtime's own action")
+            .as_str(),
+        "browse"
+    );
+    for invalid in ["Message", "send-message", "plugin:", "unconditional"] {
+        assert!(
+            PermissionPipeline::action_for_permission_name(invalid).is_err(),
+            "{invalid}"
+        );
+    }
 }
 
 #[test]
 fn message_tool_visibility_requires_an_allow_or_ask_rule() {
-    assert!(!tool_visible(&[], None, PermissionAction::Message, None));
+    assert!(!tool_visible(&[], None, &PermissionAction::MESSAGE, None));
     let only_deny = [rule(
         "deny-all",
-        PermissionAction::Message,
+        PermissionAction::MESSAGE,
         "*",
         PermissionEffect::Deny,
     )];
     assert!(!tool_visible(
         &only_deny,
         None,
-        PermissionAction::Message,
+        &PermissionAction::MESSAGE,
         None
     ));
     let allows = [rule(
         "allow-child",
-        PermissionAction::Message,
+        PermissionAction::MESSAGE,
         "child",
         PermissionEffect::Allow,
     )];
-    assert!(tool_visible(&allows, None, PermissionAction::Message, None));
+    assert!(tool_visible(
+        &allows,
+        None,
+        &PermissionAction::MESSAGE,
+        None
+    ));
     let asks = [rule(
         "ask-sibling",
-        PermissionAction::Message,
+        PermissionAction::MESSAGE,
         "sibling",
         PermissionEffect::Ask,
     )];
-    assert!(tool_visible(&asks, None, PermissionAction::Message, None));
+    assert!(tool_visible(&asks, None, &PermissionAction::MESSAGE, None));
     // Delegate rules never make the message tool visible: the actions are
     // independent by decision.
     let delegate_only = [rule(
         "allow-delegate",
-        PermissionAction::Delegate,
+        PermissionAction::DELEGATE,
         "*",
         PermissionEffect::Allow,
     )];
     assert!(!tool_visible(
         &delegate_only,
         None,
-        PermissionAction::Message,
+        &PermissionAction::MESSAGE,
         None
     ));
 }
@@ -99,19 +121,19 @@ fn message_relationship_labels_match_literal_resources_with_wildcard_catch_all()
     let rules = policy(vec![
         rule(
             "allow-child",
-            PermissionAction::Message,
+            PermissionAction::MESSAGE,
             "child",
             PermissionEffect::Allow,
         ),
         rule(
             "ask-sibling",
-            PermissionAction::Message,
+            PermissionAction::MESSAGE,
             "sibling",
             PermissionEffect::Ask,
         ),
         rule(
             "deny-rest",
-            PermissionAction::Message,
+            PermissionAction::MESSAGE,
             "*",
             PermissionEffect::Deny,
         ),
@@ -119,7 +141,7 @@ fn message_relationship_labels_match_literal_resources_with_wildcard_catch_all()
     assert_eq!(
         decide(
             &rules,
-            resource(PermissionAction::Message, "child", b"child")
+            resource(PermissionAction::MESSAGE, "child", b"child")
         )
         .effect,
         PermissionEffect::Allow
@@ -127,7 +149,7 @@ fn message_relationship_labels_match_literal_resources_with_wildcard_catch_all()
     assert_eq!(
         decide(
             &rules,
-            resource(PermissionAction::Message, "parent", b"parent")
+            resource(PermissionAction::MESSAGE, "parent", b"parent")
         )
         .effect,
         PermissionEffect::Deny
@@ -135,7 +157,7 @@ fn message_relationship_labels_match_literal_resources_with_wildcard_catch_all()
     assert_eq!(
         decide(
             &rules,
-            resource(PermissionAction::Message, "sibling", b"sibling")
+            resource(PermissionAction::MESSAGE, "sibling", b"sibling")
         )
         .effect,
         PermissionEffect::Ask
@@ -143,7 +165,7 @@ fn message_relationship_labels_match_literal_resources_with_wildcard_catch_all()
     assert_eq!(
         decide(
             &rules,
-            resource(PermissionAction::Message, "grandparent", b"grandparent")
+            resource(PermissionAction::MESSAGE, "grandparent", b"grandparent")
         )
         .effect,
         PermissionEffect::Deny
@@ -152,7 +174,7 @@ fn message_relationship_labels_match_literal_resources_with_wildcard_catch_all()
     assert_eq!(
         decide(
             &policy(Vec::new()),
-            resource(PermissionAction::Message, "child", b"child")
+            resource(PermissionAction::MESSAGE, "child", b"child")
         )
         .effect,
         PermissionEffect::Deny
@@ -163,13 +185,13 @@ fn message_relationship_labels_match_literal_resources_with_wildcard_catch_all()
 fn later_run_agent_governs_permission_mutation_classification() {
     let creation = policy(vec![rule(
         "creation",
-        PermissionAction::Read,
+        PermissionAction::READ,
         "*",
         PermissionEffect::Allow,
     )]);
     let later = policy(vec![rule(
         "later",
-        PermissionAction::Read,
+        PermissionAction::READ,
         "*",
         PermissionEffect::Deny,
     )]);
@@ -188,7 +210,7 @@ fn later_run_agent_governs_permission_mutation_classification() {
 fn unconditional_tools_are_visible_without_rules_and_cannot_be_ruled() {
     let deny_all = policy(vec![rule(
         "deny",
-        PermissionAction::Read,
+        PermissionAction::READ,
         "*",
         PermissionEffect::Deny,
     )]);
@@ -217,13 +239,13 @@ fn skill_grants_allow_ask_but_never_override_deny() {
     let grants = SessionPermissionOverlay {
         rules: vec![rule(
             "skill-grant",
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "git status",
             PermissionEffect::Allow,
         )],
     };
     let operation = operation(vec![resource(
-        PermissionAction::Bash,
+        PermissionAction::BASH,
         "git status",
         b"git status",
     )]);
@@ -232,7 +254,7 @@ fn skill_grants_allow_ask_but_never_override_deny() {
     let ask = pipeline.decide_operation_with_grants(
         &policy(vec![rule(
             "ask",
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "*",
             PermissionEffect::Ask,
         )]),
@@ -247,7 +269,7 @@ fn skill_grants_allow_ask_but_never_override_deny() {
     let denied = pipeline.decide_operation_with_grants(
         &policy(vec![rule(
             "deny",
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "*",
             PermissionEffect::Deny,
         )]),
@@ -264,7 +286,7 @@ fn skill_grants_allow_ask_but_never_override_deny() {
 fn turn_scoped_skill_grant_requires_explicit_ask() {
     let base_policy = policy(vec![rule(
         "ask",
-        PermissionAction::Bash,
+        PermissionAction::BASH,
         "git*",
         PermissionEffect::Ask,
     )]);
@@ -272,13 +294,13 @@ fn turn_scoped_skill_grant_requires_explicit_ask() {
         rules: vec![
             rule(
                 "skill-grant-exact",
-                PermissionAction::Bash,
+                PermissionAction::BASH,
                 "git",
                 PermissionEffect::Allow,
             ),
             rule(
                 "skill-grant-prefix",
-                PermissionAction::Bash,
+                PermissionAction::BASH,
                 "git *",
                 PermissionEffect::Allow,
             ),
@@ -300,7 +322,7 @@ fn turn_scoped_skill_grant_requires_explicit_ask() {
     ));
     for command in ["git", "git status", "git commit -m x"] {
         let operation = operation(vec![resource(
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             command,
             command.as_bytes(),
         )]);
@@ -319,7 +341,7 @@ fn turn_scoped_skill_grant_requires_explicit_ask() {
         None,
         Some(&grants),
         &operation(vec![resource(
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "cargo test",
             b"cargo test",
         )]),
@@ -337,7 +359,7 @@ fn turn_scoped_skill_grant_requires_explicit_ask() {
 
     let denied = policy(vec![rule(
         "deny",
-        PermissionAction::Bash,
+        PermissionAction::BASH,
         "*",
         PermissionEffect::Deny,
     )]);
@@ -354,14 +376,14 @@ fn turn_scoped_skill_grant_requires_explicit_ask() {
 fn skill_grant_can_publish_another_skill_action() {
     let base_policy = policy(vec![rule(
         "ask",
-        PermissionAction::Skill,
+        PermissionAction::SKILL,
         "other-skill",
         PermissionEffect::Ask,
     )]);
     let grants = SessionPermissionOverlay {
         rules: vec![rule(
             "skill-chain",
-            PermissionAction::Skill,
+            PermissionAction::SKILL,
             "other-skill",
             PermissionEffect::Allow,
         )],
@@ -381,7 +403,7 @@ fn skill_grant_can_publish_another_skill_action() {
         Some(std::path::Path::new("/workspace")),
     ));
     let operation = operation(vec![resource(
-        PermissionAction::Skill,
+        PermissionAction::SKILL,
         "other-skill",
         b"other-skill",
     )]);
@@ -428,9 +450,9 @@ fn resource(action: PermissionAction, label: &str, binding: &[u8]) -> PreparedAp
 }
 
 fn operation(resources: Vec<PreparedApprovalResource>) -> PreparedOperationIdentity {
-    let action = resources.first().expect("test resources").capability;
+    let action = &resources.first().expect("test resources").capability;
     let capabilities = vec![ApprovalCapability {
-        action,
+        action: action.clone(),
         operation: PreparedCapabilityOperation::new("permission:test").expect("operation"),
     }];
     PreparedOperationIdentity::new(
@@ -466,7 +488,11 @@ fn decide_many(
 }
 
 fn decide_loose(policy: &AgentSnapshot, action: PermissionAction) -> super::PermissionDecision {
-    let prepared_resource = resource(action, "unscoped-test-identity", b"permission-name-only");
+    let prepared_resource = resource(
+        action.clone(),
+        "unscoped-test-identity",
+        b"permission-name-only",
+    );
     let operation = PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"loose args"),
         vec![ApprovalCapability {
@@ -489,9 +515,9 @@ fn decide_loose(policy: &AgentSnapshot, action: PermissionAction) -> super::Perm
 #[test]
 fn loose_permission_uses_only_bare_or_wildcard_effect() {
     let bare_allow = cookie_agent_config::PermissionValue::Effect(PermissionEffect::Allow)
-        .rules(PermissionAction::Delegate);
+        .rules(PermissionAction::DELEGATE);
     assert_eq!(
-        decide_loose(&policy(bare_allow), PermissionAction::Delegate).effect,
+        decide_loose(&policy(bare_allow), PermissionAction::DELEGATE).effect,
         PermissionEffect::Allow
     );
     for effect in [
@@ -502,11 +528,11 @@ fn loose_permission_uses_only_bare_or_wildcard_effect() {
         let decision = decide_loose(
             &policy(vec![rule(
                 "wildcard",
-                PermissionAction::Delegate,
+                PermissionAction::DELEGATE,
                 "*",
                 effect,
             )]),
-            PermissionAction::Delegate,
+            PermissionAction::DELEGATE,
         );
         assert_eq!(decision.effect, effect);
         assert_eq!(decision.evaluations[0].trace.candidates.len(), 1);
@@ -514,11 +540,11 @@ fn loose_permission_uses_only_bare_or_wildcard_effect() {
     let specific_only = decide_loose(
         &policy(vec![rule(
             "specific",
-            PermissionAction::Delegate,
+            PermissionAction::DELEGATE,
             "reviewer",
             PermissionEffect::Allow,
         )]),
-        PermissionAction::Delegate,
+        PermissionAction::DELEGATE,
     );
     assert_eq!(specific_only.effect, PermissionEffect::Deny);
     assert!(specific_only.evaluations[0].trace.candidates.is_empty());
@@ -531,18 +557,18 @@ fn former_loose_marker_literal_remains_a_scoped_resource() {
         &policy(vec![
             rule(
                 "literal-deny",
-                PermissionAction::Bash,
+                PermissionAction::BASH,
                 literal,
                 PermissionEffect::Deny,
             ),
             rule(
                 "fallback-allow",
-                PermissionAction::Bash,
+                PermissionAction::BASH,
                 "*",
                 PermissionEffect::Allow,
             ),
         ]),
-        resource(PermissionAction::Bash, literal, literal.as_bytes()),
+        resource(PermissionAction::BASH, literal, literal.as_bytes()),
     );
     assert_eq!(decision.effect, PermissionEffect::Deny);
     assert_eq!(decision.evaluations[0].trace.normalized_resource, literal);
@@ -553,41 +579,41 @@ fn delegate_spawn_matches_agent_pattern_while_session_tools_ignore_it() {
     let delegate_policy = policy(vec![
         rule(
             "reviewer",
-            PermissionAction::Delegate,
+            PermissionAction::DELEGATE,
             "reviewer",
             PermissionEffect::Allow,
         ),
         rule(
             "fallback",
-            PermissionAction::Delegate,
+            PermissionAction::DELEGATE,
             "*",
             PermissionEffect::Deny,
         ),
     ]);
     let spawn = decide(
         &delegate_policy,
-        resource(PermissionAction::Delegate, "reviewer", b"reviewer"),
+        resource(PermissionAction::DELEGATE, "reviewer", b"reviewer"),
     );
     assert_eq!(spawn.effect, PermissionEffect::Allow);
-    let session_tool = decide_loose(&delegate_policy, PermissionAction::Delegate);
+    let session_tool = decide_loose(&delegate_policy, PermissionAction::DELEGATE);
     assert_eq!(session_tool.effect, PermissionEffect::Deny);
 
     let specific_deny_with_wildcard_allow = decide_loose(
         &policy(vec![
             rule(
                 "reviewer",
-                PermissionAction::Delegate,
+                PermissionAction::DELEGATE,
                 "reviewer",
                 PermissionEffect::Deny,
             ),
             rule(
                 "fallback",
-                PermissionAction::Delegate,
+                PermissionAction::DELEGATE,
                 "*",
                 PermissionEffect::Allow,
             ),
         ]),
-        PermissionAction::Delegate,
+        PermissionAction::DELEGATE,
     );
     assert_eq!(
         specific_deny_with_wildcard_allow.effect,
@@ -600,13 +626,13 @@ fn mcp_permissions_are_scoped_by_generated_tool_name() {
     let mcp_policy = policy(vec![
         rule(
             "server-allow",
-            PermissionAction::Mcp,
+            PermissionAction::MCP,
             "github_*",
             PermissionEffect::Allow,
         ),
         rule(
             "tool-deny",
-            PermissionAction::Mcp,
+            PermissionAction::MCP,
             "github_delete_repo",
             PermissionEffect::Deny,
         ),
@@ -614,7 +640,7 @@ fn mcp_permissions_are_scoped_by_generated_tool_name() {
     assert_eq!(
         decide(
             &mcp_policy,
-            resource(PermissionAction::Mcp, "github_search", b"search")
+            resource(PermissionAction::MCP, "github_search", b"search")
         )
         .effect,
         PermissionEffect::Allow
@@ -622,7 +648,7 @@ fn mcp_permissions_are_scoped_by_generated_tool_name() {
     assert_eq!(
         decide(
             &mcp_policy,
-            resource(PermissionAction::Mcp, "github_delete_repo", b"delete")
+            resource(PermissionAction::MCP, "github_delete_repo", b"delete")
         )
         .effect,
         PermissionEffect::Deny
@@ -630,14 +656,14 @@ fn mcp_permissions_are_scoped_by_generated_tool_name() {
     assert_eq!(
         decide(
             &mcp_policy,
-            resource(PermissionAction::Mcp, "slack_search", b"unmatched")
+            resource(PermissionAction::MCP, "slack_search", b"unmatched")
         )
         .effect,
         PermissionEffect::Deny
     );
     assert_eq!(
         PermissionPipeline::action_for_permission_name("mcp").expect("MCP action"),
-        PermissionAction::Mcp
+        PermissionAction::MCP
     );
     assert!(PermissionPipeline::tool_visible(&mcp_policy, "mcp"));
     assert!(!PermissionPipeline::tool_visible(
@@ -647,7 +673,7 @@ fn mcp_permissions_are_scoped_by_generated_tool_name() {
     assert!(!PermissionPipeline::tool_visible(
         &policy(vec![rule(
             "deny-all",
-            PermissionAction::Mcp,
+            PermissionAction::MCP,
             "*",
             PermissionEffect::Deny,
         )]),
@@ -657,13 +683,13 @@ fn mcp_permissions_are_scoped_by_generated_tool_name() {
         &policy(vec![
             rule(
                 "deny-all",
-                PermissionAction::Mcp,
+                PermissionAction::MCP,
                 "*",
                 PermissionEffect::Deny,
             ),
             rule(
                 "allow-github",
-                PermissionAction::Mcp,
+                PermissionAction::MCP,
                 "github_*",
                 PermissionEffect::Allow,
             ),
@@ -676,14 +702,14 @@ fn mcp_permissions_are_scoped_by_generated_tool_name() {
 fn session_overlay_precedes_more_specific_agent_rules() {
     let policy = policy(vec![rule(
         "agent-specific",
-        PermissionAction::Bash,
+        PermissionAction::BASH,
         "git status",
         PermissionEffect::Allow,
     )]);
     let overlay = SessionPermissionOverlay {
         rules: vec![rule(
             "overlay-wildcard",
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "*",
             PermissionEffect::Deny,
         )],
@@ -692,7 +718,7 @@ fn session_overlay_precedes_more_specific_agent_rules() {
         &policy,
         Some(&overlay),
         &operation(vec![resource(
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "git status",
             b"git status",
         )]),
@@ -717,11 +743,11 @@ fn exact_rule_matches_normalized_label_not_opaque_identity() {
     let decision = decide(
         &policy(vec![rule(
             "exact",
-            PermissionAction::Read,
+            PermissionAction::READ,
             "/workspace/a.txt",
             PermissionEffect::Allow,
         )]),
-        resource(PermissionAction::Read, "/workspace/a.txt", b"file"),
+        resource(PermissionAction::READ, "/workspace/a.txt", b"file"),
     );
     assert_eq!(decision.effect, PermissionEffect::Allow);
     assert_eq!(
@@ -736,18 +762,18 @@ fn more_literals_win_before_wildcard_count() {
         &policy(vec![
             rule(
                 "allow",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "/workspace/*",
                 PermissionEffect::Allow,
             ),
             rule(
                 "deny",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "*/secret.txt",
                 PermissionEffect::Deny,
             ),
         ]),
-        resource(PermissionAction::Read, "/workspace/secret.txt", b"secret"),
+        resource(PermissionAction::READ, "/workspace/secret.txt", b"secret"),
     );
     assert_eq!(decision.effect, PermissionEffect::Deny);
     assert_eq!(decision.evaluations[0].trace.candidates.len(), 2);
@@ -759,18 +785,18 @@ fn universal_catch_all_is_least_specific() {
         &policy(vec![
             rule(
                 "allow",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "*",
                 PermissionEffect::Allow,
             ),
             rule(
                 "deny",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "*/.env.*",
                 PermissionEffect::Deny,
             ),
         ]),
-        resource(PermissionAction::Read, "nested/.env.local", b"secret"),
+        resource(PermissionAction::READ, "nested/.env.local", b"secret"),
     );
     assert_eq!(decision.effect, PermissionEffect::Deny);
     assert_eq!(decision.evaluations[0].trace.candidates.len(), 2);
@@ -782,18 +808,18 @@ fn later_declaration_wins_final_specificity_tie() {
         &policy(vec![
             rule(
                 "earlier-deny",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "/workspace/*",
                 PermissionEffect::Deny,
             ),
             rule(
                 "later-allow",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "/workspace/*",
                 PermissionEffect::Allow,
             ),
         ]),
-        resource(PermissionAction::Read, "/workspace/public.txt", b"public"),
+        resource(PermissionAction::READ, "/workspace/public.txt", b"public"),
     );
     assert_eq!(decision.effect, PermissionEffect::Allow);
     assert_eq!(decision.evaluations[0].trace.candidates.len(), 2);
@@ -805,11 +831,11 @@ fn later_declaration_wins_final_specificity_tie() {
 
 #[test]
 fn subagent_operation_matches_owned_child_agent_type_in_delegate_map() {
-    let resource = resource(PermissionAction::Delegate, "reviewer", b"reviewer");
+    let resource = resource(PermissionAction::DELEGATE, "reviewer", b"reviewer");
     let operation = PreparedOperationIdentity::new(
         Sha256Digest::of_bytes(b"delegate args"),
         vec![ApprovalCapability {
-            action: PermissionAction::Delegate,
+            action: PermissionAction::DELEGATE,
             operation: PreparedCapabilityOperation::new("delegate_subagent:spawn")
                 .expect("delegate operation"),
         }],
@@ -820,7 +846,7 @@ fn subagent_operation_matches_owned_child_agent_type_in_delegate_map() {
     let allowed = PermissionPipeline::default().decide_operation(
         &policy(vec![rule(
             "allow-reviewer",
-            PermissionAction::Delegate,
+            PermissionAction::DELEGATE,
             "reviewer",
             PermissionEffect::Allow,
         )]),
@@ -830,14 +856,14 @@ fn subagent_operation_matches_owned_child_agent_type_in_delegate_map() {
     );
     assert_eq!(
         PermissionPipeline::action_for_permission_name("delegate").expect("delegate action"),
-        PermissionAction::Delegate
+        PermissionAction::DELEGATE
     );
     assert_eq!(allowed.effect, PermissionEffect::Allow);
 
     let denied = PermissionPipeline::default().decide_operation(
         &policy(vec![rule(
             "allow-explorer",
-            PermissionAction::Delegate,
+            PermissionAction::DELEGATE,
             "explorer",
             PermissionEffect::Allow,
         )]),
@@ -853,11 +879,11 @@ fn wildcard_allow_applies_to_non_secret_workspace_path() {
     let decision = decide(
         &policy(vec![rule(
             "allow",
-            PermissionAction::Read,
+            PermissionAction::READ,
             "/workspace/*",
             PermissionEffect::Allow,
         )]),
-        resource(PermissionAction::Read, "/workspace/public.txt", b"public"),
+        resource(PermissionAction::READ, "/workspace/public.txt", b"public"),
     );
     assert_eq!(decision.effect, PermissionEffect::Allow);
 }
@@ -868,20 +894,20 @@ fn multi_resource_deny_wins_over_allow() {
         &policy(vec![
             rule(
                 "allow-public",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "/workspace/public.txt",
                 PermissionEffect::Allow,
             ),
             rule(
                 "deny-secret",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "/workspace/secret.txt",
                 PermissionEffect::Deny,
             ),
         ]),
         vec![
-            resource(PermissionAction::Read, "/workspace/public.txt", b"public"),
-            resource(PermissionAction::Read, "/workspace/secret.txt", b"secret"),
+            resource(PermissionAction::READ, "/workspace/public.txt", b"public"),
+            resource(PermissionAction::READ, "/workspace/secret.txt", b"secret"),
         ],
     );
     assert_eq!(decision.effect, PermissionEffect::Deny);
@@ -894,20 +920,20 @@ fn multi_resource_ask_beats_allow() {
         &policy(vec![
             rule(
                 "ask-review",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "/workspace/review.txt",
                 PermissionEffect::Ask,
             ),
             rule(
                 "allow-public",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "/workspace/public.txt",
                 PermissionEffect::Allow,
             ),
         ]),
         vec![
-            resource(PermissionAction::Read, "/workspace/public.txt", b"public"),
-            resource(PermissionAction::Read, "/workspace/review.txt", b"review"),
+            resource(PermissionAction::READ, "/workspace/public.txt", b"public"),
+            resource(PermissionAction::READ, "/workspace/review.txt", b"review"),
         ],
     );
     assert_eq!(decision.effect, PermissionEffect::Ask);
@@ -920,18 +946,18 @@ fn absolute_rule_controls_outside_read() {
         &policy(vec![
             rule(
                 "read-all",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "*",
                 PermissionEffect::Allow,
             ),
             rule(
                 "outside-etc",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "/etc/*",
                 PermissionEffect::Ask,
             ),
         ]),
-        resource(PermissionAction::Read, "/etc/passwd", b"passwd"),
+        resource(PermissionAction::READ, "/etc/passwd", b"passwd"),
     );
     assert_eq!(decision.effect, PermissionEffect::Ask);
 }
@@ -942,19 +968,19 @@ fn absolute_deny_pattern_catches_outside_ssh_read() {
         &policy(vec![
             rule(
                 "read-all",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "*",
                 PermissionEffect::Allow,
             ),
             rule(
                 "deny-ssh",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "*/.ssh/*",
                 PermissionEffect::Deny,
             ),
         ]),
         resource(
-            PermissionAction::Read,
+            PermissionAction::READ,
             "/home/other/.ssh/id_ed25519",
             b"ssh-key",
         ),
@@ -978,29 +1004,34 @@ fn resource_names_do_not_override_configured_permission_effects() {
         ".cookie-agent/config.toml",
     ];
     let cases = [
-        (PermissionAction::Read, file_names.as_slice()),
-        (PermissionAction::Write, file_names.as_slice()),
-        (PermissionAction::Read, &["tool_result:call_123"][..]),
-        (PermissionAction::Bash, &["cat .env", "rm -rf x"][..]),
-        (PermissionAction::Delegate, &["reviewer"][..]),
-        (PermissionAction::Mcp, &["github_delete_repo"][..]),
-        (PermissionAction::Plugin, &["read .env"][..]),
-        (PermissionAction::Skill, &["review"][..]),
+        (PermissionAction::READ, file_names.as_slice()),
+        (PermissionAction::WRITE, file_names.as_slice()),
+        (PermissionAction::READ, &["tool_result:call_123"][..]),
+        (PermissionAction::BASH, &["cat .env", "rm -rf x"][..]),
+        (PermissionAction::DELEGATE, &["reviewer"][..]),
+        (PermissionAction::MCP, &["github_delete_repo"][..]),
+        (PermissionAction::PLUGIN, &["read .env"][..]),
+        (PermissionAction::SKILL, &["review"][..]),
     ];
     for (action, names) in cases {
         for name in names {
-            let operation = operation(vec![resource(action, name, name.as_bytes())]);
+            let operation = operation(vec![resource(action.clone(), name, name.as_bytes())]);
             let labels = [Some((*name).into())];
             for effect in [
                 PermissionEffect::Allow,
                 PermissionEffect::Deny,
                 PermissionEffect::Ask,
             ] {
-                let rules = vec![rule("configured", action, "*", effect)];
+                let rules = vec![rule("configured", action.clone(), "*", effect)];
                 for (policy, overlay) in [
                     (policy(rules.clone()), None),
                     (
-                        policy(vec![rule("agent", action, name, PermissionEffect::Deny)]),
+                        policy(vec![rule(
+                            "agent",
+                            action.clone(),
+                            name,
+                            PermissionEffect::Deny,
+                        )]),
                         Some(SessionPermissionOverlay { rules }),
                     ),
                 ] {
@@ -1015,7 +1046,10 @@ fn resource_names_do_not_override_configured_permission_effects() {
                     assert_eq!(decision.evaluations[0].trace.effect, effect);
                 }
             }
-            let decision = decide(&policy(Vec::new()), resource(action, name, name.as_bytes()));
+            let decision = decide(
+                &policy(Vec::new()),
+                resource(action.clone(), name, name.as_bytes()),
+            );
             assert_eq!(
                 decision.effect,
                 PermissionEffect::Deny,
@@ -1028,9 +1062,14 @@ fn resource_names_do_not_override_configured_permission_effects() {
 
 #[test]
 fn dotenv_files_accept_broad_policy_and_overlay_allows() {
-    for action in [PermissionAction::Read, PermissionAction::Write] {
+    for action in [PermissionAction::READ, PermissionAction::WRITE] {
         for pattern in ["*", "${workspace_dir}/*"] {
-            let allow_all = rule("allow-all", action, pattern, PermissionEffect::Allow);
+            let allow_all = rule(
+                "allow-all",
+                action.clone(),
+                pattern,
+                PermissionEffect::Allow,
+            );
             let overlay = SessionPermissionOverlay {
                 rules: vec![allow_all.clone()],
             };
@@ -1045,7 +1084,7 @@ fn dotenv_files_accept_broad_policy_and_overlay_allows() {
             ] {
                 let decision = decide(
                     &policy(vec![allow_all.clone()]),
-                    resource(action, path, path.as_bytes()),
+                    resource(action.clone(), path, path.as_bytes()),
                 );
                 assert_eq!(
                     decision.effect,
@@ -1057,12 +1096,12 @@ fn dotenv_files_accept_broad_policy_and_overlay_allows() {
                 let decision = PermissionPipeline::default().decide_operation_with_overlay(
                     &policy(vec![rule(
                         "agent-deny",
-                        action,
+                        action.clone(),
                         path,
                         PermissionEffect::Deny,
                     )]),
                     Some(&overlay),
-                    &operation(vec![resource(action, path, path.as_bytes())]),
+                    &operation(vec![resource(action.clone(), path, path.as_bytes())]),
                     &[Some(path.into())],
                     Some(std::path::Path::new("/workspace")),
                 );
@@ -1082,7 +1121,7 @@ fn dotenv_files_accept_broad_policy_and_overlay_allows() {
 
 #[test]
 fn dotenv_specific_rules_override_broad_allows_in_each_layer() {
-    for action in [PermissionAction::Read, PermissionAction::Write] {
+    for action in [PermissionAction::READ, PermissionAction::WRITE] {
         for effect in [
             PermissionEffect::Allow,
             PermissionEffect::Deny,
@@ -1100,24 +1139,29 @@ fn dotenv_specific_rules_override_broad_allows_in_each_layer() {
                 ),
             ] {
                 let rules = vec![
-                    rule("specific", action, specific, effect),
-                    rule("later-broad", action, broad, PermissionEffect::Allow),
+                    rule("specific", action.clone(), specific, effect),
+                    rule(
+                        "later-broad",
+                        action.clone(),
+                        broad,
+                        PermissionEffect::Allow,
+                    ),
                 ];
                 let decision = decide(
                     &policy(rules.clone()),
-                    resource(action, path, path.as_bytes()),
+                    resource(action.clone(), path, path.as_bytes()),
                 );
                 assert_eq!(decision.effect, effect, "{action:?} {specific}");
 
                 let decision = PermissionPipeline::default().decide_operation_with_overlay(
                     &policy(vec![rule(
                         "agent-allow",
-                        action,
+                        action.clone(),
                         path,
                         PermissionEffect::Allow,
                     )]),
                     Some(&SessionPermissionOverlay { rules }),
-                    &operation(vec![resource(action, path, path.as_bytes())]),
+                    &operation(vec![resource(action.clone(), path, path.as_bytes())]),
                     &[Some(path.into())],
                     Some(std::path::Path::new("/workspace")),
                 );
@@ -1133,31 +1177,31 @@ fn later_generic_allow_cannot_override_exact_env_deny() {
         &policy(vec![
             rule(
                 "exact-deny",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "nested/.env.local",
                 PermissionEffect::Deny,
             ),
             rule(
                 "allow-all",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "*",
                 PermissionEffect::Allow,
             ),
         ]),
-        resource(PermissionAction::Read, "nested/.env.local", b"env"),
+        resource(PermissionAction::READ, "nested/.env.local", b"env"),
     );
     assert_eq!(decision.effect, PermissionEffect::Deny);
 }
 
 #[test]
 fn unmatched_dotenv_files_use_normal_default_deny() {
-    for action in [PermissionAction::Read, PermissionAction::Write] {
+    for action in [PermissionAction::READ, PermissionAction::WRITE] {
         for path in [".env", ".env.local", "nested/.env.local", "/outside/.env"] {
             for rules in [
                 Vec::new(),
                 vec![rule(
                     "unrelated",
-                    action,
+                    action.clone(),
                     "${workspace_dir}/src/*",
                     PermissionEffect::Allow,
                 )],
@@ -1165,7 +1209,7 @@ fn unmatched_dotenv_files_use_normal_default_deny() {
                 let decision = PermissionPipeline::default().decide_operation_with_overlay(
                     &policy(rules.clone()),
                     Some(&SessionPermissionOverlay { rules }),
-                    &operation(vec![resource(action, path, path.as_bytes())]),
+                    &operation(vec![resource(action.clone(), path, path.as_bytes())]),
                     &[Some(path.into())],
                     Some(std::path::Path::new("/workspace")),
                 );
@@ -1184,7 +1228,7 @@ fn unmatched_dotenv_files_use_normal_default_deny() {
 fn tool_visibility_requires_an_effective_non_deny_rule() {
     let hidden = policy(vec![rule(
         "deny-all",
-        PermissionAction::Read,
+        PermissionAction::READ,
         "*",
         PermissionEffect::Deny,
     )]);
@@ -1193,13 +1237,13 @@ fn tool_visibility_requires_an_effective_non_deny_rule() {
     let specific_exception = policy(vec![
         rule(
             "deny-all",
-            PermissionAction::Read,
+            PermissionAction::READ,
             "*",
             PermissionEffect::Deny,
         ),
         rule(
             "allow-readme",
-            PermissionAction::Read,
+            PermissionAction::READ,
             "README.md",
             PermissionEffect::Allow,
         ),
@@ -1212,19 +1256,19 @@ fn tool_visibility_requires_an_effective_non_deny_rule() {
     let denied_again = policy(vec![
         rule(
             "deny-all",
-            PermissionAction::Read,
+            PermissionAction::READ,
             "*",
             PermissionEffect::Deny,
         ),
         rule(
             "allow-readme",
-            PermissionAction::Read,
+            PermissionAction::READ,
             "README.md",
             PermissionEffect::Allow,
         ),
         rule(
             "deny-all-later",
-            PermissionAction::Read,
+            PermissionAction::READ,
             "*",
             PermissionEffect::Deny,
         ),
@@ -1233,7 +1277,7 @@ fn tool_visibility_requires_an_effective_non_deny_rule() {
 
     let delegate_hidden = policy(vec![rule(
         "deny-delegate",
-        PermissionAction::Delegate,
+        PermissionAction::DELEGATE,
         "*",
         PermissionEffect::Deny,
     )]);
@@ -1244,13 +1288,13 @@ fn tool_visibility_requires_an_effective_non_deny_rule() {
     let delegate_exception = policy(vec![
         rule(
             "deny-delegate",
-            PermissionAction::Delegate,
+            PermissionAction::DELEGATE,
             "*",
             PermissionEffect::Deny,
         ),
         rule(
             "allow-reviewer",
-            PermissionAction::Delegate,
+            PermissionAction::DELEGATE,
             "reviewer",
             PermissionEffect::Allow,
         ),
@@ -1301,13 +1345,13 @@ fn visibility_uses_any_rule_without_resource_precedence() {
         let rules = vec![
             rule(
                 "opt-in",
-                PermissionAction::Webfetch,
+                PermissionAction::WEBFETCH,
                 "https://*.quantumcookie.xyz/*",
                 effect,
             ),
             rule(
                 "later-deny",
-                PermissionAction::Webfetch,
+                PermissionAction::WEBFETCH,
                 "https://*.quantumcookie.xyz/*",
                 PermissionEffect::Deny,
             ),
@@ -1315,7 +1359,7 @@ fn visibility_uses_any_rule_without_resource_precedence() {
         let deny = SessionPermissionOverlay {
             rules: vec![rule(
                 "deny",
-                PermissionAction::Webfetch,
+                PermissionAction::WEBFETCH,
                 "*",
                 PermissionEffect::Deny,
             )],
@@ -1323,7 +1367,7 @@ fn visibility_uses_any_rule_without_resource_precedence() {
         assert!(super::tool_visible(
             &rules,
             Some(&deny),
-            PermissionAction::Webfetch,
+            &PermissionAction::WEBFETCH,
             None
         ));
         assert!(super::tool_visible(
@@ -1331,24 +1375,24 @@ fn visibility_uses_any_rule_without_resource_precedence() {
             Some(&SessionPermissionOverlay {
                 rules: rules.clone()
             }),
-            PermissionAction::Webfetch,
+            &PermissionAction::WEBFETCH,
             None
         ));
         assert!(!super::tool_visible(
             &rules,
             None,
-            PermissionAction::Read,
+            &PermissionAction::READ,
             None
         ));
         assert!(!super::tool_visible(
             &[],
             Some(&deny),
-            PermissionAction::Webfetch,
+            &PermissionAction::WEBFETCH,
             None
         ));
     }
     assert_eq!(
-        decide_loose(&policy(Vec::new()), PermissionAction::Webfetch).effect,
+        decide_loose(&policy(Vec::new()), PermissionAction::WEBFETCH).effect,
         PermissionEffect::Deny
     );
 }
@@ -1357,7 +1401,7 @@ fn visibility_uses_any_rule_without_resource_precedence() {
 fn plugin_visibility_is_action_scoped_and_execution_remains_authoritative() {
     let plugin_policy = policy(vec![rule(
         "allow-echo",
-        PermissionAction::Plugin,
+        PermissionAction::PLUGIN,
         "echo *",
         PermissionEffect::Allow,
     )]);
@@ -1373,7 +1417,7 @@ fn plugin_visibility_is_action_scoped_and_execution_remains_authoritative() {
     let overlay = SessionPermissionOverlay {
         rules: vec![rule(
             "deny-echo",
-            PermissionAction::Plugin,
+            PermissionAction::PLUGIN,
             "echo *",
             PermissionEffect::Deny,
         )],
@@ -1388,7 +1432,7 @@ fn plugin_visibility_is_action_scoped_and_execution_remains_authoritative() {
     let grant = SessionPermissionOverlay {
         rules: vec![rule(
             "grant-delete",
-            PermissionAction::Plugin,
+            PermissionAction::PLUGIN,
             "delete *",
             PermissionEffect::Allow,
         )],
@@ -1404,7 +1448,7 @@ fn plugin_visibility_is_action_scoped_and_execution_remains_authoritative() {
     let read_only_grant = SessionPermissionOverlay {
         rules: vec![rule(
             "grant-issue-read",
-            PermissionAction::Plugin,
+            PermissionAction::PLUGIN,
             "issue_read *",
             PermissionEffect::Allow,
         )],
@@ -1432,7 +1476,7 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
     let named_allow = SessionPermissionOverlay {
         rules: vec![rule(
             "overlay-named-allow",
-            PermissionAction::Read,
+            PermissionAction::READ,
             "README.md",
             PermissionEffect::Allow,
         )],
@@ -1448,13 +1492,13 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
         rules: vec![
             rule(
                 "overlay-wildcard-deny",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "*",
                 PermissionEffect::Deny,
             ),
             rule(
                 "overlay-named-ask",
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "README.md",
                 PermissionEffect::Ask,
             ),
@@ -1470,14 +1514,14 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
     let wildcard_deny = SessionPermissionOverlay {
         rules: vec![rule(
             "overlay-wildcard-deny",
-            PermissionAction::Read,
+            PermissionAction::READ,
             "*",
             PermissionEffect::Deny,
         )],
     };
     let policy_allow = policy(vec![rule(
         "policy-allow",
-        PermissionAction::Read,
+        PermissionAction::READ,
         "*",
         PermissionEffect::Allow,
     )]);
@@ -1490,14 +1534,14 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
 
     let named_policy_allow = policy(vec![rule(
         "policy-named-allow",
-        PermissionAction::Read,
+        PermissionAction::READ,
         "README.md",
         PermissionEffect::Allow,
     )]);
     let identical_named_deny = SessionPermissionOverlay {
         rules: vec![rule(
             "overlay-named-deny",
-            PermissionAction::Read,
+            PermissionAction::READ,
             "README.md",
             PermissionEffect::Deny,
         )],
@@ -1512,7 +1556,7 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
     let markdown_deny = SessionPermissionOverlay {
         rules: vec![rule(
             "overlay-markdown-deny",
-            PermissionAction::Read,
+            PermissionAction::READ,
             "*.md",
             PermissionEffect::Deny,
         )],
@@ -1527,7 +1571,7 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
     let text_deny = SessionPermissionOverlay {
         rules: vec![rule(
             "overlay-text-deny",
-            PermissionAction::Read,
+            PermissionAction::READ,
             "*.txt",
             PermissionEffect::Deny,
         )],
@@ -1541,7 +1585,7 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
 
     let policy_wildcard_allow = policy(vec![rule(
         "policy-wildcard-allow",
-        PermissionAction::Read,
+        PermissionAction::READ,
         "*",
         PermissionEffect::Allow,
     )]);
@@ -1557,14 +1601,14 @@ fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
 fn workspace_dir_pattern_matches_absolute_workspace_path_only() {
     let policy = policy(vec![rule(
         "workspace-write",
-        PermissionAction::Write,
+        PermissionAction::WRITE,
         "${workspace_dir}/src/*",
         PermissionEffect::Allow,
     )]);
     assert_eq!(
         super::effective_permission(
             &policy,
-            PermissionAction::Write,
+            &PermissionAction::WRITE,
             "src/main.rs",
             Some(std::path::Path::new("/workspace")),
         )
@@ -1574,7 +1618,7 @@ fn workspace_dir_pattern_matches_absolute_workspace_path_only() {
     assert_eq!(
         super::effective_permission(
             &policy,
-            PermissionAction::Write,
+            &PermissionAction::WRITE,
             "/outside/src/main.rs",
             Some(std::path::Path::new("/workspace")),
         )
@@ -1588,19 +1632,19 @@ fn workspace_less_tools_never_match_workspace_dir_or_relative_path_rules() {
     let policy = policy(vec![
         rule(
             "workspace-read",
-            PermissionAction::Read,
+            PermissionAction::READ,
             "${workspace_dir}/*",
             PermissionEffect::Allow,
         ),
         rule(
             "relative-read",
-            PermissionAction::Read,
+            PermissionAction::READ,
             "notes/*",
             PermissionEffect::Allow,
         ),
         rule(
             "site",
-            PermissionAction::Webfetch,
+            PermissionAction::WEBFETCH,
             "https://example.com/*",
             PermissionEffect::Allow,
         ),
@@ -1608,23 +1652,23 @@ fn workspace_less_tools_never_match_workspace_dir_or_relative_path_rules() {
     let workspace = Some(std::path::Path::new("/workspace"));
     for (action, resource, with_workspace) in [
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "/workspace/a.txt",
             PermissionEffect::Allow,
         ),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "notes/a.txt",
             PermissionEffect::Allow,
         ),
     ] {
         assert_eq!(
-            super::effective_permission(&policy, action, resource, workspace).0,
+            super::effective_permission(&policy, &action, resource, workspace).0,
             with_workspace,
             "{resource} with a workspace"
         );
         assert_eq!(
-            super::effective_permission(&policy, action, resource, None).0,
+            super::effective_permission(&policy, &action, resource, None).0,
             PermissionEffect::Deny,
             "{resource} without a workspace"
         );
@@ -1633,7 +1677,7 @@ fn workspace_less_tools_never_match_workspace_dir_or_relative_path_rules() {
     assert_eq!(
         super::effective_permission(
             &policy,
-            PermissionAction::Webfetch,
+            &PermissionAction::WEBFETCH,
             "https://example.com/page",
             None
         )
@@ -1643,7 +1687,7 @@ fn workspace_less_tools_never_match_workspace_dir_or_relative_path_rules() {
     let decision = PermissionPipeline::default().decide_operation(
         &policy,
         &operation(vec![resource(
-            PermissionAction::Read,
+            PermissionAction::READ,
             "/workspace/a.txt",
             b"file",
         )]),
@@ -1659,13 +1703,13 @@ fn relative_and_workspace_dir_patterns_share_specificity_ordering() {
     let policy = policy(vec![
         rule(
             "relative",
-            PermissionAction::Write,
+            PermissionAction::WRITE,
             "src/*",
             PermissionEffect::Deny,
         ),
         rule(
             "absolute",
-            PermissionAction::Write,
+            PermissionAction::WRITE,
             "${workspace_dir}/src/*",
             PermissionEffect::Allow,
         ),
@@ -1673,7 +1717,7 @@ fn relative_and_workspace_dir_patterns_share_specificity_ordering() {
     assert_eq!(
         super::effective_permission(
             &policy,
-            PermissionAction::Write,
+            &PermissionAction::WRITE,
             "src/main.rs",
             Some(std::path::Path::new("/workspace")),
         )
@@ -1694,14 +1738,14 @@ fn workspace_dir_expansion_canonicalizes_the_workspace_anchor() {
     symlink(&workspace, &alias).expect("workspace symlink");
     let policy = policy(vec![rule(
         "workspace-write",
-        PermissionAction::Write,
+        PermissionAction::WRITE,
         "${workspace_dir}/src/*",
         PermissionEffect::Allow,
     )]);
     assert_eq!(
         super::effective_permission(
             &policy,
-            PermissionAction::Write,
+            &PermissionAction::WRITE,
             "src/main.rs",
             Some(alias.as_path()),
         )
@@ -1727,7 +1771,7 @@ fn decide_on(
     command: &str,
     scope: super::PermissionScope<'_>,
 ) -> PermissionEffect {
-    let resource = resource(PermissionAction::Bash, command, command.as_bytes());
+    let resource = resource(PermissionAction::BASH, command, command.as_bytes());
     PermissionPipeline::default()
         .decide_operation(
             policy,
@@ -1741,21 +1785,21 @@ fn decide_on(
 #[test]
 fn qualified_rules_apply_only_to_their_runtime_and_win_specificity_ties() {
     let policy = policy(vec![
-        rule("bash", PermissionAction::Bash, "*", PermissionEffect::Ask),
+        rule("bash", PermissionAction::BASH, "*", PermissionEffect::Ask),
         qualified(
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "labpc",
             "*",
             PermissionEffect::Allow,
         ),
         rule(
             "git",
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "git *",
             PermissionEffect::Deny,
         ),
         qualified(
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "labpc",
             "cargo *",
             PermissionEffect::Deny,
@@ -1764,7 +1808,7 @@ fn qualified_rules_apply_only_to_their_runtime_and_win_specificity_ties() {
         // runtime selector still ranks it lower.
         rule(
             "cargo",
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "cargo *",
             PermissionEffect::Allow,
         ),
@@ -1797,7 +1841,7 @@ fn qualified_rules_apply_only_to_their_runtime_and_win_specificity_ties() {
 #[test]
 fn a_runtime_selector_limits_tool_visibility_to_that_runtime() {
     let policy = policy(vec![qualified(
-        PermissionAction::Bash,
+        PermissionAction::BASH,
         "labpc",
         "*",
         PermissionEffect::Allow,
@@ -1823,9 +1867,9 @@ fn a_runtime_selector_limits_tool_visibility_to_that_runtime() {
 fn overlay_rules_are_unique_per_runtime_selector() {
     let overlay = SessionPermissionOverlay {
         rules: vec![
-            rule("bash", PermissionAction::Bash, "*", PermissionEffect::Ask),
+            rule("bash", PermissionAction::BASH, "*", PermissionEffect::Ask),
             qualified(
-                PermissionAction::Bash,
+                PermissionAction::BASH,
                 "labpc",
                 "*",
                 PermissionEffect::Allow,
@@ -1833,10 +1877,10 @@ fn overlay_rules_are_unique_per_runtime_selector() {
         ],
     };
     overlay.validate().expect("distinct selectors");
-    let view = super::effective_permission_view(&policy(Vec::new()), &overlay);
+    let view = super::effective_permission_view(&policy(Vec::new()), &overlay, &[]);
     let bash = view
         .iter()
-        .find(|entry| entry.action == PermissionAction::Bash)
+        .find(|entry| entry.action == PermissionAction::BASH)
         .expect("bash entry");
     assert_eq!(bash.effect, PermissionEffect::Ask);
     assert_eq!(bash.patterns.len(), 1);
@@ -1855,7 +1899,7 @@ fn tree_grants_apply_only_to_their_runtime_and_old_grants_read_as_local() {
         ApprovalId, OperationFingerprint, RuntimeId, SessionId, TreeApprovalGrant,
         TreeApprovalGrantId,
     };
-    let mut granted = resource(PermissionAction::Bash, "git status", b"git status");
+    let mut granted = resource(PermissionAction::BASH, "git status", b"git status");
     granted.binding_lifetime = PreparedBindingLifetime::RestartStable;
     let operation = operation(vec![granted]);
     let root = SessionId::new_v7();
@@ -1893,4 +1937,87 @@ fn tree_grants_apply_only_to_their_runtime_and_old_grants_read_as_local() {
     base["runtime_id"] = serde_json::Value::Null;
     let base: TreeApprovalGrant = serde_json::from_value(base).expect("base grant");
     assert_eq!(base.runtime_id, None);
+}
+
+/// A runtime's own action is an opaque label: denied (so hidden) until a
+/// rule names it, matched by plain wildcards, and scoped by runtime
+/// selectors like any other action.
+#[test]
+fn a_runtime_action_is_denied_until_a_rule_names_it() {
+    let browse = PermissionAction::new("browse").unwrap();
+    assert!(!PermissionPipeline::tool_visible_with_overlay(
+        &policy(Vec::new()),
+        None,
+        "browse",
+        Some("web")
+    ));
+
+    let rules = vec![
+        rule("browse", browse.clone(), "*", PermissionEffect::Ask),
+        rule(
+            "docs",
+            browse.clone(),
+            "https://docs.rs/*",
+            PermissionEffect::Allow,
+        ),
+        // At equal specificity a runtime selector wins.
+        qualified(
+            browse.clone(),
+            "labpc",
+            "https://docs.rs/*",
+            PermissionEffect::Deny,
+        ),
+    ];
+    let agent = policy(rules);
+    assert!(PermissionPipeline::tool_visible_with_overlay(
+        &agent,
+        None,
+        "browse",
+        Some("web")
+    ));
+    let effect = |resource: &str, runtime: &str| {
+        super::effective_permission(
+            &agent,
+            &browse,
+            resource,
+            super::PermissionScope::runtime(runtime, None),
+        )
+        .0
+    };
+    assert_eq!(
+        effect("https://docs.rs/serde", "web"),
+        PermissionEffect::Allow
+    );
+    assert_eq!(effect("https://example.com", "web"), PermissionEffect::Ask);
+    assert_eq!(
+        effect("https://docs.rs/serde", "labpc"),
+        PermissionEffect::Deny
+    );
+}
+
+#[test]
+fn the_permission_view_lists_declared_and_named_actions_after_the_built_ins() {
+    let browse = PermissionAction::new("browse").unwrap();
+    let click = PermissionAction::new("click").unwrap();
+    let overlay = SessionPermissionOverlay {
+        rules: vec![rule("click", click.clone(), "*", PermissionEffect::Ask)],
+    };
+    let view = super::effective_permission_view(
+        &policy(Vec::new()),
+        &overlay,
+        &[PermissionAction::READ, browse.clone()],
+    );
+    let actions = view
+        .iter()
+        .map(|entry| entry.action.clone())
+        .collect::<Vec<_>>();
+    let mut expected = PermissionAction::BUILT_IN.to_vec();
+    expected.extend([browse, click]);
+    assert_eq!(actions, expected);
+    let browse_entry = &view[PermissionAction::BUILT_IN.len()];
+    assert_eq!(browse_entry.effect, PermissionEffect::Deny);
+    assert_eq!(browse_entry.source, PermissionRuleSource::Default);
+    let click_entry = &view[PermissionAction::BUILT_IN.len() + 1];
+    assert_eq!(click_entry.effect, PermissionEffect::Ask);
+    assert_eq!(click_entry.source, PermissionRuleSource::SessionOverlay);
 }

@@ -104,19 +104,20 @@ pub fn prepared_resource(
     complete_binding.extend_from_slice(stable_label_bytes);
     complete_binding.push(0);
     complete_binding.extend_from_slice(binding_bytes);
+    let boundary = if action == PermissionAction::BASH {
+        ApprovalBoundary::CommandPrefix {
+            prefix: String::from_utf8_lossy(stable_label_bytes).into_owned(),
+        }
+    } else {
+        ApprovalBoundary::Exact
+    };
     Ok(PreparedApprovalResource {
         capability: action,
         canonical: PreparedResourceIdentity::new(format!("{logical_kind}:{}", label.as_str()))
             .map_err(tool_error)?,
         binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(&complete_binding),
         binding_lifetime: lifetime,
-        boundary: if action == PermissionAction::Bash {
-            ApprovalBoundary::CommandPrefix {
-                prefix: String::from_utf8_lossy(stable_label_bytes).into_owned(),
-            }
-        } else {
-            ApprovalBoundary::Exact
-        },
+        boundary,
         source,
     })
 }

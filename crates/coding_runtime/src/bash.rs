@@ -434,7 +434,7 @@ impl ToolProvider for BashTool {
         let mut binding = command.as_bytes().to_vec();
         binding.extend_from_slice(&executable_binding);
         let resources = vec![prepared_resource(
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "command",
             command.as_bytes(),
             &binding,
@@ -447,7 +447,7 @@ impl ToolProvider for BashTool {
         let operation = prepared_operation(
             "bash",
             &args,
-            vec![(PermissionAction::Bash, "execute")],
+            vec![(PermissionAction::BASH, "execute")],
             resources,
             &context,
         )?;

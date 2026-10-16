@@ -135,7 +135,7 @@ impl ToolProvider for WebfetchTool {
         let args: WebfetchArgs = parse_args(&call.name, call.arguments)?;
         args.validate()?;
         let resource = prepared_resource(
-            PermissionAction::Webfetch,
+            PermissionAction::WEBFETCH,
             "url",
             args.url.as_bytes(),
             args.url.as_bytes(),
@@ -145,7 +145,7 @@ impl ToolProvider for WebfetchTool {
         let operation = prepared_operation(
             "webfetch",
             &args,
-            vec![(PermissionAction::Webfetch, "get")],
+            vec![(PermissionAction::WEBFETCH, "get")],
             vec![resource],
             b"webfetch:v1",
         )?;
@@ -595,7 +595,7 @@ mod tests {
         assert_eq!(decide(&policy).effect, PermissionEffect::Deny);
         policy.permissions.push(PermissionRule {
             runtime: None,
-            action: PermissionAction::Webfetch,
+            action: PermissionAction::WEBFETCH,
             resource: WildcardPattern::new(url.split('?').next().unwrap()).unwrap(),
             effect: PermissionEffect::Allow,
         });

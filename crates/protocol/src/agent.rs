@@ -103,20 +103,147 @@ pub enum AgentMode {
     Internal,
 }
 
-#[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum PermissionAction {
-    Read,
-    Write,
-    Bash,
-    Delegate,
-    Message,
-    Mcp,
-    Plugin,
-    Skill,
-    Webfetch,
+/// The permission action a tool is checked under: a free-form label the tool
+/// declares, matching `[a-z][a-z0-9_]{0,31}`. Rules name actions; an action
+/// no rule names is denied.
+///
+/// The constants are the actions of the tools cookie agent ships. The daemon
+/// gives two groups of them meaning: [`Self::is_path`] actions take file
+/// paths as resources, and [`Self::is_base_layer`] actions belong to the
+/// daemon's own tools. Every other action is opaque: its resources match
+/// rules as plain wildcard patterns.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct PermissionAction(Cow<'static, str>);
+
+impl PermissionAction {
+    pub const READ: Self = Self(Cow::Borrowed("read"));
+    pub const WRITE: Self = Self(Cow::Borrowed("write"));
+    pub const BASH: Self = Self(Cow::Borrowed("bash"));
+    pub const DELEGATE: Self = Self(Cow::Borrowed("delegate"));
+    pub const MESSAGE: Self = Self(Cow::Borrowed("message"));
+    pub const MCP: Self = Self(Cow::Borrowed("mcp"));
+    pub const PLUGIN: Self = Self(Cow::Borrowed("plugin"));
+    pub const SKILL: Self = Self(Cow::Borrowed("skill"));
+    pub const WEBFETCH: Self = Self(Cow::Borrowed("webfetch"));
+
+    /// The actions of the tools cookie agent ships, in display order.
+    pub const BUILT_IN: [Self; 9] = [
+        Self::READ,
+        Self::WRITE,
+        Self::BASH,
+        Self::DELEGATE,
+        Self::MESSAGE,
+        Self::MCP,
+        Self::PLUGIN,
+        Self::SKILL,
+        Self::WEBFETCH,
+    ];
+
+    pub const MAX_LEN: usize = 32;
+
+    /// The permission name of tools that need no rule. It is not an action:
+    /// no tool, rule, or grant may name it.
+    pub const RESERVED: &'static str = "unconditional";
+
+    pub fn new(value: impl Into<String>) -> Result<Self, PermissionActionError> {
+        let value = value.into();
+        let valid = value.len() <= Self::MAX_LEN
+            && value.bytes().enumerate().all(|(index, byte)| {
+                byte.is_ascii_lowercase() || (index > 0 && (byte.is_ascii_digit() || byte == b'_'))
+            })
+            && !value.is_empty();
+        if !valid {
+            return Err(PermissionActionError::Invalid(value));
+        }
+        if value == Self::RESERVED {
+            return Err(PermissionActionError::Reserved);
+        }
+        Ok(Self(Cow::Owned(value)))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Whether resources are file paths: rules may use `${workspace_dir}`,
+    /// and a relative resource resolves against the tool's workspace.
+    #[must_use]
+    pub fn is_path(&self) -> bool {
+        *self == Self::READ || *self == Self::WRITE
+    }
+
+    /// Whether the action belongs to the daemon's base-layer tools, which no
+    /// runtime selector reaches.
+    #[must_use]
+    pub fn is_base_layer(&self) -> bool {
+        *self == Self::DELEGATE || *self == Self::MESSAGE || *self == Self::SKILL
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PermissionActionError {
+    Invalid(String),
+    Reserved,
+}
+
+impl fmt::Display for PermissionActionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Invalid(value) => write!(
+                formatter,
+                "invalid permission action `{value}`; expected [a-z][a-z0-9_]{{0,31}}"
+            ),
+            Self::Reserved => write!(
+                formatter,
+                "`{}` is reserved and is not a permission action",
+                PermissionAction::RESERVED
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PermissionActionError {}
+
+impl fmt::Display for PermissionAction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl Serialize for PermissionAction {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for PermissionAction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for PermissionAction {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("PermissionAction")
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,31}$",
+            "not": { "const": "unconditional" },
+            "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action."
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
@@ -186,7 +313,7 @@ impl SessionPermissionOverlay {
         let mut keys = BTreeSet::new();
         if !self.rules.iter().all(|rule| {
             keys.insert((
-                rule.action,
+                rule.action.clone(),
                 rule.runtime.clone(),
                 rule.resource.as_str().to_owned(),
             ))

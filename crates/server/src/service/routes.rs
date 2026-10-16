@@ -223,7 +223,7 @@ impl ServerProtocol for Server {
         self.engine
             .set_session_permission(
                 params.session_id,
-                params.action,
+                &params.action,
                 params.runtime,
                 params.resource,
                 params.effect,
@@ -241,7 +241,7 @@ impl ServerProtocol for Server {
         self.engine
             .clear_session_permission(
                 params.session_id,
-                params.action,
+                &params.action,
                 params.runtime,
                 &params.resource,
                 context.client_origin(),

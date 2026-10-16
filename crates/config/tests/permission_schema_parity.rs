@@ -162,7 +162,7 @@ fn frontmatter_uses_action_keyed_ordered_permissions() {
     .unwrap();
     let read = frontmatter
         .permissions
-        .get(&PermissionAction::Read)
+        .get(&PermissionAction::READ)
         .unwrap();
     let PermissionValue::Resources(resources) = read else {
         panic!("read should use resource map form");
@@ -171,7 +171,7 @@ fn frontmatter_uses_action_keyed_ordered_permissions() {
     assert_eq!(resources.get_index(1).unwrap().0.as_str(), "file?.rs");
     assert_eq!(resources.get_index(1).unwrap().1, &PermissionEffect::Allow);
     assert!(matches!(
-        frontmatter.permissions.get(&PermissionAction::Bash),
+        frontmatter.permissions.get(&PermissionAction::BASH),
         Some(PermissionValue::Effect(PermissionEffect::Deny))
     ));
 }
@@ -184,7 +184,7 @@ fn message_relationship_rules_parse_from_agent_frontmatter() {
     .expect("message permission frontmatter");
     let PermissionValue::Resources(resources) = frontmatter
         .permissions
-        .get(&PermissionAction::Message)
+        .get(&PermissionAction::MESSAGE)
         .expect("message rules")
     else {
         panic!("message permissions should use resource map form");
@@ -215,14 +215,29 @@ fn duplicate_action_and_resource_keys_are_rejected() {
 }
 
 #[test]
-fn grep_and_glob_permission_keys_are_rejected() {
-    for action in ["grep", "glob"] {
+fn permission_keys_take_any_action_label_but_not_the_reserved_name() {
+    for action in ["grep", "browse", "a", "abcdefghijklmnopqrstuvwxyz012345"] {
+        assert!(
+            serde_yaml::from_str::<AgentFrontmatter>(&format!(
+                "description: Worker\nmode: subagent\nenabled: true\nmodels: []\npermissions:\n  {action}: deny\n"
+            ))
+            .is_ok(),
+            "{action} is an action label"
+        );
+    }
+    for action in [
+        "Grep",
+        "web-fetch",
+        "1grep",
+        "abcdefghijklmnopqrstuvwxyz0123456",
+        "unconditional",
+    ] {
         assert!(
             serde_yaml::from_str::<AgentFrontmatter>(&format!(
                 "description: Worker\nmode: subagent\nenabled: true\nmodels: []\npermissions:\n  {action}: deny\n"
             ))
             .is_err(),
-            "{action} permission key must be unknown"
+            "{action} is not an action label"
         );
     }
 }
@@ -313,43 +328,43 @@ Fixture agent body.
     assert_eq!(loaded.agents.len(), 5);
     for (id, document) in &loaded.agents {
         let cases = [
-            (PermissionAction::Read, ".env", PermissionEffect::Deny),
+            (PermissionAction::READ, ".env", PermissionEffect::Deny),
             (
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "nested/.env.local",
                 PermissionEffect::Deny,
             ),
             (
-                PermissionAction::Read,
+                PermissionAction::READ,
                 ".env.example",
                 PermissionEffect::Allow,
             ),
             (
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "nested/.env.example",
                 PermissionEffect::Allow,
             ),
             (
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "store-v3.json",
                 PermissionEffect::Deny,
             ),
-            (PermissionAction::Read, "id_ed25519", PermissionEffect::Deny),
-            (PermissionAction::Read, ".netrc", PermissionEffect::Deny),
+            (PermissionAction::READ, "id_ed25519", PermissionEffect::Deny),
+            (PermissionAction::READ, ".netrc", PermissionEffect::Deny),
             (
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "application_default_credentials.json",
                 PermissionEffect::Deny,
             ),
             (
-                PermissionAction::Read,
+                PermissionAction::READ,
                 "src/lib.rs",
                 PermissionEffect::Allow,
             ),
         ];
         for (action, resource, expected) in cases {
             assert_eq!(
-                configured_effect(&document.frontmatter, action, resource),
+                configured_effect(&document.frontmatter, action.clone(), resource),
                 expected,
                 "{id} {action:?} {resource}"
             );
@@ -359,33 +374,33 @@ Fixture agent body.
                 !document
                     .frontmatter
                     .permissions
-                    .contains_key(&PermissionAction::Delegate)
+                    .contains_key(&PermissionAction::DELEGATE)
             );
         } else {
             assert_eq!(
-                configured_effect(&document.frontmatter, PermissionAction::Delegate, "worker"),
+                configured_effect(&document.frontmatter, PermissionAction::DELEGATE, "worker"),
                 PermissionEffect::Ask
             );
             assert_eq!(
-                configured_effect(&document.frontmatter, PermissionAction::Write, "operation"),
+                configured_effect(&document.frontmatter, PermissionAction::WRITE, "operation"),
                 PermissionEffect::Ask
             );
             assert_eq!(
-                configured_effect(&document.frontmatter, PermissionAction::Bash, "git status"),
+                configured_effect(&document.frontmatter, PermissionAction::BASH, "git status"),
                 PermissionEffect::Ask
             );
             assert_eq!(
-                configured_effect(&document.frontmatter, PermissionAction::Bash, "cat .env"),
+                configured_effect(&document.frontmatter, PermissionAction::BASH, "cat .env"),
                 PermissionEffect::Deny
             );
             assert_eq!(
-                configured_effect(&document.frontmatter, PermissionAction::Bash, "rm -rf x"),
+                configured_effect(&document.frontmatter, PermissionAction::BASH, "rm -rf x"),
                 PermissionEffect::Deny
             );
             assert_eq!(
                 configured_effect(
                     &document.frontmatter,
-                    PermissionAction::Bash,
+                    PermissionAction::BASH,
                     "git status && rm -rf x"
                 ),
                 PermissionEffect::Deny
@@ -408,11 +423,14 @@ fn dotenv_permissions_do_not_gain_implicit_rules() {
             "permissions": permissions
         }))
         .expect("agent frontmatter");
-        for action in [PermissionAction::Read, PermissionAction::Write] {
-            assert_eq!(frontmatter.permissions[&action].rules(action).len(), 1);
+        for action in [PermissionAction::READ, PermissionAction::WRITE] {
+            assert_eq!(
+                frontmatter.permissions[&action].rules(action.clone()).len(),
+                1
+            );
             for path in [".env", ".env.local", "nested/.env.local"] {
                 assert_eq!(
-                    configured_effect(&frontmatter, action, path),
+                    configured_effect(&frontmatter, action.clone(), path),
                     PermissionEffect::Allow,
                     "{action:?} {path}"
                 );
@@ -431,7 +449,7 @@ fn webfetch_rules_preserve_explicit_effects_queries_and_strict_schema() {
     assert_eq!(
         configured_effect(
             &empty,
-            PermissionAction::Webfetch,
+            PermissionAction::WEBFETCH,
             "https://docs.quantumcookie.xyz/"
         ),
         PermissionEffect::Deny
@@ -442,15 +460,15 @@ fn webfetch_rules_preserve_explicit_effects_queries_and_strict_schema() {
             serde_json::json!({"webfetch": {"*https://*.quantumcookie.xyz/*": effect}});
         let parsed: AgentFrontmatter = serde_json::from_value(value).unwrap();
         assert_eq!(
-            parsed.permissions[&PermissionAction::Webfetch]
-                .rules(PermissionAction::Webfetch)
+            parsed.permissions[&PermissionAction::WEBFETCH]
+                .rules(PermissionAction::WEBFETCH)
                 .len(),
             1
         );
         assert_eq!(
             configured_effect(
                 &parsed,
-                PermissionAction::Webfetch,
+                PermissionAction::WEBFETCH,
                 "https://docs.quantumcookie.xyz/page?key=value"
             ),
             serde_json::from_value::<PermissionEffect>(effect.into()).unwrap()
@@ -459,7 +477,7 @@ fn webfetch_rules_preserve_explicit_effects_queries_and_strict_schema() {
     for permissions in [
         serde_json::json!({"webfetch": true}),
         serde_json::json!({"webfetch": "invalid"}),
-        serde_json::json!({"webfetch": "allow", "unknown": "allow"}),
+        serde_json::json!({"webfetch": "allow", "Unknown": "allow"}),
     ] {
         let mut value = base.clone();
         value["permissions"] = permissions;
@@ -548,10 +566,10 @@ fn workspace_dir_expression_is_portable_for_filesystem_permissions() {
         let read = worker
             .frontmatter
             .permissions
-            .get(&PermissionAction::Read)
+            .get(&PermissionAction::READ)
             .unwrap();
         assert_eq!(
-            read.rules(PermissionAction::Read)[0].resource.as_str(),
+            read.rules(PermissionAction::READ)[0].resource.as_str(),
             "${workspace_dir}/src/*"
         );
     }
@@ -573,13 +591,13 @@ fn permission_keys_take_a_runtime_selector() {
     let (key, value) = frontmatter.permissions.get_index(1).expect("bash@labpc");
     let rules = value.rules(key);
     assert_eq!(rules.len(), 1);
-    assert_eq!(rules[0].action, PermissionAction::Bash);
+    assert_eq!(rules[0].action, PermissionAction::BASH);
     assert_eq!(
         rules[0].runtime.as_ref().map(|runtime| runtime.as_str()),
         Some("labpc")
     );
     assert!(matches!(
-        frontmatter.permissions.get(&PermissionAction::Bash),
+        frontmatter.permissions.get(&PermissionAction::BASH),
         Some(PermissionValue::Effect(PermissionEffect::Ask))
     ));
 
@@ -587,7 +605,8 @@ fn permission_keys_take_a_runtime_selector() {
         "bash@",
         "bash@LabPC",
         "bash@1lab",
-        "fetch@labpc",
+        "Fetch@labpc",
+        "unconditional@labpc",
         "delegate@labpc",
         "message@labpc",
         "skill@labpc",

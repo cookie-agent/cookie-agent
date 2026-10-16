@@ -103,78 +103,78 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
         .collect::<Vec<_>>();
     assert_eq!(tool_names, ["bash", "edit", "read", "write"]);
     assert!(frozen.permissions.iter().any(|rule| {
-        rule.action == PermissionAction::Read
+        rule.action == PermissionAction::READ
             && rule.resource.as_str() == "store-v3.json"
             && rule.effect == cookie_agent_protocol::PermissionEffect::Deny
     }));
     assert!(frozen.permissions.iter().any(|rule| {
-        rule.action == PermissionAction::Write
+        rule.action == PermissionAction::WRITE
             && rule.resource.as_str() == "*"
             && rule.effect == cookie_agent_protocol::PermissionEffect::Ask
     }));
     for (action, resource, expected) in [
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             ".env",
             cookie_agent_protocol::PermissionEffect::Deny,
         ),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "nested/.env.local",
             cookie_agent_protocol::PermissionEffect::Deny,
         ),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             ".env.example",
             cookie_agent_protocol::PermissionEffect::Allow,
         ),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "nested/.env.example",
             cookie_agent_protocol::PermissionEffect::Allow,
         ),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "store-v3.json",
             cookie_agent_protocol::PermissionEffect::Deny,
         ),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "nested/store-v3.json",
             cookie_agent_protocol::PermissionEffect::Deny,
         ),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "id_ed25519",
             cookie_agent_protocol::PermissionEffect::Deny,
         ),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             ".netrc",
             cookie_agent_protocol::PermissionEffect::Deny,
         ),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "application_default_credentials.json",
             cookie_agent_protocol::PermissionEffect::Deny,
         ),
         (
-            PermissionAction::Read,
+            PermissionAction::READ,
             "src/lib.rs",
             cookie_agent_protocol::PermissionEffect::Allow,
         ),
         (
-            PermissionAction::Write,
+            PermissionAction::WRITE,
             "src/lib.rs",
             cookie_agent_protocol::PermissionEffect::Ask,
         ),
         (
-            PermissionAction::Bash,
+            PermissionAction::BASH,
             "cargo test",
             cookie_agent_protocol::PermissionEffect::Ask,
         ),
         (
-            PermissionAction::Delegate,
+            PermissionAction::DELEGATE,
             "worker",
             cookie_agent_protocol::PermissionEffect::Ask,
         ),
@@ -182,7 +182,7 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
         assert_eq!(
             crate::permissions::effective_permission(
                 &frozen,
-                action,
+                &action,
                 resource,
                 Some(fixture.engine.inner.runtimes.local_workspace_root()),
             )
@@ -324,19 +324,19 @@ async fn published_tool_order_is_stable_across_registration_and_overlay_order() 
         let mut rules = vec![
             PermissionRule {
                 runtime: None,
-                action: PermissionAction::Read,
+                action: PermissionAction::READ,
                 resource: WildcardPattern::new("*").unwrap(),
                 effect: PermissionEffect::Allow,
             },
             PermissionRule {
                 runtime: None,
-                action: PermissionAction::Write,
+                action: PermissionAction::WRITE,
                 resource: WildcardPattern::new("*").unwrap(),
                 effect: PermissionEffect::Allow,
             },
             PermissionRule {
                 runtime: None,
-                action: PermissionAction::Bash,
+                action: PermissionAction::BASH,
                 resource: WildcardPattern::new("*").unwrap(),
                 effect: PermissionEffect::Allow,
             },

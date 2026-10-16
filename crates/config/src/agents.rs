@@ -117,13 +117,10 @@ impl From<PermissionAction> for PermissionKey {
 
 impl std::fmt::Display for PermissionKey {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let action = serde_json::to_value(self.action)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_default();
+        let action = self.action.as_str();
         match &self.runtime {
             Some(runtime) => write!(formatter, "{action}@{runtime}"),
-            None => formatter.write_str(&action),
+            None => formatter.write_str(action),
         }
     }
 }
@@ -136,9 +133,7 @@ impl std::str::FromStr for PermissionKey {
             Some((action, runtime)) => (action, Some(runtime)),
             None => (value, None),
         };
-        let action: PermissionAction =
-            serde_json::from_value(serde_json::Value::String(action.to_owned()))
-                .map_err(|_| format!("unknown permission action `{action}`"))?;
+        let action = PermissionAction::new(action).map_err(|error| error.to_string())?;
         let runtime = runtime
             .map(|runtime| {
                 RuntimeId::new(runtime).map_err(|_| {
@@ -146,12 +141,7 @@ impl std::str::FromStr for PermissionKey {
                 })
             })
             .transpose()?;
-        if runtime.is_some()
-            && matches!(
-                action,
-                PermissionAction::Delegate | PermissionAction::Message | PermissionAction::Skill
-            )
-        {
+        if runtime.is_some() && action.is_base_layer() {
             return Err(format!(
                 "`{value}`: `delegate`, `message`, and `skill` belong to the base layer and take no runtime selector"
             ));
@@ -216,7 +206,7 @@ impl PermissionValue {
         let key = key.into();
         match self {
             Self::Effect(effect) => vec![PermissionRule {
-                action: key.action,
+                action: key.action.clone(),
                 runtime: key.runtime.clone(),
                 resource: WildcardPattern::new("*").expect("static wildcard"),
                 effect: *effect,
@@ -224,7 +214,7 @@ impl PermissionValue {
             Self::Resources(resources) => resources
                 .iter()
                 .map(|(resource, effect)| PermissionRule {
-                    action: key.action,
+                    action: key.action.clone(),
                     runtime: key.runtime.clone(),
                     resource: resource.clone(),
                     effect: *effect,
@@ -493,7 +483,7 @@ fn validate_agent_document(
     if permission_rules > MAX_LIST {
         return Err(ConfigError::AgentLimit(document.id.clone()));
     }
-    let delegate_key = PermissionKey::any(PermissionAction::Delegate);
+    let delegate_key = PermissionKey::any(PermissionAction::DELEGATE);
     if let Some(delegate) = frontmatter.permissions.get(&delegate_key) {
         let rules = delegate.rules(&delegate_key);
         // Expanded targets land in AgentDescriptor and FrozenDelegationPolicy,
@@ -554,7 +544,7 @@ fn validate_agent_document(
         }
     }
     for (key, value) in &frontmatter.permissions {
-        if !matches!(key.action, PermissionAction::Read | PermissionAction::Write)
+        if !key.action.is_path()
             && value.rules(key).iter().any(|rule| {
                 rule.resource
                     .as_str()

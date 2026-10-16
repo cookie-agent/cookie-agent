@@ -461,7 +461,7 @@ async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
         .engine
         .set_session_permission(
             session.session_id,
-            PermissionAction::Write,
+            &PermissionAction::WRITE,
             None,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Deny,
