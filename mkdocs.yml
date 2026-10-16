@@ -108,6 +108,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Runtimes: specs/runtimes.md
+      - Background tool calls: specs/background-tools.md
       - Tool output streams: specs/tool-output-streams.md
       - Agent messaging: specs/agent-messaging.md
       - Model configuration: specs/model-configuration.md
