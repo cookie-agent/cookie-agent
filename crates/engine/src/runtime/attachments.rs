@@ -115,7 +115,7 @@ pub(crate) fn attached_event(attachment: &RuntimeAttachment) -> Event {
     Event::RuntimeAttached {
         name: attachment.name.clone(),
         runtime_id: attachment.runtime_id.clone(),
-        kind: attachment.kind,
+        kind: attachment.kind.clone(),
         workspace: attachment.workspace.clone(),
     }
 }
@@ -505,7 +505,7 @@ mod tests {
         RuntimeAttachment {
             name: AttachmentName::new(name).unwrap(),
             runtime_id: RuntimeId::new("labpc").unwrap(),
-            kind: RuntimeKind::Coding,
+            kind: RuntimeKind::new("coding").unwrap(),
             workspace: Some("/srv/api".into()),
         }
     }

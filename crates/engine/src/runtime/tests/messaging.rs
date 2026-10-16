@@ -505,7 +505,7 @@ fn ac8_agent_owner_events_are_supported_by_the_protocol_projection() {
 
 #[test]
 fn ac9_protocol_version_and_schema_baselines_are_present() {
-    assert_eq!(cookie_agent_protocol::PROTOCOL_VERSION, 40);
+    assert_eq!(cookie_agent_protocol::PROTOCOL_VERSION, 41);
     for baseline in [
         "/../protocol/event-payload-baseline.json",
         "/../protocol/extension-protocol-baseline.json",

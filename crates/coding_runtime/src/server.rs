@@ -438,7 +438,6 @@ impl Server {
     ) -> Result<(InitializeResult, Option<McpWatch>), String> {
         cookie_agent_protocol::RuntimeId::new(params.runtime_id.as_str())
             .map_err(|_| format!("invalid runtime ID `{}`", params.runtime_id))?;
-        protocol::check_mcp_hosting(cookie_agent_protocol::RuntimeKind::Coding, &params.settings)?;
         let mcp_servers = mcp_servers(&params.settings.mcp_servers)?;
         if params.settings.agent_md.max_bytes > AGENT_MD_MAX_BYTES {
             return Err(format!("agent_md.max_bytes exceeds {AGENT_MD_MAX_BYTES}"));
@@ -514,13 +513,12 @@ impl Server {
         let info = Arc::new(RuntimeInfo::coding(&params.runtime_id, workspace));
         let result = InitializeResult {
             version: RUNTIME_PROTOCOL_VERSION,
-            kind: info.kind(),
+            kind: info.kind().clone(),
             attachment_name: info.attachment_name().to_owned(),
             workspace: info
                 .workspace()
                 .map(|workspace| workspace.root().to_string_lossy().into_owned()),
-            platform: std::env::consts::OS.to_owned(),
-            shell: Some("bash".to_owned()),
+            platform: Some(std::env::consts::OS.to_owned()),
             tools,
             skills: wire_skills(&skills),
             mcp_servers,

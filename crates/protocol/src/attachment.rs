@@ -4,27 +4,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{AttachmentName, RuntimeId};
-
-/// What a runtime offers. A runtime reports its own kind.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeKind {
-    /// The daemon's own runtime: MCP servers and plugins, no workspace.
-    Global,
-    /// A runtime that works in one workspace with file and shell tools.
-    Coding,
-}
-
-impl RuntimeKind {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Global => "global",
-            Self::Coding => "coding",
-        }
-    }
-}
+use crate::{AttachmentName, RuntimeId, RuntimeKind};
 
 /// One runtime a session is attached to.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
@@ -65,7 +45,7 @@ impl RuntimeAttachmentFold {
                 attachments.push(RuntimeAttachment {
                     name: name.clone(),
                     runtime_id: runtime_id.clone(),
-                    kind: *kind,
+                    kind: kind.clone(),
                     workspace: workspace.clone(),
                 });
             }

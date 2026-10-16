@@ -195,7 +195,7 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 40);
+    assert_eq!(PROTOCOL_VERSION, 41);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(38)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(37)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(36)).is_err());
@@ -2168,5 +2168,30 @@ fn historical_workspace_document_source_decodes_as_user() {
     assert_eq!(
         serde_json::to_string(&AgentDocumentSource::User).unwrap(),
         "\"user\""
+    );
+}
+
+#[test]
+fn kind_labels_accept_lowercase_names_up_to_sixteen_bytes() {
+    for valid in ["coding", "global", "x", "browser-2", "abcdefghijklmnop"] {
+        assert_eq!(RuntimeKind::new(valid).unwrap().as_str(), valid);
+        assert_eq!(ClientKind::new(valid).unwrap().as_str(), valid);
+    }
+    for invalid in [
+        "",
+        "Coding",
+        "2fa",
+        "-cli",
+        "web_ui",
+        "a b",
+        "abcdefghijklmnopq",
+    ] {
+        assert!(RuntimeKind::new(invalid).is_err(), "{invalid:?}");
+        assert!(ClientKind::new(invalid).is_err(), "{invalid:?}");
+    }
+    assert!(serde_json::from_value::<RuntimeKind>(json!("Browser")).is_err());
+    assert_eq!(
+        serde_json::to_value(RuntimeKind::new("browser").unwrap()).unwrap(),
+        json!("browser")
     );
 }

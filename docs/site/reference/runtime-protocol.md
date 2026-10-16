@@ -34,7 +34,7 @@ engine's `runtimes::remote` module.
 
 ## Version
 
-The protocol version is an integer, currently **1**
+The protocol version is an integer, currently **2**
 (`protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its version in
 `runtime/initialize`; a runtime that speaks another version fails the request
 with code `-32010` and a message naming both versions, and the daemon checks
@@ -112,12 +112,9 @@ ignored.
 | `settings.agent_md` | `max_bytes`: files larger than this are skipped. At most the `AGENTS.md` event bound. |
 | `settings.mcp_servers` | The template's MCP servers: `name` and `config`, the server's table as the [`[mcp.servers.<name>]` schema](../guide/mcp.md#accepted-fields) reads it. |
 
-A runtime rejects settings its kind does not support with `-32011`, as it does
-a workspace it cannot open. MCP hosting is a feature of the coding kind: a
-runtime of another kind rejects a nonempty `mcp_servers`, and the daemon
-rejects an initialize reply whose `kind` hosts no MCP servers when it sent
-some (`protocol::check_mcp_hosting`). A coding runtime parses each server
-strictly and rejects the request when one does not parse or enables OAuth,
+A runtime rejects settings it does not support with `-32011`, as it does a
+workspace it cannot open; a runtime that hosts no MCP servers rejects a
+nonempty `mcp_servers`. A coding runtime parses each server strictly and rejects the request when one does not parse or enables OAuth,
 which stays with the daemon's global runtime.
 
 A coding runtime connects every enabled server before it answers: the reply
@@ -132,11 +129,10 @@ OAuth is never used: a remote server connects with its static headers only.
 | Result field | Meaning |
 |---|---|
 | `version` | The runtime's protocol version. |
-| `kind` | `global` or `coding`. |
+| `kind` | The runtime's kind, a self-declared label such as `global` or `coding`: a lowercase ASCII letter followed by up to 15 lowercase letters, digits, or hyphens. The daemon shows it to clients and in approval reviews and never branches on it; version 1 allowed only `global` or `coding`. |
 | `attachment_name` | The name sessions attach the instance under: `<runtime ID>_<workspace basename>`, sanitized, for a coding runtime. |
-| `workspace` | The canonical workspace on the runtime's machine. |
-| `platform` | Operating system, as Rust's `std::env::consts::OS` names it. |
-| `shell` | The shell `bash` runs. |
+| `workspace` | The canonical workspace on the runtime's machine; absent for a runtime without one. `AGENTS.md` is loaded only from runtimes that report one. |
+| `platform` | Optional: the operating system, as Rust's `std::env::consts::OS` names it, for a runtime where it matters. Shown in the system prompt's `<runtimes>` block. Version 1 required it and also carried `shell`. |
 | `tools.tools` | Tool declarations: `name`, `collision` (`prefix` or `fallback`), `permission` (a permission action such as `bash` or `read`), `description`, `parameters` (JSON Schema), `concurrency`, `result_truncation`, `output`. |
 | `tools.prompt_sections` | System prompt sections (`title`, `body`) the tools contribute. |
 | `skills.skills` | Project skills: the `SKILL.md` text, `source`, absolute `path` and `base_dir` on the runtime's machine, and a sample of `supporting_files`. The daemon parses the text with the same rules as local discovery. |

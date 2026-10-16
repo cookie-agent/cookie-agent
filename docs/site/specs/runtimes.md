@@ -50,7 +50,7 @@ only notification path, and they stay a daemon-side plugin feature.
 | **Daemon** | Today's daemon, unchanged in process model: plain `cookie` runs it in-process, `cookie daemon` serves it over WebSocket. It is the gateway. Its working directory now only locates the session store and stamps `cwd_identity`. |
 | **Base layer** | Tools the daemon implements itself for its own orchestration. Always present, never detachable. |
 | **Runtime** | A source of tools, workspace context, and producer messages. |
-| **Runtime kind** | `global` or `coding` in this milestone. A runtime reports its own kind in `runtime/initialize`; templates do not declare it. |
+| **Runtime kind** | A free-form label a runtime declares for itself in `runtime/initialize`, such as `global` or `coding`; templates do not declare it. The daemon only displays it: behaviour follows from what a runtime reports (its workspace, tools, and skills), never from its kind, so runtimes of new kinds need no daemon change. |
 | **Runtime template** | A configured way to start runtimes: `[runtimes.<id>]`. The `<id>` is the *runtime ID*. |
 | **Runtime instance** | A running runtime: one per (runtime ID, canonical workspace). Shared by every session attached to it. |
 | **Attachment** | A durable session fact binding a session to a runtime instance under a session-unique *attachment name*. |
@@ -64,9 +64,10 @@ only notification path, and they stay a daemon-side plugin feature.
 | Global runtime (`global`) | daemon process, in-process trait calls | top-level `[mcp]` servers and `[plugins]`, `webfetch` (declared `Fallback`) | user skills (`~/.agents/skills`, `~/.cookie-agent/skills`) |
 | Coding runtime (`coding`) | built-in `local` instance in the daemon process; others in child processes | `read`, `write`, `edit`, `bash`, `webfetch`, plus MCP servers from its template | workspace root, platform, `AGENTS.md`, project skills |
 
-Plugins exist only on the daemon, hosted by the global runtime. MCP hosting
-is a feature of the coding kind, not of the runtime contract: coding runtimes
-host MCP servers, and future runtime kinds need not. No runtime hosts plugins.
+Plugins exist only on the daemon, hosted by the global runtime. Hosting MCP
+servers is up to each runtime, not part of the runtime contract: coding
+runtimes host them, and a runtime that does not rejects a template that lists
+some. No runtime hosts plugins.
 
 Rules:
 
@@ -112,7 +113,7 @@ command = "rust-analyzer-mcp"
 - Templates do not declare a kind. The command decides what runs, and the
   runtime reports its kind in `runtime/initialize`, so there is one source of
   truth. The `mcp` table is still parsed strictly when the configuration
-  loads; a runtime whose kind hosts no MCP servers rejects a nonempty one at
+  loads; a runtime that hosts no MCP servers rejects a nonempty one at
   initialize.
 - A template whose command contains `{workspace}` needs a workspace: attach
   and session creation require one. A template without the placeholder takes
@@ -333,7 +334,7 @@ does not; it is called in-process through the same Rust trait.
 
 | Method | Direction | Purpose |
 |---|---|---|
-| `runtime/initialize` | daemon → runtime | Version, runtime ID, requested workspace (when the template takes one), and settings: `tool_output` and `agent_md` limits and the template's MCP servers. A runtime rejects settings its kind does not support. Reply: version, kind, attachment name, canonical workspace, platform, shell, tool declarations, skills. |
+| `runtime/initialize` | daemon → runtime | Version, runtime ID, requested workspace (when the template takes one), and settings: `tool_output` and `agent_md` limits and the template's MCP servers. A runtime rejects settings it does not support. Reply: version, kind, attachment name, and tool declarations and skills; when they apply, canonical workspace and platform. |
 | `runtime/tools_changed` | runtime → daemon | Tool list changed; the daemon re-lists before the next model turn (section 6.1). |
 | `runtime/context` | daemon → runtime | Per-admission context for the run's preset: `AGENTS.md`. |
 | `tool/prepare` | daemon → runtime | Name, arguments, session, run, turn context. Reply: prepared ID, operation identity, permission resource, policy labels, presentation, display argument, serialization key, concurrency. |

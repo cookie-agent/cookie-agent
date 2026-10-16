@@ -618,9 +618,9 @@ fn runtime_listing() -> cookie_agent_protocol::RuntimesListResult {
                 runtime_id: RuntimeId::new(id).unwrap(),
                 attachment_name: Some(AttachmentName::new(name).unwrap()),
                 kind: Some(if id == "global" {
-                    RuntimeKind::Global
+                    RuntimeKind::new("global").unwrap()
                 } else {
-                    RuntimeKind::Coding
+                    RuntimeKind::new("coding").unwrap()
                 }),
                 workspace: workspace.map(str::to_owned),
                 platform: workspace.map(|_| "linux".to_owned()),
@@ -666,7 +666,7 @@ fn runtime_rows_match_instances_and_read_legacy_sessions_as_global_and_local() {
     let attached = [RuntimeAttachment {
         name: AttachmentName::new("labpc_api").unwrap(),
         runtime_id: RuntimeId::new("labpc").unwrap(),
-        kind: RuntimeKind::Coding,
+        kind: RuntimeKind::new("coding").unwrap(),
         workspace: Some("/srv/api".into()),
     }];
     let rows = super::runtime_rows(Some(&attached), Some(&listing));
@@ -737,13 +737,13 @@ fn runtime_retry_sends_the_workspace_exactly_when_the_template_takes_one() {
         RuntimeAttachment {
             name: AttachmentName::new("global").unwrap(),
             runtime_id: RuntimeId::new("global").unwrap(),
-            kind: RuntimeKind::Global,
+            kind: RuntimeKind::new("global").unwrap(),
             workspace: None,
         },
         RuntimeAttachment {
             name: AttachmentName::new("labpc_api").unwrap(),
             runtime_id: RuntimeId::new("labpc").unwrap(),
-            kind: RuntimeKind::Coding,
+            kind: RuntimeKind::new("coding").unwrap(),
             workspace: Some("/srv/api".into()),
         },
     ];
@@ -770,13 +770,13 @@ fn runtime_panel_renders_attachments_with_status_and_failure_reason() {
         RuntimeAttachment {
             name: AttachmentName::new("global").unwrap(),
             runtime_id: RuntimeId::new("global").unwrap(),
-            kind: RuntimeKind::Global,
+            kind: RuntimeKind::new("global").unwrap(),
             workspace: None,
         },
         RuntimeAttachment {
             name: AttachmentName::new("labpc_api").unwrap(),
             runtime_id: RuntimeId::new("labpc").unwrap(),
-            kind: RuntimeKind::Coding,
+            kind: RuntimeKind::new("coding").unwrap(),
             workspace: Some("/srv/api".into()),
         },
     ];

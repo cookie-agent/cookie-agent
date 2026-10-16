@@ -222,13 +222,17 @@ fn legacy_attachments(listing: Option<&RuntimesListResult>) -> Vec<RuntimeAttach
                 name: instance
                     .and_then(|instance| instance.attachment_name.clone())
                     .or_else(|| cookie_agent_protocol::AttachmentName::new(id).ok())?,
-                kind: instance.and_then(|instance| instance.kind).unwrap_or(
-                    if id == RuntimeId::GLOBAL {
-                        RuntimeKind::Global
+                // Until the instance reports its kind, label the two built-ins
+                // with the kinds they declare.
+                kind: match instance.and_then(|instance| instance.kind.clone()) {
+                    Some(kind) => kind,
+                    None => RuntimeKind::new(if id == RuntimeId::GLOBAL {
+                        "global"
                     } else {
-                        RuntimeKind::Coding
-                    },
-                ),
+                        "coding"
+                    })
+                    .ok()?,
+                },
                 workspace: instance.and_then(|instance| instance.workspace.clone()),
                 runtime_id,
             })

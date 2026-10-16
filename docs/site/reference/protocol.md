@@ -5,7 +5,7 @@ Protocol 40 is current-only. A client must call `handshake` before any other
 method:
 
 ```json
-{ "protocol_version": 40, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+{ "protocol_version": 41, "client": { "kind": "tui", "instance_id": "<uuid>" } }
 ```
 
 `client.kind` names the client program: a lowercase letter followed by up to 15
@@ -14,7 +14,7 @@ lowercase letters, digits, or hyphens (the shipped clients use `tui` and `cli`).
 across reconnects so it can recognize events it caused. Any number of clients
 may connect to one daemon at once.
 
-The response is `{ "protocol_version": 40, "origin": "client:<kind>-<id>" }`,
+The response is `{ "protocol_version": 41, "origin": "client:<kind>-<id>" }`,
 where `<id>` is the instance id as 32 lowercase hex digits. The daemon stamps
 that origin on every event the connection's requests cause, so each client can
 tell its own actions from another client's. A repeated handshake on the same
@@ -41,11 +41,13 @@ state and their hosting `runtime_id` and `workspace` in `mcp.server.list`,
 `mcp.server.list` lists the servers coding runtimes host,
 `mcp.server.reconnect` takes an optional `runtime_id` and `workspace`, and
 `mcp.changed` and `runtimes.changed` gained `failures` (see
-[Connection failures](#connection-failures)). Older clients are rejected.
+[Connection failures](#connection-failures)). Protocol 41 made a runtime's
+`kind` a free-form label the runtime declares instead of `global` or
+`coding`. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 40.
+members of protocol 41.
 
 ## Error diagnostics
 
@@ -68,7 +70,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 40 alongside independent display and output references. The
+preserved in protocol 41 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -192,7 +194,8 @@ A session uses the tools and workspace context of the
 [runtimes](../specs/runtimes.md) it is attached to. A `RuntimeAttachment` is
 `{ name, runtime_id, kind, workspace? }`: the session-unique attachment `name`
 (also the tool prefix on name collisions), the template's `runtime_id`, the
-runtime's `kind` (`global` or `coding`), and the canonical `workspace` the
+runtime's `kind` (a label the runtime declares, such as `global` or `coding`;
+the daemon never branches on it), and the canonical `workspace` the
 runtime reported, if any. The session create, get, and resume results carry the
 session's attachments in attach order; clients follow later changes through the
 `runtime_attached` and `runtime_detached` events of the session.

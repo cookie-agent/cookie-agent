@@ -26,7 +26,8 @@ impl Engine {
         }
         let mut loaded = Vec::new();
         for attachment in self.session_runtimes(session)? {
-            if attachment.kind != cookie_agent_protocol::RuntimeKind::Coding {
+            // `AGENTS.md` lives in a workspace; runtimes without one have none.
+            if attachment.workspace.is_none() {
                 continue;
             }
             let Some(instance) = self.inner.runtimes.instance(&attachment) else {

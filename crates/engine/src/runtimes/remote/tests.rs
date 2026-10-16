@@ -195,7 +195,7 @@ async fn prepare(
 fn started_info(started: &crate::StartedRuntime) -> cookie_agent_runtime_api::RuntimeInfo {
     cookie_agent_runtime_api::RuntimeInfo::new(
         started.info.id(),
-        started.info.kind(),
+        started.info.kind().clone(),
         started.info.attachment_name(),
         started.info.workspace().cloned(),
     )
@@ -1217,4 +1217,48 @@ async fn local_mcp_servers_need_the_protocol_local_runtime() {
         error.to_string().contains("[runtimes.local.mcp]"),
         "{error}"
     );
+}
+
+/// A runtime of any kind, written in any language, needs only to speak the
+/// protocol: the daemon takes its self-declared kind as a label and its
+/// workspace and platform as optional.
+#[tokio::test]
+async fn a_runtime_of_any_kind_without_a_workspace_starts() {
+    let (daemon, mut runtime) = in_process_pair(8);
+    let fake = tokio::spawn(async move {
+        let request = runtime.recv().await.unwrap().unwrap().into_text().unwrap();
+        let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+        assert_eq!(request["method"], "runtime/initialize");
+        let reply = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": {
+                "version": cookie_agent_runtime_api::protocol::RUNTIME_PROTOCOL_VERSION,
+                "kind": "browser",
+                "attachment_name": "browser",
+                "tools": { "tools": [] },
+                "skills": { "skills": [], "discoveries": [] },
+            },
+        });
+        runtime
+            .send(MessageFrame::Text(reply.to_string()))
+            .await
+            .unwrap();
+        runtime
+    });
+    let settings = runtime_settings(&custom_fixture().0.config, "browser");
+    let (client, result) = RuntimeClient::initialize(
+        cookie_agent_runtime_api::RuntimeConnection::new(Box::new(daemon)),
+        "browser",
+        None,
+        &settings,
+        Duration::from_secs(1),
+        None,
+    )
+    .await
+    .unwrap();
+    let started = started(client, result).unwrap();
+    assert_eq!(started.info.kind().as_str(), "browser");
+    assert!(started.info.workspace().is_none());
+    drop(fake.await.unwrap());
 }

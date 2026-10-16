@@ -192,10 +192,7 @@ async fn global_fallback_is_published_alone_and_hidden_behind_the_local_tool() {
     let published = &composed.tools["write"];
     assert_eq!(runtime_id(&published.source.origin), Some("local"));
     let local_runtime = published.source.origin.runtime().expect("local runtime");
-    assert_eq!(
-        local_runtime.kind(),
-        cookie_agent_runtime_api::RuntimeKind::Coding
-    );
+    assert_eq!(local_runtime.kind().as_str(), "coding");
     assert_eq!(
         local_runtime.workspace().expect("local workspace").root(),
         fixture.engine.inner.runtimes.local_workspace_root()

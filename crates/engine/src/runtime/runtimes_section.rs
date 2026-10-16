@@ -64,7 +64,7 @@ impl Engine {
                     instance
                         .info()
                         .workspace()
-                        .map(|workspace| workspace.platform().to_owned())
+                        .and_then(|workspace| workspace.platform().map(str::to_owned))
                 })
             {
                 block.push_str(&format!(

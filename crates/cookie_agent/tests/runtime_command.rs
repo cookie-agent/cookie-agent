@@ -84,7 +84,10 @@ async fn the_runtime_expands_home_initializes_and_stops_on_shutdown() {
         result.workspace.as_deref(),
         Some(canonical.to_string_lossy().as_ref())
     );
-    assert_eq!(result.kind, cookie_agent_protocol::RuntimeKind::Coding);
+    assert_eq!(
+        result.kind,
+        cookie_agent_protocol::RuntimeKind::new("coding").unwrap()
+    );
     assert_eq!(result.attachment_name, "labpc_my_repo");
     assert!(
         result.tools.tools.iter().any(|tool| tool.name == "bash"),

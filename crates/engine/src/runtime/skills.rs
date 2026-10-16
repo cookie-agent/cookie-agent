@@ -145,15 +145,16 @@ impl Engine {
                 continue;
             };
             let registry = instance.skills();
-            match attachment.kind {
-                cookie_agent_protocol::RuntimeKind::Global => user.push(registry),
-                cookie_agent_protocol::RuntimeKind::Coding => {
-                    let workspace = instance
-                        .info()
-                        .workspace()
-                        .map(|workspace| workspace.root().to_owned());
-                    project.push((attachment.name, registry, workspace));
-                }
+            // The daemon's own global runtime carries the user skills; every
+            // other attachment's skills are its project skills.
+            if attachment.runtime_id.as_str() == cookie_agent_protocol::RuntimeId::GLOBAL {
+                user.push(registry);
+            } else {
+                let workspace = instance
+                    .info()
+                    .workspace()
+                    .map(|workspace| workspace.root().to_owned());
+                project.push((attachment.name, registry, workspace));
             }
         }
         let mut offered = HashMap::<String, usize>::new();

@@ -323,7 +323,8 @@ do not cross this upgrade.
 The runless `runtime_attached` and `runtime_detached` events record the
 session's [runtime attachments](../specs/runtimes.md#5-session-attachments).
 `runtime_attached` carries the session-unique attachment `name`, the
-`runtime_id` of the template, the runtime's `kind` (`global` or `coding`), and,
+`runtime_id` of the template, the `kind` label the runtime declared (such as
+`global` or `coding`), and,
 when the runtime has one, the canonical `workspace` it reported.
 `runtime_detached` carries the `name` it removes. The attachment set is the fold
 of these events in log order; a session's creation writes one

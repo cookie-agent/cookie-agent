@@ -190,63 +190,88 @@ impl fmt::Debug for Notification {
     }
 }
 
-/// The kind of client on a connection, such as `tui` or `cli`: a lowercase
-/// ASCII letter followed by up to 15 lowercase letters, digits, or hyphens.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct ClientKind(String);
-impl ClientKind {
-    pub const MAX_LEN: usize = 16;
+/// A self-declared kind label: a lowercase ASCII letter followed by up to 15
+/// lowercase letters, digits, or hyphens. The daemon only displays it and
+/// never branches on it.
+macro_rules! kind_label {
+    ($(#[$meta:meta])* $name:ident, $what:literal, $description:literal) => {
+        $(#[$meta])*
+        #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+        pub struct $name(String);
+        impl $name {
+            pub const MAX_LEN: usize = 16;
 
-    pub fn new(value: impl Into<String>) -> Result<Self, WireStringError> {
-        let value = value.into();
-        let valid = value.len() <= Self::MAX_LEN
-            && value.bytes().enumerate().all(|(index, byte)| {
-                byte.is_ascii_lowercase() || (index > 0 && (byte.is_ascii_digit() || byte == b'-'))
-            })
-            && !value.is_empty();
-        if valid {
-            Ok(Self(value))
-        } else {
-            Err(WireStringError::Invalid("client kind"))
+            pub fn new(value: impl Into<String>) -> Result<Self, WireStringError> {
+                let value = value.into();
+                let valid = value.len() <= Self::MAX_LEN
+                    && value.bytes().enumerate().all(|(index, byte)| {
+                        byte.is_ascii_lowercase()
+                            || (index > 0 && (byte.is_ascii_digit() || byte == b'-'))
+                    })
+                    && !value.is_empty();
+                if valid {
+                    Ok(Self(value))
+                } else {
+                    Err(WireStringError::Invalid($what))
+                }
+            }
+
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
         }
-    }
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(&self.0)
+            }
+        }
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                serializer.serialize_str(&self.0)
+            }
+        }
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+            }
+        }
+        impl JsonSchema for $name {
+            fn inline_schema() -> bool {
+                true
+            }
+            fn schema_name() -> Cow<'static, str> {
+                Cow::Borrowed(stringify!($name))
+            }
+            fn json_schema(_: &mut SchemaGenerator) -> Schema {
+                json_schema!({
+                    "type":"string",
+                    "pattern":"^[a-z][a-z0-9-]{0,15}$",
+                    "description":$description
+                })
+            }
+        }
+    };
+}
 
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-impl Serialize for ClientKind {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0)
-    }
-}
-impl<'de> Deserialize<'de> for ClientKind {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
-    }
-}
-impl JsonSchema for ClientKind {
-    fn inline_schema() -> bool {
-        true
-    }
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("ClientKind")
-    }
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type":"string",
-            "pattern":"^[a-z][a-z0-9-]{0,15}$",
-            "description":"Client kind, such as `tui` or `cli`."
-        })
-    }
-}
+kind_label!(
+    /// The kind of client on a connection, such as `tui` or `cli`.
+    ClientKind,
+    "client kind",
+    "Client kind, such as `tui` or `cli`."
+);
+kind_label!(
+    /// The kind a runtime declares for itself, such as `coding` or `global`.
+    RuntimeKind,
+    "runtime kind",
+    "Runtime kind the runtime declares, such as `coding` or `global`."
+);
 
 /// Who is on a connection. The kind names the client program; the instance
 /// identifies one running client and stays the same across its reconnects,

@@ -419,7 +419,6 @@ impl RuntimeClient {
                 result.version
             ));
         }
-        protocol::check_mcp_hosting(result.kind, settings)?;
         // A notification the runtime sent after its reply may already have
         // been handled; it is newer than the reply.
         lock(&inner.tools).get_or_insert_with(|| Arc::new(result.tools.clone().into()));
@@ -610,15 +609,9 @@ impl RuntimeClient {
 /// The instance an initialize reply describes.
 fn started(client: RuntimeClient, result: InitializeResult) -> Result<StartedRuntime, String> {
     {
-        let workspace = match (result.kind, result.workspace) {
-            (cookie_agent_protocol::RuntimeKind::Coding, Some(root)) => Some(
-                WorkspaceContext::reported(PathBuf::from(root), result.platform),
-            ),
-            (cookie_agent_protocol::RuntimeKind::Coding, None) => {
-                return Err("a coding runtime reported no workspace".into());
-            }
-            (_, _) => None,
-        };
+        let workspace = result
+            .workspace
+            .map(|root| WorkspaceContext::reported(PathBuf::from(root), result.platform));
         let attachment_name = cookie_agent_protocol::AttachmentName::new(
             result.attachment_name.as_str(),
         )

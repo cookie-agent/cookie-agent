@@ -24,7 +24,7 @@ use crate::{
 };
 
 /// The runtime protocol version. Both ends must speak exactly this version.
-pub const RUNTIME_PROTOCOL_VERSION: u32 = 1;
+pub const RUNTIME_PROTOCOL_VERSION: u32 = 2;
 
 /// The largest frame either end sends or accepts. It fits an `execute`
 /// reply carrying [`MAX_INLINE_MEDIA_BYTES`] of base64 media next to a full
@@ -123,7 +123,7 @@ pub struct InitializeParams {
 }
 
 /// What the daemon's configuration says about the runtime's work. A runtime
-/// rejects settings its kind does not support.
+/// rejects settings it does not support.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSettings {
@@ -132,31 +132,9 @@ pub struct RuntimeSettings {
     /// `[agent_md]`: the `AGENTS.md` size rule.
     pub agent_md: AgentMdLimits,
     /// The template's MCP servers, which the runtime hosts on its own
-    /// machine. A runtime whose kind hosts no MCP servers (see
-    /// [`hosts_mcp_servers`]) rejects a nonempty list.
+    /// machine. A runtime that hosts no MCP servers rejects a nonempty list.
     #[serde(default)]
     pub mcp_servers: Vec<McpServerSettings>,
-}
-
-/// Whether runtimes of `kind` host MCP servers. MCP hosting is a feature of
-/// the coding kind, not of the runtime contract.
-#[must_use]
-pub const fn hosts_mcp_servers(kind: RuntimeKind) -> bool {
-    matches!(kind, RuntimeKind::Coding)
-}
-
-/// Rejects MCP servers in `settings` for a runtime of `kind` that hosts
-/// none.
-pub fn check_mcp_hosting(kind: RuntimeKind, settings: &RuntimeSettings) -> Result<(), String> {
-    if settings.mcp_servers.is_empty() || hosts_mcp_servers(kind) {
-        Ok(())
-    } else {
-        Err(format!(
-            "a {} runtime hosts no MCP servers, but its template lists {}",
-            kind.as_str(),
-            settings.mcp_servers.len()
-        ))
-    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -251,11 +229,10 @@ pub struct InitializeResult {
     /// The canonical workspace on the runtime's machine.
     #[serde(default)]
     pub workspace: Option<String>,
-    /// Operating system, as Rust's `std::env::consts::OS` names it.
-    pub platform: String,
-    /// The shell `bash` runs, when the runtime has one.
+    /// Operating system, as Rust's `std::env::consts::OS` names it, for a
+    /// runtime where it matters.
     #[serde(default)]
-    pub shell: Option<String>,
+    pub platform: Option<String>,
     pub tools: RuntimeTools,
     pub skills: RuntimeSkills,
     /// The template's MCP servers after their first connection attempt.

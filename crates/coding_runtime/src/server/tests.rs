@@ -173,13 +173,16 @@ async fn initialize_reports_identity_tools_and_project_skills_then_shuts_down() 
         .await
         .unwrap();
     assert_eq!(result.version, RUNTIME_PROTOCOL_VERSION);
-    assert_eq!(result.kind, cookie_agent_protocol::RuntimeKind::Coding);
+    assert_eq!(
+        result.kind,
+        cookie_agent_protocol::RuntimeKind::new("coding").unwrap()
+    );
     assert_eq!(result.attachment_name, "labpc_my_repo");
     assert_eq!(
         result.workspace.as_deref(),
         Some(root.canonicalize().unwrap().to_str().unwrap())
     );
-    assert_eq!(result.platform, std::env::consts::OS);
+    assert_eq!(result.platform.as_deref(), Some(std::env::consts::OS));
     let names = result
         .tools
         .tools

@@ -234,7 +234,7 @@ impl RuntimeInstance {
             runtime_id: cookie_agent_protocol::RuntimeId::new(self.info.id()).map_err(|_| {
                 EngineError::Runtime(format!("invalid runtime ID `{}`", self.info.id()))
             })?,
-            kind: self.info.kind(),
+            kind: self.info.kind().clone(),
             workspace: self.workspace_string(),
         })
     }
@@ -1022,7 +1022,7 @@ impl RuntimeRegistry {
                     runtime_id: key.runtime_id.clone(),
                     attachment_name: instance
                         .map(|instance| instance.info.attachment_name().to_owned()),
-                    kind: instance.map(|instance| instance.info.kind()),
+                    kind: instance.map(|instance| instance.info.kind().clone()),
                     workspace: key
                         .workspace
                         .as_ref()
@@ -1031,7 +1031,7 @@ impl RuntimeRegistry {
                         instance
                             .info
                             .workspace()
-                            .map(|workspace| workspace.platform().to_owned())
+                            .and_then(|workspace| workspace.platform().map(str::to_owned))
                     }),
                     status,
                     message,
