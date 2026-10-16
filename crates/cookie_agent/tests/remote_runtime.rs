@@ -218,6 +218,11 @@ impl Fixture {
     /// `env`, which passes its arguments on unchanged as `ssh` passes them
     /// to the remote command.
     async fn new(startup_timeout_ms: u64) -> Self {
+        Self::with_config(startup_timeout_ms, "").await
+    }
+
+    /// [`Self::new`] with `extra` appended to `config.toml`.
+    async fn with_config(startup_timeout_ms: u64, extra: &str) -> Self {
         let root = tempfile::tempdir().expect("fixture root");
         private_dir(root.path());
         let web = root.path().join("web");
@@ -261,7 +266,7 @@ command = {command}
 env = {{ HOME = {home} }}
 startup_timeout_ms = {startup_timeout_ms}
 shutdown_grace_ms = 2000
-"#,
+{extra}"#,
                 address = model.address,
                 home = serde_json::Value::from(remote_home.to_string_lossy().into_owned()),
             ),
@@ -271,7 +276,7 @@ shutdown_grace_ms = 2000
         private_dir(&agents);
         fs::write(
             agents.join("primary.md"),
-            "---\ndescription: Remote runtime agent\nmode: primary\nenabled: true\nmodels:\n  - { model: \"custom.local/test\", variant: null }\npermissions:\n  read: allow\n  bash: allow\n---\nUse the tools.\n",
+            "---\ndescription: Remote runtime agent\nmode: primary\nenabled: true\nmodels:\n  - { model: \"custom.local/test\", variant: null }\npermissions:\n  read: allow\n  bash: allow\n  mcp: allow\n---\nUse the tools.\n",
         )
         .expect("agent");
         let configuration =
@@ -635,5 +640,95 @@ async fn failed_starts_name_the_reason_and_the_runtime_stderr() {
         .to_string();
     assert!(error.contains("did not start within 1 ms"), "{error}");
     assert_eq!(fixture.remote_status(), Some(RuntimeInstanceStatus::Failed));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_configured_runtime_hosts_its_template_mcp_servers() {
+    let fixture = Fixture::with_config(
+        30_000,
+        &format!(
+            "\n[runtimes.remote.mcp.servers.fixture]\ncommand = \"python3\"\nargs = [{}]\n",
+            serde_json::Value::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../mcp/tests/fixtures/mcp_server.py"
+            ))
+        ),
+    )
+    .await;
+    let session = fixture.session().await;
+
+    // The runtime connected its server before the session was created.
+    let canonical = fixture.repo.canonicalize().unwrap();
+    let servers = fixture.engine.list_mcp_servers();
+    let hosted = servers
+        .iter()
+        .find(|server| server.runtime_id.as_str() == "remote")
+        .unwrap_or_else(|| panic!("the remote runtime's server is listed: {servers:?}"));
+    assert_eq!(hosted.name, "fixture");
+    assert_eq!(
+        hosted.workspace.as_deref(),
+        Some(canonical.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        hosted.state,
+        cookie_agent_protocol::McpServerState::Connected
+    );
+    assert_eq!(hosted.tool_count, 2);
+
+    // Its tools reach the model under their `<server>_<tool>` names, and a
+    // call runs on the runtime's machine.
+    fixture.model.enqueue(tool_call(
+        "fixture_echo_text",
+        &serde_json::json!({"text": "echoed by the remote MCP server"}),
+    ));
+    fixture.model.enqueue(final_answer("done"));
+    let ended = fixture.run(session, "use the MCP tool").await;
+    assert!(
+        matches!(ended, EventPayload::RunCompleted { .. }),
+        "{ended:?}"
+    );
+    let requests = fixture.model.requests();
+    assert_eq!(requests.len(), 2, "{requests:#?}");
+    let tools = offered_tools(&requests[0]);
+    assert!(
+        tools.iter().any(|tool| tool == "fixture_echo_text"),
+        "{tools:?}"
+    );
+    assert!(
+        requests[1].contains("echoed by the remote MCP server"),
+        "{}",
+        requests[1]
+    );
+
+    // A reconnect is routed to the runtime that hosts the server, which
+    // reports the new connection.
+    let mut changes = fixture.engine.subscribe_mcp_changes();
+    changes.mark_unchanged();
+    fixture
+        .engine
+        .reconnect_runtime_mcp_server(
+            "remote",
+            Some(canonical.to_string_lossy().as_ref()),
+            "fixture".into(),
+        )
+        .await
+        .expect("reconnect");
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let state = fixture
+                .engine
+                .list_mcp_servers()
+                .into_iter()
+                .find(|server| server.runtime_id.as_str() == "remote")
+                .map(|server| server.state);
+            if state == Some(cookie_agent_protocol::McpServerState::Connected) {
+                break;
+            }
+            changes.changed().await.expect("changes");
+        }
+    })
+    .await
+    .expect("the server is connected again");
     fixture.engine.shutdown().await;
 }
