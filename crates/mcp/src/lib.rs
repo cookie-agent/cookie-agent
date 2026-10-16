@@ -6,7 +6,7 @@
 //! server output, retains result media as attachments, and follows each
 //! server through its states ([`McpServerState`]). A connected server that
 //! drops is reconnected with the shared
-//! [`ReconnectPolicy`](cookie_agent_runtime_api::reconnect::ReconnectPolicy):
+//! [`ReconnectPolicy`]:
 //! its tools stay published and calls fail fast with `runtime_unavailable`
 //! meanwhile, and when every attempt fails its tools are dropped and the
 //! failure is broadcast (`docs/site/specs/runtimes.md` section 6.4). Names

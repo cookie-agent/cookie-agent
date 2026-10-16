@@ -37,8 +37,10 @@ resume results carry the session's `runtimes`, `session.runtime.attach`,
 tree grants carry a runtime selector or runtime ID, and `delegate_subagent`
 accepts `runtimes`. In the same version the `lazy` MCP server setting and the
 `lazy-not-connected` state were removed, MCP servers gained the `reconnecting`
-state and their hosting `runtime_id` in `mcp.server.list`, and `mcp.changed`
-and `runtimes.changed` gained `failures` (see
+state and their hosting `runtime_id` and `workspace` in `mcp.server.list`,
+`mcp.server.list` lists the servers coding runtimes host,
+`mcp.server.reconnect` takes an optional `runtime_id` and `workspace`, and
+`mcp.changed` and `runtimes.changed` gained `failures` (see
 [Connection failures](#connection-failures)). Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
@@ -444,7 +446,7 @@ connection's subscriptions:
 
 | Notification | `failures` entry |
 |---|---|
-| `mcp.changed` | `runtime_id` hosting the server (`global` for top-level `[mcp]`), `server`, `reason`, `session_ids` |
+| `mcp.changed` | `runtime_id` hosting the server (`global` for top-level `[mcp]`), `workspace` of the hosting instance when its runtime has one, `server`, `reason`, `session_ids` |
 | `runtimes.changed` | `runtime_id`, `workspace` when the template takes one, `reason`, `session_ids` |
 
 Subscribing to a session also sends the failures that already affect it, so a
@@ -455,15 +457,22 @@ TUI shows each as an error row in every named session it displays.
 
 ### MCP servers
 
-`mcp.server.list` returns each server's hosting `runtime_id`, `name`,
-`source`, `definition`, `state`, `tool_count`, `message`, and
+`mcp.server.list` returns the servers of every runtime: the global runtime's
+top-level `[mcp]` servers first, then those each running coding runtime
+instance hosts from its template's `mcp` table. Each entry has the hosting
+`runtime_id`, the hosting instance's `workspace` (absent for `global`),
+`name`, `source`, `definition`, `state`, `tool_count`, `message`, and
 `auth_in_progress`. `state` is `connected`, `connecting`, `reconnecting`,
 `failed`, `needs_auth`, `disabled`, or `disconnected`. A `reconnecting` server
 dropped and is being restarted: its tools stay published and calls fail with
 the `runtime_unavailable` failure code until it reconnects or, after every
 attempt failed, becomes `failed` and its tools are dropped (see
-[MCP](../guide/mcp.md#connection-lifecycle)). The `mcp.server.*` mutations,
-`mcp.server.reconnect`, and `mcp.auth.*` act on servers of the global runtime.
+[MCP](../guide/mcp.md#connection-lifecycle)). The `mcp.server.*` mutations
+and `mcp.auth.*` act on servers of the global runtime. `mcp.server.reconnect
+{ name, runtime_id?, workspace? }` reconnects a server of any runtime and
+waits for the attempt: without `runtime_id` (or with `global`) a top-level
+server, otherwise the one the instance of `runtime_id` at `workspace` hosts,
+as `mcp.server.list` names them.
 
 The shared client maps these to `ClientDelivery` variants (`Live`, replay
 deliveries, `PluginEvent`, `RuntimeChanged`, `RecoveryFailed`), so a UI

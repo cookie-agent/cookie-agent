@@ -24,6 +24,42 @@ oauth = true
 Servers are configured only in the user file. A `<cwd>/.cookie-agent/config.toml`
 is never read, so a repository cannot add MCP servers.
 
+## Where servers run
+
+An MCP server belongs to the [runtime](runtimes.md) that hosts it, and runs
+on that runtime's machine:
+
+- **Top-level `[mcp.servers.<name>]`** servers belong to the daemon's global
+  runtime and run where the daemon runs. Every session that attaches
+  `global` (the default) can use them. Only these servers can use OAuth, and
+  only these can be added, edited, removed, or toggled from `/mcp`.
+- **`[runtimes.<id>.mcp.servers.<name>]`** servers belong to a coding
+  runtime template. Each instance of the template hosts its own copy on the
+  instance's machine, for example a language server next to a repository on
+  another host over ssh, and sessions attached to that instance can use
+  them. `[runtimes.local.mcp.servers.<name>]` servers run in the daemon's
+  built-in `local` coding runtime.
+
+```toml
+[runtimes.labpc]
+command = ["ssh", "labpc", "cookie", "runtime", "coding", "--stdio", "--workspace", "{workspace}"]
+
+[runtimes.labpc.mcp.servers.rust_analyzer]
+command = "rust-analyzer-mcp"
+
+[runtimes.local.mcp.servers.docs]
+command = "docs-mcp"
+```
+
+A runtime's servers use the same table schema and are parsed as strictly,
+except that a template server that enables OAuth (`oauth = true` or an
+`oauth` table) fails validation: OAuth credentials live in the daemon's
+`mcp-oauth.json` and only the global runtime uses them. A runtime's remote
+servers connect with their static `headers` only. A command, its `cwd`, and
+its environment are resolved on the runtime's machine, and the process
+inherits the runtime's environment plus `env`. Template servers change only
+when the daemon restarts.
+
 Each server must set exactly one of `command` or `url`. `args`, `env`, and `cwd`
 apply only to stdio commands; `headers` applies only to Streamable HTTP. Servers
 are enabled by default. `timeout_ms` bounds connection, listing, and calls and
@@ -31,34 +67,40 @@ defaults to 30000.
 
 ## Connection lifecycle
 
-Top-level `[mcp]` servers belong to the [global runtime](../specs/runtimes.md),
-and every enabled server connects eagerly: there is no deferred connection, and
-an authored `lazy` key is an unknown field.
+Every enabled server connects eagerly, in every runtime: there is no deferred
+connection, and an authored `lazy` key is an unknown field.
 
-- **At startup** every enabled server connects, in parallel, when the daemon
-  starts. The first run waits for every server's initial connection and
-  `tools/list` attempt to finish, so its tool context is not built from a
-  partial startup snapshot. Each wait is bounded by that server's
-  `timeout_ms`; one server's failure does not block the others.
+- **At startup** every enabled server connects, in parallel: the global
+  runtime's when the daemon starts, and a coding runtime's when its instance
+  starts, before the instance answers the daemon (so the template's
+  `startup_timeout_ms` must cover them). The first run waits for every
+  server's initial connection and `tools/list` attempt to finish, so its tool
+  context is not built from a partial startup snapshot. Each wait is bounded
+  by that server's `timeout_ms`; one server's failure does not block the
+  others.
 - **A failed server** publishes no tools. It is retried when a session that
-  uses the global runtime is created or opened (and when the global runtime is
-  attached to a session), and the session's next run waits for that attempt
-  too. `r` in `/mcp` (or `mcp.server.reconnect`) retries it on demand.
+  uses its runtime instance is created or opened (and when the instance is
+  attached to a session or retried from `/runtime`), and the session's next
+  run waits for that attempt too. `r` in `/mcp` (or `mcp.server.reconnect`)
+  retries it on demand.
 - **A dropped server** (a stdio process that exits, a closed pipe, or an HTTP
-  session the transport gives up on) is restarted up to 3 times, after 1 s,
-  2 s, and 4 s. While it reconnects it shows as `reconnecting`, its tools stay
+  session the transport gives up on) is restarted by the runtime that hosts
+  it up to 3 times, after 1 s, 2 s, and 4 s. While it reconnects it shows as `reconnecting`, its tools stay
   published so the model's tool list does not change, and calls fail fast with
   the `runtime_unavailable` failure code; calls are never retried for the
   model. A successful attempt restores the server with its current tool list.
   When every attempt fails, its tools are dropped and it becomes `failed`.
 
 A failure at connect time and a drop that exhausts its reconnects reach every
-client viewing a session that uses the server: the TUI shows an error row in
-each such session naming the server and the reason (see
-[connection failures](../reference/protocol.md#connection-failures)).
+client viewing a session that uses the server, that is, a session attached to
+the instance that hosts it: the TUI shows an error row in each such session
+naming the server, its runtime (and the instance's workspace), and the reason
+(see [connection failures](../reference/protocol.md#connection-failures)).
 
 ## OAuth for remote servers
 
+OAuth is available only to top-level `[mcp]` servers, which the daemon's
+global runtime hosts; see [where servers run](#where-servers-run).
 Streamable HTTP servers use OAuth automatically when an unauthenticated request
 returns an authorization challenge. OAuth can be selected explicitly or disabled:
 
@@ -150,17 +192,19 @@ separately.
 ## TUI management
 
 Run `/mcp` to open the live MCP panel. It lists the servers of every runtime,
-grouped and labelled by the runtime that hosts them (`global` for top-level
-`[mcp]` servers) and their source. The list reports `connected` with its
+grouped and labelled by the runtime instance that hosts them: `global` for
+top-level `[mcp]` servers first, then each coding runtime instance as
+`<runtime> at <workspace>`, with their source. The list reports `connected` with its
 tool count, `connecting`, `reconnecting`, `failed` with the connection error,
 `needs_auth`, and `disabled`. The panel refreshes on every MCP change and polls
 the daemon while it is open. Select a server to inspect its complete command, arguments,
 environment, and working directory, or URL and headers. Press `a` on a
 `needs_auth` remote server to begin OAuth.
 
-The panel can reconnect a failed server, toggle enablement, and add, edit, or
-remove definitions. It edits global-runtime servers only; a coding runtime's
-servers come from its runtime template. Add/edit forms accept either a command, JSON string array
+The panel can reconnect any runtime's server (`r`, which the daemon passes to
+the runtime that hosts it), and toggle enablement and add, edit, or remove
+definitions of global-runtime servers only; a coding runtime's servers come
+from its runtime template. Add/edit forms accept either a command, JSON string array
 of arguments, JSON string object of environment variables, and optional working
 directory, or a URL plus a JSON string object of headers. Choose
 `runtime only` or `user config.toml` before submitting.
@@ -198,9 +242,12 @@ An MCP tool is exposed as `<server>_<tool>`. Both components replace characters
 outside `[a-zA-Z0-9_-]` with `_`; there is no `mcp_` prefix. For example,
 `github` plus `search/repos` becomes `github_search_repos`. Inside the global
 runtime, a server whose generated name collides with another MCP or plugin
-tool, or with the global `webfetch`, is rejected. A name that collides with a
-tool of another runtime or of the base layer is published with the runtime's
-attachment prefix instead, for example `global_github_search_repos`; see
+tool, or with the global `webfetch`, is rejected; inside a coding runtime, one
+that collides with another of its MCP servers' tools or its built-in tools is
+rejected the same way, and the built-in tools keep their names. A name that
+collides with a tool of another runtime or of the base layer is published
+with the runtime's attachment prefix instead, for example
+`global_github_search_repos` or `labpc_api_rust_analyzer_hover`; see
 [tool composition](../specs/runtimes.md#63-collisions).
 
 ```yaml

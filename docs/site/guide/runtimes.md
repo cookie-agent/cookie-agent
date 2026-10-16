@@ -2,7 +2,8 @@
 
 A *runtime* is where a session's tools run: the daemon's built-in `local`
 coding runtime works in the directory `cookie` started in, and the `global`
-runtime hosts top-level MCP servers and plugins. A `[runtimes.<id>]` table
+runtime hosts top-level MCP servers and plugins. A coding runtime can host MCP
+servers of its own, on its own machine. A `[runtimes.<id>]` table
 configures another way to start coding runtimes, typically on another machine
 over ssh, so a session on your laptop can read, edit, and run commands in a
 repository on that machine. The [runtimes specification](../specs/runtimes.md)
@@ -39,9 +40,9 @@ names for the remote runtime only.
 |---|---|---|---|
 | `command` | array of strings | required | The program and its arguments. |
 | `env` | table of strings | `{}` | Variables added to the daemon's environment for the process. |
-| `startup_timeout_ms` | positive integer | `10000` | Bound on starting the process and its answer to `runtime/initialize`. |
+| `startup_timeout_ms` | positive integer | `10000` | Bound on starting the process and its answer to `runtime/initialize`, which follows its MCP servers' first connection attempts. |
 | `shutdown_grace_ms` | positive integer | `3000` | How long a stopping runtime gets before its process group is killed. |
-| `mcp.servers.<name>` | MCP server table | none | MCP servers the runtime would host on its own machine; see below. |
+| `mcp.servers.<name>` | MCP server table | none | MCP servers each instance hosts on its own machine; see below. |
 
 - **Runtime IDs** match `[a-z][a-z0-9_]{0,31}` because they become tool name
   prefixes. `global` is reserved. `[runtimes.local]` configures the built-in
@@ -64,14 +65,50 @@ names for the remote runtime only.
 - **MCP servers** are parsed with the [MCP server schema](mcp.md), and a
   server that enables OAuth (`oauth = true` or an `oauth` table) is rejected:
   OAuth credentials live on the daemon and are available to top-level `[mcp]`
-  servers only. Static-header HTTP servers are allowed. Coding runtimes do not
-  host MCP servers yet, so a runtime whose template lists any fails to start
-  (for `[runtimes.local]`, the daemon does not start).
+  servers only. Static-header HTTP servers are allowed. See
+  [template MCP servers](#template-mcp-servers).
 - Templates declare no kind and accept no `plugins` table: the runtime reports
   its kind when it starts, and plugins run only in the global runtime.
 
 Unknown keys and invalid values fail the configuration load, as everywhere in
 `config.toml`. Changes take effect when the daemon next starts.
+
+## Template MCP servers
+
+Every instance of a template hosts the template's `mcp.servers` itself: the
+runtime process (`cookie runtime coding` on the remote machine, or the
+daemon's process for `[runtimes.local]`) starts each server, so commands,
+working directories, and URLs are resolved where the repository is.
+
+```toml
+[runtimes.labpc]
+command = ["ssh", "-o", "BatchMode=yes", "labpc", "cookie", "runtime", "coding", "--stdio", "--workspace", "{workspace}"]
+startup_timeout_ms = 30000
+
+[runtimes.labpc.mcp.servers.rust_analyzer]
+command = "rust-analyzer-mcp"
+
+[runtimes.local.mcp.servers.docs]
+command = "docs-mcp"
+```
+
+- **Connecting.** An instance connects every enabled server before it
+  answers the daemon, so its tools are listed when a session first uses the
+  instance. `startup_timeout_ms` covers these first attempts; raise it for
+  servers that start slowly. A server that fails publishes no tools, and
+  clients viewing a session attached to the instance get an error naming it.
+- **Tools.** The servers' tools are the instance's tools, named
+  `<server>_<tool>` like any [MCP tool](mcp.md#tool-names-and-permissions)
+  and gated by the `mcp` permission. When another attachment offers the same
+  name, they are prefixed with the attachment name like the built-in tools.
+- **Drops and retries.** The runtime restarts a dropped server (1 s, 2 s,
+  4 s) with its tools still published, and drops them when every attempt
+  fails. A failed server is retried when a session that uses the instance is
+  created or opened, when the instance is attached or retried (`r` in
+  `/runtime`), and with `r` on the server in `/mcp`.
+- **Status.** `/mcp` lists the servers of every instance as
+  `<runtime> at <workspace>`. They cannot be edited there; change the
+  template and restart the daemon.
 
 ## Instances and workspaces
 

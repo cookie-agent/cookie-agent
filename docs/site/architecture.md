@@ -62,9 +62,10 @@ identity
        ├─ runtime_api   (tool contract + runtime protocol; never on the engine)
        ├─ models
        │    └─ config
-       │         ├─ coding_runtime  (also on runtime_api; never on the engine)
-       │         └─ engine  (also on runtime_api)
-       │              └─ server
+       │         └─ mcp     (also on runtime_api; never on the engine)
+       │              ├─ coding_runtime  (never on the engine)
+       │              └─ engine  (enables mcp's `oauth` feature)
+       │                   └─ server
        └─ cookie_agent (binary: composes every layer)
 ```
 
@@ -82,8 +83,9 @@ The TUI's own tests still drive a real `server` through a dev-dependency.
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
 | `config` | Strict runtime configuration and Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports `AgentMode`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |
 | `runtime_api` | The contract between the engine and the tools it runs: `ToolProvider`, `ToolSpec`, prepared calls, preparation and execution contexts, progress and stdin, the traits through which the engine provides output capture, artifact retention, and background jobs, runtime identity (`ToolOrigin`, `RuntimeInfo`, `WorkspaceContext`), tool attachment validation, and the `AGENTS.md` lookup. It also holds the [runtime protocol](reference/runtime-protocol.md): its wire types (`protocol`), the symmetric JSON-RPC peer both ends run with a newline-delimited stdio transport (`rpc`), and `RuntimeConnector`, which starts a runtime for a requested workspace and returns its transport with a bounded `DiagnosticTail` of what it writes outside the protocol. Depends on `protocol` only. |
-| `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence, the base layer tools (delegation: `delegate_subagent`, `get_subagent_result`, `cancel_subagent`; messaging: `send_message`; `skill`; goals; `read_artifact`), and the runtime registry with the runtime protocol client (`runtimes::remote`), the child-process connector of configured templates (`runtimes::process`), and instance reconnects. |
-| `coding_runtime` | The coding runtime: its `read`, `write`, `edit`, `bash`, and `webfetch` tools, working in the runtime's workspace, the global runtime's fallback `webfetch`, and the runtime protocol server (`server::serve`) that answers a daemon with them, the workspace's project skills, and its `AGENTS.md`, plus the in-process connector the daemon's `local` runtime uses and `server::serve_stdio`, which `cookie runtime coding --stdio` runs. Depends on `runtime_api` and `config` (the skill parser), never on the engine. |
+| `mcp` | The MCP client (`cookie_agent_mcp`): an `McpRegistry` per runtime that connects its servers eagerly over stdio or Streamable HTTP, publishes their tools as `<server>_<tool>` with untrusted-output markings, maps result media to attachments, reconnects dropped servers with the shared reconnect policy, and reports status and failures to subscribers and an `McpObserver`. The `oauth` feature, which only the engine enables, adds OAuth for remote servers and the `mcp-oauth.json` credential store. Depends on `runtime_api` and `config`, never on the engine. |
+| `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence, the base layer tools (delegation: `delegate_subagent`, `get_subagent_result`, `cancel_subagent`; messaging: `send_message`; `skill`; goals; `read_artifact`), and the runtime registry with the runtime protocol client (`runtimes::remote`), the child-process connector of configured templates (`runtimes::process`), instance reconnects, and the global runtime's `McpRegistry` with the TUI's runtime-layer MCP edits and their write-back (`config_store`). |
+| `coding_runtime` | The coding runtime: its `read`, `write`, `edit`, `bash`, and `webfetch` tools, working in the runtime's workspace, the global runtime's fallback `webfetch`, and the runtime protocol server (`server::serve`) that answers a daemon with them, the workspace's project skills, and its `AGENTS.md`, plus the in-process connector the daemon's `local` runtime uses and `server::serve_stdio`, which `cookie runtime coding --stdio` runs. The server hosts its template's MCP servers with an `McpRegistry` without OAuth. Depends on `runtime_api`, `mcp`, and `config` (the skill parser), never on the engine. |
 | `server` | The `ServerProtocol` implementation over `Engine`, the axum WebSocket accept path, `Server::connect_in_process`, and the per-run token / ready-line APIs. Server side only. |
 | `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow. Depends only on `protocol` and runs over a `protocol::Client` it is handed. |
 | `cookie_agent` | CLI and composition root wiring every crate together, and `cookie runtime coding --stdio`, which serves a coding runtime to a daemon without reading any configuration. The only binary. |
@@ -308,7 +310,11 @@ session and drive the run loop:
     session attached to it. The built-in templates are `global` (top-level MCP
     servers, plugins, and a `webfetch` that is only a fallback; no workspace)
     and `local` (kind `coding`: `read`, `write`, `edit`, `bash`, and
-    `webfetch` in the daemon's working directory). Both instances start with
+    `webfetch` in the daemon's working directory, and the
+    `[runtimes.local.mcp]` servers). A coding runtime hosts its template's
+    MCP servers itself, on its own machine: it connects them before it
+    answers `runtime/initialize`, declares their tools next to its built-in
+    ones, and reports their status (`mcp/changed`). Both instances start with
     the daemon (`Engine::open_async`). Each configured `[runtimes.<id>]`
     adds a protocol template whose `ProcessConnector` runs the template's
     command (`runtimes/process.rs`); its instances start when a session
@@ -333,17 +339,21 @@ session and drive the run loop:
     bytes, for a coding runtime), suffixed `_2`, `_3`, ... on a clash.
   - *connections*: everything a session uses is connected before its first
     run. The global runtime's MCP servers connect eagerly when the daemon
-    starts, and the first run waits for those attempts. Creating or opening a
-    session starts its attached instances and retries the failed MCP servers
-    of an attached global runtime; its next run waits for them. A connected
-    MCP server that drops is restarted by the shared reconnect policy
-    (`crates/engine/src/runtimes/reconnect.rs`: three attempts after 1 s,
-    2 s, and 4 s); meanwhile its tools stay published and calls fail fast with
-    `runtime_unavailable`, and when every attempt fails its tools are
-    dropped. Connect failures, exhausted reconnects, and failed instance
-    starts are broadcast by the MCP and runtime registries; the server turns
-    them into `mcp.changed` and `runtimes.changed` notifications that name the
-    affected sessions each connection subscribes to.
+    starts, and the first run waits for those attempts; a coding runtime's
+    servers have finished theirs when its instance starts. Creating or
+    opening a session starts its attached instances and retries the failed
+    MCP servers of every attached instance (`mcp/reconnect` for a coding
+    runtime); its next run waits for them. A connected MCP server that drops
+    is restarted by the shared reconnect policy
+    (`cookie_agent_runtime_api::reconnect`: three attempts after 1 s, 2 s,
+    and 4 s) in the runtime that hosts it; meanwhile its tools stay published
+    and calls fail fast with `runtime_unavailable`, and when every attempt
+    fails its tools are dropped. Connect failures, exhausted reconnects, and
+    failed instance starts are broadcast by the runtime registry and the MCP
+    hub, which merges the global runtime's servers with those coding
+    runtimes report; the server turns them into `mcp.changed` and
+    `runtimes.changed` notifications that name the affected sessions each
+    connection subscribes to.
 
   Every published tool records which layer or attachment offers it, and the
   instance generation it came from. Preparation, permission decisions, and

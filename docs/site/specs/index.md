@@ -6,7 +6,7 @@ configuration reference.
 
 | Specification | Status |
 |---|---|
-| [Runtimes](runtimes.md) | Draft; product decisions approved 2026-10-15; daemon as gateway with global and coding runtimes; phases 1-3 (runtime seam, attachments, runtime protocol) implemented |
+| [Runtimes](runtimes.md) | Implemented; daemon as gateway with global and coding runtimes, attachments, the runtime protocol, remote runtimes from `[runtimes.<id>]` templates, and template MCP servers; the manual labpc check is pending the author |
 | [Agent messaging](agent-messaging.md) | Implemented; governing contract for `send_message` agent-to-agent messaging |
 | [Subagent handles](subagent-handles.md) | Draft proposal; short tree-unique handles for model-facing session references |
 | [Tree-scoped session ownership lock](tree-ownership-lock.md) | Implemented; one `owner.lock` per root session tree, no lock files for delegated children |

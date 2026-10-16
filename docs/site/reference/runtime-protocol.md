@@ -51,7 +51,9 @@ the version in the reply the same way. There is no negotiation.
    bounded tail (the last 32 lines, at most 4 KiB) that failure reasons end
    with; nothing but protocol messages may appear on its stdout.
 2. Sessions use the instance: the daemon prepares, executes, and releases
-   calls, and asks for `AGENTS.md` context at each root run's admission.
+   calls, and asks for `AGENTS.md` context at each root run's admission. A
+   coding runtime reports its MCP servers' status as it changes
+   (`mcp/changed`) and a changed tool list (`runtime/tools_changed`).
 3. The daemon sends `runtime/shutdown` when it shuts down, waits up to the
    template's `shutdown_grace_ms` for the answer, and closes the transport
    (a child's stdin); a child that has not exited after another grace is
@@ -93,6 +95,8 @@ transparently.
 | `job/progress` | runtime → daemon | request | Output of a background job |
 | `job/completed` | runtime → daemon | notification | A background job finished with its report |
 | `job/kill` | daemon → runtime | notification | Kill a background job |
+| `mcp/changed` | runtime → daemon | notification | The status of the runtime's MCP servers, and the ones that failed |
+| `mcp/reconnect` | daemon → runtime | request | Reconnect one MCP server, or retry every failed one |
 
 An unknown request is answered with `-32601`; an unknown notification is
 ignored.
@@ -106,10 +110,24 @@ ignored.
 | `workspace` | The workspace path the daemon asks for, when the template has one, exactly as a session gave it: the runtime expands a leading `~` and resolves it on its own machine. Optional: a runtime started for one workspace (`--workspace`) uses its own, and refuses one that resolves elsewhere. |
 | `settings.tool_output` | The `[tool_output]` preview limits: `max_lines`, `max_bytes`, `head_lines`, `tail_lines`. |
 | `settings.agent_md` | `max_bytes`: files larger than this are skipped. At most the `AGENTS.md` event bound. |
-| `settings.mcp_servers` | The template's MCP servers (`name` and the server's `config` table). A coding runtime does not host MCP servers yet and rejects a nonempty list. |
+| `settings.mcp_servers` | The template's MCP servers: `name` and `config`, the server's table as the [`[mcp.servers.<name>]` schema](../guide/mcp.md#accepted-fields) reads it. |
 
 A runtime rejects settings its kind does not support with `-32011`, as it does
-a workspace it cannot open.
+a workspace it cannot open. MCP hosting is a feature of the coding kind: a
+runtime of another kind rejects a nonempty `mcp_servers`, and the daemon
+rejects an initialize reply whose `kind` hosts no MCP servers when it sent
+some (`protocol::check_mcp_hosting`). A coding runtime parses each server
+strictly and rejects the request when one does not parse or enables OAuth,
+which stays with the daemon's global runtime.
+
+A coding runtime connects every enabled server before it answers: the reply
+comes once each server's first connection attempt and tool listing have
+finished, successfully or not, so the template's `startup_timeout_ms` must
+cover them. A server that fails publishes no tools; its status says why. The
+servers' tools join the declared tools as `<server>_<tool>`, with permission
+`mcp`, after the runtime's built-in tools, which keep their names: a server
+whose tool would take another tool's name fails, as in the global runtime.
+OAuth is never used: a remote server connects with its static headers only.
 
 | Result field | Meaning |
 |---|---|
@@ -123,11 +141,39 @@ a workspace it cannot open.
 | `tools.prompt_sections` | System prompt sections (`title`, `body`) the tools contribute. |
 | `skills.skills` | Project skills: the `SKILL.md` text, `source`, absolute `path` and `base_dir` on the runtime's machine, and a sample of `supporting_files`. The daemon parses the text with the same rules as local discovery. |
 | `skills.discoveries` | Every `SKILL.md` found, with `precedence_winner`. |
+| `mcp_servers` | The status of each MCP server after its first connection attempt, in name order: `name`; `state`, one of `connected`, `connecting`, `reconnecting`, `failed`, `disabled`, or `disconnected`; `message`, why it failed; and `tools`, its tool names. Absent when the runtime hosts none. |
 
 ### `runtime/tools_changed`
 
 Params are a new `tools` object as in the initialize result. The daemon uses
 it from the next model turn on.
+
+### `mcp/changed`, `mcp/reconnect`
+
+`mcp/changed` carries `servers`, the status of every MCP server the runtime
+hosts as in the initialize result, and `failures`, the servers that failed to
+connect or dropped and did not reconnect since the last report, each with
+`server` and `reason`. The runtime sends it after its initialize reply,
+whenever a status changes; a failure may arrive in a report of its own. The
+daemon shows the statuses in `mcp.server.list` and passes each failure to the
+clients viewing a session attached to the instance.
+
+When a connected server drops, the runtime restarts it up to 3 times, after
+1 s, 2 s, and 4 s. Meanwhile it is `reconnecting`, its tools stay declared,
+and calls fail with `runtime_unavailable`. A successful attempt restores the
+server with its current tool list; when every attempt fails, it becomes
+`failed`, a `runtime/tools_changed` drops its tools, and `mcp/changed`
+reports the failure.
+
+`mcp/reconnect` params: `server`, optional. With a name, the runtime closes
+that server's connection and connects it again; without one, it retries every
+failed server. It answers `{}` once the attempts have finished, or
+`{"error": …}` for an unknown or disabled server or a failed attempt; the new
+status follows in `mcp/changed`. While one of the instance's servers is
+`failed`, the daemon sends it without a name when a session that uses the
+instance is created or opened, or when the instance is attached or retried,
+and the session's next run waits for the answer; it names a server for
+`mcp.server.reconnect`.
 
 ### `runtime/context`
 

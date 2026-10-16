@@ -1,9 +1,11 @@
 # Runtimes: Daemon, Global Runtime, and Coding Runtimes
 
-Status: **draft; product decisions approved 2026-10-15**. This document is the
-governing specification for splitting tool execution and workspace context out
-of the engine into attachable *runtimes*. Section
-[Open questions](#14-open-questions) lists anything still undecided.
+Status: **implemented** (all four phases, product decisions approved
+2026-10-15); the manual end-to-end check against labpc that phase 4 names is
+pending the author. This document is the governing specification for
+splitting tool execution and workspace context out of the engine into
+attachable *runtimes*. Section [Open questions](#14-open-questions) lists
+anything still undecided.
 
 ## 1. Goal and scope
 
@@ -340,6 +342,8 @@ does not; it is called in-process through the same Rust trait.
 | `tool/stdin`, `tool/cancel` | daemon → runtime | As today's `ToolStdin` and cancellation token. |
 | `job/started`, `job/progress`, `job/completed` | runtime → daemon | Background jobs (bash `background`). The daemon commits completions as today. |
 | `job/kill` | daemon → runtime | Revert or delete killed the owning call. |
+| `mcp/changed` | runtime → daemon | The status of the template's MCP servers and the ones that failed (section 6.4), merged into `mcp.changed`. |
+| `mcp/reconnect` | daemon → runtime | Reconnect one MCP server, or retry the failed ones when a session that uses the instance is created or opened. |
 | `runtime/shutdown` | daemon → runtime | Graceful stop, then termination after `shutdown_grace_ms`. |
 
 `ToolPreparationContext.cwd` and `workspace_root` disappear from the daemon
