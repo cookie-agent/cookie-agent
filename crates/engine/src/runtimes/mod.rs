@@ -53,8 +53,8 @@ pub use registry::{
 };
 pub(crate) use registry::{RuntimeInstance, RuntimeRegistry};
 pub(crate) use remote::{
-    HostedMcpServer, ProtocolTemplate, RuntimeClient, register_configured_templates,
-    runtime_settings,
+    HostedMcpServer, ProtocolTemplate, RuntimeClient, RuntimeProducerCall, RuntimeProducerHost,
+    register_configured_templates, runtime_settings,
 };
 
 /// One-line description of where a tool runs, for the approval reviewer.

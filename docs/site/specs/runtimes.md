@@ -41,7 +41,9 @@ another machine (labpc over ssh) end to end.
 **Out of scope:** a persistent or discoverable daemon, runtimes that dial in,
 channel adapters (chat apps), schedulers and other openclaw-style triggers,
 web clients, and runtime kinds other than `coding`. Producer messages are the
-only notification path, and they stay a daemon-side plugin feature.
+only notification path, and in this milestone they stayed a daemon-side
+plugin feature; runtime protocol 4 later opened them to runtimes (see
+[external producers](external-producers.md)).
 
 ## 2. Vocabulary
 
@@ -356,9 +358,9 @@ does not; it is called in-process through the same Rust trait.
 `ToolPreparationContext.cwd` and `workspace_root` disappear from the daemon
 side; the runtime fills them from its own workspace.
 
-Producer messaging stays a daemon-side plugin feature. Runtimes report back
-to sessions only through background-job completions; a later runtime kind
-that needs general producer messages adds them to this protocol then.
+Runtime protocol 4 adds producer messaging for runtimes: a runtime that
+declares it may send producer messages to the sessions attached to it (see
+[external producers](external-producers.md)).
 
 ## 10. Lifecycle and failure
 

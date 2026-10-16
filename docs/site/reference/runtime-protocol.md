@@ -34,7 +34,7 @@ engine's `runtimes::remote` module.
 
 ## Version
 
-The protocol version is an integer, currently **3**
+The protocol version is an integer, currently **4**
 (`protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its version in
 `runtime/initialize`; a runtime that speaks another version fails the request
 with code `-32010` and a message naming both versions, and the daemon checks
@@ -43,7 +43,9 @@ Version 3 removed `tool/stdin` and the `stdin` flag of `tool/execute`: tools
 no longer take input while they run. It also replaced the `job/*` messages and
 the `background` flag and `launched_jobs` of `tool/execute` with
 `tool/detachable`, and added `background` and `background_default` to tool
-declarations.
+declarations. Version 4 added producer messaging: the `producer_messaging`
+capability, the `producer/*` requests, and the recovery handshake (see
+[Producer messaging](#producer-messaging)).
 
 ## Lifecycle
 
@@ -98,6 +100,12 @@ transparently.
 | `tool/detachable` | runtime → daemon | notification | An executing call reached its detach point |
 | `mcp/changed` | runtime → daemon | notification | The status of the runtime's MCP servers, and the ones that failed |
 | `mcp/reconnect` | daemon → runtime | request | Reconnect one MCP server, or retry every failed one |
+| `producer/recovery/start` | daemon → runtime | notification | Producer messaging is open; restore tracked work, then report |
+| `producer/recovery/complete` | runtime → daemon | request | The runtime's recovery outcome |
+| `producer/register` | runtime → daemon | request | Register a named producer for an attached session |
+| `producer/send` | runtime → daemon | request | Send a message through a registered producer |
+| `producer/unregister` | runtime → daemon | request | Close a registration; its messages stay |
+| `producer/discard` | runtime → daemon | request | Discard one of the runtime's waiting messages |
 
 An unknown request is answered with `-32601`; an unknown notification is
 ignored.
@@ -138,6 +146,7 @@ OAuth is never used: a remote server connects with its static headers only.
 | `tools.prompt_sections` | System prompt sections (`title`, `body`) the tools contribute. |
 | `skills.skills` | Project skills: the `SKILL.md` text, `source`, absolute `path` and `base_dir` on the runtime's machine, and a sample of `supporting_files`. The daemon parses the text with the same rules as local discovery. |
 | `skills.discoveries` | Every `SKILL.md` found, with `precedence_winner`. |
+| `producer_messaging` | Optional, default `false`: the runtime sends producer messages to the sessions attached to it (see [Producer messaging](#producer-messaging)). |
 | `mcp_servers` | The status of each MCP server after its first connection attempt, in name order: `name`; `state`, one of `connected`, `connecting`, `reconnecting`, `failed`, `disabled`, or `disconnected`; `message`, why it failed; and `tools`, its tool names. Absent when the runtime hosts none. |
 
 ### `runtime/tools_changed`
@@ -253,7 +262,42 @@ A call whose work reports its own results once detached sets
 reports every turn). The daemon then only stops waiting: it drops the call
 instead of awaiting its reply and sends no `<background_result>`, and
 cancelling the run that waited for it ends the call without cancelling the
-work.
+work. For a runtime's call, the daemon then sends no `tool/cancel`: the call
+keeps running in the runtime, and whatever it reports later goes through its
+[producer messaging](#producer-messaging).
+
+### Producer messaging
+
+A runtime that declares `producer_messaging` may put messages into the model
+input of the sessions attached to it, as plugins do (see the [external
+producers spec](../specs/external-producers.md)). It produces as `external {
+source, name }`: the daemon derives `source`, `runtime:<attachment name>`,
+from the connection, and the runtime names each producer it registers.
+
+1. After `runtime/initialize`, the daemon sends `producer/recovery/start`.
+   The runtime may send producer requests from then on; earlier ones are
+   rejected. It restores whatever external work it tracks and answers
+   `producer/recovery/complete` with `outcome` `{"status": "ready"}` or
+   `{"status": "failed", "message": …}`. Until then its source is
+   `starting`, and goal reminders of the sessions attached to it wait.
+2. `producer/register` (`session_id`, `name`: `[a-z0-9][a-z0-9_.-]{0,63}`)
+   returns `producer_id`. `producer/send` (`session_id`, `producer_id`,
+   `mode` `steer` or `queue`, `idempotency_key`, `description`, `body`)
+   returns `message_id` once the message is durably accepted; an identical
+   retry returns the same receipt. `producer/unregister` (`session_id`,
+   `producer_id`) and `producer/discard` (`session_id`, `message_id`) return
+   `{}`. The params and results are the plugin protocol's
+   `ExtensionProducer*` types.
+3. Every request may only address a session attached to the runtime's
+   instance; any other fails with `-32016`. The body must be non-empty and at
+   most [`[producers] max_body_bytes`](../engine/producers.md).
+4. Registrations belong to the connection. They end when it does or when the
+   session detaches the runtime; a reconnected runtime registers again, and
+   its retried sends deduplicate against what it sent before.
+
+The coding runtime declares producer messaging when started with
+`ServeOptions::producer_messaging`; its tools then reach these requests
+through `ToolExecutionContext::producers`.
 
 ## Errors
 
@@ -268,6 +312,7 @@ work.
 | `-32013` | Unknown prepared call or job. |
 | `-32014` | Reading the runtime's context failed; `data.path` names the file. |
 | `-32015` | The reply would exceed the frame bound. |
+| `-32016` | The daemon rejected a producer request: messaging is not open on the connection, the session is not attached to the runtime, or the operation failed. |
 
 Tool-level failures travel inside results as `{"kind": …, "message": …}`, where
 `kind` is the tool error kind (`failed`, `operation_changed`,

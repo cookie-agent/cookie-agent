@@ -95,6 +95,10 @@ pub struct ToolExecutionContext {
     /// background. The tool never sees the `background` argument; a tool
     /// whose admission differs in the background reads this.
     pub background: bool,
+    /// Where a runtime's tool sends producer messages, such as the results
+    /// of work that reports itself after detaching; `None` where the
+    /// runtime does not produce.
+    pub producers: Option<Arc<dyn crate::ProducerChannel>>,
 }
 
 impl ToolExecutionContext {
@@ -352,6 +356,12 @@ impl DetachPoint {
             note,
             reports_itself: false,
         });
+    }
+
+    /// What the call reported at its detach point, once it reached it.
+    #[must_use]
+    pub fn current(&self) -> Option<Detachable> {
+        self.sender.borrow().clone()
     }
 
     /// Marks the call detachable as `detachable`. Only the first call counts.

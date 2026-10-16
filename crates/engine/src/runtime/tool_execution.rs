@@ -774,6 +774,7 @@ impl Engine {
                 artifacts: engine.inner.artifacts.clone(),
                 detach: detach_point,
                 background: background == Some(true),
+                producers: None,
             }))
             .catch_unwind()
             .map(|result| {

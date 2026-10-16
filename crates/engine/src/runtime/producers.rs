@@ -130,7 +130,9 @@ impl Engine {
         self.spawn_admission_task(&runtime, async move {
             loop {
                 if let Some(inner) = weak.upgrade() {
-                    Engine { inner }.reconcile_plugin_producer_sessions().await;
+                    Engine { inner }
+                        .reconcile_external_producer_sessions()
+                        .await;
                 } else {
                     return;
                 }
@@ -161,7 +163,7 @@ impl Engine {
                 self.inner
                     .plugins
                     .complete_producer_recovery(&authenticated, &params.outcome)?;
-                self.reconcile_plugin_producer_sessions().await;
+                self.reconcile_external_producer_sessions().await;
                 return Ok(Response::RecoveryComplete(
                     ExtensionRecoveryCompleteResult {},
                 ));
@@ -292,7 +294,7 @@ impl Engine {
         session: SessionId,
     ) -> Result<(), EngineError> {
         if connection.source.runtime_attachment().is_some()
-            && !self.runtime_source_attached(&connection.source, session)
+            && !self.runtime_source_attached(&connection.source, connection.epoch, session)
         {
             return Err(EngineError::Producer(format!(
                 "{} is not attached to session {session}",
@@ -339,7 +341,7 @@ impl Engine {
         states
     }
 
-    async fn reconcile_plugin_producer_sessions(&self) {
+    pub(super) async fn reconcile_external_producer_sessions(&self) {
         let mut sessions: HashSet<_> = self
             .inner
             .sessions
@@ -397,7 +399,7 @@ impl Engine {
                         record.authority.connection_epoch.is_some_and(|epoch| {
                             self.external_connection_is_current(source, epoch)
                                 && (source.runtime_attachment().is_none()
-                                    || self.runtime_source_attached(source, session))
+                                    || self.runtime_source_attached(source, epoch, session))
                         })
                     }
                     // Agent registrations are runtime-only sender slots for tree

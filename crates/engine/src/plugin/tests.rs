@@ -341,6 +341,7 @@ async fn execute(
             artifacts: crate::ArtifactRouter::open_flat(harness.directory.path().join("artifacts"))
                 .expect("artifact store"),
             detach: cookie_agent_runtime_api::DetachPoint::channel().0,
+            producers: None,
         })
         .await?
         .into_result_for_test()

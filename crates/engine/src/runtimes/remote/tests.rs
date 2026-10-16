@@ -78,6 +78,8 @@ impl Transport for Breakable {
 /// connection.
 struct TestConnector {
     tools: CodingToolsFactory,
+    /// The runtimes it serves declare producer messaging.
+    producer_messaging: bool,
     broken: Mutex<CancellationToken>,
     /// Connections made so far.
     connects: std::sync::atomic::AtomicUsize,
@@ -87,8 +89,13 @@ struct TestConnector {
 
 impl TestConnector {
     fn new(tools: CodingToolsFactory) -> Arc<Self> {
+        Self::with_producers(tools, false)
+    }
+
+    fn with_producers(tools: CodingToolsFactory, producer_messaging: bool) -> Arc<Self> {
         Arc::new(Self {
             tools,
+            producer_messaging,
             broken: Mutex::new(CancellationToken::new()),
             connects: std::sync::atomic::AtomicUsize::new(0),
             refuse: std::sync::atomic::AtomicBool::new(false),
@@ -134,6 +141,7 @@ impl RuntimeConnector for TestConnector {
                 workspace: None,
                 tools: Arc::clone(&self.tools),
                 mcp_reconnect: None,
+                producer_messaging: self.producer_messaging,
             },
         ));
         Ok(cookie_agent_runtime_api::RuntimeConnection::new(Box::new(
@@ -292,6 +300,7 @@ fn call_context(cancellation: CancellationToken) -> Call {
             turn_context: turn_context(),
             artifacts: artifacts.clone(),
             detach: detach_point,
+            producers: None,
         },
         capture,
         artifacts,
@@ -1220,4 +1229,360 @@ async fn a_runtime_can_declare_a_permission_free_tool() {
         ))
         .unwrap();
     assert_eq!(tools[0].permission_name, None);
+}
+
+/// A runtime tool that registers a producer for the call's session, or for
+/// the session its arguments name, and sends one message through it.
+struct ReportTool;
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReportArgs {
+    #[serde(default)]
+    session: Option<SessionId>,
+    /// Detach as work that reports itself first, then send the message a
+    /// moment later unless the call is cancelled meanwhile.
+    #[serde(default)]
+    detach_first: bool,
+}
+
+#[async_trait]
+impl ToolProvider for ReportTool {
+    fn provider_id(&self) -> &'static str {
+        "test.report"
+    }
+
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok(vec![ToolSpec {
+            background: false,
+            background_default: false,
+            name: "report".into(),
+            collision: Default::default(),
+            permission_name: None,
+            description: "Report a finished job.".into(),
+            parameters: authoring::schema::<ReportArgs>(),
+            concurrency: Default::default(),
+            result_truncation: Default::default(),
+            output: Default::default(),
+        }])
+    }
+
+    fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError> {
+        Ok(None)
+    }
+
+    fn get_permission_resource(
+        &self,
+        _tool_name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
+        Ok((None, None))
+    }
+
+    fn get_display_argument(
+        &self,
+        _name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        Ok("report".into())
+    }
+
+    async fn prepare(
+        &self,
+        ctx: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        let args: ReportArgs = authoring::parse_args("report", call.arguments.clone())?;
+        // No rule is evaluated; the capability only names the operation.
+        let action = cookie_agent_protocol::PermissionAction::new("report")
+            .map_err(|error| ToolError::execution(error.to_string()))?;
+        let resource = authoring::prepared_resource(
+            action.clone(),
+            "report",
+            b"report",
+            b"report",
+            cookie_agent_protocol::PreparedBindingLifetime::ProcessLocal,
+            cookie_agent_protocol::ApprovalResourceSource::PrimaryOperation,
+        )?;
+        let operation = authoring::prepared_operation(
+            "report",
+            &call.arguments,
+            vec![(action, "report")],
+            vec![resource],
+            &ctx.context_bytes(),
+        )?;
+        PreparedTool::new(
+            operation,
+            call.arguments,
+            None,
+            Box::new(ReportExecutor(args)),
+        )
+    }
+}
+
+struct ReportExecutor(ReportArgs);
+
+#[async_trait]
+impl PreparedExecutor for ReportExecutor {
+    async fn execute(
+        self: Box<Self>,
+        context: ToolExecutionContext,
+    ) -> Result<ToolCompletion, ToolError> {
+        let producers = context
+            .producers
+            .clone()
+            .ok_or_else(|| ToolError::execution("no producer channel"))?;
+        let session = self.0.session.unwrap_or(context.session);
+        let (key, body) = if self.0.detach_first {
+            context
+                .detach
+                .reached_with(cookie_agent_runtime_api::Detachable {
+                    note: None,
+                    reports_itself: true,
+                });
+            tokio::select! {
+                () = context.cancellation.cancelled() => {
+                    return Err(ToolError::execution("cancelled"));
+                }
+                () = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+            ("job-2", "late output")
+        } else {
+            ("job-1", "job output")
+        };
+        let sent = async {
+            let producer = producers
+                .register(
+                    session,
+                    cookie_agent_protocol::ProducerName::new("jobs").unwrap(),
+                )
+                .await?;
+            producers
+                .send(
+                    session,
+                    producer,
+                    cookie_agent_runtime_api::ProducerMessage {
+                        mode: cookie_agent_protocol::ProducerDeliveryMode::Queue,
+                        idempotency_key: cookie_agent_protocol::ProducerIdempotencyKey::new(key)
+                            .unwrap(),
+                        description: cookie_agent_protocol::SafeDisplayText::new("Job finished")
+                            .unwrap(),
+                        body: body.into(),
+                    },
+                )
+                .await
+        }
+        .await;
+        Ok(ToolCompletion::single(PersistedToolResult {
+            title: cookie_agent_protocol::SafeDisplayText::new("Report").unwrap(),
+            output: match sent {
+                Ok(message) => format!("sent {message}"),
+                Err(error) => format!("error: {error}"),
+            },
+            display: None,
+            retained_output: None,
+            metadata: serde_json::Value::Null,
+            truncation: None,
+            attachments: Vec::new(),
+            additional_messages: Vec::new(),
+        }))
+    }
+}
+
+/// Prepares the `report` tool of `instance` for `session` with `arguments`.
+async fn prepare_report(
+    instance: &crate::runtimes::RuntimeInstance,
+    session: SessionId,
+    arguments: serde_json::Value,
+) -> PreparedTool {
+    let provider = Arc::clone(&instance.sources().1[0]);
+    provider
+        .prepare(
+            ToolPreparationContext {
+                session,
+                run: RunId::new_v7(),
+                origin: instance.origin(),
+                turn_context: turn_context(),
+            },
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: "report".into(),
+                arguments,
+            },
+        )
+        .await
+        .expect("prepared")
+}
+
+/// Runs the `report` tool of `instance` for `session` with `arguments`.
+async fn report(
+    instance: &crate::runtimes::RuntimeInstance,
+    session: SessionId,
+    arguments: serde_json::Value,
+) -> String {
+    let prepared = prepare_report(instance, session, arguments).await;
+    let mut call = call_context(CancellationToken::new());
+    call.context.session = session;
+    let completion = execute(prepared, call.context).await.expect("report runs");
+    match completion.output {
+        cookie_agent_protocol::ToolCompletionOutput::Single { text } => text,
+        other => panic!("unexpected output {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_producing_runtime_sends_only_to_the_sessions_attached_to_it() {
+    let (fixture, selection) = custom_fixture();
+    let workspace = private_tempdir();
+    let connector = TestConnector::with_producers(
+        Arc::new(|_workspace: &cookie_agent_runtime_api::WorkspaceContext| {
+            vec![Arc::new(ReportTool) as Arc<dyn ToolProvider>]
+        }),
+        true,
+    );
+    register_remote(&fixture, &connector);
+    let engine = &fixture.engine;
+    let origin = cookie_agent_protocol::EventOrigin::new("user").unwrap();
+    let attached = engine.create_session(selection.clone()).unwrap().session_id;
+    let unattached = engine.create_session(selection).unwrap().session_id;
+    let attachment = engine
+        .attach_runtime(
+            attached,
+            "remote",
+            Some(workspace.path().to_owned()),
+            origin.clone(),
+        )
+        .await
+        .unwrap();
+    let instance = engine.inner.runtimes.instance(&attachment).unwrap();
+    let source =
+        cookie_agent_protocol::ProducerSource::runtime(instance.info().attachment_name()).unwrap();
+
+    // The daemon opens producer messaging and the runtime recovers.
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let sources = engine
+                .session_producers(cookie_agent_protocol::SessionProducersParams {
+                    session_id: attached,
+                })
+                .await
+                .unwrap()
+                .sources;
+            if sources.iter().any(|state| {
+                state.source == source
+                    && state.status == cookie_agent_protocol::ProducerSourceStatus::Ready
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the runtime's producer source becomes ready");
+
+    let output = report(&instance, attached, serde_json::json!({})).await;
+    assert!(output.starts_with("sent "), "{output}");
+    let accepted = engine
+        .inner
+        .store
+        .get(attached)
+        .unwrap()
+        .log
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            cookie_agent_protocol::EventPayload::ProducerMessageAccepted {
+                producer_owner,
+                body,
+                ..
+            } => Some((producer_owner.clone(), body.clone())),
+            _ => None,
+        })
+        .expect("the message is accepted");
+    assert_eq!(
+        accepted,
+        (
+            cookie_agent_protocol::ProducerOwner::external(
+                source.clone(),
+                cookie_agent_protocol::ProducerName::new("jobs").unwrap()
+            ),
+            "job output".to_owned()
+        )
+    );
+
+    // A session the runtime is not attached to is out of its reach.
+    let refused = report(
+        &instance,
+        attached,
+        serde_json::json!({"session": unattached}),
+    )
+    .await;
+    assert!(
+        refused.starts_with("error:") && refused.contains("not attached"),
+        "{refused}"
+    );
+
+    // A call that reports itself keeps running in the runtime after the
+    // daemon stops waiting for it.
+    let prepared = prepare_report(
+        &instance,
+        attached,
+        serde_json::json!({"detach_first": true}),
+    )
+    .await;
+    let mut call = call_context(CancellationToken::new());
+    call.context.session = attached;
+    // Boxed, so dropping it drops the call as the daemon does.
+    let mut execution = Box::pin(execute(prepared, call.context));
+    tokio::select! {
+        _ = &mut execution => panic!("the call detaches before it ends"),
+        _ = call.detach.reached() => {}
+    }
+    drop(execution);
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let arrived = engine
+                .inner
+                .store
+                .get(attached)
+                .unwrap()
+                .log
+                .events()
+                .iter()
+                .any(|event| {
+                    matches!(
+                        &event.payload,
+                        cookie_agent_protocol::EventPayload::ProducerMessageAccepted { body, .. }
+                            if body == "late output"
+                    )
+                });
+            if arrived {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the self-reporting call sends its message after the daemon stopped waiting");
+
+    // Detaching the runtime drops its registrations there.
+    let producers = |session| async move {
+        engine
+            .session_producers(cookie_agent_protocol::SessionProducersParams {
+                session_id: session,
+            })
+            .await
+            .unwrap()
+    };
+    assert_eq!(producers(attached).await.producers.len(), 2);
+    // The message woke the idle session; detaching waits for that run.
+    crate::runtime::tests::support::wait_for_session_not_running(engine, attached).await;
+    engine
+        .detach_runtime(attached, attachment.name.clone(), origin)
+        .await
+        .unwrap();
+    let after = producers(attached).await;
+    assert!(after.producers.is_empty(), "{after:?}");
+    assert!(after.sources.iter().all(|state| state.source != source));
+    fixture.engine.shutdown().await;
 }

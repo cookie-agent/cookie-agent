@@ -1,6 +1,6 @@
 # External Producers
 
-Status: **approved, being implemented** (decisions of 2026-10-16). This document is the governing
+Status: **implemented** (decisions of 2026-10-16; both code phases landed 2026-10-16). This document is the governing
 specification for letting plugins and runtimes register any number of named
 producers and send messages into sessions. Section
 [Decisions](#10-decisions) records what review settled.
@@ -123,11 +123,17 @@ Runtime protocol 4 adds producer messaging to runtimes.
 - **Self-reporting tools.** A runtime tool may now detach with
   `reports_itself` and report its own results later as producer messages,
   as `delegate_subagent` does in the daemon.
-- On the runtime side, `runtime_api` gains a producer handle (register,
-  send, unregister, discard) that a runtime's tools receive in
-  `ToolExecutionContext` and the runtime itself can hold; the coding
-  runtime's protocol server (`coding_runtime::server`) implements it with
-  these requests.
+- On the runtime side, `runtime_api` gains `ProducerChannel` (register,
+  send, unregister, discard), which a runtime's tools receive as
+  `ToolExecutionContext::producers`; the coding runtime's protocol server
+  (`coding_runtime::server`) implements it with these requests when started
+  with `ServeOptions::producer_messaging`, and reports its recovery ready at
+  once since it tracks no work of its own.
+- A runtime may send producer requests only after `producer/recovery/start`;
+  earlier ones are rejected.
+- A runtime's call that detaches with `reports_itself` is not cancelled when
+  the daemon stops waiting for it; it keeps running and reports through its
+  producers.
 
 ## 6. Configuration
 

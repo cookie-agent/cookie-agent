@@ -497,6 +497,24 @@ impl RuntimeRegistry {
             .map(Arc::clone)
     }
 
+    /// Every instance whose tools sessions see: ready or reconnecting, the
+    /// built-in ones included.
+    pub(crate) fn published_instances(&self) -> Vec<Arc<RuntimeInstance>> {
+        let mut instances = vec![Arc::clone(&self.global), Arc::clone(&self.local)];
+        for instance in self
+            .slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .filter_map(InstanceSlot::published)
+        {
+            if !instances.iter().any(|known| Arc::ptr_eq(known, instance)) {
+                instances.push(Arc::clone(instance));
+            }
+        }
+        instances
+    }
+
     /// The running instance of `runtime_id` whose canonical workspace is
     /// `workspace`, if it is up.
     pub(crate) fn instance_at(

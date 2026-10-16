@@ -24,7 +24,7 @@ use crate::{
 };
 
 /// The runtime protocol version. Both ends must speak exactly this version.
-pub const RUNTIME_PROTOCOL_VERSION: u32 = 3;
+pub const RUNTIME_PROTOCOL_VERSION: u32 = 4;
 
 /// The largest frame either end sends or accepts. It fits an `execute`
 /// reply carrying [`MAX_INLINE_MEDIA_BYTES`] of base64 media next to a full
@@ -70,6 +70,21 @@ pub mod method {
     /// daemon → runtime: reconnect one MCP server, or retry every failed
     /// one.
     pub const MCP_RECONNECT: &str = "mcp/reconnect";
+    /// runtime → daemon: register a named producer for a session attached
+    /// to the runtime.
+    pub const PRODUCER_REGISTER: &str = "producer/register";
+    /// runtime → daemon: send a message through a registered producer.
+    pub const PRODUCER_SEND: &str = "producer/send";
+    /// runtime → daemon: close a registration; its messages stay.
+    pub const PRODUCER_UNREGISTER: &str = "producer/unregister";
+    /// runtime → daemon: discard one of the runtime's waiting messages.
+    pub const PRODUCER_DISCARD: &str = "producer/discard";
+    /// daemon → runtime (notification): producer messaging is open; restore
+    /// the external work the runtime tracks, then answer with
+    /// [`PRODUCER_RECOVERY_COMPLETE`].
+    pub const PRODUCER_RECOVERY_START: &str = "producer/recovery/start";
+    /// runtime → daemon: the runtime's recovery outcome.
+    pub const PRODUCER_RECOVERY_COMPLETE: &str = "producer/recovery/complete";
 }
 
 /// JSON-RPC error codes the runtime protocol uses besides the standard ones.
@@ -90,6 +105,10 @@ pub mod error_code {
     pub const CONTEXT_FAILED: i32 = -32014;
     /// The reply would exceed the frame bound.
     pub const REPLY_TOO_LARGE: i32 = -32015;
+    /// The daemon rejected a producer operation: messaging is not open on
+    /// the connection, the session is not attached to the runtime, or the
+    /// operation itself failed.
+    pub const PRODUCER_REJECTED: i32 = -32016;
 }
 
 /// An empty params or result object.
@@ -229,6 +248,10 @@ pub struct InitializeResult {
     /// Their tools are among `tools`.
     #[serde(default)]
     pub mcp_servers: Vec<McpServerReport>,
+    /// The runtime sends producer messages to the sessions attached to it
+    /// (`producer/*`), once the daemon sends `producer/recovery/start`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub producer_messaging: bool,
 }
 
 /// A runtime's tools and their prompt sections.

@@ -23,6 +23,7 @@ mod error;
 mod execution;
 pub mod media;
 mod prepared;
+mod producers;
 pub mod protocol;
 mod provider;
 pub mod reconnect;
@@ -39,6 +40,7 @@ pub use prepared::{
     PreparedDeclaration, PreparedExecutor, PreparedExecutorCell, PreparedSerializationKey,
     PreparedTool, ToolCompletion, bounded_tool_display, sanitize_tool_display,
 };
+pub use producers::{ProducerChannel, ProducerMessage};
 pub use provider::{
     PromptSection, SessionToolContext, ToolCall, ToolCollision, ToolConcurrency, ToolProvider,
     ToolResultTruncationPolicy, ToolSpec, tool_presentation, tool_title_only,

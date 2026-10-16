@@ -978,6 +978,7 @@ impl Engine {
         // producer state arrive with each tree's load (tree-local B1, C1).
         engine.install_tree_load_observer()?;
         engine.install_producer_runtime();
+        engine.install_runtime_producers();
         if let Some(runtime) = &engine.inner.runtime {
             engine.inner.mcp.start_eager(runtime);
             engine.inner.plugins.start_eager(runtime);

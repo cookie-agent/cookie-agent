@@ -19,8 +19,8 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, Weak,
-        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -28,7 +28,10 @@ use std::{
 use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::{McpServerConfig, SkillDiscovery, SkillRegistry};
-use cookie_agent_protocol::{SessionId, ToolCallId, ToolCallPresentation};
+use cookie_agent_protocol::{
+    ExtensionRecoveryCompleteParams, ExtensionRecoveryOutcome, ProducerSourceStatus, SessionId,
+    ToolCallId, ToolCallPresentation,
+};
 use cookie_agent_runtime_api::{
     DetachPoint, DiagnosticTail, PreparedDeclaration, PreparedExecutor, PreparedSerializationKey,
     PreparedTool, ProgressSink, PromptSection, RuntimeConnection, RuntimeConnector, RuntimeInfo,
@@ -244,6 +247,44 @@ pub(crate) fn register_configured_templates(
     Ok(())
 }
 
+/// Distinguishes every runtime connection of this process from every other,
+/// so a producer registration made over one never passes for another's.
+static NEXT_CONNECTION_EPOCH: AtomicU64 = AtomicU64::new(1);
+
+/// One producer request a runtime sent: which connection, which method, and
+/// its params as sent.
+pub(crate) struct RuntimeProducerCall {
+    /// The attachment name the runtime reported.
+    pub(crate) attachment: String,
+    pub(crate) epoch: u64,
+    pub(crate) method: String,
+    pub(crate) params: serde_json::Value,
+}
+
+/// The answer to a [`RuntimeProducerCall`]: its result, or why it failed.
+pub(crate) type RuntimeProducerAnswer =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>;
+
+/// Where a runtime connection's producer requests go: the engine, once it
+/// opened producer messaging on the connection.
+pub(crate) struct RuntimeProducerHost {
+    /// Answers one producer operation.
+    pub(crate) call: Box<dyn Fn(RuntimeProducerCall) -> RuntimeProducerAnswer + Send + Sync>,
+    /// A connection's recovery state changed.
+    pub(crate) changed: Box<dyn Fn() + Send + Sync>,
+}
+
+/// A connection's producer messaging.
+#[derive(Default)]
+struct ProducerState {
+    /// The runtime declared `producer_messaging`.
+    declared: bool,
+    /// Set when the engine opens producer messaging on the connection.
+    host: Option<Arc<RuntimeProducerHost>>,
+    status: Option<ProducerSourceStatus>,
+    outcome: Option<ExtensionRecoveryOutcome>,
+}
+
 /// One connection to a runtime instance. Dropping the last handle closes it.
 #[derive(Clone)]
 pub(crate) struct RuntimeClient {
@@ -253,6 +294,11 @@ pub(crate) struct RuntimeClient {
 struct ClientInner {
     peer: Peer,
     runtime_id: String,
+    /// This connection's producer epoch; see [`NEXT_CONNECTION_EPOCH`].
+    epoch: u64,
+    /// The attachment name the runtime reported, once initialized.
+    attachment_name: OnceLock<String>,
+    producers: Mutex<ProducerState>,
     /// What the runtime writes outside the protocol, such as its stderr.
     diagnostics: Option<DiagnosticTail>,
     /// How long [`RuntimeClient::shutdown`] waits for the runtime.
@@ -368,6 +414,9 @@ impl RuntimeClient {
         let inner = Arc::new(ClientInner {
             peer,
             runtime_id: runtime_id.to_owned(),
+            epoch: NEXT_CONNECTION_EPOCH.fetch_add(1, Ordering::Relaxed),
+            attachment_name: OnceLock::new(),
+            producers: Mutex::default(),
             diagnostics: connection.diagnostics,
             shutdown_grace,
             tools: Mutex::default(),
@@ -402,6 +451,8 @@ impl RuntimeClient {
                 result.version
             ));
         }
+        let _ = inner.attachment_name.set(result.attachment_name.clone());
+        lock(&inner.producers).declared = result.producer_messaging;
         // A notification the runtime sent after its reply may already have
         // been handled; it is newer than the reply.
         lock(&inner.tools).get_or_insert_with(|| Arc::new(result.tools.clone().into()));
@@ -431,6 +482,48 @@ impl RuntimeClient {
             }
         }
         Ok((Self { inner }, result))
+    }
+
+    /// This connection's producer epoch.
+    pub(crate) fn epoch(&self) -> u64 {
+        self.inner.epoch
+    }
+
+    /// The runtime declared producer messaging.
+    pub(crate) fn produces(&self) -> bool {
+        lock(&self.inner.producers).declared
+    }
+
+    /// The runtime's producer recovery state; `None` when it does not
+    /// produce. A closed connection is `starting`: its work is unknown
+    /// until the instance reconnects and recovers.
+    pub(crate) fn producer_status(&self) -> Option<ProducerSourceStatus> {
+        let state = lock(&self.inner.producers);
+        if !state.declared {
+            return None;
+        }
+        if self.inner.peer.is_closed() {
+            return Some(ProducerSourceStatus::Starting);
+        }
+        Some(state.status.unwrap_or(ProducerSourceStatus::Starting))
+    }
+
+    /// Opens producer messaging on a connection whose runtime declared it:
+    /// its requests go to `host` from now on, and the runtime is told to
+    /// recover. Returns whether it opened now.
+    pub(crate) fn start_producers(&self, host: &Arc<RuntimeProducerHost>) -> bool {
+        {
+            let mut state = lock(&self.inner.producers);
+            if !state.declared || state.host.is_some() || self.inner.peer.is_closed() {
+                return false;
+            }
+            state.host = Some(Arc::clone(host));
+            state.status = Some(ProducerSourceStatus::Starting);
+        }
+        self.inner
+            .peer
+            .notify_detached(method::PRODUCER_RECOVERY_START, &Empty {});
+        true
     }
 
     /// The MCP servers the runtime hosts, with their last reported status.
@@ -511,7 +604,6 @@ impl RuntimeClient {
     }
 
     /// Whether the connection has ended.
-    #[cfg(test)]
     pub(crate) fn is_closed(&self) -> bool {
         self.inner.peer.is_closed()
     }
@@ -697,7 +789,17 @@ impl ClientInner {
 
     async fn handle_request(self: Arc<Self>, request: IncomingRequest) {
         let result = match request.method.as_str() {
-            method::TOOL_PROGRESS => self.call_progress(&request).await,
+            method::TOOL_PROGRESS => self.call_progress(&request).await.and_then(|outcome| {
+                serde_json::to_value(outcome)
+                    .map_err(|error| RpcError::remote(-32603, error.to_string()))
+            }),
+            method::PRODUCER_REGISTER
+            | method::PRODUCER_SEND
+            | method::PRODUCER_UNREGISTER
+            | method::PRODUCER_DISCARD => self.call_producer(&request).await,
+            method::PRODUCER_RECOVERY_COMPLETE => self
+                .complete_producer_recovery(&request)
+                .map(|()| serde_json::json!({})),
             other => Err(RpcError::remote(
                 error_code::METHOD_NOT_FOUND,
                 format!("unknown method `{other}`"),
@@ -746,6 +848,67 @@ impl ClientInner {
         }
     }
 
+    /// Hands a producer operation to the engine once it opened producer
+    /// messaging on this connection.
+    async fn call_producer(
+        &self,
+        request: &IncomingRequest,
+    ) -> Result<serde_json::Value, RpcError> {
+        let host = lock(&self.producers).host.clone().ok_or_else(|| {
+            RpcError::remote(
+                error_code::PRODUCER_REJECTED,
+                "producer messaging has not started on this connection",
+            )
+        })?;
+        let attachment = self.attachment_name.get().cloned().ok_or_else(|| {
+            RpcError::remote(
+                error_code::NOT_INITIALIZED,
+                "the runtime is not initialized",
+            )
+        })?;
+        (host.call)(RuntimeProducerCall {
+            attachment,
+            epoch: self.epoch,
+            method: request.method.clone(),
+            params: request.params()?,
+        })
+        .await
+        .map_err(|message| RpcError::remote(error_code::PRODUCER_REJECTED, message))
+    }
+
+    /// Records the runtime's recovery outcome. A repeat of the same outcome
+    /// is accepted; a different one is not.
+    fn complete_producer_recovery(&self, request: &IncomingRequest) -> Result<(), RpcError> {
+        let ExtensionRecoveryCompleteParams { outcome } = request.params()?;
+        let host = {
+            let mut state = lock(&self.producers);
+            let Some(host) = state.host.clone() else {
+                return Err(RpcError::remote(
+                    error_code::PRODUCER_REJECTED,
+                    "producer recovery has not started on this connection",
+                ));
+            };
+            if let Some(previous) = &state.outcome {
+                return if *previous == outcome {
+                    Ok(())
+                } else {
+                    Err(RpcError::remote(
+                        error_code::PRODUCER_REJECTED,
+                        "recovery outcome already reported",
+                    ))
+                };
+            }
+            state.status = Some(match outcome {
+                ExtensionRecoveryOutcome::Ready => ProducerSourceStatus::Ready,
+                ExtensionRecoveryOutcome::Failed { .. } => ProducerSourceStatus::Failed,
+            });
+            state.outcome = Some(outcome);
+            host
+        };
+        (host.changed)();
+        Ok(())
+    }
+
     async fn call_progress(&self, request: &IncomingRequest) -> Result<Outcome, RpcError> {
         let ToolProgressParams {
             prepared_id,
@@ -760,9 +923,14 @@ impl ClientInner {
         Ok(Outcome::of(sink.send(progress.into()).await))
     }
 
-    /// The connection ended: calls fail through their pending replies.
+    /// The connection ended: calls fail through their pending replies, and
+    /// its producer registrations no longer pass for live.
     fn connection_lost(&self) {
         lock(&self.executions).clear();
+        let host = lock(&self.producers).host.clone();
+        if let Some(host) = host {
+            (host.changed)();
+        }
     }
 
     fn remember_presentation(&self, call: ToolCallId, presentation: ToolCallPresentation) {
@@ -795,6 +963,7 @@ impl ClientInner {
             artifacts,
             detach,
             background,
+            producers: _,
         } = context;
         let params = ExecuteParams {
             prepared_id,
@@ -844,7 +1013,7 @@ impl ClientInner {
 }
 
 /// Unregisters an execution; one dropped before its reply also cancels the
-/// call in the runtime.
+/// call in the runtime, unless the call reported itself at its detach point.
 struct ExecutionGuard<'a> {
     client: &'a Arc<ClientInner>,
     prepared_id: u64,
@@ -853,8 +1022,12 @@ struct ExecutionGuard<'a> {
 
 impl Drop for ExecutionGuard<'_> {
     fn drop(&mut self) {
-        lock(&self.client.executions).remove(&self.prepared_id);
-        if !self.finished {
+        let host = lock(&self.client.executions).remove(&self.prepared_id);
+        // Work that reports itself outlives the call that waited for it.
+        let reports_itself = host
+            .and_then(|host| host.detach.current())
+            .is_some_and(|detachable| detachable.reports_itself);
+        if !self.finished && !reports_itself {
             self.client.peer.notify_detached(
                 method::TOOL_CANCEL,
                 &PreparedRef {

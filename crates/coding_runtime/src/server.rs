@@ -67,6 +67,11 @@ pub struct ServeOptions {
     /// How dropped MCP servers are reconnected; the shared default when
     /// absent. Tests that cannot wait for the production backoff set it.
     pub mcp_reconnect: Option<ReconnectPolicy>,
+    /// Declare producer messaging: the runtime's tools get a
+    /// [`ToolExecutionContext::producers`] channel to the sessions attached
+    /// to the runtime. The runtime tracks no external work of its own, so
+    /// it reports its recovery ready as soon as the daemon starts it.
+    pub producer_messaging: bool,
 }
 
 impl Default for ServeOptions {
@@ -76,6 +81,7 @@ impl Default for ServeOptions {
             workspace: None,
             tools: builtin_tools(),
             mcp_reconnect: None,
+            producer_messaging: false,
         }
     }
 }
@@ -364,6 +370,19 @@ impl Server {
                     execution.cancel.cancel();
                 }
             }
+            method::PRODUCER_RECOVERY_START if self.options.producer_messaging => {
+                let peer = self.peer.clone();
+                tokio::spawn(async move {
+                    let _ = peer
+                        .request::<_, cookie_agent_protocol::ExtensionRecoveryCompleteResult>(
+                            method::PRODUCER_RECOVERY_COMPLETE,
+                            &cookie_agent_protocol::ExtensionRecoveryCompleteParams {
+                                outcome: cookie_agent_protocol::ExtensionRecoveryOutcome::Ready,
+                            },
+                        )
+                        .await;
+                });
+            }
             // Notifications this runtime does not know are ignored.
             _ => {}
         }
@@ -489,6 +508,7 @@ impl Server {
             tools,
             skills: wire_skills(&skills),
             mcp_servers,
+            producer_messaging: self.options.producer_messaging,
         };
         let initialized = Arc::new(Initialized {
             info,
@@ -775,6 +795,11 @@ impl Server {
             artifacts: artifacts.clone(),
             detach,
             background: params.background,
+            producers: self.options.producer_messaging.then(|| {
+                Arc::new(PeerProducers {
+                    peer: self.peer.clone(),
+                }) as Arc<dyn cookie_agent_runtime_api::ProducerChannel>
+            }),
         };
         let result = AssertUnwindSafe(executor.execute(context))
             .catch_unwind()
@@ -1077,3 +1102,99 @@ impl std::fmt::Debug for Server {
 mod mcp_tests;
 #[cfg(test)]
 mod tests;
+
+/// A tool's producer channel: `producer/*` requests to the daemon over the
+/// runtime's connection.
+#[derive(Debug)]
+struct PeerProducers {
+    peer: Peer,
+}
+
+impl PeerProducers {
+    async fn request<P: Serialize + Sync, R: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        params: &P,
+    ) -> Result<R, ToolError> {
+        self.peer
+            .request(method, params)
+            .await
+            .map_err(|error| ToolError::execution(format!("{method}: {error}")))
+    }
+}
+
+#[async_trait]
+impl cookie_agent_runtime_api::ProducerChannel for PeerProducers {
+    async fn register(
+        &self,
+        session: SessionId,
+        name: cookie_agent_protocol::ProducerName,
+    ) -> Result<cookie_agent_protocol::ProducerId, ToolError> {
+        let result: cookie_agent_protocol::ExtensionProducerRegisterResult = self
+            .request(
+                method::PRODUCER_REGISTER,
+                &cookie_agent_protocol::ExtensionProducerRegisterParams {
+                    session_id: session,
+                    name,
+                },
+            )
+            .await?;
+        Ok(result.producer_id)
+    }
+
+    async fn send(
+        &self,
+        session: SessionId,
+        producer: cookie_agent_protocol::ProducerId,
+        message: cookie_agent_runtime_api::ProducerMessage,
+    ) -> Result<cookie_agent_protocol::ProducerMessageId, ToolError> {
+        let result: cookie_agent_protocol::ExtensionProducerSendResult = self
+            .request(
+                method::PRODUCER_SEND,
+                &cookie_agent_protocol::ExtensionProducerSendParams {
+                    session_id: session,
+                    producer_id: producer,
+                    mode: message.mode,
+                    idempotency_key: message.idempotency_key,
+                    description: message.description,
+                    body: message.body,
+                },
+            )
+            .await?;
+        Ok(result.message_id)
+    }
+
+    async fn unregister(
+        &self,
+        session: SessionId,
+        producer: cookie_agent_protocol::ProducerId,
+    ) -> Result<(), ToolError> {
+        let _: cookie_agent_protocol::ExtensionProducerUnregisterResult = self
+            .request(
+                method::PRODUCER_UNREGISTER,
+                &cookie_agent_protocol::ExtensionProducerUnregisterParams {
+                    session_id: session,
+                    producer_id: producer,
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn discard(
+        &self,
+        session: SessionId,
+        message: cookie_agent_protocol::ProducerMessageId,
+    ) -> Result<(), ToolError> {
+        let _: cookie_agent_protocol::ExtensionProducerDiscardResult = self
+            .request(
+                method::PRODUCER_DISCARD,
+                &cookie_agent_protocol::ExtensionProducerDiscardParams {
+                    session_id: session,
+                    message_id: message,
+                },
+            )
+            .await?;
+        Ok(())
+    }
+}
