@@ -767,8 +767,12 @@ async fn run_mcp(url: &str, token: &str, command: McpCommand) -> anyhow::Result<
                 println!("No MCP servers are configured.");
             }
             for server in servers {
+                let runtime = match &server.workspace {
+                    Some(workspace) => format!("{} at {workspace}", server.runtime_id),
+                    None => server.runtime_id.to_string(),
+                };
                 println!(
-                    "{}\t{} tools\t{:?}",
+                    "{}\t{} tools\t{:?}\t{runtime}",
                     server.name, server.tool_count, server.state
                 );
             }
@@ -781,7 +785,10 @@ async fn run_mcp(url: &str, token: &str, command: McpCommand) -> anyhow::Result<
                 .context("mcp.server.list failed")?
                 .servers
                 .into_iter()
-                .find(|candidate| candidate.name == server)
+                .find(|candidate| {
+                    candidate.name == server
+                        && candidate.runtime_id.as_str() == cookie_agent_protocol::RuntimeId::GLOBAL
+                })
                 .with_context(|| format!("unknown MCP server `{server}`"))?;
             if status.state != McpServerState::NeedsAuth {
                 anyhow::bail!(

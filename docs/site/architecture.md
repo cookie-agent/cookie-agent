@@ -19,7 +19,7 @@ has six top-level subcommands plus a default mode:
 | `attach [--url] --token` | Attach the TUI to an existing daemon WebSocket |
 | `connect [provider_id] --token` | Interactive durable managed-provider connection (TTY only) |
 | `disconnect [provider_id] --token` | Interactive durable managed-provider disconnection (TTY only) |
-| `mcp --token list` | List configured MCP servers |
+| `mcp --token list` | List the MCP servers of every runtime with their state and hosting runtime |
 | `mcp --token auth <server>` | Start OAuth authorization for a remote MCP server |
 
 The daemon binds only to the configured port and authenticates every WebSocket
