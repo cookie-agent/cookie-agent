@@ -21,6 +21,7 @@ pub fn tool_execution_context(
 ) -> Result<ToolExecutionContext, ToolError> {
     let (progress, _receiver) = mpsc::channel(1);
     Ok(ToolExecutionContext {
+        background: false,
         session: SessionId::new_v7(),
         run: RunId::new_v7(),
         progress: ProgressSink::new(progress),

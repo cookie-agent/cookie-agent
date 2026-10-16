@@ -26,7 +26,6 @@ block under the system prompt in the TUI transcript.
 | [`skill`](#skill) | `skill` |
 | [`delegate_subagent`](#delegate_subagent) | `delegate` |
 | [`get_subagent_result`](#get_subagent_result) | `delegate` |
-| [`cancel_subagent`](#cancel_subagent) | `delegate` |
 | [`send_message`](#send_message) | `message` |
 | [`goal_get`](#goal_get) | `read` |
 | [`goal_update`](#goal_update) | `write` |
@@ -312,13 +311,13 @@ Only when at least one skill is visible to the session.
 ## `delegate_subagent`
 
 ```text
-delegate_subagent(agent_type: "<subagent id>", background?: boolean, description: string, inherit_context?: boolean, prompt: string, resume_session_id?: string, runtimes?: string[])
+delegate_subagent(agent_type: "<subagent id>", description: string, inherit_context?: boolean, prompt: string, resume_session_id?: string, runtimes?: string[])
 ```
 
 Description sent to the model:
 
 ```text
-Delegate a self-contained task to a specialist agent. Foreground (default) blocks until done. background=true returns immediately with a session handle; the result is pushed back automatically as a <subagent_notification>. If you need to wait for completion, tell the user and end your turn; the notification will wake this session. Use get_subagent_result only to read the available result after notification. To continue an existing subagent, pass its resume_session_id (see the handle in its start/completion notice).
+Delegate a self-contained task to a specialist agent. In the foreground (default) the call waits for the subagent's first turn and returns its result. In the background it returns at once with the subagent's handle. Every later turn of the subagent, and the first one when it runs in the background, arrives as a <subagent_report> that wakes this session, so to wait for one, tell the user and end your turn. To continue an existing subagent, pass its resume_session_id or send it a message.
 ```
 
 Only when the agent can delegate to at least one subagent at this depth. The `agent_type` enum lists those subagents; this page shows a placeholder.
@@ -326,7 +325,6 @@ Only when the agent can delegate to at least one subagent at this depth. The `ag
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `agent_type` | `"<subagent id>"` | yes |  |
-| `background` | `boolean` | no | Default: `false`. |
 | `description` | `string` | yes | Short (3-5 words) summary of the task |
 | `inherit_context` | `boolean` | no | Default: `false`. |
 | `prompt` | `string` | yes | Full task brief with objective, context, and deliverable |
@@ -344,10 +342,6 @@ Only when the agent can delegate to at least one subagent at this depth. The `ag
             "<subagent id>"
           ],
           "type": "string"
-        },
-        "background": {
-          "default": false,
-          "type": "boolean"
         },
         "description": {
           "description": "Short (3-5 words) summary of the task",
@@ -391,7 +385,7 @@ get_subagent_result(limit?: integer, offset?: integer, session_id: string)
 Description sent to the model:
 
 ```text
-Read the current status and latest result of a subagent you delegated. This call returns immediately; it never waits. A background delegation sends a completion notification to this parent session when it ends. Use the handle from the subagent's start or completion notice, e.g. "explore_1a2b3c4d". Only your own subagents are visible.
+Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Use the subagent's handle, e.g. "explore_1a2b3c4d". Only your own subagents are visible.
 ```
 
 Only when the agent can delegate to at least one subagent at this depth.
@@ -421,46 +415,6 @@ Only when the agent can delegate to at least one subagent at this depth.
         },
         "session_id": {
           "description": "Handle (agent_type + 8 hex, e.g. \"coder_9f8e7d6b\") or full UUID of one of your subagents.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "session_id"
-      ],
-      "type": "object"
-    }
-    ```
-
-## `cancel_subagent`
-
-```text
-cancel_subagent(reason?: string, session_id: string)
-```
-
-Description sent to the model:
-
-```text
-Cancel a subagent you delegated. Accepts the same handle or UUID forms as get_subagent_result.
-```
-
-Only when the agent can delegate to at least one subagent at this depth.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `reason` | `string` | no |  |
-| `session_id` | `string` | yes | Handle or full UUID of one of your subagents. |
-
-??? note "Parameters JSON Schema"
-
-    ```json
-    {
-      "additionalProperties": false,
-      "properties": {
-        "reason": {
-          "type": "string"
-        },
-        "session_id": {
-          "description": "Handle or full UUID of one of your subagents.",
           "type": "string"
         }
       },
@@ -679,12 +633,12 @@ stop_background(job: string)
 Description sent to the model:
 
 ```text
-Stop a call running in the background. It returns once the call has ended; its <background_result> still arrives, with status "stopped" and the output it produced.
+Stop a call running in the background. It returns once the call has ended; its <background_result> still arrives, with status "stopped" and the output it produced. Given a subagent's handle, it cancels the turn the subagent is running; its <subagent_report> follows with status "cancelled", and the subagent can still be messaged or resumed.
 ```
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `job` | `string` | yes | The job ID from the result that moved the call to the background, such as `job_1a2b3c4d`. |
+| `job` | `string` | yes | The job ID from the result that moved the call to the background, such as `job_1a2b3c4d`, or a subagent's handle. |
 
 ??? note "Parameters JSON Schema"
 
@@ -694,7 +648,7 @@ Stop a call running in the background. It returns once the call has ended; its <
       "additionalProperties": false,
       "properties": {
         "job": {
-          "description": "The job ID from the result that moved the call to the background, such as `job_1a2b3c4d`.",
+          "description": "The job ID from the result that moved the call to the background, such as `job_1a2b3c4d`, or a subagent's handle.",
           "type": "string"
         }
       },

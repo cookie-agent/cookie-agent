@@ -10,7 +10,7 @@ use cookie_agent_runtime_api::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{prepared_operation, prepared_resource, safe_title};
+use super::{prepared_operation, prepared_resource};
 
 const DEFAULT_RESULT_LIMIT: u32 = 2_000;
 
@@ -34,8 +34,6 @@ struct DelegateArgs {
     description: String,
     prompt: String,
     agent_type: AgentId,
-    #[serde(default)]
-    background: bool,
     /// Handle or full UUID of an existing subagent to resume.
     resume_session_id: Option<String>,
     #[serde(default)]
@@ -56,14 +54,6 @@ struct GetResultArgs {
     limit: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CancelArgs {
-    /// Handle or full UUID of one of the caller's subagents.
-    session_id: String,
-    reason: Option<String>,
-}
-
 enum DelegateExecutor {
     Invoke {
         engine: Engine,
@@ -73,10 +63,6 @@ enum DelegateExecutor {
     GetResult {
         engine: Engine,
         args: GetResultArgs,
-    },
-    Cancel {
-        engine: Engine,
-        args: CancelArgs,
     },
 }
 
@@ -90,7 +76,7 @@ impl DelegateToolProvider {
     pub(crate) fn specs(targets: &[&str]) -> Vec<ToolSpec> {
         vec![
         ToolSpec {
-            background: false,
+            background: true,
             background_default: false,
             collision: Default::default(),
             output: Default::default(),
@@ -98,14 +84,13 @@ impl DelegateToolProvider {
             result_truncation: result_truncation_policy("delegate_subagent"),
             name: "delegate_subagent".into(),
             permission_name: Some("delegate".into()),
-            description: "Delegate a self-contained task to a specialist agent. Foreground (default) blocks until done. background=true returns immediately with a session handle; the result is pushed back automatically as a <subagent_notification>. If you need to wait for completion, tell the user and end your turn; the notification will wake this session. Use get_subagent_result only to read the available result after notification. To continue an existing subagent, pass its resume_session_id (see the handle in its start/completion notice).".into(),
+            description: "Delegate a self-contained task to a specialist agent. In the foreground (default) the call waits for the subagent's first turn and returns its result. In the background it returns at once with the subagent's handle. Every later turn of the subagent, and the first one when it runs in the background, arrives as a <subagent_report> that wakes this session, so to wait for one, tell the user and end your turn. To continue an existing subagent, pass its resume_session_id or send it a message.".into(),
             parameters: serde_json::json!({
                 "type":"object","additionalProperties":false,
                 "properties":{
                     "description":{"type":"string","description":"Short (3-5 words) summary of the task"},
                     "prompt":{"type":"string","description":"Full task brief with objective, context, and deliverable"},
                     "agent_type":{"type":"string","enum":targets},
-                    "background":{"type":"boolean","default":false},
                     "resume_session_id":{
                         "type":"string",
                         "description":"Optional. Handle or UUID of an existing subagent of yours to resume, e.g. \"explore_1a2b3c4d\". Only subagents you delegated are valid."
@@ -129,7 +114,7 @@ impl DelegateToolProvider {
             result_truncation: result_truncation_policy("get_subagent_result"),
             name: "get_subagent_result".into(),
             permission_name: Some("delegate".into()),
-            description: "Read the current status and latest result of a subagent you delegated. This call returns immediately; it never waits. A background delegation sends a completion notification to this parent session when it ends. Use the handle from the subagent's start or completion notice, e.g. \"explore_1a2b3c4d\". Only your own subagents are visible.".into(),
+            description: "Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Use the subagent's handle, e.g. \"explore_1a2b3c4d\". Only your own subagents are visible.".into(),
             parameters: serde_json::json!({
                 "type":"object","additionalProperties":false,
                 "properties":{
@@ -139,25 +124,6 @@ impl DelegateToolProvider {
                     },
                     "offset":{"type":"integer","minimum":0,"default":0},
                     "limit":{"type":"integer","minimum":1,"maximum":4_294_967_295_u64,"default":2000}
-                },
-                "required":["session_id"]
-            }),
-        },
-        ToolSpec {
-            background: false,
-            background_default: false,
-            collision: Default::default(),
-            output: Default::default(),
-            concurrency: Default::default(),
-            result_truncation: result_truncation_policy("cancel_subagent"),
-            name: "cancel_subagent".into(),
-            permission_name: Some("delegate".into()),
-            description: "Cancel a subagent you delegated. Accepts the same handle or UUID forms as get_subagent_result.".into(),
-            parameters: serde_json::json!({
-                "type":"object","additionalProperties":false,
-                "properties":{
-                    "session_id":{"type":"string","description":"Handle or full UUID of one of your subagents."},
-                    "reason":{"type":"string"}
                 },
                 "required":["session_id"]
             }),
@@ -231,10 +197,11 @@ impl ToolProvider for DelegateToolProvider {
         }
         body.push_str(
             "\n\nDelegation behavior:\n\
-             - Foreground delegation waits for the child and returns its result.\n\
-             - background=true returns a handle immediately; when the child finishes, this parent session receives a completion notification.\n\
-             - If you need to wait for a background child, tell the user that you are waiting and end your turn; the completion notification will wake this session.\n\
-             - Use get_subagent_result only to read the available result after notification; it does not wait.",
+             - Foreground delegation waits for the child's first turn and returns its result.\n\
+             - background=true returns the child's handle immediately.\n\
+             - Every turn of a child that is not returned as a tool result arrives as a <subagent_report> that wakes this session; to wait for one, tell the user that you are waiting and end your turn.\n\
+             - stop_background with the child's handle stops its current turn.\n\
+             - Use get_subagent_result to read a child's full output; it does not wait.",
         );
         Ok(vec![PromptSection {
             title: "Available subagents".into(),
@@ -253,7 +220,7 @@ impl ToolProvider for DelegateToolProvider {
 
     fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "delegate_subagent" | "get_subagent_result" | "cancel_subagent" => Ok(Some("delegate")),
+            "delegate_subagent" | "get_subagent_result" => Ok(Some("delegate")),
             _ => Err(ToolError::execution(
                 "delegate provider received another tool",
             )),
@@ -278,7 +245,6 @@ impl ToolProvider for DelegateToolProvider {
         match name {
             "delegate_subagent" => Ok(parse_delegate(arguments)?.description),
             "get_subagent_result" => Ok(parse_result(arguments)?.session_id.to_string()),
-            "cancel_subagent" => Ok(parse_cancel(arguments)?.session_id.to_string()),
             _ => Err(ToolError::execution(
                 "delegate provider received another tool",
             )),
@@ -356,29 +322,6 @@ impl ToolProvider for DelegateToolProvider {
                 };
                 (parts, normalized, executor)
             }
-            "cancel_subagent" => {
-                let args = parse_cancel(&call.arguments)?;
-                let target = self
-                    .engine
-                    .resolve_subagent_target(
-                        ctx.session,
-                        &args.session_id,
-                        crate::SubagentScope::DirectChildren,
-                    )
-                    .map_err(|error| ToolError::execution(error.to_string()))?;
-                let agent_type = self
-                    .engine
-                    .subagent_agent_type(ctx.session, target)
-                    .map_err(|error| ToolError::execution(error.to_string()))?;
-                let parts = Self::operation(&ctx, "cancel_subagent", &args, "cancel", &agent_type)?;
-                let normalized = serde_json::to_value(&args)
-                    .map_err(|error| ToolError::execution(error.to_string()))?;
-                let executor = DelegateExecutor::Cancel {
-                    engine: self.engine.clone(),
-                    args,
-                };
-                (parts, normalized, executor)
-            }
             _ => {
                 return Err(ToolError::execution(
                     "delegate provider received another tool",
@@ -396,7 +339,7 @@ fn delegate_permission_resource(
 ) -> Result<Option<String>, ToolError> {
     match name {
         "delegate_subagent" => Ok(Some(parse_delegate(arguments)?.agent_type.to_string())),
-        "get_subagent_result" | "cancel_subagent" => Ok(None),
+        "get_subagent_result" => Ok(None),
         _ => Err(ToolError::execution(
             "delegate provider received another tool",
         )),
@@ -421,7 +364,7 @@ impl PreparedExecutor for DelegateExecutor {
                     call_id,
                     args,
                 } => {
-                    let background = args.background;
+                    let background = context.background;
                     let handle = engine
                         .delegate_invoke(DelegateInvocation {
                             parent_session_id: context.session,
@@ -437,18 +380,22 @@ impl PreparedExecutor for DelegateExecutor {
                         })
                         .await
                         .map_err(|error| ToolError::execution(error.to_string()))?;
-                    if background {
-                        let short_id = engine
-                            .get_session(handle.child_session_id)
-                            .ok()
-                            .and_then(|meta| meta.short_id);
-                        Ok(background_start_result(handle.child_session_id, short_id))
-                    } else {
-                        engine
-                            .await_delegate(handle)
-                            .await
-                            .map_err(|error| ToolError::execution(error.to_string()))
-                    }
+                    let short_id = engine
+                        .get_session(handle.child_session_id)
+                        .ok()
+                        .and_then(|meta| meta.short_id);
+                    // The subagent reports its own turns once the call stops
+                    // waiting for it.
+                    context
+                        .detach
+                        .reached_with(cookie_agent_runtime_api::Detachable {
+                            note: Some(detach_note(handle.child_session_id, short_id)),
+                            reports_itself: true,
+                        });
+                    engine
+                        .await_delegate(handle)
+                        .await
+                        .map_err(|error| ToolError::execution(error.to_string()))
                 }
                 Self::GetResult { engine, args } => engine
                     .get_subagent_result(
@@ -461,10 +408,6 @@ impl PreparedExecutor for DelegateExecutor {
                     )
                     .await
                     .map_err(|error| ToolError::execution(error.to_string())),
-                Self::Cancel { engine, args } => engine
-                    .cancel_subagent(context.session, &args.session_id, args.reason)
-                    .await
-                    .map_err(|error| ToolError::execution(error.to_string())),
             }
         }
         .await;
@@ -472,34 +415,17 @@ impl PreparedExecutor for DelegateExecutor {
     }
 }
 
-/// The immediate background `delegate_subagent` result. The fragment is
-/// pre-wrapped so the model can copy it without reproducing a 36-char UUID; the
-/// UUID stays available under the unified `session_id` metadata key and the
-/// handle under `handle` (absent, with a UUID fallback label, for pre-handle
-/// sessions).
-fn background_start_result(
+/// The line a delegation that moves to the background adds to its immediate
+/// result: the subagent's handle, which the model copies instead of a 36-char
+/// UUID (the UUID stands in for a pre-handle session).
+fn detach_note(
     child_session_id: cookie_agent_protocol::SessionId,
     short_id: Option<String>,
-) -> ToolResult {
-    let label = short_id
-        .clone()
-        .unwrap_or_else(|| child_session_id.to_string());
-    let metadata = serde_json::json!({
-        "session_id": child_session_id,
-        "handle": short_id,
-    });
-    ToolResult {
-        display: None,
-        retained_output: None,
-        title: safe_title("Subagent started"),
-        output: format!(
-            "Subagent started. [subagent session {label}]\nuse get_subagent_result with session_id \"{label}\""
-        ),
-        metadata,
-        truncation: None,
-        attachments: Vec::new(),
-        additional_messages: Vec::new(),
-    }
+) -> String {
+    let label = short_id.unwrap_or_else(|| child_session_id.to_string());
+    format!(
+        "[subagent session {label}] Each time its turn ends you get a <subagent_report handle=\"{label}\">. Message it with send_message; read its full output with get_subagent_result (session_id \"{label}\"); stop its turn with stop_background (job \"{label}\")."
+    )
 }
 
 fn parse_delegate(arguments: &serde_json::Value) -> Result<DelegateArgs, ToolError> {
@@ -523,11 +449,6 @@ fn parse_result(arguments: &serde_json::Value) -> Result<GetResultArgs, ToolErro
         .map_err(|error| ToolError::execution(error.to_string()))
 }
 
-fn parse_cancel(arguments: &serde_json::Value) -> Result<CancelArgs, ToolError> {
-    serde_json::from_value(arguments.clone())
-        .map_err(|error| ToolError::execution(error.to_string()))
-}
-
 #[cfg(test)]
 mod tests {
     use crate::permissions::ApprovalStore;
@@ -539,8 +460,8 @@ mod tests {
     use serde::Serialize;
 
     use super::{
-        CancelArgs, DelegateToolProvider, GetResultArgs, background_start_result,
-        delegate_permission_resource, parse_delegate, parse_result,
+        DelegateToolProvider, GetResultArgs, delegate_permission_resource, detach_note,
+        parse_delegate, parse_result,
     };
 
     fn assert_legacy_grant_does_not_match(
@@ -608,25 +529,11 @@ mod tests {
             "agent",
             b"explorer",
         );
-        assert_legacy_grant_does_not_match(
-            "cancel_subagent",
-            "cancel",
-            &CancelArgs {
-                session_id: session_id.to_string(),
-                reason: None,
-            },
-            "agent",
-            b"explorer",
-        );
     }
 
     #[test]
     fn delegate_permission_metadata_distinguishes_spawn_from_session_tools() {
-        for name in [
-            "delegate_subagent",
-            "get_subagent_result",
-            "cancel_subagent",
-        ] {
+        for name in ["delegate_subagent", "get_subagent_result"] {
             assert_eq!(
                 DelegateToolProvider::get_permission_name(name).expect("permission name"),
                 Some("delegate")
@@ -647,7 +554,7 @@ mod tests {
         let session_id = cookie_agent_protocol::SessionId::new_v7();
         assert_eq!(
             delegate_permission_resource(
-                "cancel_subagent",
+                "get_subagent_result",
                 &serde_json::json!({"session_id":session_id}),
             )
             .expect("provider-managed label resource"),
@@ -658,7 +565,7 @@ mod tests {
     #[test]
     fn only_paginated_subagent_results_opt_out_of_truncation() {
         assert_eq!(
-            super::result_truncation_policy("cancel_subagent"),
+            super::result_truncation_policy("send_message"),
             cookie_agent_runtime_api::ToolResultTruncationPolicy::Bounded
         );
         for name in ["delegate_subagent", "get_subagent_result"] {
@@ -670,30 +577,18 @@ mod tests {
     }
 
     #[test]
-    fn background_start_result_surfaces_the_exact_handle_fragment() {
+    fn the_detach_note_names_the_handle_and_how_to_reach_the_subagent() {
         let session_id = cookie_agent_protocol::SessionId::new_v7();
-        let result = background_start_result(session_id, Some("explore_1a2b3c4d".into()));
-        assert_eq!(
-            result.output,
-            "Subagent started. [subagent session explore_1a2b3c4d]\nuse get_subagent_result with session_id \"explore_1a2b3c4d\""
+        let note = detach_note(session_id, Some("explore_1a2b3c4d".into()));
+        assert!(
+            note.starts_with("[subagent session explore_1a2b3c4d]"),
+            "{note}"
         );
-        assert_eq!(
-            result.metadata,
-            serde_json::json!({"session_id": session_id, "handle": "explore_1a2b3c4d"})
-        );
-        assert!(!result.output.contains(&session_id.to_string()));
-
-        let legacy = background_start_result(session_id, None);
-        assert_eq!(
-            legacy.output,
-            format!(
-                "Subagent started. [subagent session {session_id}]\nuse get_subagent_result with session_id \"{session_id}\""
-            )
-        );
-        assert_eq!(
-            legacy.metadata,
-            serde_json::json!({"session_id": session_id, "handle": null})
-        );
+        assert!(note.contains(r#"get_subagent_result (session_id "explore_1a2b3c4d")"#));
+        assert!(note.contains(r#"stop_background (job "explore_1a2b3c4d")"#));
+        assert!(!note.contains(&session_id.to_string()));
+        let legacy = detach_note(session_id, None);
+        assert!(legacy.starts_with(&format!("[subagent session {session_id}]")));
     }
 
     #[test]

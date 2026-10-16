@@ -45,11 +45,11 @@ pub struct DelegateHandle {
     pub child_run_id: Option<RunId>,
 }
 
-/// A delegate wait that cancels its child if its consumer abandons the wait.
+/// A delegate wait. A consumer that abandons it releases the delegation to
+/// the background instead of cancelling the child.
 pub struct DelegateAwait {
     pub(crate) future: Pin<Box<dyn Future<Output = Result<ToolResult, EngineError>> + Send>>,
     pub(crate) engine: Engine,
-    pub(crate) runtime: Option<tokio::runtime::Handle>,
     pub(crate) handle: DelegateHandle,
     pub(crate) completed: bool,
 }
@@ -74,21 +74,9 @@ impl Drop for DelegateAwait {
         if self.completed {
             return;
         }
-        // Delegate waits are created and polled from the Tokio tool task. If that
-        // task is dropped, retain the cancellation in a detached runtime task.
-        // This closes the abandoned-tool-call child-run leak.
-        if let Some(runtime) = self
-            .runtime
-            .clone()
-            .or_else(|| tokio::runtime::Handle::try_current().ok())
-        {
-            let engine = self.engine.clone();
-            let cancel_engine = engine.clone();
-            let handle = self.handle;
-            let _ = engine.spawn_admission_task(&runtime, async move {
-                let _ = cancel_engine.cancel_delegate(handle).await;
-            });
-        }
+        // The caller stopped waiting: the call moved to the background or
+        // its run was cancelled. The child keeps running and reports itself.
+        self.engine.release_foreground_delegate(self.handle);
     }
 }
 

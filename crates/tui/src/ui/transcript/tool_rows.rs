@@ -10,7 +10,7 @@ pub(super) fn tool_icon(title: &str) -> &'static str {
         "write" | "edit" => "📝",
         "webfetch" => "🌐",
         "send_message" => "📨",
-        "delegate_subagent" | "get_subagent_result" | "cancel_subagent" => "🤖",
+        "delegate_subagent" | "get_subagent_result" => "🤖",
         "skill" => "✨",
         "goal_get" | "goal_update" => "🎯",
         _ => external_tool_icon(title),

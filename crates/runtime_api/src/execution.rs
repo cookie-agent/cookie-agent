@@ -91,6 +91,10 @@ pub struct ToolExecutionContext {
     pub artifacts: Arc<dyn ToolArtifacts>,
     /// Where a background-capable tool says it may be detached.
     pub detach: DetachPoint,
+    /// The model asked to run this call of a background-capable tool in the
+    /// background. The tool never sees the `background` argument; a tool
+    /// whose admission differs in the background reads this.
+    pub background: bool,
 }
 
 impl ToolExecutionContext {
@@ -317,6 +321,10 @@ pub struct DetachPoint {
 pub struct Detachable {
     /// A line for the immediate result, such as a process ID.
     pub note: Option<String>,
+    /// The work reports its own results once detached (a subagent reports
+    /// each finished turn), so the host only stops waiting: it drops the
+    /// call's execution and sends no `<background_result>`.
+    pub reports_itself: bool,
 }
 
 /// The host's side of a [`DetachPoint`].
@@ -340,11 +348,19 @@ impl DetachPoint {
 
     /// Marks the call detachable with `note`. Only the first call counts.
     pub fn reached(&self, note: Option<String>) {
+        self.reached_with(Detachable {
+            note,
+            reports_itself: false,
+        });
+    }
+
+    /// Marks the call detachable as `detachable`. Only the first call counts.
+    pub fn reached_with(&self, detachable: Detachable) {
         self.sender.send_if_modified(|current| {
             if current.is_some() {
                 return false;
             }
-            *current = Some(Detachable { note });
+            *current = Some(detachable);
             true
         });
     }

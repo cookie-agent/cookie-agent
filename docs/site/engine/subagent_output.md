@@ -14,8 +14,8 @@ An omitted table inherits. An authored table replaces the lower table, with
 defaults for omitted fields; unknown fields fail. See
 [config.toml](../guide/configuration.md).
 
-Controls the preview of a subagent's final report in the `delegate_subagent`
-result and the `<subagent_notification>` a background delegation sends. It
+Controls the preview of a subagent's final message in the `delegate_subagent`
+result and in the `<subagent_report>` each finished turn sends its parent. It
 truncates the way [`[tool_output]`](tool_output.md) does: a report within both
 `max_lines` and `max_bytes` is shown whole and ends in `full output shown`; a
 longer one shows its first `head_lines` and last `tail_lines` lines, splitting
@@ -23,8 +23,9 @@ longer one shows its first `head_lines` and last `tail_lines` lines, splitting
 `[… 200 lines omitted. Read more: get_subagent_result(session_id="explore_1a2b3c4d", offset=20)]`.
 `get_subagent_result` pages the full report and is never truncated.
 
-The preview is stored on the parent's `delegate_finished` event, so changing
-these limits affects later completions only.
+The preview is stored when the turn reports, on the parent's
+`delegate_finished` event or report message, so changing these limits affects
+later reports only.
 
 | Key | Type | Default | Description |
 |---|---|---|---|

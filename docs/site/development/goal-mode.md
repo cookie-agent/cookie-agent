@@ -151,8 +151,8 @@ Semantics:
 
 Every registration has one authenticated owner. Durable `ProducerOwner` variants
 are `Plugin { plugin }`, `Delegation { invocation_id }`, `Goal { goal_id }`,
-`GoalControl { goal_id }`, `Agent { session_id }`, and `Tool { tool_call_id }`
-(`crates/protocol/src/producer.rs`). Plugin connection
+`GoalControl { goal_id }`, `Agent { session_id }`, `Tool { tool_call_id }`, and
+`Subagent { session_id }` (`crates/protocol/src/producer.rs`). Plugin connection
 authority remains runtime-only. `GoalControl` identifies engine-authored lifecycle
 steering, separate from the goal controller's continuation reminders. The
 destination is fixed at registration and checked on every send.

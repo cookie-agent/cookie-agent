@@ -908,6 +908,7 @@ impl Engine {
                             notification_sent: false,
                             producer_id: producer_guard.as_ref().map(|guard| guard.producer_id),
                             monitor_started: monitor_release.is_some(),
+                            foreground_waiting: !invocation.background,
                         };
                         debug_assert!(record.background || record.producer_id.is_none());
                         records.insert(child.session_id, record);
@@ -979,6 +980,7 @@ impl Engine {
             notification_sent: false,
             producer_id: producer_guard.as_ref().map(|guard| guard.producer_id),
             monitor_started: false,
+            foreground_waiting: !invocation.background,
         };
         debug_assert!(record.background || record.producer_id.is_none());
         self.inner
@@ -1113,7 +1115,6 @@ impl Engine {
         DelegateAwait {
             future: Box::pin(async move { engine.await_delegate_inner(handle).await }),
             engine: self.clone(),
-            runtime: self.inner.runtime.clone(),
             handle,
             completed: false,
         }
@@ -1193,6 +1194,63 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// The parent stopped waiting for a foreground delegation: its call moved
+    /// to the background, or the parent's run was cancelled. The child keeps
+    /// running and reports its turns itself; from now on it counts toward
+    /// the concurrency limit like a background delegation, and a monitor
+    /// finishes its bookkeeping.
+    pub(crate) fn release_foreground_delegate(&self, handle: DelegateHandle) {
+        let released = {
+            let mut records = self
+                .inner
+                .delegation
+                .by_session
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            records
+                .get_mut(&handle.child_session_id)
+                .filter(|record| {
+                    record.invocation_id == handle.invocation_id && record.foreground_waiting
+                })
+                .map(|record| {
+                    record.foreground_waiting = false;
+                    record.background = true;
+                    record.counts_slot = record.root_session_id == record.parent_session_id;
+                    record.monitor_started = true;
+                    record.parent_session_id
+                })
+        };
+        let Some(parent) = released else {
+            return;
+        };
+        // The child's running turn now lists among the parent's background
+        // calls.
+        self.notify_background_changed(parent);
+        let engine = self.clone();
+        let _ = self.spawn_background_delegation_task(async move {
+            let _ = engine.await_delegate_inner(handle).await;
+            if let Some(run) = handle.child_run_id {
+                engine
+                    .deliver_subagent_report_until_done(handle.child_session_id, run)
+                    .await;
+            }
+            engine
+                .finish_background_until_done(handle.child_session_id, handle.invocation_id)
+                .await;
+        });
+    }
+
+    /// Whether a foreground call still waits for `run` of `child`.
+    pub(super) fn foreground_waits_for(&self, child: SessionId, run: RunId) -> bool {
+        self.inner
+            .delegation
+            .by_session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&child)
+            .is_some_and(|record| record.foreground_waiting && record.child_run_id == Some(run))
     }
 
     /// Cancels the child run and returns the structured delegate cancellation
@@ -2379,22 +2437,26 @@ impl Engine {
         }
     }
 
-    pub async fn cancel_subagent(
+    /// Stops the subagent `reference` of `caller_session_id`, a direct child:
+    /// a queued delegation is dropped before it starts, and a running child's
+    /// current turn is cancelled, whatever started it. Returns once the child
+    /// is no longer running; its report follows. The child can still be
+    /// resumed or messaged afterwards.
+    pub async fn stop_subagent(
         &self,
         caller_session_id: SessionId,
         reference: impl std::fmt::Display,
         reason: Option<String>,
-    ) -> Result<ToolResult, EngineError> {
+    ) -> Result<(), EngineError> {
         let child_session_id = self.resolve_subagent_target(
             caller_session_id,
             reference,
             SubagentScope::DirectChildren,
         )?;
-        let handle = self
-            .ensure_subagent_owned(caller_session_id, child_session_id)
+        self.ensure_subagent_owned(caller_session_id, child_session_id)
             .await?;
         let admission_guard = self.inner.delegation.admission.lock().await;
-        let record = self
+        let queued = self
             .inner
             .delegation
             .by_session
@@ -2402,22 +2464,11 @@ impl Engine {
             .map_err(|_| EngineError::ActorStopped)?
             .get(&child_session_id)
             .copied()
-            .ok_or_else(|| EngineError::ToolFailed("subagent registry entry is missing".into()))?;
-        if record.state == DelegationState::Queued {
-            self.inner
-                .delegation
-                .by_session
-                .lock()
-                .map_err(|_| EngineError::ActorStopped)?
-                .get(&child_session_id)
-                .filter(|record| record.state == DelegationState::Queued)
-                .map(|_| ())
-                .ok_or_else(|| {
-                    EngineError::ToolFailed("subagent is not queued for cancellation".into())
-                })?;
+            .filter(|record| record.state == DelegationState::Queued);
+        if let Some(record) = queued {
             let cancellation_reason = reason
                 .as_deref()
-                .unwrap_or("queued subagent cancelled before startup");
+                .unwrap_or("queued subagent stopped before startup");
             self.mark_delegation_finished(record.invocation_id, SessionStatus::Cancelled)
                 .await?;
             self.void_runless_pending_inputs(child_session_id).await?;
@@ -2446,39 +2497,37 @@ impl Engine {
             drop(admission_guard);
             self.finish_background_or_retry(child_session_id, record.invocation_id)
                 .await;
-            let short_id = self.session_short_id(child_session_id);
-            return Ok(cancelled_delegate_result(
-                child_session_id,
-                short_id.as_deref(),
-                None,
-            ));
+            return Ok(());
         }
-        let child_run_id = record
-            .child_run_id
-            .or(handle.child_run_id)
-            .or_else(|| {
-                self.inner
-                    .delegation_events
-                    .get(handle.invocation_id)
-                    .and_then(|entry| entry.child_run_id)
-            })
-            .ok_or_else(|| EngineError::ToolFailed("subagent has not started a run".into()))?;
         drop(admission_guard);
-        let child = self.inner.store.get(child_session_id)?;
-        if matches!(child.status, SessionStatus::Running | SessionStatus::Idle) {
-            self.cancel_run_durably(child_run_id, reason)?;
-        }
-        loop {
-            let child = self.inner.store.get(child_session_id)?;
-            if !matches!(child.status, SessionStatus::Running | SessionStatus::Idle) {
-                return Ok(cancelled_delegate_result(
-                    child_session_id,
-                    child.meta.short_id.as_deref(),
-                    Some(delegate_final_text(&child, Some(child_run_id)).to_owned()),
-                ));
-            }
+        let current_run = self
+            .inner
+            .sessions
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .find(|(_, active)| active.session == child_session_id)
+            .map(|(run, _)| *run);
+        let Some(run) = current_run else {
+            return Err(EngineError::ToolFailed(format!(
+                "subagent {} has no turn running",
+                self.session_short_id(child_session_id)
+                    .unwrap_or_else(|| child_session_id.to_string())
+            )));
+        };
+        self.cancel_run_durably(run, reason)?;
+        while self
+            .inner
+            .sessions
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(&run)
+        {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -2889,6 +2938,8 @@ impl Engine {
                         notification_sent,
                         producer_id,
                         monitor_started,
+                        // After a restart nothing waits in the foreground.
+                        foreground_waiting: false,
                     },
                 );
             if let Some(stale) = stale_foreground_producer {
@@ -3373,6 +3424,9 @@ pub(super) struct DelegationRecord {
     pub(super) notification_sent: bool,
     pub(super) producer_id: Option<ProducerId>,
     pub(super) monitor_started: bool,
+    /// A foreground `delegate_subagent` call is still waiting for the
+    /// child's first turn, whose report is then its tool result.
+    pub(super) foreground_waiting: bool,
 }
 
 struct BackgroundProducerGuard {
@@ -3495,13 +3549,11 @@ pub(crate) fn render_subagent_notification(
     )
 }
 
+/// The report a background delegation's first turn sends, as every later
+/// turn's (`super::subagent_reports`). History renders recorded
+/// `<subagent_notification>` messages as they were.
 pub(super) fn render_background_completion(teaser: &DelegateTeaser) -> String {
-    render_subagent_notification(
-        &teaser.preview,
-        teaser.status,
-        teaser.total_lines,
-        &teaser.short_id,
-    )
+    super::subagent_reports::render_subagent_report(teaser)
 }
 
 pub(crate) fn freeze_delegated_child_policy(
@@ -3614,7 +3666,7 @@ pub(super) struct DelegateTeaser {
     pub(super) total_lines: u64,
 }
 
-fn delegate_teaser(
+pub(super) fn delegate_teaser(
     child: &session::SessionProjection,
     child_session_id: SessionId,
     status: SessionStatus,
@@ -3985,10 +4037,12 @@ mod concurrency_tests {
         insta::assert_snapshot!(
             render_background_completion(&teaser),
             @r###"
-<subagent_notification>first line
+<subagent_report handle="explore_1a2b3c4d" status="completed">
+first line
 second line
 
-[subagent session explore_1a2b3c4d; completed; 79 lines; use get_subagent_result with session_id "explore_1a2b3c4d" for the full output]</subagent_notification>
+[subagent session explore_1a2b3c4d; completed; 79 lines; use get_subagent_result with session_id "explore_1a2b3c4d" for the full output]
+</subagent_report>
 "###
         );
     }

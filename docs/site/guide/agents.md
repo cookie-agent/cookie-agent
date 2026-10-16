@@ -173,8 +173,11 @@ the [security guidance](security.md#agentsmd-context-files). Configure limits in
 
 `delegate_subagent` requires a short `description`, a self-contained `prompt`,
 an allowed `agent_type`, and accepts optional `background`, `resume_session_id`,
-`inherit_context`, and `runtimes` arguments. Foreground calls block and return a concise
-result teaser. Background calls return immediately with the child's handle;
+`inherit_context`, and `runtimes` arguments. `delegate_subagent` is a
+[background-capable](../reference/tools.md#background-calls) tool that runs in the
+foreground by default: a foreground call blocks and returns the child's first
+turn as a concise result teaser. A background call, or a foreground call the
+user moves to the background, returns immediately with the child's handle;
 admission still waits for any required permission approval. A child is
 addressed everywhere by its short tree-unique handle
 (`<agent_type>_<8 hex>`, e.g. `explore_1a2b3c4d`) or a full session UUID; a
@@ -188,8 +191,8 @@ titles; invalid title text rejects the delegation.
 that was previously created by this same parent session. Top-level, unknown,
 foreign, self, and ancestor sessions are rejected. A terminal child starts a new run with the new
 prompt; an active child receives the prompt through its pending-input FIFO. The
-current delegation link is refreshed, so result, messaging, cancel, queue, slot,
-and completion-notification behavior applies to the resumed work. The existing
+current delegation link is refreshed, so result, messaging, stop, queue, slot,
+and report behavior applies to the resumed work. The existing
 session title is never replaced by the new description; the description remains
 only the delegation call's display argument. A child that already has a queued
 or starting delegation cannot be resumed again until that invocation starts or
@@ -212,17 +215,35 @@ does not have rejects the call. A resumed child keeps its own attachments, so
 tools from its own attachments the same way the parent does.
 
 Background sessions move through `queued`, `running`, and a terminal
-`completed`, `failed`, `interrupted`, or `cancelled` state. Completion appends a
-parent event containing the session ID and handle, status, a preview of the
-result (see [`[subagent_output]`](../engine/subagent_output.md)), and total line
-count. Use `get_subagent_result` with the
-child's handle or UUID and zero-based `offset`/`limit` to read the last assistant
-message of the child's most recent turn in pages; a running child (including one
-just woken by `send_message`) reports as running and returns no text. It never
-waits. If a background child is still running, tell the user that you are waiting
-and end the turn; its completion notification will wake this parent session. Use
-`cancel_subagent` with the owned handle or UUID and optional `reason` to cancel
-it. Result and cancellation operations reject sessions that are not direct
+`completed`, `failed`, `interrupted`, or `cancelled` state.
+
+A subagent reports **every turn it finishes** to its direct parent, whatever
+started the turn: the delegation, a resume, `send_message` mail, or its own
+background results. The report is a `<subagent_report handle="…"
+status="…">` message steered into the parent, carrying a preview of the turn's
+final assistant message (see
+[`[subagent_output]`](../engine/subagent_output.md)), the status, and the total
+line count; it wakes an idle parent. The one exception is the first turn of a
+foreground call, whose report is the tool result instead. Each turn reports
+exactly once, across retries and restarts; a grandchild reports to its own
+parent only.
+
+Use `get_subagent_result` with the child's handle or UUID and zero-based
+`offset`/`limit` to read the last assistant message of the child's most recent
+turn in pages; a running child (including one just woken by `send_message`)
+reports as running and returns no text. It never waits. If a background child
+is still running, tell the user that you are waiting and end the turn; its
+report will wake this parent session.
+
+A child's running turn appears among the parent's background calls under its
+handle. `stop_background` with the handle cancels that turn, whichever turn it
+is, and returns once it has ended; its report follows with
+`status="cancelled"`. A queued delegation is dropped instead. Stopping an idle
+child is an error. The child can still be resumed or messaged afterwards.
+Cancelling or interrupting the parent's run does **not** stop its children: a
+foreground `delegate_subagent` call it was waiting on ends cancelled, and the
+child keeps running and reports its turn as if the call had been moved to the
+background. Result and stop operations reject sessions that are not direct
 children of the caller.
 
 The former `steer_subagent` tool is removed. Agents reach children and other
@@ -553,7 +574,8 @@ Tool providers publish a static permission name and an optional resource label:
 | `write`, `edit` | `write` | Workspace-relative path inside the workspace; absolute path outside it |
 | `bash` | `bash` | Complete command string |
 | `delegate_subagent` | `delegate` | Target `agent_type` |
-| `get_subagent_result`, `cancel_subagent` | `delegate` | Owned subagent's `agent_type` |
+| `get_subagent_result` | `delegate` | Owned subagent's `agent_type` |
+| `stop_background` | none | Needs no permission |
 | `send_message` | `message` | Recipient's relationship to the sender: `parent`, `child`, `sibling`, or `*` |
 | `<server>_<tool>` | `mcp` | The complete generated MCP tool name |
 | `skill` | `skill` | Skill name |
@@ -669,18 +691,16 @@ that permits it. Review them and work only in repositories you trust.
 
 Delegation targets come from the keys in the `delegate` permission map and must
 resolve to enabled `subagent` or `all` agents. This action controls
-`delegate_subagent`, `get_subagent_result`, and
-`cancel_subagent`. All three tools use the target subagent's agent type as their
-permission resource.
-Result and cancel retain their existing ownership and argument
+`delegate_subagent` and `get_subagent_result`. Both tools use the target
+subagent's agent type as their permission resource.
+Result retains its existing ownership and argument
 validation, and permission evaluation uses that agent type. Their approval
 display still shows the owned `session_id`; display text is independent of the
 permission resource.
 
 This changes existing mapped delegation policies. For example,
 `delegate: {reviewer: allow, "*": deny}` allows `delegate_subagent` targeting
-`reviewer`, but denies `get_subagent_result` and
-`cancel_subagent` for other agent types. Existing tree grants issued for their
+`reviewer`, but denies `get_subagent_result` for other agent types. Existing tree grants issued for their
 former identities do not carry over.
 Runtime `delegation.max_depth` defaults to 3 and `max_concurrency` defaults to 4.
 

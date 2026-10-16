@@ -332,6 +332,7 @@ async fn execute(
     let (progress, _receiver) = tokio::sync::mpsc::channel(1);
     executor
         .execute(ToolExecutionContext {
+            background: false,
             session: SessionId::new_v7(),
             run: RunId::new_v7(),
             progress: ProgressSink::new(progress),

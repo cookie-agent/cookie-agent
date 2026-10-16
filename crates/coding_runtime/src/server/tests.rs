@@ -395,6 +395,7 @@ async fn calls_are_prepared_executed_and_released_by_prepared_id() {
     assert!(revalidated.error.is_none());
 
     let execute = |prepared_id| ExecuteParams {
+        background: false,
         prepared_id,
         session,
         run,

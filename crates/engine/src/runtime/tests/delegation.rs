@@ -5,7 +5,7 @@ use cookie_agent_protocol::{
     ToolTerminationOutcome,
 };
 
-use crate::{Engine, EngineHistoryView, EngineOptions};
+use crate::{Engine, EngineOptions};
 
 use super::support::*;
 
@@ -395,8 +395,8 @@ async fn rebuilding_registry_strips_foreground_delegation_producer() {
 }
 
 #[tokio::test]
-async fn cancelling_foreground_delegates_preserves_child_sessions_in_results_and_history() {
-    let (endpoint, children_reached, _release_children, server) = parallel_delegate_server().await;
+async fn cancelling_the_parent_leaves_foreground_children_running_and_reporting() {
+    let (endpoint, children_reached, release_children, server) = parallel_delegate_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     fixture.engine.register_tool_provider(
         crate::ToolLayer::Base,
@@ -435,12 +435,10 @@ async fn cancelling_foreground_delegates_preserves_child_sessions_in_results_and
         )
         .await
         .expect("cancel parent");
-    // Tool results precede RunCancelled. Do not shut down before the parent
-    // commits its terminal event, or adoption correctly treats it as interrupted.
-    let parent = await_projection(
+    let projection = await_projection(
         &fixture.engine,
         parent.session_id,
-        "cancelled parent and delegate results",
+        "cancelled parent with both calls ended",
         |projection| {
             projection.runs.get(&run).is_some_and(|run| {
                 run.status == SessionStatus::Cancelled && run.pending_calls.is_empty()
@@ -449,7 +447,20 @@ async fn cancelling_foreground_delegates_preserves_child_sessions_in_results_and
     )
     .await;
     wait_for_run_inactive(&fixture.engine, run).await;
-    let events = parent.log.events();
+
+    // Each call ends cancelled and names the child it leaves running.
+    let children = fixture
+        .engine
+        .children(parent.session_id)
+        .expect("children");
+    assert_eq!(children.len(), 2);
+    assert!(
+        children
+            .iter()
+            .all(|child| child.status == SessionStatus::Running),
+        "cancelling the parent must not cascade: {children:?}"
+    );
+    let events = projection.log.events();
     let terminations = events
         .iter()
         .filter_map(|event| match &event.payload {
@@ -460,52 +471,79 @@ async fn cancelling_foreground_delegates_preserves_child_sessions_in_results_and
         })
         .collect::<Vec<_>>();
     assert_eq!(terminations.len(), 2);
-    let history = fixture
-        .engine
-        .get_history(parent.meta.session_id, EngineHistoryView::Assembled)
-        .await
-        .expect("assembled parent history");
-    let tool_turns = history
-        .iter()
-        .filter(|turn| matches!(turn, oven_sdk::HistoryTurn::Tool(_)))
-        .collect::<Vec<_>>();
-    let encoded = serde_json::to_string(&tool_turns).unwrap();
-    assert_eq!(encoded.matches("\"is_error\":true").count(), 2);
     for termination in terminations {
-        termination
-            .validate()
-            .expect("valid cancellation termination");
         assert_eq!(termination.outcome, ToolTerminationOutcome::Cancelled);
-        let result = termination
-            .result
-            .as_ref()
-            .expect("retained delegate result");
-        let child_id = result.metadata["session_id"]
-            .as_str()
-            .expect("child session ID");
-        let handle = result.metadata["handle"].as_str().expect("child handle");
-        assert_eq!(result.metadata["status"], "cancelled");
-        assert!(result.metadata.get("preview").is_none());
+        let child = events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::ToolCallLinked {
+                    tool_call_id,
+                    child_session_id,
+                } if *tool_call_id == termination.tool_call_id => Some(*child_session_id),
+                _ => None,
+            })
+            .expect("linked child");
+        let handle = fixture
+            .engine
+            .session_short_id(child)
+            .expect("child handle");
         assert!(
-            result
-                .output
-                .contains(&format!("[subagent session {handle}; cancelled;"))
+            termination.error.as_ref().is_some_and(|error| error
+                .message
+                .as_str()
+                .contains(&format!("[subagent session {handle}]"))),
+            "{termination:?}"
         );
-        assert!(encoded.contains(&serde_json::to_string(&result.output).unwrap()));
-        assert!(events.iter().any(|event| matches!(&event.payload,
-            EventPayload::ToolCallLinked { tool_call_id, child_session_id }
-                if *tool_call_id == termination.tool_call_id && child_session_id.to_string() == child_id
-        )));
     }
-    fixture.engine.shutdown().await;
-    server.abort();
-    assert!(server.await.unwrap_err().is_cancelled());
 
+    // Both children finish their turns and report to the parent.
+    release_children.notify_one();
+    let reports = |projection: &crate::session::SessionProjection| {
+        projection
+            .log
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::ProducerMessageAccepted {
+                    producer_owner: cookie_agent_protocol::ProducerOwner::Subagent { session_id },
+                    body,
+                    ..
+                } => Some((*session_id, body.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let projection = await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "both children reported",
+        |projection| reports(projection).len() == 2,
+    )
+    .await;
+    for (child, body) in reports(&projection) {
+        let handle = fixture
+            .engine
+            .session_short_id(child)
+            .expect("child handle");
+        assert!(
+            body.starts_with(&format!(
+                "<subagent_report handle=\"{handle}\" status=\"completed\">"
+            )),
+            "{body}"
+        );
+        assert!(body.contains("complete"), "{body}");
+    }
+    // The reports wake the parent; what it does with them is not this test's
+    // concern.
+    server.abort();
+    fixture.engine.shutdown().await;
+
+    // A restart does not report the turns again.
     let reopened = reopen_engine(&fixture);
     reopened
-        .resume(parent.meta.session_id)
+        .resume(parent.session_id)
         .await
-        .expect("adopt cancelled parent");
+        .expect("adopt parent");
     tokio::time::timeout(
         test_timeout(10),
         reopened.wait_for_delegation_reconciliation_for_test(),
@@ -515,49 +553,9 @@ async fn cancelling_foreground_delegates_preserves_child_sessions_in_results_and
     let recovered = reopened
         .inner
         .store
-        .get(parent.meta.session_id)
+        .get(parent.session_id)
         .expect("recovered parent");
-    assert_eq!(recovered.status, SessionStatus::Cancelled);
-    assert_eq!(
-        recovered.runs.len(),
-        1,
-        "recovery must not start an automatic run"
-    );
-    assert!(recovered.log.events().iter().all(|event| !matches!(
-        event.payload,
-        EventPayload::DelegateFinishedV2 { .. }
-            | EventPayload::ProducerMessageAccepted {
-                producer_owner: cookie_agent_protocol::ProducerOwner::Delegation { .. },
-                ..
-            }
-    )));
-    assert!(
-        reopened
-            .session_producers(cookie_agent_protocol::SessionProducersParams {
-                session_id: parent.meta.session_id,
-            })
-            .await
-            .expect("recovered producers")
-            .producers
-            .is_empty()
-    );
-    for entry in reopened.inner.delegation_events.entries() {
-        assert!(!entry.request.background);
-        assert!(
-            !reopened
-                .delegation_registry_snapshot(entry.reservation.child_session_id)
-                .expect("recovered foreground registry")
-                .2
-        );
-    }
-    let recovered_history = reopened
-        .get_history(parent.meta.session_id, EngineHistoryView::Assembled)
-        .await
-        .expect("recovered history");
-    assert_eq!(
-        serde_json::to_value(recovered_history).unwrap(),
-        serde_json::to_value(history).unwrap()
-    );
+    assert_eq!(reports(&recovered).len(), 2);
     reopened.shutdown().await;
 }
 

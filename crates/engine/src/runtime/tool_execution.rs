@@ -773,6 +773,7 @@ impl Engine {
                 turn_context,
                 artifacts: engine.inner.artifacts.clone(),
                 detach: detach_point,
+                background: background == Some(true),
             }))
             .catch_unwind()
             .map(|result| {
@@ -819,6 +820,16 @@ impl Engine {
                         // The call's live display ends here; its capture goes on.
                         hub.finalize();
                         engine.retain_finalized_output_hub(call.id);
+                        let by = detach_by.expect("detaching on request");
+                        if detachable.reports_itself {
+                            // The work reports itself (a subagent): stop
+                            // waiting; dropping the execution releases it.
+                            drop(invoke);
+                            return Ok(super::background_tasks::self_reporting_result(
+                                by,
+                                detachable.note.as_deref(),
+                            ));
+                        }
                         return engine
                             .detach_call(super::background_tasks::DetachedCall {
                                 session: active.session,
@@ -828,7 +839,7 @@ impl Engine {
                                     .primary_argument
                                     .as_ref()
                                     .map(|display| display.as_str().to_owned()),
-                                by: detach_by.expect("detaching on request"),
+                                by,
                                 started_at,
                                 note: detachable.note,
                                 execution: invoke,
@@ -877,6 +888,24 @@ impl Engine {
                         publish_tool_progress(&engine, active.session, run, &progress);
                     }
                     _ = active.cancellation.cancelled() => {
+                        if let Some(detachable) = detach_watch.current().filter(|detachable| detachable.reports_itself) {
+                            // Work that reports itself outlives the run that
+                            // waited for it: stop waiting instead of cancelling.
+                            drop(invoke);
+                            hub.finalize();
+                            engine.retain_finalized_output_hub(call.id);
+                            let mut message = "tool call cancelled; its work keeps running and reports itself".to_owned();
+                            if let Some(note) = detachable.note.as_deref().map(str::trim).filter(|note| !note.is_empty()) {
+                                message.push('\n');
+                                message.push_str(note);
+                            }
+                            let partial_output = finalize_output(capture.as_ref(), incomplete_completion(&message), true, result_truncation).await.ok().map(Box::new);
+                            return Err(ToolFailure {
+                                code: ToolCallFailureCode::ExecutionFailed,
+                                message,
+                                partial_output,
+                            });
+                        }
                         tool_cancellation.cancel();
                         let cleanup_deadline =
                             tokio::time::Instant::now() + TOOL_CANCELLATION_CLEANUP_TIMEOUT;
@@ -1188,7 +1217,7 @@ fn fallback_permission_name(tool_name: &str) -> Option<&'static str> {
         "read" => Some("read"),
         "write" | "edit" => Some("write"),
         "bash" => Some("bash"),
-        "delegate_subagent" | "get_subagent_result" | "cancel_subagent" => Some("delegate"),
+        "delegate_subagent" | "get_subagent_result" => Some("delegate"),
         "skill" => Some("skill"),
         "webfetch" => Some("webfetch"),
         _ => None,
@@ -1279,7 +1308,6 @@ mod tests {
             ("bash", "bash"),
             ("delegate_subagent", "delegate"),
             ("get_subagent_result", "delegate"),
-            ("cancel_subagent", "delegate"),
         ] {
             let call = ToolCall {
                 id: ToolCallId::new_v7(),

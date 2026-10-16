@@ -7,7 +7,7 @@ use crate::{AgentMessageInvocation, Engine, EngineOptions};
 use super::support::*;
 
 #[tokio::test]
-async fn running_subagent_result_is_empty_waits_and_cancel_is_session_addressed() {
+async fn running_subagent_result_is_empty_waits_and_stop_background_stops_its_turn() {
     let (endpoint, server) = scripted_cancellable_delegation_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     fixture.engine.register_tool_provider(
@@ -73,21 +73,52 @@ async fn running_subagent_result_is_empty_waits_and_cancel_is_session_addressed(
             )
             .await
     });
-    let cancelled = fixture
+    // The running turn lists among the parent's background calls under the
+    // child's handle, and stop_background stops it by that handle.
+    let handle = fixture
         .engine
-        .cancel_subagent(
+        .session_short_id(child_session_id)
+        .expect("child handle");
+    let calls = fixture.engine.background_calls(parent.session_id);
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.job == handle && call.tool == "delegate_subagent"),
+        "{calls:?}"
+    );
+    let stopped = fixture
+        .engine
+        .stop_background(
             parent.session_id,
-            child_session_id,
-            Some("test cancellation".into()),
+            &handle,
+            cookie_agent_protocol::BackgroundActor::Model,
         )
         .await
-        .expect("cancel subagent");
-    assert_eq!(cancelled.metadata["status"], "cancelled");
+        .expect("stop the subagent's turn");
+    assert_eq!(stopped, crate::runtime::Stopped::Subagent);
     let waited = waiter
         .await
         .expect("result waiter task")
         .expect("waited result");
     assert!(waited.output.starts_with("<status>cancelled</status>"));
+    assert!(
+        fixture
+            .engine
+            .background_calls(parent.session_id)
+            .iter()
+            .all(|call| call.job != handle)
+    );
+    // An idle child has no turn to stop.
+    let error = fixture
+        .engine
+        .stop_background(
+            parent.session_id,
+            &handle,
+            cookie_agent_protocol::BackgroundActor::User,
+        )
+        .await
+        .expect_err("idle child");
+    assert!(error.to_string().contains("has no turn running"), "{error}");
     server.abort();
     fixture.engine.shutdown().await;
 }
@@ -315,6 +346,34 @@ async fn finished_subagent_woken_by_send_message_reports_running_then_new_turn_t
         .expect("finished wake server");
     assert_eq!(requests.len(), 4);
     assert!(requests[3].contains("next task"));
+    // The first turn was the foreground call's result; the woken turn
+    // reports to the parent.
+    let reports = |projection: &crate::session::SessionProjection| {
+        projection
+            .log
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                cookie_agent_protocol::EventPayload::ProducerMessageAccepted {
+                    producer_owner: cookie_agent_protocol::ProducerOwner::Subagent { session_id },
+                    body,
+                    ..
+                } if *session_id == child_session_id => Some(body.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let parent = await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "the woken turn reports",
+        |projection| !reports(projection).is_empty(),
+    )
+    .await;
+    let reports = reports(&parent);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert!(reports[0].starts_with("<subagent_report "));
+    assert!(reports[0].contains("child turn two"));
     fixture.engine.shutdown().await;
 }
 
@@ -432,4 +491,165 @@ async fn resume_settles_recovered_background_delegations_before_returning() {
     // The fixture scripts a steer that this scenario never sends, so its task
     // is abandoned rather than joined.
     server.abort();
+}
+
+#[tokio::test]
+async fn the_user_moves_a_foreground_delegation_to_the_background() {
+    let (endpoint, responses, server) = scripted_channel_server(3).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_body(
+                "detach-delegate",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type": "worker",
+                    "description": "Detached child",
+                    "prompt": "slow child work"
+                }),
+            ),
+        ))
+        .expect("parent delegation response");
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture.engine.register_base_layer().expect("base layer");
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("parent");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("detach-delegate").expect("run ID"),
+                selection,
+                input: "delegate and wait".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("parent run")
+        .run_id;
+    let child = await_child(
+        &fixture.engine,
+        parent.session_id,
+        "running child",
+        |child| child.status == SessionStatus::Running,
+    )
+    .await
+    .session_id;
+    let handle = fixture
+        .engine
+        .session_short_id(child)
+        .expect("child handle");
+    // A foreground delegation the call still waits for is not a background
+    // call.
+    assert!(
+        fixture
+            .engine
+            .background_calls(parent.session_id)
+            .is_empty()
+    );
+    let call = fixture
+        .engine
+        .inner
+        .store
+        .get(parent.session_id)
+        .expect("parent projection")
+        .log
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            cookie_agent_protocol::EventPayload::ToolCallLinked { tool_call_id, .. } => {
+                Some(*tool_call_id)
+            }
+            _ => None,
+        })
+        .expect("linked call");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("parent carries on"),
+        ))
+        .expect("parent follow-up response");
+    assert!(fixture.engine.request_detach(run, call));
+    let projection = await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "the call ends with its immediate result",
+        |projection| {
+            projection
+                .runs
+                .get(&run)
+                .is_some_and(|run| run.pending_calls.is_empty())
+        },
+    )
+    .await;
+    let immediate = projection
+        .log
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            cookie_agent_protocol::EventPayload::ToolCallTerminated { termination }
+                if termination.tool_call_id == call =>
+            {
+                termination
+                    .result
+                    .as_ref()
+                    .map(|result| result.output.clone())
+            }
+            _ => None,
+        })
+        .expect("immediate result");
+    assert!(
+        immediate.starts_with("User manually moved this call to the background;"),
+        "{immediate}"
+    );
+    assert!(
+        immediate.contains(&format!("[subagent session {handle}]")),
+        "{immediate}"
+    );
+    let calls = fixture.engine.background_calls(parent.session_id);
+    assert!(
+        calls
+            .iter()
+            .any(|listed| listed.job == handle && listed.tool_call_id == call),
+        "{calls:?}"
+    );
+
+    // The child's first turn reports like any other.
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "slow child work",
+            scripted_text_body("child finished"),
+        ))
+        .expect("child response");
+    let reports = |projection: &crate::session::SessionProjection| {
+        projection
+            .log
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                cookie_agent_protocol::EventPayload::ProducerMessageAccepted {
+                    producer_owner: cookie_agent_protocol::ProducerOwner::Subagent { session_id },
+                    body,
+                    ..
+                } if *session_id == child => Some(body.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let projection = await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "the first turn reports",
+        |projection| !reports(projection).is_empty(),
+    )
+    .await;
+    let reports = reports(&projection);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert!(reports[0].contains("child finished"), "{reports:?}");
+    server.abort();
+    fixture.engine.shutdown().await;
 }

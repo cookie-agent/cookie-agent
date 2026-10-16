@@ -284,6 +284,7 @@ fn call_context(cancellation: CancellationToken) -> Call {
     let (sender, display) = mpsc::channel(256);
     Call {
         context: ToolExecutionContext {
+            background: false,
             session: SessionId::new_v7(),
             run: RunId::new_v7(),
             progress: ProgressSink::with_capture(sender, capture.clone()),

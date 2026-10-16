@@ -12,19 +12,37 @@ use crate::{GoalId, InvocationId, ProducerId, SessionId, ToolCallId};
 /// reminder; its accepted messages survive goal-controller teardown.
 /// Agent identifies an in-tree agent mail sender; the session identity is
 /// engine-derived from the executing tool context, never from model arguments.
-/// Tool identifies a background job started by one tool call (a background
-/// `bash` command); the call identity is engine-derived from the executing
-/// tool context, never from model arguments.
+/// Tool identifies the background result of one tool call that ran in the
+/// background; the call identity is engine-derived from the executing tool
+/// context, never from model arguments.
+/// Subagent identifies a delegated session reporting its finished turns to
+/// its parent.
 /// The owner is durable and participates in `(session, owner, key)` dedup.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProducerOwner {
-    Plugin { plugin: String },
-    Delegation { invocation_id: InvocationId },
-    Goal { goal_id: GoalId },
-    GoalControl { goal_id: GoalId },
-    Agent { session_id: SessionId },
-    Tool { tool_call_id: ToolCallId },
+    Plugin {
+        plugin: String,
+    },
+    Delegation {
+        invocation_id: InvocationId,
+    },
+    Goal {
+        goal_id: GoalId,
+    },
+    GoalControl {
+        goal_id: GoalId,
+    },
+    Agent {
+        session_id: SessionId,
+    },
+    Tool {
+        tool_call_id: ToolCallId,
+    },
+    /// A delegated session reporting a finished turn to its parent.
+    Subagent {
+        session_id: SessionId,
+    },
 }
 
 /// Per-send mode. Queue remains accepted-but-deferred during an active run;

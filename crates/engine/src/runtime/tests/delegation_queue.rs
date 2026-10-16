@@ -245,7 +245,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
         .store(1, Ordering::Release);
     let error = fixture
         .engine
-        .cancel_subagent(
+        .stop_subagent(
             parent.session_id,
             cancelled_id,
             Some("first cancellation append fails".into()),
@@ -291,16 +291,15 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
             .iter()
             .any(|event| matches!(event.payload, EventPayload::DelegateChildTerminated { .. }))
     );
-    let cancelled = fixture
+    fixture
         .engine
-        .cancel_subagent(
+        .stop_subagent(
             parent.session_id,
             cancelled_id,
             Some("cancel while queued".into()),
         )
         .await
         .expect("cancel queued subagent");
-    assert_eq!(cancelled.metadata["status"], "cancelled");
     let cancelled_child = fixture
         .engine
         .inner
@@ -347,7 +346,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
         .session_id;
     fixture
         .engine
-        .cancel_subagent(parent.session_id, running_id, Some("free one slot".into()))
+        .stop_subagent(parent.session_id, running_id, Some("free one slot".into()))
         .await
         .expect("cancel running child");
     tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), failure_observed)

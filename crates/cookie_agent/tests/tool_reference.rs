@@ -39,7 +39,7 @@ fn availability(name: &str) -> Option<&'static str> {
             "Only when the agent can delegate to at least one subagent at this depth. The \
              `agent_type` enum lists those subagents; this page shows a placeholder."
         }
-        "get_subagent_result" | "cancel_subagent" => {
+        "get_subagent_result" => {
             "Only when the agent can delegate to at least one subagent at this depth."
         }
         "goal_get" | "goal_update" => {

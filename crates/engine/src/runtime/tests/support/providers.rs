@@ -786,6 +786,17 @@ impl PreparedExecutor for TestDelegateExecutor {
                     additional_messages: Vec::new(),
                 })
             } else {
+                // Like the real tool: a waiting call can stop waiting while
+                // the child keeps running and reports itself.
+                let label = engine
+                    .session_short_id(handle.child_session_id)
+                    .unwrap_or_else(|| handle.child_session_id.to_string());
+                context
+                    .detach
+                    .reached_with(cookie_agent_runtime_api::Detachable {
+                        note: Some(format!("[subagent session {label}]")),
+                        reports_itself: true,
+                    });
                 engine
                     .await_delegate(handle)
                     .await

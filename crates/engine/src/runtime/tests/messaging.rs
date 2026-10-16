@@ -10,7 +10,17 @@ use crate::runtime::messaging_api::{
 use crate::{AgentMessageInvocation, EngineError};
 
 fn tree_recipient(engine: &crate::Engine, sender: SessionId) -> SessionId {
-    let source = engine.inner.store.get(sender).expect("sender projection");
+    tree_session(engine, sender, sender, 1)
+}
+
+/// A session delegated from `parent` in the tree rooted at `root`.
+fn tree_session(
+    engine: &crate::Engine,
+    root: SessionId,
+    parent: SessionId,
+    depth: u32,
+) -> SessionId {
+    let source = engine.inner.store.get(root).expect("root projection");
     let recipient = SessionId::new_v7();
     engine
         .inner
@@ -21,12 +31,12 @@ fn tree_recipient(engine: &crate::Engine, sender: SessionId) -> SessionId {
             EventPayload::SessionCreated {
                 short_id: None,
                 origin: SessionOrigin::Delegated {
-                    root_session_id: sender,
-                    parent_session_id: sender,
+                    root_session_id: root,
+                    parent_session_id: parent,
                     parent_run_id: RunId::new_v7(),
                     parent_tool_call_id: ToolCallId::new_v7(),
                     invocation_id: InvocationId::new_v7(),
-                    depth: 1,
+                    depth,
                 },
                 cwd_identity: source.meta.cwd_identity.clone(),
                 creation_selection: source.meta.creation_selection.clone(),
@@ -301,7 +311,9 @@ async fn agent_message_hop_is_inherited_by_the_send_path() {
         .engine
         .create_session(selection.clone())
         .expect("sender");
-    let recipient = tree_recipient(&fixture.engine, sender.session_id);
+    // A grandchild: mail to it is a hop, unlike mail to a direct child.
+    let child = tree_recipient(&fixture.engine, sender.session_id);
+    let recipient = tree_session(&fixture.engine, sender.session_id, child, 2);
     let previous_sender = SessionId::new_v7();
     let previous_authority = crate::runtime::producers::ProducerAuthority {
         owner: ProducerOwner::Agent {
@@ -376,6 +388,31 @@ async fn agent_message_hop_is_inherited_by_the_send_path() {
     blocked.sender_run_id = observed_run;
     assert!(
         matches!(fixture.engine.send_agent_message(blocked).await, Err(EngineError::Messaging(code)) if code == MESSAGE_MAX_HOPS_EXCEEDED)
+    );
+    // Mail to the direct child carries the inherited depth without adding a
+    // hop, so the guard never refuses it.
+    let mut family = invocation(sender.session_id, child);
+    family.sender_run_id = observed_run;
+    let family = fixture
+        .engine
+        .send_agent_message(family)
+        .await
+        .expect("parent to child mail is not a hop");
+    assert!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(child)
+            .unwrap()
+            .log
+            .events()
+            .iter()
+            .any(|event| matches!(
+                event.payload,
+                EventPayload::ProducerMessageAccepted { message_id, agent_hop: Some(1), .. }
+                    if message_id == family.message_id
+            ))
     );
     assert!(
         fixture

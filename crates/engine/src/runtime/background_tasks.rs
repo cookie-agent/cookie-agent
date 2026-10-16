@@ -343,8 +343,68 @@ impl Engine {
                 },
             )
             .collect::<Vec<_>>();
+        calls.extend(self.running_subagent_turns(session));
         calls.sort_by_key(|call| call.detached_at);
         calls
+    }
+
+    /// The turns `session`'s direct children are running on their own: every
+    /// running turn but the first turn of a foreground delegation, which its
+    /// call still waits for. Each lists under the child's handle, which
+    /// `stop_background` accepts.
+    fn running_subagent_turns(
+        &self,
+        session: SessionId,
+    ) -> Vec<cookie_agent_protocol::BackgroundCall> {
+        let running = self
+            .inner
+            .sessions
+            .active
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|(run, active)| (*run, active.session, active.started_at))
+            .collect::<Vec<_>>();
+        running
+            .into_iter()
+            .filter_map(|(run, child, started_at)| {
+                let projection = self.inner.store.get(child).ok()?;
+                let cookie_agent_protocol::SessionOrigin::Delegated {
+                    parent_session_id,
+                    parent_tool_call_id,
+                    ..
+                } = projection.meta.origin
+                else {
+                    return None;
+                };
+                if parent_session_id != session || self.foreground_waits_for(child, run) {
+                    return None;
+                }
+                Some(cookie_agent_protocol::BackgroundCall {
+                    job: projection
+                        .meta
+                        .short_id
+                        .clone()
+                        .unwrap_or_else(|| child.to_string()),
+                    tool: "delegate_subagent".into(),
+                    tool_call_id: parent_tool_call_id,
+                    display: projection
+                        .meta
+                        .title
+                        .as_ref()
+                        .map(|title| title.as_str().to_owned())
+                        .or_else(|| Some(projection.creation_agent.agent.to_string())),
+                    started_at,
+                    detached_at: started_at,
+                    by: BackgroundActor::Model,
+                })
+            })
+            .collect()
+    }
+
+    /// Tells subscribers `session`'s background calls changed.
+    pub(super) fn notify_background_changed(&self, session: SessionId) {
+        let _ = self.inner.background.changes.send(session);
     }
 
     /// The sessions whose background calls change, as they change.
@@ -361,17 +421,19 @@ impl Engine {
     ) -> Result<(), EngineError> {
         self.stop_background(session, job, BackgroundActor::User)
             .await
+            .map(|_| ())
     }
 
     /// Stops the background call `job` of `session`'s tree on behalf of
     /// `by`, and returns once its execution has ended. It still reports,
-    /// with `status="stopped"`.
+    /// with `status="stopped"`. `job` may also be the handle of a direct
+    /// child, whose running turn is cancelled and reports as a subagent.
     pub(crate) async fn stop_background(
         &self,
         session: SessionId,
         job: &str,
         by: BackgroundActor,
-    ) -> Result<(), EngineError> {
+    ) -> Result<Stopped, EngineError> {
         let root = self.session_root(session)?;
         let candidates = self
             .inner
@@ -409,13 +471,47 @@ impl Engine {
             Some(entry.ended.clone())
         });
         let Some(ended) = ended else {
+            // A direct child's handle stops the turn it is running.
+            if self
+                .resolve_subagent_target(
+                    session,
+                    job,
+                    super::handles::SubagentScope::DirectChildren,
+                )
+                .is_ok()
+            {
+                return self
+                    .stop_subagent(session, job, stop_reason(by))
+                    .await
+                    .map(|()| Stopped::Subagent);
+            }
             return Err(EngineError::Runtime(format!(
                 "no running background call `{job}` in this session tree"
             )));
         };
         ended.cancelled().await;
-        Ok(())
+        Ok(Stopped::Call)
     }
+}
+
+/// What [`Engine::stop_background`] stopped.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Stopped {
+    /// A background call; its `<background_result>` follows.
+    Call,
+    /// A subagent's turn; its `<subagent_report>` follows.
+    Subagent,
+}
+
+/// The reason a stopped subagent turn records.
+fn stop_reason(by: BackgroundActor) -> Option<String> {
+    Some(
+        match by {
+            BackgroundActor::Model => "stopped by its parent with stop_background",
+            BackgroundActor::User => "stopped by the user",
+        }
+        .into(),
+    )
 }
 
 struct Signals {
@@ -455,6 +551,37 @@ fn immediate_result(job: &str, by: BackgroundActor, note: Option<&str>) -> Persi
         output,
         retained_output: None,
         metadata: serde_json::json!({"background": {"job": job, "by": actor_name(by)}}),
+        truncation: None,
+        attachments: Vec::new(),
+        additional_messages: Vec::new(),
+    }
+}
+
+/// The result committed for a call whose work reports itself (a subagent)
+/// when it moves to the background: nothing keeps running under a job, so
+/// the result points at the work's own reports instead.
+pub(super) fn self_reporting_result(
+    by: BackgroundActor,
+    note: Option<&str>,
+) -> PersistedToolResult {
+    let mut output = match by {
+        BackgroundActor::Model => "Started in the background.".to_owned(),
+        BackgroundActor::User => {
+            "User manually moved this call to the background; the work is still running.".to_owned()
+        }
+    };
+    if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
+        output.push('\n');
+        output.push_str(note.trim());
+    }
+    output.push_str("\nIts results arrive as reports when they are ready; do not wait for them.");
+    PersistedToolResult {
+        title: cookie_agent_protocol::SafeDisplayText::new("Moved to the background")
+            .expect("static title is valid"),
+        display: Some(cookie_agent_runtime_api::bounded_tool_display(&output)),
+        output,
+        retained_output: None,
+        metadata: serde_json::json!({"background": {"by": actor_name(by)}}),
         truncation: None,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
@@ -513,7 +640,7 @@ pub(super) fn completed_start(termination: &ToolCallTermination) -> bool {
 }
 
 impl Engine {
-    fn admission_tasks_closing(&self) -> bool {
+    pub(super) fn admission_tasks_closing(&self) -> bool {
         self.inner
             .delegation
             .admission_tasks_closing

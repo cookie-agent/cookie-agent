@@ -466,6 +466,14 @@ impl Engine {
                 }
             }
         }
+        let run_edge = run.and_then(|run| match &event {
+            Event::RunStarted { .. } => Some((run, false)),
+            Event::RunCompleted { .. }
+            | Event::RunFailed { .. }
+            | Event::RunCancelled { .. }
+            | Event::RunInterrupted { .. } => Some((run, true)),
+            _ => None,
+        });
         let started = match &event {
             Event::ToolCallTerminated { termination } => Some((
                 termination.tool_call_id,
@@ -485,6 +493,9 @@ impl Engine {
             self.settle_background_job(tool_call_id, completed && envelope.is_ok());
         }
         let envelope = envelope?;
+        if let Some((run, ended)) = run_edge {
+            self.observe_subagent_run(session, run, ended);
+        }
         if !was_persisted && self.inner.store.is_persisted(session)? {
             for durable in self.inner.store.log(session)?.all_events().iter() {
                 let drops = self

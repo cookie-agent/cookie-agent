@@ -750,7 +750,8 @@ pub(crate) fn scripted_message_is_subagent_notification(message: &serde_json::Va
         _ => return false,
     };
     let text = text.trim();
-    text.starts_with("<subagent_notification>") && text.ends_with("</subagent_notification>")
+    (text.starts_with("<subagent_notification>") && text.ends_with("</subagent_notification>"))
+        || (text.starts_with("<subagent_report ") && text.ends_with("</subagent_report>"))
 }
 
 pub(crate) fn scripted_effective_last_message(request: &[u8]) -> Option<serde_json::Value> {

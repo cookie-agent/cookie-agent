@@ -309,7 +309,8 @@ by the committed turn.
 
 ## Background calls
 
-A running call of a tool that supports the background (such as `bash`) shows
+A running call of a tool that supports the background (such as `bash` or
+`delegate_subagent`) shows
 a `[background]` button at the right end of its title row. Clicking it moves
 the call to the background once the tool can be detached: the call's row ends
 with the result the model got (`User manually moved this call to the
@@ -320,7 +321,11 @@ While the selected session has background calls, a bar above the composer
 lists them; clicking it, or `/background`, opens a panel with one row per call
 (job, tool, its argument, how long it has run, and who moved it). Up/Down
 select a row, `s` or a row's `[stop]` stops that call, and Esc closes the
-panel. A stopped call still reports to the model, as stopped by you. See
+panel. A stopped call still reports to the model, as stopped by you. A
+subagent working on its own, outside a call that waits for it, is listed under
+its handle; stopping it cancels the turn it is running, and the subagent
+reports that turn as cancelled. Cancelling the session's run (Esc) never stops
+its subagents. See
 [Background calls](../reference/tools.md#background-calls) for what the model
 sees.
 

@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use cookie_agent_protocol::{
     ApprovalStatus, EventOrigin, RunCancelResult, RunId, RunStartParams, RunStartResult,
@@ -104,8 +104,12 @@ impl Engine {
         }
     }
 
-    /// Cancels `run_id` and the delegated runs below it. `origin` is who
-    /// asked: it is recorded on the `RunCancelled` events this causes.
+    /// Cancels `run_id`. `origin` is who asked: it is recorded on the
+    /// `RunCancelled` event. Delegated children keep running: only their own
+    /// session's cancellation or `stop_background` stops them
+    /// (`docs/site/specs/background-tools.md` section 7.4). A delegate
+    /// admission the run still has in flight is abandoned, since no child
+    /// exists for it yet.
     pub async fn cancel_run(
         &self,
         run_id: RunId,
@@ -120,80 +124,18 @@ impl Engine {
             .get(&run_id)
             .cloned()
             .ok_or(EngineError::MissingRun(run_id))?;
-        let result = self
-            .cancel_on_actor(active.session, run_id, origin.clone())
-            .await?;
-        let inflight_runs: Vec<_> = {
-            let mut inflight = self
-                .inner
-                .delegation
-                .inflight
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            inflight
-                .values_mut()
-                .flat_map(|entries| entries.values_mut())
-                .filter(|delegate| delegate.parent_run_id == run_id)
-                .filter_map(|delegate| {
-                    delegate.cancelled = true;
-                    delegate.child_run_id
-                })
-                .collect()
-        };
-        let delegation_events = self.inner.delegation_events.clone();
-        let children = self
-            .spawn_admission_blocking(move || Ok::<_, EngineError>(delegation_events.entries()))
-            .await?;
-        let mut pending = vec![run_id];
-        pending.extend(inflight_runs);
-        let mut visited = HashSet::new();
-        while let Some(parent_run_id) = pending.pop() {
-            if !visited.insert(parent_run_id) {
-                continue;
-            }
-            let inflight_children: Vec<_> = {
-                let mut inflight = self
-                    .inner
-                    .delegation
-                    .inflight
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                inflight
-                    .values_mut()
-                    .flat_map(|entries| entries.values_mut())
-                    .filter(|delegate| delegate.parent_run_id == parent_run_id)
-                    .filter_map(|delegate| {
-                        delegate.cancelled = true;
-                        delegate.child_run_id
-                    })
-                    .collect()
-            };
-            pending.extend(inflight_children);
-            for child_run_id in children
-                .iter()
-                .filter(|entry| entry.reservation.parent_run_id == parent_run_id)
-                .filter_map(|entry| entry.child_run_id)
-            {
-                pending.push(child_run_id);
-                if child_run_id == run_id {
-                    continue;
-                }
-                let child_active = {
-                    self.inner
-                        .sessions
-                        .active
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .get(&child_run_id)
-                        .cloned()
-                };
-                if let Some(child_active) = child_active {
-                    child_active.cancellation.cancel();
-                    let _ = self
-                        .cancel_on_actor(child_active.session, child_run_id, origin.clone())
-                        .await;
-                }
-            }
+        let result = self.cancel_on_actor(active.session, run_id, origin).await?;
+        for delegate in self
+            .inner
+            .delegation
+            .inflight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values_mut()
+            .flat_map(|entries| entries.values_mut())
+            .filter(|delegate| delegate.parent_run_id == run_id && delegate.child_run_id.is_none())
+        {
+            delegate.cancelled = true;
         }
         Ok(result)
     }

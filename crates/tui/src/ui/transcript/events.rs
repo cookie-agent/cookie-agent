@@ -66,7 +66,8 @@ pub(super) fn producer_owner_label(owner: &ProducerOwner) -> String {
         ProducerOwner::Goal { .. } => "goal controller".to_owned(),
         ProducerOwner::GoalControl { .. } => "goal control".to_owned(),
         ProducerOwner::Agent { session_id } => format!("agent {session_id}"),
-        ProducerOwner::Tool { tool_call_id } => format!("background job {tool_call_id}"),
+        ProducerOwner::Tool { tool_call_id } => format!("background call {tool_call_id}"),
+        ProducerOwner::Subagent { session_id } => format!("subagent {session_id}"),
     }
 }
 

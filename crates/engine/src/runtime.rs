@@ -53,7 +53,8 @@ mod artifact_reads;
 pub(crate) mod artifacts;
 pub(crate) mod attachments;
 pub(crate) mod background_tasks;
-pub(crate) use background_tasks::BackgroundActor;
+mod subagent_reports;
+pub(crate) use background_tasks::{BackgroundActor, Stopped};
 mod blocking_io;
 pub(crate) mod compaction;
 mod delegation;
@@ -318,6 +319,8 @@ struct ActiveRun {
     /// Executing calls of background-capable tools, and the signal that
     /// moves each to the background.
     detach_requests: Mutex<HashMap<cookie_agent_protocol::ToolCallId, Arc<tokio::sync::Notify>>>,
+    /// When the run started; a subagent's running turn lists from it.
+    started_at: jiff::Timestamp,
     fallback_index: AtomicU64,
     auto_compaction_failures: AtomicU8,
     auto_compaction_diagnostic_emitted: AtomicBool,

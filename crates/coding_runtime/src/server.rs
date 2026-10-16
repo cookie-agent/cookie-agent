@@ -761,6 +761,7 @@ impl Server {
                     &DetachableParams {
                         prepared_id,
                         note: detachable.note,
+                        reports_itself: detachable.reports_itself,
                     },
                 )
                 .await;
@@ -773,6 +774,7 @@ impl Server {
             turn_context: Arc::new(params.turn.into()),
             artifacts: artifacts.clone(),
             detach,
+            background: params.background,
         };
         let result = AssertUnwindSafe(executor.execute(context))
             .catch_unwind()

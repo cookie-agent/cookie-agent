@@ -185,6 +185,7 @@ impl Harness {
             self.daemon.request(
                 method::TOOL_EXECUTE,
                 &ExecuteParams {
+                    background: false,
                     prepared_id: call.prepared_id,
                     session,
                     run,

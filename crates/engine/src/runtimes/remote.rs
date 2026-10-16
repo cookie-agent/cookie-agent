@@ -728,10 +728,18 @@ impl ClientInner {
                 }
             }
             method::TOOL_DETACHABLE => {
-                if let Ok(DetachableParams { prepared_id, note }) = notification.params()
+                if let Ok(DetachableParams {
+                    prepared_id,
+                    note,
+                    reports_itself,
+                }) = notification.params()
                     && let Some(host) = lock(&self.executions).get(&prepared_id)
                 {
-                    host.detach.reached(note);
+                    host.detach
+                        .reached_with(cookie_agent_runtime_api::Detachable {
+                            note,
+                            reports_itself,
+                        });
                 }
             }
             _ => {}
@@ -786,12 +794,14 @@ impl ClientInner {
             turn_context,
             artifacts,
             detach,
+            background,
         } = context;
         let params = ExecuteParams {
             prepared_id,
             session,
             run,
             turn: turn_context.as_ref().into(),
+            background,
         };
         lock(&self.executions).insert(prepared_id, ExecutionHost { progress, detach });
         let mut guard = ExecutionGuard {

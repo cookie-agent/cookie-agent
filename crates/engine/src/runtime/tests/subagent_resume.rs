@@ -579,16 +579,15 @@ async fn queued_terminal_resume_cancel_is_durable() {
         .await
         .expect("terminal resume queue timeout")
         .expect("terminal resume queued for cancellation");
-    let cancelled = fixture
+    fixture
         .engine
-        .cancel_subagent(
+        .stop_subagent(
             parent.session_id,
             resumed_session_id,
             Some("cancel queued resumed work".into()),
         )
         .await
         .expect("cancel queued terminal resume");
-    assert_eq!(cancelled.metadata["status"], "cancelled");
     assert_eq!(
         fixture
             .engine

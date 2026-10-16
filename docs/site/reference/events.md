@@ -154,7 +154,8 @@ promised here; the versionless best-effort session-history contract still applie
 
 `ProducerOwner` is tagged by `type`: `plugin { plugin }`,
 `delegation { invocation_id }`, `goal { goal_id }`,
-`goal_control { goal_id }`, `agent { session_id }`, or `tool { tool_call_id }`. It identifies a specific
+`goal_control { goal_id }`, `agent { session_id }`, `tool { tool_call_id }`, or
+`subagent { session_id }` (a child's `<subagent_report>`, keyed by its run ID). It identifies a specific
 stable owner, not a volatile registration or merely an owner kind. Accepted events
 are the sole authoritative message body/mode storage, including deferred queue
 sends while a run is active. Registration records are never session events.

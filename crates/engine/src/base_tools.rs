@@ -122,11 +122,7 @@ mod tests {
             GoalTools::get_permission_name("goal_update").unwrap(),
             Some("write")
         );
-        for name in [
-            "delegate_subagent",
-            "get_subagent_result",
-            "cancel_subagent",
-        ] {
+        for name in ["delegate_subagent", "get_subagent_result"] {
             assert_eq!(
                 DelegateToolProvider::get_permission_name(name).unwrap(),
                 Some("delegate")

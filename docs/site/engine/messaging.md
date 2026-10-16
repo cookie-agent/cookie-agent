@@ -26,9 +26,9 @@ producer reconcile path rather than user-steering machinery.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | boolean | `true` | Master switch. When `false`, `send_message` fails with the `send_message:disabled` tool error even if permission rules allow the send. |
-| `max_hops` | integer | `0` | Chain-length guard for message hops. Hop counting is internal producer metadata and never appears in the delivered envelope. A send that would exceed the limit fails with `send_message:max_hops_exceeded`. Values `<= 0` disable the guard. |
+| `max_hops` | integer | `0` | Chain-length guard for message hops. Hop counting is internal producer metadata and never appears in the delivered envelope. Mail between a parent and its direct child adds no hop, so the pair can exchange as much as it needs; subagent reports are not mail and never count. A send that would exceed the limit fails with `send_message:max_hops_exceeded`. Values `<= 0` disable the guard. |
 | `max_body_bytes` | integer | `32768` | Maximum UTF-8 size of a message body. Tighter than the 256 KiB plugin body cap because agent mail should be terse. A `0` value is accepted at parse time and rejects every send at runtime with `send_message:invalid_body`. |
-| `max_pending_per_session` | integer | `32` | Pending agent mail per recipient session. Beyond the cap, new sends fail with `send_message:inbox_full` and nothing is admitted or discarded. Only `Agent`-owner producer messages count; plugin, delegation-notification, and goal mail never consume the budget. |
+| `max_pending_per_session` | integer | `32` | Pending agent mail per recipient session. Beyond the cap, new sends fail with `send_message:inbox_full` and nothing is admitted or discarded. Only `Agent`-owner producer messages count; plugin, subagent-report, background-result, and goal mail never consume the budget. |
 | `max_inflight_per_pair` | integer | `4` | Per-directed-pair window of unacknowledged messages, to stop ping-pong storms. A pair message is unacknowledged while accepted, admitted, claimed, or released, and acknowledged once it is consumed or discarded. A full window fails the send with `send_message:inflight_full`. A value of `0` disables the guard. |
 
 `max_hops` and `max_inflight_per_pair` are enforced at send time and disabled

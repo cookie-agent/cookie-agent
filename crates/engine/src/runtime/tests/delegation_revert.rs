@@ -330,7 +330,7 @@ async fn surviving_background_reservation_publishes_completion_once() {
                 body,
                 ..
             } if *accepted == invocation_id => {
-                assert!(body.starts_with("<subagent_notification>"));
+                assert!(body.starts_with("<subagent_report "));
                 Some(description)
             }
             _ => None,

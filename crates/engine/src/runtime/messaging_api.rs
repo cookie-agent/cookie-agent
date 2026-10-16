@@ -11,7 +11,8 @@
 //! both paths would double-deliver the same message.
 //!
 //! Both guards are enforced at acceptance: `max_hops` bounds inherited chain
-//! depth (computed from the sender's log) and `max_inflight_per_pair` bounds
+//! depth (computed from the sender's log; mail between a parent and its
+//! direct child adds no depth) and `max_inflight_per_pair` bounds
 //! one directed sender→recipient window of unacknowledged mail. A limit of `0`
 //! disables its guard.
 
@@ -320,9 +321,18 @@ impl Engine {
         let include_reply_hint = self.send_message_tool_visible(invocation.recipient_session_id)?;
         let sender = self.messaging_projection(invocation.sender_session_id)?;
         let sender_agent_type = sender.creation_agent.agent.to_string();
-        let hop = self
+        let mut hop = self
             .goal_producer_projection(invocation.sender_session_id)?
             .inherited_agent_hop(invocation.sender_run_id);
+        // Mail between a parent and its direct child is not a hop: it carries
+        // the depth the sender inherited unchanged, so the pair can exchange
+        // as much as they need and `max_hops` never refuses it.
+        if self.parent_and_child(
+            invocation.sender_session_id,
+            invocation.recipient_session_id,
+        ) {
+            hop = hop.saturating_sub(1);
+        }
         let authority = ProducerAuthority {
             owner: ProducerOwner::Agent {
                 session_id: invocation.sender_session_id,
@@ -364,6 +374,20 @@ impl Engine {
             mode: invocation.mode,
             recipient_state,
         })
+    }
+
+    /// Whether one of the two sessions is the other's direct parent.
+    fn parent_and_child(&self, a: SessionId, b: SessionId) -> bool {
+        let parent_of = |session: SessionId| match self.inner.store.get(session) {
+            Ok(projection) => match projection.meta.origin {
+                SessionOrigin::Delegated {
+                    parent_session_id, ..
+                } => Some(parent_session_id),
+                _ => None,
+            },
+            Err(_) => None,
+        };
+        parent_of(a) == Some(b) || parent_of(b) == Some(a)
     }
 
     async fn find_or_register_agent_producer(

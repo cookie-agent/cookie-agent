@@ -51,7 +51,9 @@ actions, then the actions of the session's tools, then any other action a rule
 names. Protocol 42 removed `run.tool_stdin`: tools no longer take input while
 they run. It added background calls: `run.tool_background`,
 `session.background.list`, `session.background.stop`, and the
-`background.changed` notification. It also made tool permissions optional: a tool may declare no
+`background.changed` notification, and the `subagent { session_id }`
+producer owner of the `<subagent_report>` a subagent sends its parent after
+every turn. It also made tool permissions optional: a tool may declare no
 permission, so it is always published and every call allowed, and the
 `permission_name` the `tool_before_call` plugin hook receives is `null` for
 such a tool. Older clients are rejected.

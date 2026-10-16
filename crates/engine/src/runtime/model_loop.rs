@@ -572,6 +572,7 @@ impl Engine {
             cancelled_committed: Mutex::new(false),
             cancelled_by: Mutex::new(None),
             detach_requests: Mutex::new(HashMap::new()),
+            started_at: jiff::Timestamp::now(),
             fallback_index: AtomicU64::new(0),
             auto_compaction_failures: AtomicU8::new(0),
             auto_compaction_diagnostic_emitted: AtomicBool::new(false),

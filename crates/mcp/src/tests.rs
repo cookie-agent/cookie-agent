@@ -300,6 +300,7 @@ async fn try_execute(
     let (progress_tx, _progress_rx) = tokio::sync::mpsc::channel(8);
     executor
         .execute(ToolExecutionContext {
+            background: false,
             session: SessionId::new_v7(),
             run: RunId::new_v7(),
             progress: ProgressSink::new(progress_tx),
@@ -326,6 +327,7 @@ fn names_are_sanitized_without_prefix() {
 fn tool_result_retains_only_distinct_structured_content() {
     let (progress_tx, _progress_rx) = tokio::sync::mpsc::channel(1);
     let context = ToolExecutionContext {
+        background: false,
         session: SessionId::new_v7(),
         run: RunId::new_v7(),
         progress: ProgressSink::new(progress_tx),
@@ -394,6 +396,7 @@ fn base64_attachments_follow_the_media_gate() {
     let data = base64::engine::general_purpose::STANDARD.encode(PNG);
     let (progress_tx, _progress_rx) = tokio::sync::mpsc::channel(1);
     let context = |turn: TurnAgentContext| ToolExecutionContext {
+        background: false,
         session: SessionId::new_v7(),
         run: RunId::new_v7(),
         progress: ProgressSink::new(progress_tx.clone()),
@@ -572,6 +575,7 @@ fn tool_result_caps_combined_attachments_and_degrades_overflow_inline() {
         .expect("oversized MCP attachment result");
     let (progress_tx, _progress_rx) = tokio::sync::mpsc::channel(1);
     let context = ToolExecutionContext {
+        background: false,
         session: SessionId::new_v7(),
         run: RunId::new_v7(),
         progress: ProgressSink::new(progress_tx),

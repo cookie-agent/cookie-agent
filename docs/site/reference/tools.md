@@ -18,7 +18,7 @@ declaration.
 | `delegate_subagent` | Parallel | Delegate admission serializes durable child reservation and session creation internally. |
 | `send_message` | Parallel | Message acceptance serializes guard checks and the durable append inside the recipient actor. |
 | MCP tools | Parallel | Each MCP server's service mutex serializes calls to that server; different servers can overlap. |
-| `skill`, `get_subagent_result`, `cancel_subagent` | Exclusive | These calls interact with session-scoped state. |
+| `skill`, `get_subagent_result` | Exclusive | These calls interact with session-scoped state. |
 | Plugin and otherwise undeclared tools | Exclusive | External declarations cannot currently opt in. |
 
 All parallel-eligible calls in the turn are dispatched together without a
@@ -194,8 +194,8 @@ process-group cleanup.
 
 ## Background calls
 
-A tool that declares `background` support (`bash`, and a runtime's own tools
-that declare it) can run in the background, as the [background tool calls
+A tool that declares `background` support (`bash`, `delegate_subagent`, and
+a runtime's own tools that declare it) can run in the background, as the [background tool calls
 spec](../specs/background-tools.md) describes:
 
 - **The host owns the argument.** It adds `background` (a boolean, defaulting
@@ -224,6 +224,18 @@ spec](../specs/background-tools.md) describes:
   published only while a background-capable tool is. A user stops one with
   `session.background.stop`. Either way the call still reports, with
   `status="stopped"` and a first line saying who stopped it.
+- **Subagents report themselves.** A `delegate_subagent` call in the
+  background, or moved there, gets no job: its immediate result names the
+  subagent's handle, and every turn the subagent finishes reports to the
+  parent as a `<subagent_report handle="…" status="…">` producer message
+  owned by `subagent { session_id }`, keyed by the turn's run ID so it
+  reports once. A foreground call's first turn is its tool result instead.
+  The subagent's running turn lists among the parent's background calls
+  under its handle, and `stop_background` with the handle cancels that turn
+  (`status="cancelled"`; an idle subagent is an error). Cancelling the
+  parent's run does not reach its subagents: a foreground call it was
+  waiting on ends cancelled with the detach note, and the subagent reports
+  its turn as if the call had been moved to the background.
 
 ## Retained tool output
 
@@ -375,17 +387,17 @@ target IDs and agent descriptions into the run's system prompt under
 ceiling and enabled-target filtering as `delegate_subagent`; no section is added
 when no target is available.
 
-`delegate_subagent`, `get_subagent_result`, and `cancel_subagent` address
-subagents by a short tree-unique **handle** (`<agent_type>_<8 hex>`, e.g.
+`delegate_subagent`, `get_subagent_result`, `stop_background`, and
+`send_message` address subagents by a short tree-unique **handle** (`<agent_type>_<8 hex>`, e.g.
 `explore_1a2b3c4d`) or a full session UUID. A handle is generated when the
 session is created and resolves only within the caller's tree; a partial handle,
 another tree's handle, or a fabricated value is rejected with a self-repairing
 error that lists the live candidates as
-`handle — description — status` plus their UUIDs. Start and completion notices
+`handle — description — status` plus their UUIDs. Detach notes and reports
 pre-wrap the handle, for example
-`Subagent started. [subagent session explore_1a2b3c4d]` and
+`[subagent session explore_1a2b3c4d] Each time its turn ends you get a <subagent_report handle="explore_1a2b3c4d">. …` and
 `[subagent session explore_1a2b3c4d; completed; 79 lines; use get_subagent_result with session_id "explore_1a2b3c4d" for the full output]`.
-The completion notice previews the report per
+The report previews the turn's final message per
 [`[subagent_output]`](../engine/subagent_output.md), with its line breaks and
 tabs kept and other control characters folded to spaces. A report over the limit
 shows its first and last lines around a marker such as
@@ -446,7 +458,8 @@ Retries are safe: the idempotency key derives from the sender session, run,
 and tool call, so a retried call returns the original `message_id` and
 delivers once. Two loop-safety guards reject sends, and each can be disabled:
 `max_hops <= 0` turns off hop counting (hop metadata is internal and never
-appears in the delivered envelope), and `max_inflight_per_pair = 0` turns off
+appears in the delivered envelope; mail between a parent and its direct child
+adds no hop, and subagent reports are not messages), and `max_inflight_per_pair = 0` turns off
 the per-pair window. A pair message counts as unacknowledged while accepted,
 admitted, claimed, or released, and is acknowledged once consumed or
 discarded. See [Agent Messaging](../engine/messaging.md) for the settings and

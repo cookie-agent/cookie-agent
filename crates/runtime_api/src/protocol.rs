@@ -542,6 +542,9 @@ pub struct ExecuteParams {
     pub session: SessionId,
     pub run: RunId,
     pub turn: WireTurnContext,
+    /// The model asked to run the call in the background.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -641,6 +644,9 @@ pub struct DetachableParams {
     /// A line for the immediate result, such as a process ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The call reports its own results once detached.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reports_itself: bool,
 }
 
 // --- errors ------------------------------------------------------------------------
