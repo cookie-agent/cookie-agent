@@ -637,7 +637,10 @@ async fn bash_reaches_its_detach_point_once_the_command_runs() {
     });
     completion.expect("bash completes");
     let note = detachable.note.expect("bash names its process");
-    assert!(note.starts_with("Process "), "{note}");
+    assert!(
+        note.starts_with("Process ") && note.ends_with("; stop it with stop_background"),
+        "{note}"
+    );
 }
 
 #[tokio::test]

@@ -189,7 +189,7 @@ Windows). When the shell exits, whatever it left in that group is killed, so
 the group, such as one started with `setsid`, does.
 
 A bash call reaches its detach point as soon as its command runs; its detach
-note is `Process <pid>`. In the background it keeps its timeout and
+note is `Process <pid>; stop it with stop_background`. In the background it keeps its timeout and
 process-group cleanup.
 
 ## Background calls
