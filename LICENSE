@@ -9,8 +9,8 @@ License, the Additional Conditions prevail. This combined license is not the
 Apache License and is not an open source license.
 
 The crates in crates/identity, crates/protocol, and crates/plugin_sdk are not
-covered by this license; they are licensed under the MIT License (see
-LICENSE-MIT).
+covered by this license; they are licensed under the Apache License, Version
+2.0, without the Additional Conditions (see LICENSE-APACHE).
 
 Additional Conditions
 

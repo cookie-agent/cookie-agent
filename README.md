@@ -93,7 +93,7 @@ license, which let the project owner include your contribution in commercial
 licenses.
 
 The `cookie_agent_identity`, `cookie_agent_protocol`, and
-`cookie_agent_plugin_sdk` crates are licensed under the [MIT License](LICENSE-MIT),
-so plugins, clients, and runtimes that speak the protocol can be built and
-distributed under any terms. Releases published before 2026-10-16 remain under
-the MIT License.
+`cookie_agent_plugin_sdk` crates are licensed under the standard
+[Apache License 2.0](LICENSE-APACHE), so plugins, clients, and runtimes that
+speak the protocol can be built and distributed under any terms. Releases
+published before 2026-10-16 remain under the MIT License.
