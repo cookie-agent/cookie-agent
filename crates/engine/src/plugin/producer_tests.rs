@@ -4,9 +4,7 @@ use serde_json::json;
 
 fn registry(enabled: bool, producers: bool, script: &str) -> (tempfile::TempDir, PluginRegistry) {
     let directory = tempfile::tempdir().unwrap();
-    let mcp = Arc::new(
-        crate::McpRegistry::new(Default::default(), directory.path().join("oauth.json")).unwrap(),
-    );
+    let mcp = Arc::new(crate::McpRegistry::new(Default::default(), Default::default()).unwrap());
     let config = serde_json::from_value(json!({
             "command": if cfg!(windows) { "python" } else { "python3" },
             "args": ["-c", script], "enabled": enabled, "producer_messaging": producers,

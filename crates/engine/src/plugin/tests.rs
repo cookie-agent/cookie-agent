@@ -141,7 +141,7 @@ async fn harness(extra_env: &[(&str, &str)], timeout_ms: u64) -> Harness {
     let mcp = Arc::new(
         crate::McpRegistry::new(
             BTreeMap::new(),
-            directory.path().join("private-oauth").join("oauth.json"),
+            cookie_agent_mcp::McpRegistryOptions::default(),
         )
         .expect("MCP registry"),
     );
@@ -212,7 +212,7 @@ async fn multi_harness(plugins: &[(&str, &[(&str, &str)])]) -> Harness {
     let mcp = Arc::new(
         crate::McpRegistry::new(
             BTreeMap::new(),
-            directory.path().join("private-oauth").join("oauth.json"),
+            cookie_agent_mcp::McpRegistryOptions::default(),
         )
         .expect("MCP registry"),
     );

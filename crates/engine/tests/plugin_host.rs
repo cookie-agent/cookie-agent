@@ -13,7 +13,10 @@ use cookie_agent_models::{
 use jiff::Timestamp;
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
-const MCP_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py");
+const MCP_FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../mcp/tests/fixtures/mcp_server.py"
+);
 
 fn tools(name: &str) -> String {
     format!(

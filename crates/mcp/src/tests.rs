@@ -16,13 +16,13 @@ use rmcp::model::Tool;
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    ProgressSink, SessionToolContext, ToolCall, ToolExecutionContext, ToolPreparationContext,
-    ToolProvider as _, TurnAgentContext,
+use cookie_agent_runtime_api::{
+    ProgressSink, SessionToolContext, ToolArtifacts, ToolCall, ToolExecutionContext,
+    ToolPreparationContext, ToolProvider as _, TurnAgentContext,
 };
 
 use super::{
-    McpRegistry, McpServerFailure, McpServerState, OAUTH_STORE_FILE, TOOL_LIST_DEBOUNCE,
+    McpRegistry, McpRegistryOptions, McpServerFailure, McpServerState, TOOL_LIST_DEBOUNCE,
     convert_tool, sanitize_name,
 };
 
@@ -35,11 +35,44 @@ const PYTHON: &str = "python";
 /// polling as soon as it is reached; loaded CI runners need the headroom.
 const WAIT: Duration = Duration::from_secs(30);
 
-fn oauth_path(directory: &tempfile::TempDir) -> std::path::PathBuf {
-    directory
-        .path()
-        .join("private-oauth")
-        .join(OAUTH_STORE_FILE)
+/// Attachment bytes a test call retained, by digest.
+#[derive(Debug, Default)]
+struct MemoryArtifacts {
+    blobs: std::sync::Mutex<Vec<Vec<u8>>>,
+}
+
+#[async_trait::async_trait]
+impl ToolArtifacts for MemoryArtifacts {
+    fn retain(
+        &self,
+        _session: SessionId,
+        content: &[u8],
+    ) -> Result<(cookie_agent_protocol::ArtifactReference, String), crate::ToolError> {
+        let digest = cookie_agent_protocol::Sha256Digest::of_bytes(content)
+            .as_str()
+            .to_owned();
+        self.blobs.lock().unwrap().push(content.to_vec());
+        Ok((
+            cookie_agent_runtime_api::protocol::artifact_reference(&digest),
+            digest,
+        ))
+    }
+
+    async fn read_page(
+        self: Arc<Self>,
+        _session: SessionId,
+        _target: cookie_agent_protocol::ArtifactReadTarget,
+        _offset: u64,
+        _limit: u64,
+    ) -> Result<cookie_agent_runtime_api::ArtifactReadPage, crate::ToolError> {
+        Err(crate::ToolError::execution(
+            "no artifact reads in MCP tests",
+        ))
+    }
+}
+
+fn memory_artifacts() -> Arc<MemoryArtifacts> {
+    Arc::new(MemoryArtifacts::default())
 }
 
 fn fixture_config() -> McpServerConfig {
@@ -66,7 +99,7 @@ fn fixture_config() -> McpServerConfig {
     }
 }
 
-fn registry(directory: &tempfile::TempDir, source: McpServerSource) -> McpRegistry {
+fn registry(source: McpServerSource) -> McpRegistry {
     McpRegistry::new(
         BTreeMap::from([(
             "fixture".into(),
@@ -75,7 +108,7 @@ fn registry(directory: &tempfile::TempDir, source: McpServerSource) -> McpRegist
                 config: fixture_config(),
             },
         )]),
-        oauth_path(directory),
+        McpRegistryOptions::default(),
     )
     .expect("MCP registry")
 }
@@ -225,18 +258,16 @@ fn make_turn_context(
 
 async fn execute(
     registry: &McpRegistry,
-    directory: &tempfile::TempDir,
     name: &str,
     arguments: Value,
 ) -> cookie_agent_protocol::PersistedToolResult {
-    try_execute(registry, directory, name, arguments)
+    try_execute(registry, name, arguments)
         .await
         .expect("execute MCP call")
 }
 
 async fn try_execute(
     registry: &McpRegistry,
-    directory: &tempfile::TempDir,
     name: &str,
     arguments: Value,
 ) -> Result<cookie_agent_protocol::PersistedToolResult, crate::ToolError> {
@@ -246,7 +277,7 @@ async fn try_execute(
             ToolPreparationContext {
                 session: SessionId::new_v7(),
                 run: RunId::new_v7(),
-                origin: crate::ToolOrigin::Runtime(std::sync::Arc::new(
+                origin: cookie_agent_runtime_api::ToolOrigin::Runtime(std::sync::Arc::new(
                     cookie_agent_runtime_api::RuntimeInfo::global(),
                 )),
                 turn_context: turn_context(),
@@ -275,8 +306,7 @@ async fn try_execute(
             cancellation: CancellationToken::new(),
             stdin: None,
             turn_context: turn_context(),
-            artifacts: crate::ArtifactRouter::open_flat(directory.path().join("artifacts"))
-                .expect("artifact store"),
+            artifacts: memory_artifacts(),
             background: None,
         })
         .await
@@ -295,7 +325,6 @@ fn names_are_sanitized_without_prefix() {
 
 #[test]
 fn tool_result_retains_only_distinct_structured_content() {
-    let directory = tempfile::tempdir().expect("tempdir");
     let (progress_tx, _progress_rx) = tokio::sync::mpsc::channel(1);
     let context = ToolExecutionContext {
         session: SessionId::new_v7(),
@@ -307,7 +336,7 @@ fn tool_result_retains_only_distinct_structured_content() {
             cookie_agent_protocol::AdaptorId::Anthropic,
             false,
         )),
-        artifacts: crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap(),
+        artifacts: memory_artifacts(),
         background: None,
     };
     let structured = json!({"a": 1, "b": [2]});
@@ -365,7 +394,6 @@ fn base64_attachments_follow_the_media_gate() {
         0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
     let data = base64::engine::general_purpose::STANDARD.encode(PNG);
-    let directory = tempfile::tempdir().expect("tempdir");
     let (progress_tx, _progress_rx) = tokio::sync::mpsc::channel(1);
     let context = |turn: TurnAgentContext| ToolExecutionContext {
         session: SessionId::new_v7(),
@@ -374,8 +402,7 @@ fn base64_attachments_follow_the_media_gate() {
         cancellation: CancellationToken::new(),
         stdin: None,
         turn_context: Arc::new(turn),
-        artifacts: crate::ArtifactRouter::open_flat(directory.path().join("artifacts"))
-            .expect("artifact store"),
+        artifacts: memory_artifacts(),
         background: None,
     };
 
@@ -546,7 +573,6 @@ fn tool_result_caps_combined_attachments_and_degrades_overflow_inline() {
         .collect::<Vec<_>>();
     let result = serde_json::from_value(serde_json::json!({ "content": content }))
         .expect("oversized MCP attachment result");
-    let directory = tempfile::tempdir().expect("tempdir");
     let (progress_tx, _progress_rx) = tokio::sync::mpsc::channel(1);
     let context = ToolExecutionContext {
         session: SessionId::new_v7(),
@@ -555,8 +581,7 @@ fn tool_result_caps_combined_attachments_and_degrades_overflow_inline() {
         cancellation: CancellationToken::new(),
         stdin: None,
         turn_context: Arc::new(make_turn_context(AdaptorId::Anthropic, true)),
-        artifacts: crate::ArtifactRouter::open_flat(directory.path().join("artifacts"))
-            .expect("artifact store"),
+        artifacts: memory_artifacts(),
         background: None,
     };
 
@@ -601,8 +626,7 @@ fn tool_specs_force_closed_object_schema_and_keep_defs() {
 
 #[tokio::test]
 async fn stdio_lists_calls_and_refreshes_tools() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let registry = registry(&directory, McpServerSource::UserFile);
+    let registry = registry(McpServerSource::UserFile);
     let server = registry.server("fixture").expect("fixture server");
     server.connect().await.expect("connect fixture");
     let specs = registry
@@ -611,13 +635,7 @@ async fn stdio_lists_calls_and_refreshes_tools() {
     assert_eq!(specs.len(), 2);
     assert!(specs.iter().any(|tool| tool.name == "fixture_echo_text"));
 
-    let result = execute(
-        &registry,
-        &directory,
-        "fixture_echo_text",
-        json!({"text":"refresh"}),
-    )
-    .await;
+    let result = execute(&registry, "fixture_echo_text", json!({"text":"refresh"})).await;
     assert_eq!(result.output, "refresh");
     assert_eq!(result.metadata, json!({"mcp": {"is_error": false}}));
 
@@ -638,7 +656,7 @@ async fn stdio_lists_calls_and_refreshes_tools() {
     .await
     .expect("tools/list_changed refresh");
 
-    let error = execute(&registry, &directory, "fixture_fail", json!({})).await;
+    let error = execute(&registry, "fixture_fail", json!({})).await;
     assert_eq!(error.output, "fixture failure");
     assert_eq!(error.metadata, json!({"mcp": {"is_error": true}}));
     registry.shutdown().await;
@@ -646,8 +664,7 @@ async fn stdio_lists_calls_and_refreshes_tools() {
 
 #[test]
 fn mcp_registry_has_no_system_prompt_contribution() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let registry = registry(&directory, McpServerSource::UserFile);
+    let registry = registry(McpServerSource::UserFile);
     assert!(
         registry
             .prompt_sections(&SessionToolContext::new(SessionId::new_v7()))
@@ -668,7 +685,7 @@ async fn tool_list_notification_burst_makes_one_refresh_round_trip() {
                 config,
             },
         )]),
-        oauth_path(&directory),
+        McpRegistryOptions::default(),
     )
     .expect("registry");
     let server = registry.server("fixture").expect("server");
@@ -700,7 +717,7 @@ async fn tool_list_debounce_resets_from_each_notification() {
                 config,
             },
         )]),
-        oauth_path(&directory),
+        McpRegistryOptions::default(),
     )
     .expect("registry");
     let server = registry.server("fixture").expect("server");
@@ -744,7 +761,7 @@ async fn reset_pending_tool_refresh_starts_an_isolated_worker() {
                 config,
             },
         )]),
-        oauth_path(&directory),
+        McpRegistryOptions::default(),
     )
     .expect("registry");
     let server = registry.server("fixture").expect("server");
@@ -799,7 +816,7 @@ async fn dropping_registry_aborts_idle_tool_refresh_worker() {
                 config,
             },
         )]),
-        oauth_path(&directory),
+        McpRegistryOptions::default(),
     )
     .expect("registry");
     let server = registry.server("fixture").expect("server");
@@ -836,8 +853,7 @@ async fn dropping_registry_aborts_idle_tool_refresh_worker() {
 
 #[test]
 fn stale_generation_created_during_publish_cannot_overwrite_newer_tools() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let registry = registry(&directory, McpServerSource::UserFile);
+    let registry = registry(McpServerSource::UserFile);
     let server = registry.server("fixture").expect("server");
     server.list_generation.store(1, Ordering::Release);
     server.publish_tools_before_commit(
@@ -855,8 +871,7 @@ fn stale_generation_created_during_publish_cannot_overwrite_newer_tools() {
 
 #[test]
 fn identical_relist_keeps_tools_and_claims_untouched() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let registry = registry(&directory, McpServerSource::UserFile);
+    let registry = registry(McpServerSource::UserFile);
     let server = registry.server("fixture").expect("server");
     let tool = || Tool::new("same", "same", Arc::new(Map::new()));
     server.list_generation.store(1, Ordering::Release);
@@ -897,7 +912,7 @@ async fn removing_server_cancels_pending_tool_list_refresh() {
                 config,
             },
         )]),
-        oauth_path(&directory),
+        McpRegistryOptions::default(),
     )
     .expect("registry");
     let server = registry.server("fixture").expect("server");
@@ -932,8 +947,7 @@ async fn removing_server_cancels_pending_tool_list_refresh() {
 
 #[test]
 fn stale_refresh_failure_cannot_invalidate_newer_publication() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let registry = registry(&directory, McpServerSource::UserFile);
+    let registry = registry(McpServerSource::UserFile);
     let server = registry.server("fixture").expect("server");
     server.set_status(McpServerState::Connected, None);
     server.list_generation.store(1, Ordering::Release);
@@ -954,8 +968,7 @@ fn stale_refresh_failure_cannot_invalidate_newer_publication() {
 
 #[test]
 fn collisions_fail_the_named_server() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let registry = registry(&directory, McpServerSource::UserFile);
+    let registry = registry(McpServerSource::UserFile);
     let server = registry.server("fixture").expect("server");
     registry
         .inner
@@ -977,7 +990,6 @@ fn collisions_fail_the_named_server() {
 
 #[tokio::test]
 async fn eager_readiness_waits_for_initial_tool_listing() {
-    let directory = tempfile::tempdir().expect("tempdir");
     let mut config = fixture_config();
     config
         .env
@@ -990,7 +1002,7 @@ async fn eager_readiness_waits_for_initial_tool_listing() {
                 config,
             },
         )]),
-        oauth_path(&directory),
+        McpRegistryOptions::default(),
     )
     .expect("registry");
     registry.start_eager(&tokio::runtime::Handle::current());
@@ -1028,7 +1040,7 @@ async fn shutdown_aborts_inflight_connect_and_blocks_late_installation() {
                 config,
             },
         )]),
-        oauth_path(&directory),
+        McpRegistryOptions::default(),
     )
     .expect("registry");
     let server = registry.server("fixture").expect("server");
@@ -1079,7 +1091,6 @@ async fn shutdown_aborts_inflight_connect_and_blocks_late_installation() {
 
 #[tokio::test]
 async fn replacing_an_inflight_connect_cannot_publish_stale_tools() {
-    let directory = tempfile::tempdir().expect("tempdir");
     let mut delayed = fixture_config();
     delayed
         .env
@@ -1092,7 +1103,7 @@ async fn replacing_an_inflight_connect_cannot_publish_stale_tools() {
                 config: delayed,
             },
         )]),
-        oauth_path(&directory),
+        McpRegistryOptions::default(),
     )
     .expect("registry");
     let old = registry.server("fixture").expect("old server");
@@ -1151,7 +1162,7 @@ async fn reconnect_failure_transitions_server_to_failed() {
                 config,
             },
         )]),
-        oauth_path(&directory),
+        McpRegistryOptions::default(),
     )
     .expect("registry");
 
@@ -1175,7 +1186,6 @@ async fn reconnect_failure_transitions_server_to_failed() {
 
 #[test]
 fn sanitized_server_name_collisions_are_rejected_at_startup() {
-    let directory = tempfile::tempdir().expect("tempdir");
     let servers = BTreeMap::from([
         (
             "git hub".into(),
@@ -1192,8 +1202,8 @@ fn sanitized_server_name_collisions_are_rejected_at_startup() {
             },
         ),
     ]);
-    let error =
-        McpRegistry::new(servers, oauth_path(&directory)).expect_err("sanitized server collision");
+    let error = McpRegistry::new(servers, McpRegistryOptions::default())
+        .expect_err("sanitized server collision");
     assert!(error.to_string().contains("git/hub"));
     assert!(error.to_string().contains("git hub"));
 }
@@ -1224,9 +1234,8 @@ async fn wait_for_state(registry: &McpRegistry, expected: McpServerState) {
 
 /// A connected fixture whose restarts fail while `refuse` exists.
 async fn droppable_registry(
-    directory: &tempfile::TempDir,
     refuse: &std::path::Path,
-    policy: crate::runtimes::ReconnectPolicy,
+    policy: cookie_agent_runtime_api::reconnect::ReconnectPolicy,
 ) -> McpRegistry {
     let mut config = fixture_config();
     config.env.insert(
@@ -1241,7 +1250,7 @@ async fn droppable_registry(
                 config,
             },
         )]),
-        oauth_path(directory),
+        McpRegistryOptions::default(),
     )
     .expect("registry");
     registry.set_reconnect_policy(policy);
@@ -1259,23 +1268,19 @@ async fn a_dropped_server_keeps_its_tools_while_reconnecting_and_restores_them()
     let directory = tempfile::tempdir().expect("tempdir");
     let refuse = directory.path().join("refuse");
     let registry = droppable_registry(
-        &directory,
         &refuse,
-        crate::runtimes::ReconnectPolicy::with_delays(vec![Duration::from_millis(5); 10_000]),
+        cookie_agent_runtime_api::reconnect::ReconnectPolicy::with_delays(
+            vec![Duration::from_millis(5); 10_000],
+        ),
     )
     .await;
     let published = tool_names(&registry);
     assert_eq!(published.len(), 2);
 
     std::fs::write(&refuse, "").expect("refuse restarts");
-    let error = try_execute(
-        &registry,
-        &directory,
-        "fixture_echo_text",
-        json!({"text":"exit"}),
-    )
-    .await
-    .expect_err("the server exits during the call");
+    let error = try_execute(&registry, "fixture_echo_text", json!({"text":"exit"}))
+        .await
+        .expect_err("the server exits during the call");
     assert!(
         matches!(error, crate::ToolError::RuntimeUnavailable(_)),
         "{error:?}"
@@ -1284,7 +1289,6 @@ async fn a_dropped_server_keeps_its_tools_while_reconnecting_and_restores_them()
     assert_eq!(tool_names(&registry), published);
     let error = try_execute(
         &registry,
-        &directory,
         "fixture_echo_text",
         json!({"text":"while reconnecting"}),
     )
@@ -1298,13 +1302,7 @@ async fn a_dropped_server_keeps_its_tools_while_reconnecting_and_restores_them()
     std::fs::remove_file(&refuse).expect("allow restarts");
     wait_for_state(&registry, McpServerState::Connected).await;
     assert_eq!(tool_names(&registry), published);
-    let result = execute(
-        &registry,
-        &directory,
-        "fixture_echo_text",
-        json!({"text":"back"}),
-    )
-    .await;
+    let result = execute(&registry, "fixture_echo_text", json!({"text":"back"})).await;
     assert_eq!(result.output, "back");
     registry.shutdown().await;
 }
@@ -1314,21 +1312,17 @@ async fn a_server_that_cannot_reconnect_drops_its_tools_and_reports_why() {
     let directory = tempfile::tempdir().expect("tempdir");
     let refuse = directory.path().join("refuse");
     let registry = droppable_registry(
-        &directory,
         &refuse,
-        crate::runtimes::ReconnectPolicy::with_delays(vec![Duration::from_millis(1); 2]),
+        cookie_agent_runtime_api::reconnect::ReconnectPolicy::with_delays(
+            vec![Duration::from_millis(1); 2],
+        ),
     )
     .await;
     let mut failures = registry.subscribe_failures();
     std::fs::write(&refuse, "").expect("refuse restarts");
-    try_execute(
-        &registry,
-        &directory,
-        "fixture_echo_text",
-        json!({"text":"exit"}),
-    )
-    .await
-    .expect_err("the server exits during the call");
+    try_execute(&registry, "fixture_echo_text", json!({"text":"exit"}))
+        .await
+        .expect_err("the server exits during the call");
 
     let McpServerFailure { server, reason } = tokio::time::timeout(WAIT, failures.recv())
         .await
@@ -1364,7 +1358,7 @@ async fn a_failed_server_is_retried_when_asked_and_reports_the_failure() {
                 config,
             },
         )]),
-        oauth_path(&directory),
+        McpRegistryOptions::default(),
     )
     .expect("registry");
     let mut failures = registry.subscribe_failures();

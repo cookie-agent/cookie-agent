@@ -825,7 +825,10 @@ impl Engine {
         let mcp = Arc::new(
             crate::McpRegistry::new(
                 options.config.mcp_servers.clone(),
-                options.data_dir.join("mcp-oauth.json"),
+                cookie_agent_mcp::McpRegistryOptions {
+                    oauth_store: Some(options.data_dir.join("mcp-oauth.json")),
+                    observer: None,
+                },
             )
             .map_err(|error| EngineError::ToolFailed(error.to_string()))?,
         );

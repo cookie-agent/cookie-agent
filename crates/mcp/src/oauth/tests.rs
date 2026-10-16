@@ -22,12 +22,20 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::{McpRegistry, McpRegistryOptions, McpServerState};
+
 use super::{
-    McpOAuthHttpClient, McpRegistry, McpServerState, OAUTH_CALLBACK_TIMEOUT, OAUTH_STORE_FILE,
-    OAuthCredentialFile, OAuthExchangeState, PersistedOAuthCredential, ServerCredentialStore,
-    StrictStoredCredentials, canonical_oauth_resource_url, credential_superseded,
-    oauth_credential_key, refresh_grant_token,
+    McpOAuthHttpClient, OAUTH_CALLBACK_TIMEOUT, OAUTH_STORE_FILE, OAuthCredentialFile,
+    OAuthExchangeState, PersistedOAuthCredential, ServerCredentialStore, StrictStoredCredentials,
+    canonical_oauth_resource_url, credential_superseded, oauth_credential_key, refresh_grant_token,
 };
+
+fn store(path: impl Into<std::path::PathBuf>) -> McpRegistryOptions {
+    McpRegistryOptions {
+        oauth_store: Some(path.into()),
+        ..McpRegistryOptions::default()
+    }
+}
 
 struct OAuthFixtureState {
     refreshes: AtomicUsize,
@@ -493,7 +501,7 @@ fn oauth_registry(directory: &tempfile::TempDir, url: String, name: &str) -> Mcp
                 config: remote_config(url),
             },
         )]),
-        directory.path().join("mcp-oauth.json"),
+        store(directory.path().join("mcp-oauth.json")),
     )
     .expect("OAuth registry")
 }
@@ -512,7 +520,7 @@ fn project_oauth_registry(
                 config: remote_config(url),
             },
         )]),
-        oauth_path.to_owned(),
+        store(oauth_path.to_owned()),
     )
     .expect("project OAuth registry")
 }
@@ -526,7 +534,7 @@ fn credential_store_registry(oauth_path: &std::path::Path, url: &str, name: &str
                 config: remote_config(url.to_owned()),
             },
         )]),
-        oauth_path.to_owned(),
+        store(oauth_path.to_owned()),
     )
     .expect("credential store registry")
 }
@@ -1119,7 +1127,7 @@ async fn concurrent_servers_authorize_independently() {
                 },
             ),
         ]),
-        directory.path().join("mcp-oauth.json"),
+        store(directory.path().join("mcp-oauth.json")),
     )
     .expect("concurrent registry");
     let one = registry.server("one").expect("one");
@@ -1159,7 +1167,7 @@ async fn static_authorization_header_precedes_oauth_and_disabled_oauth_stays_fai
                 config: static_config,
             },
         )]),
-        static_directory.path().join("mcp-oauth.json"),
+        store(static_directory.path().join("mcp-oauth.json")),
     )
     .expect("static registry");
     static_registry
@@ -1186,7 +1194,7 @@ async fn static_authorization_header_precedes_oauth_and_disabled_oauth_stays_fai
                 config: disabled_config,
             },
         )]),
-        disabled_directory.path().join("mcp-oauth.json"),
+        store(disabled_directory.path().join("mcp-oauth.json")),
     )
     .expect("disabled OAuth registry");
     disabled
@@ -1340,7 +1348,7 @@ async fn eager_readiness_finishes_at_needs_auth_without_waiting_for_browser_flow
                 config,
             },
         )]),
-        directory.path().join("mcp-oauth.json"),
+        store(directory.path().join("mcp-oauth.json")),
     )
     .expect("eager registry");
     registry.start_eager(&tokio::runtime::Handle::current());
@@ -1461,7 +1469,7 @@ fn malformed_oauth_store_is_strict_and_redacted() {
     #[cfg(unix)]
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
         .expect("private OAuth store");
-    let error = McpRegistry::new(BTreeMap::new(), path.clone())
+    let error = McpRegistry::new(BTreeMap::new(), store(path.clone()))
         .expect_err("unknown OAuth credential fields must fail startup")
         .to_string();
     assert!(error.contains(&path.display().to_string()));
@@ -1869,7 +1877,7 @@ fn run_lock_free_read_parent() {
     let mut child = Command::new(exe)
         .args([
             "--exact",
-            "mcp::oauth_tests::credential_read_is_lock_free_while_lock_held_by_child_process",
+            "oauth::tests::credential_read_is_lock_free_while_lock_held_by_child_process",
             "--nocapture",
         ])
         .env(CHILD_LOCK_ENV, &path)

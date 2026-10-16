@@ -2209,7 +2209,7 @@ pub(crate) fn delayed_mcp_server(source: McpServerSource) -> LoadedMcpServer {
         config: McpServerConfig {
             command: Some(python_command().into()),
             args: vec![format!(
-                "{}/tests/fixtures/mcp_server.py",
+                "{}/../mcp/tests/fixtures/mcp_server.py",
                 env!("CARGO_MANIFEST_DIR")
             )],
             env,

@@ -1,0 +1,53 @@
+[package]
+name = "cookie_agent_mcp"
+version = "0.3.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# OAuth for remote servers and the daemon's credential store. Only the
+# daemon's global runtime enables it.
+oauth = [
+    "dep:cookie_agent_models",
+    "dep:futures-util",
+    "dep:libc",
+    "dep:reqwest",
+    "dep:sha2",
+    "dep:url",
+    "dep:uuid",
+    "dep:zeroize",
+]
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64 = "0.22"
+cookie_agent_config = { version = "=0.3.0", path = "../config" }
+cookie_agent_models = { version = "=0.3.0", path = "../models", optional = true }
+cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
+cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api" }
+futures-util = { workspace = true, optional = true }
+http.workspace = true
+process-wrap.workspace = true
+reqwest = { workspace = true, optional = true }
+rmcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = { workspace = true, optional = true }
+tokio.workspace = true
+tokio-util.workspace = true
+url = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true, optional = true }
+
+[dev-dependencies]
+cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api", features = ["test-support"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

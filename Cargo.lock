@@ -593,6 +593,7 @@ dependencies = [
  "cookie_agent_coding_runtime",
  "cookie_agent_config",
  "cookie_agent_identity",
+ "cookie_agent_mcp",
  "cookie_agent_models",
  "cookie_agent_protocol",
  "cookie_agent_runtime_api",
@@ -632,6 +633,33 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "cookie_agent_mcp"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "cookie_agent_config",
+ "cookie_agent_models",
+ "cookie_agent_protocol",
+ "cookie_agent_runtime_api",
+ "futures-util",
+ "http",
+ "libc",
+ "process-wrap",
+ "reqwest",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "url",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]

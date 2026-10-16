@@ -9,7 +9,6 @@ pub mod delegation_events;
 pub mod events;
 mod goal_projection;
 pub mod grant_journal;
-mod mcp;
 mod media;
 mod model_bridge;
 mod model_history;
@@ -31,9 +30,9 @@ pub mod testing;
 mod usage;
 
 pub use base_tools::base_layer_tool_specs;
+pub use cookie_agent_mcp::{McpRegistry, McpServerFailure, McpServerState, McpServerStatus};
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
-pub use mcp::{McpRegistry, McpServerFailure, McpServerState, McpServerStatus};
 pub use plugin::{EngineEvent, PluginRegistry, PluginState, PluginStatus};
 pub use runtime::attachments::{SessionRuntimeRequest, SessionRuntimes};
 /// Stable `send_message:<code>` error strings carried by
@@ -58,12 +57,14 @@ pub use session::TailOwner;
 
 // The tool API, imported once for the engine's own modules.
 pub(crate) use cookie_agent_runtime_api::{
-    PreparedExecutor, PreparedSerializationKey, PreparedTool, ProgressSink, PromptSection,
-    SessionToolContext, ToolCall, ToolCompletion, ToolConcurrency, ToolError, ToolExecutionContext,
-    ToolOrigin, ToolPreparationContext, ToolProgress, ToolProvider, ToolResultTruncationPolicy,
-    ToolSpec, ToolStdin, TurnAgentContext, WorkspaceContext,
+    PreparedSerializationKey, PreparedTool, ProgressSink, PromptSection, SessionToolContext,
+    ToolCall, ToolCompletion, ToolConcurrency, ToolError, ToolExecutionContext, ToolOrigin,
+    ToolPreparationContext, ToolProgress, ToolProvider, ToolResultTruncationPolicy, ToolSpec,
+    ToolStdin, TurnAgentContext, WorkspaceContext,
 };
 
+#[cfg(test)]
+pub(crate) use cookie_agent_runtime_api::PreparedExecutor;
 pub(crate) use runtime::{ArtifactRouter, SessionArtifacts};
 #[cfg(test)]
 pub(crate) use runtime::{ArtifactStore, test_session_id};

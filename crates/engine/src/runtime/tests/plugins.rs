@@ -592,7 +592,10 @@ async fn plugin_diagnostic_wedge_does_not_block_shutdown() {
 async fn a_late_mcp_connection_rejects_the_plugin_tool_published_to_the_model() {
     const PLUGIN_FIXTURE: &str =
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
-    const MCP_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py");
+    const MCP_FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../mcp/tests/fixtures/mcp_server.py"
+    );
 
     let first = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"plugin-call\",\"type\":\"function\",\"function\":{\"name\":\"fixture_echo_text\",\"arguments\":\"{\\\"plugin_arg\\\":\\\"published-schema\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n".to_owned();
     let second = "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned();
