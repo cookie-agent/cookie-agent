@@ -78,6 +78,14 @@ pub struct ToolSpec {
     pub result_truncation: ToolResultTruncationPolicy,
     #[serde(default)]
     pub output: cookie_agent_protocol::ToolOutputDeclaration,
+    /// The tool supports the background: the host adds a `background`
+    /// argument to its schema and may detach its calls.
+    #[serde(default)]
+    pub background: bool,
+    /// Whether a call runs in the background when the model omits the
+    /// argument. Only valid with `background`.
+    #[serde(default)]
+    pub background_default: bool,
 }
 
 /// How a runtime tool behaves when another source offers the same name.

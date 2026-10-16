@@ -88,6 +88,8 @@ impl ToolProvider for WebfetchTool {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            background: false,
+            background_default: false,
             collision: self.collision,
             output: Default::default(),
             name: "webfetch".into(),

@@ -7,8 +7,9 @@
 //!
 //! The engine provides the host services a call uses through traits defined
 //! here: [`ProgressCapture`] (output capture), [`ToolArtifacts`] (artifact
-//! retention and reads), and [`BackgroundJobs`] with [`BackgroundLauncher`]
-//! (background jobs). The runtime identity types ([`ToolOrigin`],
+//! retention and reads), and a [`DetachPoint`] through which a
+//! background-capable tool says when the host may detach it. The runtime
+//! identity types ([`ToolOrigin`],
 //! [`RuntimeInfo`], [`WorkspaceContext`]) say which runtime a tool belongs to,
 //! as specified in `docs/site/specs/runtimes.md`.
 //!
@@ -30,9 +31,9 @@ mod runtime;
 
 pub use error::ToolError;
 pub use execution::{
-    AdapterFamily, ArtifactReadPage, BackgroundJob, BackgroundJobs, BackgroundLauncher,
-    BackgroundReport, BackgroundTask, ProgressCapture, ProgressSink, ToolArtifacts,
-    ToolExecutionContext, ToolPreparationContext, ToolProgress, TurnAgentContext,
+    AdapterFamily, ArtifactReadPage, DetachPoint, DetachWatch, Detachable, ProgressCapture,
+    ProgressSink, ToolArtifacts, ToolExecutionContext, ToolPreparationContext, ToolProgress,
+    TurnAgentContext,
 };
 pub use prepared::{
     PreparedDeclaration, PreparedExecutor, PreparedExecutorCell, PreparedSerializationKey,

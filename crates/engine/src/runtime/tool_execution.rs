@@ -195,7 +195,7 @@ impl Engine {
         let composition = self.compose_for_policy(session_id, policy).ok();
         // Calls grouped by the provider and attachment that answer them, each
         // with the name its source knows the tool by.
-        let mut groups: Vec<(SourcedProvider, Vec<(usize, String)>)> = Vec::new();
+        let mut groups: Vec<(SourcedProvider, Vec<(usize, crate::ToolSpec)>)> = Vec::new();
         for (index, (call, _)) in calls.iter().enumerate() {
             let Some(tool) = composition
                 .as_ref()
@@ -203,7 +203,7 @@ impl Engine {
             else {
                 continue;
             };
-            let entry = (index, tool.spec.name.clone());
+            let entry = (index, tool.spec.clone());
             if let Some((_, indexes)) = groups.iter_mut().find(|(candidate, _)| {
                 Arc::ptr_eq(&candidate.provider, &tool.source.provider)
                     && candidate.attachment == tool.source.attachment
@@ -217,9 +217,14 @@ impl Engine {
         for (source, indexes) in groups {
             let provider_calls = indexes
                 .iter()
-                .map(|(index, name)| ToolCall {
-                    name: name.clone(),
-                    ..calls[*index].0.clone()
+                .map(|(index, spec)| {
+                    let mut call = ToolCall {
+                        name: spec.name.clone(),
+                        ..calls[*index].0.clone()
+                    };
+                    // Resolution reports a malformed `background` itself.
+                    let _ = take_background(spec, &mut call);
+                    call
                 })
                 .collect();
             let context = ToolPreparationContext {
@@ -283,6 +288,7 @@ impl Engine {
                         .to_owned(),
                 }),
                 interception: None,
+                background: None,
             };
         }
         let session = match self.inner.store.get(session_id) {
@@ -299,6 +305,7 @@ impl Engine {
                         message: error.to_string(),
                     }),
                     interception: None,
+                    background: None,
                 };
             }
         };
@@ -336,6 +343,7 @@ impl Engine {
                         permission_name: None,
                         presentation: fallback_presentation,
                         interception: None,
+                        background: None,
                     };
                 }
             }
@@ -351,6 +359,7 @@ impl Engine {
                     permission_name: None,
                     presentation: fallback_presentation,
                     interception: None,
+                    background: None,
                 };
             }
             None => self
@@ -377,6 +386,8 @@ impl Engine {
                         (
                             candidate.clone(),
                             crate::ToolSpec {
+                                background: false,
+                                background_default: false,
                                 collision: Default::default(),
                                 output: Default::default(),
                                 concurrency: Default::default(),
@@ -402,6 +413,7 @@ impl Engine {
                 permission_name: None,
                 presentation: fallback_presentation,
                 interception: None,
+                background: None,
             };
         };
         let SourcedProvider {
@@ -411,9 +423,27 @@ impl Engine {
             ..
         } = source;
         // A prefixed tool runs under the name its runtime knows it by.
-        let call = ToolCall {
+        let mut call = ToolCall {
             name: tool_spec.name.clone(),
             ..call
+        };
+        let background = match take_background(&tool_spec, &mut call) {
+            Ok(background) => background,
+            Err(message) => {
+                return PreparedToolCall {
+                    intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
+                    prepared: Err(ToolFailure {
+                        partial_output: None,
+                        code: ToolCallFailureCode::ExecutionFailed,
+                        message,
+                    }),
+                    call,
+                    permission_name: tool_spec.permission_name.clone(),
+                    presentation: fallback_presentation,
+                    interception: None,
+                    background: None,
+                };
+            }
         };
         let grants = self.skill_grants_for_session(session_id, attachment.as_ref());
         let permission_name = tool_spec.permission_name.clone();
@@ -443,6 +473,7 @@ impl Engine {
                 permission_name,
                 presentation: fallback_presentation,
                 interception: None,
+                background: None,
             };
         }
         let context = ToolPreparationContext {
@@ -491,6 +522,7 @@ impl Engine {
                 permission_name,
                 permission_resource: original_resource,
             }),
+            background,
         }
     }
 
@@ -523,6 +555,8 @@ impl Engine {
                 prepared,
                 interception,
                 intercepted_arguments,
+                presentation,
+                background,
                 ..
             } = prepared;
             let mut prepared = prepared?;
@@ -720,7 +754,10 @@ impl Engine {
                     .unwrap_or_else(|p| p.into_inner())
                     .insert(call.id, capture.clone());
             }
-            let tool_cancellation = active.cancellation.child_token();
+            // The call's own token: the run cancels it only while the call is
+            // in the foreground, so a detached call outlives the run.
+            let tool_cancellation = tokio_util::sync::CancellationToken::new();
+            let (detach_point, mut detach_watch) = cookie_agent_runtime_api::DetachPoint::channel();
             let invoke = std::panic::AssertUnwindSafe(executor.execute(ToolExecutionContext {
                 session: active.session,
                 run,
@@ -735,19 +772,74 @@ impl Engine {
                 cancellation: tool_cancellation.clone(),
                 turn_context,
                 artifacts: engine.inner.artifacts.clone(),
-                background: Some(Arc::new(super::background_tasks::BackgroundCapability {
-                    inner: Arc::downgrade(&engine.inner),
-                    tool_call_id: call.id,
-                    limits: active.policy.result_limits.tool_output,
-                })),
+                detach: detach_point,
             }))
             .catch_unwind()
             .map(|result| {
                 result.unwrap_or_else(|_| Err(ToolError::execution("tool execution panicked")))
             });
-            let mut invoke = Box::pin(invoke);
+            let mut invoke: std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<crate::ToolCompletion, ToolError>>
+                        + Send,
+                >,
+            > = Box::pin(invoke);
+            // The model asks for the background up front; the user may ask
+            // while the call runs.
+            let mut detach_by = (background == Some(true))
+                .then_some(super::background_tasks::BackgroundActor::Model);
+            let detach_request = background.map(|_| {
+                let request = Arc::new(tokio::sync::Notify::new());
+                active
+                    .detach_requests
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(call.id, Arc::clone(&request));
+                request
+            });
+            let _detach_registration = DetachRegistration {
+                active: &active,
+                call: call.id,
+            };
+            let started_at = jiff::Timestamp::now();
             loop {
                 tokio::select! {
+                    () = async {
+                        match &detach_request {
+                            Some(request) => request.notified().await,
+                            None => std::future::pending().await,
+                        }
+                    }, if detach_by.is_none() => {
+                        detach_by = Some(super::background_tasks::BackgroundActor::User);
+                    }
+                    detachable = detach_watch.reached(), if detach_by.is_some() => {
+                        while let Ok(progress) = progress_rx.try_recv() {
+                            publish_tool_progress(&engine, active.session, run, &progress);
+                        }
+                        // The call's live display ends here; its capture goes on.
+                        hub.finalize();
+                        engine.retain_finalized_output_hub(call.id);
+                        return engine
+                            .detach_call(super::background_tasks::DetachedCall {
+                                session: active.session,
+                                tool_call_id: call.id,
+                                tool: call.name.clone(),
+                                display: presentation
+                                    .primary_argument
+                                    .as_ref()
+                                    .map(|display| display.as_str().to_owned()),
+                                by: detach_by.expect("detaching on request"),
+                                started_at,
+                                note: detachable.note,
+                                execution: invoke,
+                                progress: progress_rx,
+                                capture,
+                                truncation: result_truncation,
+                                cancellation: tool_cancellation,
+                            })
+                            .await
+                            .map_err(ToolFailure::from);
+                    }
                     result = &mut invoke => {
                         while let Ok(progress) = progress_rx.try_recv() {
                             publish_tool_progress(&engine, active.session, run, &progress);
@@ -889,7 +981,7 @@ impl Engine {
         let session_projection = self.inner.store.get(session)?;
         let depth = session_depth(&session_projection.meta.origin);
         let delegate_enabled = !policy.delegate_targets(depth).is_empty();
-        self.compose_session_tools(session, |source, tool| {
+        let mut composition = self.compose_session_tools(session, |source, tool| {
             let delegation_tool = tool.permission_name.as_deref() == Some("delegate");
             let goal_tool = source.attachment.is_none()
                 && matches!(tool.name.as_str(), "goal_get" | "goal_update");
@@ -909,7 +1001,16 @@ impl Engine {
                                 .map(cookie_agent_runtime_api::RuntimeInfo::id),
                         )
                     })
-        })
+        })?;
+        // `stop_background` only makes sense next to a tool that can run in
+        // the background.
+        if !composition.tools.iter().any(|tool| tool.spec.background) {
+            composition.tools.retain(|tool| {
+                tool.source.attachment.is_some()
+                    || tool.spec.name != crate::base_tools::STOP_BACKGROUND_TOOL
+            });
+        }
+        Ok(composition)
     }
 
     pub(super) fn published_tool_definitions(
@@ -922,7 +1023,11 @@ impl Engine {
         let mut published = std::collections::HashMap::with_capacity(composition.tools.len());
         for ComposedTool { name, source, spec } in composition.tools {
             spec.output.validate().map_err(EngineError::ToolFailed)?;
-            let schema = JsonSchema::new(spec.parameters.clone()).map_err(|error| {
+            let mut parameters = spec.parameters.clone();
+            if spec.background {
+                add_background_argument(&mut parameters, spec.background_default);
+            }
+            let schema = JsonSchema::new(parameters).map_err(|error| {
                 EngineError::ToolFailed(format!("tool `{name}` has invalid JSON Schema: {error}"))
             })?;
             output.push(ToolDefinition::new(
@@ -940,7 +1045,64 @@ impl Engine {
     }
 }
 
-async fn finalize_output(
+/// Takes the host-owned `background` argument out of a call of a
+/// background-capable tool: the tool never sees it, and it is not part of
+/// what is approved. `Ok(None)` for any other tool; the tool's default when
+/// the model left the argument out.
+fn take_background(spec: &crate::ToolSpec, call: &mut ToolCall) -> Result<Option<bool>, String> {
+    if !spec.background {
+        return Ok(None);
+    }
+    match call
+        .arguments
+        .as_object_mut()
+        .and_then(|arguments| arguments.remove("background"))
+    {
+        None => Ok(Some(spec.background_default)),
+        Some(Value::Bool(background)) => Ok(Some(background)),
+        Some(_) => Err("`background` must be a boolean".into()),
+    }
+}
+
+/// Unregisters an executing call's detach request when its execution leaves
+/// the foreground loop.
+struct DetachRegistration<'a> {
+    active: &'a ActiveRun,
+    call: cookie_agent_protocol::ToolCallId,
+}
+
+impl Drop for DetachRegistration<'_> {
+    fn drop(&mut self) {
+        self.active
+            .detach_requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.call);
+    }
+}
+
+/// Adds the host-owned `background` argument to a background-capable tool's
+/// parameters; composition has already refused a tool that declares one.
+fn add_background_argument(parameters: &mut Value, default: bool) {
+    let Some(object) = parameters.as_object_mut() else {
+        return;
+    };
+    let properties = object
+        .entry("properties")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(properties) = properties.as_object_mut() {
+        properties.insert(
+            "background".into(),
+            serde_json::json!({
+                "type": "boolean",
+                "default": default,
+                "description": "Run in the background: the call returns at once with a job ID, and a <background_result> with its result arrives when it finishes.",
+            }),
+        );
+    }
+}
+
+pub(super) async fn finalize_output(
     capture: Option<&OutputCapture>,
     completion: crate::ToolCompletion,
     incomplete: bool,
@@ -967,7 +1129,7 @@ async fn finalize_output(
     Ok(result)
 }
 
-fn incomplete_completion(message: &str) -> crate::ToolCompletion {
+pub(super) fn incomplete_completion(message: &str) -> crate::ToolCompletion {
     crate::ToolCompletion::streamed(ToolResult {
         title: safe_display("Incomplete tool output"),
         output: String::new(),

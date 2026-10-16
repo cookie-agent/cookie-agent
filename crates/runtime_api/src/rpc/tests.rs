@@ -271,6 +271,8 @@ fn tool_errors_and_declarations_survive_the_wire() {
     }
 
     let spec = ToolSpec {
+        background: false,
+        background_default: false,
         name: "webfetch".into(),
         collision: ToolCollision::Fallback,
         permission_name: Some("webfetch".into()),

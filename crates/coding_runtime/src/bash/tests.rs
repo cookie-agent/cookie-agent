@@ -375,7 +375,6 @@ async fn real_bash_completion_keeps_read_order_and_nonzero_exits_are_data() {
                     "for i in 1 2 3; do printf 'stdout %s\\n' \"$i\"; sleep 0.04; printf 'stderr %s é\\n' \"$i\" >&2; sleep 0.04; done; exit {status}"
                 ),
                 timeout: 2_000,
-                background: false,
             },
             cwd: crate::fs_cap::prepare_existing(Path::new("/"), root.path()).unwrap(),
             executable: crate::fs_cap::prepare_existing(Path::new("/"), &executable).unwrap(),
@@ -470,7 +469,6 @@ async fn real_bash_timeout_drains_progress_before_terminal_completion() {
             args: BashArgs {
                 command: "printf 'ready\\n'; sleep 10".into(),
                 timeout: 2_000,
-                background: false,
             },
             cwd: crate::fs_cap::prepare_existing(Path::new("/"), root.path())
                 .expect("prepared cwd"),
@@ -488,8 +486,11 @@ async fn real_bash_timeout_drains_progress_before_terminal_completion() {
         )
         .await
         .unwrap();
-        let execute =
-            executor.execute_process(progress, tokio_util::sync::CancellationToken::new());
+        let execute = executor.execute_process(
+            progress,
+            tokio_util::sync::CancellationToken::new(),
+            cookie_agent_runtime_api::DetachPoint::channel().0,
+        );
         tokio::pin!(execute);
         let mut event_order = Vec::new();
         let mut progress_open = true;
@@ -604,27 +605,39 @@ async fn prepare_arguments(
 }
 
 #[tokio::test]
-async fn background_needs_an_engine_run() {
+async fn bash_reaches_its_detach_point_once_the_command_runs() {
     let root = tempfile::tempdir().unwrap();
     let artifacts = tempfile::tempdir().unwrap();
-    let prepared = prepare_arguments(
-        root.path(),
-        serde_json::json!({"command":"true","background":true}),
-    )
-    .await
-    .expect("prepare");
-    let context = cookie_agent_engine::testing::tool_execution_context(
+    let prepared = prepare_arguments(root.path(), serde_json::json!({"command":"sleep 0.2"}))
+        .await
+        .expect("prepare");
+    let (detach, mut watch) = cookie_agent_runtime_api::DetachPoint::channel();
+    let mut context = cookie_agent_engine::testing::tool_execution_context(
         artifacts.path().join("artifacts"),
         crate::test_turn_context(),
     )
     .unwrap();
-    let error = prepared.execute_for_test(context).await.unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("background jobs are unavailable"),
-        "{error}"
-    );
+    let (sender, _receiver) = tokio::sync::mpsc::channel(128);
+    context.progress = cookie_agent_engine::testing::capturing_progress_sink(
+        sender,
+        OutputHub::new(ToolCallId::new_v7(), 64 * 1024),
+        artifacts.path().join("streams"),
+        cookie_agent_protocol::ToolOutputDeclaration::Named {
+            streams: vec!["stdout".into(), "stderr".into()],
+        },
+    )
+    .await
+    .unwrap();
+    context.detach = detach;
+    let executor = prepared.executor().lock().await.take().expect("executor");
+    let (completion, detachable) = tokio::join!(executor.execute(context), async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), watch.reached())
+            .await
+            .expect("bash reaches its detach point")
+    });
+    completion.expect("bash completes");
+    let note = detachable.note.expect("bash names its process");
+    assert!(note.starts_with("Process "), "{note}");
 }
 
 #[tokio::test]
@@ -639,7 +652,6 @@ async fn zero_timeout_never_times_out() {
         args: BashArgs {
             command: "sleep 0.2; exit 3".into(),
             timeout: 0,
-            background: false,
         },
         cwd: crate::fs_cap::prepare_existing(Path::new("/"), root.path()).unwrap(),
         executable: crate::fs_cap::prepare_existing(Path::new("/"), &executable).unwrap(),
@@ -662,52 +674,4 @@ async fn zero_timeout_never_times_out() {
     .unwrap();
     let completion = Box::new(executor).execute(context).await.unwrap();
     assert_eq!(completion.result.metadata["status"], 3);
-}
-
-#[test]
-fn background_report_is_keyed_by_the_process_id() {
-    let report = super::background_report(
-        Some(4242),
-        "make test",
-        &super::BackgroundExit::TimedOut,
-        std::time::Duration::from_millis(120_000),
-    );
-    assert_eq!(report.summary, "bash timed out and was killed: make test");
-    assert_eq!(report.element, "background_bash");
-    assert_eq!(report.attributes, [("from".to_owned(), "4242".to_owned())]);
-    assert_eq!(
-        report.body,
-        "Command: make test\nStatus: timed out and was killed after 120.0s"
-    );
-    let notice = super::background_started_notice(Some(4242), "make test");
-    assert!(
-        notice.starts_with("Started in the background as process 4242: make test\n"),
-        "{notice}"
-    );
-    assert!(
-        notice.contains("<background_bash from=\"4242\">"),
-        "{notice}"
-    );
-    assert!(
-        notice.ends_with("Stop it early with `kill -- -4242`."),
-        "{notice}"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn background_report_names_the_killing_signal() {
-    use std::os::unix::process::ExitStatusExt as _;
-    let report = super::background_report(
-        None,
-        "sleep 100",
-        &super::BackgroundExit::Finished(Ok(std::process::ExitStatus::from_raw(15))),
-        std::time::Duration::from_secs(3),
-    );
-    assert_eq!(report.summary, "bash terminated by signal 15: sleep 100");
-    assert!(report.attributes.is_empty());
-    assert_eq!(
-        report.body,
-        "Command: sleep 100\nStatus: terminated by signal 15 after 3.0s"
-    );
 }

@@ -97,6 +97,8 @@ pub enum ClientDelivery {
     /// A runtime template or instance status changed; refetch
     /// `runtimes.list`. Carries instance failures for subscribed sessions.
     RuntimesChanged(crate::RuntimesChangedNotification),
+    /// A subscribed session's background calls changed.
+    BackgroundChanged(crate::BackgroundChangedNotification),
 }
 
 type Deliveries = mpsc::UnboundedSender<ClientDelivery>;
@@ -678,6 +680,38 @@ impl Client {
     }
 
     /// Lists runtime templates and the instances the daemon started.
+    /// Moves an executing call to the background.
+    pub async fn background_tool(
+        &self,
+        params: crate::RunToolBackgroundParams,
+    ) -> Result<crate::RunToolBackgroundResult, ClientError> {
+        self.call(crate::RUN_TOOL_BACKGROUND_METHOD, &params).await
+    }
+
+    pub async fn list_background(
+        &self,
+        session_id: SessionId,
+    ) -> Result<crate::SessionBackgroundListResult, ClientError> {
+        self.call(
+            crate::SESSION_BACKGROUND_LIST_METHOD,
+            &crate::SessionBackgroundListParams { session_id },
+        )
+        .await
+    }
+
+    /// Stops a background call as the user.
+    pub async fn stop_background(
+        &self,
+        session_id: SessionId,
+        job: String,
+    ) -> Result<crate::SessionBackgroundStopResult, ClientError> {
+        self.call(
+            crate::SESSION_BACKGROUND_STOP_METHOD,
+            &crate::SessionBackgroundStopParams { session_id, job },
+        )
+        .await
+    }
+
     pub async fn list_runtimes(&self) -> Result<crate::RuntimesListResult, ClientError> {
         self.call(crate::RUNTIMES_LIST_METHOD, &crate::RuntimesListParams {})
             .await
@@ -1494,6 +1528,10 @@ async fn handle_frame(
         Some(crate::RUNTIMES_CHANGED_METHOD) => {
             let changed: crate::RuntimesChangedNotification = serde_json::from_str(params.get())?;
             let _ = deliveries.send(ClientDelivery::RuntimesChanged(changed));
+        }
+        Some(crate::BACKGROUND_CHANGED_METHOD) => {
+            let changed: crate::BackgroundChangedNotification = serde_json::from_str(params.get())?;
+            let _ = deliveries.send(ClientDelivery::BackgroundChanged(changed));
         }
         _ => {}
     }

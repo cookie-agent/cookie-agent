@@ -347,9 +347,8 @@ does not; it is called in-process through the same Rust trait.
 | `tool/prepare` | daemon → runtime | Name, arguments, session, run, turn context. Reply: prepared ID, operation identity, permission resource, policy labels, presentation, display argument, serialization key, concurrency. |
 | `tool/revalidate`, `tool/execute`, `tool/release` | daemon → runtime | Execute or discard a prepared call. `execute` replies with the terminal result and inline media (bounded by today's attachment budget). |
 | `tool/progress` | runtime → daemon | Display deltas and output chunks under today's 64 KiB / 8-stream bounds. The daemon owns capture and artifact retention. |
-| `tool/stdin`, `tool/cancel` | daemon → runtime | As today's `ToolStdin` and cancellation token. |
-| `job/started`, `job/progress`, `job/completed` | runtime → daemon | Background jobs (bash `background`). The daemon commits completions as today. |
-| `job/kill` | daemon → runtime | Revert or delete killed the owning call. |
+| `tool/cancel` | daemon → runtime | As the call's cancellation token. |
+| `tool/detachable` | runtime → daemon | An executing call reached its detach point. Superseded `tool/stdin` and the `job/*` messages in runtime protocol 3 (see [background tool calls](background-tools.md)). |
 | `mcp/changed` | runtime → daemon | The status of the template's MCP servers and the ones that failed (section 6.4), merged into `mcp.changed`. |
 | `mcp/reconnect` | daemon → runtime | Reconnect one MCP server, or retry the failed ones when a session that uses the instance is created or opened. |
 | `runtime/shutdown` | daemon → runtime | Graceful stop, then termination after `shutdown_grace_ms`. |
@@ -368,9 +367,8 @@ that needs general producer messages adds them to this protocol then.
   are attached, and stay up until the daemon exits.
 - Connection, reconnection, and failure follow section 6.4.
 - Runtime stderr is captured into bounded diagnostics, as plugin stderr is.
-- When a runtime drops, calls in flight fail with a new `runtime_unavailable`
-  failure code and running background jobs complete as failed ("runtime
-  exited"). Tool calls are never retried transparently.
+- When a runtime drops, calls in flight, backgrounded ones included, fail
+  with a new `runtime_unavailable` failure code. Tool calls are never retried transparently.
 - Instance status (`starting`, `ready`, `reconnecting`, `failed`, `stopped`)
   is visible to clients (section 11).
 

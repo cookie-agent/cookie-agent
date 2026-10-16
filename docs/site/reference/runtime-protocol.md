@@ -21,7 +21,7 @@ engine's `runtimes::remote` module.
   or one line of newline-delimited JSON over a byte stream such as a child's
   stdio (`rpc::LineTransport`).
 - **Both ends send requests.** The daemon drives tools; a runtime reports
-  progress and background jobs back while a call runs. Request IDs are
+  progress back while a call runs. Request IDs are
   unsigned integers chosen by the sender.
 - **Bounded.** No frame exceeds 48 MiB (`protocol::MAX_FRAME_BYTES`), which fits
   an execute reply carrying the largest attachment as base64 next to a full
@@ -40,7 +40,10 @@ The protocol version is an integer, currently **3**
 with code `-32010` and a message naming both versions, and the daemon checks
 the version in the reply the same way. There is no negotiation.
 Version 3 removed `tool/stdin` and the `stdin` flag of `tool/execute`: tools
-no longer take input while they run.
+no longer take input while they run. It also replaced the `job/*` messages and
+the `background` flag and `launched_jobs` of `tool/execute` with
+`tool/detachable`, and added `background` and `background_default` to tool
+declarations.
 
 ## Lifecycle
 
@@ -60,12 +63,12 @@ no longer take input while they run.
    template's `shutdown_grace_ms` for the answer, and closes the transport
    (a child's stdin); a child that has not exited after another grace is
    killed with its process group. The runtime answers, cancels every running
-   call and background job, and stops. It also stops when its transport
+   call, backgrounded ones included, and stops. It also stops when its transport
    ends.
 
 When the connection is lost while the instance is in use, every call in
-flight fails with `runtime_unavailable` and every running background job
-completes as failed (`runtime … exited before the job finished`). The
+flight fails with `runtime_unavailable`; a backgrounded call reports that
+failure as its background result. The
 instance becomes `reconnecting`: its tools stay published, calls fail fast
 with `runtime_unavailable`, and the daemon starts it again up to 3 times,
 after 1 s, 2 s, and 4 s, sending `runtime/initialize` with the canonical
@@ -92,10 +95,7 @@ transparently.
 | `tool/release` | daemon → runtime | notification | Discard a prepared call that will not run |
 | `tool/progress` | runtime → daemon | request | Display and output deltas of an executing call |
 | `tool/cancel` | daemon → runtime | notification | Cancel an executing call |
-| `job/started` | runtime → daemon | request | An executing call reserves a background job |
-| `job/progress` | runtime → daemon | request | Output of a background job |
-| `job/completed` | runtime → daemon | notification | A background job finished with its report |
-| `job/kill` | daemon → runtime | notification | Kill a background job |
+| `tool/detachable` | runtime → daemon | notification | An executing call reached its detach point |
 | `mcp/changed` | runtime → daemon | notification | The status of the runtime's MCP servers, and the ones that failed |
 | `mcp/reconnect` | daemon → runtime | request | Reconnect one MCP server, or retry every failed one |
 
@@ -134,7 +134,7 @@ OAuth is never used: a remote server connects with its static headers only.
 | `attachment_name` | The name sessions attach the instance under: `<runtime ID>_<workspace basename>`, sanitized, for a coding runtime. |
 | `workspace` | The canonical workspace on the runtime's machine; absent for a runtime without one. `AGENTS.md` is loaded only from runtimes that report one. |
 | `platform` | Optional: the operating system, as Rust's `std::env::consts::OS` names it, for a runtime where it matters. Shown in the system prompt's `<runtimes>` block. Version 1 required it and also carried `shell`. |
-| `tools.tools` | Tool declarations: `name`, `collision` (`prefix` or `fallback`), `permission`, `description`, `parameters` (JSON Schema), `concurrency`, `result_truncation`, `output`. `permission` is the action the tool is checked under: a label matching `[a-z][a-z0-9_]{0,31}`, either one the daemon's own tools use (such as `bash` or `read`, which takes file paths) or the runtime's own (such as `browse`). An action no rule names is denied, so its tools stay hidden until an agent grants it. A tool without `permission` needs none: it is always published and every call is allowed without rules or approval, and its prepared calls report no `permission` either. Version 1 allowed only the nine built-in actions, and versions before 3 required `permission`. |
+| `tools.tools` | Tool declarations: `name`, `collision` (`prefix` or `fallback`), `permission`, `description`, `parameters` (JSON Schema), `concurrency`, `result_truncation`, `output`, and optionally `background` and `background_default`. `background` says the tool supports the background: the daemon adds a `background` argument to its schema, strips it before `tool/prepare`, and may detach its calls (see [Background calls](#background-calls)); `background_default` is that argument's default and is only valid with `background`. `permission` is the action the tool is checked under: a label matching `[a-z][a-z0-9_]{0,31}`, either one the daemon's own tools use (such as `bash` or `read`, which takes file paths) or the runtime's own (such as `browse`). An action no rule names is denied, so its tools stay hidden until an agent grants it. A tool without `permission` needs none: it is always published and every call is allowed without rules or approval, and its prepared calls report no `permission` either. Version 1 allowed only the nine built-in actions, and versions before 3 required `permission`. |
 | `tools.prompt_sections` | System prompt sections (`title`, `body`) the tools contribute. |
 | `skills.skills` | Project skills: the `SKILL.md` text, `source`, absolute `path` and `base_dir` on the runtime's machine, and a sample of `supporting_files`. The daemon parses the text with the same rules as local discovery. |
 | `skills.discoveries` | Every `SKILL.md` found, with `precedence_winner`. |
@@ -210,7 +210,6 @@ a notification.
 |---|---|
 | `prepared_id` | The call to run; executing consumes it. |
 | `session`, `run`, `turn` | As for prepare. |
-| `background` | The call may start background jobs. |
 
 The result's `outcome` is tagged by `status`: `completed` with the terminal
 `output` (single or streamed), the persisted `result`, and `failed`; or
@@ -221,8 +220,6 @@ The result's `outcome` is tagged by `status`: `completed` with the terminal
   attachment the reference the daemon's content-addressed artifact store will
   give it; the daemon stores the bytes, checks each digest and reference, and
   rejects a result that references media it did not receive.
-- `launched_jobs`: the jobs the call reserved and launched. The daemon
-  releases the others.
 
 While a call runs, the runtime sends its progress with `tool/progress`
 (`prepared_id`, and `progress`: `tool_call_id`, `message`, `display`, and
@@ -235,17 +232,19 @@ The daemon owns capture, previews, and artifact retention.
 runtime registers an execution as the request arrives, so a cancellation sent
 right after execute reaches it.
 
-### Background jobs
+### Background calls
 
-A call that starts a background job (such as `bash` with `background`)
-reserves it with `job/started` (`prepared_id`, `job`); the daemon reserves its
-side, which owns the job's output capture and its completion message, and
-answers `{}` or an error. The job's output arrives with `job/progress` (`job`,
-`progress`), and its end with `job/completed` (`job`, `report`: `summary`,
-`element`, `attributes`, `body`). The daemon commits the completion as it does
-for an in-process job: only once the starting call is committed as completed.
-When the starting call never commits, is reverted, or its session is deleted,
-the daemon sends `job/kill`.
+The daemon owns the background (see the [background tool calls
+spec](../specs/background-tools.md)); a runtime only says when a call may be
+detached. When an executing call of a tool declared with `background` reaches
+its detach point, the runtime sends `tool/detachable` (`prepared_id`, and an
+optional `note` for the immediate result, such as a process ID). The daemon
+may then detach the call: it commits an immediate result for it and keeps
+waiting for its `tool/execute` reply, whose result it reports to the session
+as a `<background_result>`. Nothing changes for the runtime: the call keeps
+running, its progress keeps arriving with `tool/progress`, and `tool/cancel`
+stops it, which is how a revert, a deleted session, or `stop_background`
+reaches it. A detached call does not outlive the runtime's connection.
 
 ## Errors
 

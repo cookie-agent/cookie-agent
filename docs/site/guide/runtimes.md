@@ -132,8 +132,8 @@ records the reported path, and reopening the session asks for that path.
   tail, so an `ssh` or `cookie runtime` error shows up in the TUI. Nothing of
   it is written to the daemon's own terminal.
 - **Drop.** When a running instance's process exits or its pipe closes, calls
-  in flight fail with `runtime_unavailable`, its running background jobs
-  complete as failed, and the daemon restarts the process up to 3 times after
+  in flight fail with `runtime_unavailable` (a backgrounded call reports the
+  failure as its background result), and the daemon restarts the process up to 3 times after
   1 s, 2 s, and 4 s. Meanwhile the instance shows as `reconnecting`, its tools
   stay published, and new calls fail fast with `runtime_unavailable`. A
   successful restart re-lists its tools under a new instance generation (a

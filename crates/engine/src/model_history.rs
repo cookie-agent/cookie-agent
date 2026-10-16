@@ -1492,6 +1492,39 @@ fn denied_failure(message: &str) -> Option<DeniedToolFailure> {
         .filter(|denied| denied.kind == "tool_denied")
 }
 
+/// The text the model sees for `result` as a tool result: its output, then
+/// its title, metadata, and truncation (with the `read_artifact` hint into
+/// the retained output) as JSON. Attachments, which only a tool result can
+/// carry, are named by reference. Background results wrap this text, so a
+/// detached call reports exactly what its foreground result would have said.
+pub(crate) fn tool_result_text(result: &PersistedToolResult) -> String {
+    let truncation = result.truncation.as_ref().and_then(|truncation| {
+        let artifact_id = retained_artifact_id(&truncation.retained).ok()?;
+        Some(serde_json::json!({
+            "original_bytes": truncation.original_bytes,
+            "original_lines": truncation.original_lines,
+            "artifact_id": artifact_id,
+            "read_more": {"tool": "read_artifact", "arguments": {"artifact": artifact_id}},
+        }))
+    });
+    let mut text = result.output.trim_end().to_owned();
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text.push_str(
+        &serde_json::json!({
+            "title": result.title,
+            "metadata": result.metadata,
+            "truncation": truncation,
+        })
+        .to_string(),
+    );
+    for attachment in &result.attachments {
+        text.push_str(&format!("\n[attachment {}]", attachment.reference.uri));
+    }
+    text
+}
+
 fn tool_result_part(
     result: &PersistedToolResult,
     store: SessionArtifacts<'_>,

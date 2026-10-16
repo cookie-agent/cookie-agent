@@ -5,9 +5,9 @@
 //! and sends `runtime/initialize`. The [`RuntimeClient`] it gets back keeps
 //! the connection: its [`RemoteToolProvider`] publishes the tools the runtime
 //! declared and proxies preparation and execution, it routes `tool/progress`
-//! into the call's capture, and it maps `job/*` onto the engine's background
-//! jobs. When the connection is lost, calls in flight fail with
-//! `runtime_unavailable` and running background jobs complete as failed.
+//! into the call's capture, and it hands `tool/detachable` to the call's
+//! detach point. When the connection is lost, calls in flight, backgrounded
+//! ones included, fail with `runtime_unavailable`.
 //! The client also keeps what the runtime reports about the MCP servers it
 //! hosts (`mcp/changed`), forwards their changes and failures to the
 //! [`McpHub`], and asks the runtime to reconnect them (`mcp/reconnect`).
@@ -30,23 +30,21 @@ use base64::Engine as _;
 use cookie_agent_config::{McpServerConfig, SkillDiscovery, SkillRegistry};
 use cookie_agent_protocol::{SessionId, ToolCallId, ToolCallPresentation};
 use cookie_agent_runtime_api::{
-    BackgroundJob, BackgroundJobs, BackgroundReport, DiagnosticTail, PreparedDeclaration,
-    PreparedExecutor, PreparedSerializationKey, PreparedTool, ProgressSink, PromptSection,
-    RuntimeConnection, RuntimeConnector, RuntimeInfo, SessionToolContext, ToolArtifacts, ToolCall,
-    ToolCompletion, ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider,
-    ToolSpec, WorkspaceContext,
+    DetachPoint, DiagnosticTail, PreparedDeclaration, PreparedExecutor, PreparedSerializationKey,
+    PreparedTool, ProgressSink, PromptSection, RuntimeConnection, RuntimeConnector, RuntimeInfo,
+    SessionToolContext, ToolArtifacts, ToolCall, ToolCompletion, ToolError, ToolExecutionContext,
+    ToolPreparationContext, ToolProvider, ToolSpec, WorkspaceContext,
     context::AgentMdContext,
     protocol::{
-        self, ContextParams, ContextResult, Empty, ExecuteOutcome, ExecuteParams, ExecuteResult,
-        InitializeParams, InitializeResult, InlineMedia, JobCompletedParams, JobProgressParams,
-        JobRef, JobStartedParams, McpChangedParams, McpReconnectParams, McpServerReport, Outcome,
-        PrepareOutcome, PrepareParams, PrepareResult, PreparedCall, PreparedRef,
-        RUNTIME_PROTOCOL_VERSION, RuntimeSettings, RuntimeSkills, RuntimeTools, ToolProgressParams,
-        WireBackgroundReport, WireToolCall, error_code, method,
+        self, ContextParams, ContextResult, DetachableParams, Empty, ExecuteOutcome, ExecuteParams,
+        ExecuteResult, InitializeParams, InitializeResult, InlineMedia, McpChangedParams,
+        McpReconnectParams, McpServerReport, Outcome, PrepareOutcome, PrepareParams, PrepareResult,
+        PreparedCall, PreparedRef, RUNTIME_PROTOCOL_VERSION, RuntimeSettings, RuntimeSkills,
+        RuntimeTools, ToolProgressParams, WireToolCall, error_code, method,
     },
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
 };
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::Notify;
 
 use super::{
     McpHub, McpServerFailure,
@@ -261,11 +259,9 @@ struct ClientInner {
     shutdown_grace: Duration,
     /// `None` until the initialize reply or the first `tools_changed`.
     tools: Mutex<Option<Arc<DeclaredTools>>>,
-    /// Executing calls by prepared ID: the host services their progress and
-    /// background jobs reach.
+    /// Executing calls by prepared ID: where their progress and detach
+    /// point reach the host.
     executions: Mutex<HashMap<u64, ExecutionHost>>,
-    /// Background jobs by the runtime's job ID.
-    jobs: Mutex<HashMap<u64, DaemonJob>>,
     /// Presentations of calls that failed to prepare, by call.
     presentations: Mutex<VecDeque<(ToolCallId, ToolCallPresentation)>>,
     /// The MCP servers the runtime hosts.
@@ -327,20 +323,8 @@ impl From<RuntimeTools> for DeclaredTools {
 }
 
 struct ExecutionHost {
-    session: SessionId,
     progress: ProgressSink,
-    background: Option<Arc<dyn BackgroundJobs>>,
-}
-
-struct DaemonJob {
-    /// The prepared ID of the call that reserved it.
-    execution: u64,
-    progress: ProgressSink,
-    /// The engine's reservation, until the call's reply says whether the
-    /// runtime launched the job.
-    reserved: Option<BackgroundJob>,
-    report: Option<oneshot::Receiver<WireBackgroundReport>>,
-    completion: Option<oneshot::Sender<WireBackgroundReport>>,
+    detach: DetachPoint,
 }
 
 /// One `mcp/reconnect` retry in flight.
@@ -388,7 +372,6 @@ impl RuntimeClient {
             shutdown_grace,
             tools: Mutex::default(),
             executions: Mutex::default(),
-            jobs: Mutex::default(),
             presentations: Mutex::default(),
             mcp: Mutex::new(HostedMcp {
                 definitions,
@@ -715,8 +698,6 @@ impl ClientInner {
     async fn handle_request(self: Arc<Self>, request: IncomingRequest) {
         let result = match request.method.as_str() {
             method::TOOL_PROGRESS => self.call_progress(&request).await,
-            method::JOB_STARTED => self.job_started(&request).await,
-            method::JOB_PROGRESS => self.job_progress(&request).await,
             other => Err(RpcError::remote(
                 error_code::METHOD_NOT_FOUND,
                 format!("unknown method `{other}`"),
@@ -746,13 +727,11 @@ impl ClientInner {
                     }
                 }
             }
-            method::JOB_COMPLETED => {
-                if let Ok(JobCompletedParams { job, report }) = notification.params()
-                    && let Some(completion) = lock(&self.jobs)
-                        .get_mut(&job)
-                        .and_then(|job| job.completion.take())
+            method::TOOL_DETACHABLE => {
+                if let Ok(DetachableParams { prepared_id, note }) = notification.params()
+                    && let Some(host) = lock(&self.executions).get(&prepared_id)
                 {
-                    let _ = completion.send(report);
+                    host.detach.reached(note);
                 }
             }
             _ => {}
@@ -773,48 +752,9 @@ impl ClientInner {
         Ok(Outcome::of(sink.send(progress.into()).await))
     }
 
-    async fn job_started(&self, request: &IncomingRequest) -> Result<Outcome, RpcError> {
-        let JobStartedParams { prepared_id, job } = request.params()?;
-        let host = lock(&self.executions)
-            .get(&prepared_id)
-            .map(|host| (host.session, host.background.clone()));
-        let Some((session, Some(background))) = host else {
-            return Ok(Outcome::of(Err(ToolError::execution(
-                "background jobs are unavailable here",
-            ))));
-        };
-        let reserved = match background.reserve(session).await {
-            Ok(reserved) => reserved,
-            Err(error) => return Ok(Outcome::of(Err(error))),
-        };
-        let (completion, report) = oneshot::channel();
-        lock(&self.jobs).insert(
-            job,
-            DaemonJob {
-                execution: prepared_id,
-                progress: reserved.progress(),
-                reserved: Some(reserved),
-                report: Some(report),
-                completion: Some(completion),
-            },
-        );
-        Ok(Outcome::default())
-    }
-
-    async fn job_progress(&self, request: &IncomingRequest) -> Result<Outcome, RpcError> {
-        let JobProgressParams { job, progress } = request.params()?;
-        let sink = lock(&self.jobs).get(&job).map(|job| job.progress.clone());
-        let Some(sink) = sink else {
-            return Ok(Outcome::of(Err(ToolError::ProgressSinkClosed)));
-        };
-        Ok(Outcome::of(sink.send(progress.into()).await))
-    }
-
-    /// The connection ended: calls fail through their pending replies, and
-    /// running jobs complete as failed.
+    /// The connection ended: calls fail through their pending replies.
     fn connection_lost(&self) {
         lock(&self.executions).clear();
-        lock(&self.jobs).clear();
     }
 
     fn remember_presentation(&self, call: ToolCallId, presentation: ToolCallPresentation) {
@@ -845,23 +785,15 @@ impl ClientInner {
             cancellation,
             turn_context,
             artifacts,
-            background,
+            detach,
         } = context;
         let params = ExecuteParams {
             prepared_id,
             session,
             run,
             turn: turn_context.as_ref().into(),
-            background: background.is_some(),
         };
-        lock(&self.executions).insert(
-            prepared_id,
-            ExecutionHost {
-                session,
-                progress,
-                background,
-            },
-        );
+        lock(&self.executions).insert(prepared_id, ExecutionHost { progress, detach });
         let mut guard = ExecutionGuard {
             client: self,
             prepared_id,
@@ -883,11 +815,7 @@ impl ClientInner {
         };
         guard.finished = true;
         drop(guard);
-        let reply = reply.map_err(|error| {
-            self.release_jobs(prepared_id, &[], true);
-            self.unavailable(&error)
-        })?;
-        self.release_jobs(prepared_id, &reply.launched_jobs, false);
+        let reply = reply.map_err(|error| self.unavailable(&error))?;
         let completion = match reply.outcome {
             ExecuteOutcome::Completed {
                 output,
@@ -902,44 +830,6 @@ impl ClientInner {
         };
         retain_media(artifacts.as_ref(), session, reply.media, &completion)?;
         Ok(completion)
-    }
-
-    /// Launches the jobs the call reserved that the runtime launched, and
-    /// releases the others. When the reply is unknown, the runtime may have
-    /// launched them anyway, so `kill_unlaunched` kills them there.
-    fn release_jobs(self: &Arc<Self>, prepared_id: u64, launched: &[u64], kill_unlaunched: bool) {
-        let mut to_launch = Vec::new();
-        {
-            let mut jobs = lock(&self.jobs);
-            let reserved = jobs
-                .iter()
-                .filter(|(_, job)| job.execution == prepared_id && job.reserved.is_some())
-                .map(|(id, _)| *id)
-                .collect::<Vec<_>>();
-            for id in reserved {
-                if launched.contains(&id) {
-                    let job = jobs.get_mut(&id).expect("reserved job is listed");
-                    if let (Some(reserved), Some(report)) = (job.reserved.take(), job.report.take())
-                    {
-                        to_launch.push((id, reserved, report));
-                    }
-                } else {
-                    jobs.remove(&id);
-                    if kill_unlaunched {
-                        self.peer
-                            .notify_detached(method::JOB_KILL, &JobRef { job: id });
-                    }
-                }
-            }
-        }
-        for (id, reserved, report) in to_launch {
-            let proxy = job_proxy(Arc::clone(self), id, report);
-            if reserved.launch(proxy).is_err() {
-                lock(&self.jobs).remove(&id);
-                self.peer
-                    .notify_detached(method::JOB_KILL, &JobRef { job: id });
-            }
-        }
     }
 }
 
@@ -961,7 +851,6 @@ impl Drop for ExecutionGuard<'_> {
                     prepared_id: self.prepared_id,
                 },
             );
-            self.client.release_jobs(self.prepared_id, &[], true);
         }
     }
 }
@@ -1013,57 +902,6 @@ fn retain_media(
         )));
     }
     Ok(())
-}
-
-/// The future the engine runs for a job the runtime launched: it resolves
-/// with the runtime's report, or with a failure when the runtime is gone.
-/// Dropping it, which is how the engine kills a job, kills the runtime's
-/// job.
-async fn job_proxy(
-    client: Arc<ClientInner>,
-    job: u64,
-    report: oneshot::Receiver<WireBackgroundReport>,
-) -> BackgroundReport {
-    let mut guard = JobGuard {
-        client: Arc::clone(&client),
-        job,
-        finished: false,
-    };
-    let report = match report.await {
-        Ok(report) => report.into(),
-        Err(_) => runtime_exited_report(&client.runtime_id),
-    };
-    guard.finished = true;
-    report
-}
-
-struct JobGuard {
-    client: Arc<ClientInner>,
-    job: u64,
-    finished: bool,
-}
-
-impl Drop for JobGuard {
-    fn drop(&mut self) {
-        lock(&self.client.jobs).remove(&self.job);
-        if !self.finished {
-            self.client
-                .peer
-                .notify_detached(method::JOB_KILL, &JobRef { job: self.job });
-        }
-    }
-}
-
-fn runtime_exited_report(runtime_id: &str) -> BackgroundReport {
-    BackgroundReport {
-        summary: format!("background job failed: runtime `{runtime_id}` exited"),
-        element: "background_job".into(),
-        attributes: vec![
-            ("runtime".into(), runtime_id.to_owned()),
-            ("status".into(), "failed".into()),
-        ],
-        body: format!("Status: failed: runtime `{runtime_id}` exited before the job finished\n"),
-    }
 }
 
 /// The tools a protocol runtime declared, as one provider. The sync

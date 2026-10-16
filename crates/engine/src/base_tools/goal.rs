@@ -36,6 +36,8 @@ impl GoalTools {
 
     pub(crate) fn get_spec() -> ToolSpec {
         ToolSpec {
+            background: false,
+            background_default: false,
 collision: Default::default(),
 output: Default::default(),
             concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
@@ -49,6 +51,8 @@ output: Default::default(),
 
     pub(crate) fn update_spec() -> ToolSpec {
         ToolSpec {
+            background: false,
+            background_default: false,
 collision: Default::default(),
 output: Default::default(),
             concurrency: Default::default(),

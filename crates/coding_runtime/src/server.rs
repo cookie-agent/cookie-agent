@@ -5,8 +5,8 @@
 //! `runtime/context` with the workspace's `AGENTS.md`, and prepares and
 //! executes calls. It keeps each prepared call under its prepared ID until
 //! the daemon executes or releases it, runs executions concurrently, sends
-//! their progress back with `tool/progress`, and runs background jobs
-//! locally, reporting them with `job/*`. It hosts the template's MCP servers (`docs/site/specs/runtimes.md`
+//! their progress back with `tool/progress`, and tells the daemon with
+//! `tool/detachable` when a call reaches its detach point. It hosts the template's MCP servers (`docs/site/specs/runtimes.md`
 //! section 3): it connects them before it answers `runtime/initialize`,
 //! declares their tools next to its built-in ones, reconnects dropped ones
 //! with the shared reconnect policy, and reports their status with
@@ -23,7 +23,7 @@ use std::{
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, OnceLock, Weak,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -34,19 +34,19 @@ use cookie_agent_config::{LoadedMcpServer, McpOAuthConfig, McpServerConfig, McpS
 use cookie_agent_mcp::{McpRegistry, McpRegistryOptions, McpServerFailure, McpServerStatus};
 use cookie_agent_protocol::{SessionId, Transport};
 use cookie_agent_runtime_api::{
-    BackgroundJob, BackgroundJobs, BackgroundLauncher, BackgroundTask, CodingToolsFactory,
-    ProgressCapture, ProgressSink, RuntimeConnection, RuntimeConnector, RuntimeInfo,
-    SessionToolContext, ToolArtifacts, ToolCall, ToolError, ToolExecutionContext, ToolOrigin,
-    ToolPreparationContext, ToolProgress, ToolProvider, WorkspaceContext,
+    CodingToolsFactory, DetachPoint, ProgressCapture, ProgressSink, RuntimeConnection,
+    RuntimeConnector, RuntimeInfo, SessionToolContext, ToolArtifacts, ToolCall, ToolError,
+    ToolExecutionContext, ToolOrigin, ToolPreparationContext, ToolProgress, ToolProvider,
+    WorkspaceContext,
     context::{AGENT_MD_MAX_BYTES, load_agent_md},
     protocol::{
-        self, ContextParams, ContextResult, Empty, ExecuteOutcome, ExecuteParams, ExecuteResult,
-        InitializeParams, InitializeResult, InlineMedia, JobCompletedParams, JobProgressParams,
-        JobRef, JobStartedParams, McpChangedParams, McpFailureReport, McpReconnectParams,
-        McpServerReport, McpServerSettings, Outcome, PrepareOutcome, PrepareParams, PrepareResult,
-        PreparedCall, PreparedRef, PromptSectionDeclaration, RUNTIME_PROTOCOL_VERSION,
-        RuntimeSettings, RuntimeSkills, RuntimeTools, SkillDeclaration, SkillDiscoveryDeclaration,
-        ToolDeclaration, ToolProgressParams, WireToolError, error_code, method,
+        self, ContextParams, ContextResult, DetachableParams, Empty, ExecuteOutcome, ExecuteParams,
+        ExecuteResult, InitializeParams, InitializeResult, InlineMedia, McpChangedParams,
+        McpFailureReport, McpReconnectParams, McpServerReport, McpServerSettings, Outcome,
+        PrepareOutcome, PrepareParams, PrepareResult, PreparedCall, PreparedRef,
+        PromptSectionDeclaration, RUNTIME_PROTOCOL_VERSION, RuntimeSettings, RuntimeSkills,
+        RuntimeTools, SkillDeclaration, SkillDiscoveryDeclaration, ToolDeclaration,
+        ToolProgressParams, WireToolError, error_code, method,
     },
     reconnect::ReconnectPolicy,
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
@@ -156,8 +156,7 @@ pub async fn serve_stdio(options: ServeOptions) {
 }
 
 /// Serves one daemon over `transport` until it sends `runtime/shutdown` or
-/// the transport ends. Calls and background jobs still running are
-/// cancelled when it returns.
+/// the transport ends. Calls still running are cancelled when it returns.
 pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
     let (peer, mut incoming) = Peer::start(transport);
     let server = Arc::new(Server {
@@ -167,9 +166,7 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
         state: OnceLock::new(),
         prepared: Mutex::default(),
         executions: Mutex::default(),
-        jobs: Mutex::default(),
         next_prepared: AtomicU64::new(1),
-        next_job: AtomicU64::new(1),
         stop: CancellationToken::new(),
     });
     loop {
@@ -192,7 +189,6 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
     }
     server.stop.cancel();
     lock(&server.prepared).clear();
-    lock(&server.jobs).clear();
     if let Some(mcp) = server.state.get().and_then(|state| state.mcp.clone()) {
         mcp.shutdown().await;
     }
@@ -216,12 +212,8 @@ struct Server {
     prepared: Mutex<HashMap<u64, cookie_agent_runtime_api::PreparedTool>>,
     /// Executing calls by prepared ID.
     executions: Mutex<HashMap<u64, Execution>>,
-    /// Running background jobs by job ID.
-    jobs: Mutex<HashMap<u64, CancellationToken>>,
     next_prepared: AtomicU64,
-    next_job: AtomicU64,
-    /// Cancelled when the server stops; every call and job runs under a
-    /// child of it.
+    /// Cancelled when the server stops; every call runs under a child of it.
     stop: CancellationToken,
 }
 
@@ -370,13 +362,6 @@ impl Server {
                     && let Some(execution) = lock(&self.executions).get(&prepared_id)
                 {
                     execution.cancel.cancel();
-                }
-            }
-            method::JOB_KILL => {
-                if let Ok(JobRef { job }) = notification.params()
-                    && let Some(kill) = lock(&self.jobs).remove(&job)
-                {
-                    kill.cancel();
                 }
             }
             // Notifications this runtime does not know are ignored.
@@ -761,30 +746,39 @@ impl Server {
                     )),
                 },
                 media: Vec::new(),
-                launched_jobs: Vec::new(),
             });
         };
         let artifacts = Arc::new(InlineArtifacts::default());
-        let launched = Arc::new(Mutex::new(Vec::new()));
+        let (detach, mut detach_watch) = DetachPoint::channel();
+        // The daemon decides whether to detach; it only needs to hear when
+        // the call may be.
+        let peer = self.peer.clone();
+        let announce = tokio::spawn(async move {
+            let detachable = detach_watch.reached().await;
+            let _ = peer
+                .notify(
+                    method::TOOL_DETACHABLE,
+                    &DetachableParams {
+                        prepared_id,
+                        note: detachable.note,
+                    },
+                )
+                .await;
+        });
         let context = ToolExecutionContext {
             session: params.session,
             run: params.run,
-            progress: RemoteProgress::sink(self.peer.clone(), ProgressTarget::Call(prepared_id)),
+            progress: RemoteProgress::sink(self.peer.clone(), prepared_id),
             cancellation: cancel,
             turn_context: Arc::new(params.turn.into()),
             artifacts: artifacts.clone(),
-            background: params.background.then(|| {
-                Arc::new(RemoteJobs {
-                    server: Arc::downgrade(self),
-                    prepared_id,
-                    launched: Arc::clone(&launched),
-                }) as Arc<dyn BackgroundJobs>
-            }),
+            detach,
         };
         let result = AssertUnwindSafe(executor.execute(context))
             .catch_unwind()
             .await
             .unwrap_or_else(|_| Err(ToolError::execution("tool execution panicked")));
+        announce.abort();
         let outcome = match result {
             Ok(completion) => ExecuteOutcome::Completed {
                 output: completion.output,
@@ -795,11 +789,9 @@ impl Server {
                 error: WireToolError::from(&error),
             },
         };
-        let launched_jobs = std::mem::take(&mut *lock(&launched));
         Ok(ExecuteResult {
             outcome,
             media: artifacts.take(),
-            launched_jobs,
         })
     }
 }
@@ -959,32 +951,26 @@ fn wire_skills(registry: &cookie_agent_config::SkillRegistry) -> RuntimeSkills {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-enum ProgressTarget {
-    Call(u64),
-    Job(u64),
-}
-
-/// Sends a call's or job's progress to the daemon and waits until the
+/// Sends a call's progress to the daemon and waits until the
 /// daemon has captured it, so output stays in order and capture limits
 /// reach the tool.
 #[derive(Debug)]
 struct RemoteProgress {
     peer: Peer,
-    target: ProgressTarget,
+    prepared_id: u64,
     /// Keeps the sink's display channel open. Display deltas travel with
     /// the progress itself, so nothing is ever sent on it.
     _display: mpsc::Receiver<ToolProgress>,
 }
 
 impl RemoteProgress {
-    fn sink(peer: Peer, target: ProgressTarget) -> ProgressSink {
+    fn sink(peer: Peer, prepared_id: u64) -> ProgressSink {
         let (sender, display) = mpsc::channel(1);
         ProgressSink::with_capture(
             sender,
             Arc::new(Self {
                 peer,
-                target,
+                prepared_id,
                 _display: display,
             }),
         )
@@ -999,30 +985,16 @@ impl ProgressCapture for RemoteProgress {
         display: Option<mpsc::OwnedPermit<ToolProgress>>,
     ) -> Result<(), ToolError> {
         drop(display);
-        let outcome: Result<Outcome, RpcError> = match self.target {
-            ProgressTarget::Call(prepared_id) => {
-                self.peer
-                    .request(
-                        method::TOOL_PROGRESS,
-                        &ToolProgressParams {
-                            prepared_id,
-                            progress: progress.into(),
-                        },
-                    )
-                    .await
-            }
-            ProgressTarget::Job(job) => {
-                self.peer
-                    .request(
-                        method::JOB_PROGRESS,
-                        &JobProgressParams {
-                            job,
-                            progress: progress.into(),
-                        },
-                    )
-                    .await
-            }
-        };
+        let outcome: Result<Outcome, RpcError> = self
+            .peer
+            .request(
+                method::TOOL_PROGRESS,
+                &ToolProgressParams {
+                    prepared_id: self.prepared_id,
+                    progress: progress.into(),
+                },
+            )
+            .await;
         outcome
             .map_err(|_| ToolError::ProgressSinkClosed)?
             .into_result()
@@ -1093,91 +1065,9 @@ impl ToolArtifacts for InlineArtifacts {
     }
 }
 
-/// Lets an executing call reserve background jobs: the daemon reserves its
-/// side with `job/started`, and the job runs here.
-#[derive(Debug)]
-struct RemoteJobs {
-    server: Weak<Server>,
-    prepared_id: u64,
-    launched: Arc<Mutex<Vec<u64>>>,
-}
-
 impl std::fmt::Debug for Server {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.debug_struct("Server").finish_non_exhaustive()
-    }
-}
-
-#[async_trait]
-impl BackgroundJobs for RemoteJobs {
-    async fn reserve(&self, _session: SessionId) -> Result<BackgroundJob, ToolError> {
-        let server = self
-            .server
-            .upgrade()
-            .ok_or_else(|| ToolError::execution("the runtime is shutting down"))?;
-        let job = server.next_job.fetch_add(1, Ordering::Relaxed);
-        let outcome: Outcome = server
-            .peer
-            .request(
-                method::JOB_STARTED,
-                &JobStartedParams {
-                    prepared_id: self.prepared_id,
-                    job,
-                },
-            )
-            .await
-            .map_err(|error| ToolError::runtime_unavailable(error.to_string()))?;
-        outcome.into_result()?;
-        Ok(BackgroundJob::new(
-            RemoteProgress::sink(server.peer.clone(), ProgressTarget::Job(job)),
-            Box::new(RemoteLauncher {
-                server: Weak::clone(&self.server),
-                job,
-                launched: Arc::clone(&self.launched),
-            }),
-        ))
-    }
-}
-
-struct RemoteLauncher {
-    server: Weak<Server>,
-    job: u64,
-    launched: Arc<Mutex<Vec<u64>>>,
-}
-
-impl BackgroundLauncher for RemoteLauncher {
-    fn launch(self: Box<Self>, task: BackgroundTask) -> Result<(), ToolError> {
-        let server = self
-            .server
-            .upgrade()
-            .ok_or_else(|| ToolError::execution("the runtime is shutting down"))?;
-        let job = self.job;
-        let kill = server.stop.child_token();
-        lock(&server.jobs).insert(job, kill.clone());
-        lock(&self.launched).push(job);
-        let peer = server.peer.clone();
-        let server = Weak::clone(&self.server);
-        tokio::spawn(async move {
-            let report = tokio::select! {
-                report = task => Some(report),
-                () = kill.cancelled() => None,
-            };
-            if let Some(server) = server.upgrade() {
-                lock(&server.jobs).remove(&job);
-            }
-            if let Some(report) = report {
-                let _ = peer
-                    .notify(
-                        method::JOB_COMPLETED,
-                        &JobCompletedParams {
-                            job,
-                            report: report.into(),
-                        },
-                    )
-                    .await;
-            }
-        });
-        Ok(())
     }
 }
 

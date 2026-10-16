@@ -28,7 +28,7 @@ pub fn tool_execution_context(
         turn_context,
         artifacts: ArtifactRouter::open_flat(artifact_directory.into())
             .map_err(|error| ToolError::execution(error.to_string()))?,
-        background: None,
+        detach: cookie_agent_runtime_api::DetachPoint::channel().0,
     })
 }
 

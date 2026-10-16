@@ -90,6 +90,8 @@ impl DelegateToolProvider {
     pub(crate) fn specs(targets: &[&str]) -> Vec<ToolSpec> {
         vec![
         ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             output: Default::default(),
             concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
@@ -119,6 +121,8 @@ impl DelegateToolProvider {
             }),
         },
         ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
@@ -140,6 +144,8 @@ impl DelegateToolProvider {
             }),
         },
         ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),

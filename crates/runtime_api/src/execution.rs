@@ -1,8 +1,8 @@
 //! What a tool sees while it is prepared and executed, and the host services
 //! it reaches through that context: progress capture, attachment retention,
-//! and background jobs.
+//! and the point at which the host may detach the call.
 
-use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
@@ -89,19 +89,14 @@ pub struct ToolExecutionContext {
     pub turn_context: Arc<TurnAgentContext>,
     /// The session tree's artifact store.
     pub artifacts: Arc<dyn ToolArtifacts>,
-    /// Present for calls the host runs; lets the call start a background job.
-    pub background: Option<Arc<dyn BackgroundJobs>>,
+    /// Where a background-capable tool says it may be detached.
+    pub detach: DetachPoint,
 }
 
 impl ToolExecutionContext {
-    /// Reserves a job that outlives this call and reports back to the session
-    /// through a producer message when it finishes.
-    pub async fn start_background(&self) -> Result<BackgroundJob, ToolError> {
-        self.background
-            .as_ref()
-            .ok_or_else(|| ToolError::execution("background jobs are unavailable here"))?
-            .reserve(self.session)
-            .await
+    /// Tells the host the call may now be detached; see [`DetachPoint`].
+    pub fn detachable(&self, note: Option<String>) {
+        self.detach.reached(note);
     }
 
     /// Reads a page of an artifact in this call's session tree.
@@ -303,68 +298,75 @@ impl ProgressSink {
     }
 }
 
-/// Lets one executing call reserve background jobs. The host owns each job's
-/// output capture, its producer registration, and the completion message
-/// that wakes the session.
-#[async_trait]
-pub trait BackgroundJobs: std::fmt::Debug + Send + Sync {
-    /// Reserves a job for the call in `session`.
-    async fn reserve(&self, session: SessionId) -> Result<BackgroundJob, ToolError>;
+/// The point at which an executing call of a background-capable tool may be
+/// detached, as `docs/site/specs/background-tools.md` section 4 specifies.
+///
+/// A background-capable tool calls [`DetachPoint::reached`] once it has
+/// started its work (bash right after spawning its command), with an
+/// optional note for the immediate result the host commits when it detaches
+/// the call. The host detaches only at or after that point: a call the model
+/// started in the background detaches as soon as it reaches it, and a user's
+/// request waits for it. A call that finishes first simply returns.
+#[derive(Clone, Debug)]
+pub struct DetachPoint {
+    sender: Arc<tokio::sync::watch::Sender<Option<Detachable>>>,
 }
 
-/// The future that runs a background job to its report.
-pub type BackgroundTask = Pin<Box<dyn Future<Output = BackgroundReport> + Send>>;
-
-/// Starts a reserved job; implemented by the host.
-pub trait BackgroundLauncher: Send {
-    /// Runs `task` detached from the call that reserved it.
-    fn launch(self: Box<Self>, task: BackgroundTask) -> Result<(), ToolError>;
+/// What a call reports when it reaches its detach point.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Detachable {
+    /// A line for the immediate result, such as a process ID.
+    pub note: Option<String>,
 }
 
-/// What a finished background job reports to the agent. The engine renders
-/// `<element attributes…>`, the body, and the job's output preview (truncated
-/// like any tool result), then the closing tag.
-pub struct BackgroundReport {
-    /// One-line summary shown on the notification row.
-    pub summary: String,
-    /// Element name wrapping the agent-visible report, such as `background_bash`.
-    pub element: String,
-    /// Attributes on the opening tag, in order.
-    pub attributes: Vec<(String, String)>,
-    /// Report lines placed before the output preview.
-    pub body: String,
+/// The host's side of a [`DetachPoint`].
+#[derive(Debug)]
+pub struct DetachWatch {
+    receiver: tokio::sync::watch::Receiver<Option<Detachable>>,
 }
 
-/// A reserved background job. [`BackgroundJob::progress`] captures the job's
-/// output like a foreground call's; [`BackgroundJob::launch`] hands over the
-/// future that runs it. Dropping the job unlaunched releases the reservation.
-pub struct BackgroundJob {
-    progress: ProgressSink,
-    launcher: Box<dyn BackgroundLauncher>,
-}
-
-impl BackgroundJob {
-    /// A reserved job writing to `progress` and started by `launcher`.
+impl DetachPoint {
+    /// A detach point and the watch the host reads it through.
     #[must_use]
-    pub fn new(progress: ProgressSink, launcher: Box<dyn BackgroundLauncher>) -> Self {
-        Self { progress, launcher }
+    pub fn channel() -> (Self, DetachWatch) {
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        (
+            Self {
+                sender: Arc::new(sender),
+            },
+            DetachWatch { receiver },
+        )
     }
 
-    /// The sink the job writes its output to.
+    /// Marks the call detachable with `note`. Only the first call counts.
+    pub fn reached(&self, note: Option<String>) {
+        self.sender.send_if_modified(|current| {
+            if current.is_some() {
+                return false;
+            }
+            *current = Some(Detachable { note });
+            true
+        });
+    }
+}
+
+impl DetachWatch {
+    /// The detach point, once the call has reached it.
     #[must_use]
-    pub fn progress(&self) -> ProgressSink {
-        self.progress.clone()
+    pub fn current(&self) -> Option<Detachable> {
+        self.receiver.borrow().clone()
     }
 
-    /// Runs `job` detached from the call. Its report is delivered once the
-    /// call commits; the job is dropped (killing what it owns) if the call
-    /// never commits, is reverted, or its session is deleted.
-    pub fn launch(
-        self,
-        job: impl Future<Output = BackgroundReport> + Send + 'static,
-    ) -> Result<(), ToolError> {
-        let Self { progress, launcher } = self;
-        drop(progress);
-        launcher.launch(Box::pin(job))
+    /// Waits until the call reaches its detach point. Pending forever if the
+    /// call never does and its point is dropped.
+    pub async fn reached(&mut self) -> Detachable {
+        loop {
+            if let Some(detachable) = self.receiver.borrow_and_update().clone() {
+                return detachable;
+            }
+            if self.receiver.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
     }
 }

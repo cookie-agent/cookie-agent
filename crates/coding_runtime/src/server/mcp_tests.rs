@@ -189,7 +189,6 @@ impl Harness {
                     session,
                     run,
                     turn: turn(with_image),
-                    background: false,
                 },
             ),
         )

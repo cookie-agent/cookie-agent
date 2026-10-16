@@ -458,6 +458,22 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: crate::RuntimesReconnectParams,
     ) -> Result<crate::RuntimesReconnectResult, ServerFault>;
+    /// Moves an executing call to the background.
+    async fn background_tool(
+        &self,
+        params: crate::RunToolBackgroundParams,
+        context: &ServerContext,
+    ) -> Result<crate::RunToolBackgroundResult, ServerFault>;
+    async fn list_background(
+        &self,
+        params: crate::SessionBackgroundListParams,
+    ) -> Result<crate::SessionBackgroundListResult, ServerFault>;
+    /// Stops a background call as the user.
+    async fn stop_background(
+        &self,
+        params: crate::SessionBackgroundStopParams,
+        context: &ServerContext,
+    ) -> Result<crate::SessionBackgroundStopResult, ServerFault>;
     async fn list_mcp_servers(
         &self,
         params: McpServerListParams,
@@ -744,6 +760,15 @@ async fn dispatch<S: ServerProtocol>(
         }
         crate::RUNTIMES_LIST_METHOD => value(server.list_runtimes(decode_default(params)?).await?),
         crate::RUNTIMES_RECONNECT_METHOD => value(server.reconnect_runtime(decode(params)?).await?),
+        crate::RUN_TOOL_BACKGROUND_METHOD => {
+            value(server.background_tool(decode(params)?, context).await?)
+        }
+        crate::SESSION_BACKGROUND_LIST_METHOD => {
+            value(server.list_background(decode(params)?).await?)
+        }
+        crate::SESSION_BACKGROUND_STOP_METHOD => {
+            value(server.stop_background(decode(params)?, context).await?)
+        }
         "mcp.server.list" => value(server.list_mcp_servers(decode_default(params)?).await?),
         "mcp.server.add" => value(server.add_mcp_server(decode(params)?).await?),
         "mcp.server.edit" => value(server.edit_mcp_server(decode(params)?).await?),

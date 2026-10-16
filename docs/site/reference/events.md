@@ -164,9 +164,9 @@ and reminder invalidation. Accepted agent-owned messages may carry optional
 `agent_hop` metadata for the messaging loop guard. It is absent on non-agent
 producers and legacy agent mail, is not rendered in the agent-visible envelope,
 and does not participate in idempotency comparison.
-`Tool { tool_call_id }` owns the single completion report of a background job
-started by that tool call. Its accepted message carries the job's captured
-output as `retained_output`, the same shape a tool result uses, and the body
+`Tool { tool_call_id }` owns the single `<background_result>` of that tool
+call once it ran in the background. Its accepted message carries the call's
+captured output as `retained_output`, the same shape a tool result uses, and the body
 previews it the way a tool result does. Recording the reference on the event is what keeps
 those artifacts alive; plugins cannot supply `retained_output`.
 

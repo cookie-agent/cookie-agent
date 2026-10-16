@@ -315,6 +315,26 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::RuntimesReconnectResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
+    async fn background_tool(
+        &self,
+        _: crate::RunToolBackgroundParams,
+        _context: &ServerContext,
+    ) -> Result<crate::RunToolBackgroundResult, ServerFault> {
+        Err(ServerFault::method_not_found())
+    }
+    async fn list_background(
+        &self,
+        _: crate::SessionBackgroundListParams,
+    ) -> Result<crate::SessionBackgroundListResult, ServerFault> {
+        Err(ServerFault::method_not_found())
+    }
+    async fn stop_background(
+        &self,
+        _: crate::SessionBackgroundStopParams,
+        _context: &ServerContext,
+    ) -> Result<crate::SessionBackgroundStopResult, ServerFault> {
+        Err(ServerFault::method_not_found())
+    }
     async fn list_mcp_servers(
         &self,
         _: crate::McpServerListParams,

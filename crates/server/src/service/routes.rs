@@ -38,6 +38,7 @@ impl ServerProtocol for Server {
         self.start_session_change_notifications(context.clone());
         self.start_mcp_change_notifications(context.clone());
         self.start_runtime_instance_notifications(context.clone());
+        self.start_background_notifications(context.clone());
         self.start_engine_event_notifications(context);
     }
 
@@ -609,6 +610,37 @@ impl ServerProtocol for Server {
             ))
         })?;
         Ok(cookie_agent_protocol::RuntimesReconnectResult { instance })
+    }
+
+    async fn background_tool(
+        &self,
+        params: cookie_agent_protocol::RunToolBackgroundParams,
+        _context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::RunToolBackgroundResult> {
+        Ok(cookie_agent_protocol::RunToolBackgroundResult {
+            accepted: self.engine.request_detach(params.run_id, params.call_id),
+        })
+    }
+
+    async fn list_background(
+        &self,
+        params: cookie_agent_protocol::SessionBackgroundListParams,
+    ) -> Result<cookie_agent_protocol::SessionBackgroundListResult> {
+        Ok(cookie_agent_protocol::SessionBackgroundListResult {
+            calls: self.engine.background_calls(params.session_id),
+        })
+    }
+
+    async fn stop_background(
+        &self,
+        params: cookie_agent_protocol::SessionBackgroundStopParams,
+        _context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SessionBackgroundStopResult> {
+        self.engine
+            .stop_background_as_user(params.session_id, &params.job)
+            .await
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::SessionBackgroundStopResult {})
     }
 
     async fn list_mcp_servers(&self, _: McpServerListParams) -> Result<McpServerListResult> {

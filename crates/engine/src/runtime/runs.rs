@@ -2,7 +2,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use cookie_agent_protocol::{
     ApprovalStatus, EventOrigin, RunCancelResult, RunId, RunStartParams, RunStartResult,
-    RunSteerResult, SessionId, SessionStatus,
+    RunSteerResult, SessionId, SessionStatus, ToolCallId,
 };
 
 use super::{
@@ -343,6 +343,32 @@ impl Engine {
             .any(|event| {
                 event.run_id == Some(run_id) && matches!(event.payload, Event::RunCancelled { .. })
             }))
+    }
+
+    /// Asks the executing call `call` of `run` to move to the background, as
+    /// the user; it detaches once it reaches its detach point. False when the
+    /// call is not an executing call of a background-capable tool.
+    pub fn request_detach(&self, run: RunId, call: ToolCallId) -> bool {
+        let active = self
+            .inner
+            .sessions
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&run)
+            .cloned();
+        let request = active.and_then(|active| {
+            active
+                .detach_requests
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&call)
+                .cloned()
+        });
+        request.is_some_and(|request| {
+            request.notify_one();
+            true
+        })
     }
 
     /// The active run `run` when it belongs to `session`.

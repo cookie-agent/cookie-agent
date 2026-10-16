@@ -22,8 +22,8 @@ use cookie_agent_protocol::{ApprovalResourceSource, PermissionAction, PreparedBi
 use cookie_agent_protocol::{OutputStream, SafeDisplayText, ToolCallId};
 use cookie_agent_runtime_api::ToolProgress;
 use cookie_agent_runtime_api::{
-    PreparedExecutor, PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError,
-    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
+    DetachPoint, PreparedExecutor, PreparedTool, ProgressSink, SessionToolContext, ToolCall,
+    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
 #[cfg(windows)]
 use process_wrap::tokio::{CommandWrap, JobObject as ProcessJobObject, KillOnDrop};
@@ -53,9 +53,6 @@ struct BashArgs {
     /// Milliseconds before the command is killed; 0 never times out.
     #[serde(default = "default_timeout")]
     timeout: u64,
-    /// Run in the background: return at once and get a notification when it exits.
-    #[serde(default)]
-    background: bool,
 }
 
 fn default_timeout() -> u64 {
@@ -360,6 +357,8 @@ impl ToolProvider for BashTool {
             permission_name: Self::get_permission_name("bash")?.map(Into::into),
             description: bash_tool_description().into(),
             parameters: schema::<BashArgs>(),
+            background: true,
+            background_default: false,
         }])
     }
 
@@ -469,9 +468,9 @@ fn bash_tool_description() -> &'static str {
 /// The description sent on Windows, where commands run in Git Bash, or on Unix.
 pub fn bash_tool_description_for(windows: bool) -> &'static str {
     if windows {
-        "Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\\Users\\name\\file') or use C:/ paths. Set background for long-running commands: the call returns at once with the process ID, and a <background_bash from=\"PID\"> notification with the exit status and output arrives when the command exits."
+        "Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\\Users\\name\\file') or use C:/ paths. The timeout applies in the background too: pass timeout 0 for commands that keep running, such as dev servers."
     } else {
-        "Execute one prepared shell command. Set background for long-running commands: the call returns at once with the process ID, and a <background_bash from=\"PID\"> notification with the exit status and output arrives when the command exits."
+        "Execute one prepared shell command. The timeout applies in the background too: pass timeout 0 for commands that keep running, such as dev servers."
     }
 }
 
@@ -607,6 +606,7 @@ impl BashExecutor {
         self,
         progress: ProgressSink,
         cancellation: CancellationToken,
+        detach: DetachPoint,
     ) -> Result<ToolResult, ToolError> {
         if cancellation.is_cancelled() {
             return Err(ToolError::execution("prepared bash cancelled"));
@@ -616,6 +616,8 @@ impl BashExecutor {
             stdout,
             stderr,
         } = self.spawn()?;
+        // Once the command runs, the call may move to the background.
+        detach.reached(tree.pid().map(|pid| format!("Process {pid}")));
         let merged = Arc::new(Mutex::new(MergedOutput::default()));
         let stdout_task = tokio::spawn(read_output(
             stdout,
@@ -691,79 +693,6 @@ impl BashExecutor {
             additional_messages: Vec::new(),
         })
     }
-
-    /// Spawns the command as a background job and returns as soon as it runs.
-    /// The job reports through the engine when it exits.
-    async fn execute_background(
-        self,
-        context: &ToolExecutionContext,
-    ) -> Result<cookie_agent_runtime_api::ToolCompletion, ToolError> {
-        let job = context.start_background().await?;
-        let SpawnedShell {
-            mut tree,
-            stdout,
-            stderr,
-        } = self.spawn()?;
-        let pid = tree.pid();
-        let progress = job.progress();
-        let stdout_task = tokio::spawn(read_output(
-            stdout,
-            OutputStream::Stdout,
-            progress.clone(),
-            self.tool_call_id,
-            None,
-        ));
-        let stderr_task = tokio::spawn(read_output(
-            stderr,
-            OutputStream::Stderr,
-            progress,
-            self.tool_call_id,
-            None,
-        ));
-        let job_id = self.tool_call_id;
-        let command = compact_command_line(&self.args.command);
-        let timeout = self.args.timeout;
-        let notice = background_started_notice(pid, &command);
-        job.launch(async move {
-            let started = std::time::Instant::now();
-            let exit = match within_timeout(timeout, tree.wait()).await {
-                Some(result) => {
-                    tree.settle_exited().await;
-                    BackgroundExit::Finished(result)
-                }
-                None => {
-                    tree.kill_and_reap().await;
-                    BackgroundExit::TimedOut
-                }
-            };
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
-            background_report(pid, &command, &exit, started.elapsed())
-        })?;
-        let mut completion = cookie_agent_runtime_api::ToolCompletion::streamed(ToolResult {
-            display: Some(notice.clone()),
-            retained_output: None,
-            title: crate::safe_title("Bash"),
-            output: String::new(),
-            metadata: serde_json::json!({"background": true, "job_id": job_id, "pid": pid}),
-            truncation: None,
-            attachments: Vec::new(),
-            additional_messages: Vec::new(),
-        });
-        completion.output = cookie_agent_protocol::ToolCompletionOutput::Named {
-            streams: vec![
-                cookie_agent_protocol::ToolOutputChunk {
-                    stream: Some("stdout".into()),
-                    text: notice,
-                },
-                cookie_agent_protocol::ToolOutputChunk {
-                    stream: Some("stderr".into()),
-                    text: String::new(),
-                },
-            ],
-        };
-        Ok(completion)
-    }
 }
 
 #[async_trait]
@@ -772,45 +701,13 @@ impl PreparedExecutor for BashExecutor {
         self: Box<Self>,
         context: ToolExecutionContext,
     ) -> Result<cookie_agent_runtime_api::ToolCompletion, ToolError> {
-        if self.args.background {
-            return self.execute_background(&context).await;
-        }
         let result: Result<ToolResult, ToolError> = async move {
-            self.execute_process(context.progress, context.cancellation)
+            self.execute_process(context.progress, context.cancellation, context.detach)
                 .await
         }
         .await;
         result.map(cookie_agent_runtime_api::ToolCompletion::streamed)
     }
-}
-
-enum BackgroundExit {
-    Finished(std::io::Result<std::process::ExitStatus>),
-    TimedOut,
-}
-
-/// How to stop a background job from another bash call.
-fn background_kill_hint(pid: u32) -> String {
-    if cfg!(windows) {
-        format!("taskkill //T //F //PID {pid}")
-    } else {
-        format!("kill -- -{pid}")
-    }
-}
-
-fn background_started_notice(pid: Option<u32>, command: &str) -> String {
-    let Some(pid) = pid else {
-        return format!(
-            "Started in the background: {command}\nYou will get a <background_bash> notification \
-             with its exit status and output when it exits; there is no need to poll it."
-        );
-    };
-    format!(
-        "Started in the background as process {pid}: {command}\nYou will get a \
-         <background_bash from=\"{pid}\"> notification with its exit status and output when it \
-         exits; there is no need to poll it. Stop it early with `{}`.",
-        background_kill_hint(pid)
-    )
 }
 
 /// Describes an exit status that carries no exit code.
@@ -826,31 +723,6 @@ fn signal_termination(status: &std::process::ExitStatus) -> String {
         || "terminated by a signal".to_owned(),
         |signal| format!("terminated by signal {signal}"),
     )
-}
-
-fn background_report(
-    pid: Option<u32>,
-    command: &str,
-    exit: &BackgroundExit,
-    elapsed: Duration,
-) -> cookie_agent_runtime_api::BackgroundReport {
-    let elapsed = format!("{:.1}s", elapsed.as_secs_f64());
-    let status = match exit {
-        BackgroundExit::Finished(Ok(status)) => match status.code() {
-            Some(code) => format!("exited with code {code}"),
-            None => signal_termination(status),
-        },
-        BackgroundExit::Finished(Err(error)) => format!("could not be waited on ({error})"),
-        BackgroundExit::TimedOut => "timed out and was killed".to_owned(),
-    };
-    cookie_agent_runtime_api::BackgroundReport {
-        summary: format!("bash {status}: {command}"),
-        element: "background_bash".into(),
-        attributes: pid
-            .map(|pid| vec![("from".into(), pid.to_string())])
-            .unwrap_or_default(),
-        body: format!("Command: {command}\nStatus: {status} after {elapsed}"),
-    }
 }
 
 fn completed_display(merged: MergedOutput, status: Option<i32>) -> String {

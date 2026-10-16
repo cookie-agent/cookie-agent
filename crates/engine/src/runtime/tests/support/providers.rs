@@ -50,6 +50,8 @@ impl ToolProvider for TestStreamingBashProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
@@ -351,6 +353,8 @@ impl ToolProvider for TestParallelToolProvider {
         ]
         .into_iter()
         .map(|(name, permission_name)| ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             output: Default::default(),
             concurrency: ToolConcurrency::Parallel,
@@ -602,6 +606,8 @@ impl ToolProvider for TestDelegateProvider {
             .map_err(|error| ToolError::execution(error.to_string()))?;
         Ok((!targets.is_empty())
             .then(|| ToolSpec {
+                background: false,
+                background_default: false,
                 collision: Default::default(),
                 output: Default::default(),
                 concurrency: crate::ToolConcurrency::Parallel,
@@ -808,6 +814,8 @@ impl ToolProvider for TestWriteProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
@@ -981,6 +989,8 @@ impl ToolProvider for TestAliasProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
@@ -1098,6 +1108,8 @@ impl ToolProvider for TestMediaReadProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
@@ -1319,6 +1331,8 @@ impl ToolProvider for OrderedToolDefinitionProvider {
             .tools
             .iter()
             .map(|(name, permission_name)| ToolSpec {
+                background: false,
+                background_default: false,
                 collision: Default::default(),
                 output: Default::default(),
                 concurrency: Default::default(),
@@ -1389,6 +1403,8 @@ impl ToolProvider for TestToolDefinitionProvider {
         ]
         .into_iter()
         .map(|(name, permission_name)| ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),
@@ -1456,6 +1472,8 @@ impl ToolProvider for NamedOutputProvider {
     }
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             name: "named_output".into(),
             permission_name: Some("read".into()),
@@ -1586,6 +1604,8 @@ impl ToolProvider for DivergentReadProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),

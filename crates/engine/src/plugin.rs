@@ -2093,6 +2093,8 @@ impl ToolProvider for PluginRegistry {
                     .into_iter()
                     .filter(|tool| runtime.mcp.plugin_owns_tool(&runtime.name, &tool.name))
                     .map(|tool| ToolSpec {
+                        background: false,
+                        background_default: false,
                         collision: Default::default(),
                         output: tool.output,
                         concurrency: Default::default(),

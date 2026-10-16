@@ -60,6 +60,8 @@ impl ReadArtifactTool {
     #[must_use]
     pub fn spec() -> ToolSpec {
         ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             output: Default::default(),
             concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,

@@ -13,7 +13,6 @@ use cookie_agent_protocol::{
     ToolOutputChunk, Transport, TransportError, in_process_pair,
 };
 use cookie_agent_runtime_api::{
-    BackgroundJob, BackgroundJobs, BackgroundLauncher, BackgroundReport, BackgroundTask,
     CodingToolsFactory, PreparedExecutor, PreparedTool, ProgressCapture, ProgressSink,
     RuntimeConnector, SessionToolContext, ToolArtifacts, ToolCall, ToolCompletion, ToolError,
     ToolExecutionContext, ToolOrigin, ToolPreparationContext, ToolProgress, ToolProvider, ToolSpec,
@@ -270,53 +269,16 @@ impl ToolArtifacts for RecordingArtifacts {
     }
 }
 
-/// Background jobs whose reports arrive on a channel, as the engine would
-/// commit them.
-#[derive(Debug)]
-struct RecordingJobs {
-    capture: Arc<RecordingCapture>,
-    reports: mpsc::UnboundedSender<BackgroundReport>,
-    display: Mutex<Vec<mpsc::Receiver<ToolProgress>>>,
-}
-
-#[async_trait]
-impl BackgroundJobs for RecordingJobs {
-    async fn reserve(&self, _session: SessionId) -> Result<BackgroundJob, ToolError> {
-        let (sender, receiver) = mpsc::channel(64);
-        self.display.lock().unwrap().push(receiver);
-        Ok(BackgroundJob::new(
-            ProgressSink::with_capture(sender, self.capture.clone()),
-            Box::new(RecordingLauncher {
-                reports: self.reports.clone(),
-            }),
-        ))
-    }
-}
-
-struct RecordingLauncher {
-    reports: mpsc::UnboundedSender<BackgroundReport>,
-}
-
-impl BackgroundLauncher for RecordingLauncher {
-    fn launch(self: Box<Self>, task: BackgroundTask) -> Result<(), ToolError> {
-        tokio::spawn(async move {
-            let _ = self.reports.send(task.await);
-        });
-        Ok(())
-    }
-}
-
 struct Call {
     context: ToolExecutionContext,
     capture: Arc<RecordingCapture>,
     artifacts: Arc<RecordingArtifacts>,
+    detach: cookie_agent_runtime_api::DetachWatch,
     _display: mpsc::Receiver<ToolProgress>,
 }
 
-fn call_context(
-    cancellation: CancellationToken,
-    background: Option<Arc<dyn BackgroundJobs>>,
-) -> Call {
+fn call_context(cancellation: CancellationToken) -> Call {
+    let (detach_point, detach) = cookie_agent_runtime_api::DetachPoint::channel();
     let capture = Arc::new(RecordingCapture::default());
     let artifacts = Arc::new(RecordingArtifacts::default());
     let (sender, display) = mpsc::channel(256);
@@ -328,10 +290,11 @@ fn call_context(
             cancellation,
             turn_context: turn_context(),
             artifacts: artifacts.clone(),
-            background,
+            detach: detach_point,
         },
         capture,
         artifacts,
+        detach,
         _display: display,
     }
 }
@@ -386,7 +349,7 @@ async fn streamed_output_crosses_the_protocol() {
             .is_err()
     );
 
-    let call = call_context(CancellationToken::new(), None);
+    let call = call_context(CancellationToken::new());
     let completion = execute(prepared, call.context).await.unwrap();
     assert!(!completion.failed);
     assert_eq!(call.capture.stream("stdout"), "got:hello\n");
@@ -407,7 +370,7 @@ async fn cancellation_reaches_the_call_in_the_runtime() {
     )
     .await;
     let cancellation = CancellationToken::new();
-    let call = call_context(cancellation.clone(), None);
+    let call = call_context(cancellation.clone());
     let capture = Arc::clone(&call.capture);
     let started_at = std::time::Instant::now();
     let execution = tokio::spawn(execute(prepared, call.context));
@@ -447,6 +410,8 @@ impl ToolProvider for MediaTool {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            background: false,
+            background_default: false,
             name: "snapshot".into(),
             collision: Default::default(),
             permission_name: Some("read".into()),
@@ -544,7 +509,7 @@ async fn retained_media_travels_inline_and_lands_in_the_daemon_store() {
             b"snapshot".to_vec()
         ))
     );
-    let call = call_context(CancellationToken::new(), None);
+    let call = call_context(CancellationToken::new());
     let completion = execute(prepared, call.context).await.unwrap();
     assert_eq!(call.artifacts.retained.lock().unwrap().as_slice(), [PIXEL]);
     let attachment = &completion.result.attachments[0];
@@ -558,7 +523,7 @@ async fn retained_media_travels_inline_and_lands_in_the_daemon_store() {
 }
 
 #[tokio::test]
-async fn a_background_bash_job_reports_through_the_daemon() {
+async fn a_remote_call_announces_its_detach_point() {
     let workspace = private_tempdir();
     let connector = TestConnector::builtin();
     let (started, provider) = connect(&connector, workspace.path()).await;
@@ -566,57 +531,26 @@ async fn a_background_bash_job_reports_through_the_daemon() {
         &provider,
         &started,
         "bash",
-        serde_json::json!({
-            "command": "sleep 0.2; echo background-out; echo background-err >&2",
-            "background": true,
-        }),
+        serde_json::json!({"command": "sleep 0.2; echo done"}),
     )
     .await;
-    let (reports, mut reported) = mpsc::unbounded_channel();
-    let job_capture = Arc::new(RecordingCapture::default());
-    let jobs = Arc::new(RecordingJobs {
-        capture: Arc::clone(&job_capture),
-        reports,
-        display: Mutex::default(),
+    let mut call = call_context(CancellationToken::new());
+    let (completion, detachable) = tokio::join!(execute(prepared, call.context), async {
+        tokio::time::timeout(WAIT, call.detach.reached())
+            .await
+            .expect("tool/detachable reaches the daemon")
     });
-    let call = call_context(CancellationToken::new(), Some(jobs));
-    let completion = execute(prepared, call.context).await.unwrap();
-    assert_eq!(completion.result.metadata["background"], true);
-    let report = tokio::time::timeout(WAIT, reported.recv())
-        .await
-        .expect("the job reports")
-        .expect("report");
-    assert_eq!(report.element, "background_bash");
-    assert!(
-        report.body.contains("exited with code 0"),
-        "{}",
-        report.body
-    );
-    assert_eq!(job_capture.stream("stdout"), "background-out\n");
-    assert_eq!(job_capture.stream("stderr"), "background-err\n");
+    assert!(!completion.unwrap().failed);
+    let note = detachable.note.expect("bash names its process");
+    assert!(note.starts_with("Process "), "{note}");
+    assert_eq!(call.capture.stream("stdout"), "done\n");
 }
 
 #[tokio::test]
-async fn transport_loss_fails_calls_and_jobs_in_flight() {
+async fn transport_loss_fails_calls_in_flight() {
     let workspace = private_tempdir();
     let connector = TestConnector::builtin();
     let (started, provider) = connect(&connector, workspace.path()).await;
-    let job = prepare(
-        &provider,
-        &started,
-        "bash",
-        serde_json::json!({"command": "sleep 30", "background": true}),
-    )
-    .await;
-    let (reports, mut reported) = mpsc::unbounded_channel();
-    let jobs = Arc::new(RecordingJobs {
-        capture: Arc::new(RecordingCapture::default()),
-        reports,
-        display: Mutex::default(),
-    });
-    let call = call_context(CancellationToken::new(), Some(jobs));
-    execute(job, call.context).await.unwrap();
-
     let running = prepare(
         &provider,
         &started,
@@ -624,7 +558,7 @@ async fn transport_loss_fails_calls_and_jobs_in_flight() {
         serde_json::json!({"command": "echo started; sleep 30"}),
     )
     .await;
-    let call = call_context(CancellationToken::new(), None);
+    let call = call_context(CancellationToken::new());
     let capture = Arc::clone(&call.capture);
     let execution = tokio::spawn(execute(running, call.context));
     while capture.stream("stdout").is_empty() {
@@ -641,12 +575,6 @@ async fn transport_loss_fails_calls_and_jobs_in_flight() {
         matches!(error, ToolError::RuntimeUnavailable(_)),
         "{error:?}"
     );
-    let report = tokio::time::timeout(WAIT, reported.recv())
-        .await
-        .expect("the job completes")
-        .expect("report");
-    assert_eq!(report.element, "background_job");
-    assert!(report.summary.contains("exited"), "{}", report.summary);
     assert!(connection.is_closed());
 
     // New calls fail fast with the same code.

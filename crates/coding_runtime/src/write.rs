@@ -53,6 +53,8 @@ impl ToolProvider for WriteTool {
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             output: Default::default(),
             concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,

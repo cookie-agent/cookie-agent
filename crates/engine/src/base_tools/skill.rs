@@ -92,6 +92,8 @@ impl PreparedExecutor for SkillExecutor {
 impl SkillTool {
     pub(crate) fn spec() -> ToolSpec {
         ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             output: Default::default(),
             concurrency: Default::default(),

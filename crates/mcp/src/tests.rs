@@ -306,7 +306,7 @@ async fn try_execute(
             cancellation: CancellationToken::new(),
             turn_context: turn_context(),
             artifacts: memory_artifacts(),
-            background: None,
+            detach: cookie_agent_runtime_api::DetachPoint::channel().0,
         })
         .await
         .map(|completion| {
@@ -335,7 +335,7 @@ fn tool_result_retains_only_distinct_structured_content() {
             false,
         )),
         artifacts: memory_artifacts(),
-        background: None,
+        detach: cookie_agent_runtime_api::DetachPoint::channel().0,
     };
     let structured = json!({"a": 1, "b": [2]});
     for (texts, data, retain) in [
@@ -400,7 +400,7 @@ fn base64_attachments_follow_the_media_gate() {
         cancellation: CancellationToken::new(),
         turn_context: Arc::new(turn),
         artifacts: memory_artifacts(),
-        background: None,
+        detach: cookie_agent_runtime_api::DetachPoint::channel().0,
     };
 
     let rejected = super::retain_base64_attachment(
@@ -578,7 +578,7 @@ fn tool_result_caps_combined_attachments_and_degrades_overflow_inline() {
         cancellation: CancellationToken::new(),
         turn_context: Arc::new(make_turn_context(AdaptorId::Anthropic, true)),
         artifacts: memory_artifacts(),
-        background: None,
+        detach: cookie_agent_runtime_api::DetachPoint::channel().0,
     };
 
     let mapped = super::map_tool_result(&context, "images", result).expect("bounded result");

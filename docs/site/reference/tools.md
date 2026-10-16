@@ -13,7 +13,7 @@ declaration.
 
 | Tools | Eligibility | Coordination |
 |---|---|---|
-| `read`, `read_artifact`, `bash`, `webfetch` | Parallel | Each call owns its execution and streaming state. |
+| `read`, `read_artifact`, `bash`, `webfetch`, `stop_background` | Parallel | Each call owns its execution and streaming state. |
 | `write`, `edit` | Parallel | Matching prepared serialization keys serialize mutations to the same target. |
 | `delegate_subagent` | Parallel | Delegate admission serializes durable child reservation and session creation internally. |
 | `send_message` | Parallel | Message acceptance serializes guard checks and the durable append inside the recipient actor. |
@@ -174,8 +174,11 @@ accepts. The effective model must also declare the modality and limits.
 
 ## Bash
 
-`bash` accepts a complete `command`, an optional `timeout` in milliseconds
-(default 120000; `0` never times out), and `background` (default `false`).
+`bash` accepts a complete `command` and an optional `timeout` in
+milliseconds (default 120000; `0` never times out). It is
+[background-capable](#background-calls): the host adds `background`
+(default `false`), and the timeout applies in the background too, so a
+command that keeps running, such as a dev server, needs `timeout: 0`.
 The command's standard input is empty: tools take no input while they run.
 Standard output and standard error are streamed separately during execution
 and retained as separate artifacts for the terminal result.
@@ -185,18 +188,42 @@ Windows). When the shell exits, whatever it left in that group is killed, so
 `cmd &` and `nohup cmd &` do not outlive the call; only a process that leaves
 the group, such as one started with `setsid`, does.
 
-With `background: true` the call returns as soon as the command starts. Its
-result names the process ID, which is also the process group, so
-`kill -- -PID` stops the job early (`taskkill //T //F //PID PID` on Windows). The job keeps the same timeout and process-group
-cleanup. When it exits, the engine accepts one producer message owned by
-`tool { tool_call_id }` that steers into the active run or wakes the idle
-session: a `<background_bash from="PID">` block with the command, the exit
-status and duration, and the job's standard output and standard error previewed
-exactly like a tool result: the first and last lines of each stream, with a
-`read_artifact` hint into the retained artifact for anything omitted. The job reports only after its
-starting call is committed as completed. It is killed without a report if that
-call is cancelled before it commits, if a revert removes the call, if its
-session is deleted, or when the daemon stops.
+A bash call reaches its detach point as soon as its command runs; its detach
+note is `Process <pid>`. In the background it keeps its timeout and
+process-group cleanup.
+
+## Background calls
+
+A tool that declares `background` support (`bash`, and a runtime's own tools
+that declare it) can run in the background, as the [background tool calls
+spec](../specs/background-tools.md) describes:
+
+- **The host owns the argument.** It adds `background` (a boolean, defaulting
+  to the tool's `background_default`) to the tool's schema and removes it
+  before the tool prepares the call, so the tool never sees it and an
+  approval covers the call either way.
+- **Detaching.** A call the model starts with `background: true`, or one the
+  user moves to the background (`run.tool_background`; the TUI's background
+  button), detaches once the tool reaches its detach point. A call that
+  finishes first returns as an ordinary result. Detaching commits an
+  immediate result for the call, `Started in the background as job
+  job_1a2b3c4d. …` or `User manually moved this call to the background; it
+  is still running as job job_1a2b3c4d. …`, followed by the tool's note, and
+  the run goes on. Cancelling the run no longer reaches the call.
+- **Reporting.** When the call ends, the engine accepts one producer message
+  owned by `tool { tool_call_id }` that steers into the active run or wakes
+  the idle session: `<background_result job="…" tool="…" status="…">`
+  wrapping exactly what the foreground result would have said, its output
+  previewed with a `read_artifact` hint into the retained output for
+  anything omitted. `status` is `completed`, `failed`, or `stopped`. The
+  call reports only after its immediate result is committed; a revert past
+  the call, deleting its session, or the daemon stopping kills it without a
+  report.
+- **Stopping.** `stop_background` (`job`) stops a background call of the
+  session tree and returns once it has ended; it needs no permission and is
+  published only while a background-capable tool is. A user stops one with
+  `session.background.stop`. Either way the call still reports, with
+  `status="stopped"` and a first line saying who stopped it.
 
 ## Retained tool output
 

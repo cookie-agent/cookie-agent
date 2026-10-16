@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AdapterFamily, BackgroundReport, PromptSection, RuntimeKind, ToolCollision, ToolConcurrency,
-    ToolError, ToolProgress, ToolResultTruncationPolicy, ToolSpec, TurnAgentContext,
+    AdapterFamily, PromptSection, RuntimeKind, ToolCollision, ToolConcurrency, ToolError,
+    ToolProgress, ToolResultTruncationPolicy, ToolSpec, TurnAgentContext,
 };
 
 /// The runtime protocol version. Both ends must speak exactly this version.
@@ -61,14 +61,9 @@ pub mod method {
     pub const TOOL_PROGRESS: &str = "tool/progress";
     /// daemon → runtime (notification): cancel an executing call.
     pub const TOOL_CANCEL: &str = "tool/cancel";
-    /// runtime → daemon: an executing call reserves a background job.
-    pub const JOB_STARTED: &str = "job/started";
-    /// runtime → daemon: output of a background job.
-    pub const JOB_PROGRESS: &str = "job/progress";
-    /// runtime → daemon (notification): a background job finished.
-    pub const JOB_COMPLETED: &str = "job/completed";
-    /// daemon → runtime (notification): kill a background job.
-    pub const JOB_KILL: &str = "job/kill";
+    /// runtime → daemon (notification): an executing call reached its detach
+    /// point.
+    pub const TOOL_DETACHABLE: &str = "tool/detachable";
     /// runtime → daemon (notification): the status of the runtime's MCP
     /// servers changed, or one failed.
     pub const MCP_CHANGED: &str = "mcp/changed";
@@ -265,6 +260,13 @@ pub struct ToolDeclaration {
     pub result_truncation: ToolResultTruncationPolicy,
     #[serde(default)]
     pub output: ToolOutputDeclaration,
+    /// The tool supports the background (`docs/site/specs/background-tools.md`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
+    /// Whether a call runs in the background when the model omits the
+    /// argument; only valid with `background`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background_default: bool,
 }
 
 impl ToolDeclaration {
@@ -291,6 +293,8 @@ impl ToolDeclaration {
             concurrency: spec.concurrency,
             result_truncation: spec.result_truncation,
             output: spec.output.clone(),
+            background: spec.background,
+            background_default: spec.background_default,
         })
     }
 
@@ -307,6 +311,8 @@ impl ToolDeclaration {
             concurrency: self.concurrency,
             result_truncation: self.result_truncation,
             output: self.output,
+            background: self.background,
+            background_default: self.background_default,
         }
     }
 }
@@ -536,8 +542,6 @@ pub struct ExecuteParams {
     pub session: SessionId,
     pub run: RunId,
     pub turn: WireTurnContext,
-    /// The call may start background jobs.
-    pub background: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -548,10 +552,6 @@ pub struct ExecuteResult {
     /// retain. At most [`MAX_INLINE_MEDIA_BYTES`] in all.
     #[serde(default)]
     pub media: Vec<InlineMedia>,
-    /// Jobs the call reserved with `job/started` and launched; the daemon
-    /// releases the others.
-    #[serde(default)]
-    pub launched_jobs: Vec<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -631,81 +631,16 @@ pub struct ToolProgressParams {
     pub progress: WireProgress,
 }
 
-// --- job/* ---------------------------------------------------------------------
+// --- tool/detachable ---------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// An executing call reached its detach point.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct JobStartedParams {
-    /// The executing call that reserves the job.
+pub struct DetachableParams {
     pub prepared_id: u64,
-    /// The runtime's ID for the job.
-    pub job: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct JobProgressParams {
-    pub job: u64,
-    pub progress: WireProgress,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct JobCompletedParams {
-    pub job: u64,
-    pub report: WireBackgroundReport,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct JobRef {
-    pub job: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct WireBackgroundReport {
-    pub summary: String,
-    pub element: String,
-    pub attributes: Vec<WireAttribute>,
-    pub body: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct WireAttribute {
-    pub name: String,
-    pub value: String,
-}
-
-impl From<BackgroundReport> for WireBackgroundReport {
-    fn from(report: BackgroundReport) -> Self {
-        Self {
-            summary: report.summary,
-            element: report.element,
-            attributes: report
-                .attributes
-                .into_iter()
-                .map(|(name, value)| WireAttribute { name, value })
-                .collect(),
-            body: report.body,
-        }
-    }
-}
-
-impl From<WireBackgroundReport> for BackgroundReport {
-    fn from(report: WireBackgroundReport) -> Self {
-        Self {
-            summary: report.summary,
-            element: report.element,
-            attributes: report
-                .attributes
-                .into_iter()
-                .map(|attribute| (attribute.name, attribute.value))
-                .collect(),
-            body: report.body,
-        }
-    }
+    /// A line for the immediate result, such as a process ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 // --- errors ------------------------------------------------------------------------

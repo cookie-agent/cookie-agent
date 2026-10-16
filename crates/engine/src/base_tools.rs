@@ -1,5 +1,6 @@
 //! The base layer: tools the daemon implements for its own orchestration
-//! (delegation, messaging, skills, goals, `read_artifact`). The engine
+//! (delegation, messaging, skills, goals, `read_artifact`,
+//! `stop_background`). The engine
 //! registers them itself when it opens; they have no workspace.
 
 use std::sync::Arc;
@@ -15,12 +16,15 @@ mod goal;
 mod message;
 mod read_artifact;
 mod skill;
+mod stop_background;
 
 use delegate::DelegateToolProvider;
 use goal::GoalTools;
 use message::MessageToolProvider;
 use read_artifact::ReadArtifactTool;
 use skill::SkillTool;
+use stop_background::StopBackgroundTool;
+pub(crate) use stop_background::TOOL_NAME as STOP_BACKGROUND_TOOL;
 
 fn tool_error(error: impl std::fmt::Display) -> crate::ToolError {
     crate::ToolError::execution(error.to_string())
@@ -29,12 +33,13 @@ fn tool_error(error: impl std::fmt::Display) -> crate::ToolError {
 impl Engine {
     /// Registers the base layer's providers, in composition order.
     pub(crate) fn register_base_layer(&self) -> Result<(), EngineError> {
-        let providers: [Arc<dyn ToolProvider>; 5] = [
+        let providers: [Arc<dyn ToolProvider>; 6] = [
             Arc::new(DelegateToolProvider::new(self.clone())),
             Arc::new(MessageToolProvider::new(self.clone())),
             Arc::new(SkillTool::new(self.clone())),
             Arc::new(ReadArtifactTool),
             Arc::new(GoalTools::new(self.clone())),
+            Arc::new(StopBackgroundTool::new(self.clone())),
         ];
         for provider in providers {
             self.try_register_tool_provider(ToolLayer::Base, provider)?;
@@ -67,6 +72,7 @@ pub fn base_layer_tool_specs(delegate_target: &str) -> Vec<ToolSpec> {
     specs.push(GoalTools::get_spec());
     specs.push(GoalTools::update_spec());
     specs.push(ReadArtifactTool::spec());
+    specs.push(StopBackgroundTool::spec());
     specs
 }
 

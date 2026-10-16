@@ -49,7 +49,9 @@ rules, overlays, grants, approval requests, and `session.permission.get` can
 name a runtime's own actions; `session.permission.get` lists the built-in
 actions, then the actions of the session's tools, then any other action a rule
 names. Protocol 42 removed `run.tool_stdin`: tools no longer take input while
-they run. It also made tool permissions optional: a tool may declare no
+they run. It added background calls: `run.tool_background`,
+`session.background.list`, `session.background.stop`, and the
+`background.changed` notification. It also made tool permissions optional: a tool may declare no
 permission, so it is always published and every call allowed, and the
 `permission_name` the `tool_before_call` plugin hook receives is `null` for
 such a tool. Older clients are rejected.
@@ -184,6 +186,9 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.submit_input` | Session ID, input, `steer` or `queue` delivery, optional selection, client run ID, optional `reset_fallback` | `started` run ID, `steered` run ID and seq, `queued` seq, or `handled` reason |
 | `session.recall_input` | Session ID, seq of a pending or queued input | `recalled` text, `gone`, or `not_owner` |
 | `run.cancel` | Run ID | `cancelled` boolean |
+| `run.tool_background` | Run ID, tool call ID | `accepted` boolean: false unless the call is an executing call of a background-capable tool; it detaches at its detach point (see [Background calls](tools.md#background-calls)) |
+| `session.background.list` | Session ID | The session's background `calls` |
+| `session.background.stop` | Session ID, `job` | Empty, once the call has ended; it still reports to the model, as stopped by the user. An unknown or finished job is an error |
 | `events.subscribe` | Session ID, optional cursor and `cursor_timestamp`, optional `limit` | Stored events after the cursor, or `stale_cursor`; starts notifications on the final page (see [Subscriptions](events.md#subscriptions)) |
 | `events.unsubscribe` | Session ID | Whether this connection had a live tail for it |
 | `approval.list` | Root session ID, optional status | Approval records and tree grants |
@@ -418,6 +423,16 @@ the title, and continues with new physical sequences.
 | `sessions.changed` | One session index change: `upserted`, `removed`, `approvals_changed`, `permission_mode_changed`, or `resync` |
 | `mcp.changed` | MCP server configuration or status changed; optional `failures` |
 | `runtimes.changed` | A runtime template was registered or an instance's status changed; optional `failures` |
+| `background.changed` | A subscribed session's background calls changed: `session_id` and its current `calls` |
+
+A background call in `session.background.list` and `background.changed` is
+`{ job, tool, tool_call_id, display?, started_at, detached_at, by }`: the job
+ID, the tool's name as the model called it, the call it came from, its
+display argument, when the call started and when it moved to the background,
+and who moved it (`model` or `user`). The list lives in the daemon, so it
+never shows a call a daemon restart killed. `background.changed` reaches only
+connections subscribed to the session; one that falls behind gets every
+subscribed session's list again.
 
 ### Daemon-wide changes
 

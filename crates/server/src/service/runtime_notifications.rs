@@ -166,6 +166,49 @@ impl Server {
         });
     }
 
+    /// Sends the current background calls of a subscribed session whenever
+    /// they change. A connection that falls behind gets every subscribed
+    /// session's list again.
+    pub(super) fn start_background_notifications(&self, context: ServerContext) {
+        let mut receiver = self.engine.subscribe_background_changes();
+        let engine = self.engine.clone();
+        tokio::spawn(async move {
+            let shutdown = context.shutdown();
+            loop {
+                let sessions = tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    changed = receiver.recv() => match changed {
+                        Ok(session) => context
+                            .subscribed_sessions()
+                            .into_iter()
+                            .filter(|subscribed| *subscribed == session)
+                            .collect::<Vec<_>>(),
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            context.subscribed_sessions()
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    },
+                };
+                for session_id in sessions {
+                    let notification = cookie_agent_protocol::BackgroundChangedNotification {
+                        session_id,
+                        calls: engine.background_calls(session_id),
+                    };
+                    if context
+                        .notify(
+                            cookie_agent_protocol::BACKGROUND_CHANGED_METHOD,
+                            &notification,
+                        )
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
     /// Tells a connection that just subscribed to `session` about the
     /// failures that already affect it: failures reported before the
     /// subscription named no session of this connection.

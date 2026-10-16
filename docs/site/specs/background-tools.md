@@ -1,6 +1,6 @@
 # Background Tool Calls
 
-Status: **approved, not implemented** (decisions of 2026-10-16). This document is the
+Status: **approved; phase 1 in progress** (decisions of 2026-10-16). This document is the
 governing specification for running supported tool calls in the background,
 whether the model asks for it or the user moves a running call there.
 Section [Decisions](#11-decisions) records what review settled.
@@ -90,13 +90,19 @@ background_default: false` and drop their own `background` arguments.
 ### 4.2 What the host does
 
 The engine already awaits each executing call in one `select!` loop
-(`runtime/tool_execution.rs`). Detach is one more branch of that loop:
+(`runtime/tool_execution.rs`). Detach is one more branch of that loop.
 
-1. It tells the tool the call is detached and gets back an optional **detach
-   note**: a line for the immediate result (bash: the process ID;
-   `delegate_subagent`: the subagent handle). In-process tools answer through
-   an optional detach hook on the prepared tool; remote runtimes through
-   `tool/detach` (section 8). The call's execution is otherwise untouched.
+A background-capable tool marks its **detach point**: once it has started
+its work (bash right after spawning its command), it calls
+`ToolExecutionContext::detachable(note)` with an optional **detach note**, a
+line for the immediate result (bash: the process ID; `delegate_subagent`:
+the subagent handle). A remote runtime forwards it as `tool/detachable`
+(section 8). The engine detaches only at or after that point: a call the
+model started in the background detaches as soon as it reaches it, a user's
+request waits for it, and a call that finishes first simply returns its
+result in the foreground. Detaching:
+
+1. Reads the detach note. The call's execution is otherwise untouched.
 2. It commits the call as completed with the immediate result (4.3).
 3. It moves the call's execution future, its output capture, and its
    progress channel into a background call under the existing background-job
@@ -315,7 +321,7 @@ request. A later feature may bring interactive input back in another form.
 
 | Change | Message |
 |---|---|
-| Added | `tool/detach` (daemon → runtime, request): `prepared_id`; reply `{ "note": string? }`. The call keeps executing and still answers its `tool/execute` request when it ends. |
+| Added | `tool/detachable` (runtime → daemon, notification): `prepared_id`, optional `note`. The call reached its detach point; it keeps executing and still answers its `tool/execute` request when it ends. |
 | Added | `background`, `background_default` on tool declarations (section 3). |
 | Changed | `permission` on tool declarations becomes optional; absent means the tool needs no permission (6.1). |
 | Removed | `tool/stdin`, and `stdin` on `tool/execute`. |
@@ -370,7 +376,7 @@ Each phase lands as its own commits with every gate green, and is pushed.
    detach branch, per-call cancellation, immediate and background results;
    `stop_background` and optional tool permissions (6.1); `bash` on one code
    path with its detach note; stdin
-   removed; `tool/detach` and the removal of `job/*`; `run.tool_background`,
+   removed; `tool/detachable` and the removal of `job/*`; `run.tool_background`,
    `session.background.list`/`stop`, and `background.changed`; the TUI's
    background button, bar, and panel. Runtime protocol 3, client protocol 42.
 2. **Subagents.** `delegate_subagent` as a background-capable tool;

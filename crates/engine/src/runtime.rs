@@ -53,6 +53,7 @@ mod artifact_reads;
 pub(crate) mod artifacts;
 pub(crate) mod attachments;
 pub(crate) mod background_tasks;
+pub(crate) use background_tasks::BackgroundActor;
 mod blocking_io;
 pub(crate) mod compaction;
 mod delegation;
@@ -314,6 +315,9 @@ struct ActiveRun {
     /// Who cancelled the run through [`Engine::cancel_run`]; the engine
     /// itself when unset.
     cancelled_by: Mutex<Option<cookie_agent_protocol::EventOrigin>>,
+    /// Executing calls of background-capable tools, and the signal that
+    /// moves each to the background.
+    detach_requests: Mutex<HashMap<cookie_agent_protocol::ToolCallId, Arc<tokio::sync::Notify>>>,
     fallback_index: AtomicU64,
     auto_compaction_failures: AtomicU8,
     auto_compaction_diagnostic_emitted: AtomicBool,
@@ -371,6 +375,9 @@ struct PreparedToolCall {
     prepared: Result<PreparedTool, ToolFailure>,
     interception: Option<ToolInterceptionContext>,
     intercepted_arguments: Arc<Mutex<Value>>,
+    /// For a background-capable tool, whether the model asked to run the
+    /// call in the background; `None` for any other tool.
+    background: Option<bool>,
 }
 
 impl PreparedToolCall {

@@ -1968,6 +1968,8 @@ fn convert_tool(server: &str, sanitized_server: &str, tool: Tool) -> Result<Cach
     Ok(CachedTool {
         raw_name: tool.name.into_owned(),
         spec: ToolSpec {
+            background: false,
+            background_default: false,
             collision: Default::default(),
             output: Default::default(),
             concurrency: ToolConcurrency::Parallel,

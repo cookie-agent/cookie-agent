@@ -1262,29 +1262,31 @@ async fn background_bash_returns_at_once_and_reports_when_it_exits() {
             .any(|event| matches!(event.payload, EventPayload::ProducerMessageAccepted { .. }))
     );
     let start_request = fixture.server.requests().pop().expect("second request");
-    let pid = start_request
-        .split_once("Started in the background as process ")
-        .and_then(|(_, rest)| rest.split_once(':'))
-        .map(|(pid, _)| pid.to_owned())
-        .unwrap_or_else(|| panic!("start result names the process: {start_request}"));
-    assert!(pid.parse::<u32>().is_ok(), "{pid}");
+    let job = start_request
+        .split_once("Started in the background as job ")
+        .and_then(|(_, rest)| rest.split_once('.'))
+        .map(|(job, _)| job.to_owned())
+        .unwrap_or_else(|| panic!("start result names the job: {start_request}"));
+    assert!(job.starts_with("job_"), "{job}");
+    assert!(
+        start_request.contains("Process "),
+        "start result names the process: {start_request}"
+    );
 
-    // The report is keyed by that process and previews output like a tool result.
+    // The report wraps what the foreground result would have said.
     let (body, retained) = wait_for_background_report(&fixture.engine, session_id).await;
     assert!(started.elapsed() >= Duration::from_secs(2));
     assert!(
         body.starts_with(&format!(
-            "<background_bash from=\"{pid}\">\nCommand: sleep 2; echo background-done; echo \
-             background-err >&2\nStatus: exited with code 0 after "
+            "<background_result job=\"{job}\" tool=\"bash\" status=\"completed\">\n"
         )),
         "{body}"
     );
     assert!(
-        body.ends_with(
-            "s\n[stdout]\nbackground-done\n\n[stderr]\nbackground-err\n</background_bash>"
-        ),
+        body.contains("[stdout]\nbackground-done\n\n[stderr]\nbackground-err\n"),
         "{body}"
     );
+    assert!(body.ends_with("</background_result>"), "{body}");
     // Output that fits its preview lives only in the report.
     assert_eq!(retained.expect("retained output").reference, None);
 
@@ -1298,7 +1300,7 @@ async fn background_bash_returns_at_once_and_reports_when_it_exits() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let woken = fixture.server.requests().pop().expect("woken request");
-    assert!(woken.contains("background_bash"), "{woken}");
+    assert!(woken.contains(r#"status=\"completed\""#), "{woken}");
     fixture.shutdown().await;
 }
 

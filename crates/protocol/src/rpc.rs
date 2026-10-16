@@ -390,6 +390,85 @@ pub const SESSION_RUNTIME_DETACH_METHOD: &str = "session.runtime.detach";
 pub const RUNTIMES_LIST_METHOD: &str = "runtimes.list";
 pub const RUNTIMES_CHANGED_METHOD: &str = "runtimes.changed";
 pub const RUNTIMES_RECONNECT_METHOD: &str = "runtimes.reconnect";
+pub const RUN_TOOL_BACKGROUND_METHOD: &str = "run.tool_background";
+pub const SESSION_BACKGROUND_LIST_METHOD: &str = "session.background.list";
+pub const SESSION_BACKGROUND_STOP_METHOD: &str = "session.background.stop";
+pub const BACKGROUND_CHANGED_METHOD: &str = "background.changed";
+
+/// Move an executing call of a background-capable tool to the background,
+/// as `docs/site/specs/background-tools.md` section 4 specifies. The call
+/// detaches once it reaches its detach point.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunToolBackgroundParams {
+    pub run_id: RunId,
+    pub call_id: ToolCallId,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunToolBackgroundResult {
+    /// False when the call is not an executing call of a background-capable
+    /// tool.
+    pub accepted: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionBackgroundListParams {
+    pub session_id: SessionId,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionBackgroundListResult {
+    pub calls: Vec<BackgroundCall>,
+}
+
+/// Stop a background call as the user. The call still reports to the model.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionBackgroundStopParams {
+    pub session_id: SessionId,
+    pub job: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionBackgroundStopResult {}
+
+/// A session's background calls changed.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackgroundChangedNotification {
+    pub session_id: SessionId,
+    /// The session's background calls now.
+    pub calls: Vec<BackgroundCall>,
+}
+
+/// One call running in the background.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackgroundCall {
+    pub job: String,
+    /// The tool's name as the model called it.
+    pub tool: String,
+    pub tool_call_id: ToolCallId,
+    /// The call's display argument.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
+    pub started_at: jiff::Timestamp,
+    pub detached_at: jiff::Timestamp,
+    pub by: BackgroundActor,
+}
+
+/// Who moved a call to the background.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundActor {
+    Model,
+    User,
+}
 
 /// Attach a runtime to a session that has no active run. The instance is
 /// started first when it is not running; a failure records nothing.

@@ -1088,9 +1088,9 @@ impl StateStore {
                 }
                 DeliveryOutcome::Applied
             }
-            ClientDelivery::RuntimeChanged(_) | ClientDelivery::SessionsChanged(_) => {
-                DeliveryOutcome::Applied
-            }
+            ClientDelivery::RuntimeChanged(_)
+            | ClientDelivery::SessionsChanged(_)
+            | ClientDelivery::BackgroundChanged(_) => DeliveryOutcome::Applied,
         }
     }
 

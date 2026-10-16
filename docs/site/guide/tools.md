@@ -31,6 +31,7 @@ block under the system prompt in the TUI transcript.
 | [`goal_get`](#goal_get) | `read` |
 | [`goal_update`](#goal_update) | `write` |
 | [`read_artifact`](#read_artifact) | *none* |
+| [`stop_background`](#stop_background) | *none* |
 
 ## `read`
 
@@ -181,24 +182,23 @@ Replace oldString with newString in a file, atomically.
 ## `bash`
 
 ```text
-bash(background?: boolean, command: string, timeout?: integer)
+bash(command: string, timeout?: integer)
 ```
 
 Description sent to the model on Linux and macOS:
 
 ```text
-Execute one prepared shell command. Set background for long-running commands: the call returns at once with the process ID, and a <background_bash from="PID"> notification with the exit status and output arrives when the command exits.
+Execute one prepared shell command. The timeout applies in the background too: pass timeout 0 for commands that keep running, such as dev servers.
 ```
 
 Description sent to the model on Windows, where commands run in Git Bash:
 
 ```text
-Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\Users\name\file') or use C:/ paths. Set background for long-running commands: the call returns at once with the process ID, and a <background_bash from="PID"> notification with the exit status and output arrives when the command exits.
+Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\Users\name\file') or use C:/ paths. The timeout applies in the background too: pass timeout 0 for commands that keep running, such as dev servers.
 ```
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `background` | `boolean` | no | Run in the background: return at once and get a notification when it exits. Default: `false`. |
 | `command` | `string` | yes |  |
 | `timeout` | `integer` | no | Milliseconds before the command is killed; 0 never times out. Default: `120000`. |
 
@@ -208,11 +208,6 @@ Execute one prepared Git Bash command. Single-quote native Windows paths (for ex
     {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
-        "background": {
-          "default": false,
-          "description": "Run in the background: return at once and get a notification when it exits.",
-          "type": "boolean"
-        },
         "command": {
           "type": "string"
         },
@@ -671,6 +666,42 @@ Always, whatever the agent's permission rules: it reads only output retained by 
         "artifact"
       ],
       "title": "ReadArtifactArgs",
+      "type": "object"
+    }
+    ```
+
+## `stop_background`
+
+```text
+stop_background(job: string)
+```
+
+Description sent to the model:
+
+```text
+Stop a call running in the background. It returns once the call has ended; its <background_result> still arrives, with status "stopped" and the output it produced.
+```
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `job` | `string` | yes | The job ID from the result that moved the call to the background, such as `job_1a2b3c4d`. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "job": {
+          "description": "The job ID from the result that moved the call to the background, such as `job_1a2b3c4d`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job"
+      ],
+      "title": "StopBackgroundArgs",
       "type": "object"
     }
     ```

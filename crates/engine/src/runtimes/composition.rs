@@ -108,6 +108,25 @@ pub(crate) fn compose(
             ),
             None => format!("base tool `{}` is not published: {reason}", tool.spec.name),
         };
+        if tool.spec.background_default && !tool.spec.background {
+            diagnostics.push(label(
+                "it declares `background_default` without `background`",
+            ));
+            return false;
+        }
+        if tool.spec.background
+            && tool
+                .spec
+                .parameters
+                .get("properties")
+                .and_then(|properties| properties.get("background"))
+                .is_some()
+        {
+            diagnostics.push(label(
+                "it supports the background but declares its own `background` argument",
+            ));
+            return false;
+        }
         if tool.name.len() > MAX_TOOL_NAME_BYTES {
             diagnostics.push(label(&format!(
                 "its published name `{}` is longer than {MAX_TOOL_NAME_BYTES} bytes",
@@ -187,6 +206,8 @@ mod tests {
 
     fn spec(name: &str, collision: ToolCollision) -> ToolSpec {
         ToolSpec {
+            background: false,
+            background_default: false,
             collision,
             name: name.into(),
             permission_name: Some("read".into()),

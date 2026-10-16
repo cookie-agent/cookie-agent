@@ -1,43 +1,57 @@
-//! Background jobs a tool call leaves running after it returns.
+//! Background calls: tool calls the host detached, as
+//! `docs/site/specs/background-tools.md` specifies.
 //!
-//! A tool reserves a job while its call executes, returns its own result, and
-//! hands the engine a future that resolves when the job ends. The engine owns
-//! the rest: the job's output capture, a `Tool` producer registration, and the
-//! completion message that wakes the session. A job only reports back once the
-//! call that started it is durably committed as completed; a call that never
-//! commits, a revert past it, or deleting its session kills the job instead.
-//! Engine shutdown drops the job future, which kills whatever it owns.
+//! A call of a background-capable tool is detached when the model starts it
+//! with `background` or the user moves it there, once it reaches its detach
+//! point. The engine commits an immediate result for the call and keeps its
+//! execution running here: the same future, output capture, and
+//! cancellation, no longer the run's. When the execution ends, the engine
+//! renders the result the foreground call would have returned, wraps it in
+//! `<background_result>`, and sends it as a `Tool`-owned producer message. It
+//! reports only once the immediate result is durably committed; a call that
+//! never commits, a revert past it, or deleting its session kills the
+//! execution without a report, and so does engine shutdown.
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Mutex, Weak},
+    future::Future,
+    pin::Pin,
+    sync::Mutex,
     time::Duration,
 };
 
 use cookie_agent_protocol::{
-    ExtensionProducerSendParams, ProducerDeliveryMode, ProducerId, ProducerIdempotencyKey,
-    ProducerOwner, RetainedToolOutput, SessionId, ToolCallId, ToolCallTermination,
-    ToolOutputDeclaration, ToolTerminationOutcome,
+    ExtensionProducerSendParams, PersistedToolResult, ProducerDeliveryMode, ProducerId,
+    ProducerIdempotencyKey, ProducerOwner, RetainedToolOutput, SessionId, ToolCallId,
+    ToolCallTermination, ToolTerminationOutcome,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    Engine, EngineError, Inner, output_capture::OutputCapture, producers::ProducerAuthority,
-};
-use cookie_agent_runtime_api::{
-    BackgroundJob, BackgroundJobs, BackgroundLauncher, BackgroundReport, BackgroundTask,
-};
+use super::{Engine, EngineError, output_capture::OutputCapture, producers::ProducerAuthority};
 
-use crate::{ToolCompletion, ToolError, ToolProgress, events::OutputHub};
+use crate::{ToolCompletion, ToolError, ToolProgress, ToolResultTruncationPolicy};
 
-/// Idempotency key of the one completion message a job sends.
+/// Idempotency key of the one completion message a background call sends.
 const COMPLETION_KEY: &str = "background-completion";
 
-/// Live background jobs, keyed by the tool call that started them.
-#[derive(Default)]
+/// How long a stopped call gets to end before its execution is dropped.
+const STOP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Live background calls, keyed by the tool call they came from.
 pub(crate) struct BackgroundTaskState {
     jobs: Mutex<HashMap<ToolCallId, Job>>,
+    /// The sessions whose background calls changed.
+    changes: tokio::sync::broadcast::Sender<SessionId>,
+}
+
+impl Default for BackgroundTaskState {
+    fn default() -> Self {
+        Self {
+            jobs: Mutex::default(),
+            changes: tokio::sync::broadcast::channel(64).0,
+        }
+    }
 }
 
 impl BackgroundTaskState {
@@ -47,165 +61,244 @@ impl BackgroundTaskState {
     }
 }
 
+pub(crate) use cookie_agent_protocol::BackgroundActor;
+
+fn actor_name(actor: BackgroundActor) -> &'static str {
+    match actor {
+        BackgroundActor::Model => "model",
+        BackgroundActor::User => "user",
+    }
+}
+
 struct Job {
     session: SessionId,
+    job: String,
+    tool: String,
+    display: Option<String>,
+    started_at: jiff::Timestamp,
+    detached_at: jiff::Timestamp,
+    by: BackgroundActor,
+    /// Drops the execution without a report.
     kill: CancellationToken,
-    /// Released once the starting call commits as completed.
+    /// Asks the execution to stop; it still reports.
+    stop: CancellationToken,
+    stopped_by: Option<BackgroundActor>,
+    /// Cancelled once the execution has ended.
+    ended: CancellationToken,
+    /// Released once the immediate result commits as completed.
     arm: Option<oneshot::Sender<()>>,
 }
 
-/// Lets one executing tool call reserve a background job.
-#[derive(Clone)]
-pub(crate) struct BackgroundCapability {
-    pub(crate) inner: Weak<Inner>,
-    pub(crate) tool_call_id: ToolCallId,
-    /// The run's tool-output preview limits, applied to the job's report.
-    pub(crate) limits: crate::preview::PreviewLimits,
+/// The job ID of the background call that came from `tool_call_id`.
+pub(crate) fn job_id(tool_call_id: ToolCallId) -> String {
+    let hex = tool_call_id.to_string().replace('-', "");
+    format!("job_{}", &hex[hex.len() - 8..])
 }
 
-impl std::fmt::Debug for BackgroundCapability {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("BackgroundCapability")
-            .field("tool_call_id", &self.tool_call_id)
-            .finish_non_exhaustive()
-    }
+/// A running call the engine is detaching.
+pub(super) struct DetachedCall {
+    pub(super) session: SessionId,
+    pub(super) tool_call_id: ToolCallId,
+    /// The tool's published name.
+    pub(super) tool: String,
+    /// The call's display argument, for the notification row.
+    pub(super) display: Option<String>,
+    pub(super) by: BackgroundActor,
+    pub(super) started_at: jiff::Timestamp,
+    /// The tool's line for the immediate result.
+    pub(super) note: Option<String>,
+    pub(super) execution: Pin<Box<dyn Future<Output = Result<ToolCompletion, ToolError>> + Send>>,
+    pub(super) progress: mpsc::Receiver<ToolProgress>,
+    pub(super) capture: Option<OutputCapture>,
+    pub(super) truncation: ToolResultTruncationPolicy,
+    pub(super) cancellation: CancellationToken,
 }
 
-/// The engine's side of a reserved job: started by
-/// [`cookie_agent_runtime_api::BackgroundJob::launch`], released when dropped
-/// unlaunched.
-struct Launch {
-    engine: Engine,
-    session: SessionId,
-    tool_call_id: ToolCallId,
-    producer_id: ProducerId,
-    capture: OutputCapture,
-    progress: mpsc::Receiver<ToolProgress>,
-    kill: CancellationToken,
-    arm: oneshot::Receiver<()>,
-}
-
-impl Drop for Launch {
-    fn drop(&mut self) {
-        self.engine
-            .release_background_job(self.session, self.tool_call_id, self.producer_id);
-        self.capture.release_publication();
-    }
-}
-
-#[async_trait::async_trait]
-impl BackgroundJobs for BackgroundCapability {
-    async fn reserve(&self, session: SessionId) -> Result<BackgroundJob, ToolError> {
-        let inner = self
-            .inner
-            .upgrade()
-            .ok_or_else(|| ToolError::execution("engine is shutting down"))?;
-        let engine = Engine { inner };
-        let tool_call_id = self.tool_call_id;
-        let producer_id = engine
-            .register_producer(session, tool_authority(tool_call_id))
+impl Engine {
+    /// Detaches `call`: registers its background job, keeps its execution
+    /// running, and returns the immediate result to commit for the call.
+    pub(super) async fn detach_call(
+        &self,
+        call: DetachedCall,
+    ) -> Result<PersistedToolResult, ToolError> {
+        let job = job_id(call.tool_call_id);
+        let producer_id = self
+            .register_producer(call.session, tool_authority(call.tool_call_id))
             .await
             .map_err(|error| ToolError::execution(error.to_string()))?;
-        let (sender, progress) = mpsc::channel(64);
         let (arm_sender, arm) = oneshot::channel();
         let kill = CancellationToken::new();
-        engine
-            .inner
+        let stop = CancellationToken::new();
+        let ended = CancellationToken::new();
+        self.inner
             .background
             .jobs
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(
-                tool_call_id,
+                call.tool_call_id,
                 Job {
-                    session,
+                    session: call.session,
+                    job: job.clone(),
+                    tool: call.tool.clone(),
+                    display: call.display.clone(),
+                    started_at: call.started_at,
+                    detached_at: jiff::Timestamp::now(),
+                    by: call.by,
                     kill: kill.clone(),
+                    stop: stop.clone(),
+                    stopped_by: None,
+                    ended: ended.clone(),
                     arm: Some(arm_sender),
                 },
             );
-        let capture = match OutputCapture::with_limits(
-            engine.inner.artifacts.clone(),
-            session,
-            ToolOutputDeclaration::Named {
-                streams: vec!["stdout".into(), "stderr".into()],
-            },
-            self.limits,
-        )
-        .await
-        {
-            Ok(capture) => capture,
-            Err(error) => {
-                engine.release_background_job(session, tool_call_id, producer_id);
-                return Err(error);
-            }
-        };
-        Ok(BackgroundJob::new(
-            capture.progress_sink(sender, OutputHub::new(tool_call_id, 0)),
-            Box::new(Launch {
-                engine,
-                session,
-                tool_call_id,
-                producer_id,
-                capture,
-                progress,
-                kill,
-                arm,
-            }),
-        ))
-    }
-}
-
-impl BackgroundLauncher for Launch {
-    fn launch(self: Box<Self>, task: BackgroundTask) -> Result<(), ToolError> {
-        let engine = self.engine.clone();
-        let runtime = engine
+        let _ = self.inner.background.changes.send(call.session);
+        let immediate = immediate_result(&job, call.by, call.note.as_deref());
+        let runtime = self
             .inner
             .runtime
             .clone()
-            .or_else(|| tokio::runtime::Handle::try_current().ok())
-            .ok_or_else(|| ToolError::execution("engine is shutting down"))?;
-        if engine.spawn_admission_task(&runtime, self.run(task)) {
-            Ok(())
-        } else {
-            Err(ToolError::execution("engine is shutting down"))
+            .or_else(|| tokio::runtime::Handle::try_current().ok());
+        let (session, tool_call_id) = (call.session, call.tool_call_id);
+        let started = runtime.is_some_and(|runtime| {
+            self.spawn_admission_task(
+                &runtime,
+                self.clone().run_detached(
+                    call,
+                    job,
+                    producer_id,
+                    Signals {
+                        kill,
+                        stop,
+                        ended,
+                        arm,
+                    },
+                ),
+            )
+        });
+        if !started {
+            self.release_background_job(session, tool_call_id, producer_id);
+            return Err(ToolError::execution("engine is shutting down"));
         }
+        Ok(immediate)
     }
-}
 
-impl Launch {
-    async fn run(mut self: Box<Self>, job: BackgroundTask) {
-        let report = {
-            let mut job = std::pin::pin!(job);
-            loop {
-                tokio::select! {
-                    report = &mut job => break report,
-                    () = self.kill.cancelled() => return,
-                    // Display previews need a reader; the capture already has the bytes.
-                    Some(_) = self.progress.recv() => {}
+    async fn run_detached(
+        self,
+        call: DetachedCall,
+        job: String,
+        producer_id: ProducerId,
+        mut signals: Signals,
+    ) {
+        let DetachedCall {
+            session,
+            tool_call_id,
+            tool,
+            display,
+            mut execution,
+            mut progress,
+            capture,
+            truncation,
+            cancellation,
+            ..
+        } = call;
+        let cleanup = tokio::time::sleep(Duration::MAX);
+        tokio::pin!(cleanup);
+        let mut stopping = false;
+        let outcome = loop {
+            tokio::select! {
+                outcome = &mut execution => break Some(outcome),
+                // Display previews need a reader; the capture already has the bytes.
+                Some(_) = progress.recv() => {}
+                () = signals.stop.cancelled(), if !stopping => {
+                    stopping = true;
+                    cancellation.cancel();
+                    cleanup.as_mut().reset(tokio::time::Instant::now() + STOP_CLEANUP_TIMEOUT);
                 }
+                () = &mut cleanup, if stopping => break Some(Err(ToolError::execution(
+                    "stopped; the call did not end within its cleanup deadline",
+                ))),
+                () = signals.kill.cancelled() => break None,
             }
         };
-        tokio::select! {
-            armed = &mut self.arm => if armed.is_err() { return },
-            () = self.kill.cancelled() => return,
-        }
-        let (output, retained) = match self
-            .capture
-            .finish(ToolCompletion::streamed(job_result()), false)
-            .await
-        {
-            Ok(result) => (Some(result.output), result.retained_output),
-            Err(_) => (None, None),
+        drop(execution);
+        signals.ended.cancel();
+        let _ = self.inner.background.changes.send(session);
+        let Some(outcome) = outcome else {
+            self.release_background_job(session, tool_call_id, producer_id);
+            return;
         };
-        let body = render_notification(&report, output.as_deref());
+        let stopped_by = self
+            .inner
+            .background
+            .jobs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&tool_call_id)
+            .and_then(|job| job.stopped_by);
+        let (status, result, error) = match outcome {
+            Ok(completion) => {
+                let failed = completion.failed;
+                match super::tool_execution::finalize_output(
+                    capture.as_ref(),
+                    completion,
+                    failed,
+                    truncation,
+                )
+                .await
+                {
+                    Ok(result) => (
+                        if failed { "failed" } else { "completed" },
+                        Some(result),
+                        None,
+                    ),
+                    Err(error) => ("failed", None, Some(error.to_string())),
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let partial = super::tool_execution::finalize_output(
+                    capture.as_ref(),
+                    super::tool_execution::incomplete_completion(&message),
+                    true,
+                    truncation,
+                )
+                .await
+                .ok();
+                ("failed", partial, Some(message))
+            }
+        };
+        let status = if stopped_by.is_some() {
+            "stopped"
+        } else {
+            status
+        };
+        let body = render_background_result(
+            &job,
+            &tool,
+            status,
+            stopped_by,
+            result.as_ref(),
+            error.as_deref(),
+        );
+        let retained = result.and_then(|result| result.retained_output);
+        let summary = match display.as_deref().filter(|display| !display.is_empty()) {
+            Some(display) => format!("{tool} {status}: {display}"),
+            None => format!("{tool} {status}"),
+        };
+        tokio::select! {
+            armed = &mut signals.arm => if armed.is_err() {
+                self.release_background_job(session, tool_call_id, producer_id);
+                return;
+            },
+            () = signals.kill.cancelled() => {
+                self.release_background_job(session, tool_call_id, producer_id);
+                return;
+            }
+        }
         loop {
-            let (summary, body, retained) =
-                (report.summary.clone(), body.clone(), retained.clone());
-            let (session, tool_call_id, producer_id) =
-                (self.session, self.tool_call_id, self.producer_id);
+            let (summary, body, retained) = (summary.clone(), body.clone(), retained.clone());
             let committed = self
-                .engine
                 .on_actor(session, move |engine| {
                     engine.commit_background_completion_direct(
                         session,
@@ -217,15 +310,119 @@ impl Launch {
                     )
                 })
                 .await;
-            if committed.is_ok()
-                || self.engine.admission_tasks_closing()
-                || self.kill.is_cancelled()
-            {
+            if committed.is_ok() || self.admission_tasks_closing() || signals.kill.is_cancelled() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        self.release_background_job(session, tool_call_id, producer_id);
     }
+
+    /// The background calls of `session`, oldest first.
+    pub fn background_calls(
+        &self,
+        session: SessionId,
+    ) -> Vec<cookie_agent_protocol::BackgroundCall> {
+        let mut calls = self
+            .inner
+            .background
+            .jobs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter(|(_, job)| job.session == session && !job.ended.is_cancelled())
+            .map(
+                |(tool_call_id, job)| cookie_agent_protocol::BackgroundCall {
+                    job: job.job.clone(),
+                    tool: job.tool.clone(),
+                    tool_call_id: *tool_call_id,
+                    display: job.display.clone(),
+                    started_at: job.started_at,
+                    detached_at: job.detached_at,
+                    by: job.by,
+                },
+            )
+            .collect::<Vec<_>>();
+        calls.sort_by_key(|call| call.detached_at);
+        calls
+    }
+
+    /// The sessions whose background calls change, as they change.
+    pub fn subscribe_background_changes(&self) -> tokio::sync::broadcast::Receiver<SessionId> {
+        self.inner.background.changes.subscribe()
+    }
+
+    /// Stops the background call `job` of `session` as the user; see
+    /// [`Self::stop_background`].
+    pub async fn stop_background_as_user(
+        &self,
+        session: SessionId,
+        job: &str,
+    ) -> Result<(), EngineError> {
+        self.stop_background(session, job, BackgroundActor::User)
+            .await
+    }
+
+    /// Stops the background call `job` of `session`'s tree on behalf of
+    /// `by`, and returns once its execution has ended. It still reports,
+    /// with `status="stopped"`.
+    pub(crate) async fn stop_background(
+        &self,
+        session: SessionId,
+        job: &str,
+        by: BackgroundActor,
+    ) -> Result<(), EngineError> {
+        let root = self.session_root(session)?;
+        let candidates = self
+            .inner
+            .background
+            .jobs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter(|(_, candidate)| candidate.job == job)
+            .map(|(tool_call_id, candidate)| (*tool_call_id, candidate.session))
+            .collect::<Vec<_>>();
+        let mut found = None;
+        for (tool_call_id, owner) in candidates {
+            if self
+                .session_root(owner)
+                .is_ok_and(|owner_root| owner_root == root)
+            {
+                found = Some(tool_call_id);
+                break;
+            }
+        }
+        let ended = found.and_then(|tool_call_id| {
+            let mut jobs = self
+                .inner
+                .background
+                .jobs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let entry = jobs.get_mut(&tool_call_id)?;
+            if entry.ended.is_cancelled() {
+                return None;
+            }
+            entry.stopped_by.get_or_insert(by);
+            entry.stop.cancel();
+            Some(entry.ended.clone())
+        });
+        let Some(ended) = ended else {
+            return Err(EngineError::Runtime(format!(
+                "no running background call `{job}` in this session tree"
+            )));
+        };
+        ended.cancelled().await;
+        Ok(())
+    }
+}
+
+struct Signals {
+    kill: CancellationToken,
+    stop: CancellationToken,
+    ended: CancellationToken,
+    arm: oneshot::Receiver<()>,
 }
 
 fn tool_authority(tool_call_id: ToolCallId) -> ProducerAuthority {
@@ -235,40 +432,69 @@ fn tool_authority(tool_call_id: ToolCallId) -> ProducerAuthority {
     }
 }
 
-fn job_result() -> cookie_agent_protocol::PersistedToolResult {
-    cookie_agent_protocol::PersistedToolResult {
-        title: cookie_agent_protocol::SafeDisplayText::new("Background job output")
+/// The result committed for a call when it is detached.
+fn immediate_result(job: &str, by: BackgroundActor, note: Option<&str>) -> PersistedToolResult {
+    let lead = match by {
+        BackgroundActor::Model => format!("Started in the background as job {job}."),
+        BackgroundActor::User => format!(
+            "User manually moved this call to the background; it is still running as job {job}."
+        ),
+    };
+    let mut output = format!(
+        "{lead} You will get a <background_result job=\"{job}\"> with its result when it \
+         finishes; do not wait for it or run it again."
+    );
+    if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
+        output.push('\n');
+        output.push_str(note.trim());
+    }
+    PersistedToolResult {
+        title: cookie_agent_protocol::SafeDisplayText::new("Moved to the background")
             .expect("static title is valid"),
-        output: String::new(),
-        display: None,
+        display: Some(cookie_agent_runtime_api::bounded_tool_display(&output)),
+        output,
         retained_output: None,
-        metadata: serde_json::Value::Null,
+        metadata: serde_json::json!({"background": {"job": job, "by": actor_name(by)}}),
         truncation: None,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     }
 }
 
-/// Wraps a job's report and output preview in its element.
-fn render_notification(report: &BackgroundReport, output: Option<&str>) -> String {
-    let mut body = format!("<{}", report.element);
-    for (name, value) in &report.attributes {
-        let value = value
+/// The `<background_result>` element a background call reports.
+fn render_background_result(
+    job: &str,
+    tool: &str,
+    status: &str,
+    stopped_by: Option<BackgroundActor>,
+    result: Option<&PersistedToolResult>,
+    error: Option<&str>,
+) -> String {
+    let escape = |value: &str| {
+        value
             .replace('&', "&amp;")
             .replace('"', "&quot;")
-            .replace('<', "&lt;");
-        body.push_str(&format!(" {name}=\"{value}\""));
+            .replace('<', "&lt;")
+    };
+    let mut body = format!(
+        "<background_result job=\"{}\" tool=\"{}\" status=\"{status}\">\n",
+        escape(job),
+        escape(tool)
+    );
+    match stopped_by {
+        Some(BackgroundActor::Model) => body.push_str("Stopped with stop_background.\n"),
+        Some(BackgroundActor::User) => body.push_str("User stopped this background call.\n"),
+        None => {}
     }
-    body.push_str(">\n");
-    body.push_str(report.body.trim_end());
-    if let Some(output) = output
-        .map(str::trim_end)
-        .filter(|output| !output.is_empty())
-    {
+    if let Some(result) = result {
+        body.push_str(&crate::model_history::tool_result_text(result));
         body.push('\n');
-        body.push_str(output);
     }
-    body.push_str(&format!("\n</{}>", report.element));
+    if let Some(error) = error {
+        body.push_str(error);
+        body.push('\n');
+    }
+    body.push_str("</background_result>");
     body
 }
 
@@ -435,22 +661,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn notification_wraps_the_report_and_output_in_its_element() {
-        let report = BackgroundReport {
-            summary: "bash exited with code 0: make".into(),
-            element: "background_bash".into(),
-            attributes: vec![("from".into(), "42\"<&".into())],
-            body: "Command: make\nStatus: exited with code 0 after 1.0s\n".into(),
+    fn job_ids_take_the_random_end_of_the_call_id() {
+        let call = ToolCallId::new_v7();
+        let job = job_id(call);
+        assert!(job.starts_with("job_") && job.len() == 12, "{job}");
+        assert!(call.to_string().replace('-', "").ends_with(&job[4..]));
+    }
+
+    #[test]
+    fn immediate_results_say_who_moved_the_call_and_keep_the_note() {
+        let model = immediate_result("job_1a2b3c4d", BackgroundActor::Model, Some("Process 42"));
+        assert!(
+            model
+                .output
+                .starts_with("Started in the background as job job_1a2b3c4d.")
+        );
+        assert!(model.output.ends_with("\nProcess 42"));
+        assert_eq!(model.metadata["background"]["by"], "model");
+        let user = immediate_result("job_1a2b3c4d", BackgroundActor::User, None);
+        assert!(
+            user.output
+                .starts_with("User manually moved this call to the background")
+        );
+        assert_eq!(user.metadata["background"]["job"], "job_1a2b3c4d");
+    }
+
+    #[test]
+    fn background_results_wrap_the_foreground_text_and_say_who_stopped_them() {
+        let result = PersistedToolResult {
+            title: cookie_agent_protocol::SafeDisplayText::new("Bash").unwrap(),
+            output: "[stdout]\nok\n".into(),
+            display: None,
+            retained_output: None,
+            metadata: serde_json::json!({"status": 0}),
+            truncation: None,
+            attachments: Vec::new(),
+            additional_messages: Vec::new(),
         };
+        let completed =
+            render_background_result("job_1", "bash", "completed", None, Some(&result), None);
         assert_eq!(
-            render_notification(&report, Some("[stdout]\nok\n\n[stderr]\n")),
-            "<background_bash from=\"42&quot;&lt;&amp;\">\nCommand: make\nStatus: exited with \
-             code 0 after 1.0s\n[stdout]\nok\n\n[stderr]\n</background_bash>"
+            completed,
+            format!(
+                "<background_result job=\"job_1\" tool=\"bash\" status=\"completed\">\n{}\n</background_result>",
+                crate::model_history::tool_result_text(&result)
+            )
+        );
+        let stopped = render_background_result(
+            "job_1",
+            "a\"<b",
+            "stopped",
+            Some(BackgroundActor::User),
+            None,
+            Some("cancelled"),
         );
         assert_eq!(
-            render_notification(&report, None),
-            "<background_bash from=\"42&quot;&lt;&amp;\">\nCommand: make\nStatus: exited with \
-             code 0 after 1.0s\n</background_bash>"
+            stopped,
+            "<background_result job=\"job_1\" tool=\"a&quot;&lt;b\" status=\"stopped\">\nUser stopped \
+             this background call.\ncancelled\n</background_result>"
         );
     }
 }
