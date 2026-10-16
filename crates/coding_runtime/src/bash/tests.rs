@@ -20,7 +20,7 @@ fn permission_resource_is_the_command() {
     assert_eq!(
         tool.get_permission_resource("bash", &serde_json::json!({"command":"git status"}))
             .expect("permission resource"),
-        ("bash", Some("git status".into()))
+        (Some("bash"), Some("git status".into()))
     );
     assert!(matches!(
         tool.get_permission_resource("bash", &serde_json::json!({"command":"   "})),

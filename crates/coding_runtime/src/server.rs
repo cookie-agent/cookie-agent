@@ -691,13 +691,16 @@ impl Server {
         let prepared = result.and_then(|prepared| {
             let (permission_name, resource) =
                 provider.get_permission_resource(&call.name, prepared.normalized_arguments())?;
-            let permission = protocol::permission_action(permission_name).ok_or_else(|| {
-                ToolError::execution(format!(
-                    "tool `{}` has permission `{permission_name}`, which is not a permission \
-                     action",
-                    call.name
-                ))
-            })?;
+            let permission = permission_name
+                .map(|name| {
+                    protocol::permission_action(name).ok_or_else(|| {
+                        ToolError::execution(format!(
+                            "tool `{}` has permission `{name}`, which is not a permission action",
+                            call.name
+                        ))
+                    })
+                })
+                .transpose()?;
             Ok((prepared, permission, resource))
         });
         match prepared {

@@ -65,7 +65,11 @@ pub struct ToolSpec {
     /// What happens when another source publishes the same name.
     #[serde(default)]
     pub collision: ToolCollision,
-    pub permission_name: String,
+    /// The permission name the tool's calls are checked under; `None` for a
+    /// tool that needs no permission: always published when its source offers
+    /// it, and every call allowed without evaluating rules or asking.
+    #[serde(default)]
+    pub permission_name: Option<String>,
     pub description: String,
     pub parameters: Value,
     #[serde(default)]
@@ -130,7 +134,9 @@ pub trait ToolProvider: Send + Sync {
     ) -> Result<Option<&'static str>, ToolError> {
         Ok(None)
     }
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError>
+    /// The permission name of `tool_name`; `None` when it needs no
+    /// permission.
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError>
     where
         Self: Sized;
     /// The permission name and resource of `arguments`. The host asks only
@@ -141,7 +147,7 @@ pub trait ToolProvider: Send + Sync {
         &self,
         tool_name: &str,
         arguments: &Value,
-    ) -> Result<(&'static str, Option<String>), ToolError>;
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError>;
     fn get_display_argument(&self, name: &str, arguments: &Value) -> Result<String, ToolError>;
 
     /// How clients show `call`. The host uses a prepared call's

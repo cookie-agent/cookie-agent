@@ -101,7 +101,7 @@ impl ToolProvider for OriginProbe {
         Ok(tools)
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         TestUnconditionalProvider::get_permission_name(tool_name)
     }
 
@@ -109,7 +109,7 @@ impl ToolProvider for OriginProbe {
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         self.inner.get_permission_resource(name, arguments)
     }
 

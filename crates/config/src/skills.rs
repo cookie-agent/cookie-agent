@@ -759,7 +759,7 @@ mod tests {
         let custom = parse_allowed_tools("Browse(https://*)").unwrap();
         assert_eq!(custom[0].action.as_str(), "browse");
         assert_eq!(custom[0].pattern.as_str(), "https://*");
-        for invalid in ["Web-Fetch", "Unconditional", "plugin:x"] {
+        for invalid in ["Web-Fetch", "plugin:x"] {
             let error = parse_allowed_tools(invalid).unwrap_err();
             assert!(
                 error.contains(&format!("invalid allowed-tools tool `{invalid}`")),

@@ -613,7 +613,7 @@ fn tool_specs_force_closed_object_schema_and_keep_defs() {
     );
     let converted = convert_tool("git hub", "git_hub", tool).expect("tool conversion");
     assert_eq!(converted.spec.name, "git_hub_search_repos");
-    assert_eq!(converted.spec.permission_name, "mcp");
+    assert_eq!(converted.spec.permission_name.as_deref(), Some("mcp"));
     assert_eq!(converted.spec.parameters["type"], "object");
     assert_eq!(converted.spec.parameters["additionalProperties"], false);
     assert!(converted.spec.parameters.get("$defs").is_some());

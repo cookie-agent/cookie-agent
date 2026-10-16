@@ -357,15 +357,15 @@ impl ToolProvider for BashTool {
             concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
             name: "bash".into(),
-            permission_name: Self::get_permission_name("bash")?.into(),
+            permission_name: Self::get_permission_name("bash")?.map(Into::into),
             description: bash_tool_description().into(),
             parameters: schema::<BashArgs>(),
         }])
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "bash" => Ok("bash"),
+            "bash" => Ok(Some("bash")),
             _ => Err(ToolError::execution("bash provider received another tool")),
         }
     }
@@ -374,7 +374,7 @@ impl ToolProvider for BashTool {
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let permission_name = Self::get_permission_name(name)?;
         let args: BashArgs = parse_args("bash", arguments.clone())?;
         if args.command.trim().is_empty() {

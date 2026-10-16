@@ -152,15 +152,15 @@ impl ToolProvider for EditTool {
             concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
             name: "edit".into(),
-            permission_name: Self::get_permission_name("edit")?.into(),
+            permission_name: Self::get_permission_name("edit")?.map(Into::into),
             description: "Replace oldString with newString in a file, atomically.".into(),
             parameters: schema::<EditArgs>(),
         }])
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "edit" => Ok("write"),
+            "edit" => Ok(Some("write")),
             _ => Err(ToolError::execution("edit provider received another tool")),
         }
     }
@@ -169,7 +169,7 @@ impl ToolProvider for EditTool {
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let permission_name = Self::get_permission_name(name)?;
         let args: EditArgs = parse_args("edit", arguments.clone())?;
         if args.file_path.is_empty() {
@@ -341,7 +341,7 @@ mod tests {
                 })
             )
             .expect("permission resource"),
-            ("write", Some("value.txt".into()))
+            (Some("write"), Some("value.txt".into()))
         );
         assert!(matches!(
             tool.get_permission_resource(
@@ -500,7 +500,7 @@ mod tests {
             assert_eq!(
                 tool.get_permission_resource("edit", prepared.normalized_arguments())
                     .expect("normalized permission resource"),
-                ("write", Some(requested.to_owned()))
+                (Some("write"), Some(requested.to_owned()))
             );
             crate::assert_workspace_rule_allows(
                 &prepared,

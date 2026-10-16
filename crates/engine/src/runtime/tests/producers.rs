@@ -112,7 +112,7 @@ impl ToolProvider for GoalVisibilityProvider {
                 collision: Default::default(),
                 output: Default::default(),
                 name: name.into(),
-                permission_name: permission_name.into(),
+                permission_name: Some(permission_name.into()),
                 description: description.into(),
                 parameters,
                 concurrency: Default::default(),
@@ -122,10 +122,10 @@ impl ToolProvider for GoalVisibilityProvider {
         .collect())
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "goal_get" => Ok("read"),
-            "goal_update" => Ok("write"),
+            "goal_get" => Ok(Some("read")),
+            "goal_update" => Ok(Some("write")),
             _ => Err(ToolError::execution("unexpected goal visibility tool")),
         }
     }
@@ -134,7 +134,7 @@ impl ToolProvider for GoalVisibilityProvider {
         &self,
         name: &str,
         _arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         Ok((Self::get_permission_name(name)?, Some("goal:test".into())))
     }
 

@@ -367,7 +367,7 @@ async fn calls_are_prepared_executed_and_released_by_prepared_id() {
     assert!(error.message.contains("unavailable"), "{}", error.message);
     assert_eq!(
         read.permission,
-        cookie_agent_protocol::PermissionAction::READ
+        Some(cookie_agent_protocol::PermissionAction::READ)
     );
     assert_eq!(read.permission_resource.as_deref(), Some("notes.txt"));
     assert_eq!(

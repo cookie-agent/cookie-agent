@@ -414,7 +414,8 @@ struct ToolInterceptionContext {
     provider: Arc<dyn ToolProvider>,
     spec: ToolSpec,
     preparation: ToolPreparationContext,
-    permission_name: String,
+    /// `None` for a tool that needs no permission.
+    permission_name: Option<String>,
     permission_resource: Option<String>,
 }
 

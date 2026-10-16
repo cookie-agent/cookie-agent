@@ -94,8 +94,7 @@ and `Edit` maps to the `write` permission just like the builtin edit tool.
 Every other name is the permission action itself, lowercased: `Read`, `Bash`,
 `Webfetch`, and so on for the built-in tools, or a runtime's own action such
 as `Browse(https://docs.rs/*)`. A name that lowercases to no valid action
-(see [permissions](agents.md#permissions)) or to the reserved `unconditional`
-is an error. The older Cookie Agent `action:pattern` list form is not accepted.
+(see [permissions](agents.md#permissions)) is an error. The older Cookie Agent `action:pattern` list form is not accepted.
 
 `Plugin` grants the complete plugin permission group. `Plugin(name:*)` grants
 both `name` and `name *`, where `name` is a plugin-declared permission prefix;

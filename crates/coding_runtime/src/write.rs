@@ -58,16 +58,16 @@ impl ToolProvider for WriteTool {
             concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
             name: "write".into(),
-            permission_name: Self::get_permission_name("write")?.into(),
+            permission_name: Self::get_permission_name("write")?.map(Into::into),
             description: "Write content to a file atomically, creating missing parent directories."
                 .into(),
             parameters: schema::<WriteArgs>(),
         }])
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "write" => Ok("write"),
+            "write" => Ok(Some("write")),
             _ => Err(ToolError::execution("write provider received another tool")),
         }
     }
@@ -76,7 +76,7 @@ impl ToolProvider for WriteTool {
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let permission_name = Self::get_permission_name(name)?;
         let args: WriteArgs = parse_args("write", arguments.clone())?;
         if args.file_path.is_empty() {
@@ -205,7 +205,7 @@ mod tests {
                 &serde_json::json!({"filePath":"out.txt","content":"x"})
             )
             .expect("permission resource"),
-            ("write", Some("out.txt".into()))
+            (Some("write"), Some("out.txt".into()))
         );
         assert!(matches!(
             tool.get_permission_resource("write", &serde_json::json!({"content":"x"})),
@@ -386,7 +386,7 @@ mod tests {
             assert_eq!(
                 tool.get_permission_resource("write", prepared.normalized_arguments())
                     .expect("normalized permission resource"),
-                ("write", Some(requested.to_owned()))
+                (Some("write"), Some(requested.to_owned()))
             );
             crate::assert_workspace_rule_allows(
                 &prepared,

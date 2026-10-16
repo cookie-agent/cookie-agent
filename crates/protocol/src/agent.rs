@@ -141,10 +141,6 @@ impl PermissionAction {
 
     pub const MAX_LEN: usize = 32;
 
-    /// The permission name of tools that need no rule. It is not an action:
-    /// no tool, rule, or grant may name it.
-    pub const RESERVED: &'static str = "unconditional";
-
     pub fn new(value: impl Into<String>) -> Result<Self, PermissionActionError> {
         let value = value.into();
         let valid = value.len() <= Self::MAX_LEN
@@ -154,9 +150,6 @@ impl PermissionAction {
             && !value.is_empty();
         if !valid {
             return Err(PermissionActionError::Invalid(value));
-        }
-        if value == Self::RESERVED {
-            return Err(PermissionActionError::Reserved);
         }
         Ok(Self(Cow::Owned(value)))
     }
@@ -184,7 +177,6 @@ impl PermissionAction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PermissionActionError {
     Invalid(String),
-    Reserved,
 }
 
 impl fmt::Display for PermissionActionError {
@@ -193,11 +185,6 @@ impl fmt::Display for PermissionActionError {
             Self::Invalid(value) => write!(
                 formatter,
                 "invalid permission action `{value}`; expected [a-z][a-z0-9_]{{0,31}}"
-            ),
-            Self::Reserved => write!(
-                formatter,
-                "`{}` is reserved and is not a permission action",
-                PermissionAction::RESERVED
             ),
         }
     }
@@ -240,7 +227,6 @@ impl JsonSchema for PermissionAction {
         json_schema!({
             "type": "string",
             "pattern": "^[a-z][a-z0-9_]{0,31}$",
-            "not": { "const": "unconditional" },
             "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action."
         })
     }

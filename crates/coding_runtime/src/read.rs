@@ -80,7 +80,7 @@ impl ToolProvider for ReadTool {
             concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
             result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut,
             name: "read".into(),
-            permission_name: Self::get_permission_name("read")?.into(),
+            permission_name: Self::get_permission_name("read")?.map(Into::into),
             description:
                 "Read a text/image/video file or a directory snapshot using a zero-based offset."
                     .into(),
@@ -88,9 +88,9 @@ impl ToolProvider for ReadTool {
         }])
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "read" => Ok("read"),
+            "read" => Ok(Some("read")),
             _ => Err(ToolError::execution("read provider received another tool")),
         }
     }
@@ -99,7 +99,7 @@ impl ToolProvider for ReadTool {
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let permission_name = Self::get_permission_name(name)?;
         let args: ReadArgs = parse_args("read", arguments.clone())?;
         if args.file_path.is_empty() {

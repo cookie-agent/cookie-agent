@@ -20,14 +20,6 @@ use thiserror::Error;
 /// Display stand-in for a permission resource the tool did not scope.
 pub(crate) const UNSCOPED_PERMISSION_RESOURCE_DISPLAY: &str = "<permission-name-only>";
 
-/// Permission name of base-layer tools that need no rule: they are always
-/// published and every call is allowed without evaluating rules or asking,
-/// because they can only reach state the session tree already owns (for
-/// example `read_artifact`). It maps to no [`PermissionAction`], so no rule,
-/// grant, or overlay can name it. Their prepared operations still carry a
-/// capability for approval identity; it is never evaluated.
-pub const UNCONDITIONAL_PERMISSION_NAME: &str = "unconditional";
-
 /// Where a permission is evaluated: the runtime that offers the tool, and
 /// that runtime's workspace.
 ///
@@ -202,10 +194,10 @@ pub struct PermissionDecision {
 }
 
 impl PermissionDecision {
-    /// The decision for a tool with [`UNCONDITIONAL_PERMISSION_NAME`]: allowed,
-    /// with no rule evaluated.
+    /// The decision for a tool that needs no permission: allowed, with no
+    /// rule evaluated.
     #[must_use]
-    pub fn unconditional() -> Self {
+    pub fn permission_free() -> Self {
         Self {
             effect: PermissionEffect::Allow,
             evaluations: Vec::new(),
@@ -219,13 +211,6 @@ pub struct PermissionPipeline {
 }
 
 impl PermissionPipeline {
-    /// Whether `permission_name` marks a tool that is always visible and
-    /// always allowed ([`UNCONDITIONAL_PERMISSION_NAME`]).
-    #[must_use]
-    pub fn is_unconditional(permission_name: &str) -> bool {
-        permission_name == UNCONDITIONAL_PERMISSION_NAME
-    }
-
     /// The action a tool's permission name checks: the name itself when it
     /// is an action label, or `plugin` for a plugin tool's `plugin:<tool>`.
     pub fn action_for_permission_name(
@@ -373,7 +358,8 @@ impl PermissionPipeline {
     }
 
     /// Whether a tool with `permission_name` of the runtime with ID `runtime`
-    /// (`None` for the base layer) is visible.
+    /// (`None` for the base layer) is visible. A tool that needs no permission
+    /// has no name to ask about and is always visible.
     #[must_use]
     pub fn tool_visible_with_overlay(
         policy: &AgentSnapshot,
@@ -381,9 +367,6 @@ impl PermissionPipeline {
         permission_name: &str,
         runtime: Option<&str>,
     ) -> bool {
-        if Self::is_unconditional(permission_name) {
-            return true;
-        }
         let Ok(action) = Self::action_for_permission_name(permission_name) else {
             return false;
         };
@@ -767,8 +750,10 @@ impl crate::Engine {
                 .tools_for_session(&context)
                 .map_err(|error| crate::EngineError::ToolFailed(error.to_string()))?
             {
-                if let Ok(action) =
-                    PermissionPipeline::action_for_permission_name(&tool.permission_name)
+                if let Some(Ok(action)) = tool
+                    .permission_name
+                    .as_deref()
+                    .map(PermissionPipeline::action_for_permission_name)
                     && !actions.contains(&action)
                 {
                     actions.push(action);

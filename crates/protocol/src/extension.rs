@@ -4,7 +4,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const EXTENSION_PROTOCOL_VERSION: &str = "0.0.6";
+pub const EXTENSION_PROTOCOL_VERSION: &str = "0.0.7";
 pub const PLUGIN_PRODUCER_REGISTER_METHOD: &str = "plugin/producer/register";
 pub const PLUGIN_PRODUCER_SEND_METHOD: &str = "plugin/producer/send";
 pub const PLUGIN_PRODUCER_UNREGISTER_METHOD: &str = "plugin/producer/unregister";
@@ -86,7 +86,7 @@ impl JsonSchema for ExtensionProtocolVersion {
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"string","const":"0.0.6"})
+        json_schema!({"type":"string","const":"0.0.7"})
     }
 }
 
@@ -395,7 +395,10 @@ pub struct ExtensionToolBeforeCallParams {
     pub context_id: String,
     pub tool: String,
     pub arguments: Value,
-    pub permission_name: String,
+    /// `null` for a tool that needs no permission.
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<String>", required)]
+    pub permission_name: Option<String>,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<String>", required)]
     pub resource: Option<String>,

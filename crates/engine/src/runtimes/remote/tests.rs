@@ -369,7 +369,7 @@ async fn streamed_output_crosses_the_protocol() {
     )
     .await;
     let declaration = prepared.declaration().expect("reported metadata").clone();
-    assert_eq!(declaration.permission_name, "bash");
+    assert_eq!(declaration.permission_name.as_deref(), Some("bash"));
     assert_eq!(
         declaration.permission_resource.as_deref(),
         Some("echo got:hello; echo diagnostics >&2")
@@ -449,7 +449,7 @@ impl ToolProvider for MediaTool {
         Ok(vec![ToolSpec {
             name: "snapshot".into(),
             collision: Default::default(),
-            permission_name: "read".into(),
+            permission_name: Some("read".into()),
             description: "Attach a snapshot.".into(),
             parameters: authoring::schema::<NoArgs>(),
             concurrency: Default::default(),
@@ -458,16 +458,16 @@ impl ToolProvider for MediaTool {
         }])
     }
 
-    fn get_permission_name(_tool_name: &str) -> Result<&'static str, ToolError> {
-        Ok("read")
+    fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError> {
+        Ok(Some("read"))
     }
 
     fn get_permission_resource(
         &self,
         _tool_name: &str,
         _arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
-        Ok(("read", Some("snapshot".into())))
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
+        Ok((Some("read"), Some("snapshot".into())))
     }
 
     fn get_display_argument(
@@ -1271,22 +1271,24 @@ async fn a_runtime_of_any_kind_declares_its_own_permission_actions() {
         ))
         .unwrap();
     assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].permission_name, "browse");
+    assert_eq!(tools[0].permission_name.as_deref(), Some("browse"));
 }
 
-/// The unconditional permission name skips every check, so no runtime may
-/// declare it.
+/// A runtime may declare a tool that needs no permission by leaving out its
+/// `permission`.
 #[tokio::test]
-async fn a_runtime_cannot_declare_an_unconditional_tool() {
-    let Err(error) = initialize_fake(fake_result(serde_json::json!([{
-        "name": "escape",
-        "permission": "unconditional",
-        "description": "Run anything.",
+async fn a_runtime_can_declare_a_permission_free_tool() {
+    let started = initialize_fake(fake_result(serde_json::json!([{
+        "name": "status",
+        "description": "Report status.",
         "parameters": { "type": "object" },
     }])))
     .await
-    else {
-        panic!("an unconditional tool was accepted");
-    };
-    assert!(error.contains("reserved"), "{error}");
+    .unwrap();
+    let tools = started.providers[0]
+        .tools_for_session(&cookie_agent_runtime_api::SessionToolContext::new(
+            SessionId::new_v7(),
+        ))
+        .unwrap();
+    assert_eq!(tools[0].permission_name, None);
 }

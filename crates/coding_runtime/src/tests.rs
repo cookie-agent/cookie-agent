@@ -12,13 +12,19 @@ use super::{BuiltinTools, bash::BashTool, edit::EditTool, read::ReadTool, write:
 
 #[test]
 fn static_permission_names_cover_every_builtin_tool() {
-    assert_eq!(ReadTool::get_permission_name("read").unwrap(), "read");
-    assert_eq!(WriteTool::get_permission_name("write").unwrap(), "write");
-    assert_eq!(EditTool::get_permission_name("edit").unwrap(), "write");
-    assert_eq!(BashTool::get_permission_name("bash").unwrap(), "bash");
+    assert_eq!(ReadTool::get_permission_name("read").unwrap(), Some("read"));
+    assert_eq!(
+        WriteTool::get_permission_name("write").unwrap(),
+        Some("write")
+    );
+    assert_eq!(
+        EditTool::get_permission_name("edit").unwrap(),
+        Some("write")
+    );
+    assert_eq!(BashTool::get_permission_name("bash").unwrap(), Some("bash"));
     assert_eq!(
         BuiltinTools::get_permission_name("webfetch").unwrap(),
-        "webfetch"
+        Some("webfetch")
     );
     assert!(BuiltinTools::get_permission_name("read_tool_result").is_err());
     assert!(BuiltinTools::get_permission_name("grep").is_err());
@@ -371,7 +377,7 @@ async fn windows_short_workspace_spelling_roundtrips_prepared_resources() {
     assert_eq!(
         tool.get_permission_resource("read", prepared.normalized_arguments())
             .unwrap(),
-        ("read", Some("value.txt".into()))
+        (Some("read"), Some("value.txt".into()))
     );
     for (requested, workspace) in [(&short, &long), (&long, &short)] {
         assert_eq!(

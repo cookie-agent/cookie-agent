@@ -43,13 +43,16 @@ state and their hosting `runtime_id` and `workspace` in `mcp.server.list`,
 `mcp.changed` and `runtimes.changed` gained `failures` (see
 [Connection failures](#connection-failures)). Protocol 41 made a runtime's
 `kind` a free-form label the runtime declares instead of `global` or
-`coding`, and made `PermissionAction` a free-form label (`[a-z][a-z0-9_]{0,31}`,
-`unconditional` reserved) instead of the nine built-in actions, so permission
+`coding`, and made `PermissionAction` a free-form label (`[a-z][a-z0-9_]{0,31}`)
+instead of the nine built-in actions, so permission
 rules, overlays, grants, approval requests, and `session.permission.get` can
 name a runtime's own actions; `session.permission.get` lists the built-in
 actions, then the actions of the session's tools, then any other action a rule
 names. Protocol 42 removed `run.tool_stdin`: tools no longer take input while
-they run. Older clients are rejected.
+they run. It also made tool permissions optional: a tool may declare no
+permission, so it is always published and every call allowed, and the
+`permission_name` the `tool_before_call` plugin hook receives is `null` for
+such a tool. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
@@ -268,7 +271,7 @@ The engine implements these methods through its per-session actor. Goal mutation
 are root-only; producer inspection is available for any owned session.
 Goal/producer request shapes remain unchanged. Session protocol 18 added declared
 tool-output channels, terminal output
-references, and independent UI display. Plugin extension `0.0.6` uses typed
+references, and independent UI display. Plugin extension `0.0.7` uses typed
 terminal single/named output and final display; package versions are unchanged.
 
 | Surface | Public contract | Implementation owner |

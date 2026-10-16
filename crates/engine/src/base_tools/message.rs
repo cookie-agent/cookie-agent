@@ -48,7 +48,7 @@ impl MessageToolProvider {
             concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
             result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::Bounded,
             name: "send_message".into(),
-            permission_name: "message".into(),
+            permission_name: Some("message".into()),
             description: "Send a message to another agent in your session tree. Recipient accepts a subagent handle or a full UUID.".into(),
             parameters: serde_json::json!({
                 "type":"object","additionalProperties":false,
@@ -100,17 +100,17 @@ impl ToolProvider for MessageToolProvider {
         Ok(vec![Self::spec()])
     }
 
-    fn get_permission_name(_name: &str) -> Result<&'static str, ToolError> {
-        Ok("message")
+    fn get_permission_name(_name: &str) -> Result<Option<&'static str>, ToolError> {
+        Ok(Some("message"))
     }
 
     fn get_permission_resource(
         &self,
         _name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let _ = Self::parse(arguments)?;
-        Ok(("message", Some("*".into())))
+        Ok((Some("message"), Some("*".into())))
     }
 
     fn get_display_argument(

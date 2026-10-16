@@ -361,7 +361,7 @@ async fn plugin_executor_maps_success_and_error_results() {
             .registry
             .get_permission_resource("fixture_echo", &arguments)
             .expect("permission resource"),
-        ("plugin", Some("fixture_echo src/lib.rs".into()))
+        (Some("plugin"), Some("fixture_echo src/lib.rs".into()))
     );
     let result = execute(&success, prepared(&success).await, CancellationToken::new())
         .await
@@ -634,7 +634,7 @@ async fn dispatches_all_interception_hooks_and_fails_open_on_crash() {
             context_id: plugin_context_id(),
             tool: "fixture_echo".into(),
             arguments: serde_json::json!({"text":"original","path":"src/lib.rs"}),
-            permission_name: "fixture_echo".into(),
+            permission_name: Some("fixture_echo".into()),
             resource: Some("src/lib.rs".into()),
         },
     )
@@ -735,7 +735,7 @@ async fn dispatches_all_interception_hooks_and_fails_open_on_crash() {
             context_id: plugin_context_id(),
             tool: "fixture_echo".into(),
             arguments: serde_json::json!({}),
-            permission_name: "fixture_echo".into(),
+            permission_name: Some("fixture_echo".into()),
             resource: None,
         },
     )
@@ -780,7 +780,7 @@ async fn interception_plugins_follow_registry_order() {
             context_id: plugin_context_id(),
             tool: "example".into(),
             arguments: serde_json::json!({"step":"original"}),
-            permission_name: "read".into(),
+            permission_name: Some("read".into()),
             resource: None,
         },
     )
@@ -822,7 +822,7 @@ async fn interception_timeout_fails_open_and_remaining_hooks_continue() {
             context_id: plugin_context_id(),
             tool: "example".into(),
             arguments: serde_json::json!({}),
-            permission_name: "read".into(),
+            permission_name: Some("read".into()),
             resource: None,
         },
     )

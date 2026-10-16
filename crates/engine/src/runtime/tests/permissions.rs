@@ -640,7 +640,7 @@ fn test_write_provider_exposes_permission_resources() {
         write
             .get_permission_resource("write", &serde_json::json!({}))
             .expect("write resource"),
-        ("write", Some("approval-test.txt".into()))
+        (Some("write"), Some("approval-test.txt".into()))
     );
     assert_eq!(
         write
@@ -660,7 +660,7 @@ async fn permission_labels_come_from_prepared_permission_resource() {
         provider
             .get_permission_resource("read", &raw)
             .expect("raw permission resource"),
-        ("read", Some("canonical/src/lib.rs".into()))
+        (Some("read"), Some("canonical/src/lib.rs".into()))
     );
     let prepared = provider
         .prepare(
@@ -680,7 +680,10 @@ async fn permission_labels_come_from_prepared_permission_resource() {
         .expect("prepare");
     assert_eq!(prepared.policy_labels(), [Some("divergent-raw".into())]);
     let labeled = crate::runtime::tool_execution::apply_permission_resource(
-        &provider, "read", "read", prepared,
+        &provider,
+        "read",
+        Some("read"),
+        prepared,
     )
     .expect("overwrite")
     .0;
@@ -688,7 +691,7 @@ async fn permission_labels_come_from_prepared_permission_resource() {
         provider
             .get_permission_resource("read", labeled.normalized_arguments())
             .expect("prepared permission resource"),
-        ("read", Some("canonical/src/lib.rs".into()))
+        (Some("read"), Some("canonical/src/lib.rs".into()))
     );
     assert_eq!(
         labeled.policy_labels(),
@@ -713,7 +716,10 @@ async fn permission_labels_come_from_prepared_permission_resource() {
         .await
         .expect("prepare without resource");
     let labeled = crate::runtime::tool_execution::apply_permission_resource(
-        &provider, "read", "read", prepared,
+        &provider,
+        "read",
+        Some("read"),
+        prepared,
     )
     .expect("preserve labels")
     .0;

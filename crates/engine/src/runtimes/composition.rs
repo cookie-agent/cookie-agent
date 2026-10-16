@@ -150,15 +150,15 @@ mod tests {
         fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
             Ok(Vec::new())
         }
-        fn get_permission_name(_: &str) -> Result<&'static str, ToolError> {
-            Ok("read")
+        fn get_permission_name(_: &str) -> Result<Option<&'static str>, ToolError> {
+            Ok(Some("read"))
         }
         fn get_permission_resource(
             &self,
             _: &str,
             _: &serde_json::Value,
-        ) -> Result<(&'static str, Option<String>), ToolError> {
-            Ok(("read", None))
+        ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
+            Ok((Some("read"), None))
         }
         fn get_display_argument(
             &self,
@@ -189,7 +189,7 @@ mod tests {
         ToolSpec {
             collision,
             name: name.into(),
-            permission_name: "read".into(),
+            permission_name: Some("read".into()),
             description: String::new(),
             parameters: serde_json::json!({"type":"object"}),
             concurrency: Default::default(),

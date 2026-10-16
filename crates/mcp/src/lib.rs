@@ -1800,15 +1800,15 @@ impl ToolProvider for McpRegistry {
             .collect())
     }
 
-    fn get_permission_name(_tool_name: &str) -> Result<&'static str, ToolError> {
-        Ok("mcp")
+    fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError> {
+        Ok(Some("mcp"))
     }
 
     fn get_permission_resource(
         &self,
         tool_name: &str,
         _arguments: &Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let owned = self
             .servers()
             .into_iter()
@@ -1818,7 +1818,7 @@ impl ToolProvider for McpRegistry {
                 "unknown MCP tool `{tool_name}`"
             )));
         }
-        Ok(("mcp", Some(tool_name.to_owned())))
+        Ok((Some("mcp"), Some(tool_name.to_owned())))
     }
 
     fn get_display_argument(&self, name: &str, _arguments: &Value) -> Result<String, ToolError> {
@@ -1974,7 +1974,7 @@ fn convert_tool(server: &str, sanitized_server: &str, tool: Tool) -> Result<Cach
             // External opt-out requires a future extension-protocol capability.
             result_truncation: Default::default(),
             name: generated,
-            permission_name: "mcp".into(),
+            permission_name: Some("mcp".into()),
             description,
             parameters: Value::Object(schema),
         },

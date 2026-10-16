@@ -95,7 +95,7 @@ impl DelegateToolProvider {
             concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
             result_truncation: result_truncation_policy("delegate_subagent"),
             name: "delegate_subagent".into(),
-            permission_name: "delegate".into(),
+            permission_name: Some("delegate".into()),
             description: "Delegate a self-contained task to a specialist agent. Foreground (default) blocks until done. background=true returns immediately with a session handle; the result is pushed back automatically as a <subagent_notification>. If you need to wait for completion, tell the user and end your turn; the notification will wake this session. Use get_subagent_result only to read the available result after notification. To continue an existing subagent, pass its resume_session_id (see the handle in its start/completion notice).".into(),
             parameters: serde_json::json!({
                 "type":"object","additionalProperties":false,
@@ -124,7 +124,7 @@ impl DelegateToolProvider {
             concurrency: Default::default(),
             result_truncation: result_truncation_policy("get_subagent_result"),
             name: "get_subagent_result".into(),
-            permission_name: "delegate".into(),
+            permission_name: Some("delegate".into()),
             description: "Read the current status and latest result of a subagent you delegated. This call returns immediately; it never waits. A background delegation sends a completion notification to this parent session when it ends. Use the handle from the subagent's start or completion notice, e.g. \"explore_1a2b3c4d\". Only your own subagents are visible.".into(),
             parameters: serde_json::json!({
                 "type":"object","additionalProperties":false,
@@ -145,7 +145,7 @@ impl DelegateToolProvider {
             concurrency: Default::default(),
             result_truncation: result_truncation_policy("cancel_subagent"),
             name: "cancel_subagent".into(),
-            permission_name: "delegate".into(),
+            permission_name: Some("delegate".into()),
             description: "Cancel a subagent you delegated. Accepts the same handle or UUID forms as get_subagent_result.".into(),
             parameters: serde_json::json!({
                 "type":"object","additionalProperties":false,
@@ -245,9 +245,9 @@ impl ToolProvider for DelegateToolProvider {
         })
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "delegate_subagent" | "get_subagent_result" | "cancel_subagent" => Ok("delegate"),
+            "delegate_subagent" | "get_subagent_result" | "cancel_subagent" => Ok(Some("delegate")),
             _ => Err(ToolError::execution(
                 "delegate provider received another tool",
             )),
@@ -258,7 +258,7 @@ impl ToolProvider for DelegateToolProvider {
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let permission_name = Self::get_permission_name(name)?;
         let resource = delegate_permission_resource(name, arguments)?;
         Ok((permission_name, resource))
@@ -623,7 +623,7 @@ mod tests {
         ] {
             assert_eq!(
                 DelegateToolProvider::get_permission_name(name).expect("permission name"),
-                "delegate"
+                Some("delegate")
             );
         }
         assert_eq!(

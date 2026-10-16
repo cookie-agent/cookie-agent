@@ -2099,7 +2099,7 @@ impl ToolProvider for PluginRegistry {
                         // External opt-out requires a future extension-protocol capability.
                         result_truncation: Default::default(),
                         name: tool.name,
-                        permission_name: format!("plugin:{}", tool.permission_name),
+                        permission_name: Some(format!("plugin:{}", tool.permission_name)),
                         description: tool.description,
                         parameters: tool.parameters,
                     }),
@@ -2108,19 +2108,19 @@ impl ToolProvider for PluginRegistry {
         Ok(tools)
     }
 
-    fn get_permission_name(_tool_name: &str) -> Result<&'static str, ToolError> {
-        Ok("plugin")
+    fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError> {
+        Ok(Some("plugin"))
     }
 
     fn get_permission_resource(
         &self,
         tool_name: &str,
         arguments: &Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let (_, declaration) = self.resolve_tool(tool_name)?;
         let primary = primary_resource(&declaration, arguments)?;
         Ok((
-            "plugin",
+            Some("plugin"),
             Some(permission_resource(
                 &declaration.permission_name,
                 primary.as_deref(),

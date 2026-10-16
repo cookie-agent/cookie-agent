@@ -273,7 +273,7 @@ fn tool_errors_and_declarations_survive_the_wire() {
     let spec = ToolSpec {
         name: "webfetch".into(),
         collision: ToolCollision::Fallback,
-        permission_name: "webfetch".into(),
+        permission_name: Some("webfetch".into()),
         description: "Fetch".into(),
         parameters: json!({"type": "object"}),
         concurrency: crate::ToolConcurrency::Parallel,
@@ -288,7 +288,7 @@ fn tool_errors_and_declarations_survive_the_wire() {
         declaration
     );
     let plugin = ToolSpec {
-        permission_name: "plugin:docs".into(),
+        permission_name: Some("plugin:docs".into()),
         ..spec
     };
     assert!(ToolDeclaration::from_spec(&plugin).is_err());

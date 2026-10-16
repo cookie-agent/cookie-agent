@@ -291,8 +291,8 @@ the existing `OperationChanged` path.
   gives meaning only to the actions of its own tools: `read` and `write` take
   file paths (`${workspace_dir}`, workspace-relative resources), and
   `delegate`, `message`, and `skill` belong to the base layer. Every other
-  action matches plain wildcard patterns. `unconditional` is reserved: no
-  runtime may declare it.
+  action matches plain wildcard patterns. A tool may also declare no
+  permission at all (see [background tool calls](background-tools.md#61-tools-that-need-no-permission)).
 - `${workspace_dir}` and relative resources resolve against the workspace of
   the runtime that prepared the call. Base layer and global tools have no
   workspace; path-relative patterns never match them.

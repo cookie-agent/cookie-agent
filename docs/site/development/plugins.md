@@ -129,7 +129,7 @@ and hook-chaining details.
 
 ## Protocol
 
-The extension protocol version is the semantic-version string `0.0.6`. Before version 1.0,
+The extension protocol version is the semantic-version string `0.0.7`. Before version 1.0,
 cookie agent requires an exact version match: additive method or schema changes bump the patch
 version, and plugins must update before connecting to the new engine. A plugin reporting any
 other value is refused and its status contains the reported mismatch.
@@ -337,7 +337,7 @@ by chunk, ordinary, or terminal class in their diagnostic message.
 This stream is observational and not durable. Each plugin has an independent bounded 1024-message
 queue. A full queue drops delivery for that plugin, increments its dropped-event status counter,
 and records a session diagnostic. It cannot delay session persistence, another plugin, or the
-engine. There is no event-type filter in protocol 0.0.6; replay and filtered subscriptions remain
+engine. There is no event-type filter in protocol 0.0.7; replay and filtered subscriptions remain
 future work.
 
 Plugins with `subscribe_bus: true` also receive non-durable `plugin/bus_event` notifications.
@@ -383,7 +383,7 @@ receive it normally.
 
 ## Interception
 
-Plugins register hook names in `capabilities.intercept`. The complete 0.0.6 set is
+Plugins register hook names in `capabilities.intercept`. The complete 0.0.7 set is
 `tool_before_call`, `tool_after_result`, `agent_before_start`, `session_before_compact`,
 `user_before_input`, `model_before_request`, `provider_before_headers`,
 `provider_before_request`, `provider_after_response`, `message_end`, `model_before_select`,
@@ -398,7 +398,8 @@ schema-validated and re-prepared through the pinned provider before later hooks 
 permission capabilities, resources, and labels must remain identical to the approved operation.
 A block short-circuits later hooks and returns a tool error to the
 model, so the turn continues without executing the tool. Modified arguments are validated against
-the pinned `ToolSpec` JSON Schema. Hooks cannot alter `permission_name` or `resource`, denied calls
+the pinned `ToolSpec` JSON Schema. `permission_name` is `null` for a tool that declares no
+permission. Hooks cannot alter `permission_name` or `resource`, denied calls
 are never disclosed to plugins, and an allow hook never grants permission.
 
 `plugin/intercept/tool_after_result` observes the tool result and may replace its content before
@@ -426,7 +427,7 @@ validation before later plugins see them. Parameter adjustments apply with eithe
 `replace`; `replace` requires a complete message list. Prompt-cache markers are placed only after
 the final validated model-hook result.
 
-Pinned Oven adapters in 0.0.6 do not expose their adapter-assembled HTTP headers or raw provider
+Pinned Oven adapters in 0.0.7 do not expose their adapter-assembled HTTP headers or raw provider
 JSON. Accordingly, `provider_before_headers` receives an empty map; requesting a non-empty `set` or
 `delete` mutation records an `unsupported_capability` diagnostic and does not mutate the HTTP
 request. `provider_before_request` operates on Oven's normalized request JSON, not the adapter's raw
@@ -522,5 +523,5 @@ terminates the process if needed. Shutdown remains bounded when initialization i
 
 ## Current limitation
 
-Plugin resource methods remain deferred. Protocol 0.0.6 event subscriptions have no replay or
+Plugin resource methods remain deferred. Protocol 0.0.7 event subscriptions have no replay or
 per-event-type filters.

@@ -215,7 +215,7 @@ fn duplicate_action_and_resource_keys_are_rejected() {
 }
 
 #[test]
-fn permission_keys_take_any_action_label_but_not_the_reserved_name() {
+fn permission_keys_take_any_action_label() {
     for action in ["grep", "browse", "a", "abcdefghijklmnopqrstuvwxyz012345"] {
         assert!(
             serde_yaml::from_str::<AgentFrontmatter>(&format!(
@@ -230,7 +230,6 @@ fn permission_keys_take_any_action_label_but_not_the_reserved_name() {
         "web-fetch",
         "1grep",
         "abcdefghijklmnopqrstuvwxyz0123456",
-        "unconditional",
     ] {
         assert!(
             serde_yaml::from_str::<AgentFrontmatter>(&format!(
@@ -606,7 +605,6 @@ fn permission_keys_take_a_runtime_selector() {
         "bash@LabPC",
         "bash@1lab",
         "Fetch@labpc",
-        "unconditional@labpc",
         "delegate@labpc",
         "message@labpc",
         "skill@labpc",

@@ -313,7 +313,7 @@ impl ToolProvider for BuiltinTools {
         Ok(tools)
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
             "read" => read::ReadTool::get_permission_name(tool_name),
             "write" => write::WriteTool::get_permission_name(tool_name),
@@ -328,7 +328,7 @@ impl ToolProvider for BuiltinTools {
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         match name {
             "read" => self.read.get_permission_resource(name, arguments),
             "write" => self.write.get_permission_resource(name, arguments),

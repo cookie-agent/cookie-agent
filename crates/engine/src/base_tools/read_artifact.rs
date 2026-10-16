@@ -2,9 +2,8 @@
 //!
 //! A base-layer tool: it reads only artifacts stored in the calling session's
 //! own tree, so it needs no permission rule. It is always published and every
-//! call is allowed ([`UNCONDITIONAL_PERMISSION_NAME`]).
+//! call is allowed: the tool declares no permission.
 
-use crate::permissions::UNCONDITIONAL_PERMISSION_NAME;
 use async_trait::async_trait;
 use cookie_agent_protocol::{
     ApprovalResourceSource, ArtifactReadTarget, PermissionAction,
@@ -66,7 +65,7 @@ impl ReadArtifactTool {
             concurrency: cookie_agent_runtime_api::ToolConcurrency::Parallel,
             result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::OptOut,
             name: TOOL_NAME.into(),
-            permission_name: UNCONDITIONAL_PERMISSION_NAME.into(),
+            permission_name: None,
             description: "Read retained tool output by line, using a zero-based offset. Truncated results and elided history name the artifact (and stream) to read in a read_artifact hint; continue from the offset it gives.".into(),
             parameters: schema::<ReadArtifactArgs>(),
         }
@@ -83,9 +82,9 @@ impl ToolProvider for ReadArtifactTool {
         Ok(vec![Self::spec()])
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            TOOL_NAME => Ok(UNCONDITIONAL_PERMISSION_NAME),
+            TOOL_NAME => Ok(None),
             _ => Err(ToolError::execution(
                 "read_artifact provider received another tool",
             )),
@@ -96,7 +95,7 @@ impl ToolProvider for ReadArtifactTool {
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let permission_name = Self::get_permission_name(name)?;
         let args: ReadArtifactArgs = parse_args(TOOL_NAME, arguments.clone())?;
         args.target()?;
@@ -246,18 +245,11 @@ mod tests {
     }
 
     #[test]
-    fn read_artifact_is_unconditional() {
-        let spec = ReadArtifactTool::spec();
-        assert_eq!(spec.permission_name, UNCONDITIONAL_PERMISSION_NAME);
-        assert!(crate::permissions::PermissionPipeline::is_unconditional(
-            &spec.permission_name
-        ));
-        assert!(
-            crate::permissions::PermissionPipeline::action_for_permission_name(
-                &spec.permission_name
-            )
-            .is_err(),
-            "no rule can name the unconditional permission"
+    fn read_artifact_needs_no_permission() {
+        assert_eq!(ReadArtifactTool::spec().permission_name, None);
+        assert_eq!(
+            ReadArtifactTool::get_permission_name(TOOL_NAME).unwrap(),
+            None
         );
     }
 
@@ -282,7 +274,7 @@ mod tests {
         let args = serde_json::json!({"artifact": digest, "offset": 1, "limit": 1});
         assert_eq!(
             tool.get_permission_resource(TOOL_NAME, &args).unwrap(),
-            (UNCONDITIONAL_PERMISSION_NAME, Some(digest.clone()))
+            (None, Some(digest.clone()))
         );
         let prepared = tool
             .prepare(context(reader.session, reader.run), call(args))

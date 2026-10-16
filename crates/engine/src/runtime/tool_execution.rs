@@ -55,12 +55,13 @@ impl Engine {
         prepared_call: &PreparedToolCall,
     ) -> Result<PermissionDecision, ToolFailure> {
         let prepared = prepared_call.prepared.as_ref().map_err(Clone::clone)?;
+        // A resolved tool without a permission name needs no permission.
         if prepared_call
-            .permission_name
-            .as_deref()
-            .is_some_and(PermissionPipeline::is_unconditional)
+            .interception
+            .as_ref()
+            .is_some_and(|interception| interception.permission_name.is_none())
         {
-            return Ok(PermissionDecision::unconditional());
+            return Ok(PermissionDecision::permission_free());
         }
         let permission_overlay = self
             .inner
@@ -380,7 +381,7 @@ impl Engine {
                                 output: Default::default(),
                                 concurrency: Default::default(),
                                 name: call.name.clone(),
-                                permission_name: permission_name.to_owned(),
+                                permission_name: Some(permission_name.to_owned()),
                                 description: String::new(),
                                 parameters: serde_json::json!(true),
                                 result_truncation: Default::default(),
@@ -416,18 +417,20 @@ impl Engine {
         };
         let grants = self.skill_grants_for_session(session_id, attachment.as_ref());
         let permission_name = tool_spec.permission_name.clone();
-        let delegation_tool = permission_name == "delegate";
+        let delegation_tool = permission_name.as_deref() == Some("delegate");
         let enabled = !delegation_tool || delegate_enabled;
         let direct_skill = call.name == "skill" && self.is_direct_skill_call(call.id);
         if !enabled
             || (!direct_skill
-                && !PermissionPipeline::tool_visible_with_grants(
-                    &policy.agent,
-                    Some(permission_overlay),
-                    grants.as_ref(),
-                    &permission_name,
-                    PermissionScope::of(&origin),
-                ))
+                && !permission_name.as_deref().is_none_or(|permission_name| {
+                    PermissionPipeline::tool_visible_with_grants(
+                        &policy.agent,
+                        Some(permission_overlay),
+                        grants.as_ref(),
+                        permission_name,
+                        PermissionScope::of(&origin),
+                    )
+                }))
         {
             return PreparedToolCall {
                 intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
@@ -437,7 +440,7 @@ impl Engine {
                     message: format!("tool `{}` is not enabled for this session", call.name),
                 }),
                 call,
-                permission_name: Some(permission_name),
+                permission_name,
                 presentation: fallback_presentation,
                 interception: None,
             };
@@ -456,7 +459,7 @@ impl Engine {
                 match apply_permission_resource(
                     provider.as_ref(),
                     &call.name,
-                    &permission_name,
+                    permission_name.as_deref(),
                     prepared,
                 ) {
                     Ok((prepared, resource)) => (Ok(prepared), resource),
@@ -477,7 +480,7 @@ impl Engine {
         PreparedToolCall {
             intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
             call,
-            permission_name: Some(permission_name.clone()),
+            permission_name: permission_name.clone(),
             presentation,
             prepared,
             interception: Some(ToolInterceptionContext {
@@ -632,7 +635,7 @@ impl Engine {
                             apply_permission_resource(
                                 interception.provider.as_ref(),
                                 &modified_call.name,
-                                &interception.permission_name,
+                                interception.permission_name.as_deref(),
                                 prepared,
                             )
                         })
@@ -887,20 +890,25 @@ impl Engine {
         let depth = session_depth(&session_projection.meta.origin);
         let delegate_enabled = !policy.delegate_targets(depth).is_empty();
         self.compose_session_tools(session, |source, tool| {
-            let delegation_tool = tool.permission_name == "delegate";
+            let delegation_tool = tool.permission_name.as_deref() == Some("delegate");
             let goal_tool = source.attachment.is_none()
                 && matches!(tool.name.as_str(), "goal_get" | "goal_update");
             (!delegation_tool || delegate_enabled)
                 && (!goal_tool || policy.goal_tools_enabled)
-                && PermissionPipeline::tool_visible_with_overlay(
-                    &policy.agent,
-                    Some(&session_projection.permission_overlay),
-                    &tool.permission_name,
-                    source
-                        .origin
-                        .runtime()
-                        .map(cookie_agent_runtime_api::RuntimeInfo::id),
-                )
+                && tool
+                    .permission_name
+                    .as_deref()
+                    .is_none_or(|permission_name| {
+                        PermissionPipeline::tool_visible_with_overlay(
+                            &policy.agent,
+                            Some(&session_projection.permission_overlay),
+                            permission_name,
+                            source
+                                .origin
+                                .runtime()
+                                .map(cookie_agent_runtime_api::RuntimeInfo::id),
+                        )
+                    })
         })
     }
 
@@ -1031,31 +1039,39 @@ fn fallback_permission_name(tool_name: &str) -> Option<&'static str> {
 pub(crate) fn apply_permission_resource(
     provider: &dyn ToolProvider,
     name: &str,
-    expected_permission_name: &str,
+    expected_permission_name: Option<&str>,
     prepared: PreparedTool,
 ) -> Result<(PreparedTool, Option<String>), ToolError> {
     let (permission_name, resource) = match prepared.declaration() {
         Some(declaration) => (
-            std::borrow::Cow::Owned(declaration.permission_name.clone()),
+            declaration
+                .permission_name
+                .clone()
+                .map(std::borrow::Cow::Owned),
             declaration.permission_resource.clone(),
         ),
         None => {
             let (permission_name, resource) =
                 provider.get_permission_resource(name, prepared.normalized_arguments())?;
-            (std::borrow::Cow::Borrowed(permission_name), resource)
+            (permission_name.map(std::borrow::Cow::Borrowed), resource)
         }
     };
-    let permission_name = permission_name.as_ref();
-    if permission_name != expected_permission_name
-        && !(permission_name == "plugin" && expected_permission_name.starts_with("plugin:"))
-    {
+    let permission_name = permission_name.as_deref();
+    let matches = match (permission_name, expected_permission_name) {
+        (Some(actual), Some(expected)) => {
+            actual == expected || (actual == "plugin" && expected.starts_with("plugin:"))
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    if !matches {
         return Err(ToolError::execution(
             "tool permission metadata changed between discovery and preparation",
         ));
     }
-    if PermissionPipeline::is_unconditional(permission_name) {
-        // No rule is evaluated, so the prepared capability is not checked
-        // against an action.
+    let Some(permission_name) = permission_name else {
+        // A tool that needs no permission evaluates no rule, so the prepared
+        // capability is not checked against an action.
         return match resource {
             Some(resource) => Ok((
                 prepared.with_permission_resource(Some(resource.clone()))?,
@@ -1063,7 +1079,7 @@ pub(crate) fn apply_permission_resource(
             )),
             None => Ok((prepared, None)),
         };
-    }
+    };
     let action = PermissionPipeline::action_for_permission_name(permission_name)
         .map_err(|error| ToolError::execution(error.to_string()))?;
     if prepared

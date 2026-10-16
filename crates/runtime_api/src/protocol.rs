@@ -252,8 +252,10 @@ pub struct ToolDeclaration {
     pub name: String,
     #[serde(default)]
     pub collision: ToolCollision,
-    /// The fixed permission action the tool is checked under.
-    pub permission: PermissionAction,
+    /// The fixed permission action the tool is checked under; absent for a
+    /// tool that needs no permission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<PermissionAction>,
     pub description: String,
     /// JSON Schema of the arguments.
     pub parameters: Value,
@@ -266,18 +268,24 @@ pub struct ToolDeclaration {
 }
 
 impl ToolDeclaration {
-    /// The declaration of `spec`, whose permission name must be a
-    /// permission action.
+    /// The declaration of `spec`, whose permission name, when it has one,
+    /// must be a permission action.
     pub fn from_spec(spec: &ToolSpec) -> Result<Self, String> {
         Ok(Self {
             name: spec.name.clone(),
             collision: spec.collision,
-            permission: permission_action(&spec.permission_name).ok_or_else(|| {
-                format!(
-                    "tool `{}` has permission `{}`, which is not a permission action",
-                    spec.name, spec.permission_name
-                )
-            })?,
+            permission: spec
+                .permission_name
+                .as_deref()
+                .map(|name| {
+                    permission_action(name).ok_or_else(|| {
+                        format!(
+                            "tool `{}` has permission `{name}`, which is not a permission action",
+                            spec.name
+                        )
+                    })
+                })
+                .transpose()?,
             description: spec.description.clone(),
             parameters: spec.parameters.clone(),
             concurrency: spec.concurrency,
@@ -291,7 +299,9 @@ impl ToolDeclaration {
         ToolSpec {
             name: self.name,
             collision: self.collision,
-            permission_name: self.permission.as_str().to_owned(),
+            permission_name: self
+                .permission
+                .map(|permission| permission.as_str().to_owned()),
             description: self.description,
             parameters: self.parameters,
             concurrency: self.concurrency,
@@ -476,8 +486,10 @@ pub struct PreparedCall {
     /// The policy labels the tool set, one per operation resource.
     pub policy_labels: Vec<Option<String>>,
     pub normalized_arguments: Value,
-    /// The permission action the call is checked under.
-    pub permission: PermissionAction,
+    /// The permission action the call is checked under; absent for a tool
+    /// that needs no permission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<PermissionAction>,
     /// The permission resource of the normalized arguments.
     #[serde(default)]
     pub permission_resource: Option<String>,

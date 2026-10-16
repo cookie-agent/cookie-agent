@@ -140,7 +140,7 @@ fn permission_resource_is_the_file_path() {
     assert_eq!(
         tool.get_permission_resource("read", &serde_json::json!({"filePath":"src/lib.rs"}))
             .expect("permission resource"),
-        ("read", Some("src/lib.rs".into()))
+        (Some("read"), Some("src/lib.rs".into()))
     );
     assert!(matches!(
         tool.get_permission_resource("read", &serde_json::json!({})),
@@ -612,7 +612,7 @@ async fn outside_workspace_read_has_one_absolute_labeled_resource() {
         ReadTool::new(&crate::test_workspace(workspace.path()))
             .get_permission_resource("read", prepared.normalized_arguments())
             .expect("resource from prepared args"),
-        ("read", Some(expected_label))
+        (Some("read"), Some(expected_label))
     );
 }
 
@@ -627,7 +627,7 @@ async fn workspace_read_label_is_canonical_workspace_relative() {
         ReadTool::new(&crate::test_workspace(workspace.path()))
             .get_permission_resource("read", prepared.normalized_arguments())
             .expect("resource from prepared args"),
-        ("read", Some("nested/value.txt".into()))
+        (Some("read"), Some("nested/value.txt".into()))
     );
 }
 
@@ -722,7 +722,7 @@ async fn symlink_routes_keep_lexical_read_permissions_and_arguments() {
         assert_eq!(
             tool.get_permission_resource("read", prepared.normalized_arguments())
                 .expect("normalized permission resource"),
-            ("read", Some(requested.to_owned()))
+            (Some("read"), Some(requested.to_owned()))
         );
         crate::assert_workspace_rule_allows(
             &prepared,

@@ -121,8 +121,9 @@ pub type PreparedExecutorCell = Arc<tokio::sync::Mutex<Option<Box<dyn PreparedEx
 /// about one prepared call.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedDeclaration {
-    /// The permission name the call is checked under.
-    pub permission_name: String,
+    /// The permission name the call is checked under; `None` when the tool
+    /// needs no permission.
+    pub permission_name: Option<String>,
     /// The permission resource of the call's normalized arguments.
     pub permission_resource: Option<String>,
     /// How clients show the call.

@@ -472,8 +472,8 @@ belongs to exactly one tree: output written by a root or one of its descendants
 lands in that root's `artifacts/`. A session reads only its own tree's
 artifacts, so a `read_artifact` digest naming content another tree stored does not
 resolve there. `read_artifact` therefore needs no permission rule: it is a
-base-layer tool with the unconditional permission name, always published and
-always allowed.
+base-layer tool that declares no permission, always published and always
+allowed.
 A fork of a root hard-links every artifact its history references — and the
 streams a named-stream manifest lists — into the new tree before the fork is
 published, so it never depends on its source; a link that fails fails the fork. Collection is therefore per tree

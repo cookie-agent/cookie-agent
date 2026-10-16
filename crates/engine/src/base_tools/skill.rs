@@ -97,7 +97,7 @@ impl SkillTool {
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "skill".into(),
-            permission_name: "skill".into(),
+            permission_name: Some("skill".into()),
             description: "Load an available skill by name with optional arguments.".into(),
             parameters: schema::<SkillArgs>(),
         }
@@ -121,9 +121,9 @@ impl ToolProvider for SkillTool {
         Ok(vec![Self::spec()])
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         if tool_name == "skill" {
-            Ok("skill")
+            Ok(Some("skill"))
         } else {
             Err(ToolError::execution("skill provider received another tool"))
         }
@@ -140,10 +140,10 @@ impl ToolProvider for SkillTool {
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         Self::get_permission_name(name)?;
         let args: SkillArgs = serde_json::from_value(arguments.clone()).map_err(tool_error)?;
-        Ok(("skill", Some(args.name)))
+        Ok((Some("skill"), Some(args.name)))
     }
 
     fn get_display_argument(

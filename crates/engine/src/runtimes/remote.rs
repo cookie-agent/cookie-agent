@@ -1097,7 +1097,9 @@ impl RemoteToolProvider {
         )?
         .with_reported_policy_labels(call.policy_labels)?
         .with_declaration(PreparedDeclaration {
-            permission_name: call.permission.as_str().to_owned(),
+            permission_name: call
+                .permission
+                .map(|permission| permission.as_str().to_owned()),
             permission_resource: call.permission_resource,
             presentation: call.presentation,
         }))
@@ -1124,7 +1126,7 @@ impl ToolProvider for RemoteToolProvider {
             .unwrap_or_default())
     }
 
-    fn get_permission_name(_tool_name: &str) -> Result<&'static str, ToolError>
+    fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError>
     where
         Self: Sized,
     {
@@ -1137,7 +1139,7 @@ impl ToolProvider for RemoteToolProvider {
         &self,
         _tool_name: &str,
         _arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         Err(ToolError::execution(
             "a runtime tool's permission resource is reported when it is prepared",
         ))

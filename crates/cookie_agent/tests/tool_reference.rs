@@ -8,7 +8,7 @@
 use std::fmt::Write as _;
 
 use cookie_agent_coding_runtime::{BuiltinTools, bash::bash_tool_description_for};
-use cookie_agent_engine::{base_layer_tool_specs, permissions::UNCONDITIONAL_PERMISSION_NAME};
+use cookie_agent_engine::base_layer_tool_specs;
 use cookie_agent_protocol::SessionId;
 use cookie_agent_runtime_api::{SessionToolContext, ToolProvider, ToolSpec, WorkspaceContext};
 use serde_json::Value;
@@ -71,11 +71,10 @@ fn render(specs: &[ToolSpec]) -> String {
          | Tool | Permission |\n|---|---|\n",
     );
     for spec in specs {
-        let permission = if spec.permission_name == UNCONDITIONAL_PERMISSION_NAME {
-            "*none*".to_owned()
-        } else {
-            format!("`{}`", spec.permission_name)
-        };
+        let permission = spec
+            .permission_name
+            .as_ref()
+            .map_or_else(|| "*none*".to_owned(), |name| format!("`{name}`"));
         writeln!(page, "| [`{0}`](#{0}) | {permission} |", spec.name).unwrap();
     }
     for spec in specs {

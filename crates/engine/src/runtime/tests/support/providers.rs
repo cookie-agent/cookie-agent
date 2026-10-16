@@ -55,7 +55,7 @@ impl ToolProvider for TestStreamingBashProvider {
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "bash".into(),
-            permission_name: "bash".into(),
+            permission_name: Some("bash".into()),
             description: "Stream until cancelled".into(),
             parameters: serde_json::json!({
                 "type":"object",
@@ -68,9 +68,9 @@ impl ToolProvider for TestStreamingBashProvider {
         }])
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "bash" => Ok("bash"),
+            "bash" => Ok(Some("bash")),
             _ => Err(ToolError::execution(
                 "streaming provider received another tool",
             )),
@@ -81,7 +81,7 @@ impl ToolProvider for TestStreamingBashProvider {
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let command = arguments
             .get("command")
             .and_then(serde_json::Value::as_str)
@@ -288,14 +288,14 @@ impl ToolProvider for TestOptOutProvider {
         }
         Ok(tools)
     }
-    fn get_permission_name(name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(name: &str) -> Result<Option<&'static str>, ToolError> {
         TestParallelToolProvider::get_permission_name(name)
     }
     fn get_permission_resource(
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         self.0.get_permission_resource(name, arguments)
     }
     fn get_display_argument(
@@ -356,7 +356,7 @@ impl ToolProvider for TestParallelToolProvider {
             concurrency: ToolConcurrency::Parallel,
             result_truncation: Default::default(),
             name: name.into(),
-            permission_name: permission_name.into(),
+            permission_name: Some(permission_name.into()),
             description: format!("Parallel test tool {name}"),
             parameters: serde_json::json!({
                 "type":"object",
@@ -374,15 +374,15 @@ impl ToolProvider for TestParallelToolProvider {
         .collect())
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
-        parallel_tool_permission(tool_name).map(|(permission, _)| permission)
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
+        parallel_tool_permission(tool_name).map(|(permission, _)| Some(permission))
     }
 
     fn get_permission_resource(
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let permission = Self::get_permission_name(name)?;
         let resource = arguments
             .get("name")
@@ -607,7 +607,7 @@ impl ToolProvider for TestDelegateProvider {
                 concurrency: crate::ToolConcurrency::Parallel,
                 result_truncation: Default::default(),
                 name: "delegate_subagent".to_owned(),
-                permission_name: "delegate".to_owned(),
+                permission_name: Some("delegate".to_owned()),
                 description: "Delegate scripted work".to_owned(),
                 parameters: serde_json::json!({
                     "type":"object",
@@ -627,9 +627,9 @@ impl ToolProvider for TestDelegateProvider {
             .collect())
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "delegate_subagent" => Ok("delegate"),
+            "delegate_subagent" => Ok(Some("delegate")),
             _ => Err(ToolError::execution(
                 "delegate provider received another tool",
             )),
@@ -640,7 +640,7 @@ impl ToolProvider for TestDelegateProvider {
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let permission_name = Self::get_permission_name(name)?;
         let args: TestDelegateArgs = serde_json::from_value(arguments.clone())
             .map_err(|error| ToolError::execution(error.to_string()))?;
@@ -813,7 +813,7 @@ impl ToolProvider for TestWriteProvider {
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "write".to_owned(),
-            permission_name: "write".to_owned(),
+            permission_name: Some("write".to_owned()),
             description: "Write a test value".to_owned(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -823,9 +823,9 @@ impl ToolProvider for TestWriteProvider {
         }])
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "write" => Ok("write"),
+            "write" => Ok(Some("write")),
             _ => Err(ToolError::execution("write provider received another tool")),
         }
     }
@@ -834,7 +834,7 @@ impl ToolProvider for TestWriteProvider {
         &self,
         name: &str,
         _arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         Ok((
             Self::get_permission_name(name)?,
             Some("approval-test.txt".into()),
@@ -930,21 +930,20 @@ impl ToolProvider for TestUnconditionalProvider {
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         let mut tools = self.0.tools_for_session(ctx)?;
         for tool in &mut tools {
-            tool.permission_name = crate::permissions::UNCONDITIONAL_PERMISSION_NAME.into();
+            tool.permission_name = None;
         }
         Ok(tools)
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
-        TestWriteProvider::get_permission_name(tool_name)
-            .map(|_| crate::permissions::UNCONDITIONAL_PERMISSION_NAME)
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
+        TestWriteProvider::get_permission_name(tool_name).map(|_| None)
     }
 
     fn get_permission_resource(
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let (_, resource) = self.0.get_permission_resource(name, arguments)?;
         Ok((Self::get_permission_name(name)?, resource))
     }
@@ -987,15 +986,15 @@ impl ToolProvider for TestAliasProvider {
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "bad_name".to_owned(),
-            permission_name: "write".to_owned(),
+            permission_name: Some("write".to_owned()),
             description: "Aliased tool that must never execute".to_owned(),
             parameters: serde_json::json!({"type":"object","additionalProperties":true}),
         }])
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "bad_name" => Ok("write"),
+            "bad_name" => Ok(Some("write")),
             _ => Err(ToolError::execution("alias provider received another tool")),
         }
     }
@@ -1004,7 +1003,7 @@ impl ToolProvider for TestAliasProvider {
         &self,
         name: &str,
         _arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         Ok((Self::get_permission_name(name)?, Some("alias-test".into())))
     }
 
@@ -1104,7 +1103,7 @@ impl ToolProvider for TestMediaReadProvider {
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "read".into(),
-            permission_name: "read".into(),
+            permission_name: Some("read".into()),
             description: "Read a test media file".into(),
             parameters: serde_json::json!({
                 "type":"object",
@@ -1115,9 +1114,9 @@ impl ToolProvider for TestMediaReadProvider {
         }])
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "read" => Ok("read"),
+            "read" => Ok(Some("read")),
             _ => Err(ToolError::execution("read provider received another tool")),
         }
     }
@@ -1126,7 +1125,7 @@ impl ToolProvider for TestMediaReadProvider {
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let path = arguments
             .get("filePath")
             .and_then(serde_json::Value::as_str)
@@ -1275,7 +1274,7 @@ impl ToolProvider for TestPromptProvider {
         Ok(Vec::new())
     }
 
-    fn get_permission_name(_tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         Err(ToolError::execution("prompt-only provider has no tools"))
     }
 
@@ -1283,7 +1282,7 @@ impl ToolProvider for TestPromptProvider {
         &self,
         _tool_name: &str,
         _arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         Err(ToolError::execution("prompt-only provider has no tools"))
     }
 
@@ -1325,7 +1324,7 @@ impl ToolProvider for OrderedToolDefinitionProvider {
                 concurrency: Default::default(),
                 result_truncation: Default::default(),
                 name: (*name).into(),
-                permission_name: (*permission_name).into(),
+                permission_name: Some((*permission_name).into()),
                 description: format!("Ordered {name} definition"),
                 parameters: serde_json::json!({
                     "type":"object",
@@ -1336,7 +1335,7 @@ impl ToolProvider for OrderedToolDefinitionProvider {
             .collect())
     }
 
-    fn get_permission_name(_tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         Err(ToolError::execution(
             "ordered definition provider is listing-only",
         ))
@@ -1346,7 +1345,7 @@ impl ToolProvider for OrderedToolDefinitionProvider {
         &self,
         _tool_name: &str,
         _arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         Err(ToolError::execution(
             "ordered definition provider is listing-only",
         ))
@@ -1395,7 +1394,7 @@ impl ToolProvider for TestToolDefinitionProvider {
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: name.into(),
-            permission_name: permission_name.into(),
+            permission_name: Some(permission_name.into()),
             description: format!("Test {name} tool definition"),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1406,13 +1405,13 @@ impl ToolProvider for TestToolDefinitionProvider {
         .collect())
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "read" => Ok("read"),
-            "write" | "edit" => Ok("write"),
-            "bash" => Ok("bash"),
-            "delegate" => Ok("delegate"),
-            "fixture_mcp" => Ok("mcp"),
+            "read" => Ok(Some("read")),
+            "write" | "edit" => Ok(Some("write")),
+            "bash" => Ok(Some("bash")),
+            "delegate" => Ok(Some("delegate")),
+            "fixture_mcp" => Ok(Some("mcp")),
             _ => Err(ToolError::execution("unknown test tool definition")),
         }
     }
@@ -1421,7 +1420,7 @@ impl ToolProvider for TestToolDefinitionProvider {
         &self,
         name: &str,
         _arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         Ok((Self::get_permission_name(name)?, Some("test".into())))
     }
 
@@ -1459,7 +1458,7 @@ impl ToolProvider for NamedOutputProvider {
         Ok(vec![ToolSpec {
             collision: Default::default(),
             name: "named_output".into(),
-            permission_name: "read".into(),
+            permission_name: Some("read".into()),
             description: "Produce named output".into(),
             parameters: serde_json::json!({"type":"object","additionalProperties":false}),
             concurrency: ToolConcurrency::Parallel,
@@ -1469,15 +1468,15 @@ impl ToolProvider for NamedOutputProvider {
             },
         }])
     }
-    fn get_permission_name(_: &str) -> Result<&'static str, ToolError> {
-        Ok("read")
+    fn get_permission_name(_: &str) -> Result<Option<&'static str>, ToolError> {
+        Ok(Some("read"))
     }
     fn get_permission_resource(
         &self,
         _: &str,
         _: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
-        Ok(("read", Some("named_output".into())))
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
+        Ok((Some("read"), Some("named_output".into())))
     }
     fn get_display_argument(&self, _: &str, _: &serde_json::Value) -> Result<String, ToolError> {
         Ok("named output".into())
@@ -1592,7 +1591,7 @@ impl ToolProvider for DivergentReadProvider {
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "read".into(),
-            permission_name: "read".into(),
+            permission_name: Some("read".into()),
             description: "Divergent prepared-label test".into(),
             parameters: serde_json::json!({
                 "type":"object",
@@ -1603,9 +1602,9 @@ impl ToolProvider for DivergentReadProvider {
         }])
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "read" => Ok("read"),
+            "read" => Ok(Some("read")),
             _ => Err(ToolError::execution("read provider received another tool")),
         }
     }
@@ -1614,7 +1613,7 @@ impl ToolProvider for DivergentReadProvider {
         &self,
         name: &str,
         _arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let permission_name = Self::get_permission_name(name)?;
         Ok((permission_name, self.raw_resource.clone()))
     }

@@ -67,7 +67,7 @@ impl ToolProvider for BackgroundJobProvider {
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "bash".into(),
-            permission_name: "bash".into(),
+            permission_name: Some("bash".into()),
             description: "Start a background job".into(),
             parameters: serde_json::json!({
                 "type":"object",
@@ -78,9 +78,9 @@ impl ToolProvider for BackgroundJobProvider {
         }])
     }
 
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+    fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         match tool_name {
-            "bash" => Ok("bash"),
+            "bash" => Ok(Some("bash")),
             _ => Err(ToolError::execution("job provider received another tool")),
         }
     }
@@ -89,7 +89,7 @@ impl ToolProvider for BackgroundJobProvider {
         &self,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let command = arguments
             .get("command")
             .and_then(serde_json::Value::as_str)

@@ -488,7 +488,7 @@ The tools cookie agent ships use `read`, `write`, `bash`, `delegate`,
 `message`, `mcp`, `plugin`, `skill`, and `webfetch`; a runtime's tools may
 declare actions of their own, such as `browse`, which rules name the same way.
 An action is a lowercase ASCII letter followed by up to 31 lowercase letters,
-digits, or underscores; `unconditional` is reserved and rejected. A key that
+digits, or underscores. A key that
 names no tool's action is accepted and simply governs nothing, and `/permissions`
 lists it as its own row. Each action is either one bare effect or a
 resource-pattern map:

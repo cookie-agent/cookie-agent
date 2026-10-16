@@ -104,11 +104,17 @@ mod tests {
 
     #[test]
     fn static_permission_names_cover_every_base_tool() {
-        assert_eq!(SkillTool::get_permission_name("skill").unwrap(), "skill");
-        assert_eq!(GoalTools::get_permission_name("goal_get").unwrap(), "read");
+        assert_eq!(
+            SkillTool::get_permission_name("skill").unwrap(),
+            Some("skill")
+        );
+        assert_eq!(
+            GoalTools::get_permission_name("goal_get").unwrap(),
+            Some("read")
+        );
         assert_eq!(
             GoalTools::get_permission_name("goal_update").unwrap(),
-            "write"
+            Some("write")
         );
         for name in [
             "delegate_subagent",
@@ -117,7 +123,7 @@ mod tests {
         ] {
             assert_eq!(
                 DelegateToolProvider::get_permission_name(name).unwrap(),
-                "delegate"
+                Some("delegate")
             );
         }
     }

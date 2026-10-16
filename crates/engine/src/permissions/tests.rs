@@ -58,7 +58,7 @@ fn permission_names_map_to_actions_and_invalid_names_fail() {
             .as_str(),
         "browse"
     );
-    for invalid in ["Message", "send-message", "plugin:", "unconditional"] {
+    for invalid in ["Message", "send-message", "plugin:"] {
         assert!(
             PermissionPipeline::action_for_permission_name(invalid).is_err(),
             "{invalid}"
@@ -207,29 +207,22 @@ fn later_run_agent_governs_permission_mutation_classification() {
 }
 
 #[test]
-fn unconditional_tools_are_visible_without_rules_and_cannot_be_ruled() {
-    let deny_all = policy(vec![rule(
-        "deny",
-        PermissionAction::READ,
-        "*",
-        PermissionEffect::Deny,
-    )]);
-    for agent in [policy(Vec::new()), deny_all] {
-        assert!(PermissionPipeline::tool_visible_with_overlay(
-            &agent,
-            None,
-            super::UNCONDITIONAL_PERMISSION_NAME,
-            None
-        ));
-        assert!(!PermissionPipeline::tool_visible_with_overlay(
-            &agent, None, "read", None
-        ));
-    }
-    assert!(
-        PermissionPipeline::action_for_permission_name(super::UNCONDITIONAL_PERMISSION_NAME)
-            .is_err()
+fn the_name_unconditional_is_an_ordinary_action() {
+    // Permission-free tools declare no permission name; `unconditional` is no
+    // longer special, so a rule can name it like any other action.
+    assert_eq!(
+        PermissionPipeline::action_for_permission_name("unconditional")
+            .unwrap()
+            .as_str(),
+        "unconditional"
     );
-    let decision = super::PermissionDecision::unconditional();
+    assert!(!PermissionPipeline::tool_visible_with_overlay(
+        &policy(Vec::new()),
+        None,
+        "unconditional",
+        None
+    ));
+    let decision = super::PermissionDecision::permission_free();
     assert_eq!(decision.effect, PermissionEffect::Allow);
     assert!(decision.evaluations.is_empty());
 }
