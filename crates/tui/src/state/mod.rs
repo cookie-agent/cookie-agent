@@ -77,6 +77,11 @@ pub struct ToolCallState {
     pub status: ToolStatus,
     pub detail: String,
     pub has_output_chunks: bool,
+    /// The call's tool supports the background, so a running call can be
+    /// moved there.
+    pub backgroundable: bool,
+    /// The call moved to the background; its result arrives later.
+    pub backgrounded: bool,
     /// Changes with every mutation of this call, unique across sessions and
     /// rebuilds (see `next_tool_revision`), so its rendered row can be
     /// cached by it.
@@ -702,6 +707,8 @@ pub struct SessionState {
     /// The latest attempt until its first delta, commit, or abandonment.
     pub(crate) pending_attempt: Option<AttemptId>,
     pub tools: HashMap<ToolCallId, ToolCallState>,
+    /// The session's background calls, as the daemon last reported them.
+    pub background_calls: Vec<cookie_agent_protocol::BackgroundCall>,
     /// Buffered tool rows awaiting their committed placeholder, keyed by
     /// the owning turn's content index so starts/completions cannot reorder.
     pub(crate) pending_tool_rows: Vec<PendingToolRow>,
@@ -1088,9 +1095,16 @@ impl StateStore {
                 }
                 DeliveryOutcome::Applied
             }
-            ClientDelivery::RuntimeChanged(_)
-            | ClientDelivery::SessionsChanged(_)
-            | ClientDelivery::BackgroundChanged(_) => DeliveryOutcome::Applied,
+            ClientDelivery::BackgroundChanged(changed) => {
+                self.sessions
+                    .entry(changed.session_id)
+                    .or_default()
+                    .background_calls = changed.calls;
+                DeliveryOutcome::Applied
+            }
+            ClientDelivery::RuntimeChanged(_) | ClientDelivery::SessionsChanged(_) => {
+                DeliveryOutcome::Applied
+            }
         }
     }
 

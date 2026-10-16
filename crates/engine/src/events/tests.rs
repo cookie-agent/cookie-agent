@@ -2849,6 +2849,7 @@ fn skipped_tool_termination_taints_terminal_state_but_no_skip_rejects_elision() 
         5,
         EventPayload::ToolCallStarted {
             start: ToolCallStart {
+                background: false,
                 output: Default::default(),
                 tool_call_id,
                 owner: owner.clone(),

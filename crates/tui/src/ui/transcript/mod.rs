@@ -785,6 +785,8 @@ pub(super) struct BlockHit {
     pub(super) id: BlockId,
     pub(super) hover_rect: Option<Rect>,
     pub(super) toggle_rect: Option<Rect>,
+    /// The background button of a running call's title row, when shown.
+    pub(super) action_rect: Option<Rect>,
 }
 
 // Layout cache validity depends on each independent render input; grouping them
@@ -2012,7 +2014,35 @@ pub(super) fn block_hit_at<'a>(
         viewport.width.saturating_sub(gutter),
         viewport.height,
     );
+    let action_rect = match region.id {
+        BlockId::Tool(_) if region.start_line >= scroll_offset && region.start_line < end => {
+            line_at(region.start_line).and_then(|line| {
+                let text = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>();
+                let at = text
+                    .trim_end()
+                    .strip_suffix(tool_rows::BACKGROUND_BUTTON)?
+                    .len();
+                let column = UnicodeWidthStr::width(&text[..at]);
+                Some(Rect::new(
+                    viewport
+                        .x
+                        .saturating_add(u16::try_from(column).unwrap_or(u16::MAX)),
+                    viewport.y
+                        + u16::try_from(region.start_line - scroll_offset).unwrap_or(u16::MAX),
+                    u16::try_from(UnicodeWidthStr::width(tool_rows::BACKGROUND_BUTTON))
+                        .unwrap_or(u16::MAX),
+                    1,
+                ))
+            })
+        }
+        _ => None,
+    };
     (start < end).then(|| BlockHit {
+        action_rect,
         rect: Rect::new(
             viewport.x,
             viewport.y + u16::try_from(start - scroll_offset).unwrap_or(u16::MAX),

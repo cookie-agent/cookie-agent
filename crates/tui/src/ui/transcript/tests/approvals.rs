@@ -30,6 +30,8 @@ fn link_tool(app: &mut App, approval: &ApprovalState, title: &str, arguments: &s
         .insert(
             call_id,
             ToolCallState {
+                backgroundable: false,
+                backgrounded: false,
                 id: call_id,
                 owner: owner(1, "call-1"),
                 presentation: presentation(title, primary),

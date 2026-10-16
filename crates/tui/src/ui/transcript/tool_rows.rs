@@ -215,6 +215,12 @@ pub(super) fn tool_header_title(tool: &crate::state::ToolCallState, budget: usiz
     )
 }
 
+/// The button at the right end of a running background-capable call's title
+/// row; clicking it moves the call to the background.
+pub(in crate::ui) const BACKGROUND_BUTTON: &str = "[background]";
+/// Title columns a row must keep beside the button for the button to show.
+const MIN_TITLE_BESIDE_BUTTON: usize = 24;
+
 /// A compact or expanded tool row inside its owning assistant item. Running
 /// pulses a suffix; terminal failures retain their exact concise markers.
 /// `pending_name` identifies a committed placeholder whose execution has not
@@ -318,7 +324,29 @@ pub(super) fn tool_child_layout(
     } else {
         context.width
     };
-    let (header, title) = tool_header_row(tool, chevron, &suffix, header_width);
+    // A backgrounded call says so; a running call of a background-capable
+    // tool offers the move at the right end of its title row.
+    let suffix = if tool.backgrounded {
+        format!("{suffix} · background")
+    } else {
+        suffix
+    };
+    let button_width = UnicodeWidthStr::width(BACKGROUND_BUTTON);
+    let content_width = tool_header_content_width(header_width);
+    let offer_background = tool.status == ToolStatus::Running
+        && tool.backgroundable
+        && content_width >= button_width + 1 + MIN_TITLE_BESIDE_BUTTON;
+    let row_width = if offer_background {
+        header_width.saturating_sub(u16::try_from(button_width + 1).unwrap_or(u16::MAX))
+    } else {
+        header_width
+    };
+    let (mut header, title) = tool_header_row(tool, chevron, &suffix, row_width);
+    if offer_background {
+        let used = UnicodeWidthStr::width(header.as_str());
+        header.push_str(&" ".repeat(content_width.saturating_sub(used + button_width)));
+        header.push_str(BACKGROUND_BUTTON);
+    }
     let mut body = Vec::new();
     if is_expanded {
         body.extend(expanded_title_lines(

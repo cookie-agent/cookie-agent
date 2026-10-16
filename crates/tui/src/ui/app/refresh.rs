@@ -413,6 +413,13 @@ impl App {
                 attempt,
                 outcome,
             } => self.finish_subscription(session_id, attempt, outcome),
+            RpcUpdate::BackgroundCalls { session_id, calls } => {
+                self.store
+                    .sessions
+                    .entry(session_id)
+                    .or_default()
+                    .background_calls = calls;
+            }
             RpcUpdate::SteerFailed {
                 session_id,
                 input,

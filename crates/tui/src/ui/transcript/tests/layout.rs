@@ -1039,6 +1039,8 @@ fn cancelled_and_interrupted_tools_render_distinct_concise_markers() {
         state.tools.insert(
             call_id,
             ToolCallState {
+                backgroundable: false,
+                backgrounded: false,
                 id: call_id,
                 owner: owner(1, "call-1"),
                 presentation: presentation("bash", Some("make")),

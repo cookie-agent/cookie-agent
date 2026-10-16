@@ -1264,3 +1264,54 @@ fn collapsed_tool_rows_are_muted_and_only_a_failure_suffix_keeps_its_colour() {
         }
     }
 }
+
+#[test]
+fn running_background_capable_calls_offer_a_button_on_their_title_row() {
+    let mut state = read_tool_state("src/lib.rs", ToolStatus::Running, "");
+    let call_id = read_tool_id(&state);
+    let button = |state: &SessionState, width: u16| {
+        let layout = transcript_layout(state, None, width);
+        let region = *layout
+            .regions
+            .iter()
+            .find(|region| region.id == BlockId::Tool(call_id))
+            .expect("tool region");
+        let hit = block_hit(
+            region,
+            &layout.lines,
+            ratatui::layout::Rect::new(0, 0, width, 40),
+            0,
+        )
+        .expect("visible tool");
+        (snapshot_lines(&layout.lines), hit.action_rect)
+    };
+    // A tool that does not support the background offers nothing.
+    let (text, rect) = button(&state, 80);
+    assert!(!text.contains(BACKGROUND_BUTTON), "{text}");
+    assert_eq!(rect, None);
+
+    state.tools.get_mut(&call_id).unwrap().backgroundable = true;
+    let (text, rect) = button(&state, 80);
+    let row = text
+        .lines()
+        .find(|line| line.contains(BACKGROUND_BUTTON))
+        .expect("button row");
+    assert!(row.contains("read"), "{row}");
+    assert!(row.ends_with(BACKGROUND_BUTTON), "{row}");
+    let rect = rect.expect("button target");
+    assert_eq!(usize::from(rect.width), BACKGROUND_BUTTON.len());
+    assert_eq!(
+        usize::from(rect.x),
+        unicode_width::UnicodeWidthStr::width(row) - BACKGROUND_BUTTON.len()
+    );
+    // Too narrow a row keeps the title instead.
+    assert_eq!(button(&state, 30).1, None);
+
+    // Once moved, the finished call says so and offers nothing.
+    let tool = state.tools.get_mut(&call_id).unwrap();
+    tool.status = ToolStatus::Completed;
+    tool.backgrounded = true;
+    let (text, rect) = button(&state, 80);
+    assert!(text.contains("· background"), "{text}");
+    assert_eq!(rect, None);
+}

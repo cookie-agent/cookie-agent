@@ -72,11 +72,13 @@ impl App {
             tree_rows,
             self.queue_strip_height(),
             self.goal_bar_visible(),
+            self.background_bar_visible(),
             input_text_rows,
         );
         self.render_tree(frame, layout.agent, &tree_entries);
         self.render_conversation(frame, layout.conversation);
         self.render_queue_strip(frame, layout.queue);
+        self.render_background_bar(frame, layout.background);
         self.render_goal_bar(frame, layout.goal);
         let title_spans = self.message_title_spans();
         let composer_focused = self.composer_focused();
@@ -186,6 +188,7 @@ impl App {
         }
         match self.modal {
             Modal::GoalDetail => self.render_goal_detail(frame),
+            Modal::Background => self.render_background_panel(frame),
             Modal::Sessions => {
                 self.render_session_search(frame, centered(frame.area(), 72, 60));
             }

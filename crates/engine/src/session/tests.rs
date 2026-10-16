@@ -3624,6 +3624,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                         Some(run_id),
                         EventPayload::ToolCallStarted {
                             start: cookie_agent_protocol::ToolCallStart {
+                                background: false,
                                 output: Default::default(),
                                 tool_call_id,
                                 owner: owner.clone(),
@@ -4122,6 +4123,7 @@ fn append_realistic_run(
                 Some(run_id),
                 EventPayload::ToolCallStarted {
                     start: cookie_agent_protocol::ToolCallStart {
+                        background: false,
                         output: Default::default(),
                         tool_call_id,
                         owner: owner.clone(),

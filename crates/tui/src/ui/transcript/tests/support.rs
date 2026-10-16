@@ -827,6 +827,7 @@ pub(crate) fn tool_started_at(
         run,
         EventPayload::ToolCallStarted {
             start: ToolCallStart {
+                background: false,
                 output: Default::default(),
                 tool_call_id: call_id,
                 owner,
@@ -2395,6 +2396,8 @@ pub(crate) fn read_tool_state(path: &str, status: ToolStatus, detail: &str) -> S
     state.tools.insert(
         call_id,
         ToolCallState {
+            backgroundable: false,
+            backgrounded: false,
             id: call_id,
             owner: owner(1, "call-1"),
             presentation: presentation("read", None),

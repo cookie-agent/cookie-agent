@@ -1,6 +1,6 @@
 # Background Tool Calls
 
-Status: **approved; phase 1 in progress** (decisions of 2026-10-16). This document is the
+Status: **phase 1 implemented; phases 2 and 3 pending** (decisions of 2026-10-16). This document is the
 governing specification for running supported tool calls in the background,
 whether the model asks for it or the user moves a running call there.
 Section [Decisions](#11-decisions) records what review settled.

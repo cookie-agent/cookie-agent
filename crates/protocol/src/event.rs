@@ -808,6 +808,10 @@ pub struct ToolCallStart {
     pub owner: AssistantToolCallRef,
     pub presentation: ToolCallPresentation,
     pub operation_fingerprint: OperationFingerprint,
+    /// Whether the call's tool supports the background, so a client may
+    /// offer to move the call there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

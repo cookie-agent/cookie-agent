@@ -18,6 +18,7 @@ fn tool_failures_with_output_stay_inline_on_replay() {
             1,
             EventPayload::ToolCallStarted {
                 start: cookie_agent_protocol::ToolCallStart {
+                    background: false,
                     tool_call_id: call,
                     owner: owner.clone(),
                     output: Default::default(),
@@ -2680,6 +2681,8 @@ fn tool_termination_clears_streamed_output_and_sets_detail() {
     state.tools.insert(
         call_id,
         ToolCallState {
+            backgroundable: false,
+            backgrounded: false,
             id: call_id,
             owner: owner.clone(),
             presentation: cookie_agent_protocol::ToolCallPresentation {
@@ -2793,6 +2796,7 @@ fn tool_display_is_bounded_and_final_replacement_matches_replay() {
     };
     let start = EventPayload::ToolCallStarted {
         start: cookie_agent_protocol::ToolCallStart {
+            background: false,
             tool_call_id: call,
             output: Default::default(),
             owner: owner.clone(),
@@ -2941,6 +2945,7 @@ fn replay_with_tool_chunks_ends_at_committed_result_only() {
             1,
             EventPayload::ToolCallStarted {
                 start: cookie_agent_protocol::ToolCallStart {
+                    background: false,
                     output: Default::default(),
                     tool_call_id: call_id,
                     owner: owner.clone(),
@@ -3297,6 +3302,7 @@ fn delegate_tool_starts_update_agent_activity() {
         let model_call_id =
             cookie_agent_protocol::ModelCallId::new(model_call_id).expect("model call ID");
         cookie_agent_protocol::ToolCallStart {
+            background: false,
             output: Default::default(),
             tool_call_id: ToolCallId::new_v7(),
             owner: cookie_agent_protocol::AssistantToolCallRef {

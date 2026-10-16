@@ -1223,6 +1223,7 @@ impl Engine {
                             },
                             presentation: prepared_call.presentation.clone(),
                             operation_fingerprint,
+                            background: prepared_call.background.is_some(),
                         },
                     },
                 )

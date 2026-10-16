@@ -2,6 +2,7 @@
 
 mod agents;
 mod approvals;
+mod background;
 mod composer;
 mod draw;
 mod emoji_backend;
@@ -142,6 +143,8 @@ pub(super) enum Modal {
     Permissions,
     Usage,
     GoalDetail,
+    /// The selected session's background calls.
+    Background,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -503,6 +506,11 @@ pub(super) struct UiHitMap {
     pub(super) confirm_buttons: Vec<(Rect, ConfirmButton)>,
     pub(super) goal_actions: Vec<(Rect, GoalBarAction)>,
     pub(super) goal_close: Option<Rect>,
+    /// The background bar; a click opens the panel.
+    pub(super) background_bar: Option<Rect>,
+    /// The background panel's rows and their stop buttons, by list index.
+    pub(super) background_rows: Vec<(Rect, usize)>,
+    pub(super) background_stops: Vec<(Rect, usize)>,
 }
 
 impl UiHitMap {
@@ -534,6 +542,9 @@ impl UiHitMap {
         self.confirm_buttons.clear();
         self.goal_actions.clear();
         self.goal_close = None;
+        self.background_bar = None;
+        self.background_rows.clear();
+        self.background_stops.clear();
     }
 }
 
@@ -688,6 +699,7 @@ pub struct App {
     pub(super) transient_notices: Vec<String>,
     pub(super) goal_notices: HashMap<SessionId, Vec<String>>,
     goal_detail: goal::GoalDetailState,
+    background_panel: background::BackgroundPanelState,
     pub(super) goal_focus: Option<GoalBarAction>,
     pub(super) picker_state: ListState,
     pub(super) session_search: SearchPickerState,
@@ -787,6 +799,12 @@ pub(in crate::ui) enum RpcUpdate {
     /// Subscribe a session afresh once its recovery gave up.
     RetrySubscription {
         session_id: SessionId,
+    },
+    /// A session's background calls, fetched when it was subscribed; later
+    /// changes arrive as `background.changed`.
+    BackgroundCalls {
+        session_id: SessionId,
+        calls: Vec<cookie_agent_protocol::BackgroundCall>,
     },
     Status(String),
     Notice(String),
@@ -1219,6 +1237,7 @@ impl App {
             transient_notices: Vec::new(),
             goal_notices: HashMap::new(),
             goal_detail: goal::GoalDetailState::default(),
+            background_panel: background::BackgroundPanelState::default(),
             goal_focus: None,
             picker_state: ListState::default().with_selected(Some(0)),
             session_search: SearchPickerState::default(),

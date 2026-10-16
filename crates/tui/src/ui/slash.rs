@@ -37,6 +37,7 @@ pub(crate) enum SlashCommand {
     Connect,
     Mcp,
     Runtime,
+    Background,
     Permissions,
     Usage,
     Sessions,
@@ -149,6 +150,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "attach and detach the session's runtimes",
         action: PaletteAction::Run(SlashCommand::Runtime),
         writes_session: true,
+    },
+    CommandSpec {
+        name: "background",
+        aliases: &["bg"],
+        description: "list and stop the session's background calls",
+        action: PaletteAction::Run(SlashCommand::Background),
+        writes_session: false,
     },
     CommandSpec {
         name: "permissions",

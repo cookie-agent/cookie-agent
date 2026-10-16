@@ -235,6 +235,7 @@ mod tests {
             let id = ToolCallId::new_v7();
             self.push(Event::ToolCallStarted {
                 start: ToolCallStart {
+                    background: false,
                     tool_call_id: id,
                     output: Default::default(),
                     owner: owner(),

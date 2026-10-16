@@ -307,6 +307,7 @@ async fn scrolled_message_title_hits_follow_visible_cells_or_disappear() {
             app.tree_entries().len(),
             0,
             false,
+            false,
             input_text_rows,
         )
         .input

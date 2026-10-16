@@ -348,6 +348,11 @@ async fn a_call_started_in_the_background_reports_its_foreground_result_later() 
     wait_for_run_inactive(&run.fixture.engine, run.run_id).await;
     let projection = run.fixture.engine.inner.store.get(run.session_id).unwrap();
     let call = call_id(&projection);
+    // Clients learn from the start event that the call can be backgrounded.
+    assert!(projection.log.events().iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolCallStarted { start } if start.tool_call_id == call && start.background
+    )));
     let job = crate::runtime::background_tasks::job_id(call);
     let immediate = call_result(&projection).expect("immediate result");
     assert!(

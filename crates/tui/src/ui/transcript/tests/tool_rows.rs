@@ -108,6 +108,8 @@ fn expandable_rows_render_emoji_before_collapsed_and_expanded_chevrons() {
     state.tools.insert(
         call_id,
         ToolCallState {
+            backgroundable: false,
+            backgrounded: false,
             id: call_id,
             owner: owner(1, "call-1"),
             presentation: presentation("bash", Some("true")),
@@ -237,6 +239,8 @@ fn tool_children_render_compact_titles_with_status_semantics() {
     state.tools.insert(
         call_id,
         ToolCallState {
+            backgroundable: false,
+            backgrounded: false,
             id: call_id,
             owner: owner(1, "call-1"),
             presentation: presentation("bash", Some("touch README.md")),
@@ -307,6 +311,8 @@ fn wrapped_tool_arguments_keep_the_assistant_gutter() {
     state.tools.insert(
         call_id,
         ToolCallState {
+            backgroundable: false,
+            backgrounded: false,
             id: call_id,
             owner: owner(1, "call-1"),
             presentation: presentation("bash", None),

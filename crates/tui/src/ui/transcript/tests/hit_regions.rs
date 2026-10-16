@@ -375,6 +375,8 @@ async fn running_tool_display_is_the_only_implicit_output_click_region() {
     state.tools.insert(
         call_id,
         ToolCallState {
+            backgroundable: false,
+            backgrounded: false,
             id: call_id,
             owner: owner(1, "call-1"),
             presentation: presentation("bash", None),
@@ -484,6 +486,8 @@ fn title_hover_starts_on_the_margin_so_the_highlight_covers_the_padding() {
     state.tools.insert(
         call_id,
         ToolCallState {
+            backgroundable: false,
+            backgrounded: false,
             id: call_id,
             owner: owner(1, "call-1"),
             presentation: presentation("bash", Some("ls")),

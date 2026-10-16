@@ -372,7 +372,9 @@ a record. The TUI shows the latest record as a collapsible tools block under
 the system prompt.
 
 `tool_call_started` records the single/named output declaration, including
-arbitrary named streams.
+arbitrary named streams, and `background: true` when the call's tool supports
+the background, so a client may offer to move the running call there
+(`run.tool_background`); the field is absent otherwise and in older logs.
 `tool_call_progress` is live-only. It contains a control-free status `message`
 and optional UI-only `display`. Display deltas append; terminal `result.display`
 replaces them. Historical `output_chunk` fields still decode, but current

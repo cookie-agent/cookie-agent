@@ -924,7 +924,8 @@ impl App {
             | Modal::Runtimes
             | Modal::Permissions
             | Modal::Usage
-            | Modal::GoalDetail => {}
+            | Modal::GoalDetail
+            | Modal::Background => {}
             Modal::None => {}
         }
     }

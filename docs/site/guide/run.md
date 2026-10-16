@@ -117,6 +117,7 @@ intact.
 | `/connect` | Connect or update a managed provider |
 | `/mcp` | Manage MCP servers; see [MCP servers](mcp.md) |
 | `/runtime` (also `runtimes`) | Attach and detach the selected session's runtimes; see [Runtimes panel](#runtimes-panel) |
+| `/background` (also `bg`) | List and stop the selected session's background calls; see [Background calls](#background-calls) |
 | `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](agents.md#permissions) |
 | `/sessions` (also `resume`, `load`, `continue`) | Choose a session |
 | `/skills` | Search user-invocable skills, pick one, then enter optional arguments; see [Skills](skills.md) |
@@ -305,6 +306,23 @@ completion, failure, cancellation, or interruption, the same row swaps to the
 committed terminal result. Reopening a session renders only that committed
 content. Assistant text follows the same rule: streamed partials are replaced
 by the committed turn.
+
+## Background calls
+
+A running call of a tool that supports the background (such as `bash`) shows
+a `[background]` button at the right end of its title row. Clicking it moves
+the call to the background once the tool can be detached: the call's row ends
+with the result the model got (`User manually moved this call to the
+background …`) and `· background`, and the run goes on while the call keeps
+running. The model can also start a call in the background itself.
+
+While the selected session has background calls, a bar above the composer
+lists them; clicking it, or `/background`, opens a panel with one row per call
+(job, tool, its argument, how long it has run, and who moved it). Up/Down
+select a row, `s` or a row's `[stop]` stops that call, and Esc closes the
+panel. A stopped call still reports to the model, as stopped by you. See
+[Background calls](../reference/tools.md#background-calls) for what the model
+sees.
 
 ## Approvals
 

@@ -1804,6 +1804,7 @@ pub(crate) fn append_named_compaction_tool_history(
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::ToolCallStarted {
                 start: cookie_agent_protocol::ToolCallStart {
+                    background: false,
                     output: Default::default(),
                     tool_call_id,
                     owner: owner.clone(),

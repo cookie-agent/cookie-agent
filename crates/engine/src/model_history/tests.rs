@@ -2353,6 +2353,7 @@ fn tail_candidates_stop_at_pending_tool_group_until_late_termination() {
         run,
         EventPayload::ToolCallStarted {
             start: ToolCallStart {
+                background: false,
                 output: Default::default(),
                 tool_call_id,
                 owner: owner.clone(),
@@ -2506,6 +2507,7 @@ fn assembled_tool_transcript_snapshot_is_stable() {
             run,
             EventPayload::ToolCallStarted {
                 start: ToolCallStart {
+                    background: false,
                     output: Default::default(),
                     tool_call_id: call,
                     owner: owner.clone(),

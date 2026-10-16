@@ -140,7 +140,15 @@ impl App {
             // No outer deadline: the client bounds every replay page itself,
             // and a long history can take several pages.
             let outcome = match client.subscribe_events(session_id, cursor).await {
-                Ok(()) => SubscriptionOutcome::Established,
+                Ok(()) => {
+                    if let Ok(listed) = client.list_background(session_id).await {
+                        let _ = updates.send(RpcUpdate::BackgroundCalls {
+                            session_id,
+                            calls: listed.calls,
+                        });
+                    }
+                    SubscriptionOutcome::Established
+                }
                 Err(crate::ClientError::ReplayInProgress) => SubscriptionOutcome::ReplayInProgress,
                 Err(error) => SubscriptionOutcome::Failed(error.to_string()),
             };

@@ -930,6 +930,8 @@ pub(super) fn reduce_event_from(
                     status: ToolStatus::Running,
                     detail: identities,
                     has_output_chunks: false,
+                    backgroundable: start.background,
+                    backgrounded: false,
                     revision: next_tool_revision(),
                 },
             );
@@ -944,6 +946,10 @@ pub(super) fn reduce_event_from(
                 ToolTerminationOutcome::Interrupted => ToolStatus::Interrupted,
             };
             let failed = !matches!(termination.outcome, ToolTerminationOutcome::Completed);
+            let backgrounded = termination
+                .result
+                .as_ref()
+                .is_some_and(|result| result.metadata.get("background").is_some());
             let failure_message = matches!(
                 termination.outcome,
                 ToolTerminationOutcome::Failed | ToolTerminationOutcome::Interrupted
@@ -1012,6 +1018,7 @@ pub(super) fn reduce_event_from(
                 tool.status = status;
                 tool.detail = detail;
                 tool.has_output_chunks = false;
+                tool.backgrounded = backgrounded;
                 tool.revision = next_tool_revision();
             }
             // A failed call is fed back to the model as its tool result and

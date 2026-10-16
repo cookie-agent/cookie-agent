@@ -1138,6 +1138,7 @@ mod tests {
                             run,
                             Event::ToolCallStarted {
                                 start: cookie_agent_protocol::ToolCallStart {
+                                    background: false,
                                     tool_call_id: id,
                                     output: Default::default(),
                                     owner: owner.clone(),

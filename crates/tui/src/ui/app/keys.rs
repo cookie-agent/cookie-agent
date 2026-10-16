@@ -854,6 +854,7 @@ impl App {
         }
         match self.modal {
             Modal::GoalDetail => self.handle_goal_detail_key(key),
+            Modal::Background => self.handle_background_key(key),
             Modal::Sessions => self.handle_session_picker(key).await,
             Modal::Presets => self.handle_selection_picker(key).await,
             Modal::Agents => self.handle_agent_picker_key(key).await,
@@ -1656,6 +1657,28 @@ impl App {
                 self.click_permissions(column, row);
                 return;
             }
+            if self.modal == Modal::Background {
+                if let Some((_, index)) = self
+                    .hit_map
+                    .background_stops
+                    .iter()
+                    .find(|(rect, _)| contains(*rect, column, row))
+                    .copied()
+                {
+                    self.stop_background_call(index);
+                } else if let Some((_, index)) = self
+                    .hit_map
+                    .background_rows
+                    .iter()
+                    .find(|(rect, _)| contains(*rect, column, row))
+                    .copied()
+                {
+                    self.background_panel.selected = index;
+                } else {
+                    self.modal = Modal::None;
+                }
+                return;
+            }
             if let Some((_, button)) = self
                 .hit_map
                 .confirm_buttons
@@ -1761,6 +1784,14 @@ impl App {
             .copied()
         {
             self.activate_goal_action(action);
+            return;
+        }
+        if self
+            .hit_map
+            .background_bar
+            .is_some_and(|rect| contains(rect, column, row))
+        {
+            self.open_background_panel();
             return;
         }
         self.goal_focus = None;
@@ -1884,6 +1915,25 @@ impl App {
             self.open_user_menu(hit);
             return;
         }
+        // A running call's background button sits on its title row, which
+        // otherwise toggles the call.
+        if let Some(call_id) = self
+            .hit_map
+            .blocks
+            .iter()
+            .rev()
+            .find(|hit| {
+                hit.action_rect
+                    .is_some_and(|rect| contains(rect, column, row))
+            })
+            .and_then(|hit| match hit.id {
+                crate::ui::transcript::BlockId::Tool(call_id) => Some(call_id),
+                _ => None,
+            })
+        {
+            self.request_background(call_id);
+            return;
+        }
         if let Some(hit) = self
             .hit_map
             .blocks
@@ -1988,6 +2038,7 @@ impl App {
                     | Modal::Permissions
                     | Modal::Usage
                     | Modal::GoalDetail
+                    | Modal::Background
                     | Modal::None => 0,
                 };
                 move_picker_selection(&mut self.picker_state, len, up);

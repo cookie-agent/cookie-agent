@@ -75,6 +75,9 @@ pub(crate) struct UiLayout {
     /// line; zero height while the selected session's queue is empty.
     pub(crate) queue: Rect,
     pub(crate) status: Rect,
+    /// The background bar directly above the goal bar; zero height when the
+    /// session has no background calls or the terminal has no space for it.
+    pub(crate) background: Rect,
     /// The persistent goal bar directly above the composer; zero height when
     /// it is not visible or the terminal has no space for it.
     pub(crate) goal: Rect,
@@ -100,6 +103,7 @@ pub(crate) fn terminal_layout_with_tree_rows(
     visible_tree_rows: usize,
     queue_rows: u16,
     goal_visible: bool,
+    background_visible: bool,
     input_text_rows: u16,
 ) -> UiLayout {
     let agent_height = if visible_tree_rows <= 1 {
@@ -120,9 +124,12 @@ pub(crate) fn terminal_layout_with_tree_rows(
         .saturating_sub(input_height)
         .saturating_sub(bar_height);
     let goal_height = u16::from(goal_visible && available_height > 0);
-    let status_height = u16::from(available_height.saturating_sub(goal_height) >= 3);
+    let background_height =
+        u16::from(background_visible && available_height.saturating_sub(goal_height) > 0);
+    let bars_height = goal_height + background_height;
+    let status_height = u16::from(available_height.saturating_sub(bars_height) >= 3);
     let content_height = available_height
-        .saturating_sub(goal_height)
+        .saturating_sub(bars_height)
         .saturating_sub(status_height);
     let agent_height = if content_height > 1 {
         agent_height.min(content_height - 1)
@@ -153,9 +160,15 @@ pub(crate) fn terminal_layout_with_tree_rows(
         area.width,
         status_height,
     );
-    let goal = Rect::new(
+    let background = Rect::new(
         area.x,
         status.y.saturating_add(status_height),
+        area.width,
+        background_height,
+    );
+    let goal = Rect::new(
+        area.x,
+        background.y.saturating_add(background_height),
         area.width,
         goal_height,
     );
@@ -178,6 +191,7 @@ pub(crate) fn terminal_layout_with_tree_rows(
         conversation,
         queue,
         status,
+        background,
         goal,
         input,
         bar,
@@ -194,7 +208,7 @@ mod tests {
         for width in [1, 3, 7, 8, 20, 40, 80] {
             for height in 0..=24 {
                 let area = Rect::new(2, 3, width, height);
-                let layout = terminal_layout_with_tree_rows(area, 3, 5, false, 2);
+                let layout = terminal_layout_with_tree_rows(area, 3, 5, false, false, 2);
 
                 assert_eq!(layout.goal.height, 0, "{width}x{height}");
                 assert_eq!(layout.goal.y, layout.input.y, "{width}x{height}");
@@ -212,8 +226,8 @@ mod tests {
         for width in [1, 3, 7, 8, 20, 40, 80] {
             for height in 0..=24 {
                 let area = Rect::new(2, 3, width, height);
-                let hidden = terminal_layout_with_tree_rows(area, 3, 5, false, 1);
-                let shown = terminal_layout_with_tree_rows(area, 3, 5, true, 1);
+                let hidden = terminal_layout_with_tree_rows(area, 3, 5, false, false, 1);
+                let shown = terminal_layout_with_tree_rows(area, 3, 5, true, false, 1);
                 let expected_goal_height = u16::from(
                     area.height
                         .saturating_sub(hidden.input.height)
@@ -258,8 +272,8 @@ mod tests {
     #[test]
     fn visible_goal_is_reserved_before_ephemeral_status() {
         let area = Rect::new(0, 0, 20, 7);
-        let hidden = terminal_layout_with_tree_rows(area, 0, 0, false, 1);
-        let shown = terminal_layout_with_tree_rows(area, 0, 0, true, 1);
+        let hidden = terminal_layout_with_tree_rows(area, 0, 0, false, false, 1);
+        let shown = terminal_layout_with_tree_rows(area, 0, 0, true, false, 1);
 
         assert_eq!(hidden.status.height, 1);
         assert_eq!(hidden.goal.height, 0);
@@ -268,5 +282,22 @@ mod tests {
         assert_eq!(shown.goal.y + shown.goal.height, shown.input.y);
         assert_eq!(shown.input, hidden.input);
         assert_eq!(shown.bar, hidden.bar);
+    }
+
+    #[test]
+    fn the_background_bar_sits_directly_above_the_goal_bar() {
+        let area = Rect::new(0, 0, 40, 24);
+        let both = terminal_layout_with_tree_rows(area, 0, 0, true, true, 1);
+        assert_eq!(both.background.height, 1);
+        assert_eq!(both.goal.height, 1);
+        assert_eq!(both.background.y + 1, both.goal.y);
+        assert_eq!(both.goal.y + 1, both.input.y);
+        let alone = terminal_layout_with_tree_rows(area, 0, 0, false, true, 1);
+        assert_eq!(alone.goal.height, 0);
+        assert_eq!(alone.background.y + 1, alone.input.y);
+        // A terminal with one spare row keeps the goal bar.
+        let cramped = terminal_layout_with_tree_rows(Rect::new(0, 0, 40, 5), 0, 0, true, true, 1);
+        assert_eq!(cramped.goal.height, 1);
+        assert_eq!(cramped.background.height, 0);
     }
 }

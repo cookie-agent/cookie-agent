@@ -1009,6 +1009,7 @@ impl App {
                 self.mcp_panel.form = None;
                 self.poll_mcp();
             }
+            SlashCommand::Background => self.open_background_panel(),
             SlashCommand::Runtime => {
                 if self.selected.is_none() {
                     self.status = "select a session before managing its runtimes".into();

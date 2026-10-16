@@ -78,7 +78,8 @@ fn model_turn_committed_updates_latest_context_tokens() {
 #[test]
 fn terminal_layout_has_exact_rects_for_wide_square_tall_and_tiny_terminals() {
     for (width, height) in [(160, 50), (80, 24), (40, 12), (20, 8), (8, 2), (4, 1)] {
-        let layout = terminal_layout_with_tree_rows(Rect::new(0, 0, width, height), 3, 0, false, 1);
+        let layout =
+            terminal_layout_with_tree_rows(Rect::new(0, 0, width, height), 3, 0, false, false, 1);
         assert_eq!(layout.agent.y, 0);
         assert_eq!(layout.conversation.y, layout.agent.height);
         assert_eq!(layout.bar.height, 1.min(height));
@@ -872,12 +873,14 @@ async fn failed_mode_click_reloads_authoritative_state_after_stale_hydration() {
 async fn agent_panel_text_rows_are_clamped_1_to_4_with_borders_outside() {
     let mut app = test_app().await;
     for sessions in [0usize, 1] {
-        let layout = terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions, 0, false, 1);
+        let layout =
+            terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions, 0, false, false, 1);
         assert_eq!(layout.agent.height, 0);
         assert_eq!(layout.conversation.y, 0);
     }
     for (sessions, expected_rows) in [(2usize, 4u16), (3, 5), (4, 6), (5, 6), (9, 6)] {
-        let layout = terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions, 0, false, 1);
+        let layout =
+            terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions, 0, false, false, 1);
         app.tree = Some(SessionTree {
             session: session_meta(SessionId::new_v7()),
             children: (1..sessions)
@@ -901,7 +904,7 @@ async fn agent_panel_text_rows_are_clamped_1_to_4_with_borders_outside() {
         assert!(bottom, "sessions {sessions}");
         assert!(!below, "sessions {sessions}");
     }
-    let tiny = terminal_layout_with_tree_rows(Rect::new(0, 0, 20, 8), 20, 0, false, 1);
+    let tiny = terminal_layout_with_tree_rows(Rect::new(0, 0, 20, 8), 20, 0, false, false, 1);
     // The single-row composer is three rows tall, so the eight-row
     // terminal leaves four rows above the bar: one for the status line,
     // one guaranteed conversation row, and the rest for the agent panel
@@ -963,7 +966,7 @@ async fn agent_panel_caps_at_four_rows_and_scrolls_a_longer_tree() {
     // Seven live entries still earn only the capped viewport: MAX rows plus
     // two borders, with the conversation starting right below it.
     let layout =
-        terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 30), entries.len(), 0, false, 1);
+        terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 30), entries.len(), 0, false, false, 1);
     assert_eq!(
         layout.agent.height,
         u16::try_from(max_rows + 2).expect("rows")
@@ -1221,9 +1224,9 @@ async fn agent_panel_manual_override_wins_for_completed_history_and_rerooting() 
 #[test]
 fn composer_grows_with_text_rows_and_reclaims_conversation() {
     let area = Rect::new(0, 0, 80, 24);
-    let single = terminal_layout_with_tree_rows(area, 3, 0, false, 1);
+    let single = terminal_layout_with_tree_rows(area, 3, 0, false, false, 1);
     assert_eq!(single.input.height, 3);
-    let grown = terminal_layout_with_tree_rows(area, 3, 0, false, 4);
+    let grown = terminal_layout_with_tree_rows(area, 3, 0, false, false, 4);
     assert_eq!(grown.input.height, 6);
     // Every added composer row comes out of the conversation pane; the
     // agent panel, status line, and bar keep their geometry.
@@ -1235,7 +1238,7 @@ fn composer_grows_with_text_rows_and_reclaims_conversation() {
     assert_eq!(grown.bar, single.bar);
     // The ceiling is five text rows plus borders, and the box stays
     // glued to the bar above it.
-    let ceiling = terminal_layout_with_tree_rows(area, 3, 0, false, 99);
+    let ceiling = terminal_layout_with_tree_rows(area, 3, 0, false, false, 99);
     assert_eq!(ceiling.input.height, 7);
     assert_eq!(ceiling.input.y + ceiling.input.height, ceiling.bar.y);
 }

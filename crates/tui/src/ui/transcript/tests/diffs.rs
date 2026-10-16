@@ -87,6 +87,8 @@ fn edit_arguments_render_added_and_removed_diff_gutters() {
     state.tools.insert(
         call_id,
         ToolCallState {
+            backgroundable: false,
+            backgrounded: false,
             id: call_id,
             owner: owner(1, "call-1"),
             presentation: presentation("edit", Some("src/main.rs")),
@@ -231,6 +233,8 @@ fn tool_code_views_snapshot() {
     state.tools.insert(
         read_id,
         ToolCallState {
+            backgroundable: false,
+            backgrounded: false,
             id: read_id,
             owner: owner(1, "call-read"),
             presentation: presentation("read", Some("src/main.rs")),
@@ -245,6 +249,8 @@ fn tool_code_views_snapshot() {
     state.tools.insert(
         edit_id,
         ToolCallState {
+            backgroundable: false,
+            backgrounded: false,
             id: edit_id,
             owner: owner(1, "call-edit"),
             presentation: presentation("edit", Some("src/main.rs")),
@@ -274,6 +280,8 @@ fn changed_diff_rows_are_tinted_inside_the_band_padding() {
     state.tools.insert(
         edit_id,
         ToolCallState {
+            backgroundable: false,
+            backgrounded: false,
             id: edit_id,
             owner: owner(1, "call-edit"),
             presentation: presentation("edit", Some("src/main.rs")),
