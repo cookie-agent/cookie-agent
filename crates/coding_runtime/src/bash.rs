@@ -617,10 +617,7 @@ impl BashExecutor {
             stderr,
         } = self.spawn()?;
         // Once the command runs, the call may move to the background.
-        detach.reached(
-            tree.pid()
-                .map(|pid| format!("Process {pid}; stop it with stop_background")),
-        );
+        detach.reached(tree.pid().map(|pid| format!("Process {pid}")));
         let merged = Arc::new(Mutex::new(MergedOutput::default()));
         let stdout_task = tokio::spawn(read_output(
             stdout,

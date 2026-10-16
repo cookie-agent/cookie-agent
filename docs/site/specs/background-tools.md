@@ -124,10 +124,11 @@ The tool result committed at detach, model-visible as the call's result:
 
 - Model-started: `Started in the background as job <job>. You will get a
   <background_result job="<job>"> with its result when it finishes; do not
-  wait for it or run it again.`
+  wait for it or run it again. Stop it with stop_background(<job>).`
 - User-moved: `User manually moved this call to the background; it is still
   running as job <job>. You will get a <background_result job="<job>"> with
-  its result when it finishes; do not wait for it or run it again.`
+  its result when it finishes; do not wait for it or run it again. Stop it
+  with stop_background(<job>).`
 
 The detach note, when present, follows on its own line. The result's metadata
 carries `{"background": {"job": "<job>", "by": "model" | "user"}}` so clients
@@ -316,8 +317,8 @@ life, foreground and background alike. Detaching does not touch it, so a call
 the user moves to the background after 90 seconds is still killed 30 seconds
 later unless the model set a longer `timeout`. The tool description tells the
 model to pass `timeout: 0` for long-lived background commands such as dev
-servers. The detach note is the process ID: `Process <pid>; stop it with
-stop_background`.
+servers. The detach note is the process ID: `Process <pid>`; the
+immediate result already says how to stop the call by its job ID.
 
 **stdin is removed** from tools entirely: `ToolExecutionContext::stdin`,
 `ToolStdin`, `StdinWrite`, the engine's hard-coded `call.name == "bash"`

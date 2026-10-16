@@ -189,7 +189,7 @@ Windows). When the shell exits, whatever it left in that group is killed, so
 the group, such as one started with `setsid`, does.
 
 A bash call reaches its detach point as soon as its command runs; its detach
-note is `Process <pid>; stop it with stop_background`. In the background it keeps its timeout and
+note is `Process <pid>`. In the background it keeps its timeout and
 process-group cleanup.
 
 ## Background calls
@@ -208,7 +208,8 @@ spec](../specs/background-tools.md) describes:
   finishes first returns as an ordinary result. Detaching commits an
   immediate result for the call, `Started in the background as job
   job_1a2b3c4d. …` or `User manually moved this call to the background; it
-  is still running as job job_1a2b3c4d. …`, followed by the tool's note, and
+  is still running as job job_1a2b3c4d. …`, ending with `Stop it with
+  stop_background(job_1a2b3c4d).` and followed by the tool's note, and
   the run goes on. Cancelling the run no longer reaches the call.
 - **Reporting.** When the call ends, the engine accepts one producer message
   owned by `tool { tool_call_id }` that steers into the active run or wakes

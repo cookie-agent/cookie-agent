@@ -538,7 +538,7 @@ fn immediate_result(job: &str, by: BackgroundActor, note: Option<&str>) -> Persi
     };
     let mut output = format!(
         "{lead} You will get a <background_result job=\"{job}\"> with its result when it \
-         finishes; do not wait for it or run it again."
+         finishes; do not wait for it or run it again. Stop it with stop_background({job})."
     );
     if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
         output.push('\n');
@@ -803,7 +803,11 @@ mod tests {
                 .output
                 .starts_with("Started in the background as job job_1a2b3c4d.")
         );
-        assert!(model.output.ends_with("\nProcess 42"));
+        assert!(
+            model
+                .output
+                .contains("Stop it with stop_background(job_1a2b3c4d).\nProcess 42")
+        );
         assert_eq!(model.metadata["background"]["by"], "model");
         let user = immediate_result("job_1a2b3c4d", BackgroundActor::User, None);
         assert!(

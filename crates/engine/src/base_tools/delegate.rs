@@ -424,7 +424,7 @@ fn detach_note(
 ) -> String {
     let label = short_id.unwrap_or_else(|| child_session_id.to_string());
     format!(
-        "[subagent session {label}] Each time its turn ends you get a <subagent_report handle=\"{label}\">. Message it with send_message; read its full output with get_subagent_result (session_id \"{label}\"); stop its turn with stop_background (job \"{label}\")."
+        "[subagent session {label}] Each time its turn ends you get a <subagent_report handle=\"{label}\">. Message it with send_message; read its full output with get_subagent_result (session_id \"{label}\"); stop its turn with stop_background({label})."
     )
 }
 
@@ -585,7 +585,7 @@ mod tests {
             "{note}"
         );
         assert!(note.contains(r#"get_subagent_result (session_id "explore_1a2b3c4d")"#));
-        assert!(note.contains(r#"stop_background (job "explore_1a2b3c4d")"#));
+        assert!(note.contains("stop_background(explore_1a2b3c4d)"));
         assert!(!note.contains(&session_id.to_string()));
         let legacy = detach_note(session_id, None);
         assert!(legacy.starts_with(&format!("[subagent session {session_id}]")));
