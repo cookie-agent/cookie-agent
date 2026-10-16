@@ -24,8 +24,9 @@ The binary is `target/debug/cookie`. To install the workspace version into
 cargo install --locked --path crates/cookie_agent
 ```
 
-The workspace contains ten crates: `config`, `cookie_agent`, `engine`,
-`identity`, `models`, `plugin_sdk`, `protocol`, `server`, `tools`, and `tui`.
+The workspace contains twelve crates: `coding_runtime`, `config`,
+`cookie_agent`, `engine`, `identity`, `mcp`, `models`, `plugin_sdk`,
+`protocol`, `runtime_api`, `server`, and `tui`.
 Their public interfaces are available in the [Rust API documentation](../reference/api.md).
 
 ## Required gates

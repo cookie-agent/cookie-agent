@@ -15,8 +15,11 @@ and observability are all built in.
 
 - **Subagent delegation** — agents delegate to other agents, with background
   tasks that keep running while you keep working.
+- **Runtimes** — a session's tools run in attachable runtimes: the local
+  workspace, a repository on another machine over ssh, or several at once,
+  with colliding tool names prefixed by runtime.
 - **MCP servers** — attach local or remote MCP tool servers, including
-  streamable HTTP servers with OAuth.
+  streamable HTTP servers with OAuth, on the daemon or inside a runtime.
 - **Plugins** — run out-of-process JSON-RPC extensions that add tools, observe
   events, and intercept decisions across the run lifecycle: user input, model
   requests, tool calls, agent starts, compaction, forks, and more. An official
