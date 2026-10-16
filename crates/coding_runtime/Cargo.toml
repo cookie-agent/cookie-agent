@@ -13,6 +13,7 @@ workspace = true
 async-trait.workspace = true
 base64 = "0.22"
 cookie_agent_config = { version = "=0.3.0", path = "../config" }
+cookie_agent_mcp = { version = "=0.3.0", path = "../mcp" }
 cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
 cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api" }
 futures-util.workspace = true

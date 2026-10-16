@@ -118,18 +118,6 @@ async fn requests_before_initialize_and_unsupported_settings_are_refused() {
     assert_eq!(remote_code(error).0, error_code::NOT_INITIALIZED);
 
     let mut params = initialize_params(Some(workspace.path()));
-    params.settings.mcp_servers = vec![cookie_agent_runtime_api::protocol::McpServerSettings {
-        name: "docs".into(),
-        config: json!({"command": "docs-mcp"}),
-    }];
-    let error = harness
-        .daemon
-        .request::<_, InitializeResult>(method::INITIALIZE, &params)
-        .await
-        .expect_err("MCP servers are not hosted yet");
-    assert_eq!(remote_code(error).0, error_code::INITIALIZE_REJECTED);
-
-    let mut params = initialize_params(Some(workspace.path()));
     params.settings.agent_md.max_bytes = cookie_agent_runtime_api::context::AGENT_MD_MAX_BYTES + 1;
     let error = harness
         .daemon

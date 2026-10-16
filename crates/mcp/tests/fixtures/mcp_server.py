@@ -28,6 +28,9 @@ def response(request_id, result):
 
 
 refreshed = False
+ONE_PIXEL_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
 
 for line in sys.stdin:
     message = json.loads(line)
@@ -64,6 +67,12 @@ for line in sys.stdin:
                     "inputSchema": {"properties": {}},
                 },
             ]
+        if os.environ.get("MCP_FIXTURE_IMAGE"):
+            tools.append({
+                "name": "image",
+                "description": "Return a one-pixel PNG.",
+                "inputSchema": {"type": "object", "properties": {}},
+            })
         if refreshed:
             tools.append({
                 "name": "new tool",
@@ -79,7 +88,15 @@ for line in sys.stdin:
         if params["arguments"].get("text") == "exit":
             # Simulates a crash in the middle of a call.
             sys.exit(0)
-        if params["name"] == "fail":
+        if params["name"] == "image":
+            response(request_id, {
+                "content": [
+                    {"type": "text", "text": "one pixel"},
+                    {"type": "image", "mimeType": "image/png", "data": ONE_PIXEL_PNG},
+                ],
+                "isError": False,
+            })
+        elif params["name"] == "fail":
             response(request_id, {
                 "content": [{"type": "text", "text": "fixture failure"}],
                 "isError": True,

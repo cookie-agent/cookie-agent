@@ -74,6 +74,12 @@ pub mod method {
     pub const JOB_COMPLETED: &str = "job/completed";
     /// daemon → runtime (notification): kill a background job.
     pub const JOB_KILL: &str = "job/kill";
+    /// runtime → daemon (notification): the status of the runtime's MCP
+    /// servers changed, or one failed.
+    pub const MCP_CHANGED: &str = "mcp/changed";
+    /// daemon → runtime: reconnect one MCP server, or retry every failed
+    /// one.
+    pub const MCP_RECONNECT: &str = "mcp/reconnect";
 }
 
 /// JSON-RPC error codes the runtime protocol uses besides the standard ones.
@@ -125,10 +131,32 @@ pub struct RuntimeSettings {
     pub tool_output: ToolOutputLimits,
     /// `[agent_md]`: the `AGENTS.md` size rule.
     pub agent_md: AgentMdLimits,
-    /// The template's MCP servers. No runtime hosts them yet; a nonempty
-    /// list is rejected.
+    /// The template's MCP servers, which the runtime hosts on its own
+    /// machine. A runtime whose kind hosts no MCP servers (see
+    /// [`hosts_mcp_servers`]) rejects a nonempty list.
     #[serde(default)]
     pub mcp_servers: Vec<McpServerSettings>,
+}
+
+/// Whether runtimes of `kind` host MCP servers. MCP hosting is a feature of
+/// the coding kind, not of the runtime contract.
+#[must_use]
+pub const fn hosts_mcp_servers(kind: RuntimeKind) -> bool {
+    matches!(kind, RuntimeKind::Coding)
+}
+
+/// Rejects MCP servers in `settings` for a runtime of `kind` that hosts
+/// none.
+pub fn check_mcp_hosting(kind: RuntimeKind, settings: &RuntimeSettings) -> Result<(), String> {
+    if settings.mcp_servers.is_empty() || hosts_mcp_servers(kind) {
+        Ok(())
+    } else {
+        Err(format!(
+            "a {} runtime hosts no MCP servers, but its template lists {}",
+            kind.as_str(),
+            settings.mcp_servers.len()
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -153,7 +181,63 @@ pub struct AgentMdLimits {
 #[serde(deny_unknown_fields)]
 pub struct McpServerSettings {
     pub name: String,
+    /// The server's table, as the `[mcp.servers.<name>]` schema reads it.
     pub config: Value,
+}
+
+/// The status of one MCP server a runtime hosts.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerReport {
+    pub name: String,
+    pub state: McpServerState,
+    /// Why the server failed, or what it is doing.
+    #[serde(default)]
+    pub message: Option<String>,
+    /// The names of its tools as the runtime declares them.
+    #[serde(default)]
+    pub tools: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerState {
+    Disabled,
+    Disconnected,
+    Connecting,
+    Connected,
+    /// The connection dropped and is being re-established: its tools stay
+    /// declared and calls fail with `runtime_unavailable`.
+    Reconnecting,
+    Failed,
+}
+
+/// An MCP server that failed to connect, or dropped and did not reconnect.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpFailureReport {
+    pub server: String,
+    pub reason: String,
+}
+
+// --- mcp/changed, mcp/reconnect --------------------------------------------------
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpChangedParams {
+    /// Every server the runtime hosts, in name order.
+    pub servers: Vec<McpServerReport>,
+    /// Servers that failed since the last report, in order.
+    #[serde(default)]
+    pub failures: Vec<McpFailureReport>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpReconnectParams {
+    /// The server to reconnect now; absent to retry every failed server.
+    #[serde(default)]
+    pub server: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -174,6 +258,10 @@ pub struct InitializeResult {
     pub shell: Option<String>,
     pub tools: RuntimeTools,
     pub skills: RuntimeSkills,
+    /// The template's MCP servers after their first connection attempt.
+    /// Their tools are among `tools`.
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerReport>,
 }
 
 /// A runtime's tools and their prompt sections.

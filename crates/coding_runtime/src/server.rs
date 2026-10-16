@@ -7,25 +7,32 @@
 //! the daemon executes or releases it, runs executions concurrently, sends
 //! their progress back with `tool/progress`, feeds `tool/stdin` to
 //! interactive calls, and runs background jobs locally, reporting them with
-//! `job/*`. It returns on `runtime/shutdown` or when the transport ends,
-//! cancelling what still runs.
+//! `job/*`. It hosts the template's MCP servers (`docs/site/specs/runtimes.md`
+//! section 3): it connects them before it answers `runtime/initialize`,
+//! declares their tools next to its built-in ones, reconnects dropped ones
+//! with the shared reconnect policy, and reports their status with
+//! `mcp/changed` and a changed tool list with `runtime/tools_changed`. It
+//! returns on `runtime/shutdown` or when the transport ends, cancelling what
+//! still runs and stopping its MCP servers.
 //!
 //! [`in_process_connector`] runs it on a task of the daemon's own process
 //! over an in-memory frame pair; that is how the daemon's `local` coding
 //! runtime runs.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock, Weak,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
 use async_trait::async_trait;
 use base64::Engine as _;
+use cookie_agent_config::{LoadedMcpServer, McpOAuthConfig, McpServerConfig, McpServerSource};
+use cookie_agent_mcp::{McpRegistry, McpRegistryOptions, McpServerFailure, McpServerStatus};
 use cookie_agent_protocol::{SessionId, Transport};
 use cookie_agent_runtime_api::{
     BackgroundJob, BackgroundJobs, BackgroundLauncher, BackgroundTask, CodingToolsFactory,
@@ -36,11 +43,13 @@ use cookie_agent_runtime_api::{
     protocol::{
         self, ContextParams, ContextResult, Empty, ExecuteOutcome, ExecuteParams, ExecuteResult,
         InitializeParams, InitializeResult, InlineMedia, JobCompletedParams, JobProgressParams,
-        JobRef, JobStartedParams, Outcome, PrepareOutcome, PrepareParams, PrepareResult,
+        JobRef, JobStartedParams, McpChangedParams, McpFailureReport, McpReconnectParams,
+        McpServerReport, McpServerSettings, Outcome, PrepareOutcome, PrepareParams, PrepareResult,
         PreparedCall, PreparedRef, PromptSectionDeclaration, RUNTIME_PROTOCOL_VERSION,
         RuntimeSettings, RuntimeSkills, RuntimeTools, SkillDeclaration, SkillDiscoveryDeclaration,
         StdinParams, ToolDeclaration, ToolProgressParams, WireToolError, error_code, method,
     },
+    reconnect::ReconnectPolicy,
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
 };
 use futures_util::FutureExt as _;
@@ -56,6 +65,9 @@ pub struct ServeOptions {
     pub workspace: Option<PathBuf>,
     /// Builds the runtime's tools for its workspace.
     pub tools: CodingToolsFactory,
+    /// How dropped MCP servers are reconnected; the shared default when
+    /// absent. Tests that cannot wait for the production backoff set it.
+    pub mcp_reconnect: Option<ReconnectPolicy>,
 }
 
 impl Default for ServeOptions {
@@ -64,6 +76,7 @@ impl Default for ServeOptions {
         Self {
             workspace: None,
             tools: builtin_tools(),
+            mcp_reconnect: None,
         }
     }
 }
@@ -75,20 +88,14 @@ fn builtin_tools() -> CodingToolsFactory {
 /// Starts a coding runtime on a task of this process for each connection,
 /// over an in-memory frame pair.
 struct InProcessConnector {
-    tools: CodingToolsFactory,
+    options: ServeOptions,
 }
 
 #[async_trait]
 impl RuntimeConnector for InProcessConnector {
     async fn connect(&self, _workspace: Option<&Path>) -> Result<RuntimeConnection, String> {
         let (daemon, runtime) = cookie_agent_protocol::in_process_pair(64);
-        tokio::spawn(serve(
-            Box::new(runtime),
-            ServeOptions {
-                workspace: None,
-                tools: Arc::clone(&self.tools),
-            },
-        ));
+        tokio::spawn(serve(Box::new(runtime), self.options.clone()));
         Ok(RuntimeConnection::new(Box::new(daemon)))
     }
 }
@@ -105,7 +112,18 @@ pub fn in_process_connector() -> Arc<dyn RuntimeConnector> {
 /// this process.
 #[must_use]
 pub fn in_process_connector_with(tools: CodingToolsFactory) -> Arc<dyn RuntimeConnector> {
-    Arc::new(InProcessConnector { tools })
+    in_process_connector_with_options(ServeOptions {
+        tools,
+        ..ServeOptions::default()
+    })
+}
+
+/// A connector that runs a coding runtime with `options` in this process.
+/// The daemon names the workspace in `runtime/initialize`, so
+/// `options.workspace` should be `None`.
+#[must_use]
+pub fn in_process_connector_with_options(options: ServeOptions) -> Arc<dyn RuntimeConnector> {
+    Arc::new(InProcessConnector { options })
 }
 
 /// `path` with a leading `~` (alone, or followed by a separator) replaced by
@@ -146,6 +164,7 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
     let server = Arc::new(Server {
         peer: peer.clone(),
         options,
+        initializing: AtomicBool::new(false),
         state: OnceLock::new(),
         prepared: Mutex::default(),
         executions: Mutex::default(),
@@ -175,6 +194,9 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
     server.stop.cancel();
     lock(&server.prepared).clear();
     lock(&server.jobs).clear();
+    if let Some(mcp) = server.state.get().and_then(|state| state.mcp.clone()) {
+        mcp.shutdown().await;
+    }
     peer.close();
 }
 
@@ -187,6 +209,9 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 struct Server {
     peer: Peer,
     options: ServeOptions,
+    /// Set by the first `runtime/initialize`, which may wait for MCP
+    /// servers before it sets `state`.
+    initializing: AtomicBool,
     state: OnceLock<Arc<Initialized>>,
     /// Prepared calls by prepared ID, until executed or released.
     prepared: Mutex<HashMap<u64, cookie_agent_runtime_api::PreparedTool>>,
@@ -204,9 +229,24 @@ struct Server {
 struct Initialized {
     info: Arc<RuntimeInfo>,
     settings: RuntimeSettings,
+    /// The built-in providers, then the MCP registry when the runtime hosts
+    /// MCP servers. Names are unique across them: the registry fails a
+    /// server whose tool would take a built-in name.
     providers: Vec<Arc<dyn ToolProvider>>,
-    /// The provider of each tool, by name.
-    routes: HashMap<String, usize>,
+    /// The template's MCP servers, when it has any.
+    mcp: Option<McpRegistry>,
+}
+
+impl Initialized {
+    /// The provider that declares `name` now.
+    fn route(&self, name: &str) -> Option<usize> {
+        let context = SessionToolContext::new(SessionId::new_v7());
+        self.providers.iter().position(|provider| {
+            provider
+                .tools_for_session(&context)
+                .is_ok_and(|tools| tools.iter().any(|tool| tool.name == name))
+        })
+    }
 }
 
 struct Execution {
@@ -260,8 +300,15 @@ impl Server {
     ) {
         let method = request.method.clone();
         if method == method::INITIALIZE {
-            let result = self.initialize(&request);
-            return reply(request, result).await;
+            return match self.initialize(&request).await {
+                Ok((result, watch)) => {
+                    reply(request, Ok(result)).await;
+                    if let Some(watch) = watch {
+                        tokio::spawn(Arc::clone(&self).report_mcp(watch));
+                    }
+                }
+                Err(error) => reply::<InitializeResult>(request, Err(error)).await,
+            };
         }
         let Some(state) = self.state.get().cloned() else {
             if let Some(admitted) = admitted {
@@ -316,6 +363,10 @@ impl Server {
                 let result = self.stdin(&request).await;
                 reply(request, result).await;
             }
+            method::MCP_RECONNECT => {
+                let result = reconnect_mcp(&state, &request).await;
+                reply(request, result).await;
+            }
             other => {
                 let message = format!("unknown method `{other}`");
                 let _ = request
@@ -351,7 +402,14 @@ impl Server {
         }
     }
 
-    fn initialize(&self, request: &IncomingRequest) -> Result<InitializeResult, RpcError> {
+    /// Initializes the runtime: its workspace, tools, and skills, and its
+    /// MCP servers, each of which has finished its first connection attempt
+    /// when this returns. Returns the reply and, when the runtime hosts MCP
+    /// servers, what [`Self::report_mcp`] watches once the reply is sent.
+    async fn initialize(
+        &self,
+        request: &IncomingRequest,
+    ) -> Result<(InitializeResult, Option<McpWatch>), RpcError> {
         let params: InitializeParams = request.params()?;
         if params.version != RUNTIME_PROTOCOL_VERSION {
             return Err(RpcError::remote(
@@ -364,20 +422,26 @@ impl Server {
             ));
         }
         let rejected = |message: String| RpcError::remote(error_code::INITIALIZE_REJECTED, message);
-        if self.state.get().is_some() {
+        if self.initializing.swap(true, Ordering::AcqRel) {
             return Err(rejected("the runtime is already initialized".into()));
         }
-        cookie_agent_protocol::RuntimeId::new(params.runtime_id.as_str())
-            .map_err(|_| rejected(format!("invalid runtime ID `{}`", params.runtime_id)))?;
-        if !params.settings.mcp_servers.is_empty() {
-            return Err(rejected(
-                "this coding runtime does not host MCP servers yet".into(),
-            ));
+        let result = self.initialize_once(params).await.map_err(rejected);
+        if result.is_err() {
+            self.initializing.store(false, Ordering::Release);
         }
+        result
+    }
+
+    async fn initialize_once(
+        &self,
+        params: InitializeParams,
+    ) -> Result<(InitializeResult, Option<McpWatch>), String> {
+        cookie_agent_protocol::RuntimeId::new(params.runtime_id.as_str())
+            .map_err(|_| format!("invalid runtime ID `{}`", params.runtime_id))?;
+        protocol::check_mcp_hosting(cookie_agent_protocol::RuntimeKind::Coding, &params.settings)?;
+        let mcp_servers = mcp_servers(&params.settings.mcp_servers)?;
         if params.settings.agent_md.max_bytes > AGENT_MD_MAX_BYTES {
-            return Err(rejected(format!(
-                "agent_md.max_bytes exceeds {AGENT_MD_MAX_BYTES}"
-            )));
+            return Err(format!("agent_md.max_bytes exceeds {AGENT_MD_MAX_BYTES}"));
         }
         let requested = params
             .workspace
@@ -390,28 +454,63 @@ impl Server {
                     .zip(own.canonicalize().ok())
                     .is_some_and(|(requested, own)| requested == own);
                 if !same {
-                    return Err(rejected(format!(
+                    return Err(format!(
                         "the daemon asks for workspace {}, but this runtime serves {}",
                         requested.display(),
                         own.display()
-                    )));
+                    ));
                 }
                 requested
             }
             (Some(requested), None) => requested,
             (None, Some(own)) => own.clone(),
-            (None, None) => return Err(rejected("no workspace was given".into())),
+            (None, None) => return Err("no workspace was given".into()),
         };
-        let workspace = WorkspaceContext::new(&path).map_err(|error| {
-            rejected(format!(
-                "workspace {} is unavailable: {error}",
-                path.display()
-            ))
-        })?;
+        let workspace = WorkspaceContext::new(&path)
+            .map_err(|error| format!("workspace {} is unavailable: {error}", path.display()))?;
         let skills = cookie_agent_config::load_project_skills(workspace.root())
-            .map_err(|error| rejected(format!("project skills: {error}")))?;
-        let providers = (self.options.tools)(&workspace);
-        let (tools, routes) = declared_tools(&providers).map_err(rejected)?;
+            .map_err(|error| format!("project skills: {error}"))?;
+        let mut providers = (self.options.tools)(&workspace);
+        let (mcp, watch) = if mcp_servers.is_empty() {
+            (None, None)
+        } else {
+            let registry = McpRegistry::new(mcp_servers, McpRegistryOptions::default())
+                .map_err(|error| error.to_string())?;
+            for provider in &providers {
+                registry
+                    .reserve_provider(provider.as_ref())
+                    .map_err(|error| error.to_string())?;
+            }
+            if let Some(policy) = &self.options.mcp_reconnect {
+                registry.set_reconnect_policy(policy.clone());
+            }
+            registry.start_eager(&tokio::runtime::Handle::current());
+            tokio::select! {
+                () = registry.await_eager_ready() => {}
+                () = self.stop.cancelled() => {
+                    registry.shutdown().await;
+                    return Err("the runtime stopped while its MCP servers connected".into());
+                }
+            }
+            // Subscribed before the reply: a failure from now on reaches
+            // the daemon once it has the reply, one before is in it.
+            let watch = McpWatch {
+                registry: registry.clone(),
+                changes: registry.subscribe_changes(),
+                failures: registry.subscribe_failures(),
+                declared: RuntimeTools::default(),
+                reported: Vec::new(),
+            };
+            providers.push(Arc::new(registry.clone()));
+            (Some(registry), Some(watch))
+        };
+        let tools = declared_tools(&providers)?;
+        let mcp_servers = mcp.as_ref().map(mcp_reports).unwrap_or_default();
+        let watch = watch.map(|watch| McpWatch {
+            declared: tools.clone(),
+            reported: mcp_servers.clone(),
+            ..watch
+        });
         let info = Arc::new(RuntimeInfo::coding(&params.runtime_id, workspace));
         let result = InitializeResult {
             version: RUNTIME_PROTOCOL_VERSION,
@@ -424,17 +523,75 @@ impl Server {
             shell: Some("bash".to_owned()),
             tools,
             skills: wire_skills(&skills),
+            mcp_servers,
         };
         let initialized = Arc::new(Initialized {
             info,
             settings: params.settings,
             providers,
-            routes,
+            mcp,
         });
-        self.state
-            .set(initialized)
-            .map_err(|_| rejected("the runtime is already initialized".into()))?;
-        Ok(result)
+        if self.state.set(initialized).is_err() {
+            return Err("the runtime is already initialized".into());
+        }
+        Ok((result, watch))
+    }
+
+    /// Reports the MCP servers' status and the tool list to the daemon as
+    /// they change, until the runtime stops.
+    async fn report_mcp(self: Arc<Self>, mut watch: McpWatch) {
+        let Some(state) = self.state.get().cloned() else {
+            return;
+        };
+        loop {
+            let failure = tokio::select! {
+                () = self.stop.cancelled() => return,
+                changed = watch.changes.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    None
+                }
+                failure = watch.failures.recv() => match failure {
+                    Ok(failure) => Some(failure),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => None,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+            };
+            if let Ok(tools) = declared_tools(&state.providers)
+                && tools != watch.declared
+            {
+                watch.declared = tools;
+                if self
+                    .peer
+                    .notify(method::TOOLS_CHANGED, &watch.declared)
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let servers = mcp_reports(&watch.registry);
+            if servers == watch.reported && failure.is_none() {
+                continue;
+            }
+            watch.reported = servers;
+            let params = McpChangedParams {
+                servers: watch.reported.clone(),
+                failures: failure
+                    .into_iter()
+                    .map(|McpServerFailure { server, reason }| McpFailureReport { server, reason })
+                    .collect(),
+            };
+            if self
+                .peer
+                .notify(method::MCP_CHANGED, &params)
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
     }
 
     async fn context(
@@ -511,8 +668,8 @@ impl Server {
         let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
         let mut outcomes: Vec<Option<PrepareOutcome>> = (0..calls.len()).map(|_| None).collect();
         for (index, call) in calls.iter().enumerate() {
-            match state.routes.get(&call.name) {
-                Some(&provider) => match groups.iter_mut().find(|(group, _)| *group == provider) {
+            match state.route(&call.name) {
+                Some(provider) => match groups.iter_mut().find(|(group, _)| *group == provider) {
                     Some((_, indexes)) => indexes.push(index),
                     None => groups.push((provider, vec![index])),
                 },
@@ -714,19 +871,109 @@ async fn reply<T: Serialize>(request: IncomingRequest, result: Result<T, RpcErro
     };
 }
 
-/// The tool declarations of `providers` and the provider of each name.
-fn declared_tools(
-    providers: &[Arc<dyn ToolProvider>],
-) -> Result<(RuntimeTools, HashMap<String, usize>), String> {
+/// What [`Server::report_mcp`] watches.
+struct McpWatch {
+    registry: McpRegistry,
+    changes: tokio::sync::watch::Receiver<u64>,
+    failures: tokio::sync::broadcast::Receiver<McpServerFailure>,
+    /// The tool list and server status the daemon last got.
+    declared: RuntimeTools,
+    reported: Vec<McpServerReport>,
+}
+
+/// The template's MCP servers, parsed and checked like the daemon's
+/// `[mcp.servers.<name>]` tables. OAuth stays with the daemon's global
+/// runtime, so a server that enables it is refused.
+fn mcp_servers(
+    settings: &[McpServerSettings],
+) -> Result<BTreeMap<String, LoadedMcpServer>, String> {
+    let mut servers = BTreeMap::new();
+    for server in settings {
+        let config: McpServerConfig = serde_json::from_value(server.config.clone())
+            .map_err(|error| format!("MCP server `{}`: {error}", server.name))?;
+        config
+            .validate(&server.name)
+            .map_err(|error| format!("MCP server `{}`: {error}", server.name))?;
+        if matches!(
+            config.oauth,
+            McpOAuthConfig::Enabled | McpOAuthConfig::Settings(_)
+        ) {
+            return Err(format!(
+                "MCP server `{}` enables OAuth, which only the daemon's global runtime supports",
+                server.name
+            ));
+        }
+        let loaded = LoadedMcpServer {
+            source: McpServerSource::UserFile,
+            config,
+        };
+        if servers.insert(server.name.clone(), loaded).is_some() {
+            return Err(format!("MCP server `{}` is listed twice", server.name));
+        }
+    }
+    Ok(servers)
+}
+
+/// The status of every server `registry` hosts, as the protocol reports it.
+fn mcp_reports(registry: &McpRegistry) -> Vec<McpServerReport> {
+    registry.statuses().into_iter().map(mcp_report).collect()
+}
+
+fn mcp_report(status: McpServerStatus) -> McpServerReport {
+    use cookie_agent_mcp::McpServerState as State;
+    use protocol::McpServerState as Wire;
+    McpServerReport {
+        name: status.server,
+        state: match status.state {
+            State::Disabled => Wire::Disabled,
+            State::Disconnected => Wire::Disconnected,
+            State::Connecting => Wire::Connecting,
+            State::Connected => Wire::Connected,
+            State::Reconnecting => Wire::Reconnecting,
+            // A runtime's servers never use OAuth.
+            State::NeedsAuth | State::Failed => Wire::Failed,
+        },
+        message: status.message,
+        tools: status.tools,
+    }
+}
+
+/// `mcp/reconnect`: reconnects one server now, or retries every failed one,
+/// and answers once the attempts have finished.
+async fn reconnect_mcp(
+    state: &Initialized,
+    request: &IncomingRequest,
+) -> Result<Outcome, RpcError> {
+    let params: McpReconnectParams = request.params()?;
+    let Some(registry) = &state.mcp else {
+        return Ok(Outcome::of(match params.server {
+            Some(server) => Err(ToolError::execution(format!(
+                "unknown MCP server `{server}`"
+            ))),
+            None => Ok(()),
+        }));
+    };
+    Ok(Outcome::of(match params.server {
+        Some(server) => registry.reconnect_server(&server).await,
+        None => {
+            registry.retry_failed(&tokio::runtime::Handle::current());
+            registry.await_eager_ready().await;
+            Ok(())
+        }
+    }))
+}
+
+/// The tool declarations of `providers`, whose names must be unique.
+fn declared_tools(providers: &[Arc<dyn ToolProvider>]) -> Result<RuntimeTools, String> {
     let context = SessionToolContext::new(SessionId::new_v7());
     let mut tools = RuntimeTools::default();
-    let mut routes = HashMap::new();
-    for (index, provider) in providers.iter().enumerate() {
+    let mut names = std::collections::HashSet::new();
+    for provider in providers {
         for spec in provider
             .tools_for_session(&context)
             .map_err(|error| format!("listing tools: {error}"))?
         {
-            if routes.insert(spec.name.clone(), index).is_some() {
+            if !names.insert(spec.name.clone()) {
                 return Err(format!("tool `{}` is declared twice", spec.name));
             }
             tools.tools.push(ToolDeclaration::from_spec(&spec)?);
@@ -739,7 +986,7 @@ fn declared_tools(
                 .map(PromptSectionDeclaration::from),
         );
     }
-    Ok((tools, routes))
+    Ok(tools)
 }
 
 fn wire_skills(registry: &cookie_agent_config::SkillRegistry) -> RuntimeSkills {
@@ -994,5 +1241,7 @@ impl BackgroundLauncher for RemoteLauncher {
     }
 }
 
+#[cfg(test)]
+mod mcp_tests;
 #[cfg(test)]
 mod tests;

@@ -134,6 +134,7 @@ impl RuntimeConnector for TestConnector {
             ServeOptions {
                 workspace: None,
                 tools: Arc::clone(&self.tools),
+                mcp_reconnect: None,
             },
         ));
         Ok(cookie_agent_runtime_api::RuntimeConnection::new(Box::new(
