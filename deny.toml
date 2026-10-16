@@ -25,6 +25,11 @@ allow = [
     "Zlib",
 ]
 
+# Our own unpublished crates use the Cookie Agent License (see LICENSE);
+# dependencies still need an allowed license.
+[licenses.private]
+ignore = true
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"

@@ -17,7 +17,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-license = "MIT"
+license-file = "LICENSE"
 repository = "https://github.com/cookie-agent/cookie-agent"
 rust-version = "1.88"
 

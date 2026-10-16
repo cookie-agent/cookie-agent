@@ -4,7 +4,7 @@ version = "0.3.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license-file.workspace = true
 
 [features]
 # OAuth for remote servers and the daemon's credential store. Only the

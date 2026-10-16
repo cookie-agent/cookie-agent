@@ -77,3 +77,23 @@ including the development version's [Installation](https://cookie-agent.github.i
 [Providers](https://cookie-agent.github.io/doc/dev/guide/providers/),
 [Plugins](https://cookie-agent.github.io/doc/dev/guide/plugins/), and
 [Agent permissions](https://cookie-agent.github.io/doc/dev/guide/agents/#permissions).
+
+## License
+
+cookie agent is licensed under the [Cookie Agent License](LICENSE): the Apache
+License 2.0 with one added condition. You can use, modify, fork, and self-host
+it for free, including commercially and as an internal tool for your team. The
+exception: an organization with annual revenue of USD 10,000 or more needs a
+commercial license to offer cookie agent (its daemon, gateway, or runtime, or a
+product that embeds them) to third parties as a hosted service. Contact
+realquantumcookie@gmail.com for one.
+
+By submitting a contribution, you agree to the contribution terms in the
+license, which let the project owner include your contribution in commercial
+licenses.
+
+The `cookie_agent_identity`, `cookie_agent_protocol`, and
+`cookie_agent_plugin_sdk` crates are licensed under the [MIT License](LICENSE-MIT),
+so plugins, clients, and runtimes that speak the protocol can be built and
+distributed under any terms. Releases published before 2026-10-16 remain under
+the MIT License.
