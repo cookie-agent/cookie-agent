@@ -7,6 +7,7 @@ configuration reference.
 | Specification | Status |
 |---|---|
 | [Runtimes](runtimes.md) | Implemented; daemon as gateway with global and coding runtimes, attachments, the runtime protocol, remote runtimes from `[runtimes.<id>]` templates, and template MCP servers; the manual labpc check is pending the author |
+| [Plugins: tools, hooks, events, and producers](plugins-v1.md) | Approved; plugin tools over the runtime tool messages, cleaned protocol on the runtime stack |
 | [External producers](external-producers.md) | Implemented; named producers for plugins and runtimes under one `external { source, name }` owner |
 | [Agent messaging](agent-messaging.md) | Implemented; governing contract for `send_message` agent-to-agent messaging |
 | [Subagent handles](subagent-handles.md) | Draft proposal; short tree-unique handles for model-facing session references |
