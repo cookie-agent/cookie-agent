@@ -347,6 +347,7 @@ shutdown_grace_ms = 2000
                         },
                     ]),
                     global: true,
+                    cwd: None,
                 },
             )
             .await

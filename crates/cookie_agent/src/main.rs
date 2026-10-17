@@ -568,6 +568,15 @@ fn data_dir() -> anyhow::Result<PathBuf> {
     paths::user_data_root().context("determine home directory for cookie agent data")
 }
 
+/// This process's canonical working directory, which the TUI sends as the
+/// directory of the sessions it creates; `None` when it is unavailable.
+#[cfg(feature = "tui")]
+fn client_directory() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let cwd = cwd.canonicalize().unwrap_or(cwd);
+    Some(cwd.to_string_lossy().into_owned())
+}
+
 #[cfg(feature = "tui")]
 async fn run_local_frontend(mut runtime: Runtime) -> anyhow::Result<()> {
     let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(128);
@@ -578,7 +587,7 @@ async fn run_local_frontend(mut runtime: Runtime) -> anyhow::Result<()> {
             .handshake_as(client_identity("tui"))
             .await
             .context("handshake with daemon")?;
-        cookie_agent_tui::run_with_new_session(client).await
+        cookie_agent_tui::run_with_new_session(client, client_directory()).await
     }
     .await;
     runtime.server.shutdown();
@@ -628,7 +637,7 @@ async fn run_attached_tui(url: &str, token: &str) -> anyhow::Result<()> {
             Ok(client)
         })
     });
-    cookie_agent_tui::run_attached(client, reconnector).await
+    cookie_agent_tui::run_attached(client, reconnector, client_directory()).await
 }
 
 #[cfg(not(feature = "tui"))]

@@ -332,8 +332,8 @@ pub struct SessionCreateParams {
     #[schemars(length(max = 256))]
     pub permission_rules: Vec<PermissionRule>,
     /// The runtimes the session attaches besides `global`, in order. When
-    /// omitted, the session attaches `local` (the daemon's working
-    /// directory). Instances that are not running are started first; a
+    /// omitted, the session attaches `local`'s `coding` capability at `cwd`,
+    /// or at the daemon's working directory. Instances that are not running are started first; a
     /// failure creates no session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 256))]
@@ -341,6 +341,11 @@ pub struct SessionCreateParams {
     /// Whether the session attaches the global runtime; `true` when omitted.
     #[serde(default = "attach_global", skip_serializing_if = "attaches_global")]
     pub global: bool,
+    /// The client's directory, as the client names it: the session's
+    /// `cwd_identity`, and the workspace of `local`'s `coding` capability
+    /// when `runtimes` is omitted. The daemon's own directory when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 const fn attach_global() -> bool {
@@ -363,6 +368,7 @@ impl SessionCreateParams {
             permission_rules: Vec::new(),
             runtimes: None,
             global: true,
+            cwd: None,
         }
     }
 }

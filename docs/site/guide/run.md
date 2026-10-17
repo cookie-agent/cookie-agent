@@ -65,6 +65,12 @@ interactive prompt, so a missing token is clap's standard required-argument
 error. The URL defaults to `ws://127.0.0.1:7419/ws` and may be changed with
 `--url`; only loopback WebSocket URLs with the exact `/ws` path are accepted.
 See [Server](../engine/server.md).
+
+One daemon serves sessions of any directory. The TUI, whether attached or
+running the daemon itself, creates its sessions for the directory it was
+started in: they work there with `local`'s `coding` capability, and its
+session list shows that directory's sessions. Sessions stay in the store of
+the directory the daemon started in.
 Configured plugins and eager MCP servers, which come only from the user
 `config.toml`, start during engine initialization, before a model tool call is
 approved. Repository `AGENTS.md` files and project skills still enter model

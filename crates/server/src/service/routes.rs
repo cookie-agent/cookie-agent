@@ -57,6 +57,7 @@ impl ServerProtocol for Server {
                     .collect()
             }),
             global: params.global,
+            cwd: params.cwd.map(std::path::PathBuf::from),
         };
         let session = self
             .engine

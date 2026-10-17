@@ -1,6 +1,6 @@
 # Persistent Daemon, Dial-in Runtimes, and Runtime Capabilities
 
-Status: **approved; phase 1 implemented** (decisions of 2026-10-16 below and
+Status: **approved; phases 1 and 2 implemented** (decisions of 2026-10-16 below and
 in [Review](#10-review); see [Implementation notes](#11-implementation-notes)). This spec extends the [runtimes spec](runtimes.md);
 where they differ, this one governs.
 
@@ -243,4 +243,9 @@ Confirmed in review 2026-10-16:
   connection has one implicit instance.
 - `cookie runtime coding --workspace` became
   `cookie runtime serve --stdio [--root <dir>]...`.
+
+**Phase 2** (2026-10-16): the TUI binary passes its canonical directory, so
+both plain `cookie` and `cookie attach` create sessions for it and list only
+its sessions; a session list without a directory (tests, other clients)
+shows every session.
 

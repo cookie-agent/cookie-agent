@@ -89,9 +89,10 @@ impl Harness {
             }
         });
         let client = Client::connect_stream(TestStream { incoming, sent });
-        let mut app = App::new_with_config(client, false, TuiConfig::default(), Theme::default())
-            .await
-            .unwrap();
+        let mut app =
+            App::new_with_config(client, false, None, TuiConfig::default(), Theme::default())
+                .await
+                .unwrap();
         app.install_initial_runtime(runtime);
         app.selected = Some(template.session_id);
         app.draft = Some(selection.clone());

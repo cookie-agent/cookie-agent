@@ -27,13 +27,17 @@ pub struct SessionRuntimeRequest {
     pub workspace: Option<PathBuf>,
 }
 
-/// The runtimes a new session attaches.
+/// Where a new session works and the runtimes it attaches.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionRuntimes {
-    /// Runtimes besides `global`, in order; `None` attaches `local`.
+    /// Runtimes besides `global`, in order; `None` attaches `local`'s
+    /// `coding` capability at `cwd`.
     pub runtimes: Option<Vec<SessionRuntimeRequest>>,
     /// Whether the session attaches the global runtime.
     pub global: bool,
+    /// The client's directory: the session's cwd identity and the default
+    /// `coding` workspace. The daemon's own directory when `None`.
+    pub cwd: Option<PathBuf>,
 }
 
 impl Default for SessionRuntimes {
@@ -41,6 +45,7 @@ impl Default for SessionRuntimes {
         Self {
             runtimes: None,
             global: true,
+            cwd: None,
         }
     }
 }
@@ -207,9 +212,23 @@ impl Engine {
             push_instance(&mut attachments, self.inner.runtimes.global())?;
         }
         match &runtimes.runtimes {
-            None => {
-                push_instance(&mut attachments, self.inner.runtimes.local())?;
-            }
+            None => match &runtimes.cwd {
+                Some(cwd) => {
+                    let instance = self
+                        .inner
+                        .runtimes
+                        .ensure(
+                            RuntimeId::LOCAL,
+                            Some(cookie_agent_protocol::CapabilityName::CODING),
+                            Some(cwd),
+                        )
+                        .await?;
+                    push_instance(&mut attachments, &instance)?;
+                }
+                None => {
+                    push_instance(&mut attachments, self.inner.runtimes.local())?;
+                }
+            },
             Some(requests) => {
                 for request in requests {
                     let instance = self

@@ -1116,3 +1116,54 @@ async fn a_session_attaches_each_capability_of_a_runtime_separately() {
     assert_eq!(recorded, ["coding", "notes"]);
     fixture.engine.shutdown().await;
 }
+
+/// A daemon serves sessions of any directory: a session created for the
+/// client's directory records it and works there with `local`'s `coding`.
+#[tokio::test]
+async fn a_session_created_for_a_client_directory_works_there() {
+    let (fixture, selection) = custom_fixture();
+    let client_directory = workspace_dir(fixture._directory.path(), "client-repo");
+    let canonical = client_directory.canonicalize().unwrap();
+    let session = fixture
+        .engine
+        .create_session_with_permissions(
+            selection.clone(),
+            None,
+            Vec::new(),
+            crate::SessionRuntimes {
+                cwd: Some(client_directory.clone()),
+                ..crate::SessionRuntimes::default()
+            },
+        )
+        .await
+        .expect("session");
+    assert_eq!(session.cwd_identity.as_str(), canonical.to_string_lossy());
+    let attachments = fixture
+        .engine
+        .session_runtimes(session.session_id)
+        .expect("attachments");
+    let coding = attachments
+        .iter()
+        .find(|attachment| attachment.runtime_id.as_str() == "local")
+        .expect("local coding");
+    assert_eq!(coding.capability.as_str(), "coding");
+    assert_eq!(
+        coding.workspace.as_deref(),
+        Some(canonical.to_string_lossy().as_ref())
+    );
+    assert_eq!(coding.name.as_str(), "local_client_repo");
+
+    // Without a directory the daemon's own is used, as before.
+    let default = fixture
+        .engine
+        .create_session_with_permissions(
+            selection,
+            None,
+            Vec::new(),
+            crate::SessionRuntimes::default(),
+        )
+        .await
+        .expect("default session");
+    assert_ne!(default.cwd_identity, session.cwd_identity);
+    fixture.engine.shutdown().await;
+}

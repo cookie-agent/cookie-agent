@@ -77,7 +77,8 @@ attached; `session.create` runtime entries, `session.runtime.attach`, and
 `runtimes.reconnect` take an optional `capability`; `runtimes.list` returns
 `runtimes` (each runtime's lifetime, connection state, and capabilities) in
 place of `templates`, and its instances and `runtimes.changed` failures name
-their capability. A runtime now produces as `runtime:<runtime ID>` rather
+their capability; `session.create` takes the client's `cwd`. A runtime now
+produces as `runtime:<runtime ID>` rather
 than `runtime:<attachment name>`. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
@@ -177,7 +178,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `runtime.snapshot.get` | Empty object | One coherent runtime snapshot |
 | `provider.connect` | Provider, expected catalog revision, setup/auth values, client ID | Durable connection, effective auth, snapshot, replay state |
 | `provider.disconnect` | Provider, expected revisions/generation, client ID | Disconnect receipt, effective auth, snapshot, replay state |
-| `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, workspace? }]`), optional `global` (default `true`) | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
+| `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory) | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
 | `session.list` | Optional cwd identity | Root session metadata list with skipped-event diagnostics |
 | `session.get` | Session ID | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
 | `session.goal.get` | Session ID | Required nullable `goal: GoalState` |
@@ -242,8 +243,11 @@ session's attachments in attach order; clients follow later changes through the
 
 `session.create` attaches `global` unless `global` is `false`, then each entry
 of `runtimes` (`runtime_id`, optional `capability`, optional `workspace`) in
-order; without `runtimes` it attaches `local`'s `coding` capability at the
-daemon's working directory. An empty `runtimes` list creates a
+order; without `runtimes` it attaches `local`'s `coding` capability at `cwd`,
+or at the daemon's working directory without one. `cwd` is the client's
+directory as it names it: the session records it as its `cwd_identity`, so
+one daemon serves sessions of many directories and `session.list` with a
+`cwd_identity` shows one directory's. An empty `runtimes` list creates a
 session with no coding runtime. Instances that are not running are started
 first, and a failure creates no session.
 

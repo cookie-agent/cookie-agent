@@ -91,7 +91,11 @@ impl Engine {
             .validate()
             .map_err(|error| EngineError::Permission(error.to_string()))?;
         let attachments = self.resolve_session_runtimes(&runtimes).await?;
-        let meta = self.create_session_attached(selection, &attachments)?;
+        let cwd = runtimes
+            .cwd
+            .as_deref()
+            .unwrap_or_else(|| self.inner.store.cwd());
+        let meta = self.create_session_in(selection, &attachments, cwd)?;
         let session_id = meta.session_id;
         self.connect_session(session_id).await;
         if !overlay.rules.is_empty() {
@@ -122,9 +126,20 @@ impl Engine {
         selection: RunSelection,
         attachments: &[cookie_agent_protocol::RuntimeAttachment],
     ) -> Result<SessionMeta, EngineError> {
+        self.create_session_in(selection, attachments, self.inner.store.cwd())
+    }
+
+    /// Creates a root session of the client directory `cwd` whose creation
+    /// also records `attachments`.
+    fn create_session_in(
+        &self,
+        selection: RunSelection,
+        attachments: &[cookie_agent_protocol::RuntimeAttachment],
+        cwd: &std::path::Path,
+    ) -> Result<SessionMeta, EngineError> {
         let (runtime, policy) = self.freeze_selection_policy(&selection)?;
         let id = SessionId::new_v7();
-        let cwd_identity = cwd_identity(self.inner.store.cwd())?;
+        let cwd_identity = cwd_identity(cwd)?;
         // A new root begins an empty tree, so its first handle is trivially
         // unique; it still goes through the same generation path so every
         // session carries a handle uniformly.

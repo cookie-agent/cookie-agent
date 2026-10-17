@@ -67,7 +67,7 @@ async fn app_with_replies(replies: Vec<Value>) -> (App, Arc<Mutex<Vec<Value>>>) 
         incoming: incoming_rx,
         sent,
     });
-    let app = App::new_with_config(client, false, TuiConfig::default(), Theme::default())
+    let app = App::new_with_config(client, false, None, TuiConfig::default(), Theme::default())
         .await
         .expect("app");
     recorded.lock().expect("requests").clear();

@@ -90,7 +90,12 @@ impl App {
     pub(in crate::ui) async fn refresh_lists(&mut self) {
         match self
             .client
-            .list_sessions(SessionListParams::default())
+            .list_sessions(SessionListParams {
+                cwd_identity: self
+                    .cwd
+                    .as_deref()
+                    .and_then(|cwd| cookie_agent_protocol::CwdIdentity::new(cwd).ok()),
+            })
             .await
         {
             Ok(result) => {
@@ -159,7 +164,12 @@ impl App {
                     .find(|existing| existing.session_id == session.session_id)
                 {
                     *existing = session;
-                } else if matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root) {
+                } else if matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root)
+                    && self
+                        .cwd
+                        .as_deref()
+                        .is_none_or(|cwd| session.cwd_identity.as_str() == cwd)
+                {
                     // A root another client created; children join the cache
                     // when the Agents tree loads them.
                     self.sessions.push(session);

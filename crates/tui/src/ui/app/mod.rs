@@ -584,6 +584,9 @@ enum AgentPanelMode {
 }
 
 pub struct App {
+    /// The client's directory, when the binary gave one: sessions it
+    /// creates record it, and the session list shows its sessions only.
+    cwd: Option<String>,
     pub(super) client: Client,
     pub(super) deliveries: Option<tokio::sync::mpsc::UnboundedReceiver<ClientDelivery>>,
     pub(super) rpc_updates_tx: tokio::sync::mpsc::UnboundedSender<RpcUpdate>,
@@ -1143,12 +1146,13 @@ impl App {
     ) -> Result<Self, crate::config::TuiConfigError> {
         let tui_config = crate::config::load(None)?;
         let theme = crate::terminal_detect::theme_without_terminal_detection(tui_config.theme);
-        Self::new_with_config(client, create_new_session, tui_config, theme).await
+        Self::new_with_config(client, create_new_session, None, tui_config, theme).await
     }
 
     async fn new_with_config(
         client: Client,
         create_new_session: bool,
+        cwd: Option<String>,
         tui_config: TuiConfig,
         theme: Theme,
     ) -> Result<Self, crate::config::TuiConfigError> {
@@ -1160,6 +1164,7 @@ impl App {
         let (rpc_updates_tx, rpc_updates_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = Self {
             client,
+            cwd,
             deliveries: Some(deliveries),
             rpc_updates_tx,
             rpc_updates_rx,
@@ -1428,6 +1433,7 @@ impl App {
             .create_session(SessionCreateParams {
                 permission_mode: self.draft_permissions.mode,
                 permission_rules: self.draft_permissions.rules.clone(),
+                cwd: self.cwd.clone(),
                 ..SessionCreateParams::new(selection)
             })
             .await
@@ -1583,24 +1589,33 @@ pub type Reconnector = std::sync::Arc<
 
 /// Run the terminal UI against a connected client.
 pub async fn run_with_client(client: Client) -> anyhow::Result<()> {
-    run_terminal(client, false, None).await
+    run_terminal(client, false, None, None).await
 }
 
 /// Run the terminal UI against a daemon it reconnects to with
 /// `reconnector` whenever the connection drops.
-pub async fn run_attached(client: Client, reconnector: Reconnector) -> anyhow::Result<()> {
-    run_terminal(client, false, Some(reconnector)).await
+///
+/// `cwd` is the client's directory: new sessions record it and work in it by
+/// default, and the session list shows its sessions.
+pub async fn run_attached(
+    client: Client,
+    reconnector: Reconnector,
+    cwd: Option<String>,
+) -> anyhow::Result<()> {
+    run_terminal(client, false, Some(reconnector), cwd).await
 }
 
-/// Run the terminal UI with a newly created root session.
-pub async fn run_with_new_session(client: Client) -> anyhow::Result<()> {
-    run_terminal(client, true, None).await
+/// Run the terminal UI with a newly created root session; see
+/// [`run_attached`] for `cwd`.
+pub async fn run_with_new_session(client: Client, cwd: Option<String>) -> anyhow::Result<()> {
+    run_terminal(client, true, None, cwd).await
 }
 
 async fn run_terminal(
     client: Client,
     create_new_session: bool,
     reconnector: Option<Reconnector>,
+    cwd: Option<String>,
 ) -> anyhow::Result<()> {
     crate::markdown::warm_up_syntax_assets();
     install_terminal_panic_hook();
@@ -1613,7 +1628,7 @@ async fn run_terminal(
         detection_source = %detection.source,
         "TUI theme selected"
     );
-    let mut app = App::new_with_config(client, create_new_session, tui_config, theme)
+    let mut app = App::new_with_config(client, create_new_session, cwd, tui_config, theme)
         .await
         .context("initialize TUI")?;
     app.reconnector = reconnector;
