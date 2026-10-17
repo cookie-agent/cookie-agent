@@ -7,6 +7,13 @@ splitting tool execution and workspace context out of the engine into
 attachable *runtimes*. Section [Open questions](#14-open-questions) lists
 anything still undecided.
 
+The [runtime capabilities spec](runtime-capabilities.md) later changed parts
+of this one: a runtime offers capabilities over one connection that serves
+every workspace (runtime protocol 5), instances are keyed by
+(runtime ID, capability, workspace), templates no longer substitute
+`{workspace}`, runtimes can dial in, and the daemon serves sessions of any
+directory. Where the two differ, that spec governs.
+
 ## 1. Goal and scope
 
 cookie agent aims to cover both coding-agent use (opencode) and personal
