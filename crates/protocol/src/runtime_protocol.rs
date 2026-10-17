@@ -543,7 +543,7 @@ pub struct DetachableParams {
 
 // --- errors ------------------------------------------------------------------------
 
-/// A [`ToolError`] on the wire.
+/// A runtime API `ToolError` on the wire.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WireToolError {

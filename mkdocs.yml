@@ -111,6 +111,7 @@ nav:
       - Runtimes: specs/runtimes.md
       - Background tool calls: specs/background-tools.md
       - External producers: specs/external-producers.md
+      - Persistent daemon and runtime capabilities: specs/runtime-capabilities.md
       - Plugins (tools, hooks, events, producers): specs/plugins-v1.md
       - Tool output streams: specs/tool-output-streams.md
       - Agent messaging: specs/agent-messaging.md
