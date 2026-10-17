@@ -27,8 +27,7 @@ fn provider() -> ProviderDescriptor {
                 "help": "API region endpoint",
                 "required": true,
                 "default": "us-east-1",
-                "validation": {"value_type": "string", "min_length": 1, "max_length": 32, "minimum": null, "maximum": null},
-                "safe_to_project": true
+                "validation": {"value_type": "string", "min_length": 1, "max_length": 32, "minimum": null, "maximum": null}
             }],
             "auth_methods": [{
                 "id": "api-key",

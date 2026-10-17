@@ -9,9 +9,17 @@ providers can still be available through the catalog and user provider store.
 
 `/connect` in the TUI, or `cookie connect --token <TOKEN>` against the daemon
 (or set `COOKIE_DAEMON_TOKEN`), walks through provider setup and
-authentication. Connections are stored globally for the
-current user, not in `config.toml`. Setup is validated locally; the first
-model request tests the credentials. Never commit credential-bearing files.
+authentication: choose the auth method, fill in its setup values (a region,
+project, or resource name, shown and pre-filled from the stored connection),
+then type the credentials, which are masked. Connections are stored in the
+daemon's provider store (`~/.cookie-agent/providers/` on the daemon's
+machine), not in `config.toml`. Setup is validated locally; the first model
+request tests the credentials. A failed connect keeps what you typed in the
+TUI's form, so it can be corrected and resent; a connect that raced a
+catalog refresh is retried once when the provider's form did not change.
+Errors name the cause, such as `missing_setup_field`, `missing_credential`,
+or `custom_provider_not_store_backed` for a `[providers.*]` provider. Never
+commit credential-bearing files.
 
 At startup, the engine serves the validated catalog cache (or the bundled
 catalog on first run) and refreshes `https://models.dev/catalog.json` in the

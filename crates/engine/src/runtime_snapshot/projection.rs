@@ -344,14 +344,10 @@ fn provider_descriptor(
                     family_registry().by_npm(connection.policy.package_claim.as_str())
                 })
         });
-    let mut setup_ids = BTreeMap::<String, bool>::new();
+    let mut setup_ids = BTreeSet::<String>::new();
     let mut add_template = |template: &str| {
         for name in placeholders(template) {
-            let secret = placeholder_is_secret(&name);
-            setup_ids
-                .entry(setup_field_name(&name))
-                .and_modify(|value| *value |= secret)
-                .or_insert(secret);
+            setup_ids.insert(setup_field_name(&name));
         }
     };
     if let Some(record) = record {
@@ -376,21 +372,21 @@ fn provider_descriptor(
         match recipe.family {
             cookie_agent_models::recipes::FamilyKind::Vertex
             | cookie_agent_models::recipes::FamilyKind::VertexAnthropic => {
-                setup_ids.insert("project".to_owned(), false);
-                setup_ids.insert("location".to_owned(), false);
+                setup_ids.insert("project".to_owned());
+                setup_ids.insert("location".to_owned());
             }
             cookie_agent_models::recipes::FamilyKind::Bedrock => {
-                setup_ids.insert("region".to_owned(), false);
+                setup_ids.insert("region".to_owned());
             }
             cookie_agent_models::recipes::FamilyKind::Azure => {
-                setup_ids.insert("resource_name".to_owned(), false);
+                setup_ids.insert("resource_name".to_owned());
             }
             _ => {}
         }
     }
     let mut setup_fields = setup_ids
         .iter()
-        .map(|(id, secret)| setup_descriptor(id, *secret))
+        .map(|id| setup_descriptor(id))
         .collect::<Result<Vec<_>, EngineError>>()?;
     setup_fields.sort_by(|left, right| left.id.cmp(&right.id));
     let mut auth_methods = if let Some(recipe) = recipe {
@@ -454,15 +450,7 @@ fn provider_descriptor(
     })
 }
 
-fn placeholder_is_secret(name: &str) -> bool {
-    let name = name.to_ascii_uppercase();
-    name.contains("KEY") || name.contains("TOKEN") || name.contains("SECRET")
-}
-
-fn setup_descriptor(
-    field: &str,
-    secret: bool,
-) -> Result<protocol::SetupFieldDescriptor, EngineError> {
+fn setup_descriptor(field: &str) -> Result<protocol::SetupFieldDescriptor, EngineError> {
     let id = protocol::SetupFieldId::new(field).map_err(|_| EngineError::RuntimeCompileFailed)?;
     Ok(protocol::SetupFieldDescriptor {
         id,
@@ -479,7 +467,6 @@ fn setup_descriptor(
             minimum: None,
             maximum: None,
         },
-        safe_to_project: !secret,
     })
 }
 

@@ -123,7 +123,6 @@ mod tests {
                 minimum: None,
                 maximum: None,
             },
-            safe_to_project: true,
         }
     }
 

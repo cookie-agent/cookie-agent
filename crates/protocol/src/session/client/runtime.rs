@@ -41,6 +41,45 @@ impl Client {
         }
     }
 
+    /// Connects a provider the way every client should: the identical
+    /// request once more after store contention (the daemon replays a
+    /// commit whose answer was lost), and once more against the new catalog
+    /// revision when a catalog refresh landed in between and `provider`'s
+    /// form (its setup fields and auth methods) is unchanged in it.
+    pub async fn connect_provider_retrying(
+        &self,
+        mut params: ProviderConnectParams,
+        provider: &crate::ProviderDescriptor,
+    ) -> Result<ProviderConnectResult, ClientError> {
+        let (mut contention_retried, mut catalog_retried) = (false, false);
+        loop {
+            let error = match self.connect_provider(params.clone()).await {
+                Ok(result) => return Ok(result),
+                Err(error) => error,
+            };
+            match error.rpc_error_code() {
+                Some("lock_contention") if !contention_retried => contention_retried = true,
+                Some("catalog_revision_conflict") if !catalog_retried => {
+                    catalog_retried = true;
+                    let snapshot = self.runtime_snapshot().await?.snapshot;
+                    let unchanged = snapshot.providers.iter().any(|current| {
+                        current.id == provider.id
+                            && current.setup_fields == provider.setup_fields
+                            && current.auth_methods == provider.auth_methods
+                    });
+                    if !unchanged {
+                        return Err(error);
+                    }
+                    params.expected_catalog_revision = snapshot.catalog_revision;
+                    params.client_connect_id =
+                        crate::ClientConnectId::new(uuid::Uuid::now_v7().to_string())
+                            .expect("uuid-derived client connect id");
+                }
+                _ => return Err(error),
+            }
+        }
+    }
+
     pub async fn disconnect_provider(
         &self,
         params: ProviderDisconnectParams,

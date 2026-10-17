@@ -124,6 +124,22 @@ pub enum ClientError {
     ReplayTimedOut,
 }
 
+impl ClientError {
+    /// The typed `code` a daemon error carries in its data, such as
+    /// `lock_contention` or `catalog_revision_conflict`.
+    #[must_use]
+    pub fn rpc_error_code(&self) -> Option<&str> {
+        match self {
+            Self::Rpc(rpc) => rpc
+                .data
+                .as_ref()
+                .and_then(|data| data.get("code"))
+                .and_then(Value::as_str),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ReplayRequest {
     session_id: SessionId,

@@ -1,3 +1,5 @@
+use cookie_agent_protocol::ProviderId;
+
 /// A syntactically valid 43-character base64url daemon token.
 const TEST_TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
@@ -232,7 +234,6 @@ fn provider(state: ProviderSupportState) -> ProviderDescriptor {
                 minimum: None,
                 maximum: None,
             },
-            safe_to_project: true,
         }],
         auth_methods: vec![AuthMethodDescriptor {
             id: cookie_agent_protocol::AuthMethodId::new("bearer-api-key-v1").unwrap(),
@@ -812,33 +813,18 @@ fn headless_model_errors_name_the_unavailable_reason() {
 }
 
 #[test]
-fn sensitive_connect_serialization_has_current_contract_and_drop_wipes_source() {
+fn typed_credentials_become_protocol_credentials_and_the_source_is_wiped() {
     let before = SECRET_VALUES_WIPED.load(TestOrdering::SeqCst);
-    let mut params = SensitiveProviderConnectParams {
-        provider_id: ProviderId::new("openai").unwrap(),
-        expected_catalog_revision: cookie_agent_protocol::CatalogRevision::new(format!(
-            "sha256:{}",
-            "0".repeat(64)
-        ))
-        .unwrap(),
-        setup_values: BTreeMap::new(),
-        auth_method: cookie_agent_protocol::AuthMethodId::new("bearer-api-key-v1").unwrap(),
-        auth_values: SecretValues(BTreeMap::from([(
-            "api_key".into(),
-            "invented-test-placeholder".into(),
-        )])),
-        client_connect_id: ClientConnectId::new("connect-1").unwrap(),
-    };
-    let encoded = serde_json::to_value(&params).unwrap();
-    assert!(encoded.get("expected_catalog_revision").is_some());
-    assert!(encoded.get("setup_values").is_some());
-    assert!(encoded.get("auth_values").is_some());
-    assert!(encoded.get("credentials").is_none());
-    for value in params.auth_values.0.values_mut() {
-        value.zeroize();
-        assert!(value.is_empty());
-    }
-    drop(params);
+    let credentials = SecretValues(BTreeMap::from([(
+        "api_key".into(),
+        "invented-test-placeholder".into(),
+    )]))
+    .into_credentials()
+    .expect("credentials");
+    assert_eq!(
+        credentials.get(&cookie_agent_protocol::AuthFieldName::new("api_key").unwrap()),
+        Some("invented-test-placeholder")
+    );
     assert!(SECRET_VALUES_WIPED.load(TestOrdering::SeqCst) > before);
 }
 
@@ -1160,6 +1146,96 @@ async fn connect_reconnect_and_disconnect_are_idempotent() {
             .unwrap()
             .replayed
     );
+    runtime.server.shutdown();
+    runtime.stop_catalog_refresh().await;
+    runtime.engine.shutdown().await;
+}
+
+/// A catalog refresh between reading the snapshot and connecting is retried
+/// against the new revision, unless the provider's form changed with it.
+#[tokio::test]
+async fn connect_retries_a_catalog_conflict_when_the_provider_form_is_unchanged() {
+    let temporary = tempfile::tempdir().unwrap();
+    private_directory(temporary.path());
+    let workspace = temporary.path().join("workspace");
+    let cache_anchor = temporary.path().join("cache-anchor");
+    write_empty_config(&workspace);
+    private_directory(&cache_anchor);
+    let mut runtime = compose_isolated(
+        &workspace,
+        || {
+            Ok(OfflineTransport {
+                fetches: Arc::new(AtomicUsize::new(0)),
+                body: openai_catalog(),
+            })
+        },
+        |transport| CatalogManager::in_directory(transport, &cache_anchor, "catalog"),
+        || ProviderStore::open(temporary.path().join("providers")),
+        || Ok(temporary.path().join("data")),
+    )
+    .await
+    .unwrap();
+    await_initial_catalog_refresh(&runtime).await;
+    let stale = runtime.engine.runtime_snapshot().unwrap().snapshot;
+    let provider = stale
+        .providers
+        .iter()
+        .find(|provider| provider.id.as_str() == "openai")
+        .unwrap()
+        .clone();
+    // The same provider under a new catalog revision: a model was renamed.
+    let renamed = String::from_utf8(openai_catalog().to_vec())
+        .unwrap()
+        .replace(r#""name":"GPT Test""#, r#""name":"GPT Renamed""#);
+    let refreshed = CatalogManager::in_directory(
+        OfflineTransport {
+            fetches: Arc::new(AtomicUsize::new(0)),
+            body: Arc::new(renamed.into_bytes()),
+        },
+        &cache_anchor,
+        "refreshed-catalog",
+    )
+    .refresh()
+    .await
+    .unwrap();
+    runtime.engine.refresh_catalog(Arc::new(refreshed)).unwrap();
+    assert_ne!(
+        runtime
+            .engine
+            .runtime_snapshot()
+            .unwrap()
+            .snapshot
+            .catalog_revision,
+        stale.catalog_revision
+    );
+
+    let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
+    let server_task = tokio::spawn(runtime.server.clone().serve_stream(server_stream));
+    let client = Client::connect_stream(client_stream);
+    client.handshake().await.unwrap();
+    let params = || cookie_agent_protocol::ProviderConnectParams {
+        provider_id: provider.id.clone(),
+        expected_catalog_revision: stale.catalog_revision.clone(),
+        setup_values: BTreeMap::new(),
+        auth_method: cookie_agent_protocol::AuthMethodId::new("bearer-api-key-v1").unwrap(),
+        auth_values: serde_json::from_value(serde_json::json!({"api_key": "placeholder"})).unwrap(),
+        client_connect_id: ClientConnectId::new(Uuid::now_v7().to_string()).unwrap(),
+    };
+    // A form that no longer matches the provider is not retried.
+    let mut changed = provider.clone();
+    changed.auth_methods.clear();
+    let error = client
+        .connect_provider_retrying(params(), &changed)
+        .await
+        .expect_err("a changed form is not retried");
+    assert_eq!(error.rpc_error_code(), Some("catalog_revision_conflict"));
+    let connected = client
+        .connect_provider_retrying(params(), &provider)
+        .await
+        .expect("retried against the new catalog");
+    assert_eq!(connected.durable_connection.provider_id, provider.id);
+    drop(client);
+    server_task.await.unwrap().unwrap();
     runtime.server.shutdown();
     runtime.stop_catalog_refresh().await;
     runtime.engine.shutdown().await;

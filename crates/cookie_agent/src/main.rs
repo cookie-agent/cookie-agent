@@ -21,7 +21,7 @@ use cookie_agent_protocol::{
     AuthMethodDescriptor, Client, ClientConnectId, ClientRequestId, EffectiveAuthState,
     McpAuthBeginParams, McpAuthCancelParams, McpAuthCompleteParams, McpServerState,
     ProviderConfigurationState, ProviderConnectResult, ProviderDescriptor,
-    ProviderDisconnectParams, ProviderDisconnectResult, ProviderId, ProviderSupportState,
+    ProviderDisconnectParams, ProviderDisconnectResult, ProviderSupportState,
     RuntimeSnapshotResult, SafeCode, SafeSetupValue, parse_setup_value, paths, setup_value_text,
     validate_websocket_url,
 };
@@ -94,7 +94,7 @@ enum Command {
         #[command(flatten)]
         args: Box<run::RunArgs>,
     },
-    /// Serve the exact cookie-agent protocol 45 JSON-RPC WebSocket daemon on localhost.
+    /// Serve the exact cookie-agent protocol 46 JSON-RPC WebSocket daemon on localhost.
     Daemon {
         /// Localhost port to bind. `0` selects an ephemeral port; the ready line
         /// reports the real one.
@@ -257,14 +257,13 @@ impl Drop for SecretValues {
     }
 }
 
-#[derive(Serialize)]
-struct SensitiveProviderConnectParams {
-    provider_id: ProviderId,
-    expected_catalog_revision: cookie_agent_protocol::CatalogRevision,
-    setup_values: BTreeMap<cookie_agent_protocol::SetupFieldId, SafeSetupValue>,
-    auth_method: cookie_agent_protocol::AuthMethodId,
-    auth_values: SecretValues,
-    client_connect_id: ClientConnectId,
+impl SecretValues {
+    /// The protocol's credential map, built without leaving a plaintext
+    /// copy behind: the JSON in between is zeroized.
+    fn into_credentials(self) -> anyhow::Result<cookie_agent_protocol::ProviderCredentialValues> {
+        let serialized = Zeroizing::new(serde_json::to_vec(&self)?);
+        serde_json::from_slice(&serialized).context("credentials")
+    }
 }
 
 trait ConnectIo {
@@ -894,13 +893,14 @@ async fn run_connect_with<I: ConnectIo>(
         anyhow::bail!("provider connection cancelled");
     }
 
-    let setup_values = collect_setup_values(provider, |prompt| io.read_public(prompt))?;
+    // The TUI's order: the auth method, its setup values, then credentials.
     let auth_method = choose_auth_method(provider, io)?;
-    let auth_values = collect_auth_values(auth_method, |prompt| io.read_secret(prompt))?;
+    let setup_values = collect_setup_values(provider, |prompt| io.read_public(prompt))?;
+    let auth_values =
+        collect_auth_values(auth_method, |prompt| io.read_secret(prompt))?.into_credentials()?;
     let result: ProviderConnectResult = client
-        .call_sensitive(
-            "provider.connect",
-            SensitiveProviderConnectParams {
+        .connect_provider_retrying(
+            cookie_agent_protocol::ProviderConnectParams {
                 provider_id: provider.id.clone(),
                 expected_catalog_revision: runtime.snapshot.catalog_revision,
                 setup_values,
@@ -909,6 +909,7 @@ async fn run_connect_with<I: ConnectIo>(
                 client_connect_id: ClientConnectId::new(Uuid::now_v7().to_string())
                     .expect("UUID is a valid connect ID"),
             },
+            provider,
         )
         .await
         .context("provider.connect failed")?;

@@ -158,7 +158,6 @@ pub struct SetupFieldDescriptor {
     #[schemars(with = "crate::NullableSchema<SafeSetupValue>", required)]
     pub default: Option<SafeSetupValue>,
     pub validation: SetupFieldValidation,
-    pub safe_to_project: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -762,7 +761,7 @@ impl<'de> Deserialize<'de> for ProviderDisconnectResult {
 pub enum ProviderConnectErrorCode {
     UnknownProvider,
     UnsupportedProvider,
-    QuarantinedProvider,
+    CustomProviderNotStoreBacked,
     RemovedWithoutRetainedRecipeMatch,
     CatalogRevisionConflict,
     MissingSetupField,
@@ -787,7 +786,6 @@ pub struct ProviderConnectError {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderDisconnectErrorCode {
-    InvalidProvider,
     CustomProviderNotStoreBacked,
     RuntimeRevisionConflict,
     ProviderStateRevisionConflict,

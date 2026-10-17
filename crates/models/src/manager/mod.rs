@@ -2160,7 +2160,10 @@ fn normalize_connect(
         .iter()
         .map(|field| field.name)
         .collect::<BTreeSet<_>>();
-    if !required.is_subset(&actual) || !actual.is_subset(&allowed) {
+    if !required.is_subset(&actual) {
+        return Err(ModelManagerError::MissingCredentials);
+    }
+    if !actual.is_subset(&allowed) {
         return Err(ModelManagerError::InvalidCredentials);
     }
     let endpoint = if let Some(record) = current
@@ -2251,18 +2254,19 @@ fn resolved_provider_endpoint(
         .collect::<Result<BTreeMap<_, _>, ModelManagerError>>()?;
     let template = record.api.as_deref().or(recipe.default_endpoint);
     if let Some(template) = template {
+        // A placeholder the setup values do not fill is a missing field.
         return crate::recipes::substitute_placeholders(template, &values)
             .map(|value| value.trim_end_matches('/').to_owned())
-            .ok_or(ModelManagerError::InvalidSetup);
+            .ok_or(ModelManagerError::MissingSetup);
     }
     match recipe.family {
         crate::recipes::FamilyKind::Vertex | crate::recipes::FamilyKind::VertexAnthropic => {
             let project = values
                 .get("project")
-                .ok_or(ModelManagerError::InvalidSetup)?;
+                .ok_or(ModelManagerError::MissingSetup)?;
             let location = values
                 .get("location")
-                .ok_or(ModelManagerError::InvalidSetup)?;
+                .ok_or(ModelManagerError::MissingSetup)?;
             Ok(format!(
                 "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}"
             ))
@@ -2708,10 +2712,14 @@ pub enum ModelManagerError {
     CustomProviderNotStoreBacked,
     #[error("invalid_setup")]
     InvalidSetup,
+    #[error("missing_setup")]
+    MissingSetup,
     #[error("unsupported_auth_method")]
     UnsupportedAuthMethod,
     #[error("invalid_credentials")]
     InvalidCredentials,
+    #[error("missing_credentials")]
+    MissingCredentials,
     #[error("runtime_compile_failed")]
     RuntimeCompileFailed,
     #[error("unknown_model")]

@@ -1098,8 +1098,7 @@ pub(crate) fn provider_descriptor(
                 "help": "Public service region",
                 "required": true,
                 "default": "us-west-2",
-                "validation": {"value_type": "string", "min_length": 2, "max_length": 32, "minimum": null, "maximum": null},
-                "safe_to_project": true
+                "validation": {"value_type": "string", "min_length": 2, "max_length": 32, "minimum": null, "maximum": null}
             }],
             "auth_methods": [{
                 "id": "api-key",
@@ -1196,17 +1195,15 @@ pub(crate) fn multi_auth_provider() -> cookie_agent_protocol::ProviderDescriptor
             "help": "Public service region",
             "required": true,
             "default": null,
-            "validation": {"value_type": "string", "min_length": 1, "max_length": 32, "minimum": null, "maximum": null},
-            "safe_to_project": true
+            "validation": {"value_type": "string", "min_length": 1, "max_length": 32, "minimum": null, "maximum": null}
         },
         {
             "id": "service_token",
             "display_name": "Service token",
-            "help": "Derived secret setup placeholder",
+            "help": "Derived setup placeholder",
             "required": true,
             "default": null,
-            "validation": {"value_type": "string", "min_length": 1, "max_length": 64, "minimum": null, "maximum": null},
-            "safe_to_project": false
+            "validation": {"value_type": "string", "min_length": 1, "max_length": 64, "minimum": null, "maximum": null}
         }
     ]);
     serde_json::from_value(value).expect("multi-auth provider")

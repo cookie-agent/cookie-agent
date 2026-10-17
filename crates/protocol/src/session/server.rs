@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json, value::RawValue};
 use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
+use zeroize::Zeroize as _;
 
 use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
@@ -896,11 +897,25 @@ enum Incoming {
     },
 }
 
+/// Parses a request frame. The frame's own buffer is wiped once parsed: a
+/// `provider.connect` request carries credentials, and the typed params that
+/// end up holding them zeroize when dropped.
 fn parse_incoming(frame: MessageFrame) -> Result<Value, ServerFault> {
     let parsed = match frame {
         MessageFrame::Value(value) => return Ok(value),
-        MessageFrame::Text(text) => serde_json::from_str(&text),
-        MessageFrame::Bytes(bytes) => serde_json::from_slice(&bytes),
+        MessageFrame::Text(mut text) => {
+            let parsed = serde_json::from_str(&text);
+            text.zeroize();
+            parsed
+        }
+        MessageFrame::Bytes(bytes) => {
+            let parsed = serde_json::from_slice(&bytes);
+            // Shared bytes another holder still reads are left alone.
+            if let Ok(mut owned) = bytes.try_into_mut() {
+                owned.as_mut().zeroize();
+            }
+            parsed
+        }
     };
     parsed.map_err(|_| ServerFault::new(-32700, "parse error", None))
 }

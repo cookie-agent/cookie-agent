@@ -453,9 +453,10 @@ async fn connect_form_cycles_auth_masks_secrets_traverses_and_submits_selected_m
     assert!(rendered.contains("Credentials are verified on first use."));
     assert!(rendered.contains("Setup:"));
     assert!(rendered.contains("service_token"));
+    // Credentials are masked; setup values, whatever their name, are not.
     assert!(rendered.contains('•'));
     assert!(!rendered.contains("bearer-secret"));
-    assert!(!rendered.contains("derived-secret"));
+    assert!(rendered.contains("derived-secret"));
     assert_eq!(
         app.provider_form.as_ref().expect("form").setup[0]
             .input
@@ -522,7 +523,7 @@ async fn connect_form_escape_cancels_and_clears_values() {
 }
 
 #[tokio::test]
-async fn connect_rpc_error_is_persistent_and_preserves_public_setup_for_retry() {
+async fn connect_rpc_error_is_persistent_and_keeps_what_was_typed_for_retry() {
     let mut app = test_app().await;
     app.begin_provider_form(multi_auth_provider());
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
@@ -539,10 +540,12 @@ async fn connect_rpc_error_is_persistent_and_preserves_public_setup_for_retry() 
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .await;
 
+    // Nothing is wiped while the connect is in flight, so a failure is
+    // retried without retyping.
     let form = app.provider_form.as_ref().expect("form retained in flight");
     assert_eq!(form.setup[0].input.as_str(), "東京");
-    assert!(form.setup[1].input.as_str().is_empty());
-    assert!(form.secrets[0].input.as_str().is_empty());
+    assert_eq!(form.setup[1].input.as_str(), "temporary-setup-secret");
+    assert_eq!(form.secrets[0].input.as_str(), "temporary-secret");
     app.abort_connect_work();
 
     let full_error = "JSON-RPC -32011: catalog_revision_conflict (provider connect error)";
@@ -572,13 +575,35 @@ async fn connect_rpc_error_is_persistent_and_preserves_public_setup_for_retry() 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
         .await;
     assert_eq!(app.modal, Modal::ConnectSetup);
-    assert_eq!(
-        app.provider_form.as_ref().expect("form").setup[0]
-            .input
-            .as_str(),
-        "東京"
-    );
-    assert!(app.provider_form.as_ref().expect("form").error.is_none());
+    let form = app.provider_form.as_ref().expect("form");
+    assert_eq!(form.setup[0].input.as_str(), "東京");
+    assert_eq!(form.secrets[0].input.as_str(), "temporary-secret");
+    assert!(form.error.is_none());
+}
+
+/// Each provider runs its own connect or disconnect: starting one for a
+/// second provider leaves the first one running.
+#[tokio::test]
+async fn provider_operations_run_one_task_per_provider() {
+    let mut app = test_app().await;
+    let (client, _recorded, incoming_guard) = live_recording_client();
+    app.client = client;
+    for provider in [multi_auth_provider(), credentials_only_provider()] {
+        app.begin_provider_form(provider);
+        let form = app.provider_form.as_mut().expect("form");
+        for field in &mut form.setup {
+            field.input.set_buffer("us-west-2".into());
+        }
+        for secret in &mut form.secrets {
+            secret.input.set_buffer("typed-secret".into());
+        }
+        app.dispatch_provider_connect();
+    }
+    assert_eq!(app.connect_tasks.len(), 2);
+    assert!(app.connect_tasks.values().all(|task| !task.is_finished()));
+    app.abort_connect_work();
+    assert!(app.connect_tasks.is_empty());
+    drop(incoming_guard);
 }
 
 #[tokio::test]

@@ -1,11 +1,11 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 45 is current-only. A client must call `handshake` before any other
+Protocol 46 is current-only. A client must call `handshake` before any other
 method:
 
 ```json
-{ "protocol_version": 45, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+{ "protocol_version": 46, "client": { "kind": "tui", "instance_id": "<uuid>" } }
 ```
 
 `client.kind` names the client program: a lowercase letter followed by up to 15
@@ -81,11 +81,16 @@ their capability; `session.create` takes the client's `cwd`; the
 handshake reply carries the daemon's `machine_id`; and `runtimes.list` shows
 runtimes that dial in (`dial_in`). A runtime now
 produces as `runtime:<runtime ID>` rather
-than `runtime:<attachment name>`. Older clients are rejected.
+than `runtime:<attachment name>`. Protocol 46 removed
+`SetupFieldDescriptor.safe_to_project` (every setup value is shown and
+projected), added the `provider.connect` error codes
+`custom_provider_not_store_backed`, and removed the connect code
+`quarantined_provider` and the disconnect code `invalid_provider`, which
+nothing produced. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 45.
+members of protocol 46.
 
 ## Error diagnostics
 
@@ -108,7 +113,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 45 alongside independent display and output references. The
+preserved in protocol 46 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment

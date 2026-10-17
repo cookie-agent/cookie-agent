@@ -59,9 +59,18 @@ impl RpcFault {
             EngineError::ModelManager(
                 cookie_agent_models::ModelManagerError::RemovedWithoutRetainedRecipeMatch,
             ) => ProviderConnectErrorCode::RemovedWithoutRetainedRecipeMatch,
+            EngineError::ModelManager(
+                cookie_agent_models::ModelManagerError::CustomProviderNotStoreBacked,
+            ) => ProviderConnectErrorCode::CustomProviderNotStoreBacked,
             EngineError::ModelManager(cookie_agent_models::ModelManagerError::InvalidSetup) => {
                 ProviderConnectErrorCode::InvalidSetupField
             }
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::MissingSetup) => {
+                ProviderConnectErrorCode::MissingSetupField
+            }
+            EngineError::ModelManager(
+                cookie_agent_models::ModelManagerError::MissingCredentials,
+            ) => ProviderConnectErrorCode::MissingCredential,
             EngineError::ModelManager(
                 cookie_agent_models::ModelManagerError::UnsupportedAuthMethod,
             ) => ProviderConnectErrorCode::UnsupportedAuthMethod,
@@ -434,6 +443,51 @@ mod tests {
         assert_eq!(conflict.code, RunStartConflictCode::SessionRunning);
         assert_eq!(conflict.session_id, session_id);
         assert_eq!(conflict.client_run_id, client_run_id);
+    }
+
+    #[test]
+    fn provider_connect_faults_name_the_failure() {
+        use cookie_agent_models::ModelManagerError;
+        let request = ProviderConnectParams {
+            provider_id: cookie_agent_protocol::ProviderId::new("openai").unwrap(),
+            expected_catalog_revision: cookie_agent_protocol::CatalogRevision::new(format!(
+                "sha256:{}",
+                "0".repeat(64)
+            ))
+            .unwrap(),
+            setup_values: std::collections::BTreeMap::new(),
+            auth_method: cookie_agent_protocol::AuthMethodId::new("bearer-api-key-v1").unwrap(),
+            auth_values: serde_json::from_value(json!({"api_key": "placeholder"})).unwrap(),
+            client_connect_id: cookie_agent_protocol::ClientConnectId::new("connect-1").unwrap(),
+        };
+        for (error, expected) in [
+            (
+                ModelManagerError::CustomProviderNotStoreBacked,
+                ProviderConnectErrorCode::CustomProviderNotStoreBacked,
+            ),
+            (
+                ModelManagerError::MissingSetup,
+                ProviderConnectErrorCode::MissingSetupField,
+            ),
+            (
+                ModelManagerError::InvalidSetup,
+                ProviderConnectErrorCode::InvalidSetupField,
+            ),
+            (
+                ModelManagerError::MissingCredentials,
+                ProviderConnectErrorCode::MissingCredential,
+            ),
+            (
+                ModelManagerError::InvalidCredentials,
+                ProviderConnectErrorCode::InvalidCredential,
+            ),
+        ] {
+            let fault: cookie_agent_protocol::ServerFault =
+                RpcFault::provider_connect(&request, EngineError::ModelManager(error)).into();
+            let data: ProviderConnectError =
+                serde_json::from_value(fault.data.expect("typed data")).expect("connect error");
+            assert_eq!(data.code, expected);
+        }
     }
 
     #[test]

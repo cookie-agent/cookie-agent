@@ -178,11 +178,11 @@ pub(super) fn is_store_contention(error: &ClientError) -> bool {
     }
 }
 
-/// Provider connect/disconnect resubmit policy: the first contention-class
-/// failure gets exactly one automatic resubmission of the identical request
-/// (same client request id, so the daemon's replay path answers a commit whose
-/// response was lost); a second consecutive contention surfaces to the user and
-/// the pending payload stays held.
+/// Provider disconnect resubmit policy: the first contention-class failure
+/// gets exactly one automatic resubmission of the identical request (same
+/// client request id, so the daemon's replay path answers a commit whose
+/// response was lost); a second consecutive contention surfaces to the user.
+/// Connect follows the same policy through `Client::connect_provider_retrying`.
 pub(super) fn retry_store_contention_once(attempt: usize, error: &ClientError) -> bool {
     attempt == 0 && is_store_contention(error)
 }
@@ -646,7 +646,10 @@ pub struct App {
     pub(super) connect_provider: Option<ProviderDescriptor>,
     pub(super) provider_form: Option<ProviderForm>,
     pub(super) provider_operations: HashMap<cookie_agent_protocol::ProviderId, ProviderOperation>,
-    pub(super) connect_task: Option<tokio::task::JoinHandle<()>>,
+    /// The running connect or disconnect of each provider; one at a time
+    /// per provider.
+    pub(super) connect_tasks:
+        HashMap<cookie_agent_protocol::ProviderId, tokio::task::JoinHandle<()>>,
     pub(super) tree: Option<SessionTree>,
     agent_panel_mode: AgentPanelMode,
     /// Session the conversation currently shows. Independent of the tree root.
@@ -1221,7 +1224,7 @@ impl App {
             connect_provider: None,
             provider_form: None,
             provider_operations: HashMap::new(),
-            connect_task: None,
+            connect_tasks: HashMap::new(),
             tree: None,
             agent_panel_mode: AgentPanelMode::Auto,
             selected: None,

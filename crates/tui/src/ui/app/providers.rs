@@ -313,7 +313,8 @@ impl App {
             ProviderAction::Connect
         };
         let baseline = self.runtime.revision().cloned();
-        form.wipe_sensitive_values();
+        // The form keeps what was typed until the connect succeeds or the
+        // form closes, so a failed attempt is retried without retyping.
         self.provider_operations
             .insert(provider.id.clone(), ProviderOperation::InProgress(action));
         self.status = format!("{} provider {}…", action_name(action), provider.id);
@@ -328,25 +329,22 @@ impl App {
             auth_method,
             auth_values,
         };
+        let task_provider = provider.clone();
         let task = tokio::spawn(async move {
-            let mut attempt = 0_usize;
-            let connect = loop {
-                match client.connect_provider(params.clone()).await {
-                    Ok(connect) => break connect,
-                    Err(error) => {
-                        if retry_store_contention_once(attempt, &error) {
-                            attempt += 1;
-                            continue;
-                        }
-                        let _ = updates.send(RpcUpdate::ProviderMutationFinished {
-                            outcome: ProviderMutationOutcome::Failed {
-                                provider_id: provider.id,
-                                action,
-                                error: store_contention_message(&error, "providers"),
-                            },
-                        });
-                        return;
-                    }
+            let connect = match client
+                .connect_provider_retrying(params, &task_provider)
+                .await
+            {
+                Ok(connect) => connect,
+                Err(error) => {
+                    let _ = updates.send(RpcUpdate::ProviderMutationFinished {
+                        outcome: ProviderMutationOutcome::Failed {
+                            provider_id: task_provider.id,
+                            action,
+                            error: store_contention_message(&error, "providers"),
+                        },
+                    });
+                    return;
                 }
             };
             let _ = updates.send(RpcUpdate::ProviderMutationFinished {
@@ -357,7 +355,7 @@ impl App {
                 },
             });
         });
-        if let Some(previous) = self.connect_task.replace(task) {
+        if let Some(previous) = self.connect_tasks.insert(provider.id, task) {
             previous.abort();
         }
     }
@@ -412,7 +410,7 @@ impl App {
         self.status = format!("disconnect provider {}…", provider.id);
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
-        let provider_id = provider.id;
+        let provider_id = provider.id.clone();
         let task = tokio::spawn(async move {
             let mut attempt = 0_usize;
             let outcome = loop {
@@ -439,13 +437,13 @@ impl App {
             };
             let _ = updates.send(RpcUpdate::ProviderMutationFinished { outcome });
         });
-        if let Some(previous) = self.connect_task.replace(task) {
+        if let Some(previous) = self.connect_tasks.insert(provider.id, task) {
             previous.abort();
         }
     }
 
     pub(in crate::ui) fn abort_connect_work(&mut self) {
-        if let Some(task) = self.connect_task.take() {
+        for (_, task) in self.connect_tasks.drain() {
             task.abort();
         }
     }

@@ -385,6 +385,76 @@ async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_prese
     reopened_two.shutdown().await;
 }
 
+/// A connect that leaves out a required setup field or credential says so,
+/// rather than calling the value invalid.
+#[tokio::test]
+async fn connect_names_a_missing_setup_field_or_credential() {
+    use cookie_agent_models::ModelManagerError;
+    let temporary = private_tempdir();
+    let workspace = temporary.path().join("workspace");
+    let config = empty_provider_workspace(&workspace);
+    let catalog = bedrock_catalog();
+    let (engine, _) = open_workspace_engine(
+        &workspace,
+        &temporary.path().join("data"),
+        &temporary.path().join("provider-store"),
+        Arc::clone(&catalog),
+        config,
+    );
+    let region = || {
+        BTreeMap::from([(
+            SetupFieldId::new("region").expect("setup field"),
+            cookie_agent_protocol::SafeSetupValue::String(
+                cookie_agent_protocol::BoundedSetupString::new("us-east-1").expect("region"),
+            ),
+        )])
+    };
+    let connect = |setup_values, auth_values: serde_json::Value| {
+        engine.connect_provider(ProviderConnectParams {
+            provider_id: ProviderId::new("amazon-bedrock").expect("provider ID"),
+            expected_catalog_revision: catalog.revision.clone(),
+            setup_values,
+            auth_method: cookie_agent_protocol::AuthMethodId::new("aws-sigv4-credentials-v1")
+                .expect("auth method"),
+            auth_values: serde_json::from_value(auth_values).expect("credential values"),
+            client_connect_id: ClientConnectId::new(uuid::Uuid::now_v7().to_string())
+                .expect("connect ID"),
+        })
+    };
+    let complete = serde_json::json!({
+        "access_key_id": "bedrock-access",
+        "secret_access_key": "bedrock-secret",
+        "session_token": "bedrock-session"
+    });
+    assert!(matches!(
+        connect(
+            region(),
+            serde_json::json!({"access_key_id": "bedrock-access"})
+        ),
+        Err(EngineError::ModelManager(
+            ModelManagerError::MissingCredentials
+        ))
+    ));
+    assert!(matches!(
+        connect(
+            region(),
+            serde_json::json!({
+                "access_key_id": "bedrock-access",
+                "secret_access_key": "bedrock-secret",
+                "api_key": "unexpected"
+            })
+        ),
+        Err(EngineError::ModelManager(
+            ModelManagerError::InvalidCredentials
+        ))
+    ));
+    assert!(matches!(
+        connect(BTreeMap::new(), complete.clone()),
+        Err(EngineError::ModelManager(ModelManagerError::MissingSetup))
+    ));
+    connect(region(), complete).expect("a complete connect");
+}
+
 #[test]
 fn catalog_refresh_publishes_one_coherent_reasoned_snapshot() {
     let fixture = fixture();
@@ -549,7 +619,7 @@ fn registry_model_shape_drift_is_counted_with_exact_model_identity() {
 }
 
 #[test]
-fn nested_endpoint_placeholders_project_setup_and_secret_classification() {
+fn nested_endpoint_placeholders_project_setup_fields() {
     let fixture = fixture();
     let mut catalog = (*bedrock_catalog()).clone();
     let provider = Arc::make_mut(&mut catalog.providers)
@@ -572,14 +642,10 @@ fn nested_endpoint_placeholders_project_setup_and_secret_classification() {
         .expect("nested placeholder refresh")
         .snapshot;
     let fields = &snapshot.providers[0].setup_fields;
-    assert!(fields.iter().any(|field| {
-        field.id.as_str() == "azure_cognitive_services_resource_name" && field.safe_to_project
-    }));
-    assert!(
-        fields
-            .iter()
-            .any(|field| { field.id.as_str() == "service_token" && !field.safe_to_project })
-    );
+    // Every placeholder is a setup field, shown like any other.
+    for id in ["azure_cognitive_services_resource_name", "service_token"] {
+        assert!(fields.iter().any(|field| field.id.as_str() == id), "{id}");
+    }
 }
 
 #[test]

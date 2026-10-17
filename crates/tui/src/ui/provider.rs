@@ -98,10 +98,8 @@ impl ProviderForm {
             .iter()
             .cloned()
             .map(|descriptor| {
-                let value = descriptor
-                    .safe_to_project
-                    .then(|| stored_setup.and_then(|values| values.get(&descriptor.id)))
-                    .flatten()
+                let value = stored_setup
+                    .and_then(|values| values.get(&descriptor.id))
                     .or(descriptor.default.as_ref())
                     .map(setup_value_text)
                     .unwrap_or_default();
@@ -134,17 +132,6 @@ impl ProviderForm {
     pub(crate) fn wipe_secrets(&mut self) {
         for field in &mut self.setup {
             field.input.wipe();
-        }
-        for secret in &mut self.secrets {
-            secret.input.wipe();
-        }
-    }
-
-    pub(crate) fn wipe_sensitive_values(&mut self) {
-        for field in &mut self.setup {
-            if !field.descriptor.safe_to_project {
-                field.input.wipe();
-            }
         }
         for secret in &mut self.secrets {
             secret.input.wipe();

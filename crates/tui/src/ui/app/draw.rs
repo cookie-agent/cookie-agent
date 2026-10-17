@@ -1389,9 +1389,8 @@ impl App {
         for (index, field) in form.setup.iter_mut().enumerate() {
             let height = 3.min(inner.bottom().saturating_sub(y));
             let field_area = Rect::new(inner.x, y, inner.width, height);
-            let secret = !field.descriptor.safe_to_project;
             let title = format!(
-                "Setup: {} [{}]{}{} · {}",
+                "Setup: {} [{}]{} · {}",
                 field.descriptor.display_name,
                 field.descriptor.id,
                 if field.descriptor.required {
@@ -1399,32 +1398,20 @@ impl App {
                 } else {
                     ""
                 },
-                if secret { " secret" } else { "" },
                 field.descriptor.help
             );
             let focused = focus == ProviderFormFocus::Setup(index);
-            let rendered = if secret {
-                input::render_masked(
-                    frame,
-                    field_area,
-                    &mut field.input,
-                    focused,
-                    &title,
-                    &self.theme,
-                )
-            } else {
-                input::render(
-                    frame,
-                    field_area,
-                    field.input.state_mut(),
-                    focused,
-                    title.clone(),
-                    // Setup fields carry their display name and help text;
-                    // a placeholder could read as a prefilled default.
-                    None,
-                    &self.theme,
-                )
-            };
+            let rendered = input::render(
+                frame,
+                field_area,
+                field.input.state_mut(),
+                focused,
+                title,
+                // Setup fields carry their display name and help text; a
+                // placeholder could read as a prefilled default.
+                None,
+                &self.theme,
+            );
             self.hit_map.provider_fields.push(ProviderFieldHit {
                 rect: field_area,
                 text_rect: rendered.text_rect,

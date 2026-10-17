@@ -510,7 +510,10 @@ impl App {
             RpcUpdate::Tree { .. } => {}
             RpcUpdate::TreeFailed { .. } => {}
             RpcUpdate::ProviderMutationFinished { outcome } => {
-                self.connect_task = None;
+                let (ProviderMutationOutcome::Failed { provider_id, .. }
+                | ProviderMutationOutcome::Connected { provider_id, .. }
+                | ProviderMutationOutcome::Disconnected { provider_id, .. }) = &outcome;
+                self.connect_tasks.remove(provider_id);
                 self.apply_provider_mutation_outcome(outcome);
             }
             RpcUpdate::ApprovalResponse {
