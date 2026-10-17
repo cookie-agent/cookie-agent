@@ -380,15 +380,18 @@ of its runtime attachments, for example `~/web · global, local_web`, or
 
 `/runtime` lists the selected session's
 [runtime attachments](../specs/runtimes.md#5-session-attachments): each
-attachment's name, runtime ID, workspace, and instance status (`starting`,
-`ready`, `reconnecting`, `failed`, `stopped`, or `not running`). The details
-pane shows the selected attachment's kind, platform, and, for a failed
-instance, the reason. The panel refreshes on every runtime change and while it
+attachment's name, runtime and capability (`labpc/coding`), workspace, and
+instance status (`starting`, `ready`, `reconnecting`, `failed`, `stopped`, or
+`not running`). The details pane shows the selected attachment's kind,
+platform, and, for a failed instance, the reason. The panel refreshes on every runtime change and while it
 is open.
 
-Press `a` to attach a runtime: choose a template with the arrow keys and, when
-the template takes a workspace, Tab to the workspace path and type it; Enter
-attaches. The path is passed to the runtime as typed and resolved on its
+Press `a` to attach a runtime's capability: choose a runtime with the arrow
+keys; when it offers several capabilities, Tab to the capability and choose
+one; when the capability takes a workspace, Tab to the workspace path and
+type it; Enter attaches. A runtime that has not connected yet shows no
+capabilities: attaching it connects it and takes its only capability, and
+the form shows why its last connection failed. The path is passed to the runtime as typed and resolved on its
 machine (see [Runtimes](runtimes.md)). Press `d` to detach the selected
 attachment, and `r` to retry its instance now, for example after fixing why it
 failed (`runtimes.reconnect`). The daemon refuses both

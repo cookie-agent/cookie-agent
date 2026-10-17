@@ -1,10 +1,11 @@
-//! Runtime templates and the instances started from them.
+//! Runtime templates and the capability instances opened from them.
 //!
-//! A [`RuntimeTemplate`] is a way to start runtimes; its ID is the *runtime
-//! ID*. The [`RuntimeRegistry`] starts at most one [`RuntimeInstance`] per
-//! (runtime ID, canonical workspace) and shares it with every session attached
-//! to it. The `global` and `local` instances start with the engine; any other
-//! instance starts when a session first needs it.
+//! A [`RuntimeTemplate`] is a way to reach a runtime; its ID is the *runtime
+//! ID*. A runtime offers capabilities, and one connection serves all of
+//! them. The [`RuntimeRegistry`] opens at most one [`RuntimeInstance`] per
+//! (runtime ID, capability, canonical workspace) and shares it with every
+//! session attached to it. The `global` and `local` instances start with the
+//! engine; any other instance opens when a session first needs it.
 //!
 //! Production registers the built-in `global` and `local` templates and one
 //! protocol template per configured `[runtimes.<id>]`, whose instances run in
@@ -26,7 +27,9 @@ use std::{
 
 use async_trait::async_trait;
 use cookie_agent_config::SkillRegistry;
-use cookie_agent_protocol::{RuntimeAttachment, RuntimeKind};
+use cookie_agent_protocol::{
+    CapabilityName, RuntimeAttachment, RuntimeCapabilityInfo, RuntimeKind, RuntimeLifetime,
+};
 use cookie_agent_runtime_api::{RuntimeInfo, ToolOrigin, ToolProvider};
 
 use tokio_util::sync::CancellationToken;
@@ -34,37 +37,72 @@ use tokio_util::sync::CancellationToken;
 use super::{ReconnectOutcome, ReconnectPolicy};
 use crate::EngineError;
 
-/// A way to start runtime instances: the built-in `global` and `local`
-/// runtimes and the configured `[runtimes.<id>]` templates.
+/// A way to reach a runtime and open its capabilities: the built-in
+/// `global` and `local` runtimes and the configured `[runtimes.<id>]`
+/// templates.
 #[async_trait]
 pub trait RuntimeTemplate: Send + Sync {
-    /// The runtime ID instances of this template carry.
+    /// The runtime's ID.
     fn runtime_id(&self) -> &str;
 
-    /// Whether starting an instance takes a workspace. Attaching such a
-    /// template requires one; attaching any other template rejects one.
-    fn takes_workspace(&self) -> bool;
+    /// How the daemon reaches the runtime.
+    fn lifetime(&self) -> RuntimeLifetime {
+        RuntimeLifetime::Spawned
+    }
 
-    /// Starts one instance. `workspace` is `Some` exactly when
-    /// [`Self::takes_workspace`] is true, and is the path a session asked
-    /// for, exactly as given: the runtime resolves it and reports the
-    /// canonical workspace. The error is a human-readable reason.
-    async fn start(&self, workspace: Option<&Path>) -> Result<StartedRuntime, String>;
+    /// What the runtime offers, connecting it when it is not connected. The
+    /// error is a human-readable reason.
+    async fn capabilities(&self) -> Result<Vec<RuntimeCapabilityInfo>, String>;
+
+    /// What clients see without connecting: whether a connection is up, and
+    /// what the runtime offered when it last connected.
+    fn listing(&self) -> RuntimeListingState;
+
+    /// The workspace an instance of `capability` opens in when a session
+    /// names none, such as the daemon's working directory for `local`.
+    fn default_workspace(&self, _capability: &CapabilityName) -> Option<PathBuf> {
+        None
+    }
+
+    /// Opens `capability` for `workspace`, which is `Some` exactly when the
+    /// capability takes one and is the path a session asked for, exactly as
+    /// given: the runtime resolves it and reports the canonical workspace.
+    /// One connection serves every instance; a template whose connection
+    /// dropped connects again. The error is a human-readable reason.
+    async fn start(
+        &self,
+        capability: &CapabilityName,
+        workspace: Option<&Path>,
+    ) -> Result<StartedRuntime, String>;
+
+    /// Lets go of the template's connection as the daemon stops; the
+    /// daemon shuts it down through the instances that use it.
+    fn disconnect(&self) {}
 }
 
-/// What a started runtime reports about itself.
+/// What [`RuntimeTemplate::listing`] reports.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RuntimeListingState {
+    pub connected: bool,
+    pub capabilities: Vec<RuntimeCapabilityInfo>,
+    pub platform: Option<String>,
+    /// Why the last attempt to connect failed, while it is not connected.
+    pub message: Option<String>,
+}
+
+/// What an opened capability instance reports about itself.
 pub struct StartedRuntime {
-    /// Identity, kind, attachment name, and canonical workspace.
+    /// Identity, capability, kind, attachment name, and canonical workspace.
     pub info: RuntimeInfo,
     /// Tool providers, in composition order.
     pub providers: Vec<Arc<dyn ToolProvider>>,
-    /// Skills the runtime contributes: user skills for the global runtime,
-    /// project skills found for its workspace for a coding runtime. Read once
-    /// at start.
+    /// Skills the instance contributes: user skills for the global runtime,
+    /// project skills found for its workspace for a coding instance. Read
+    /// once at start.
     pub skills: SkillRegistry,
     /// The runtime protocol connection of an instance that runs behind it;
     /// `None` for an in-process runtime.
-    pub(crate) connection: Option<super::remote::RuntimeClient>,
+    pub(crate) connection: Option<super::remote::InstanceConnection>,
 }
 
 /// Lifecycle state of a runtime instance as clients see it.
@@ -95,7 +133,7 @@ struct CurrentStart {
     generation: u64,
     providers: Vec<Arc<dyn ToolProvider>>,
     skills: Arc<SkillRegistry>,
-    connection: Option<super::remote::RuntimeClient>,
+    connection: Option<super::remote::InstanceConnection>,
 }
 
 impl CurrentStart {
@@ -135,7 +173,7 @@ impl RuntimeInstance {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub(crate) fn connection(&self) -> Option<super::remote::RuntimeClient> {
+    pub(crate) fn connection(&self) -> Option<super::remote::InstanceConnection> {
         self.current().connection.clone()
     }
 
@@ -186,9 +224,10 @@ impl RuntimeInstance {
     }
 
     /// Whether `info` describes this instance: a restart must come back as
-    /// the same runtime, kind, attachment name, and workspace.
+    /// the same runtime, capability, kind, attachment name, and workspace.
     fn same_identity(&self, info: &RuntimeInfo) -> bool {
         self.info.id() == info.id()
+            && self.info.capability() == info.capability()
             && self.info.kind() == info.kind()
             && self.info.attachment_name() == info.attachment_name()
             && self.info.workspace().map(|workspace| workspace.root())
@@ -234,6 +273,7 @@ impl RuntimeInstance {
             runtime_id: cookie_agent_protocol::RuntimeId::new(self.info.id()).map_err(|_| {
                 EngineError::Runtime(format!("invalid runtime ID `{}`", self.info.id()))
             })?,
+            capability: self.info.capability().clone(),
             kind: self.info.kind().clone(),
             workspace: self.workspace_string(),
         })
@@ -245,12 +285,15 @@ impl RuntimeInstance {
             .map(|workspace| workspace.root().to_string_lossy().into_owned())
     }
 
-    /// Drops what the runtime declared and its protocol connection, which
-    /// closes it, as when it failed for good.
+    /// Drops what the runtime declared and its protocol connection, as when
+    /// it failed for good.
     fn drop_runtime(&self) -> Option<super::remote::RuntimeClient> {
         let mut current = self.current();
         current.providers.clear();
-        current.connection.take()
+        current
+            .connection
+            .take()
+            .map(|connection| connection.client)
     }
 
     /// Drops every provider (they may hold the engine) and the protocol
@@ -267,6 +310,7 @@ impl RuntimeInstance {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct InstanceKey {
     runtime_id: String,
+    capability: String,
     workspace: Option<PathBuf>,
 }
 
@@ -274,6 +318,7 @@ impl InstanceKey {
     fn of(info: &RuntimeInfo) -> Self {
         Self {
             runtime_id: info.id().to_owned(),
+            capability: info.capability().as_str().to_owned(),
             workspace: info
                 .workspace()
                 .map(|workspace| workspace.root().to_owned()),
@@ -311,23 +356,26 @@ impl InstanceSlot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeFailure {
     pub runtime_id: String,
-    /// The workspace the instance was started for, when its template takes
-    /// one.
+    pub capability: String,
+    /// The workspace the instance was started for, when its capability
+    /// takes one.
     pub workspace: Option<String>,
     pub reason: String,
 }
 
-/// A template as `runtimes.list` reports it.
+/// A runtime as `runtimes.list` reports it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeTemplateSummary {
     pub runtime_id: String,
-    pub takes_workspace: bool,
+    pub lifetime: RuntimeLifetime,
+    pub listing: RuntimeListingState,
 }
 
 /// An instance as `runtimes.list` reports it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeInstanceSummary {
     pub runtime_id: String,
+    pub capability: String,
     /// The name the instance reports; absent until it has started.
     pub attachment_name: Option<String>,
     pub kind: Option<RuntimeKind>,
@@ -485,6 +533,7 @@ impl RuntimeRegistry {
     pub(crate) fn instance(&self, attachment: &RuntimeAttachment) -> Option<Arc<RuntimeInstance>> {
         let key = InstanceKey {
             runtime_id: attachment.runtime_id.as_str().to_owned(),
+            capability: attachment.capability.as_str().to_owned(),
             workspace: attachment.workspace.as_deref().map(PathBuf::from),
         };
         let slots = self
@@ -515,22 +564,20 @@ impl RuntimeRegistry {
         instances
     }
 
-    /// The running instance of `runtime_id` whose canonical workspace is
-    /// `workspace`, if it is up.
+    /// A running instance of `runtime_id` whose canonical workspace is
+    /// `workspace`, if one is up.
     pub(crate) fn instance_at(
         &self,
         runtime_id: &str,
         workspace: Option<&str>,
     ) -> Option<Arc<RuntimeInstance>> {
-        let key = InstanceKey {
-            runtime_id: runtime_id.to_owned(),
-            workspace: workspace.map(PathBuf::from),
-        };
+        let workspace = workspace.map(PathBuf::from);
         self.slots
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&key)
-            .and_then(InstanceSlot::published)
+            .iter()
+            .find(|(key, _)| key.runtime_id == runtime_id && key.workspace == workspace)
+            .and_then(|(_, slot)| slot.published())
             .map(Arc::clone)
     }
 
@@ -565,6 +612,7 @@ impl RuntimeRegistry {
             slot.published()
                 .filter(|_| {
                     candidate.runtime_id == key.runtime_id
+                        && candidate.capability == key.capability
                         && (key.workspace.is_none() || candidate.workspace == key.workspace)
                 })
                 .map(Arc::clone)
@@ -582,48 +630,130 @@ impl RuntimeRegistry {
                 || requested.clone(),
                 |workspace| InstanceKey {
                     runtime_id: requested.runtime_id.clone(),
+                    capability: requested.capability.clone(),
                     workspace: Some(workspace.clone()),
                 },
             )
     }
 
-    /// The instance of `runtime_id` for `workspace`, started when it is not
-    /// running. `workspace` must be given exactly when the template takes
-    /// one; an unknown runtime ID is an error.
+    /// The capability `requested` names, or the runtime's only capability
+    /// when it names none, as `template` offers it: from its last
+    /// connection when it has one, connecting it otherwise.
+    /// The error is the reason connecting failed, or `None` when the
+    /// runtime does not offer the capability.
+    async fn capability(
+        template: &dyn RuntimeTemplate,
+        requested: Option<&str>,
+    ) -> Result<RuntimeCapabilityInfo, (EngineError, Option<String>)> {
+        let runtime_id = template.runtime_id();
+        let known = template.listing().capabilities;
+        let capabilities = if known.is_empty() {
+            template.capabilities().await.map_err(|reason| {
+                (
+                    EngineError::Runtime(format!(
+                        "runtime `{runtime_id}` failed to start: {reason}"
+                    )),
+                    Some(reason),
+                )
+            })?
+        } else {
+            known
+        };
+        let refused = |message: String| (EngineError::Runtime(message), None);
+        let names = || {
+            capabilities
+                .iter()
+                .map(|capability| capability.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match requested {
+            Some(name) => capabilities
+                .iter()
+                .find(|capability| capability.name.as_str() == name)
+                .cloned()
+                .ok_or_else(|| {
+                    refused(format!(
+                        "runtime `{runtime_id}` offers no capability `{name}`; it offers: {}",
+                        names()
+                    ))
+                }),
+            None => match capabilities.as_slice() {
+                [only] => Ok(only.clone()),
+                [] => Err(refused(format!(
+                    "runtime `{runtime_id}` offers no capabilities"
+                ))),
+                _ => Err(refused(format!(
+                    "runtime `{runtime_id}` offers several capabilities; choose one of: {}",
+                    names()
+                ))),
+            },
+        }
+    }
+
+    /// The instance of `capability` of `runtime_id` (the runtime's only
+    /// capability when `None`) for `workspace`, opened when it is not
+    /// running. `workspace` must be given exactly when the capability takes
+    /// one, unless the template has a default workspace for it; an unknown
+    /// runtime ID is an error.
     ///
     /// The workspace is passed to the runtime exactly as given: it may live
     /// on another machine, so the daemon never resolves it. The instance is
     /// keyed by the canonical workspace the runtime reports, so two spellings
-    /// of one workspace share an instance; a second start that resolves to a
-    /// running instance is stopped again.
+    /// of one workspace share an instance.
     pub(crate) async fn ensure(
         self: &Arc<Self>,
         runtime_id: &str,
+        capability: Option<&str>,
         workspace: Option<&Path>,
     ) -> Result<Arc<RuntimeInstance>, EngineError> {
         let template = self
             .template(runtime_id)
             .ok_or_else(|| EngineError::Runtime(format!("unknown runtime `{runtime_id}`")))?;
-        match (template.takes_workspace(), workspace) {
-            (true, None) => {
-                return Err(EngineError::Runtime(format!(
-                    "runtime `{runtime_id}` requires a workspace"
-                )));
+        let offered = match Self::capability(template.as_ref(), capability).await {
+            Ok(offered) => offered,
+            Err((error, Some(_))) => {
+                // The runtime could not be reached: a session that names the
+                // capability, as one reopening does, sees its instance fail.
+                if let Some(capability) = capability {
+                    let key = InstanceKey {
+                        runtime_id: runtime_id.to_owned(),
+                        capability: capability.to_owned(),
+                        workspace: workspace.map(Path::to_owned),
+                    };
+                    let previous = self.begin_start(&key);
+                    self.fail_start(key, error.to_string(), previous);
+                }
+                return Err(error);
             }
+            Err((error, None)) => return Err(error),
+        };
+        let default_workspace = template.default_workspace(&offered.name);
+        let workspace = match (offered.takes_workspace, workspace) {
             (true, Some(workspace)) if workspace.as_os_str().is_empty() => {
                 return Err(EngineError::Runtime(format!(
-                    "runtime `{runtime_id}` requires a workspace"
+                    "capability `{}` of runtime `{runtime_id}` requires a workspace",
+                    offered.name
                 )));
             }
+            (true, Some(workspace)) => Some(workspace),
+            (true, None) => Some(default_workspace.as_deref().ok_or_else(|| {
+                EngineError::Runtime(format!(
+                    "capability `{}` of runtime `{runtime_id}` requires a workspace",
+                    offered.name
+                ))
+            })?),
             (false, Some(_)) => {
                 return Err(EngineError::Runtime(format!(
-                    "runtime `{runtime_id}` takes no workspace"
+                    "capability `{}` of runtime `{runtime_id}` takes no workspace",
+                    offered.name
                 )));
             }
-            _ => {}
-        }
+            (false, None) => None,
+        };
         let requested = InstanceKey {
             runtime_id: runtime_id.to_owned(),
+            capability: offered.name.as_str().to_owned(),
             workspace: workspace.map(Path::to_owned),
         };
         if let Some(instance) = self.live(&requested) {
@@ -635,14 +765,19 @@ impl RuntimeRegistry {
         }
         let pending = self.resolve(&requested);
         let previous = self.begin_start(&pending);
-        match template.start(workspace).await {
-            Ok(started) if started.info.id() == runtime_id => {
+        match template.start(&offered.name, workspace).await {
+            Ok(started)
+                if started.info.id() == runtime_id
+                    && started.info.capability() == &offered.name =>
+            {
                 Ok(self.install(&requested, &pending, started, previous))
             }
             Ok(started) => {
                 let message = format!(
-                    "runtime `{runtime_id}` reported runtime ID `{}`",
-                    started.info.id()
+                    "runtime `{runtime_id}` opened `{}` of runtime `{}` for capability `{}`",
+                    started.info.capability(),
+                    started.info.id(),
+                    offered.name
                 );
                 self.fail_start(pending, message.clone(), previous);
                 Err(EngineError::Runtime(message))
@@ -720,12 +855,10 @@ impl RuntimeRegistry {
             }
         }
         if let Some(existing) = slots.get(&key).and_then(InstanceSlot::published) {
-            // Another spelling of a workspace that already has an instance.
+            // Another spelling of a workspace that already has an instance;
+            // the runtime's connection is shared, so it stays up.
             let existing = Arc::clone(existing);
             drop(slots);
-            if let Some(connection) = started.connection {
-                tokio::spawn(async move { connection.shutdown().await });
-            }
             self.notify();
             return existing;
         }
@@ -760,13 +893,12 @@ impl RuntimeRegistry {
         if let Some(instance) = self.instance(attachment) {
             return Ok(instance);
         }
-        let takes_workspace = self
-            .template(attachment.runtime_id.as_str())
-            .is_some_and(|template| template.takes_workspace());
-        let workspace = takes_workspace
-            .then(|| attachment.workspace.as_deref().map(Path::new))
-            .flatten();
-        self.ensure(attachment.runtime_id.as_str(), workspace).await
+        self.ensure(
+            attachment.runtime_id.as_str(),
+            Some(attachment.capability.as_str()),
+            attachment.workspace.as_deref().map(Path::new),
+        )
+        .await
     }
 
     /// Watches the built-in instances' connections; see [`Self::watch`].
@@ -787,7 +919,7 @@ impl RuntimeRegistry {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let closed = connection.closed();
+        let closed = connection.client.closed();
         drop(connection);
         let registry = Arc::downgrade(self);
         let instance = Arc::downgrade(instance);
@@ -833,7 +965,8 @@ impl RuntimeRegistry {
             self.fail_lost(&key, &instance, message);
             return;
         };
-        let workspace = key.workspace.clone().filter(|_| template.takes_workspace());
+        let workspace = key.workspace.clone();
+        let capability = instance.info.capability().clone();
         let policy = self
             .reconnect
             .lock()
@@ -843,20 +976,17 @@ impl RuntimeRegistry {
             .run(&self.shutdown, |_| {
                 let template = Arc::clone(&template);
                 let workspace = workspace.clone();
+                let capability = capability.clone();
                 let instance = Arc::clone(&instance);
                 async move {
-                    let started = template.start(workspace.as_deref()).await?;
+                    let started = template.start(&capability, workspace.as_deref()).await?;
                     if instance.same_identity(&started.info) {
                         return Ok(started);
                     }
-                    let restarted = format!(
+                    Err(format!(
                         "the runtime restarted as `{}`",
                         started.info.attachment_name()
-                    );
-                    if let Some(connection) = started.connection {
-                        connection.shutdown().await;
-                    }
-                    Err(restarted)
+                    ))
                 }
             })
             .await;
@@ -879,17 +1009,11 @@ impl RuntimeRegistry {
                         _ => Some(started),
                     }
                 };
-                match restarted {
-                    // Stopped meanwhile: the new connection is not needed.
-                    Some(started) => {
-                        if let Some(connection) = started.connection {
-                            connection.shutdown().await;
-                        }
-                    }
-                    None => {
-                        self.watch(&instance);
-                        self.notify();
-                    }
+                // Stopped meanwhile, the reopened instance is not needed;
+                // the runtime's connection is shared, so it stays up.
+                if restarted.is_none() {
+                    self.watch(&instance);
+                    self.notify();
                 }
             }
             ReconnectOutcome::Exhausted {
@@ -927,6 +1051,7 @@ impl RuntimeRegistry {
         drop(instance.drop_runtime());
         let _ = self.failures.send(RuntimeFailure {
             runtime_id: key.runtime_id.clone(),
+            capability: key.capability.clone(),
             workspace: key
                 .workspace
                 .as_ref()
@@ -951,6 +1076,7 @@ impl RuntimeRegistry {
     fn fail_start(&self, key: InstanceKey, reason: String, previous: Option<Arc<RuntimeInstance>>) {
         let failure = RuntimeFailure {
             runtime_id: key.runtime_id.clone(),
+            capability: key.capability.clone(),
             workspace: key
                 .workspace
                 .as_ref()
@@ -996,7 +1122,8 @@ impl RuntimeRegistry {
             .values()
             .map(|template| RuntimeTemplateSummary {
                 runtime_id: template.runtime_id().to_owned(),
-                takes_workspace: template.takes_workspace(),
+                lifetime: template.lifetime(),
+                listing: template.listing(),
             })
             .collect()
     }
@@ -1008,9 +1135,11 @@ impl RuntimeRegistry {
             .workspace
             .as_ref()
             .map(|workspace| workspace.to_string_lossy().into_owned());
-        self.instances()
-            .into_iter()
-            .find(|summary| summary.runtime_id == key.runtime_id && summary.workspace == workspace)
+        self.instances().into_iter().find(|summary| {
+            summary.runtime_id == key.runtime_id
+                && summary.capability == key.capability
+                && summary.workspace == workspace
+        })
     }
 
     pub(crate) fn instances(&self) -> Vec<RuntimeInstanceSummary> {
@@ -1038,6 +1167,7 @@ impl RuntimeRegistry {
                 };
                 RuntimeInstanceSummary {
                     runtime_id: key.runtime_id.clone(),
+                    capability: key.capability.clone(),
                     attachment_name: instance
                         .map(|instance| instance.info.attachment_name().to_owned()),
                     kind: instance.map(|instance| instance.info.kind().clone()),
@@ -1090,6 +1220,17 @@ impl RuntimeRegistry {
         drop(slots);
         connections.extend(self.global.clear());
         connections.extend(self.local.clear());
+        for template in self
+            .templates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+        {
+            template.disconnect();
+        }
+        // Instances of one runtime share its connection: shut each down once.
+        let mut epochs = std::collections::HashSet::new();
+        connections.retain(|connection| epochs.insert(connection.epoch()));
         self.notify();
         connections
     }

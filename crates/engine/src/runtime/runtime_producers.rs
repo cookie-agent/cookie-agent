@@ -1,7 +1,7 @@
 //! Runtimes and plugins as producer sources (`docs/site/specs/external-producers.md`
 //! section 5): a runtime that declares `producer_messaging` produces as
-//! `runtime:<attachment name>`, over its live connection, and only for the
-//! sessions attached to it.
+//! `runtime:<runtime ID>`, over its live connection, and only for the
+//! sessions attached to one of its capability instances.
 
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ use super::{
     Engine, EngineError,
     producers::{ExternalConnection, ExternalProducerOperation, ExternalProducerResult},
 };
-use crate::runtimes::{RuntimeClient, RuntimeInstance, RuntimeProducerCall, RuntimeProducerHost};
+use crate::runtimes::{InstanceConnection, RuntimeProducerCall, RuntimeProducerHost};
 
 impl Engine {
     /// Opens producer messaging on every runtime connection that declares
@@ -114,14 +114,14 @@ impl Engine {
         value.map_err(|error| EngineError::Producer(error.to_string()))
     }
 
-    /// The instance whose live, producing connection `epoch` is, when it
-    /// reports the attachment name of `source`.
+    /// The live, producing connection `epoch` of the runtime of `source`,
+    /// through one of its open instances.
     fn runtime_source_connection(
         &self,
         source: &ProducerSource,
         epoch: u64,
-    ) -> Option<(Arc<RuntimeInstance>, RuntimeClient)> {
-        let attachment = source.runtime_attachment()?;
+    ) -> Option<InstanceConnection> {
+        let runtime_id = source.runtime_id()?;
         self.inner
             .runtimes
             .published_instances()
@@ -131,8 +131,8 @@ impl Engine {
                 (connection.epoch() == epoch
                     && !connection.is_closed()
                     && connection.produces()
-                    && instance.info().attachment_name() == attachment)
-                    .then_some((instance, connection))
+                    && instance.info().id() == runtime_id)
+                    .then_some(connection)
             })
     }
 
@@ -149,9 +149,9 @@ impl Engine {
         epoch: u64,
         session: SessionId,
     ) -> bool {
-        let Some((instance, _)) = self.runtime_source_connection(source, epoch) else {
+        if self.runtime_source_connection(source, epoch).is_none() {
             return false;
-        };
+        }
         let Ok(projection) = self.inner.store.get(session) else {
             return false;
         };
@@ -159,7 +159,8 @@ impl Engine {
             self.inner
                 .runtimes
                 .instance(attachment)
-                .is_some_and(|attached| Arc::ptr_eq(&attached, &instance))
+                .and_then(|attached| attached.connection())
+                .is_some_and(|connection| connection.epoch() == epoch)
         })
     }
 
@@ -183,7 +184,7 @@ impl Engine {
             else {
                 continue;
             };
-            let Ok(source) = ProducerSource::runtime(instance.info().attachment_name()) else {
+            let Ok(source) = ProducerSource::runtime(instance.info().id()) else {
                 continue;
             };
             if !states.iter().any(|state| state.source == source) {

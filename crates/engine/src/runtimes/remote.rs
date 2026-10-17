@@ -1,10 +1,12 @@
-//! The daemon's end of the runtime protocol: runtime instances that run in
-//! another task or process and are reached over a frame transport.
+//! The daemon's end of the runtime protocol: runtimes that run in another
+//! task or process and are reached over a frame transport.
 //!
-//! A [`ProtocolTemplate`] starts an instance with its [`RuntimeConnector`]
-//! and sends `runtime/initialize`. The [`RuntimeClient`] it gets back keeps
-//! the connection: its [`RemoteToolProvider`] publishes the tools the runtime
-//! declared and proxies preparation and execution, it routes `tool/progress`
+//! A [`ProtocolTemplate`] connects its runtime with its
+//! [`RuntimeConnector`] and sends `runtime/initialize`, once: the
+//! [`RuntimeClient`] it gets back keeps the connection, and every capability
+//! instance opens over it (`capability/open`). Each instance's
+//! [`RemoteToolProvider`] publishes the tools the runtime declared for it and
+//! proxies preparation and execution, it routes `tool/progress`
 //! into the call's capture, and it hands `tool/detachable` to the call's
 //! detach point. When the connection is lost, calls in flight, backgrounded
 //! ones included, fail with `runtime_unavailable`.
@@ -29,8 +31,8 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::{McpServerConfig, SkillDiscovery, SkillRegistry};
 use cookie_agent_protocol::{
-    ProducerSourceStatus, RecoveryCompleteParams, RecoveryOutcome, SessionId, ToolCallId,
-    ToolCallPresentation,
+    CapabilityName, ProducerSourceStatus, RecoveryCompleteParams, RecoveryOutcome,
+    RuntimeCapabilityInfo, SessionId, ToolCallId, ToolCallPresentation,
 };
 use cookie_agent_runtime_api::{
     DetachPoint, DiagnosticTail, PreparedDeclaration, PreparedExecutor, PreparedSerializationKey,
@@ -39,7 +41,8 @@ use cookie_agent_runtime_api::{
     ToolPreparationContext, ToolProvider, ToolSpec, WorkspaceContext,
     context::AgentMdContext,
     protocol::{
-        self, ContextParams, ContextResult, DetachableParams, Empty, ExecuteOutcome, ExecuteParams,
+        self, CapabilityOpenParams, CapabilityOpenResult, CapabilityToolsChangedParams,
+        ContextParams, ContextResult, DetachableParams, Empty, ExecuteOutcome, ExecuteParams,
         ExecuteResult, InitializeParams, InitializeResult, InlineMedia, McpChangedParams,
         McpReconnectParams, McpServerReport, Outcome, OutcomeExt as _, PrepareOutcome,
         PrepareParams, PrepareResult, PreparedCall, PreparedRef, RUNTIME_PROTOCOL_VERSION,
@@ -53,29 +56,36 @@ use tokio::sync::Notify;
 use super::{
     McpHub, McpServerFailure,
     process::ProcessConnector,
-    registry::{RuntimeRegistry, RuntimeTemplate, StartedRuntime},
+    registry::{RuntimeListingState, RuntimeRegistry, RuntimeTemplate, StartedRuntime},
 };
 use crate::EngineError;
 
 /// Failed preparations whose presentation the engine has not asked for yet.
 const MAX_PENDING_PRESENTATIONS: usize = 256;
 
-/// A template whose instances speak the runtime protocol.
+/// A runtime that speaks the runtime protocol: one connection, which every
+/// capability instance of the runtime shares.
 pub(crate) struct ProtocolTemplate {
     runtime_id: String,
-    takes_workspace: bool,
-    /// The workspace an instance gets when the template takes none, such as
-    /// the daemon's working directory for `local`.
-    fixed_workspace: Option<PathBuf>,
+    /// The workspace a `coding` instance gets when a session names none,
+    /// such as the daemon's working directory for `local`.
+    default_workspace: Option<PathBuf>,
     connector: Arc<dyn RuntimeConnector>,
     settings: RuntimeSettings,
-    /// Bound on connecting and initializing; `None` for an in-process
-    /// runtime.
+    /// Bound on connecting and initializing, and on opening an instance;
+    /// `None` for an in-process runtime.
     startup_timeout: Option<Duration>,
-    /// How long a stopping instance gets to answer `runtime/shutdown`.
+    /// How long a stopping runtime gets to answer `runtime/shutdown`.
     shutdown_grace: Duration,
     /// Where the MCP servers instances host report to.
     mcp_hub: Option<Arc<McpHub>>,
+    lifetime: cookie_agent_protocol::RuntimeLifetime,
+    /// Serializes connecting, so concurrent instances share one connection.
+    connecting: tokio::sync::Mutex<()>,
+    /// The current connection and what it reported.
+    connection: Mutex<Option<RuntimeClient>>,
+    /// What the runtime offered when it last connected.
+    offered: Mutex<RuntimeListingState>,
 }
 
 /// How long the daemon waits for the in-process `local` runtime to answer
@@ -83,12 +93,11 @@ pub(crate) struct ProtocolTemplate {
 pub(crate) const LOCAL_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 impl ProtocolTemplate {
-    /// A configured template: its instances run `connector` for the
-    /// workspace a session asks for when `takes_workspace`, and must answer
-    /// `runtime/initialize` within `startup_timeout`.
+    /// A configured template: its runtime runs `connector` and must answer
+    /// `runtime/initialize`, and each `capability/open`, within
+    /// `startup_timeout`.
     pub(crate) fn new(
         runtime_id: &str,
-        takes_workspace: bool,
         connector: Arc<dyn RuntimeConnector>,
         settings: RuntimeSettings,
         startup_timeout: Duration,
@@ -96,13 +105,16 @@ impl ProtocolTemplate {
     ) -> Self {
         Self {
             runtime_id: runtime_id.to_owned(),
-            takes_workspace,
-            fixed_workspace: None,
+            default_workspace: None,
             connector,
             settings,
             startup_timeout: Some(startup_timeout),
             shutdown_grace,
             mcp_hub: None,
+            lifetime: cookie_agent_protocol::RuntimeLifetime::Spawned,
+            connecting: tokio::sync::Mutex::new(()),
+            connection: Mutex::new(None),
+            offered: Mutex::default(),
         }
     }
 
@@ -112,58 +124,56 @@ impl ProtocolTemplate {
         self
     }
 
-    /// The `local` coding runtime for `workspace`.
+    /// The `local` coding runtime, whose instances open in `workspace` when
+    /// a session names none.
     pub(crate) fn local(
         connector: Arc<dyn RuntimeConnector>,
         workspace: &Path,
         settings: RuntimeSettings,
     ) -> Self {
         Self {
-            runtime_id: cookie_agent_runtime_api::LOCAL_RUNTIME_ID.to_owned(),
-            takes_workspace: false,
-            fixed_workspace: Some(workspace.to_owned()),
-            connector,
-            settings,
+            default_workspace: Some(workspace.to_owned()),
             startup_timeout: None,
             shutdown_grace: LOCAL_SHUTDOWN_GRACE,
-            mcp_hub: None,
+            lifetime: cookie_agent_protocol::RuntimeLifetime::Builtin,
+            ..Self::new(
+                cookie_agent_runtime_api::LOCAL_RUNTIME_ID,
+                connector,
+                settings,
+                Duration::ZERO,
+                LOCAL_SHUTDOWN_GRACE,
+            )
         }
     }
 
-    async fn connect_and_initialize(
-        &self,
-        workspace: Option<&Path>,
-        diagnostics: &Mutex<Option<DiagnosticTail>>,
-    ) -> Result<StartedRuntime, String> {
-        let connection = self.connector.connect(workspace).await?;
-        lock(diagnostics).clone_from(&connection.diagnostics);
-        let requested = workspace.or(self.fixed_workspace.as_deref());
-        let (client, result) = RuntimeClient::initialize(
-            connection,
-            &self.runtime_id,
-            requested,
-            &self.settings,
-            self.shutdown_grace,
-            self.mcp_hub.clone(),
-        )
-        .await?;
-        started(client, result)
-    }
-}
-
-#[async_trait]
-impl RuntimeTemplate for ProtocolTemplate {
-    fn runtime_id(&self) -> &str {
-        &self.runtime_id
-    }
-
-    fn takes_workspace(&self) -> bool {
-        self.takes_workspace
-    }
-
-    async fn start(&self, workspace: Option<&Path>) -> Result<StartedRuntime, String> {
+    /// The runtime's live connection, connecting and initializing it when
+    /// there is none or it ended.
+    async fn connected(&self) -> Result<RuntimeClient, String> {
+        let current = || {
+            lock(&self.connection)
+                .clone()
+                .filter(|client| !client.is_closed())
+        };
+        if let Some(client) = current() {
+            return Ok(client);
+        }
+        let _connecting = self.connecting.lock().await;
+        if let Some(client) = current() {
+            return Ok(client);
+        }
         let diagnostics = Mutex::new(None);
-        let attempt = self.connect_and_initialize(workspace, &diagnostics);
+        let attempt = async {
+            let connection = self.connector.connect().await?;
+            lock(&diagnostics).clone_from(&connection.diagnostics);
+            RuntimeClient::initialize(
+                connection,
+                &self.runtime_id,
+                &self.settings,
+                self.shutdown_grace,
+                self.mcp_hub.clone(),
+            )
+            .await
+        };
         let result = match self.startup_timeout {
             Some(timeout) => tokio::time::timeout(timeout, attempt)
                 .await
@@ -175,10 +185,77 @@ impl RuntimeTemplate for ProtocolTemplate {
                 }),
             None => attempt.await,
         };
-        result.map_err(|reason| match lock(&diagnostics).as_ref() {
-            Some(tail) => tail.annotate(&reason),
-            None => reason,
-        })
+        let (client, result) = result
+            .map_err(|reason| match lock(&diagnostics).as_ref() {
+                Some(tail) => tail.annotate(&reason),
+                None => reason,
+            })
+            .inspect_err(|reason| lock(&self.offered).message = Some(reason.clone()))?;
+        *lock(&self.offered) = RuntimeListingState {
+            connected: true,
+            capabilities: client.capabilities(),
+            platform: result.platform,
+            message: None,
+        };
+        *lock(&self.connection) = Some(client.clone());
+        Ok(client)
+    }
+}
+
+#[async_trait]
+impl RuntimeTemplate for ProtocolTemplate {
+    fn runtime_id(&self) -> &str {
+        &self.runtime_id
+    }
+
+    fn lifetime(&self) -> cookie_agent_protocol::RuntimeLifetime {
+        self.lifetime
+    }
+
+    async fn capabilities(&self) -> Result<Vec<RuntimeCapabilityInfo>, String> {
+        Ok(self.connected().await?.capabilities())
+    }
+
+    fn listing(&self) -> RuntimeListingState {
+        let mut listing = lock(&self.offered).clone();
+        listing.connected = lock(&self.connection)
+            .as_ref()
+            .is_some_and(|client| !client.is_closed());
+        if listing.connected {
+            listing.message = None;
+        }
+        listing
+    }
+
+    fn default_workspace(&self, capability: &CapabilityName) -> Option<PathBuf> {
+        (capability.as_str() == CapabilityName::CODING)
+            .then(|| self.default_workspace.clone())
+            .flatten()
+    }
+
+    async fn start(
+        &self,
+        capability: &CapabilityName,
+        workspace: Option<&Path>,
+    ) -> Result<StartedRuntime, String> {
+        let client = self.connected().await?;
+        let open = client.open(capability, workspace);
+        let result = match self.startup_timeout {
+            Some(timeout) => tokio::time::timeout(timeout, open)
+                .await
+                .unwrap_or_else(|_| {
+                    Err(format!(
+                        "the runtime did not open `{capability}` within {} ms",
+                        timeout.as_millis()
+                    ))
+                }),
+            None => open.await,
+        };
+        result.map_err(|reason| client.inner.annotate(&reason))
+    }
+
+    fn disconnect(&self) {
+        lock(&self.connection).take();
     }
 }
 
@@ -232,7 +309,6 @@ pub(crate) fn register_configured_templates(
         registry.register_template(Arc::new(
             ProtocolTemplate::new(
                 runtime_id.as_str(),
-                template.takes_workspace(),
                 Arc::new(ProcessConnector::new(
                     template.command.clone(),
                     template.env.clone(),
@@ -262,7 +338,7 @@ static NEXT_CONNECTION_EPOCH: AtomicU64 = AtomicU64::new(1);
 /// One producer request a runtime sent: which connection, which method, and
 /// its params as sent.
 pub(crate) struct RuntimeProducerCall {
-    /// The connection's producer source: `runtime:<attachment name>` or
+    /// The connection's producer source: `runtime:<runtime ID>` or
     /// `plugin:<name>`.
     pub(crate) source: cookie_agent_protocol::ProducerSource,
     pub(crate) epoch: u64,
@@ -294,10 +370,82 @@ struct ProducerState {
     outcome: Option<RecoveryOutcome>,
 }
 
-/// One connection to a runtime instance. Dropping the last handle closes it.
+/// One connection to a runtime. Dropping the last handle closes it.
 #[derive(Clone)]
 pub(crate) struct RuntimeClient {
     inner: Arc<ClientInner>,
+}
+
+/// One capability instance of a runtime: its connection, shared with the
+/// runtime's other instances, and its handle on that connection.
+#[derive(Clone)]
+pub(crate) struct InstanceConnection {
+    pub(crate) client: RuntimeClient,
+    /// `None` for a plugin, whose connection has one implicit instance.
+    pub(crate) instance: Option<String>,
+}
+
+impl InstanceConnection {
+    /// The instance's `AGENTS.md` context for a run of `preset`.
+    pub(crate) async fn agent_md(
+        &self,
+        preset: Option<&str>,
+    ) -> Result<Option<AgentMdContext>, EngineError> {
+        match &self.instance {
+            Some(instance) => self.client.agent_md(instance, preset).await,
+            None => Ok(None),
+        }
+    }
+
+    /// The MCP servers the instance hosts, with their last reported status.
+    pub(crate) fn mcp_servers(&self) -> Vec<HostedMcpServer> {
+        self.instance
+            .as_deref()
+            .map(|instance| self.client.mcp_servers(instance))
+            .unwrap_or_default()
+    }
+
+    /// Asks the runtime to reconnect the instance's MCP server `server` now
+    /// and waits for the attempt.
+    pub(crate) async fn reconnect_mcp(&self, server: &str) -> Result<(), EngineError> {
+        let instance = self
+            .instance
+            .as_deref()
+            .ok_or_else(|| EngineError::Mcp(format!("unknown MCP server `{server}`")))?;
+        self.client.reconnect_mcp(instance, server).await
+    }
+
+    /// Asks the runtime to retry the instance's failed MCP servers.
+    pub(crate) fn retry_failed_mcp(&self) {
+        if let Some(instance) = &self.instance {
+            self.client.retry_failed_mcp(instance);
+        }
+    }
+
+    /// Waits for the MCP retries of the connection.
+    pub(crate) async fn mcp_settled(&self) {
+        self.client.mcp_settled().await;
+    }
+
+    pub(crate) fn epoch(&self) -> u64 {
+        self.client.epoch()
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.client.is_closed()
+    }
+
+    pub(crate) fn produces(&self) -> bool {
+        self.client.produces()
+    }
+
+    pub(crate) fn producer_status(&self) -> Option<ProducerSourceStatus> {
+        self.client.producer_status()
+    }
+
+    pub(crate) fn start_producers(&self, host: &Arc<RuntimeProducerHost>) -> bool {
+        self.client.start_producers(host)
+    }
 }
 
 struct ClientInner {
@@ -306,7 +454,7 @@ struct ClientInner {
     /// This connection's producer epoch; see [`NEXT_CONNECTION_EPOCH`].
     epoch: u64,
     /// The producer source of the connection, once initialized:
-    /// `runtime:<attachment name>`, or `plugin:<name>` for a plugin.
+    /// `runtime:<runtime ID>`, or `plugin:<name>` for a plugin.
     producer_source: OnceLock<cookie_agent_protocol::ProducerSource>,
     /// Handles what the runtime protocol does not define, for a plugin.
     extension: OnceLock<Arc<dyn ClientExtension>>,
@@ -315,8 +463,14 @@ struct ClientInner {
     diagnostics: Option<DiagnosticTail>,
     /// How long [`RuntimeClient::shutdown`] waits for the runtime.
     shutdown_grace: Duration,
-    /// `None` until the initialize reply or the first `tools_changed`.
-    tools: Mutex<Option<Arc<DeclaredTools>>>,
+    /// What the runtime offers, from its initialize reply.
+    capabilities: OnceLock<Vec<RuntimeCapabilityInfo>>,
+    /// The runtime's operating system, from its initialize reply.
+    platform: Mutex<Option<String>>,
+    /// Each instance's declared tools, by instance handle (`None` for a
+    /// plugin's implicit instance): from its open reply or its latest
+    /// `tools_changed`.
+    tools: Mutex<HashMap<Option<String>, Arc<DeclaredTools>>>,
     /// Executing calls by prepared ID: where their progress and detach
     /// point reach the host.
     executions: Mutex<HashMap<u64, ExecutionHost>>,
@@ -330,15 +484,22 @@ struct ClientInner {
     mcp_settled: Notify,
 }
 
-/// What the daemon knows about the MCP servers a runtime hosts.
+/// What the daemon knows about the MCP servers a runtime's instances host.
 #[derive(Default)]
 struct HostedMcp {
-    /// The instance's workspace, once initialized.
-    workspace: Option<String>,
     /// The template's definitions, by server name.
     definitions: BTreeMap<String, McpServerConfig>,
-    /// Their last reported status; `None` before the initialize reply or
-    /// the first report.
+    /// Each instance's servers, by instance handle.
+    instances: BTreeMap<String, InstanceMcp>,
+}
+
+/// The MCP servers of one instance.
+#[derive(Default)]
+struct InstanceMcp {
+    /// The instance's workspace.
+    workspace: Option<String>,
+    /// Their last reported status; `None` before the open reply or the
+    /// first report.
     servers: Option<Vec<McpServerReport>>,
 }
 
@@ -408,7 +569,6 @@ impl RuntimeClient {
     pub(crate) async fn initialize(
         connection: RuntimeConnection,
         runtime_id: &str,
-        workspace: Option<&Path>,
         settings: &RuntimeSettings,
         shutdown_grace: Duration,
         mcp_hub: Option<Arc<McpHub>>,
@@ -432,6 +592,8 @@ impl RuntimeClient {
             producers: Mutex::default(),
             diagnostics: connection.diagnostics,
             shutdown_grace,
+            capabilities: OnceLock::new(),
+            platform: Mutex::default(),
             tools: Mutex::default(),
             executions: Mutex::default(),
             presentations: Mutex::default(),
@@ -451,7 +613,6 @@ impl RuntimeClient {
                 &InitializeParams {
                     version: RUNTIME_PROTOCOL_VERSION,
                     runtime_id: runtime_id.to_owned(),
-                    workspace: workspace.map(|path| path.to_string_lossy().into_owned()),
                     settings: settings.clone(),
                 },
             )
@@ -464,39 +625,30 @@ impl RuntimeClient {
                 result.version
             ));
         }
-        if let Ok(source) = cookie_agent_protocol::ProducerSource::runtime(&result.attachment_name)
-        {
+        if let Ok(source) = cookie_agent_protocol::ProducerSource::runtime(runtime_id) {
             let _ = inner.producer_source.set(source);
         }
         lock(&inner.producers).declared = result.producer_messaging;
-        // A notification the runtime sent after its reply may already have
-        // been handled; it is newer than the reply.
-        lock(&inner.tools).get_or_insert_with(|| Arc::new(result.tools.clone().into()));
-        let failed = {
-            let mut mcp = lock(&inner.mcp);
-            mcp.workspace.clone_from(&result.workspace);
-            let servers = mcp
-                .servers
-                .get_or_insert_with(|| result.mcp_servers.clone());
-            servers
+        let mut capabilities = Vec::with_capacity(result.capabilities.len());
+        for declared in &result.capabilities {
+            if capabilities
                 .iter()
-                .filter(|server| server.state == protocol::McpServerState::Failed)
-                .map(|server| {
-                    (
-                        server.name.clone(),
-                        server.message.clone().unwrap_or_default(),
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-        if let Some(hub) = &inner.mcp_hub {
-            for (server, reason) in failed {
-                hub.failed(inner.mcp_failure(server, reason));
+                .any(|known: &RuntimeCapabilityInfo| known.name == declared.name)
+            {
+                return Err(format!(
+                    "the runtime offers capability `{}` twice",
+                    declared.name
+                ));
             }
-            if !result.mcp_servers.is_empty() {
-                hub.changed();
-            }
+            capabilities.push(RuntimeCapabilityInfo {
+                name: declared.name.clone(),
+                kind: declared.kind.clone(),
+                takes_workspace: declared.takes_workspace,
+                description: declared.description.clone(),
+            });
         }
+        let _ = inner.capabilities.set(capabilities);
+        lock(&inner.platform).clone_from(&result.platform);
         Ok((Self { inner }, result))
     }
 
@@ -524,6 +676,8 @@ impl RuntimeClient {
             producers: Mutex::default(),
             diagnostics: connection.diagnostics,
             shutdown_grace,
+            capabilities: OnceLock::from(Vec::new()),
+            platform: Mutex::default(),
             tools: Mutex::default(),
             executions: Mutex::default(),
             presentations: Mutex::default(),
@@ -555,7 +709,9 @@ impl RuntimeClient {
                 result.name
             ));
         }
-        lock(&client.inner.tools).get_or_insert_with(|| Arc::new(result.tools.clone().into()));
+        lock(&client.inner.tools)
+            .entry(None)
+            .or_insert_with(|| Arc::new(result.tools.clone().into()));
         lock(&client.inner.producers).declared =
             producer_messaging && result.capabilities.producer_messaging;
         Ok((client, result))
@@ -579,12 +735,112 @@ impl RuntimeClient {
         self.inner.peer.notify(method, params).await
     }
 
-    /// The tools this connection's runtime or plugin declares, as one
-    /// provider.
+    /// The tools a plugin declares, as one provider.
     pub(crate) fn tool_provider(&self) -> Arc<dyn ToolProvider> {
         Arc::new(RemoteToolProvider {
             client: self.clone(),
+            instance: None,
         })
+    }
+
+    /// What the runtime offers.
+    pub(crate) fn capabilities(&self) -> Vec<RuntimeCapabilityInfo> {
+        self.inner.capabilities.get().cloned().unwrap_or_default()
+    }
+
+    /// Opens `capability` for `workspace` and returns the instance. The
+    /// error is a human-readable reason.
+    pub(crate) async fn open(
+        &self,
+        capability: &CapabilityName,
+        workspace: Option<&Path>,
+    ) -> Result<StartedRuntime, String> {
+        let offered = self
+            .capabilities()
+            .into_iter()
+            .find(|offered| &offered.name == capability)
+            .ok_or_else(|| format!("the runtime offers no capability `{capability}`"))?;
+        let result: CapabilityOpenResult = self
+            .inner
+            .peer
+            .request(
+                method::CAPABILITY_OPEN,
+                &CapabilityOpenParams {
+                    capability: capability.clone(),
+                    workspace: workspace.map(|path| path.to_string_lossy().into_owned()),
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let attachment_name = cookie_agent_protocol::AttachmentName::new(
+            result.attachment_name.as_str(),
+        )
+        .map_err(|_| {
+            format!(
+                "the runtime reported invalid attachment name `{}`",
+                result.attachment_name
+            )
+        })?;
+        let skills = skill_registry(result.skills)?;
+        let platform = self.platform();
+        let workspace = result
+            .workspace
+            .clone()
+            .map(|root| WorkspaceContext::reported(PathBuf::from(root), platform));
+        // A notification the runtime sent after its reply may already have
+        // been handled; it is newer than the reply.
+        lock(&self.inner.tools)
+            .entry(Some(result.instance.clone()))
+            .or_insert_with(|| Arc::new(result.tools.into()));
+        let failed = {
+            let mut mcp = lock(&self.inner.mcp);
+            let instance = mcp.instances.entry(result.instance.clone()).or_default();
+            instance.workspace.clone_from(&result.workspace);
+            instance
+                .servers
+                .get_or_insert_with(|| result.mcp_servers.clone())
+                .iter()
+                .filter(|server| server.state == protocol::McpServerState::Failed)
+                .map(|server| {
+                    (
+                        server.name.clone(),
+                        server.message.clone().unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        if let Some(hub) = &self.inner.mcp_hub {
+            for (server, reason) in failed {
+                hub.failed(self.inner.mcp_failure(&result.instance, server, reason));
+            }
+            if !result.mcp_servers.is_empty() {
+                hub.changed();
+            }
+        }
+        let info = RuntimeInfo::new(
+            &self.inner.runtime_id,
+            capability.clone(),
+            offered.kind,
+            attachment_name.as_str(),
+            workspace,
+        );
+        Ok(StartedRuntime {
+            info,
+            providers: vec![Arc::new(RemoteToolProvider {
+                client: self.clone(),
+                instance: Some(result.instance.clone()),
+            })],
+            skills,
+            connection: Some(InstanceConnection {
+                client: self.clone(),
+                instance: Some(result.instance),
+            }),
+        })
+    }
+
+    /// The operating system the runtime reported.
+    fn platform(&self) -> Option<String> {
+        lock(&self.inner.platform).clone()
     }
 
     /// What the process last wrote outside the protocol.
@@ -650,16 +906,21 @@ impl RuntimeClient {
         true
     }
 
-    /// The MCP servers the runtime hosts, with their last reported status.
-    pub(crate) fn mcp_servers(&self) -> Vec<HostedMcpServer> {
+    /// The MCP servers instance `instance` hosts, with their last reported
+    /// status.
+    fn mcp_servers(&self, instance: &str) -> Vec<HostedMcpServer> {
         let mcp = lock(&self.inner.mcp);
-        mcp.servers
+        let Some(hosted) = mcp.instances.get(instance) else {
+            return Vec::new();
+        };
+        hosted
+            .servers
             .iter()
             .flatten()
             .filter_map(|report| {
                 Some(HostedMcpServer {
                     runtime_id: self.inner.runtime_id.clone(),
-                    workspace: mcp.workspace.clone(),
+                    workspace: hosted.workspace.clone(),
                     definition: mcp.definitions.get(&report.name)?.clone(),
                     report: report.clone(),
                 })
@@ -667,15 +928,16 @@ impl RuntimeClient {
             .collect()
     }
 
-    /// Asks the runtime to reconnect its MCP server `server` now and waits
-    /// for the attempt.
-    pub(crate) async fn reconnect_mcp(&self, server: &str) -> Result<(), EngineError> {
+    /// Asks the runtime to reconnect MCP server `server` of instance
+    /// `instance` now and waits for the attempt.
+    async fn reconnect_mcp(&self, instance: &str, server: &str) -> Result<(), EngineError> {
         let outcome: Outcome = self
             .inner
             .peer
             .request(
                 method::MCP_RECONNECT,
                 &McpReconnectParams {
+                    instance: instance.to_owned(),
                     server: Some(server.to_owned()),
                 },
             )
@@ -688,13 +950,15 @@ impl RuntimeClient {
             .map_err(|error| EngineError::Mcp(error.to_string()))
     }
 
-    /// Asks the runtime to retry its failed MCP servers, as when a session
-    /// that uses it is created or opened; [`Self::mcp_settled`] waits for
-    /// the attempts.
-    pub(crate) fn retry_failed_mcp(&self) {
+    /// Asks the runtime to retry the failed MCP servers of instance
+    /// `instance`, as when a session that uses it is created or opened;
+    /// [`Self::mcp_settled`] waits for the attempts.
+    fn retry_failed_mcp(&self, instance: &str) {
         let any_failed = lock(&self.inner.mcp)
-            .servers
-            .iter()
+            .instances
+            .get(instance)
+            .and_then(|hosted| hosted.servers.as_ref())
+            .into_iter()
             .flatten()
             .any(|server| server.state == protocol::McpServerState::Failed);
         if !any_failed {
@@ -705,11 +969,15 @@ impl RuntimeClient {
         };
         self.inner.mcp_retries.fetch_add(1, Ordering::AcqRel);
         let retry = McpRetry(Arc::clone(&self.inner));
+        let params = McpReconnectParams {
+            instance: instance.to_owned(),
+            server: None,
+        };
         handle.spawn(async move {
             let _ = retry
                 .0
                 .peer
-                .request::<_, Outcome>(method::MCP_RECONNECT, &McpReconnectParams::default())
+                .request::<_, Outcome>(method::MCP_RECONNECT, &params)
                 .await;
             drop(retry);
         });
@@ -760,9 +1028,10 @@ impl RuntimeClient {
         self.inner.peer.close();
     }
 
-    /// The runtime's `AGENTS.md` context for a run of `preset`.
-    pub(crate) async fn agent_md(
+    /// Instance `instance`'s `AGENTS.md` context for a run of `preset`.
+    async fn agent_md(
         &self,
+        instance: &str,
         preset: Option<&str>,
     ) -> Result<Option<AgentMdContext>, EngineError> {
         let reply: Result<ContextResult, RpcError> = self
@@ -771,6 +1040,7 @@ impl RuntimeClient {
             .request(
                 method::CONTEXT,
                 &ContextParams {
+                    instance: instance.to_owned(),
                     preset: preset.map(str::to_owned),
                 },
             )
@@ -802,39 +1072,6 @@ impl RuntimeClient {
                 self.inner.runtime_id
             ))),
         }
-    }
-}
-
-/// The instance an initialize reply describes.
-fn started(client: RuntimeClient, result: InitializeResult) -> Result<StartedRuntime, String> {
-    {
-        let workspace = result
-            .workspace
-            .map(|root| WorkspaceContext::reported(PathBuf::from(root), result.platform));
-        let attachment_name = cookie_agent_protocol::AttachmentName::new(
-            result.attachment_name.as_str(),
-        )
-        .map_err(|_| {
-            format!(
-                "the runtime reported invalid attachment name `{}`",
-                result.attachment_name
-            )
-        })?;
-        let skills = skill_registry(result.skills)?;
-        let info = RuntimeInfo::new(
-            &client.inner.runtime_id,
-            result.kind,
-            attachment_name.as_str(),
-            workspace,
-        );
-        Ok(StartedRuntime {
-            info,
-            providers: vec![Arc::new(RemoteToolProvider {
-                client: client.clone(),
-            })],
-            skills,
-            connection: Some(client),
-        })
     }
 }
 
@@ -911,10 +1148,13 @@ impl ClientInner {
         }
     }
 
-    fn mcp_failure(&self, server: String, reason: String) -> McpServerFailure {
+    fn mcp_failure(&self, instance: &str, server: String, reason: String) -> McpServerFailure {
         McpServerFailure {
             runtime_id: self.runtime_id.clone(),
-            workspace: lock(&self.mcp).workspace.clone(),
+            workspace: lock(&self.mcp)
+                .instances
+                .get(instance)
+                .and_then(|hosted| hosted.workspace.clone()),
             server,
             reason,
         }
@@ -958,18 +1198,34 @@ impl ClientInner {
     /// it was one.
     fn handle_notification(&self, notification: &IncomingNotification) -> bool {
         match notification.method.as_str() {
+            // A plugin's implicit instance.
             method::TOOLS_CHANGED => {
                 if let Ok(tools) = notification.params::<RuntimeTools>() {
-                    *lock(&self.tools) = Some(Arc::new(tools.into()));
+                    lock(&self.tools).insert(None, Arc::new(tools.into()));
+                }
+            }
+            method::CAPABILITY_TOOLS_CHANGED => {
+                if let Ok(CapabilityToolsChangedParams { instance, tools }) = notification.params()
+                {
+                    lock(&self.tools).insert(Some(instance), Arc::new(tools.into()));
                 }
             }
             method::MCP_CHANGED => {
-                if let Ok(McpChangedParams { servers, failures }) = notification.params() {
-                    lock(&self.mcp).servers = Some(servers);
+                if let Ok(McpChangedParams {
+                    instance,
+                    servers,
+                    failures,
+                }) = notification.params()
+                {
+                    lock(&self.mcp)
+                        .instances
+                        .entry(instance.clone())
+                        .or_default()
+                        .servers = Some(servers);
                     if let Some(hub) = &self.mcp_hub {
                         hub.changed();
                         for failure in failures {
-                            hub.failed(self.mcp_failure(failure.server, failure.reason));
+                            hub.failed(self.mcp_failure(&instance, failure.server, failure.reason));
                         }
                     }
                 }
@@ -1238,6 +1494,14 @@ fn retain_media(
 /// runtime reports when it prepares a call.
 pub(crate) struct RemoteToolProvider {
     client: RuntimeClient,
+    /// The instance whose tools these are; `None` for a plugin.
+    instance: Option<String>,
+}
+
+impl RemoteToolProvider {
+    fn declared(&self) -> Option<Arc<DeclaredTools>> {
+        lock(&self.client.inner.tools).get(&self.instance).cloned()
+    }
 }
 
 impl RemoteToolProvider {
@@ -1280,15 +1544,15 @@ impl ToolProvider for RemoteToolProvider {
     }
 
     fn prompt_sections(&self, _ctx: &SessionToolContext) -> Result<Vec<PromptSection>, ToolError> {
-        Ok(lock(&self.client.inner.tools)
-            .as_ref()
+        Ok(self
+            .declared()
             .map(|tools| tools.prompt_sections.clone())
             .unwrap_or_default())
     }
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
-        Ok(lock(&self.client.inner.tools)
-            .as_ref()
+        Ok(self
+            .declared()
             .map(|tools| tools.specs.clone())
             .unwrap_or_default())
     }
@@ -1354,6 +1618,7 @@ impl ToolProvider for RemoteToolProvider {
                 .request(
                     method::TOOL_PREPARE,
                     &PrepareParams {
+                        instance: self.instance.clone(),
                         session: ctx.session,
                         run: ctx.run,
                         turn: turn.clone(),

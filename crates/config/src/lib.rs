@@ -40,7 +40,7 @@ pub use runtime::{
     SUBAGENT_OUTPUT_MAX_BYTES, ServerConfig, SessionTitleConfig, SubagentOutputConfig,
     ToolOutputConfig,
 };
-pub use runtime_templates::{RuntimeTemplateConfig, WORKSPACE_PLACEHOLDER};
+pub use runtime_templates::RuntimeTemplateConfig;
 pub use skills::{
     SkillAllowedTool, SkillContext, SkillDiagnostic, SkillDiscovery, SkillDocument,
     SkillFrontmatter, SkillRegistry, load_project_skills, load_skill_roots, load_user_skills,

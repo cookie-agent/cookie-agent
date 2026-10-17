@@ -1,12 +1,12 @@
-//! `cookie runtime coding --stdio`: the real binary serving the runtime
+//! `cookie runtime serve --stdio`: the real binary serving the runtime
 //! protocol over its standard input and output.
 
 use std::{path::Path, process::Stdio, time::Duration};
 
 use cookie_agent_runtime_api::{
     protocol::{
-        AgentMdLimits, Empty, InitializeParams, InitializeResult, RUNTIME_PROTOCOL_VERSION,
-        RuntimeSettings, ToolOutputLimits, method,
+        AgentMdLimits, CapabilityOpenParams, CapabilityOpenResult, Empty, InitializeParams,
+        InitializeResult, RUNTIME_PROTOCOL_VERSION, RuntimeSettings, ToolOutputLimits, method,
     },
     rpc::{LineTransport, Peer},
 };
@@ -14,9 +14,13 @@ use tokio::process::{Child, Command};
 
 const WAIT: Duration = Duration::from_secs(30);
 
-fn runtime(home: &Path, workspace: &str) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_cookie"))
-        .args(["runtime", "coding", "--stdio", "--workspace", workspace])
+fn runtime(home: &Path, roots: &[&str]) -> Child {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_cookie"));
+    command.args(["runtime", "serve", "--stdio"]);
+    for root in roots {
+        command.args(["--root", root]);
+    }
+    command
         .env("HOME", home)
         .env("USERPROFILE", home)
         .stdin(Stdio::piped())
@@ -36,11 +40,10 @@ fn connect(child: &mut Child) -> Peer {
     peer
 }
 
-fn params(workspace: Option<&str>) -> InitializeParams {
+fn params() -> InitializeParams {
     InitializeParams {
         version: RUNTIME_PROTOCOL_VERSION,
         runtime_id: "labpc".into(),
-        workspace: workspace.map(str::to_owned),
         settings: RuntimeSettings {
             tool_output: ToolOutputLimits {
                 max_lines: 100,
@@ -54,6 +57,20 @@ fn params(workspace: Option<&str>) -> InitializeParams {
     }
 }
 
+fn open(workspace: &str) -> CapabilityOpenParams {
+    CapabilityOpenParams {
+        capability: cookie_agent_protocol::CapabilityName::coding(),
+        workspace: Some(workspace.to_owned()),
+    }
+}
+
+async fn initialize(peer: &Peer) -> InitializeResult {
+    tokio::time::timeout(WAIT, peer.request(method::INITIALIZE, &params()))
+        .await
+        .expect("initialize answers")
+        .expect("initialize succeeds")
+}
+
 async fn exits_successfully(child: &mut Child) {
     let status = tokio::time::timeout(WAIT, child.wait())
         .await
@@ -63,36 +80,41 @@ async fn exits_successfully(child: &mut Child) {
 }
 
 #[tokio::test]
-async fn the_runtime_expands_home_initializes_and_stops_on_shutdown() {
+async fn the_runtime_opens_workspaces_expanding_home_and_stops_on_shutdown() {
     let home = tempfile::tempdir().unwrap();
     let repository = home.path().join("My Repo");
     std::fs::create_dir(&repository).unwrap();
-    let mut child = runtime(home.path(), "~/My Repo");
+    let mut child = runtime(home.path(), &[]);
     let peer = connect(&mut child);
+    let initialized = initialize(&peer).await;
+    assert_eq!(
+        initialized
+            .capabilities
+            .iter()
+            .map(|capability| capability.name.as_str())
+            .collect::<Vec<_>>(),
+        ["coding"]
+    );
 
     // The daemon may name the workspace in its own spelling; the runtime
     // resolves it on its machine and reports the canonical path.
-    let result: InitializeResult = tokio::time::timeout(
+    let opened: CapabilityOpenResult = tokio::time::timeout(
         WAIT,
-        peer.request(method::INITIALIZE, &params(Some("~/My Repo"))),
+        peer.request(method::CAPABILITY_OPEN, &open("~/My Repo")),
     )
     .await
-    .expect("initialize answers")
-    .expect("initialize succeeds");
+    .expect("open answers")
+    .expect("open succeeds");
     let canonical = repository.canonicalize().unwrap();
     assert_eq!(
-        result.workspace.as_deref(),
+        opened.workspace.as_deref(),
         Some(canonical.to_string_lossy().as_ref())
     );
-    assert_eq!(
-        result.kind,
-        cookie_agent_protocol::RuntimeKind::new("coding").unwrap()
-    );
-    assert_eq!(result.attachment_name, "labpc_my_repo");
+    assert_eq!(opened.attachment_name, "labpc_my_repo");
     assert!(
-        result.tools.tools.iter().any(|tool| tool.name == "bash"),
+        opened.tools.tools.iter().any(|tool| tool.name == "bash"),
         "{:?}",
-        result.tools.tools
+        opened.tools.tools
     );
 
     let _: Empty = tokio::time::timeout(WAIT, peer.request(method::SHUTDOWN, &Empty {}))
@@ -103,22 +125,23 @@ async fn the_runtime_expands_home_initializes_and_stops_on_shutdown() {
 }
 
 #[tokio::test]
-async fn the_runtime_refuses_another_workspace_and_exits_on_stdin_eof() {
+async fn the_runtime_refuses_workspaces_outside_its_roots_and_exits_on_stdin_eof() {
     let home = tempfile::tempdir().unwrap();
-    let workspace = tempfile::tempdir().unwrap();
-    let mut child = runtime(home.path(), &workspace.path().to_string_lossy());
+    let root = tempfile::tempdir().unwrap();
+    let mut child = runtime(home.path(), &[&root.path().to_string_lossy()]);
     let peer = connect(&mut child);
+    initialize(&peer).await;
     let error = tokio::time::timeout(
         WAIT,
-        peer.request::<_, InitializeResult>(
-            method::INITIALIZE,
-            &params(Some(&home.path().to_string_lossy())),
+        peer.request::<_, CapabilityOpenResult>(
+            method::CAPABILITY_OPEN,
+            &open(&home.path().to_string_lossy()),
         ),
     )
     .await
-    .expect("initialize answers")
-    .expect_err("a different workspace");
-    assert!(error.to_string().contains("this runtime serves"), "{error}");
+    .expect("open answers")
+    .expect_err("outside the root");
+    assert!(error.to_string().contains("outside"), "{error}");
 
     // Closing the daemon's end closes the runtime's standard input.
     peer.close();
@@ -126,9 +149,9 @@ async fn the_runtime_refuses_another_workspace_and_exits_on_stdin_eof() {
 }
 
 #[tokio::test]
-async fn a_missing_workspace_fails_on_stderr_with_nothing_on_stdout() {
+async fn a_missing_root_fails_on_stderr_with_nothing_on_stdout() {
     let home = tempfile::tempdir().unwrap();
-    let child = runtime(home.path(), "~/missing");
+    let child = runtime(home.path(), &["~/missing"]);
     let output = tokio::time::timeout(WAIT, child.wait_with_output())
         .await
         .expect("the runtime exits")

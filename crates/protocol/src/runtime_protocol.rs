@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The runtime protocol version. Both ends must speak exactly this version.
-pub const RUNTIME_PROTOCOL_VERSION: u32 = 4;
+pub const RUNTIME_PROTOCOL_VERSION: u32 = 5;
 
 /// The largest frame either end sends or accepts. It fits an `execute`
 /// reply carrying [`MAX_INLINE_MEDIA_BYTES`] of base64 media next to a full
@@ -36,9 +36,15 @@ pub const MAX_PREPARE_BATCH: usize = 256;
 /// Method names.
 pub mod method {
     /// daemon → runtime: version, identity, and settings; returns the
-    /// runtime's identity, tools, and skills.
+    /// capabilities the runtime offers.
     pub const INITIALIZE: &str = "runtime/initialize";
-    /// runtime → daemon (notification): the runtime's tool list changed.
+    /// daemon → runtime: open a capability for a workspace; returns the
+    /// instance's identity, tools, and skills.
+    pub const CAPABILITY_OPEN: &str = "capability/open";
+    /// runtime → daemon (notification): an instance's tool list changed.
+    pub const CAPABILITY_TOOLS_CHANGED: &str = "capability/tools_changed";
+    /// plugin → daemon (notification): a plugin's tool list changed. A
+    /// plugin connection has one implicit instance.
     pub const TOOLS_CHANGED: &str = "runtime/tools_changed";
     /// daemon → runtime: per-admission context (`AGENTS.md`).
     pub const CONTEXT: &str = "runtime/context";
@@ -118,11 +124,8 @@ pub struct Empty {}
 pub struct InitializeParams {
     /// The daemon's [`RUNTIME_PROTOCOL_VERSION`].
     pub version: u32,
-    /// The template's runtime ID.
+    /// The runtime's ID.
     pub runtime_id: String,
-    /// The workspace the daemon asks for, when the template has one.
-    #[serde(default)]
-    pub workspace: Option<String>,
     pub settings: RuntimeSettings,
 }
 
@@ -207,7 +210,8 @@ pub struct McpFailureReport {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpChangedParams {
-    /// Every server the runtime hosts, in name order.
+    pub instance: String,
+    /// Every server the instance hosts, in name order.
     pub servers: Vec<McpServerReport>,
     /// Servers that failed since the last report, in order.
     #[serde(default)]
@@ -217,6 +221,7 @@ pub struct McpChangedParams {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpReconnectParams {
+    pub instance: String,
     /// The server to reconnect now; absent to retry every failed server.
     #[serde(default)]
     pub server: Option<String>,
@@ -227,26 +232,70 @@ pub struct McpReconnectParams {
 pub struct InitializeResult {
     /// The runtime's [`RUNTIME_PROTOCOL_VERSION`].
     pub version: u32,
+    /// Operating system, as Rust's `std::env::consts::OS` names it, for a
+    /// runtime where it matters.
+    #[serde(default)]
+    pub platform: Option<String>,
+    /// What the runtime offers; sessions attach each one separately.
+    pub capabilities: Vec<CapabilityDeclaration>,
+    /// The runtime sends producer messages to the sessions attached to its
+    /// instances (`producer/*`), once the daemon sends
+    /// `producer/recovery/start`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub producer_messaging: bool,
+}
+
+/// One capability a runtime offers.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityDeclaration {
+    /// `[a-z][a-z0-9_]{0,31}`, unique within the runtime.
+    pub name: crate::CapabilityName,
+    /// A self-declared label the daemon shows and never branches on.
     pub kind: RuntimeKind,
+    /// Whether opening it requires a workspace.
+    pub takes_workspace: bool,
+    #[serde(default)]
+    pub description: String,
+}
+
+// --- capability/open, capability/tools_changed --------------------------------
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityOpenParams {
+    pub capability: crate::CapabilityName,
+    /// The workspace, exactly as a session gave it: the runtime expands a
+    /// leading `~` and resolves it on its own machine. Required exactly
+    /// when the capability takes one.
+    #[serde(default)]
+    pub workspace: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityOpenResult {
+    /// The runtime-chosen handle of the instance, unique on the
+    /// connection. Opening an instance that is already open returns it.
+    pub instance: String,
     /// The name sessions attach the instance under.
     pub attachment_name: String,
     /// The canonical workspace on the runtime's machine.
     #[serde(default)]
     pub workspace: Option<String>,
-    /// Operating system, as Rust's `std::env::consts::OS` names it, for a
-    /// runtime where it matters.
-    #[serde(default)]
-    pub platform: Option<String>,
     pub tools: RuntimeTools,
     pub skills: RuntimeSkills,
-    /// The template's MCP servers after their first connection attempt.
+    /// The instance's MCP servers after their first connection attempt.
     /// Their tools are among `tools`.
     #[serde(default)]
     pub mcp_servers: Vec<McpServerReport>,
-    /// The runtime sends producer messages to the sessions attached to it
-    /// (`producer/*`), once the daemon sends `producer/recovery/start`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub producer_messaging: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityToolsChangedParams {
+    pub instance: String,
+    pub tools: RuntimeTools,
 }
 
 /// A runtime's tools and their prompt sections.
@@ -346,6 +395,7 @@ pub type ToolsChangedParams = RuntimeTools;
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextParams {
+    pub instance: String,
     /// The run's agent preset.
     #[serde(default)]
     pub preset: Option<String>,
@@ -385,6 +435,10 @@ pub struct WireToolCall {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrepareParams {
+    /// The capability instance the calls go to; absent for a plugin, whose
+    /// connection has one implicit instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
     pub session: SessionId,
     pub run: RunId,
     pub turn: WireTurnContext,

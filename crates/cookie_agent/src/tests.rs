@@ -273,24 +273,44 @@ fn cli_commands_and_removed_flags_are_exact() {
         Cli::try_parse_from([
             "cookie",
             "runtime",
-            "coding",
+            "serve",
             "--stdio",
-            "--workspace",
-            "~/my repo"
+            "--root",
+            "~/my repo",
+            "--root",
+            "/srv"
         ])
         .unwrap()
         .command,
         Some(Command::Runtime {
-            command: RuntimeCommand::Coding {
+            command: RuntimeCommand::Serve {
                 stdio: true,
-                workspace: "~/my repo".into(),
+                roots: vec!["~/my repo".into(), "/srv".into()],
+            }
+        })
+    );
+    assert_eq!(
+        Cli::try_parse_from(["cookie", "runtime", "serve", "--stdio"])
+            .unwrap()
+            .command,
+        Some(Command::Runtime {
+            command: RuntimeCommand::Serve {
+                stdio: true,
+                roots: Vec::new(),
             }
         })
     );
     for arguments in [
-        vec!["cookie", "runtime", "coding", "--workspace", "/srv"],
+        vec!["cookie", "runtime", "serve", "--root", "/srv"],
         vec!["cookie", "runtime", "coding", "--stdio"],
-        vec!["cookie", "runtime", "global", "--stdio"],
+        vec![
+            "cookie",
+            "runtime",
+            "serve",
+            "--stdio",
+            "--workspace",
+            "/srv",
+        ],
     ] {
         assert!(Cli::try_parse_from(&arguments).is_err(), "{arguments:?}");
     }
@@ -469,9 +489,9 @@ fn attach_connect_and_disconnect_are_cwd_independent() {
             token: TEST_TOKEN.into(),
         },
         Command::Runtime {
-            command: RuntimeCommand::Coding {
+            command: RuntimeCommand::Serve {
                 stdio: true,
-                workspace: "~/repo".into(),
+                roots: vec!["~/repo".into()],
             },
         },
     ] {

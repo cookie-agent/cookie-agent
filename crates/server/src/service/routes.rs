@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use cookie_agent_engine::{EngineError, TailOwner, session::SessionError};
+use cookie_agent_protocol::CapabilityName;
 use cookie_agent_protocol::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondErrorCode, ApprovalRespondParams,
     ApprovalRespondResult, EventsSubscribeParams, EventsSubscribeResult, McpAuthBeginParams,
@@ -50,6 +51,7 @@ impl ServerProtocol for Server {
                     .into_iter()
                     .map(|request| cookie_agent_engine::SessionRuntimeRequest {
                         runtime_id: request.runtime_id.into_string(),
+                        capability: request.capability.map(CapabilityName::into_string),
                         workspace: request.workspace.map(std::path::PathBuf::from),
                     })
                     .collect()
@@ -555,6 +557,7 @@ impl ServerProtocol for Server {
             .attach_runtime(
                 params.session_id,
                 params.runtime_id.as_str(),
+                params.capability.as_ref().map(CapabilityName::as_str),
                 params.workspace.map(std::path::PathBuf::from),
                 context.client_origin(),
             )
@@ -620,6 +623,7 @@ impl ServerProtocol for Server {
             .engine
             .reconnect_runtime(
                 params.runtime_id.as_str(),
+                params.capability.as_ref().map(CapabilityName::as_str),
                 params.workspace.map(std::path::PathBuf::from),
             )
             .await

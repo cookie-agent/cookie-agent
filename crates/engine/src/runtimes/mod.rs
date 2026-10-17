@@ -11,10 +11,10 @@
 //! 1. The **base layer** ([`ToolLayer::Base`]): tools the daemon implements
 //!    for its own orchestration (delegation, messaging, skills, goals,
 //!    `read_artifact`). It is not a runtime and has no workspace.
-//! 2. The session's **attachments**, in attach order: runtime instances that
-//!    the [`RuntimeRegistry`] starts from [`RuntimeTemplate`]s, one per
-//!    (runtime ID, canonical workspace), shared by every session attached to
-//!    them. The built-in templates are the **global runtime** (ID `global`):
+//! 2. The session's **attachments**, in attach order: capability instances
+//!    that the [`RuntimeRegistry`] opens from [`RuntimeTemplate`]s, one per
+//!    (runtime ID, capability, canonical workspace), shared by every session
+//!    attached to them. The built-in templates are the **global runtime** (ID `global`):
 //!    top-level MCP servers, plugins, and a `webfetch` declared
 //!    `ToolCollision::Fallback`, no workspace, called in-process; and the
 //!    **local coding runtime** (ID `local`): `read`, `write`, `edit`, `bash`,
@@ -49,13 +49,13 @@ pub(crate) use mcp_hub::McpHub;
 pub use mcp_hub::McpServerFailure;
 pub(crate) use process::ProcessConnector;
 pub use registry::{
-    RuntimeFailure, RuntimeInstanceStatus, RuntimeInstanceSummary, RuntimeTemplate,
-    RuntimeTemplateSummary, StartedRuntime,
+    RuntimeFailure, RuntimeInstanceStatus, RuntimeInstanceSummary, RuntimeListingState,
+    RuntimeTemplate, RuntimeTemplateSummary, StartedRuntime,
 };
 pub(crate) use registry::{RuntimeInstance, RuntimeRegistry};
 pub(crate) use remote::{
-    ClientExtension, HostedMcpServer, ProtocolTemplate, RuntimeClient, RuntimeProducerCall,
-    RuntimeProducerHost, register_configured_templates, runtime_settings,
+    ClientExtension, HostedMcpServer, InstanceConnection, ProtocolTemplate, RuntimeClient,
+    RuntimeProducerCall, RuntimeProducerHost, register_configured_templates, runtime_settings,
 };
 
 /// One-line description of where a tool runs, for the approval reviewer.

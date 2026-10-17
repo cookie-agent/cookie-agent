@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 44 with versionless session events.
+//! Exact cookie-agent protocol 45 with versionless session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders, except
 //! the few that keep versionless session event history readable.
@@ -129,12 +129,12 @@ pub use attachment::*;
 pub use bindings::*;
 pub use cookie_agent_identity::{
     AdapterId, AgentId, AgentRevision, AttachmentName, AuthFieldName, AuthMethodId,
-    AuthParameterId, AuthRecipeId, CacheEntryId, CacheRevision, CanonicalModelId, CatalogRevision,
-    IdentityError, ManifestEntryId, ManifestRevision, ModelKey, ModelRevision, ModelSelection,
-    ModelSnapshotRevision, ProtocolRecipeId, ProviderId, ProviderModelId, ProviderRecipeId,
-    ProviderSetupRecipeId, ProviderStateRevision, ProviderStoreRevision, RecipeCompilerVersion,
-    RecipeRegistryRevision, RuntimeId, RuntimeRevision, SafeCode, SetupFieldId, StoreEntryId,
-    VariantId, WildcardPattern,
+    AuthParameterId, AuthRecipeId, CacheEntryId, CacheRevision, CanonicalModelId, CapabilityName,
+    CatalogRevision, IdentityError, ManifestEntryId, ManifestRevision, ModelKey, ModelRevision,
+    ModelSelection, ModelSnapshotRevision, ProtocolRecipeId, ProviderId, ProviderModelId,
+    ProviderRecipeId, ProviderSetupRecipeId, ProviderStateRevision, ProviderStoreRevision,
+    RecipeCompilerVersion, RecipeRegistryRevision, RuntimeId, RuntimeRevision, SafeCode,
+    SetupFieldId, StoreEntryId, VariantId, WildcardPattern,
 };
 pub use event::*;
 pub use extension::*;
@@ -152,7 +152,7 @@ pub use session_model::*;
 pub use setup_value::*;
 
 /// The only protocol version supported by this build.
-pub const PROTOCOL_VERSION: u32 = 44;
+pub const PROTOCOL_VERSION: u32 = 45;
 /// The only coherent runtime snapshot schema supported by this build.
 pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 6;
 
@@ -216,7 +216,7 @@ macro_rules! exact_numeric_wire_type {
     };
 }
 
-exact_numeric_wire_type!(ProtocolVersion, 44, "The exact protocol wire version.");
+exact_numeric_wire_type!(ProtocolVersion, 45, "The exact protocol wire version.");
 exact_numeric_wire_type!(
     RuntimeSnapshotSchemaVersion,
     6,

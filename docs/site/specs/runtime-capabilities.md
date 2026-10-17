@@ -1,7 +1,7 @@
 # Persistent Daemon, Dial-in Runtimes, and Runtime Capabilities
 
-Status: **approved** (decisions of 2026-10-16 below and in
-[Review](#10-review)). This spec extends the [runtimes spec](runtimes.md);
+Status: **approved; phase 1 implemented** (decisions of 2026-10-16 below and
+in [Review](#10-review); see [Implementation notes](#11-implementation-notes)). This spec extends the [runtimes spec](runtimes.md);
 where they differ, this one governs.
 
 ## 1. Goal and scope
@@ -112,7 +112,6 @@ template's MCP servers) and lose `workspace`. The result keeps `version` and
 | Method | Direction | Purpose |
 |---|---|---|
 | `capability/open` | daemon → runtime | `{ capability, workspace? }` → `{ instance, attachment_name, workspace?, tools, skills }`. Opening an instance that is already open returns it. A workspace is required exactly when the capability takes one. |
-| `capability/close` | daemon → runtime | `{ instance }` → `{}`, once no session uses it. |
 | `capability/tools_changed` | runtime → daemon | `{ instance, tools }`; replaces `runtime/tools_changed`. |
 
 `instance` is a runtime-chosen string, unique on its connection.
@@ -226,3 +225,22 @@ Confirmed in review 2026-10-16:
   example over ssh), but like every runtime one connection serves all their
   sessions: one process per template, no `{workspace}` placeholder, and
   `--root` limits the workspaces `coding` opens.
+
+## 11. Implementation notes
+
+**Phase 1** (2026-10-16): runtime protocol 5 and client protocol 45.
+
+- `capability/close` is not part of the protocol: an instance stays open
+  for its connection's life, as runtime instances did.
+- `capability` is optional where a session attaches or retries: without it
+  the runtime's only capability is used, and a runtime that offers several
+  asks for one. This keeps attaching a runtime that has not connected yet a
+  single step.
+- `runtimes.list` also reports a runtime's last connection failure
+  (`message`), since an attach that names no capability has no instance to
+  mark failed.
+- Plugins keep `runtime/tools_changed` and send no `instance`: a plugin
+  connection has one implicit instance.
+- `cookie runtime coding --workspace` became
+  `cookie runtime serve --stdio [--root <dir>]...`.
+

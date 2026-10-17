@@ -839,11 +839,15 @@ impl Engine {
             )
             .with_mcp_hub(Arc::clone(&mcp_hub)),
         );
-        let local = crate::RuntimeTemplate::start(local_template.as_ref(), None)
-            .await
-            .map_err(|reason| {
-                EngineError::Runtime(format!("runtime `local` failed to start: {reason}"))
-            })?;
+        let local = crate::RuntimeTemplate::start(
+            local_template.as_ref(),
+            &cookie_agent_protocol::CapabilityName::coding(),
+            Some(local_workspace.root()),
+        )
+        .await
+        .map_err(|reason| {
+            EngineError::Runtime(format!("runtime `local` failed to start: {reason}"))
+        })?;
         Self::open_started(options, local_template, local, mcp_hub)
     }
 

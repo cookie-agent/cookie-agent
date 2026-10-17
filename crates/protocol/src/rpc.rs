@@ -372,7 +372,11 @@ impl SessionCreateParams {
 #[serde(deny_unknown_fields)]
 pub struct RuntimeAttachRequest {
     pub runtime_id: RuntimeId,
-    /// Required exactly when the runtime's template takes a workspace.
+    /// The capability to attach; the runtime's only capability when
+    /// omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<CapabilityName>,
+    /// Required exactly when the capability takes a workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
 }
@@ -480,7 +484,11 @@ pub enum BackgroundActor {
 pub struct SessionRuntimeAttachParams {
     pub session_id: SessionId,
     pub runtime_id: RuntimeId,
-    /// Required exactly when the runtime's template takes a workspace.
+    /// The capability to attach; the runtime's only capability when
+    /// omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<CapabilityName>,
+    /// Required exactly when the capability takes a workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
 }
@@ -513,12 +521,12 @@ pub struct SessionRuntimeDetachResult {
 #[serde(deny_unknown_fields)]
 pub struct RuntimesListParams {}
 
-/// The runtime templates sessions can attach and the instances this daemon
-/// has started.
+/// The runtimes sessions can attach and the capability instances this
+/// daemon has opened.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimesListResult {
-    pub templates: Vec<RuntimeTemplateInfo>,
+    pub runtimes: Vec<RuntimeListing>,
     pub instances: Vec<RuntimeInstanceInfo>,
 }
 
@@ -529,7 +537,11 @@ pub struct RuntimesListResult {
 #[serde(deny_unknown_fields)]
 pub struct RuntimesReconnectParams {
     pub runtime_id: RuntimeId,
-    /// Required exactly when the runtime's template takes a workspace: the
+    /// The instance's capability; the runtime's only capability when
+    /// omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<CapabilityName>,
+    /// Required exactly when the capability takes a workspace: the
     /// instance's workspace as `runtimes.list` reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
@@ -544,16 +556,49 @@ pub struct RuntimesReconnectResult {
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct RuntimeTemplateInfo {
+pub struct RuntimeListing {
     pub runtime_id: RuntimeId,
-    /// Whether attaching the template requires a workspace.
+    pub lifetime: RuntimeLifetime,
+    /// Whether the daemon holds a connection to the runtime now.
+    pub connected: bool,
+    /// What the runtime offers; empty until it has connected once.
+    pub capabilities: Vec<RuntimeCapabilityInfo>,
+    /// The runtime's operating system, once it has connected and said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    /// Why the last attempt to connect failed, while it is not connected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// How the daemon reaches a runtime.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeLifetime {
+    /// Built into the daemon: `global` and `local`.
+    Builtin,
+    /// Started by the daemon from a `[runtimes.<id>]` template.
+    Spawned,
+}
+
+/// One capability a runtime offers.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeCapabilityInfo {
+    pub name: CapabilityName,
+    /// The capability's self-declared kind label.
+    pub kind: RuntimeKind,
+    /// Whether attaching it requires a workspace.
     pub takes_workspace: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeInstanceInfo {
     pub runtime_id: RuntimeId,
+    pub capability: CapabilityName,
     /// The name the instance reports; absent until it has started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment_name: Option<AttachmentName>,
@@ -666,6 +711,7 @@ pub struct RuntimesChangedNotification {
 #[serde(deny_unknown_fields)]
 pub struct RuntimeFailure {
     pub runtime_id: RuntimeId,
+    pub capability: CapabilityName,
     /// The instance's workspace, for a template that takes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,

@@ -239,10 +239,8 @@ impl Fixture {
             "COOKIE_RUNTIME_VIA=env",
             env!("CARGO_BIN_EXE_cookie"),
             "runtime",
-            "coding",
+            "serve",
             "--stdio",
-            "--workspace",
-            "{workspace}",
         ])
         .expect("command");
         fs::write(
@@ -339,10 +337,12 @@ shutdown_grace_ms = 2000
                     runtimes: Some(vec![
                         SessionRuntimeRequest {
                             runtime_id: "local".into(),
+                            capability: None,
                             workspace: None,
                         },
                         SessionRuntimeRequest {
                             runtime_id: "remote".into(),
+                            capability: None,
                             workspace: Some("~/repo".into()),
                         },
                     ]),
@@ -445,7 +445,9 @@ async fn a_configured_runtime_runs_tools_in_its_workspace_next_to_local() {
     assert!(
         templates
             .iter()
-            .any(|template| template.runtime_id == "remote" && template.takes_workspace),
+            .any(|template| template.runtime_id == "remote"
+                && template.lifetime == cookie_agent_protocol::RuntimeLifetime::Spawned
+                && !template.listing.connected),
         "{templates:?}"
     );
     let session = fixture.session().await;
@@ -511,7 +513,7 @@ async fn a_configured_runtime_runs_tools_in_its_workspace_next_to_local() {
     // Another spelling of the same workspace shares the instance.
     let instance = fixture
         .engine
-        .reconnect_runtime("remote", Some(canonical.clone()))
+        .reconnect_runtime("remote", None, Some(canonical.clone()))
         .await
         .unwrap();
     assert_eq!(instance.status, RuntimeInstanceStatus::Ready);
@@ -582,7 +584,7 @@ async fn a_killed_runtime_reconnects_and_one_that_cannot_is_dropped() {
     let canonical = fixture.repo.canonicalize().unwrap();
     let instance = fixture
         .engine
-        .reconnect_runtime("remote", Some(canonical))
+        .reconnect_runtime("remote", None, Some(canonical))
         .await
         .expect("retry");
     assert_eq!(instance.status, RuntimeInstanceStatus::Ready);
@@ -605,12 +607,17 @@ async fn failed_starts_name_the_reason_and_the_runtime_stderr() {
     // The runtime refuses a workspace that does not exist on its machine.
     let error = fixture
         .engine
-        .attach_runtime(session, "remote", Some("~/missing".into()), origin.clone())
+        .attach_runtime(
+            session,
+            "remote",
+            None,
+            Some("~/missing".into()),
+            origin.clone(),
+        )
         .await
         .expect_err("no such workspace");
     let error = error.to_string();
     assert!(error.contains("failed to start"), "{error}");
-    assert!(error.contains("stderr:"), "{error}");
     assert!(error.contains("missing"), "{error}");
     let failure = failures.recv().await.expect("failure");
     assert_eq!(failure.workspace.as_deref(), Some("~/missing"));
@@ -634,12 +641,27 @@ async fn failed_starts_name_the_reason_and_the_runtime_stderr() {
         .session_id;
     let error = fixture
         .engine
-        .attach_runtime(session, "remote", Some("~/repo".into()), origin)
+        .attach_runtime(session, "remote", None, Some("~/repo".into()), origin)
         .await
         .expect_err("startup timeout")
         .to_string();
     assert!(error.contains("did not start within 1 ms"), "{error}");
-    assert_eq!(fixture.remote_status(), Some(RuntimeInstanceStatus::Failed));
+    // No capability was named, so the runtime itself reports the failure.
+    let remote = fixture
+        .engine
+        .runtime_templates()
+        .into_iter()
+        .find(|template| template.runtime_id == "remote")
+        .expect("remote");
+    assert!(!remote.listing.connected);
+    assert!(
+        remote
+            .listing
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("did not start within 1 ms")),
+        "{remote:?}"
+    );
     fixture.engine.shutdown().await;
 }
 

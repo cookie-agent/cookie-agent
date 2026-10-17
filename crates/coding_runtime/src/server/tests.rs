@@ -3,10 +3,11 @@ use std::time::Duration;
 use cookie_agent_protocol::{RunId, SessionId, ToolCallId, in_process_pair};
 use cookie_agent_runtime_api::{
     protocol::{
-        AgentMdLimits, ContextParams, ContextResult, Empty, ExecuteOutcome, ExecuteParams,
-        ExecuteResult, InitializeParams, InitializeResult, Outcome, PrepareOutcome, PrepareParams,
-        PrepareResult, PreparedRef, RUNTIME_PROTOCOL_VERSION, RuntimeSettings, ToolOutputLimits,
-        ToolProgressParams, WireToolCall, WireTurnContext, error_code, method,
+        AgentMdLimits, CapabilityOpenParams, CapabilityOpenResult, ContextParams, ContextResult,
+        Empty, ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams, InitializeResult,
+        Outcome, PrepareOutcome, PrepareParams, PrepareResult, PreparedRef,
+        RUNTIME_PROTOCOL_VERSION, RuntimeSettings, ToolOutputLimits, ToolProgressParams,
+        WireToolCall, WireTurnContext, error_code, method,
     },
     rpc::{Incoming, Peer, RpcError},
 };
@@ -29,13 +30,33 @@ fn settings() -> RuntimeSettings {
     }
 }
 
-fn initialize_params(workspace: Option<&std::path::Path>) -> InitializeParams {
+fn initialize_params() -> InitializeParams {
     InitializeParams {
         version: RUNTIME_PROTOCOL_VERSION,
         runtime_id: "labpc".into(),
-        workspace: workspace.map(|path| path.to_string_lossy().into_owned()),
         settings: settings(),
     }
+}
+
+fn open_params(workspace: Option<&std::path::Path>) -> CapabilityOpenParams {
+    CapabilityOpenParams {
+        capability: cookie_agent_protocol::CapabilityName::coding(),
+        workspace: workspace.map(|path| path.to_string_lossy().into_owned()),
+    }
+}
+
+/// Initializes the runtime and opens `coding` for `workspace`.
+async fn open(harness: &Harness, workspace: &std::path::Path) -> CapabilityOpenResult {
+    let _: InitializeResult = harness
+        .daemon
+        .request(method::INITIALIZE, &initialize_params())
+        .await
+        .unwrap();
+    harness
+        .daemon
+        .request(method::CAPABILITY_OPEN, &open_params(Some(workspace)))
+        .await
+        .unwrap()
 }
 
 /// A served runtime and the daemon's peer. Progress requests are answered
@@ -88,9 +109,8 @@ fn turn() -> WireTurnContext {
 
 #[tokio::test]
 async fn a_version_mismatch_fails_initialize_with_both_versions() {
-    let workspace = tempfile::tempdir().unwrap();
     let harness = start(ServeOptions::default());
-    let mut params = initialize_params(Some(workspace.path()));
+    let mut params = initialize_params();
     params.version = RUNTIME_PROTOCOL_VERSION + 1;
     let error = harness
         .daemon
@@ -108,7 +128,6 @@ async fn a_version_mismatch_fails_initialize_with_both_versions() {
 
 #[tokio::test]
 async fn requests_before_initialize_and_unsupported_settings_are_refused() {
-    let workspace = tempfile::tempdir().unwrap();
     let harness = start(ServeOptions::default());
     let error = harness
         .daemon
@@ -117,7 +136,7 @@ async fn requests_before_initialize_and_unsupported_settings_are_refused() {
         .expect_err("not initialized");
     assert_eq!(remote_code(error).0, error_code::NOT_INITIALIZED);
 
-    let mut params = initialize_params(Some(workspace.path()));
+    let mut params = initialize_params();
     params.settings.agent_md.max_bytes = cookie_agent_runtime_api::context::AGENT_MD_MAX_BYTES + 1;
     let error = harness
         .daemon
@@ -126,12 +145,35 @@ async fn requests_before_initialize_and_unsupported_settings_are_refused() {
         .expect_err("agent_md limit above the bound");
     assert_eq!(remote_code(error).0, error_code::INITIALIZE_REJECTED);
 
+    let _: InitializeResult = harness
+        .daemon
+        .request(method::INITIALIZE, &initialize_params())
+        .await
+        .unwrap();
     let error = harness
         .daemon
-        .request::<_, InitializeResult>(method::INITIALIZE, &initialize_params(None))
+        .request::<_, CapabilityOpenResult>(method::CAPABILITY_OPEN, &open_params(None))
         .await
         .expect_err("no workspace");
     assert_eq!(remote_code(error).0, error_code::INITIALIZE_REJECTED);
+    let error = harness
+        .daemon
+        .request::<_, CapabilityOpenResult>(
+            method::CAPABILITY_OPEN,
+            &CapabilityOpenParams {
+                capability: cookie_agent_protocol::CapabilityName::new("computer_use").unwrap(),
+                workspace: None,
+            },
+        )
+        .await
+        .expect_err("no such capability");
+    assert_eq!(remote_code(error).0, error_code::INITIALIZE_REJECTED);
+    let error = harness
+        .daemon
+        .request::<_, ContextResult>(method::CONTEXT, &ContextParams::default())
+        .await
+        .expect_err("no such instance");
+    assert_eq!(remote_code(error).0, error_code::UNKNOWN_HANDLE);
 
     // Unknown params fields are invalid params.
     let error = harness
@@ -151,7 +193,7 @@ async fn requests_before_initialize_and_unsupported_settings_are_refused() {
 }
 
 #[tokio::test]
-async fn initialize_reports_identity_tools_and_project_skills_then_shuts_down() {
+async fn opening_reports_identity_tools_and_project_skills_then_shuts_down() {
     let workspace = tempfile::tempdir().unwrap();
     let root = workspace.path().join("My Repo");
     let skill = root.join(".agents/skills/release-notes");
@@ -163,26 +205,36 @@ async fn initialize_reports_identity_tools_and_project_skills_then_shuts_down() 
     )
     .unwrap();
     std::fs::write(skill.join("template.md"), "# Notes\n").unwrap();
+    let other = workspace.path().join("other");
+    std::fs::create_dir(&other).unwrap();
+    let outside = tempfile::tempdir().unwrap();
     let harness = start(ServeOptions {
-        workspace: Some(root.clone()),
+        roots: vec![workspace.path().to_owned()],
         ..ServeOptions::default()
     });
-    let result: InitializeResult = harness
+    let initialized: InitializeResult = harness
         .daemon
-        .request(method::INITIALIZE, &initialize_params(None))
+        .request(method::INITIALIZE, &initialize_params())
         .await
         .unwrap();
-    assert_eq!(result.version, RUNTIME_PROTOCOL_VERSION);
-    assert_eq!(
-        result.kind,
-        cookie_agent_protocol::RuntimeKind::new("coding").unwrap()
-    );
+    assert_eq!(initialized.version, RUNTIME_PROTOCOL_VERSION);
+    assert_eq!(initialized.platform.as_deref(), Some(std::env::consts::OS));
+    let [capability] = &initialized.capabilities[..] else {
+        panic!("one capability: {:?}", initialized.capabilities);
+    };
+    assert_eq!(capability.name.as_str(), "coding");
+    assert_eq!(capability.kind.as_str(), "coding");
+    assert!(capability.takes_workspace);
+    let result: CapabilityOpenResult = harness
+        .daemon
+        .request(method::CAPABILITY_OPEN, &open_params(Some(&root)))
+        .await
+        .unwrap();
     assert_eq!(result.attachment_name, "labpc_my_repo");
     assert_eq!(
         result.workspace.as_deref(),
         Some(root.canonicalize().unwrap().to_str().unwrap())
     );
-    assert_eq!(result.platform.as_deref(), Some(std::env::consts::OS));
     let names = result
         .tools
         .tools
@@ -204,10 +256,35 @@ async fn initialize_reports_identity_tools_and_project_skills_then_shuts_down() 
     .unwrap();
     assert_eq!(parsed.frontmatter.name, "release-notes");
 
+    // One connection serves every workspace: the same workspace reopens its
+    // instance, another opens its own, and one outside the roots is refused.
+    let again: CapabilityOpenResult = harness
+        .daemon
+        .request(method::CAPABILITY_OPEN, &open_params(Some(&root)))
+        .await
+        .unwrap();
+    assert_eq!(again.instance, result.instance);
+    let second: CapabilityOpenResult = harness
+        .daemon
+        .request(method::CAPABILITY_OPEN, &open_params(Some(&other)))
+        .await
+        .unwrap();
+    assert_ne!(second.instance, result.instance);
+    assert_eq!(second.attachment_name, "labpc_other");
+    let error = harness
+        .daemon
+        .request::<_, CapabilityOpenResult>(
+            method::CAPABILITY_OPEN,
+            &open_params(Some(outside.path())),
+        )
+        .await
+        .expect_err("outside the roots");
+    assert!(remote_code(error).1.contains("outside"));
+
     // A second initialize is refused.
     let error = harness
         .daemon
-        .request::<_, InitializeResult>(method::INITIALIZE, &initialize_params(None))
+        .request::<_, InitializeResult>(method::INITIALIZE, &initialize_params())
         .await
         .expect_err("already initialized");
     assert_eq!(remote_code(error).0, error_code::INITIALIZE_REJECTED);
@@ -237,22 +314,14 @@ async fn context_applies_the_agent_md_lookup_and_names_unreadable_files() {
     std::fs::write(agents.join("AGENTS.md"), "python preset").unwrap();
     std::fs::write(workspace.path().join("AGENTS.md"), "workspace").unwrap();
     let harness = start(ServeOptions::default());
-    let _: InitializeResult = harness
-        .daemon
-        .request(
-            method::INITIALIZE,
-            &initialize_params(Some(workspace.path())),
-        )
-        .await
-        .unwrap();
+    let instance = open(&harness, workspace.path()).await.instance;
+    let context_params = |preset: Option<&str>| ContextParams {
+        instance: instance.clone(),
+        preset: preset.map(str::to_owned),
+    };
     let context: ContextResult = harness
         .daemon
-        .request(
-            method::CONTEXT,
-            &ContextParams {
-                preset: Some("python".into()),
-            },
-        )
+        .request(method::CONTEXT, &context_params(Some("python")))
         .await
         .unwrap();
     let sources = context
@@ -271,7 +340,7 @@ async fn context_applies_the_agent_md_lookup_and_names_unreadable_files() {
     std::fs::write(workspace.path().join("AGENTS.md"), "x".repeat(5000)).unwrap();
     let context: ContextResult = harness
         .daemon
-        .request(method::CONTEXT, &ContextParams::default())
+        .request(method::CONTEXT, &context_params(None))
         .await
         .unwrap();
     assert!(context.agent_md.is_empty());
@@ -280,12 +349,7 @@ async fn context_applies_the_agent_md_lookup_and_names_unreadable_files() {
 
     let error = harness
         .daemon
-        .request::<_, ContextResult>(
-            method::CONTEXT,
-            &ContextParams {
-                preset: Some("../escape".into()),
-            },
-        )
+        .request::<_, ContextResult>(method::CONTEXT, &context_params(Some("../escape")))
         .await
         .expect_err("invalid preset");
     assert_eq!(remote_code(error).0, error_code::INVALID_PARAMS);
@@ -296,7 +360,7 @@ async fn context_applies_the_agent_md_lookup_and_names_unreadable_files() {
         std::fs::create_dir(workspace.path().join("AGENTS.md")).unwrap();
         let error = harness
             .daemon
-            .request::<_, ContextResult>(method::CONTEXT, &ContextParams::default())
+            .request::<_, ContextResult>(method::CONTEXT, &context_params(None))
             .await
             .expect_err("a directory is not readable as AGENTS.md");
         let RpcError::Remote { code, data, .. } = error else {
@@ -317,14 +381,7 @@ async fn calls_are_prepared_executed_and_released_by_prepared_id() {
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("notes.txt"), "hello\n").unwrap();
     let mut harness = start(ServeOptions::default());
-    let _: InitializeResult = harness
-        .daemon
-        .request(
-            method::INITIALIZE,
-            &initialize_params(Some(workspace.path())),
-        )
-        .await
-        .unwrap();
+    let instance = Some(open(&harness, workspace.path()).await.instance);
     let session = SessionId::new_v7();
     let run = RunId::new_v7();
     let prepared: PrepareResult = harness
@@ -332,6 +389,7 @@ async fn calls_are_prepared_executed_and_released_by_prepared_id() {
         .request(
             method::TOOL_PREPARE,
             &PrepareParams {
+                instance: instance.clone(),
                 session,
                 run,
                 turn: turn(),
@@ -450,6 +508,7 @@ async fn calls_are_prepared_executed_and_released_by_prepared_id() {
         .request(
             method::TOOL_PREPARE,
             &PrepareParams {
+                instance: instance.clone(),
                 session,
                 run,
                 turn: turn(),

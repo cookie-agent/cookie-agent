@@ -21,7 +21,7 @@ use cookie_agent_runtime_api::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::{ProtocolTemplate, RuntimeClient, runtime_settings, started};
+use super::{ProtocolTemplate, RuntimeClient, runtime_settings};
 use crate::runtime::tests::support::{custom_fixture, private_tempdir};
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -125,10 +125,7 @@ impl TestConnector {
 
 #[async_trait]
 impl RuntimeConnector for TestConnector {
-    async fn connect(
-        &self,
-        _workspace: Option<&std::path::Path>,
-    ) -> Result<cookie_agent_runtime_api::RuntimeConnection, String> {
+    async fn connect(&self) -> Result<cookie_agent_runtime_api::RuntimeConnection, String> {
         if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("connection refused".into());
         }
@@ -138,7 +135,7 @@ impl RuntimeConnector for TestConnector {
         tokio::spawn(serve(
             Box::new(runtime),
             ServeOptions {
-                workspace: None,
+                roots: Vec::new(),
                 tools: Arc::clone(&self.tools),
                 mcp_reconnect: None,
                 producer_messaging: self.producer_messaging,
@@ -158,19 +155,24 @@ async fn connect(
     connector: &Arc<TestConnector>,
     workspace: &std::path::Path,
 ) -> (crate::StartedRuntime, Arc<dyn ToolProvider>) {
-    let connection = connector.connect(Some(workspace)).await.unwrap();
+    let connection = connector.connect().await.unwrap();
     let settings = runtime_settings(&custom_fixture().0.config, "remote");
-    let (client, result) = RuntimeClient::initialize(
+    let (client, _) = RuntimeClient::initialize(
         connection,
         "remote",
-        Some(workspace),
         &settings,
         Duration::from_secs(1),
         None,
     )
     .await
     .unwrap();
-    let started = started(client, result).unwrap();
+    let started = client
+        .open(
+            &cookie_agent_protocol::CapabilityName::coding(),
+            Some(workspace),
+        )
+        .await
+        .unwrap();
     let provider = Arc::clone(&started.providers[0]);
     (started, provider)
 }
@@ -202,6 +204,7 @@ async fn prepare(
 fn started_info(started: &crate::StartedRuntime) -> cookie_agent_runtime_api::RuntimeInfo {
     cookie_agent_runtime_api::RuntimeInfo::new(
         started.info.id(),
+        started.info.capability().clone(),
         started.info.kind().clone(),
         started.info.attachment_name(),
         started.info.workspace().cloned(),
@@ -650,7 +653,7 @@ async fn a_dropped_instance_reconnects_with_its_tools_published_meanwhile() {
     ]));
     let mut failures = registry.subscribe_failures();
     let instance = registry
-        .ensure("remote", Some(workspace.path()))
+        .ensure("remote", None, Some(workspace.path()))
         .await
         .unwrap();
     let first_generation = instance.generation();
@@ -716,6 +719,65 @@ async fn a_dropped_instance_reconnects_with_its_tools_published_meanwhile() {
     fixture.engine.shutdown().await;
 }
 
+/// One connection serves every workspace of a runtime: a second workspace
+/// opens over it, and a dropped connection is replaced once for both.
+#[tokio::test]
+async fn one_connection_serves_every_workspace_and_reconnects_once_for_them() {
+    let (fixture, _) = custom_fixture();
+    let (api, web) = (private_tempdir(), private_tempdir());
+    let connector = TestConnector::builtin();
+    register_remote(&fixture, &connector);
+    let registry = &fixture.engine.inner.runtimes;
+    registry.set_reconnect_policy(crate::runtimes::ReconnectPolicy::with_delays(vec![
+        Duration::from_millis(20),
+    ]));
+    let first = registry
+        .ensure("remote", None, Some(api.path()))
+        .await
+        .unwrap();
+    let second = registry
+        .ensure("remote", None, Some(web.path()))
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(&first, &second));
+    assert_ne!(
+        first.info().workspace().unwrap().root(),
+        second.info().workspace().unwrap().root()
+    );
+    assert_eq!(connector.connects(), 1);
+    let (first_connection, second_connection) =
+        (first.connection().unwrap(), second.connection().unwrap());
+    assert_eq!(first_connection.epoch(), second_connection.epoch());
+    assert_ne!(first_connection.instance, second_connection.instance);
+    let listing = registry
+        .templates()
+        .into_iter()
+        .find(|template| template.runtime_id == "remote")
+        .unwrap()
+        .listing;
+    assert!(listing.connected);
+    assert_eq!(listing.capabilities[0].name.as_str(), "coding");
+
+    connector.cut();
+    tokio::time::timeout(WAIT, async {
+        while [&first, &second].iter().any(|instance| {
+            instance
+                .connection()
+                .is_none_or(|connection| connection.epoch() == first_connection.epoch())
+        }) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("both instances reconnect");
+    assert_eq!(connector.connects(), 2);
+    assert_eq!(
+        first.connection().unwrap().epoch(),
+        second.connection().unwrap().epoch()
+    );
+    fixture.engine.shutdown().await;
+}
+
 #[tokio::test]
 async fn an_instance_that_cannot_reconnect_fails_and_is_revived_on_demand() {
     let (fixture, _) = custom_fixture();
@@ -729,7 +791,7 @@ async fn an_instance_that_cannot_reconnect_fails_and_is_revived_on_demand() {
     ]));
     let mut failures = registry.subscribe_failures();
     let instance = registry
-        .ensure("remote", Some(workspace.path()))
+        .ensure("remote", None, Some(workspace.path()))
         .await
         .unwrap();
     let first_generation = instance.generation();
@@ -773,14 +835,14 @@ async fn an_instance_that_cannot_reconnect_fails_and_is_revived_on_demand() {
 
     // A retry fails while the runtime is unreachable, then revives it.
     let error = registry
-        .ensure("remote", Some(workspace.path()))
+        .ensure("remote", None, Some(workspace.path()))
         .await
         .err()
         .expect("still unreachable");
     assert!(error.to_string().contains("connection refused"), "{error}");
     connector.set_refuse(false);
     let revived = registry
-        .ensure("remote", Some(workspace.path()))
+        .ensure("remote", None, Some(workspace.path()))
         .await
         .unwrap();
     assert!(Arc::ptr_eq(&revived, &instance));
@@ -846,7 +908,7 @@ async fn the_local_runtime_runs_behind_the_protocol() {
     );
     let connection = engine.inner.runtimes.local().connection().unwrap();
     engine.shutdown().await;
-    tokio::time::timeout(WAIT, connection.closed())
+    tokio::time::timeout(WAIT, connection.client.closed())
         .await
         .expect("shutdown closes the local runtime");
 }
@@ -861,7 +923,6 @@ fn register_remote(
         .runtimes
         .register_template(Arc::new(ProtocolTemplate::new(
             "remote",
-            true,
             connector.clone(),
             runtime_settings(&fixture.config, "remote"),
             WAIT,
@@ -887,7 +948,10 @@ async fn instances_are_keyed_by_the_workspace_the_runtime_reports() {
     let registry = &fixture.engine.inner.runtimes;
 
     // The daemon passes the path as given; the runtime resolves it.
-    let instance = registry.ensure("remote", Some(&first_link)).await.unwrap();
+    let instance = registry
+        .ensure("remote", None, Some(&first_link))
+        .await
+        .unwrap();
     assert_eq!(
         instance.info().workspace().unwrap().root(),
         canonical.as_path()
@@ -895,15 +959,18 @@ async fn instances_are_keyed_by_the_workspace_the_runtime_reports() {
     assert_eq!(connector.connects(), 1);
     // The same spelling and the canonical path reuse it without connecting.
     for path in [&first_link, &canonical] {
-        let again = registry.ensure("remote", Some(path)).await.unwrap();
+        let again = registry.ensure("remote", None, Some(path)).await.unwrap();
         assert!(Arc::ptr_eq(&again, &instance));
     }
     assert_eq!(connector.connects(), 1);
-    // A new spelling must start a runtime to learn where it resolves; that
-    // one is stopped again and the running instance is shared.
-    let deduplicated = registry.ensure("remote", Some(&second_link)).await.unwrap();
+    // A new spelling asks the runtime where it resolves, over the same
+    // connection, and the running instance is shared.
+    let deduplicated = registry
+        .ensure("remote", None, Some(&second_link))
+        .await
+        .unwrap();
     assert!(Arc::ptr_eq(&deduplicated, &instance));
-    assert_eq!(connector.connects(), 2);
+    assert_eq!(connector.connects(), 1);
     let remote = registry
         .instances()
         .into_iter()
@@ -922,6 +989,7 @@ async fn instances_are_keyed_by_the_workspace_the_runtime_reports() {
         .attach_runtime(
             session,
             "remote",
+            None,
             Some(second_link.clone()),
             cookie_agent_protocol::EventOrigin::new("user").unwrap(),
         )
@@ -1147,41 +1215,64 @@ async fn local_mcp_servers_need_the_protocol_local_runtime() {
 }
 
 /// Initializes against a fake runtime, as one written in any language would
-/// be, that answers `runtime/initialize` with `result` plus the current
-/// protocol version.
-async fn initialize_fake(mut result: serde_json::Value) -> Result<crate::StartedRuntime, String> {
-    result["version"] = cookie_agent_runtime_api::protocol::RUNTIME_PROTOCOL_VERSION.into();
+/// be, that offers one capability, `browse`, of kind `browser` without a
+/// workspace, and answers `capability/open` with `opened`.
+async fn initialize_fake(opened: serde_json::Value) -> Result<crate::StartedRuntime, String> {
     let (daemon, mut runtime) = in_process_pair(8);
     let fake = tokio::spawn(async move {
-        let request = runtime.recv().await.unwrap().unwrap().into_text().unwrap();
-        let request: serde_json::Value = serde_json::from_str(&request).unwrap();
-        assert_eq!(request["method"], "runtime/initialize");
-        let reply = serde_json::json!({ "jsonrpc": "2.0", "id": request["id"], "result": result });
-        runtime
-            .send(MessageFrame::Text(reply.to_string()))
-            .await
-            .unwrap();
+        for reply in [
+            serde_json::json!({
+                "version": cookie_agent_runtime_api::protocol::RUNTIME_PROTOCOL_VERSION,
+                "capabilities": [{
+                    "name": "browse",
+                    "kind": "browser",
+                    "takes_workspace": false,
+                }],
+            }),
+            opened,
+        ] {
+            let Ok(Some(request)) = runtime.recv().await else {
+                return runtime;
+            };
+            let request: serde_json::Value =
+                serde_json::from_str(&request.into_text().unwrap()).unwrap();
+            let reply =
+                serde_json::json!({ "jsonrpc": "2.0", "id": request["id"], "result": reply });
+            runtime
+                .send(MessageFrame::Text(reply.to_string()))
+                .await
+                .unwrap();
+        }
         runtime
     });
     let settings = runtime_settings(&custom_fixture().0.config, "fake");
     let initialized = RuntimeClient::initialize(
         cookie_agent_runtime_api::RuntimeConnection::new(Box::new(daemon)),
         "fake",
-        None,
         &settings,
         Duration::from_secs(1),
         None,
     )
     .await
     .map_err(|error| error.to_string());
+    let opened = match initialized {
+        Ok((client, _)) => {
+            client
+                .open(
+                    &cookie_agent_protocol::CapabilityName::new("browse").unwrap(),
+                    None,
+                )
+                .await
+        }
+        Err(error) => Err(error),
+    };
     drop(fake.await.unwrap());
-    let (client, result) = initialized?;
-    started(client, result)
+    opened
 }
 
 fn fake_result(tools: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
-        "kind": "browser",
+        "instance": "browse_1",
         "attachment_name": "browser",
         "tools": { "tools": tools },
         "skills": { "skills": [], "discoveries": [] },
@@ -1449,14 +1540,14 @@ async fn a_producing_runtime_sends_only_to_the_sessions_attached_to_it() {
         .attach_runtime(
             attached,
             "remote",
+            None,
             Some(workspace.path().to_owned()),
             origin.clone(),
         )
         .await
         .unwrap();
     let instance = engine.inner.runtimes.instance(&attachment).unwrap();
-    let source =
-        cookie_agent_protocol::ProducerSource::runtime(instance.info().attachment_name()).unwrap();
+    let source = cookie_agent_protocol::ProducerSource::runtime(instance.info().id()).unwrap();
 
     // The daemon opens producer messaging and the runtime recovers.
     tokio::time::timeout(WAIT, async {

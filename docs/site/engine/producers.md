@@ -10,7 +10,7 @@ max_body_bytes = 65536
 
 A plugin or a runtime produces under an `external { source, name }` owner:
 the daemon derives `source` from the connection (`plugin:<name>` or
-`runtime:<attachment name>`), and the sender picks a `name` for each
+`runtime:<runtime ID>`), and the sender picks a `name` for each
 producer it registers. See the [external producers
 spec](../specs/external-producers.md). An omitted table inherits; an authored
 table replaces the lower table and uses defaults for omitted fields. Unknown

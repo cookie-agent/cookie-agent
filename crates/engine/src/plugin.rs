@@ -927,7 +927,7 @@ impl PluginRuntime {
         let name = self.name.clone();
         let producer_messaging = self.config.producer_messaging;
         let attempt = async move {
-            let connection = connector.connect(None).await?;
+            let connection = connector.connect().await?;
             RuntimeClient::initialize_plugin(
                 connection,
                 &name,

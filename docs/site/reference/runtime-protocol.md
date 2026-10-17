@@ -5,8 +5,8 @@ workspace context that runs outside the engine (see the
 [runtimes specification](../specs/runtimes.md)). The daemon's built-in `local`
 coding runtime speaks it on a task of the daemon's own process over an
 in-memory frame pair; a configured [`[runtimes.<id>]`](../guide/runtimes.md)
-template runs a command, typically `ssh host cookie runtime coding --stdio
---workspace {workspace}`, and speaks it over the child's stdin and stdout. The
+template runs a command, typically `ssh host cookie runtime serve --stdio`,
+and speaks it over the child's stdin and stdout. The
 local and remote paths are one code path. The global runtime does not speak
 it; the engine calls it in-process.
 
@@ -38,7 +38,7 @@ their tools with this protocol's tool messages over their own connection
 
 ## Version
 
-The protocol version is an integer, currently **4**
+The protocol version is an integer, currently **5**
 (`runtime_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its version in
 `runtime/initialize`; a runtime that speaks another version fails the request
 with code `-32010` and a message naming both versions, and the daemon checks
@@ -49,7 +49,26 @@ the `background` flag and `launched_jobs` of `tool/execute` with
 `tool/detachable`, and added `background` and `background_default` to tool
 declarations. Version 4 added producer messaging: the `producer_messaging`
 capability, the `producer/*` requests, and the recovery handshake (see
-[Producer messaging](#producer-messaging)).
+[Producer messaging](#producer-messaging)). Version 5 added capabilities: one
+connection serves every workspace and capability of a runtime.
+`runtime/initialize` lost `workspace` and reports `capabilities`;
+`capability/open` opens an instance for a workspace and returns what
+`runtime/initialize` used to (identity, tools, skills, MCP servers);
+`capability/tools_changed` replaced `runtime/tools_changed`; and
+`tool/prepare`, `runtime/context`, `mcp/changed`, and `mcp/reconnect` name
+their `instance` (see the [runtime capabilities spec](../specs/runtime-capabilities.md)).
+
+## Capabilities and instances
+
+A runtime offers **capabilities**, such as `coding`. Sessions attach each one
+separately, as `{ runtime_id, capability, workspace? }`. The daemon opens a
+capability for a workspace (or none, for a capability that takes none) with
+`capability/open`; the result is an **instance**, under a runtime-chosen
+handle unique on the connection. One instance per (capability, canonical
+workspace) is shared by every session attached to it, and stays open for the
+connection's life. Tool calls, context, and MCP reports name the instance
+they belong to; prepared IDs are unique per connection, so the messages
+about one prepared call need no instance.
 
 ## Lifecycle
 
@@ -57,53 +76,57 @@ capability, the `producer/*` requests, and the recovery handshake (see
    configured template: it runs the command in its own process group, a job
    object on Windows, with the daemon's environment plus the template's `env`)
    and sends `runtime/initialize`, all within the template's
-   `startup_timeout_ms`. Every other request before it is answered with
-   `-32012`; a second initialize with `-32011`. A child's stderr is kept as a
-   bounded tail (the last 32 lines, at most 4 KiB) that failure reasons end
-   with; nothing but protocol messages may appear on its stdout.
-2. Sessions use the instance: the daemon prepares, executes, and releases
+   `startup_timeout_ms`. It connects once per runtime, when a session first
+   needs one of its capabilities. Every other request before it is answered
+   with `-32012`; a second initialize with `-32011`. A child's stderr is kept
+   as a bounded tail (the last 32 lines, at most 4 KiB) that failure reasons
+   end with; nothing but protocol messages may appear on its stdout.
+2. The daemon opens an instance with `capability/open` for each capability
+   and workspace its sessions attach, each within `startup_timeout_ms`.
+3. Sessions use the instances: the daemon prepares, executes, and releases
    calls, and asks for `AGENTS.md` context at each root run's admission. A
-   coding runtime reports its MCP servers' status as it changes
-   (`mcp/changed`) and a changed tool list (`runtime/tools_changed`).
-3. The daemon sends `runtime/shutdown` when it shuts down, waits up to the
+   coding runtime reports each instance's MCP servers' status as it changes
+   (`mcp/changed`) and a changed tool list (`capability/tools_changed`).
+4. The daemon sends `runtime/shutdown` when it shuts down, waits up to the
    template's `shutdown_grace_ms` for the answer, and closes the transport
    (a child's stdin); a child that has not exited after another grace is
    killed with its process group. The runtime answers, cancels every running
    call, backgrounded ones included, and stops. It also stops when its transport
    ends.
 
-When the connection is lost while the instance is in use, every call in
-flight fails with `runtime_unavailable`; a backgrounded call reports that
-failure as its background result. The
-instance becomes `reconnecting`: its tools stay published, calls fail fast
-with `runtime_unavailable`, and the daemon starts it again up to 3 times,
-after 1 s, 2 s, and 4 s, sending `runtime/initialize` with the canonical
-workspace the instance reported. A restart that reports the same identity
-(runtime ID, kind, attachment name, workspace) revives the instance under a
-new generation: its tools are listed again, and a call published before the
-restart fails as `operation_changed`. When every attempt fails, the instance
-becomes `failed`, its tools leave the session's tool list, and clients are
-told the reason. A failed instance starts again when a session that uses it
-is created or opened, or on `runtimes.reconnect`. Calls are never retried
-transparently.
+When the connection is lost while it is in use, every call in flight fails
+with `runtime_unavailable`; a backgrounded call reports that failure as its
+background result. Every instance of the runtime becomes `reconnecting`: its
+tools stay published, calls fail fast with `runtime_unavailable`, and the
+daemon connects the runtime again up to 3 times, after 1 s, 2 s, and 4 s, and
+opens each instance again with the canonical workspace it reported. One new
+connection serves them all. An instance that comes back with the same
+identity (runtime ID, capability, kind, attachment name, workspace) is
+revived under a new generation: its tools are listed again, and a call
+published before the restart fails as `operation_changed`. When every
+attempt fails, the instance becomes `failed`, its tools leave the session's
+tool list, and clients are told the reason. A failed instance starts again
+when a session that uses it is created or opened, or on
+`runtimes.reconnect`. Calls are never retried transparently.
 
 ## Methods
 
 | Method | Direction | Kind | Purpose |
 |---|---|---|---|
-| `runtime/initialize` | daemon → runtime | request | Version, runtime ID, workspace, settings; returns identity, tools, skills |
-| `runtime/tools_changed` | runtime → daemon | notification | The whole new tool list |
-| `runtime/context` | daemon → runtime | request | `AGENTS.md` context for a run's preset |
+| `runtime/initialize` | daemon → runtime | request | Version, runtime ID, settings; returns the capabilities |
+| `capability/open` | daemon → runtime | request | Open a capability for a workspace; returns the instance's identity, tools, skills |
+| `capability/tools_changed` | runtime → daemon | notification | An instance's whole new tool list |
+| `runtime/context` | daemon → runtime | request | An instance's `AGENTS.md` context for a run's preset |
 | `runtime/shutdown` | daemon → runtime | request | Stop gracefully |
-| `tool/prepare` | daemon → runtime | request | Prepare one turn's calls to this runtime |
+| `tool/prepare` | daemon → runtime | request | Prepare one turn's calls to an instance |
 | `tool/revalidate` | daemon → runtime | request | Check a prepared call can still run as approved |
 | `tool/execute` | daemon → runtime | request | Run a prepared call; returns its terminal result |
 | `tool/release` | daemon → runtime | notification | Discard a prepared call that will not run |
 | `tool/progress` | runtime → daemon | request | Display and output deltas of an executing call |
 | `tool/cancel` | daemon → runtime | notification | Cancel an executing call |
 | `tool/detachable` | runtime → daemon | notification | An executing call reached its detach point |
-| `mcp/changed` | runtime → daemon | notification | The status of the runtime's MCP servers, and the ones that failed |
-| `mcp/reconnect` | daemon → runtime | request | Reconnect one MCP server, or retry every failed one |
+| `mcp/changed` | runtime → daemon | notification | The status of an instance's MCP servers, and the ones that failed |
+| `mcp/reconnect` | daemon → runtime | request | Reconnect one of an instance's MCP servers, or retry every failed one |
 | `producer/recovery/start` | daemon → runtime | notification | Producer messaging is open; restore tracked work, then report |
 | `producer/recovery/complete` | runtime → daemon | request | The runtime's recovery outcome |
 | `producer/register` | runtime → daemon | request | Register a named producer for an attached session |
@@ -119,51 +142,66 @@ ignored.
 | Params field | Meaning |
 |---|---|
 | `version` | The daemon's protocol version. |
-| `runtime_id` | The template's runtime ID, `[a-z][a-z0-9_]{0,31}`. |
-| `workspace` | The workspace path the daemon asks for, when the template has one, exactly as a session gave it: the runtime expands a leading `~` and resolves it on its own machine. Optional: a runtime started for one workspace (`--workspace`) uses its own, and refuses one that resolves elsewhere. |
+| `runtime_id` | The runtime's ID, `[a-z][a-z0-9_]{0,31}`. |
 | `settings.tool_output` | The `[tool_output]` preview limits: `max_lines`, `max_bytes`, `head_lines`, `tail_lines`. |
 | `settings.agent_md` | `max_bytes`: files larger than this are skipped. At most the `AGENTS.md` event bound. |
-| `settings.mcp_servers` | The template's MCP servers: `name` and `config`, the server's table as the [`[mcp.servers.<name>]` schema](../guide/mcp.md#accepted-fields) reads it. |
+| `settings.mcp_servers` | The template's MCP servers: `name` and `config`, the server's table as the [`[mcp.servers.<name>]` schema](../guide/mcp.md#accepted-fields) reads it. Each instance of a capability that hosts MCP servers runs them in its workspace. |
 
-A runtime rejects settings it does not support with `-32011`, as it does a
-workspace it cannot open; a runtime that hosts no MCP servers rejects a
-nonempty `mcp_servers`. A coding runtime parses each server strictly and rejects the request when one does not parse or enables OAuth,
-which stays with the daemon's global runtime.
-
-A coding runtime connects every enabled server before it answers: the reply
-comes once each server's first connection attempt and tool listing have
-finished, successfully or not, so the template's `startup_timeout_ms` must
-cover them. A server that fails publishes no tools; its status says why. The
-servers' tools join the declared tools as `<server>_<tool>`, with permission
-`mcp`, after the runtime's built-in tools, which keep their names: a server
-whose tool would take another tool's name fails, as in the global runtime.
-OAuth is never used: a remote server connects with its static headers only.
+A runtime rejects settings it does not support with `-32011`; a runtime that
+hosts no MCP servers rejects a nonempty `mcp_servers`. A coding runtime
+parses each server strictly and rejects the request when one does not parse
+or enables OAuth, which stays with the daemon's global runtime.
 
 | Result field | Meaning |
 |---|---|
 | `version` | The runtime's protocol version. |
-| `kind` | The runtime's kind, a self-declared label such as `global` or `coding`: a lowercase ASCII letter followed by up to 15 lowercase letters, digits, or hyphens. The daemon shows it to clients and in approval reviews and never branches on it; version 1 allowed only `global` or `coding`. |
-| `attachment_name` | The name sessions attach the instance under: `<runtime ID>_<workspace basename>`, sanitized, for a coding runtime. |
-| `workspace` | The canonical workspace on the runtime's machine; absent for a runtime without one. `AGENTS.md` is loaded only from runtimes that report one. |
-| `platform` | Optional: the operating system, as Rust's `std::env::consts::OS` names it, for a runtime where it matters. Shown in the system prompt's `<runtimes>` block. Version 1 required it and also carried `shell`. |
+| `platform` | Optional: the operating system, as Rust's `std::env::consts::OS` names it, for a runtime where it matters. Shown in the system prompt's `<runtimes>` block. |
+| `capabilities` | What the runtime offers: `name` (`[a-z][a-z0-9_]{0,31}`, unique within the runtime); `kind`, a self-declared label such as `coding` (a lowercase ASCII letter followed by up to 15 lowercase letters, digits, or hyphens) that the daemon shows to clients and in approval reviews and never branches on; `takes_workspace`; and an optional `description`. The coding runtime offers `coding`, which takes a workspace. |
+| `producer_messaging` | Optional, default `false`: the runtime sends producer messages to the sessions attached to its instances (see [Producer messaging](#producer-messaging)). |
+
+### `capability/open`
+
+| Params field | Meaning |
+|---|---|
+| `capability` | One of the runtime's capabilities. |
+| `workspace` | The workspace path, exactly as a session gave it, required exactly when the capability takes one: the runtime expands a leading `~` and resolves it on its own machine. A runtime started with `--root` refuses one outside its roots. |
+
+The runtime answers `-32011` for a capability it does not offer or a
+workspace it cannot open. Opening an instance that is already open (the same
+capability and canonical workspace) returns it. A coding instance connects
+every enabled MCP server before it answers: the reply comes once each
+server's first connection attempt and tool listing have finished,
+successfully or not, so the template's `startup_timeout_ms` must cover them.
+A server that fails publishes no tools; its status says why. The servers'
+tools join the declared tools as `<server>_<tool>`, with permission `mcp`,
+after the runtime's built-in tools, which keep their names: a server whose
+tool would take another tool's name fails, as in the global runtime. OAuth is
+never used: a remote server connects with its static headers only.
+
+| Result field | Meaning |
+|---|---|
+| `instance` | The instance's handle on this connection. |
+| `attachment_name` | The name sessions attach the instance under: `<runtime ID>_<workspace basename>`, sanitized, for a coding instance. |
+| `workspace` | The canonical workspace on the runtime's machine; absent for a capability without one. `AGENTS.md` is loaded only from instances that report one. |
 | `tools.tools` | Tool declarations: `name`, `collision` (`prefix`, `override`, or `fallback`; see [collisions](../specs/runtimes.md#63-collisions)), `permission`, `description`, `parameters` (JSON Schema), `concurrency`, `result_truncation`, `output`, and optionally `background` and `background_default`. `background` says the tool supports the background: the daemon adds a `background` argument to its schema, strips it before `tool/prepare`, and may detach its calls (see [Background calls](#background-calls)); `background_default` is that argument's default and is only valid with `background`. `permission` is the action the tool is checked under: a label matching `[a-z][a-z0-9_]{0,31}`, either one the daemon's own tools use (such as `bash` or `read`, which takes file paths) or the runtime's own (such as `browse`). An action no rule names is denied, so its tools stay hidden until an agent grants it. A tool without `permission` needs none: it is always published and every call is allowed without rules or approval, and its prepared calls report no `permission` either. Version 1 allowed only the nine built-in actions, and versions before 3 required `permission`. |
 | `tools.prompt_sections` | System prompt sections (`title`, `body`) the tools contribute. |
 | `skills.skills` | Project skills: the `SKILL.md` text, `source`, absolute `path` and `base_dir` on the runtime's machine, and a sample of `supporting_files`. The daemon parses the text with the same rules as local discovery. |
 | `skills.discoveries` | Every `SKILL.md` found, with `precedence_winner`. |
-| `producer_messaging` | Optional, default `false`: the runtime sends producer messages to the sessions attached to it (see [Producer messaging](#producer-messaging)). |
-| `mcp_servers` | The status of each MCP server after its first connection attempt, in name order: `name`; `state`, one of `connected`, `connecting`, `reconnecting`, `failed`, `disabled`, or `disconnected`; `message`, why it failed; and `tools`, its tool names. Absent when the runtime hosts none. |
+| `mcp_servers` | The status of each MCP server after its first connection attempt, in name order: `name`; `state`, one of `connected`, `connecting`, `reconnecting`, `failed`, `disabled`, or `disconnected`; `message`, why it failed; and `tools`, its tool names. Absent when the instance hosts none. |
 
-### `runtime/tools_changed`
+### `capability/tools_changed`
 
-Params are a new `tools` object as in the initialize result. The daemon uses
-it from the next model turn on.
+Params: `instance` and its new `tools` object as in the open result. The
+daemon uses it from the next model turn on. (A plugin, whose connection has
+one implicit instance, sends `runtime/tools_changed` with the `tools` object
+alone.)
 
 ### `mcp/changed`, `mcp/reconnect`
 
-`mcp/changed` carries `servers`, the status of every MCP server the runtime
-hosts as in the initialize result, and `failures`, the servers that failed to
-connect or dropped and did not reconnect since the last report, each with
-`server` and `reason`. The runtime sends it after its initialize reply,
+`mcp/changed` carries `instance`; `servers`, the status of every MCP server
+the instance hosts as in the open result; and `failures`, the servers that
+failed to connect or dropped and did not reconnect since the last report,
+each with `server` and `reason`. The runtime sends it after its open reply,
 whenever a status changes; a failure may arrive in a report of its own. The
 daemon shows the statuses in `mcp.server.list` and passes each failure to the
 clients viewing a session attached to the instance.
@@ -172,33 +210,35 @@ When a connected server drops, the runtime restarts it up to 3 times, after
 1 s, 2 s, and 4 s. Meanwhile it is `reconnecting`, its tools stay declared,
 and calls fail with `runtime_unavailable`. A successful attempt restores the
 server with its current tool list; when every attempt fails, it becomes
-`failed`, a `runtime/tools_changed` drops its tools, and `mcp/changed`
+`failed`, a `capability/tools_changed` drops its tools, and `mcp/changed`
 reports the failure.
 
-`mcp/reconnect` params: `server`, optional. With a name, the runtime closes
-that server's connection and connects it again; without one, it retries every
-failed server. It answers `{}` once the attempts have finished, or
-`{"error": …}` for an unknown or disabled server or a failed attempt; the new
-status follows in `mcp/changed`. While one of the instance's servers is
-`failed`, the daemon sends it without a name when a session that uses the
-instance is created or opened, or when the instance is attached or retried,
-and the session's next run waits for the answer; it names a server for
-`mcp.server.reconnect`.
+`mcp/reconnect` params: `instance`, and `server`, optional. With a name, the
+runtime closes that server's connection and connects it again; without one,
+it retries every failed server of the instance. It answers `{}` once the
+attempts have finished, or `{"error": …}` for an unknown or disabled server
+or a failed attempt; the new status follows in `mcp/changed`. While one of
+the instance's servers is `failed`, the daemon sends it without a name when a
+session that uses the instance is created or opened, or when the instance is
+attached or retried, and the session's next run waits for the answer; it
+names a server for `mcp.server.reconnect`.
 
 ### `runtime/context`
 
-Params: `preset`, the run's agent preset (optional; must be a valid agent ID).
-Result: `agent_md`, the `AGENTS.md` entries in prompt order, and `skipped`,
-files over the size limit. The runtime applies the lookup to its workspace:
+Params: `instance`, and `preset`, the run's agent preset (optional; must be a
+valid agent ID). Result: `agent_md`, the `AGENTS.md` entries in prompt order, and `skipped`,
+files over the size limit. The runtime applies the lookup to the instance's
+workspace:
 the preset's `.cookie-agent/agents/<preset>/AGENTS.md`, else
 `.cookie-agent/agents/AGENTS.md`, then `<workspace>/AGENTS.md`. A file that
 exists but cannot be read fails the request with `-32014` and `data.path`.
 
 ### `tool/prepare`
 
-Params: `session`, `run`, `turn` (the agent, model, adapter, adapter family,
-and model capabilities of the turn), and `calls` (`id`, `name`, `arguments`;
-at most 256). The runtime prepares a turn's calls together, so calls on one
+Params: `instance`, the instance whose tools the calls name; `session`,
+`run`, `turn` (the agent, model, adapter, adapter family, and model
+capabilities of the turn); and `calls` (`id`, `name`, `arguments`; at most
+256). A plugin's prepare carries no `instance`. The runtime prepares a turn's calls together, so calls on one
 target chain. The result has one entry per call, tagged by `status`:
 
 - `prepared`: `prepared_id`; `operation`, the prepared operation identity;
@@ -273,10 +313,11 @@ keeps running in the runtime, and whatever it reports later goes through its
 ### Producer messaging
 
 A runtime that declares `producer_messaging` may put messages into the model
-input of the sessions attached to it, as plugins do (see the [external
-producers spec](../specs/external-producers.md)). It produces as `external {
-source, name }`: the daemon derives `source`, `runtime:<attachment name>`,
-from the connection, and the runtime names each producer it registers.
+input of the sessions attached to its instances, as plugins do (see the
+[external producers spec](../specs/external-producers.md)). It produces as
+`external { source, name }`: the daemon derives `source`,
+`runtime:<runtime ID>`, from the connection, and the runtime names each
+producer it registers.
 
 1. After `runtime/initialize`, the daemon sends `producer/recovery/start`.
    The runtime may send producer requests from then on; earlier ones are
@@ -292,8 +333,8 @@ from the connection, and the runtime names each producer it registers.
    `producer_id`) and `producer/discard` (`session_id`, `message_id`) return
    `{}`. The params and results are the protocol crate's `Producer*` and
    `Recovery*` types, which the plugin protocol shares.
-3. Every request may only address a session attached to the runtime's
-   instance; any other fails with `-32016`. The body must be non-empty and at
+3. Every request may only address a session attached to one of the
+   runtime's instances; any other fails with `-32016`. The body must be non-empty and at
    most [`[producers] max_body_bytes`](../engine/producers.md).
 4. Registrations belong to the connection. They end when it does or when the
    session detaches the runtime; a reconnected runtime registers again, and

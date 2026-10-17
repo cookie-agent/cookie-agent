@@ -42,7 +42,7 @@ on that runtime's machine:
 
 ```toml
 [runtimes.labpc]
-command = ["ssh", "labpc", "cookie", "runtime", "coding", "--stdio", "--workspace", "{workspace}"]
+command = ["ssh", "labpc", "cookie", "runtime", "serve", "--stdio"]
 
 [runtimes.labpc.mcp.servers.rust_analyzer]
 command = "rust-analyzer-mcp"

@@ -1,16 +1,17 @@
 //! The coding runtime's end of the runtime protocol.
 //!
-//! [`serve`] answers one daemon over a frame transport: it initializes a
-//! coding runtime for its workspace (tools, project skills), answers
-//! `runtime/context` with the workspace's `AGENTS.md`, and prepares and
-//! executes calls. It keeps each prepared call under its prepared ID until
+//! [`serve`] answers one daemon over a frame transport. It offers one
+//! capability, `coding`, and opens an instance of it for every workspace the
+//! daemon asks for (`capability/open`): the workspace's tools and project
+//! skills. It answers `runtime/context` with an instance's `AGENTS.md`, and
+//! prepares and executes calls of every instance concurrently. It keeps each prepared call under its prepared ID until
 //! the daemon executes or releases it, runs executions concurrently, sends
 //! their progress back with `tool/progress`, and tells the daemon with
-//! `tool/detachable` when a call reaches its detach point. It hosts the template's MCP servers (`docs/site/specs/runtimes.md`
-//! section 3): it connects them before it answers `runtime/initialize`,
+//! `tool/detachable` when a call reaches its detach point. Each instance hosts the template's MCP servers in its workspace (`docs/site/specs/runtimes.md`
+//! section 3): it connects them before it answers `capability/open`,
 //! declares their tools next to its built-in ones, reconnects dropped ones
 //! with the shared reconnect policy, and reports their status with
-//! `mcp/changed` and a changed tool list with `runtime/tools_changed`. It
+//! `mcp/changed` and a changed tool list with `capability/tools_changed`. It
 //! returns on `runtime/shutdown` or when the transport ends, cancelling what
 //! still runs and stopping its MCP servers.
 //!
@@ -35,18 +36,20 @@ use cookie_agent_mcp::{McpRegistry, McpRegistryOptions, McpServerFailure, McpSer
 use cookie_agent_protocol::{SessionId, Transport};
 use cookie_agent_runtime_api::{
     CodingToolsFactory, DetachPoint, ProgressCapture, ProgressSink, RuntimeConnection,
-    RuntimeConnector, RuntimeInfo, SessionToolContext, ToolArtifacts, ToolCall, ToolError,
-    ToolExecutionContext, ToolOrigin, ToolPreparationContext, ToolProgress, ToolProvider,
-    WorkspaceContext,
+    RuntimeConnector, RuntimeInfo, RuntimeKind, SessionToolContext, ToolArtifacts, ToolCall,
+    ToolError, ToolExecutionContext, ToolOrigin, ToolPreparationContext, ToolProgress,
+    ToolProvider, WorkspaceContext,
     context::{AGENT_MD_MAX_BYTES, load_agent_md},
     protocol::{
-        self, ContextParams, ContextResult, DetachableParams, Empty, ExecuteOutcome, ExecuteParams,
-        ExecuteResult, InitializeParams, InitializeResult, InlineMedia, McpChangedParams,
-        McpFailureReport, McpReconnectParams, McpServerReport, McpServerSettings, Outcome,
-        OutcomeExt as _, PrepareOutcome, PrepareParams, PrepareResult, PreparedCall, PreparedRef,
-        PromptSectionDeclaration, RUNTIME_PROTOCOL_VERSION, RuntimeSettings, RuntimeSkills,
-        RuntimeTools, SkillDeclaration, SkillDiscoveryDeclaration, ToolDeclaration,
-        ToolDeclarationExt as _, ToolProgressParams, WireToolError, error_code, method,
+        self, CapabilityDeclaration, CapabilityOpenParams, CapabilityOpenResult,
+        CapabilityToolsChangedParams, ContextParams, ContextResult, DetachableParams, Empty,
+        ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams, InitializeResult,
+        InlineMedia, McpChangedParams, McpFailureReport, McpReconnectParams, McpServerReport,
+        McpServerSettings, Outcome, OutcomeExt as _, PrepareOutcome, PrepareParams, PrepareResult,
+        PreparedCall, PreparedRef, PromptSectionDeclaration, RUNTIME_PROTOCOL_VERSION,
+        RuntimeSettings, RuntimeSkills, RuntimeTools, SkillDeclaration, SkillDiscoveryDeclaration,
+        ToolDeclaration, ToolDeclarationExt as _, ToolProgressParams, WireToolError, error_code,
+        method,
     },
     reconnect::ReconnectPolicy,
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
@@ -59,9 +62,10 @@ use tokio_util::sync::CancellationToken;
 /// How [`serve`] builds its runtime.
 #[derive(Clone)]
 pub struct ServeOptions {
-    /// The workspace when `runtime/initialize` names none, such as the
-    /// `--workspace` argument of `cookie runtime coding`.
-    pub workspace: Option<PathBuf>,
+    /// The directories `coding` instances may work in: a workspace must lie
+    /// under one of them, such as the `--root` arguments of
+    /// `cookie runtime serve`. Any workspace when empty.
+    pub roots: Vec<PathBuf>,
     /// Builds the runtime's tools for its workspace.
     pub tools: CodingToolsFactory,
     /// How dropped MCP servers are reconnected; the shared default when
@@ -75,10 +79,10 @@ pub struct ServeOptions {
 }
 
 impl Default for ServeOptions {
-    /// No default workspace and the [`crate::BuiltinTools`].
+    /// Any workspace and the [`crate::BuiltinTools`].
     fn default() -> Self {
         Self {
-            workspace: None,
+            roots: Vec::new(),
             tools: builtin_tools(),
             mcp_reconnect: None,
             producer_messaging: false,
@@ -98,7 +102,7 @@ struct InProcessConnector {
 
 #[async_trait]
 impl RuntimeConnector for InProcessConnector {
-    async fn connect(&self, _workspace: Option<&Path>) -> Result<RuntimeConnection, String> {
+    async fn connect(&self) -> Result<RuntimeConnection, String> {
         let (daemon, runtime) = cookie_agent_protocol::in_process_pair(64);
         tokio::spawn(serve(Box::new(runtime), self.options.clone()));
         Ok(RuntimeConnection::new(Box::new(daemon)))
@@ -106,8 +110,7 @@ impl RuntimeConnector for InProcessConnector {
 }
 
 /// A connector that runs a coding runtime with the [`crate::BuiltinTools`]
-/// in this process. The daemon names the workspace in
-/// `runtime/initialize`.
+/// in this process, for any workspace.
 #[must_use]
 pub fn in_process_connector() -> Arc<dyn RuntimeConnector> {
     in_process_connector_with(builtin_tools())
@@ -124,8 +127,6 @@ pub fn in_process_connector_with(tools: CodingToolsFactory) -> Arc<dyn RuntimeCo
 }
 
 /// A connector that runs a coding runtime with `options` in this process.
-/// The daemon names the workspace in `runtime/initialize`, so
-/// `options.workspace` should be `None`.
 #[must_use]
 pub fn in_process_connector_with_options(options: ServeOptions) -> Arc<dyn RuntimeConnector> {
     Arc::new(InProcessConnector { options })
@@ -170,6 +171,9 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
         options,
         initializing: AtomicBool::new(false),
         state: OnceLock::new(),
+        instances: Mutex::default(),
+        opening: tokio::sync::Mutex::new(()),
+        next_instance: AtomicU64::new(1),
         prepared: Mutex::default(),
         executions: Mutex::default(),
         next_prepared: AtomicU64::new(1),
@@ -195,8 +199,11 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
     }
     server.stop.cancel();
     lock(&server.prepared).clear();
-    if let Some(mcp) = server.state.get().and_then(|state| state.mcp.clone()) {
-        mcp.shutdown().await;
+    let instances = lock(&server.instances).drain().collect::<Vec<_>>();
+    for (_, instance) in instances {
+        if let Some(mcp) = &instance.mcp {
+            mcp.shutdown().await;
+        }
     }
     peer.close();
 }
@@ -210,10 +217,14 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 struct Server {
     peer: Peer,
     options: ServeOptions,
-    /// Set by the first `runtime/initialize`, which may wait for MCP
-    /// servers before it sets `state`.
+    /// Set by the first `runtime/initialize`.
     initializing: AtomicBool,
     state: OnceLock<Arc<Initialized>>,
+    /// Open capability instances by handle.
+    instances: Mutex<HashMap<String, Arc<Instance>>>,
+    /// Serializes `capability/open`, so one workspace opens once.
+    opening: tokio::sync::Mutex<()>,
+    next_instance: AtomicU64,
     /// Prepared calls by prepared ID, until executed or released.
     prepared: Mutex<HashMap<u64, cookie_agent_runtime_api::PreparedTool>>,
     /// Executing calls by prepared ID.
@@ -223,18 +234,29 @@ struct Server {
     stop: CancellationToken,
 }
 
+/// What `runtime/initialize` set.
 struct Initialized {
-    info: Arc<RuntimeInfo>,
+    runtime_id: String,
     settings: RuntimeSettings,
-    /// The built-in providers, then the MCP registry when the runtime hosts
+    /// The template's MCP servers, which every instance hosts.
+    mcp_servers: BTreeMap<String, LoadedMcpServer>,
+}
+
+/// One open `coding` instance.
+struct Instance {
+    id: String,
+    info: Arc<RuntimeInfo>,
+    /// The built-in providers, then the MCP registry when the instance hosts
     /// MCP servers. Names are unique across them: the registry fails a
     /// server whose tool would take a built-in name.
     providers: Vec<Arc<dyn ToolProvider>>,
     /// The template's MCP servers, when it has any.
     mcp: Option<McpRegistry>,
+    /// The result `capability/open` answered, for a repeated open.
+    opened: CapabilityOpenResult,
 }
 
-impl Initialized {
+impl Instance {
     /// The provider that declares `name` now.
     fn route(&self, name: &str) -> Option<usize> {
         let context = SessionToolContext::new(SessionId::new_v7());
@@ -284,15 +306,8 @@ impl Server {
     ) {
         let method = request.method.clone();
         if method == method::INITIALIZE {
-            return match self.initialize(&request).await {
-                Ok((result, watch)) => {
-                    reply(request, Ok(result)).await;
-                    if let Some(watch) = watch {
-                        tokio::spawn(Arc::clone(&self).report_mcp(watch));
-                    }
-                }
-                Err(error) => reply::<InitializeResult>(request, Err(error)).await,
-            };
+            let result = self.initialize(&request);
+            return reply(request, result).await;
         }
         let Some(state) = self.state.get().cloned() else {
             if let Some(admitted) = admitted {
@@ -307,6 +322,15 @@ impl Server {
             return;
         };
         match method.as_str() {
+            method::CAPABILITY_OPEN => match Arc::clone(&self).open(&state, &request).await {
+                Ok((result, watch)) => {
+                    reply(request, Ok(result)).await;
+                    if let Some((instance, watch)) = watch {
+                        tokio::spawn(Arc::clone(&self).report_mcp(instance, watch));
+                    }
+                }
+                Err(error) => reply::<CapabilityOpenResult>(request, Err(error)).await,
+            },
             method::CONTEXT => {
                 let result = self.context(&state, &request).await;
                 reply(request, result).await;
@@ -320,7 +344,7 @@ impl Server {
                 }
             }
             method::TOOL_PREPARE => {
-                let result = self.prepare(&state, &request).await;
+                let result = self.prepare(&request).await;
                 reply(request, result).await;
             }
             method::TOOL_REVALIDATE => {
@@ -344,7 +368,7 @@ impl Server {
                 reply(request, result).await;
             }
             method::MCP_RECONNECT => {
-                let result = reconnect_mcp(&state, &request).await;
+                let result = self.reconnect_mcp(&request).await;
                 reply(request, result).await;
             }
             other => {
@@ -388,14 +412,23 @@ impl Server {
         }
     }
 
-    /// Initializes the runtime: its workspace, tools, and skills, and its
-    /// MCP servers, each of which has finished its first connection attempt
-    /// when this returns. Returns the reply and, when the runtime hosts MCP
-    /// servers, what [`Self::report_mcp`] watches once the reply is sent.
-    async fn initialize(
-        &self,
-        request: &IncomingRequest,
-    ) -> Result<(InitializeResult, Option<McpWatch>), RpcError> {
+    /// The open instance `id` names.
+    fn instance(&self, id: Option<&str>) -> Result<Arc<Instance>, RpcError> {
+        let id = id.ok_or_else(|| {
+            RpcError::remote(error_code::INVALID_PARAMS, "the request names no instance")
+        })?;
+        lock(&self.instances).get(id).cloned().ok_or_else(|| {
+            RpcError::remote(
+                error_code::UNKNOWN_HANDLE,
+                format!("unknown instance `{id}`"),
+            )
+        })
+    }
+
+    /// Initializes the runtime: checks the version and settings, and reports
+    /// the `coding` capability. Workspaces open later, with
+    /// `capability/open`.
+    fn initialize(&self, request: &IncomingRequest) -> Result<InitializeResult, RpcError> {
         let params: InitializeParams = request.params()?;
         if params.version != RUNTIME_PROTOCOL_VERSION {
             return Err(RpcError::remote(
@@ -411,56 +444,119 @@ impl Server {
         if self.initializing.swap(true, Ordering::AcqRel) {
             return Err(rejected("the runtime is already initialized".into()));
         }
-        let result = self.initialize_once(params).await.map_err(rejected);
+        let result = self.initialize_once(params).map_err(rejected);
         if result.is_err() {
             self.initializing.store(false, Ordering::Release);
         }
         result
     }
 
-    async fn initialize_once(
-        &self,
-        params: InitializeParams,
-    ) -> Result<(InitializeResult, Option<McpWatch>), String> {
+    fn initialize_once(&self, params: InitializeParams) -> Result<InitializeResult, String> {
         cookie_agent_protocol::RuntimeId::new(params.runtime_id.as_str())
             .map_err(|_| format!("invalid runtime ID `{}`", params.runtime_id))?;
         let mcp_servers = mcp_servers(&params.settings.mcp_servers)?;
         if params.settings.agent_md.max_bytes > AGENT_MD_MAX_BYTES {
             return Err(format!("agent_md.max_bytes exceeds {AGENT_MD_MAX_BYTES}"));
         }
+        let initialized = Arc::new(Initialized {
+            runtime_id: params.runtime_id,
+            settings: params.settings,
+            mcp_servers,
+        });
+        if self.state.set(initialized).is_err() {
+            return Err("the runtime is already initialized".into());
+        }
+        Ok(InitializeResult {
+            version: RUNTIME_PROTOCOL_VERSION,
+            platform: Some(std::env::consts::OS.to_owned()),
+            capabilities: vec![CapabilityDeclaration {
+                name: cookie_agent_protocol::CapabilityName::coding(),
+                kind: RuntimeKind::new(cookie_agent_runtime_api::CODING_RUNTIME_KIND)
+                    .expect("`coding` is a valid kind"),
+                takes_workspace: true,
+                description: "Read, write, edit, and run commands in a workspace".into(),
+            }],
+            producer_messaging: self.options.producer_messaging,
+        })
+    }
+
+    /// `capability/open`: the `coding` instance for a workspace, opened when
+    /// it is not open yet. A new instance's MCP servers have finished their
+    /// first connection attempt when this returns. Returns the reply and,
+    /// for a new instance that hosts MCP servers, what
+    /// [`Self::report_mcp`] watches once the reply is sent.
+    async fn open(
+        self: Arc<Self>,
+        state: &Initialized,
+        request: &IncomingRequest,
+    ) -> Result<(CapabilityOpenResult, Option<(Arc<Instance>, McpWatch)>), RpcError> {
+        let params: CapabilityOpenParams = request.params()?;
+        let rejected = |message: String| RpcError::remote(error_code::INITIALIZE_REJECTED, message);
+        if params.capability.as_str() != cookie_agent_protocol::CapabilityName::CODING {
+            return Err(rejected(format!(
+                "this runtime offers no capability `{}`",
+                params.capability
+            )));
+        }
         let requested = params
             .workspace
-            .map(|workspace| expand_home(Path::new(&workspace)));
-        let path = match (requested, &self.options.workspace) {
-            (Some(requested), Some(own)) => {
-                let same = requested
-                    .canonicalize()
-                    .ok()
-                    .zip(own.canonicalize().ok())
-                    .is_some_and(|(requested, own)| requested == own);
-                if !same {
-                    return Err(format!(
-                        "the daemon asks for workspace {}, but this runtime serves {}",
-                        requested.display(),
-                        own.display()
-                    ));
-                }
-                requested
-            }
-            (Some(requested), None) => requested,
-            (None, Some(own)) => own.clone(),
-            (None, None) => return Err("no workspace was given".into()),
-        };
-        let workspace = WorkspaceContext::new(&path)
-            .map_err(|error| format!("workspace {} is unavailable: {error}", path.display()))?;
+            .map(|workspace| expand_home(Path::new(&workspace)))
+            .ok_or_else(|| rejected("`coding` requires a workspace".into()))?;
+        let workspace = WorkspaceContext::new(&requested).map_err(|error| {
+            rejected(format!(
+                "workspace {} is unavailable: {error}",
+                requested.display()
+            ))
+        })?;
+        if !self.options.roots.is_empty()
+            && !self.options.roots.iter().any(|root| {
+                root.canonicalize()
+                    .is_ok_and(|root| workspace.root().starts_with(root))
+            })
+        {
+            return Err(rejected(format!(
+                "workspace {} is outside the directories this runtime serves",
+                workspace.root().display()
+            )));
+        }
+        let _opening = self.opening.lock().await;
+        let existing = lock(&self.instances)
+            .values()
+            .find(|instance| {
+                instance
+                    .info
+                    .workspace()
+                    .is_some_and(|open| open.root() == workspace.root())
+            })
+            .cloned();
+        if let Some(instance) = existing {
+            return Ok((instance.opened.clone(), None));
+        }
+        let (instance, watch) = self
+            .open_instance(state, workspace)
+            .await
+            .map_err(rejected)?;
+        lock(&self.instances).insert(instance.id.clone(), Arc::clone(&instance));
+        Ok((
+            instance.opened.clone(),
+            watch.map(|watch| (instance, watch)),
+        ))
+    }
+
+    async fn open_instance(
+        &self,
+        state: &Initialized,
+        workspace: WorkspaceContext,
+    ) -> Result<(Arc<Instance>, Option<McpWatch>), String> {
         let skills = cookie_agent_config::load_project_skills(workspace.root())
             .map_err(|error| format!("project skills: {error}"))?;
         let mut providers = (self.options.tools)(&workspace);
-        let (mcp, watch) = if mcp_servers.is_empty() {
+        let (mcp, watch) = if state.mcp_servers.is_empty() {
             (None, None)
         } else {
-            let registry = McpRegistry::new(mcp_servers, McpRegistryOptions::default())
-                .map_err(|error| error.to_string())?;
+            let registry =
+                McpRegistry::new(state.mcp_servers.clone(), McpRegistryOptions::default())
+                    .map_err(|error| error.to_string())?;
             for provider in &providers {
                 registry
                     .reserve_provider(provider.as_ref())
@@ -496,38 +592,36 @@ impl Server {
             reported: mcp_servers.clone(),
             ..watch
         });
-        let info = Arc::new(RuntimeInfo::coding(&params.runtime_id, workspace));
-        let result = InitializeResult {
-            version: RUNTIME_PROTOCOL_VERSION,
-            kind: info.kind().clone(),
+        let info = Arc::new(RuntimeInfo::coding(&state.runtime_id, workspace));
+        let id = format!(
+            "coding_{}",
+            self.next_instance.fetch_add(1, Ordering::Relaxed)
+        );
+        let opened = CapabilityOpenResult {
+            instance: id.clone(),
             attachment_name: info.attachment_name().to_owned(),
             workspace: info
                 .workspace()
                 .map(|workspace| workspace.root().to_string_lossy().into_owned()),
-            platform: Some(std::env::consts::OS.to_owned()),
             tools,
             skills: wire_skills(&skills),
             mcp_servers,
-            producer_messaging: self.options.producer_messaging,
         };
-        let initialized = Arc::new(Initialized {
-            info,
-            settings: params.settings,
-            providers,
-            mcp,
-        });
-        if self.state.set(initialized).is_err() {
-            return Err("the runtime is already initialized".into());
-        }
-        Ok((result, watch))
+        Ok((
+            Arc::new(Instance {
+                id,
+                info,
+                providers,
+                mcp,
+                opened,
+            }),
+            watch,
+        ))
     }
 
-    /// Reports the MCP servers' status and the tool list to the daemon as
-    /// they change, until the runtime stops.
-    async fn report_mcp(self: Arc<Self>, mut watch: McpWatch) {
-        let Some(state) = self.state.get().cloned() else {
-            return;
-        };
+    /// Reports an instance's MCP servers' status and tool list to the
+    /// daemon as they change, until the runtime stops.
+    async fn report_mcp(self: Arc<Self>, instance: Arc<Instance>, mut watch: McpWatch) {
         loop {
             let failure = tokio::select! {
                 () = self.stop.cancelled() => return,
@@ -543,13 +637,19 @@ impl Server {
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 },
             };
-            if let Ok(tools) = declared_tools(&state.providers)
+            if let Ok(tools) = declared_tools(&instance.providers)
                 && tools != watch.declared
             {
                 watch.declared = tools;
                 if self
                     .peer
-                    .notify(method::TOOLS_CHANGED, &watch.declared)
+                    .notify(
+                        method::CAPABILITY_TOOLS_CHANGED,
+                        &CapabilityToolsChangedParams {
+                            instance: instance.id.clone(),
+                            tools: watch.declared.clone(),
+                        },
+                    )
                     .await
                     .is_err()
                 {
@@ -562,6 +662,7 @@ impl Server {
             }
             watch.reported = servers;
             let params = McpChangedParams {
+                instance: instance.id.clone(),
                 servers: watch.reported.clone(),
                 failures: failure
                     .into_iter()
@@ -585,6 +686,7 @@ impl Server {
         request: &IncomingRequest,
     ) -> Result<ContextResult, RpcError> {
         let params: ContextParams = request.params()?;
+        let instance = self.instance(Some(&params.instance))?;
         if let Some(preset) = &params.preset {
             cookie_agent_protocol::AgentId::new(preset.as_str()).map_err(|_| {
                 RpcError::remote(
@@ -593,7 +695,7 @@ impl Server {
                 )
             })?;
         }
-        let workspace = state
+        let workspace = instance
             .info
             .workspace()
             .expect("a coding runtime has a workspace")
@@ -618,12 +720,9 @@ impl Server {
         })
     }
 
-    async fn prepare(
-        &self,
-        state: &Initialized,
-        request: &IncomingRequest,
-    ) -> Result<PrepareResult, RpcError> {
+    async fn prepare(&self, request: &IncomingRequest) -> Result<PrepareResult, RpcError> {
         let params: PrepareParams = request.params()?;
+        let state = self.instance(params.instance.as_deref())?;
         if params.calls.len() > protocol::MAX_PREPARE_BATCH {
             return Err(RpcError::remote(
                 error_code::INVALID_PARAMS,
@@ -899,27 +998,27 @@ fn mcp_report(status: McpServerStatus) -> McpServerReport {
 
 /// `mcp/reconnect`: reconnects one server now, or retries every failed one,
 /// and answers once the attempts have finished.
-async fn reconnect_mcp(
-    state: &Initialized,
-    request: &IncomingRequest,
-) -> Result<Outcome, RpcError> {
-    let params: McpReconnectParams = request.params()?;
-    let Some(registry) = &state.mcp else {
-        return Ok(Outcome::of(match params.server {
-            Some(server) => Err(ToolError::execution(format!(
-                "unknown MCP server `{server}`"
-            ))),
-            None => Ok(()),
-        }));
-    };
-    Ok(Outcome::of(match params.server {
-        Some(server) => registry.reconnect_server(&server).await,
-        None => {
-            registry.retry_failed(&tokio::runtime::Handle::current());
-            registry.await_eager_ready().await;
-            Ok(())
-        }
-    }))
+impl Server {
+    async fn reconnect_mcp(&self, request: &IncomingRequest) -> Result<Outcome, RpcError> {
+        let params: McpReconnectParams = request.params()?;
+        let state = self.instance(Some(&params.instance))?;
+        let Some(registry) = &state.mcp else {
+            return Ok(Outcome::of(match params.server {
+                Some(server) => Err(ToolError::execution(format!(
+                    "unknown MCP server `{server}`"
+                ))),
+                None => Ok(()),
+            }));
+        };
+        Ok(Outcome::of(match params.server {
+            Some(server) => registry.reconnect_server(&server).await,
+            None => {
+                registry.retry_failed(&tokio::runtime::Handle::current());
+                registry.await_eager_ready().await;
+                Ok(())
+            }
+        }))
+    }
 }
 
 /// The tool declarations of `providers`, whose names must be unique.

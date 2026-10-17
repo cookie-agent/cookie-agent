@@ -3,18 +3,23 @@
 
 use cookie_agent_engine::{Engine, RuntimeInstanceStatus, RuntimeInstanceSummary};
 use cookie_agent_protocol::{
-    AttachmentName, RuntimeId, RuntimeInstanceInfo, RuntimeTemplateInfo, RuntimesListResult,
+    AttachmentName, CapabilityName, RuntimeId, RuntimeInstanceInfo, RuntimeListing,
+    RuntimesListResult,
 };
 
 pub(crate) fn runtimes_list(engine: &Engine) -> RuntimesListResult {
     RuntimesListResult {
-        templates: engine
+        runtimes: engine
             .runtime_templates()
             .into_iter()
             .filter_map(|template| {
-                Some(RuntimeTemplateInfo {
+                Some(RuntimeListing {
                     runtime_id: RuntimeId::new(template.runtime_id).ok()?,
-                    takes_workspace: template.takes_workspace,
+                    lifetime: template.lifetime,
+                    connected: template.listing.connected,
+                    capabilities: template.listing.capabilities,
+                    platform: template.listing.platform,
+                    message: template.listing.message,
                 })
             })
             .collect(),
@@ -30,6 +35,7 @@ pub(crate) fn runtimes_list(engine: &Engine) -> RuntimesListResult {
 pub(crate) fn instance_info(instance: RuntimeInstanceSummary) -> Option<RuntimeInstanceInfo> {
     Some(RuntimeInstanceInfo {
         runtime_id: RuntimeId::new(instance.runtime_id).ok()?,
+        capability: CapabilityName::new(instance.capability).ok()?,
         attachment_name: instance
             .attachment_name
             .and_then(|name| AttachmentName::new(name).ok()),

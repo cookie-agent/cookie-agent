@@ -7,11 +7,11 @@ use base64::Engine as _;
 use cookie_agent_protocol::{RunId, SessionId, ToolCallId, in_process_pair};
 use cookie_agent_runtime_api::{
     protocol::{
-        AgentMdLimits, ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams,
-        InitializeResult, McpChangedParams, McpReconnectParams, McpServerSettings, McpServerState,
-        Outcome, PrepareOutcome, PrepareParams, PrepareResult, RUNTIME_PROTOCOL_VERSION,
-        RuntimeSettings, RuntimeTools, ToolOutputLimits, WireToolCall, WireTurnContext, error_code,
-        method,
+        AgentMdLimits, CapabilityOpenParams, CapabilityOpenResult, CapabilityToolsChangedParams,
+        ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams, InitializeResult,
+        McpChangedParams, McpReconnectParams, McpServerSettings, McpServerState, Outcome,
+        PrepareOutcome, PrepareParams, PrepareResult, RUNTIME_PROTOCOL_VERSION, RuntimeSettings,
+        RuntimeTools, ToolOutputLimits, WireToolCall, WireTurnContext, error_code, method,
     },
     reconnect::ReconnectPolicy,
     rpc::{Incoming, Peer, RpcError},
@@ -48,11 +48,19 @@ fn fixture(env: &[(&str, &Path)]) -> Value {
     })
 }
 
-fn initialize_params(workspace: &Path, servers: Vec<(&str, Value)>) -> InitializeParams {
-    InitializeParams {
+/// The initialize request for `servers` and the open request for
+/// `workspace`.
+fn initialize_params(
+    workspace: &Path,
+    servers: Vec<(&str, Value)>,
+) -> (InitializeParams, CapabilityOpenParams) {
+    let open = CapabilityOpenParams {
+        capability: cookie_agent_protocol::CapabilityName::coding(),
+        workspace: Some(workspace.to_string_lossy().into_owned()),
+    };
+    let initialize = InitializeParams {
         version: RUNTIME_PROTOCOL_VERSION,
         runtime_id: "labpc".into(),
-        workspace: Some(workspace.to_string_lossy().into_owned()),
         settings: RuntimeSettings {
             tool_output: ToolOutputLimits {
                 max_lines: 100,
@@ -69,7 +77,8 @@ fn initialize_params(workspace: &Path, servers: Vec<(&str, Value)>) -> Initializ
                 })
                 .collect(),
         },
-    }
+    };
+    (initialize, open)
 }
 
 /// What the runtime tells the daemon on its own.
@@ -82,6 +91,8 @@ enum Notice {
 struct Harness {
     daemon: Peer,
     notices: mpsc::UnboundedReceiver<Notice>,
+    /// The instance [`Harness::initialize`] opened.
+    instance: std::sync::OnceLock<String>,
 }
 
 fn start(reconnect: ReconnectPolicy) -> Harness {
@@ -100,7 +111,12 @@ fn start(reconnect: ReconnectPolicy) -> Harness {
             match message {
                 Incoming::Notification(notification) => {
                     let notice = match notification.method.as_str() {
-                        method::TOOLS_CHANGED => Notice::Tools(notification.params().unwrap()),
+                        method::CAPABILITY_TOOLS_CHANGED => Notice::Tools(
+                            notification
+                                .params::<CapabilityToolsChangedParams>()
+                                .unwrap()
+                                .tools,
+                        ),
                         method::MCP_CHANGED => Notice::Mcp(notification.params().unwrap()),
                         _ => continue,
                     };
@@ -113,7 +129,11 @@ fn start(reconnect: ReconnectPolicy) -> Harness {
             }
         }
     });
-    Harness { daemon, notices }
+    Harness {
+        daemon,
+        notices,
+        instance: std::sync::OnceLock::new(),
+    }
 }
 
 fn quick(attempts: usize) -> ReconnectPolicy {
@@ -145,11 +165,27 @@ fn turn(with_image: bool) -> WireTurnContext {
 }
 
 impl Harness {
-    async fn initialize(&self, params: &InitializeParams) -> InitializeResult {
-        tokio::time::timeout(WAIT, self.daemon.request(method::INITIALIZE, params))
-            .await
-            .expect("initialize answers")
-            .expect("initialize succeeds")
+    /// Initializes the runtime and opens `coding` for the workspace.
+    async fn initialize(
+        &self,
+        (initialize, open): &(InitializeParams, CapabilityOpenParams),
+    ) -> CapabilityOpenResult {
+        let _: InitializeResult =
+            tokio::time::timeout(WAIT, self.daemon.request(method::INITIALIZE, initialize))
+                .await
+                .expect("initialize answers")
+                .expect("initialize succeeds");
+        let opened: CapabilityOpenResult =
+            tokio::time::timeout(WAIT, self.daemon.request(method::CAPABILITY_OPEN, open))
+                .await
+                .expect("open answers")
+                .expect("open succeeds");
+        let _ = self.instance.set(opened.instance.clone());
+        opened
+    }
+
+    fn instance(&self) -> String {
+        self.instance.get().expect("initialized").clone()
     }
 
     /// Prepares and executes one call.
@@ -160,6 +196,7 @@ impl Harness {
             .request(
                 method::TOOL_PREPARE,
                 &PrepareParams {
+                    instance: Some(self.instance()),
                     session,
                     run,
                     turn: turn(with_image),
@@ -398,6 +435,7 @@ async fn a_crashed_server_reconnects_and_one_that_cannot_is_dropped_and_reported
         .request(
             method::TOOL_PREPARE,
             &PrepareParams {
+                instance: Some(harness.instance()),
                 session: SessionId::new_v7(),
                 run: RunId::new_v7(),
                 turn: turn(false),
@@ -460,9 +498,13 @@ async fn a_server_that_fails_at_initialize_publishes_nothing_until_it_reconnects
     std::fs::remove_file(&refuse).unwrap();
     let retried: Outcome = tokio::time::timeout(
         WAIT,
-        harness
-            .daemon
-            .request(method::MCP_RECONNECT, &McpReconnectParams::default()),
+        harness.daemon.request(
+            method::MCP_RECONNECT,
+            &McpReconnectParams {
+                instance: harness.instance(),
+                server: None,
+            },
+        ),
     )
     .await
     .unwrap()
@@ -489,6 +531,7 @@ async fn a_server_that_fails_at_initialize_publishes_nothing_until_it_reconnects
         .request(
             method::MCP_RECONNECT,
             &McpReconnectParams {
+                instance: harness.instance(),
                 server: Some("missing".into()),
             },
         )
@@ -500,6 +543,7 @@ async fn a_server_that_fails_at_initialize_publishes_nothing_until_it_reconnects
         .request(
             method::MCP_RECONNECT,
             &McpReconnectParams {
+                instance: harness.instance(),
                 server: Some("unknown".into()),
             },
         )
@@ -526,7 +570,7 @@ async fn template_servers_that_enable_oauth_or_do_not_parse_are_refused() {
             .daemon
             .request::<_, InitializeResult>(
                 method::INITIALIZE,
-                &initialize_params(workspace.path(), vec![("docs", config.clone())]),
+                &initialize_params(workspace.path(), vec![("docs", config.clone())]).0,
             )
             .await
             .expect_err("refused");

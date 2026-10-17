@@ -3523,6 +3523,7 @@ fn connection_failures_become_error_rows_in_each_named_session() {
             cookie_agent_protocol::RuntimesChangedNotification {
                 failures: vec![cookie_agent_protocol::RuntimeFailure {
                     runtime_id: runtime_id("labpc"),
+                    capability: cookie_agent_protocol::CapabilityName::coding(),
                     workspace: Some("/srv/api".into()),
                     reason: "connection refused".into(),
                     session_ids: vec![named],

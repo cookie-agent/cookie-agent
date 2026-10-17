@@ -780,7 +780,7 @@ async fn delegated_children_inherit_and_narrow_the_parent_attachments() {
     let origin = cookie_agent_protocol::EventOrigin::new("client:test").unwrap();
     fixture
         .engine
-        .attach_runtime(parent.session_id, "labpc", Some(api), origin.clone())
+        .attach_runtime(parent.session_id, "labpc", None, Some(api), origin.clone())
         .await
         .expect("attach labpc");
     let unknown = fixture.engine.validate_delegated_runtimes(

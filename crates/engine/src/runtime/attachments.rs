@@ -16,11 +16,14 @@ use crate::{
     session::SessionProjection,
 };
 
-/// One coding runtime a new session attaches.
+/// One capability a new session attaches.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionRuntimeRequest {
     pub runtime_id: String,
-    /// Required exactly when the runtime's template takes a workspace.
+    /// The runtime's only capability when `None`.
+    pub capability: Option<String>,
+    /// Required exactly when the capability takes a workspace, unless the
+    /// runtime has a default one.
     pub workspace: Option<PathBuf>,
 }
 
@@ -68,6 +71,7 @@ pub(crate) fn allocate_attachment_name(
 /// Whether `attachment` refers to `instance`.
 fn refers_to(attachment: &RuntimeAttachment, instance: &RuntimeInstance) -> bool {
     attachment.runtime_id.as_str() == instance.info().id()
+        && &attachment.capability == instance.info().capability()
         && attachment.workspace.as_deref().map(std::path::Path::new)
             == instance
                 .info()
@@ -86,7 +90,8 @@ fn push_instance(
         .find(|attachment| refers_to(attachment, instance))
     {
         return Err(EngineError::Runtime(format!(
-            "runtime `{}` is already attached as `{}`",
+            "capability `{}` of runtime `{}` is already attached as `{}`",
+            instance.info().capability(),
             instance.info().id(),
             existing.name
         )));
@@ -115,6 +120,7 @@ pub(crate) fn attached_event(attachment: &RuntimeAttachment) -> Event {
     Event::RuntimeAttached {
         name: attachment.name.clone(),
         runtime_id: attachment.runtime_id.clone(),
+        capability: Some(attachment.capability.clone()),
         kind: attachment.kind.clone(),
         workspace: attachment.workspace.clone(),
     }
@@ -209,7 +215,11 @@ impl Engine {
                     let instance = self
                         .inner
                         .runtimes
-                        .ensure(&request.runtime_id, request.workspace.as_deref())
+                        .ensure(
+                            &request.runtime_id,
+                            request.capability.as_deref(),
+                            request.workspace.as_deref(),
+                        )
                         .await?;
                     push_instance(&mut attachments, &instance)?;
                 }
@@ -296,13 +306,15 @@ impl Engine {
         }
     }
 
-    /// Attaches the instance of `runtime_id` (at `workspace`, when its
-    /// template takes one) to `session`, starting it when needed. Rejected
-    /// while the session has an active run; a failed start records nothing.
+    /// Attaches `capability` of `runtime_id` (its only capability when
+    /// `None`; at `workspace`, when the capability takes one) to `session`,
+    /// opening the instance when needed. Rejected while the session has an
+    /// active run; a failed start records nothing.
     pub async fn attach_runtime(
         &self,
         session: SessionId,
         runtime_id: &str,
+        capability: Option<&str>,
         workspace: Option<PathBuf>,
         origin: EventOrigin,
     ) -> Result<RuntimeAttachment, EngineError> {
@@ -313,7 +325,7 @@ impl Engine {
         let instance = self
             .inner
             .runtimes
-            .ensure(runtime_id, workspace.as_deref())
+            .ensure(runtime_id, capability, workspace.as_deref())
             .await?;
         if runtime_id == RuntimeId::GLOBAL {
             self.retry_global_mcp();
@@ -444,8 +456,9 @@ impl Engine {
         self.inner.runtimes.instances()
     }
 
-    /// Retries the instance of `runtime_id` (at `workspace`, when its
-    /// template takes one) now, as `runtimes.reconnect` and the `/runtime`
+    /// Retries the instance of `capability` of `runtime_id` (its only
+    /// capability when `None`; at `workspace`, when the capability takes
+    /// one) now, as `runtimes.reconnect` and the `/runtime`
     /// panel do: a failed instance starts again under a new generation, one
     /// that is not running starts, and a ready or reconnecting one is left as
     /// it is. Retrying an instance also retries the failed MCP servers it
@@ -453,12 +466,13 @@ impl Engine {
     pub async fn reconnect_runtime(
         &self,
         runtime_id: &str,
+        capability: Option<&str>,
         workspace: Option<PathBuf>,
     ) -> Result<RuntimeInstanceSummary, EngineError> {
         let instance = self
             .inner
             .runtimes
-            .ensure(runtime_id, workspace.as_deref())
+            .ensure(runtime_id, capability, workspace.as_deref())
             .await?;
         if runtime_id == RuntimeId::GLOBAL {
             self.retry_global_mcp();
@@ -505,6 +519,7 @@ mod tests {
         RuntimeAttachment {
             name: AttachmentName::new(name).unwrap(),
             runtime_id: RuntimeId::new("labpc").unwrap(),
+            capability: cookie_agent_protocol::CapabilityName::coding(),
             kind: RuntimeKind::new("coding").unwrap(),
             workspace: Some("/srv/api".into()),
         }

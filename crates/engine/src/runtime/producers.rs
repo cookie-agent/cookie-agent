@@ -215,7 +215,7 @@ impl Engine {
         connection: &ExternalConnection,
         session: SessionId,
     ) -> Result<(), EngineError> {
-        if connection.source.runtime_attachment().is_some()
+        if connection.source.runtime_id().is_some()
             && !self.runtime_source_attached(&connection.source, connection.epoch, session)
         {
             return Err(EngineError::Producer(format!(
@@ -248,7 +248,7 @@ impl Engine {
                 .plugins
                 .producer_connection_is_current(plugin, epoch);
         }
-        if source.runtime_attachment().is_some() {
+        if source.runtime_id().is_some() {
             return self.runtime_source_is_current(source, epoch);
         }
         false
@@ -320,7 +320,7 @@ impl Engine {
                     ProducerOwner::External { source, .. } => {
                         record.authority.connection_epoch.is_some_and(|epoch| {
                             self.external_connection_is_current(source, epoch)
-                                && (source.runtime_attachment().is_none()
+                                && (source.runtime_id().is_none()
                                     || self.runtime_source_attached(source, epoch, session))
                         })
                     }

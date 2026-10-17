@@ -23,7 +23,7 @@ pub const CODING_RUNTIME_KIND: &str = "coding";
 /// Upper bound of an attachment name in bytes.
 pub const MAX_ATTACHMENT_NAME_BYTES: usize = 32;
 
-pub use cookie_agent_protocol::RuntimeKind;
+pub use cookie_agent_protocol::{CapabilityName, RuntimeKind};
 
 /// The workspace a coding runtime works in.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,49 +67,57 @@ impl WorkspaceContext {
     }
 }
 
-/// Identity and context of one runtime instance.
+/// Identity and context of one capability instance: a runtime's capability
+/// opened for one workspace, or none.
 #[derive(Debug, Eq, PartialEq)]
 pub struct RuntimeInfo {
     id: String,
+    capability: CapabilityName,
     kind: RuntimeKind,
     attachment_name: String,
     workspace: Option<WorkspaceContext>,
 }
 
 impl RuntimeInfo {
-    /// The global runtime: ID, kind, and attachment name `global`, no
-    /// workspace.
+    /// The global runtime: ID, capability, kind, and attachment name
+    /// `global`, no workspace.
     #[must_use]
     pub fn global() -> Self {
         Self {
             id: GLOBAL_RUNTIME_ID.to_owned(),
+            capability: CapabilityName::global(),
             kind: RuntimeKind::new(GLOBAL_RUNTIME_ID).expect("`global` is a valid runtime kind"),
             attachment_name: GLOBAL_RUNTIME_ID.to_owned(),
             workspace: None,
         }
     }
 
-    /// A runtime of `kind` that reports `attachment_name` and `workspace`.
+    /// Capability `capability` of runtime `id`, of `kind`, that reports
+    /// `attachment_name` and `workspace`.
     #[must_use]
     pub fn new(
         id: &str,
+        capability: CapabilityName,
         kind: RuntimeKind,
         attachment_name: &str,
         workspace: Option<WorkspaceContext>,
     ) -> Self {
         Self {
             id: id.to_owned(),
+            capability,
             kind,
             attachment_name: attachment_name.to_owned(),
             workspace,
         }
     }
 
-    /// A coding runtime for `workspace`, named per [`coding_attachment_name`].
+    /// The coding capability of runtime `id` for `workspace`, named per
+    /// [`coding_attachment_name`].
     #[must_use]
     pub fn coding(id: &str, workspace: WorkspaceContext) -> Self {
         Self {
             id: id.to_owned(),
+            capability: CapabilityName::coding(),
             kind: RuntimeKind::new(CODING_RUNTIME_KIND).expect("`coding` is a valid runtime kind"),
             attachment_name: coding_attachment_name(id, workspace.root()),
             workspace: Some(workspace),
@@ -119,6 +127,12 @@ impl RuntimeInfo {
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// The capability of the runtime this instance opened.
+    #[must_use]
+    pub const fn capability(&self) -> &CapabilityName {
+        &self.capability
     }
 
     #[must_use]
@@ -202,13 +216,17 @@ impl ToolOrigin {
 
     /// Stable bytes that identify where a prepared operation runs, for the
     /// operation's execution-context digest: the canonical workspace root, or
-    /// the runtime ID (`base` for the base layer) when there is no workspace.
+    /// the runtime ID and capability (`base` for the base layer) when there
+    /// is no workspace.
     #[must_use]
     pub fn context_bytes(&self) -> Vec<u8> {
         match self {
             Self::Base => b"base".to_vec(),
             Self::Runtime(runtime) => runtime.workspace().map_or_else(
-                || format!("runtime:{}", runtime.id()).into_bytes(),
+                || {
+                    format!("runtime:{}/{}", runtime.id(), runtime.capability().as_str())
+                        .into_bytes()
+                },
                 |workspace| workspace.root().as_os_str().as_encoded_bytes().to_vec(),
             ),
         }
@@ -221,18 +239,16 @@ pub type CodingToolsFactory =
     Arc<dyn Fn(&WorkspaceContext) -> Vec<Arc<dyn ToolProvider>> + Send + Sync>;
 
 /// Starts runtimes that speak the runtime protocol: each connection is one
-/// runtime instance. The in-process coding runtime implements it with an
-/// in-memory frame pair; a runtime in a child process implements it by
-/// spawning the process and framing its stdio with
-/// [`crate::rpc::LineTransport`].
+/// runtime, which serves every capability instance its sessions use. The
+/// in-process coding runtime implements it with an in-memory frame pair; a
+/// runtime in a child process implements it by spawning the process and
+/// framing its stdio with [`crate::rpc::LineTransport`].
 #[async_trait::async_trait]
 pub trait RuntimeConnector: Send + Sync {
     /// Starts one runtime and returns the daemon's end of its transport.
-    /// `workspace` is the path a session asked for, exactly as given, when
-    /// the template takes one; the runtime resolves it on its own machine.
     /// The daemon then sends `runtime/initialize`. The error is a
     /// human-readable reason.
-    async fn connect(&self, workspace: Option<&Path>) -> Result<RuntimeConnection, String>;
+    async fn connect(&self) -> Result<RuntimeConnection, String>;
 }
 
 /// A runtime a [`RuntimeConnector`] started.

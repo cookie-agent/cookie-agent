@@ -95,7 +95,7 @@ enum Command {
         #[command(flatten)]
         args: Box<run::RunArgs>,
     },
-    /// Serve the exact cookie-agent protocol 44 JSON-RPC WebSocket daemon on localhost.
+    /// Serve the exact cookie-agent protocol 45 JSON-RPC WebSocket daemon on localhost.
     Daemon {
         /// Localhost port to bind. `0` selects an ephemeral port; the ready line
         /// reports the real one.
@@ -146,17 +146,18 @@ enum Command {
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 enum RuntimeCommand {
-    /// Serve a coding runtime (`read`, `write`, `edit`, `bash`, `webfetch`)
-    /// for one workspace on this machine.
-    Coding {
+    /// Serve this machine's runtime: the `coding` capability (`read`,
+    /// `write`, `edit`, `bash`, `webfetch`) for every workspace sessions
+    /// attach.
+    Serve {
         /// Speak the runtime protocol over standard input and output, one
         /// JSON-RPC message per line. Required: it is the only transport.
         #[arg(long, required = true)]
         stdio: bool,
-        /// The workspace directory. A leading `~` is expanded; the path is
-        /// resolved on this machine.
-        #[arg(long)]
-        workspace: PathBuf,
+        /// Limit `coding` to workspaces under this directory; repeat for
+        /// several. A leading `~` is expanded. Any workspace when omitted.
+        #[arg(long = "root", value_name = "DIR")]
+        roots: Vec<PathBuf>,
     },
 }
 
@@ -394,20 +395,22 @@ fn local_workspace(
 /// `runtime/shutdown` or closes standard input. Standard output carries only
 /// protocol messages; errors go to standard error.
 async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
-    let RuntimeCommand::Coding { stdio, workspace } = command;
+    let RuntimeCommand::Serve { stdio, roots } = command;
     anyhow::ensure!(stdio, "`--stdio` is the only runtime transport");
-    let expanded = cookie_agent_coding_runtime::server::expand_home(&workspace);
-    let workspace = expanded
-        .canonicalize()
-        .with_context(|| format!("workspace {} is unavailable", expanded.display()))?;
-    anyhow::ensure!(
-        workspace.is_dir(),
-        "workspace {} is not a directory",
-        workspace.display()
-    );
+    let roots = roots
+        .iter()
+        .map(|root| {
+            let expanded = cookie_agent_coding_runtime::server::expand_home(root);
+            let root = expanded
+                .canonicalize()
+                .with_context(|| format!("root {} is unavailable", expanded.display()))?;
+            anyhow::ensure!(root.is_dir(), "root {} is not a directory", root.display());
+            Ok(root)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
     cookie_agent_coding_runtime::server::serve_stdio(
         cookie_agent_coding_runtime::server::ServeOptions {
-            workspace: Some(workspace),
+            roots,
             ..Default::default()
         },
     )

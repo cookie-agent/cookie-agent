@@ -8,9 +8,10 @@ use serde::Deserialize;
 
 use crate::{ConfigError, McpConfig, McpOAuthConfig, McpServerConfig};
 
-/// The argv element a template's `command` substitutes with the requested
-/// workspace.
-pub const WORKSPACE_PLACEHOLDER: &str = "{workspace}";
+/// The argv element templates used to substitute with a workspace before
+/// one runtime served every workspace; a command that still has it is
+/// refused with an explanation.
+const REMOVED_WORKSPACE_PLACEHOLDER: &str = "{workspace}";
 
 const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 3_000;
@@ -31,8 +32,8 @@ pub(crate) struct RawRuntimeTemplate {
 /// `env` are empty.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeTemplateConfig {
-    /// The program and its arguments. An element equal to
-    /// [`WORKSPACE_PLACEHOLDER`] is replaced by the requested workspace.
+    /// The program and its arguments. One process serves every workspace
+    /// and capability of the runtime.
     pub command: Vec<String>,
     /// Variables added to the daemon's environment for the child.
     pub env: BTreeMap<String, String>,
@@ -45,27 +46,6 @@ pub struct RuntimeTemplateConfig {
 }
 
 impl RuntimeTemplateConfig {
-    /// Whether instances take a workspace: the command contains the
-    /// [`WORKSPACE_PLACEHOLDER`] element.
-    #[must_use]
-    pub fn takes_workspace(&self) -> bool {
-        self.command
-            .iter()
-            .any(|argument| argument == WORKSPACE_PLACEHOLDER)
-    }
-
-    /// The command with every placeholder element replaced by `workspace`.
-    #[must_use]
-    pub fn argv(&self, workspace: Option<&str>) -> Vec<String> {
-        self.command
-            .iter()
-            .map(|argument| match workspace {
-                Some(workspace) if argument == WORKSPACE_PLACEHOLDER => workspace.to_owned(),
-                _ => argument.clone(),
-            })
-            .collect()
-    }
-
     #[must_use]
     pub const fn startup_timeout(&self) -> Duration {
         Duration::from_millis(self.startup_timeout_ms)
@@ -161,12 +141,14 @@ fn validate_template(
     if command.iter().any(|argument| argument.contains('\0')) {
         return Err(invalid(id, "`command` elements must not contain NUL"));
     }
-    if command.iter().any(|argument| {
-        argument != WORKSPACE_PLACEHOLDER && argument.contains(WORKSPACE_PLACEHOLDER)
-    }) {
+    if command
+        .iter()
+        .any(|argument| argument.contains(REMOVED_WORKSPACE_PLACEHOLDER))
+    {
         return Err(invalid(
             id,
-            "`{workspace}` must be a whole element of `command`",
+            "`{workspace}` is no longer substituted: one runtime process serves every \
+             workspace, which sessions name when they attach",
         ));
     }
     let env = template.env.unwrap_or_default();

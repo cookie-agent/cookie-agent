@@ -413,7 +413,7 @@ impl Engine {
     }
 
     /// Stops the background call `job` of `session` as the user; see
-    /// [`Self::stop_background`].
+    /// `stop_background`.
     pub async fn stop_background_as_user(
         &self,
         session: SessionId,

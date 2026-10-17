@@ -37,7 +37,7 @@ and `webfetch` in the daemon's working directory, runs on a task of the daemon
 process and is reached over the [runtime protocol](reference/runtime-protocol.md)
 through an in-memory frame pair. A configured
 [`[runtimes.<id>]`](guide/runtimes.md) template starts runtimes in child
-processes (typically `cookie runtime coding --stdio` on another machine over
+processes (typically `cookie runtime serve --stdio` on another machine over
 ssh) that speak the same protocol over stdio.
 
 Any number of clients may attach to one daemon at once. Each sees every
@@ -85,10 +85,10 @@ The TUI's own tests still drive a real `server` through a dev-dependency.
 | `runtime_api` | The contract between the engine and the tools it runs: `ToolProvider`, `ToolSpec`, prepared calls, preparation and execution contexts, progress, the traits through which the engine provides output capture and artifact retention, the detach point through which a background-capable tool says when it may be backgrounded, runtime identity (`ToolOrigin`, `RuntimeInfo`, `WorkspaceContext`), tool attachment validation, and the `AGENTS.md` lookup. It re-exports the [runtime protocol](reference/runtime-protocol.md)'s wire types (`protocol`) and the symmetric JSON-RPC peer both ends run with a newline-delimited stdio transport (`rpc`), which live in the protocol crate so the plugin SDK shares them, and holds `RuntimeConnector`, which starts a runtime for a requested workspace and returns its transport with a bounded `DiagnosticTail` of what it writes outside the protocol. Depends on `protocol` only. |
 | `mcp` | The MCP client (`cookie_agent_mcp`): an `McpRegistry` per runtime that connects its servers eagerly over stdio or Streamable HTTP, publishes their tools as `<server>_<tool>` with untrusted-output markings, maps result media to attachments, reconnects dropped servers with the shared reconnect policy, and reports status and failures to subscribers and an `McpObserver`. The `oauth` feature, which only the engine enables, adds OAuth for remote servers and the `mcp-oauth.json` credential store. Depends on `runtime_api` and `config`, never on the engine. |
 | `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence, the base layer tools (delegation: `delegate_subagent`, `get_subagent_result`; messaging: `send_message`; `skill`; goals; `read_artifact`; `stop_background`), background calls (`runtime/background_tasks.rs`), subagent reports (`runtime/subagent_reports.rs`), and the runtime registry with the runtime protocol client (`runtimes::remote`), the child-process connector of configured templates (`runtimes::process`), instance reconnects, and the global runtime's `McpRegistry` with the TUI's runtime-layer MCP edits and their write-back (`config_store`). |
-| `coding_runtime` | The coding runtime: its `read`, `write`, `edit`, `bash`, and `webfetch` tools, working in the runtime's workspace, the global runtime's fallback `webfetch`, and the runtime protocol server (`server::serve`) that answers a daemon with them, the workspace's project skills, and its `AGENTS.md`, plus the in-process connector the daemon's `local` runtime uses and `server::serve_stdio`, which `cookie runtime coding --stdio` runs. The server hosts its template's MCP servers with an `McpRegistry` without OAuth. Depends on `runtime_api`, `mcp`, and `config` (the skill parser), never on the engine. |
+| `coding_runtime` | The coding runtime: its `read`, `write`, `edit`, `bash`, and `webfetch` tools, working in the runtime's workspace, the global runtime's fallback `webfetch`, and the runtime protocol server (`server::serve`) that answers a daemon with them, the workspace's project skills, and its `AGENTS.md`, plus the in-process connector the daemon's `local` runtime uses and `server::serve_stdio`, which `cookie runtime serve --stdio` runs. The server hosts its template's MCP servers with an `McpRegistry` without OAuth. Depends on `runtime_api`, `mcp`, and `config` (the skill parser), never on the engine. |
 | `server` | The `ServerProtocol` implementation over `Engine`, the axum WebSocket accept path, `Server::connect_in_process`, and the per-run token / ready-line APIs. Server side only. |
 | `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow. Depends only on `protocol` and runs over a `protocol::Client` it is handed. |
-| `cookie_agent` | CLI and composition root wiring every crate together, and `cookie runtime coding --stdio`, which serves a coding runtime to a daemon without reading any configuration. The only binary. |
+| `cookie_agent` | CLI and composition root wiring every crate together, and `cookie runtime serve --stdio`, which serves a coding runtime to a daemon without reading any configuration. The only binary. |
 
 ### Type unification
 
@@ -549,7 +549,7 @@ source's tree and therefore needs that tree's lock, taking it when it is free
 and failing as foreign-owned when it is not. Grants and grant invalidations
 committed by another process become
 visible after restart. Concurrent MCP configuration edits remain last-writer
-wins. Ownership failures in protocol 44 use an ordinary fault
+wins. Ownership failures in protocol 45 use an ordinary fault
 message rather than a new wire error.
 
 The data directory must be on a local filesystem with correct `flock` or
@@ -587,7 +587,7 @@ details.
 ## Protocol surface
 
 The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
-an authenticated WebSocket at `/ws`, protocol 44 current-only, `handshake` first.
+an authenticated WebSocket at `/ws`, protocol 45 current-only, `handshake` first.
 Discovery is a single `runtime.snapshot.get` call that returns one coherent
 runtime snapshot (schema 5). Session events stream through `events.subscribe`
 and plugin bus events through `events.plugin`. Raw tool output is not streamed

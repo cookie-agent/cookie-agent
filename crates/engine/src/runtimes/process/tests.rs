@@ -1,4 +1,4 @@
-//! Runtime processes started from a command: argv substitution, stderr
+//! Runtime processes started from a command: the environment, stderr
 //! diagnostics, the startup timeout, and process cleanup.
 
 use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
@@ -25,16 +25,13 @@ fn settings() -> RuntimeSettings {
 }
 
 fn template(script: &str, env: &[(&str, &str)], startup_timeout: Duration) -> ProtocolTemplate {
-    let command = ["sh", "-c", script, "runtime", "{workspace}"]
-        .map(str::to_owned)
-        .to_vec();
+    let command = ["sh", "-c", script, "runtime"].map(str::to_owned).to_vec();
     let env = env
         .iter()
         .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
         .collect::<BTreeMap<_, _>>();
     ProtocolTemplate::new(
         "labpc",
-        true,
         Arc::new(ProcessConnector::new(
             command,
             env,
@@ -48,26 +45,25 @@ fn template(script: &str, env: &[(&str, &str)], startup_timeout: Duration) -> Pr
 
 async fn start_error(template: &ProtocolTemplate, workspace: &str) -> String {
     template
-        .start(Some(Path::new(workspace)))
+        .start(
+            &cookie_agent_protocol::CapabilityName::coding(),
+            Some(Path::new(workspace)),
+        )
         .await
         .err()
         .expect("the runtime does not start")
 }
 
 #[tokio::test]
-async fn the_workspace_is_one_verbatim_argument_and_env_adds_to_the_environment() {
-    // `$1` is the substituted workspace; no shell sees it before the script.
+async fn env_adds_to_the_environment() {
     let template = template(
-        r#"printf '%s|%s|%s\n' "$1" "$RUNTIME_MODE" "${PATH:+inherited}" >&2; exit 3"#,
+        r#"printf '%s|%s\n' "$RUNTIME_MODE" "${PATH:+inherited}" >&2; exit 3"#,
         &[("RUNTIME_MODE", "remote")],
         Duration::from_secs(20),
     );
-    let error = start_error(&template, "~/my repo; rm -rf $HOME").await;
+    let error = start_error(&template, "/srv/api").await;
     assert!(error.contains("exit status: 3"), "{error}");
-    assert!(
-        error.ends_with("stderr:\n~/my repo; rm -rf $HOME|remote|inherited"),
-        "{error}"
-    );
+    assert!(error.ends_with("stderr:\nremote|inherited"), "{error}");
 }
 
 #[tokio::test]
@@ -126,7 +122,6 @@ async fn a_runtime_that_does_not_initialize_in_time_is_stopped() {
 async fn a_missing_program_fails_to_start() {
     let template = ProtocolTemplate::new(
         "labpc",
-        false,
         Arc::new(ProcessConnector::new(
             vec!["/nonexistent/cookie-runtime".into()],
             BTreeMap::new(),
@@ -136,7 +131,7 @@ async fn a_missing_program_fails_to_start() {
         Duration::from_secs(20),
         Duration::from_millis(200),
     );
-    let error = template.start(None).await.err().expect("no such program");
+    let error = template.capabilities().await.expect_err("no such program");
     assert!(
         error.contains("failed to run `/nonexistent/cookie-runtime`"),
         "{error}"

@@ -225,9 +225,9 @@ impl ProducerSource {
         Self::new(format!("{}{plugin}", Self::PLUGIN))
     }
 
-    /// The source of the runtime attached as `attachment`.
-    pub fn runtime(attachment: &str) -> Result<Self, WireStringError> {
-        Self::new(format!("{}{attachment}", Self::RUNTIME))
+    /// The source of the runtime `runtime_id`.
+    pub fn runtime(runtime_id: &str) -> Result<Self, WireStringError> {
+        Self::new(format!("{}{runtime_id}", Self::RUNTIME))
     }
 
     /// The configured plugin name, for a plugin source.
@@ -236,9 +236,9 @@ impl ProducerSource {
         self.0.strip_prefix(Self::PLUGIN)
     }
 
-    /// The attachment name, for a runtime source.
+    /// The runtime ID, for a runtime source.
     #[must_use]
-    pub fn runtime_attachment(&self) -> Option<&str> {
+    pub fn runtime_id(&self) -> Option<&str> {
         self.0.strip_prefix(Self::RUNTIME)
     }
 }

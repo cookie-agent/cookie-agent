@@ -70,11 +70,19 @@ decode as `external` with name `default`. `session.producers` returns
 `plugin_diagnostic` automatic compaction used to record under the name
 `engine:auto-compact`. It removed the built-in `plugin` permission action:
 plugin tools declare their own actions, and a rule naming `plugin` is an
-ordinary label that governs nothing. Older clients are rejected.
+ordinary label that governs nothing. Protocol 45 added runtime capabilities (see the
+[runtime capabilities spec](../specs/runtime-capabilities.md)): a
+`RuntimeAttachment` and a `runtime_attached` event name the `capability`
+attached; `session.create` runtime entries, `session.runtime.attach`, and
+`runtimes.reconnect` take an optional `capability`; `runtimes.list` returns
+`runtimes` (each runtime's lifetime, connection state, and capabilities) in
+place of `templates`, and its instances and `runtimes.changed` failures name
+their capability. A runtime now produces as `runtime:<runtime ID>` rather
+than `runtime:<attachment name>`. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 44.
+members of protocol 45.
 
 ## Error diagnostics
 
@@ -97,7 +105,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 44 alongside independent display and output references. The
+preserved in protocol 45 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -185,10 +193,10 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.permission.set` | Session ID, action, optional `runtime` selector, wildcard pattern, effect | Effective permissions after the overlay change |
 | `session.permission.clear` | Session ID, action, optional `runtime` selector, wildcard pattern | Effective permissions after the overlay change |
 | `session.permission.preview` | Run selection, optional overlay `rules` | Effective permissions a session created with them would have; creates nothing |
-| `session.runtime.attach` | Session ID, `runtime_id`, `workspace` when the template takes one | The new `attachment` and the session's `runtimes` |
+| `session.runtime.attach` | Session ID, `runtime_id`, optional `capability`, `workspace` when the capability takes one | The new `attachment` and the session's `runtimes` |
 | `session.runtime.detach` | Session ID, attachment `name` | The session's `runtimes` |
 | `runtimes.list` | Empty object | Runtime `templates` and live `instances` with status |
-| `runtimes.reconnect` | `runtime_id`, `workspace` when the template takes one | The `instance` afterwards, as `runtimes.list` reports it |
+| `runtimes.reconnect` | `runtime_id`, optional `capability`, `workspace` when the capability takes one | The `instance` afterwards, as `runtimes.list` reports it |
 | `plugins.list` | Empty object | The configured `plugins`, in hook order |
 | `plugins.restart` | Plugin `name` | Empty object, once the restart is under way |
 | `session.set_permission_mode` | Any session ID in the target tree, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo`; updates the runtime-only tree mode | Empty object |
@@ -222,37 +230,46 @@ a top-level entry, and stays reachable via `session.tree`, `session.children`,
 ### Runtimes
 
 A session uses the tools and workspace context of the
-[runtimes](../specs/runtimes.md) it is attached to. A `RuntimeAttachment` is
-`{ name, runtime_id, kind, workspace? }`: the session-unique attachment `name`
-(also the tool prefix on name collisions), the template's `runtime_id`, the
-runtime's `kind` (a label the runtime declares, such as `global` or `coding`;
-the daemon never branches on it), and the canonical `workspace` the
+[runtime capabilities](../specs/runtime-capabilities.md) it is attached to. A
+`RuntimeAttachment` is `{ name, runtime_id, capability, kind, workspace? }`:
+the session-unique attachment `name` (also the tool prefix on name
+collisions), the `runtime_id`, the runtime's `capability` the session uses,
+the capability's `kind` (a label the runtime declares, such as `global` or
+`coding`; the daemon never branches on it), and the canonical `workspace` the
 runtime reported, if any. The session create, get, and resume results carry the
 session's attachments in attach order; clients follow later changes through the
 `runtime_attached` and `runtime_detached` events of the session.
 
 `session.create` attaches `global` unless `global` is `false`, then each entry
-of `runtimes` in order; without `runtimes` it attaches `local`, the coding
-runtime for the daemon's working directory. An empty `runtimes` list creates a
+of `runtimes` (`runtime_id`, optional `capability`, optional `workspace`) in
+order; without `runtimes` it attaches `local`'s `coding` capability at the
+daemon's working directory. An empty `runtimes` list creates a
 session with no coding runtime. Instances that are not running are started
 first, and a failure creates no session.
 
 `session.runtime.attach` and `session.runtime.detach` are rejected while the
-session has an active run (`session running`). Attach starts the instance when
-needed and records nothing when that fails. The attachment's name is the name
-the instance reports (`global`, or `<runtime ID>_<workspace basename>` for a
-coding runtime), suffixed `_2`, `_3`, ... when the session already has an
-attachment of that name; attaching an instance a session already has is an
-error. A template whose definition takes a workspace requires `workspace`;
-for any other template, including `global` and `local`, supplying one is an
-error. Attaching a runtime ID without a template is an `unknown runtime`
-error. Besides `global` and `local`, the templates are the configured
-[`[runtimes.<id>]`](../guide/runtimes.md) tables. The daemon passes `workspace`
+session has an active run (`session running`). Attach connects the runtime
+and opens the capability's instance when needed, and records nothing when
+that fails. Without `capability` it attaches the runtime's only capability;
+a runtime that offers several asks for one, naming them. The attachment's
+name is the name the instance reports (`global`, or
+`<runtime ID>_<workspace basename>` for a `coding` instance), suffixed `_2`,
+`_3`, ... when the session already has an attachment of that name; attaching
+an instance a session already has is an error. A capability that takes a
+workspace requires `workspace`, except `local`'s `coding`, which opens at the
+daemon's working directory without one; a capability that takes none
+refuses one. Attaching a runtime ID without a template is an
+`unknown runtime` error. Besides `global` and `local`, the runtimes are the
+configured [`[runtimes.<id>]`](../guide/runtimes.md) tables. The daemon passes `workspace`
 to the runtime exactly as given; the attachment records the canonical path
 the runtime reported, and two spellings of one workspace share an instance.
 
-`runtimes.list` returns each template's `runtime_id` and whether it
-`takes_workspace`, and each instance's `runtime_id`, reported
+`runtimes.list` returns each runtime as a `RuntimeListing`: its `runtime_id`;
+its `lifetime` (`builtin` for `global` and `local`, `spawned` for a
+template); whether the daemon is `connected` to it now; its `capabilities`
+(`name`, `kind`, `takes_workspace`, `description`), empty until it has
+connected once; its `platform`; and a `message` saying why its last attempt
+to connect failed. Each instance has its `runtime_id`, `capability`, reported
 `attachment_name`, `kind`, `workspace`, and `platform` once started, its
 `status` (`starting`, `ready`, `reconnecting`, `failed`, or `stopped`), and a
 failure `message`.
@@ -260,7 +277,7 @@ failure `message`.
 `runtimes.reconnect` retries an instance now: a `failed` instance is started
 again, under a new generation, and keeps its identity; an instance that is not
 running is started; a `ready` or `reconnecting` one is left as it is.
-`workspace` follows the attach rule, and for a failed instance it is the
+`capability` and `workspace` follow the attach rule, and for a failed instance it is the
 `workspace` that `runtimes.list` reports. A start that fails is an error with
 the reason, and is also reported in `runtimes.changed`. Retrying `global`
 also retries its failed MCP servers.

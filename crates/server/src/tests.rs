@@ -992,16 +992,23 @@ async fn runtime_attachments_are_reachable_through_rpc() {
     });
 
     let (listed, _) = request(&mut client, 3, "runtimes.list", json!({})).await;
-    let templates = listed["result"]["templates"].as_array().expect("templates");
+    let runtimes = listed["result"]["runtimes"].as_array().expect("runtimes");
     assert_eq!(
-        templates
+        runtimes
             .iter()
-            .map(|template| (
-                template["runtime_id"].as_str().unwrap(),
-                template["takes_workspace"].as_bool().unwrap()
+            .map(|runtime| (
+                runtime["runtime_id"].as_str().unwrap(),
+                runtime["lifetime"].as_str().unwrap(),
+                runtime["capabilities"][0]["name"].as_str().unwrap(),
+                runtime["capabilities"][0]["takes_workspace"]
+                    .as_bool()
+                    .unwrap()
             ))
             .collect::<Vec<_>>(),
-        [("global", false), ("local", false)]
+        [
+            ("global", "builtin", "global", false),
+            ("local", "builtin", "coding", true)
+        ]
     );
     assert!(
         listed["result"]["instances"]
@@ -1063,8 +1070,8 @@ async fn runtime_attachments_are_reachable_through_rpc() {
         ),
         (
             8,
-            json!({ "session_id": session_id, "runtime_id": "local", "workspace": "/tmp" }),
-            "runtime `local` takes no workspace",
+            json!({ "session_id": session_id, "runtime_id": "local", "capability": "browse" }),
+            "runtime `local` offers no capability `browse`",
         ),
     ] {
         let (rejected, _) = request(&mut client, id, "session.runtime.attach", params).await;

@@ -31,6 +31,8 @@ pub enum IdentityError {
     Runtime,
     #[error("invalid attachment name")]
     Attachment,
+    #[error("invalid capability name")]
+    Capability,
 }
 
 macro_rules! string_identity {
@@ -296,6 +298,33 @@ impl RuntimeId {
 }
 
 string_identity!(
+    CapabilityName,
+    Capability,
+    valid_capability_name,
+    32,
+    "^[a-z][a-z0-9_]{0,31}$"
+);
+
+impl CapabilityName {
+    /// The capability of the daemon's global runtime.
+    pub const GLOBAL: &'static str = "global";
+    /// The capability coding runtimes offer: tools working in a workspace.
+    pub const CODING: &'static str = "coding";
+
+    /// The global runtime's capability.
+    #[must_use]
+    pub fn global() -> Self {
+        Self(Self::GLOBAL.to_owned())
+    }
+
+    /// The coding capability.
+    #[must_use]
+    pub fn coding() -> Self {
+        Self(Self::CODING.to_owned())
+    }
+}
+
+string_identity!(
     AttachmentName,
     Attachment,
     valid_attachment_name,
@@ -454,6 +483,10 @@ fn valid_agent_id(value: &str) -> bool {
 }
 
 fn valid_runtime_id(value: &str) -> bool {
+    valid_lower_snake(value, 32)
+}
+
+fn valid_capability_name(value: &str) -> bool {
     valid_lower_snake(value, 32)
 }
 

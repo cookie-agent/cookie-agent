@@ -260,6 +260,7 @@ impl Server {
                     &sessions,
                     cookie_agent_engine::RuntimeFailure {
                         runtime_id: instance.runtime_id,
+                        capability: instance.capability,
                         workspace: instance.workspace,
                         reason: instance.message.unwrap_or_default(),
                     },
@@ -379,11 +380,15 @@ fn runtime_failure(
     failure: cookie_agent_engine::RuntimeFailure,
 ) -> Option<cookie_agent_protocol::RuntimeFailure> {
     let runtime_id = RuntimeId::new(failure.runtime_id.as_str()).ok()?;
+    let capability = cookie_agent_protocol::CapabilityName::new(failure.capability).ok()?;
     let session_ids = affected_sessions(engine, sessions, |attachment| {
-        attachment.runtime_id == runtime_id && attachment.workspace == failure.workspace
+        attachment.runtime_id == runtime_id
+            && attachment.capability == capability
+            && attachment.workspace == failure.workspace
     });
     (!session_ids.is_empty()).then(|| cookie_agent_protocol::RuntimeFailure {
         runtime_id: runtime_id.clone(),
+        capability: capability.clone(),
         workspace: failure.workspace,
         reason: failure.reason,
         session_ids,

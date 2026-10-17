@@ -2009,6 +2009,11 @@ pub enum EventPayload {
     RuntimeAttached {
         name: AttachmentName,
         runtime_id: RuntimeId,
+        /// The capability attached; absent in events written before
+        /// capabilities, which read as `global` for the global runtime and
+        /// `coding` otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capability: Option<CapabilityName>,
         kind: RuntimeKind,
         /// Canonical workspace the runtime reported; absent without one.
         #[serde(default, skip_serializing_if = "Option::is_none")]

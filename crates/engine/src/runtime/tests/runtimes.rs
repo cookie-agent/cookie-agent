@@ -296,7 +296,7 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
     let api = workspace_dir(root, "api");
     let attached = fixture
         .engine
-        .attach_runtime(session, "labpc", Some(api.clone()), origin())
+        .attach_runtime(session, "labpc", None, Some(api.clone()), origin())
         .await
         .expect("attach labpc");
     assert_eq!(attached.name.as_str(), "labpc_api");
@@ -441,7 +441,7 @@ async fn sessions_attach_runtimes_under_unique_names() {
             let engine = fixture.engine.clone();
             async move {
                 engine
-                    .attach_runtime(session, "labpc", Some(workspace), origin())
+                    .attach_runtime(session, "labpc", None, Some(workspace), origin())
                     .await
                     .expect("attach")
                     .name
@@ -458,7 +458,7 @@ async fn sessions_attach_runtimes_under_unique_names() {
     // One instance per (runtime ID, workspace), shared and never attached twice.
     let again = fixture
         .engine
-        .attach_runtime(session, "labpc", Some(first), origin())
+        .attach_runtime(session, "labpc", None, Some(first), origin())
         .await;
     assert!(
         matches!(&again, Err(EngineError::Runtime(message)) if message.contains("already attached as `labpc_api`")),
@@ -468,16 +468,20 @@ async fn sessions_attach_runtimes_under_unique_names() {
 
     for (runtime, workspace, expected) in [
         ("nowhere", None, "unknown runtime `nowhere`"),
-        ("labpc", None, "runtime `labpc` requires a workspace"),
+        (
+            "labpc",
+            None,
+            "capability `coding` of runtime `labpc` requires a workspace",
+        ),
         (
             "local",
             Some(root.to_owned()),
-            "runtime `local` takes no workspace",
+            "capability `coding` of runtime `local` is already attached",
         ),
     ] {
         let error = fixture
             .engine
-            .attach_runtime(session, runtime, workspace, origin())
+            .attach_runtime(session, runtime, None, workspace, origin())
             .await
             .expect_err("rejected attach");
         assert!(error.to_string().contains(expected), "{error}");
@@ -602,7 +606,7 @@ async fn attach_and_detach_are_rejected_while_the_session_runs() {
         .expect("start run");
     reached.await.expect("request reached");
     assert!(matches!(
-        fixture.engine.attach_runtime(session, "labpc", None, origin()).await,
+        fixture.engine.attach_runtime(session, "labpc", None, None, origin()).await,
         Err(EngineError::SessionRunning(id)) if id == session
     ));
     assert!(matches!(
@@ -620,7 +624,7 @@ async fn attach_and_detach_are_rejected_while_the_session_runs() {
     wait_for_session_not_running(&fixture.engine, session).await;
     fixture
         .engine
-        .attach_runtime(session, "labpc", None, origin())
+        .attach_runtime(session, "labpc", None, None, origin())
         .await
         .expect("attach once idle");
     fixture.engine.shutdown().await;
@@ -643,7 +647,7 @@ async fn reopening_a_session_starts_its_attached_instances() {
         .session_id;
     fixture
         .engine
-        .attach_runtime(session, "labpc", Some(api), origin())
+        .attach_runtime(session, "labpc", None, Some(api), origin())
         .await
         .expect("attach labpc");
     // Persist the session so another engine can open it.
@@ -684,12 +688,19 @@ impl crate::RuntimeTemplate for UnreachableTemplate {
         "labpc"
     }
 
-    fn takes_workspace(&self) -> bool {
-        true
+    async fn capabilities(
+        &self,
+    ) -> Result<Vec<cookie_agent_protocol::RuntimeCapabilityInfo>, String> {
+        Err("ssh: connect to host labpc: Connection refused".into())
+    }
+
+    fn listing(&self) -> crate::RuntimeListingState {
+        crate::RuntimeListingState::default()
     }
 
     async fn start(
         &self,
+        _capability: &cookie_agent_protocol::CapabilityName,
         _workspace: Option<&std::path::Path>,
     ) -> Result<crate::StartedRuntime, String> {
         Err("ssh: connect to host labpc: Connection refused".into())
@@ -714,7 +725,7 @@ async fn an_instance_that_fails_to_start_on_open_is_reported() {
         .session_id;
     fixture
         .engine
-        .attach_runtime(session, "labpc", Some(api.clone()), origin())
+        .attach_runtime(session, "labpc", None, Some(api.clone()), origin())
         .await
         .expect("attach labpc");
     fixture
@@ -774,7 +785,7 @@ async fn each_coding_attachment_loads_its_own_agent_md() {
         .session_id;
     fixture
         .engine
-        .attach_runtime(session, "labpc", Some(api), origin())
+        .attach_runtime(session, "labpc", None, Some(api), origin())
         .await
         .expect("attach labpc");
     fixture
@@ -909,7 +920,7 @@ async fn same_named_project_skills_of_two_attachments_are_prefixed() {
 
     let attached = fixture
         .engine
-        .attach_runtime(session, "labpc", Some(api), origin())
+        .attach_runtime(session, "labpc", None, Some(api), origin())
         .await
         .expect("attach labpc");
     let local = fixture
@@ -962,5 +973,146 @@ async fn same_named_project_skills_of_two_attachments_are_prefixed() {
             .trim(),
         "Local deploy."
     );
+    fixture.engine.shutdown().await;
+}
+
+/// A runtime that offers `coding`, which takes a workspace, and `notes`,
+/// which takes none.
+struct TwoCapabilityTemplate;
+
+impl TwoCapabilityTemplate {
+    fn offered() -> Vec<cookie_agent_protocol::RuntimeCapabilityInfo> {
+        let capability =
+            |name: &str, takes_workspace| cookie_agent_protocol::RuntimeCapabilityInfo {
+                name: cookie_agent_protocol::CapabilityName::new(name).unwrap(),
+                kind: cookie_agent_protocol::RuntimeKind::new(name).unwrap(),
+                takes_workspace,
+                description: String::new(),
+            };
+        vec![capability("coding", true), capability("notes", false)]
+    }
+}
+
+#[async_trait]
+impl crate::RuntimeTemplate for TwoCapabilityTemplate {
+    fn runtime_id(&self) -> &str {
+        "devbox"
+    }
+
+    async fn capabilities(
+        &self,
+    ) -> Result<Vec<cookie_agent_protocol::RuntimeCapabilityInfo>, String> {
+        Ok(Self::offered())
+    }
+
+    fn listing(&self) -> crate::RuntimeListingState {
+        crate::RuntimeListingState {
+            connected: true,
+            capabilities: Self::offered(),
+            ..crate::RuntimeListingState::default()
+        }
+    }
+
+    async fn start(
+        &self,
+        capability: &cookie_agent_protocol::CapabilityName,
+        workspace: Option<&std::path::Path>,
+    ) -> Result<crate::StartedRuntime, String> {
+        let info = match workspace {
+            Some(path) => cookie_agent_runtime_api::RuntimeInfo::coding(
+                "devbox",
+                crate::WorkspaceContext::new(path).map_err(|error| error.to_string())?,
+            ),
+            None => cookie_agent_runtime_api::RuntimeInfo::new(
+                "devbox",
+                capability.clone(),
+                cookie_agent_protocol::RuntimeKind::new(capability.as_str()).unwrap(),
+                &format!("devbox_{capability}"),
+                None,
+            ),
+        };
+        Ok(crate::StartedRuntime {
+            info,
+            providers: Vec::new(),
+            skills: cookie_agent_config::SkillRegistry::default(),
+            connection: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_session_attaches_each_capability_of_a_runtime_separately() {
+    let (fixture, selection) = custom_fixture();
+    let api = workspace_dir(fixture._directory.path(), "api");
+    fixture
+        .engine
+        .register_runtime_template(Arc::new(TwoCapabilityTemplate))
+        .expect("register devbox");
+    let session = fixture
+        .engine
+        .create_session(selection)
+        .expect("session")
+        .session_id;
+    let attach = |capability: Option<&'static str>, workspace: Option<std::path::PathBuf>| {
+        fixture
+            .engine
+            .attach_runtime(session, "devbox", capability, workspace, origin())
+    };
+
+    let error = attach(None, Some(api.clone()))
+        .await
+        .expect_err("ambiguous");
+    assert!(
+        error
+            .to_string()
+            .contains("offers several capabilities; choose one of: coding, notes"),
+        "{error}"
+    );
+    let error = attach(Some("browse"), None).await.expect_err("not offered");
+    assert!(
+        error
+            .to_string()
+            .contains("runtime `devbox` offers no capability `browse`"),
+        "{error}"
+    );
+    let error = attach(Some("notes"), Some(api.clone()))
+        .await
+        .expect_err("notes takes no workspace");
+    assert!(error.to_string().contains("takes no workspace"), "{error}");
+
+    let coding = attach(Some("coding"), Some(api)).await.expect("coding");
+    let notes = attach(Some("notes"), None).await.expect("notes");
+    assert_eq!(coding.name.as_str(), "devbox_api");
+    assert_eq!(coding.capability.as_str(), "coding");
+    assert_eq!(
+        (notes.name.as_str(), notes.capability.as_str()),
+        ("devbox_notes", "notes")
+    );
+    let error = attach(Some("notes"), None)
+        .await
+        .expect_err("attached once");
+    assert!(error.to_string().contains("already attached"), "{error}");
+
+    // The attach events record the capability.
+    let recorded = fixture
+        .engine
+        .inner
+        .store
+        .get(session)
+        .unwrap()
+        .log
+        .events()
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::RuntimeAttached {
+                runtime_id,
+                capability,
+                ..
+            } if runtime_id.as_str() == "devbox" => capability.clone(),
+            _ => None,
+        })
+        .map(|capability| capability.into_string())
+        .collect::<Vec<_>>();
+    assert_eq!(recorded, ["coding", "notes"]);
     fixture.engine.shutdown().await;
 }

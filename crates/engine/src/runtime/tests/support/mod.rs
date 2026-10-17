@@ -62,8 +62,9 @@ pub(crate) use scripted::*;
 pub(crate) type FakeRuntimeTools =
     Arc<dyn Fn(&crate::WorkspaceContext) -> Vec<Arc<dyn ToolProvider>> + Send + Sync>;
 
-/// An in-process coding runtime template for tests. With a fixed workspace it
-/// takes none, like `local`; without one, attaching it requires a workspace.
+/// An in-process coding runtime template for tests. With a fixed workspace,
+/// attaching without one opens it there, like `local`; without one,
+/// attaching requires a workspace.
 pub(crate) struct FakeRuntimeTemplate {
     pub(crate) id: &'static str,
     pub(crate) fixed_workspace: Option<std::path::PathBuf>,
@@ -103,12 +104,36 @@ impl crate::RuntimeTemplate for FakeRuntimeTemplate {
         self.id
     }
 
-    fn takes_workspace(&self) -> bool {
-        self.fixed_workspace.is_none()
+    async fn capabilities(
+        &self,
+    ) -> Result<Vec<cookie_agent_protocol::RuntimeCapabilityInfo>, String> {
+        Ok(self.listing().capabilities)
+    }
+
+    fn listing(&self) -> crate::RuntimeListingState {
+        crate::RuntimeListingState {
+            connected: true,
+            capabilities: vec![cookie_agent_protocol::RuntimeCapabilityInfo {
+                name: cookie_agent_protocol::CapabilityName::coding(),
+                kind: cookie_agent_protocol::RuntimeKind::new("coding").expect("kind"),
+                takes_workspace: true,
+                description: String::new(),
+            }],
+            platform: None,
+            message: None,
+        }
+    }
+
+    fn default_workspace(
+        &self,
+        _capability: &cookie_agent_protocol::CapabilityName,
+    ) -> Option<std::path::PathBuf> {
+        self.fixed_workspace.clone()
     }
 
     async fn start(
         &self,
+        _capability: &cookie_agent_protocol::CapabilityName,
         workspace: Option<&std::path::Path>,
     ) -> Result<crate::StartedRuntime, String> {
         let path = workspace

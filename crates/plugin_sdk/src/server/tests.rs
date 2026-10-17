@@ -96,6 +96,7 @@ impl Engine {
             .request(
                 method::TOOL_PREPARE,
                 &PrepareParams {
+                    instance: None,
                     session,
                     run: RunId::new_v7(),
                     turn: turn(),

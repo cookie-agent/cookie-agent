@@ -144,11 +144,17 @@ impl App {
                 KeyCode::Esc => self.runtime_panel.form = None,
                 KeyCode::Tab | KeyCode::BackTab => self.runtime_panel.move_focus(),
                 KeyCode::Enter => self.submit_runtime_attach(),
-                KeyCode::Up | KeyCode::Left if focus == RuntimeFormFocus::Template => {
-                    self.runtime_panel.cycle_template(true);
+                KeyCode::Up | KeyCode::Left if focus == RuntimeFormFocus::Runtime => {
+                    self.runtime_panel.cycle_runtime(true);
                 }
-                KeyCode::Down | KeyCode::Right if focus == RuntimeFormFocus::Template => {
-                    self.runtime_panel.cycle_template(false);
+                KeyCode::Down | KeyCode::Right if focus == RuntimeFormFocus::Runtime => {
+                    self.runtime_panel.cycle_runtime(false);
+                }
+                KeyCode::Up | KeyCode::Left if focus == RuntimeFormFocus::Capability => {
+                    self.runtime_panel.cycle_capability(true);
+                }
+                KeyCode::Down | KeyCode::Right if focus == RuntimeFormFocus::Capability => {
+                    self.runtime_panel.cycle_capability(false);
                 }
                 _ if focus == RuntimeFormFocus::Workspace => {
                     if let Some(form) = self.runtime_panel.form.as_mut() {
@@ -191,8 +197,8 @@ impl App {
                     .and_then(|index| rows.get(index))
                 {
                     match self.runtime_panel.reconnect_request(row) {
-                        Ok((runtime_id, workspace)) => {
-                            self.dispatch_runtime_reconnect(runtime_id, workspace);
+                        Ok((runtime_id, capability, workspace)) => {
+                            self.dispatch_runtime_reconnect(runtime_id, capability, workspace);
                         }
                         Err(error) => self.status = error,
                     }
@@ -205,6 +211,7 @@ impl App {
     fn dispatch_runtime_reconnect(
         &mut self,
         runtime_id: cookie_agent_protocol::RuntimeId,
+        capability: cookie_agent_protocol::CapabilityName,
         workspace: Option<String>,
     ) {
         self.status = format!("retrying runtime `{runtime_id}`...");
@@ -214,6 +221,7 @@ impl App {
             let result = client
                 .reconnect_runtime(cookie_agent_protocol::RuntimesReconnectParams {
                     runtime_id: runtime_id.clone(),
+                    capability: Some(capability),
                     workspace,
                 })
                 .await
@@ -235,7 +243,7 @@ impl App {
     }
 
     fn submit_runtime_attach(&mut self) {
-        let (runtime_id, workspace) = match self.runtime_panel.attach_request() {
+        let (runtime_id, capability, workspace) = match self.runtime_panel.attach_request() {
             Ok(request) => request,
             Err(error) => {
                 self.status = error;
@@ -255,6 +263,7 @@ impl App {
                 .attach_runtime(cookie_agent_protocol::SessionRuntimeAttachParams {
                     session_id,
                     runtime_id,
+                    capability,
                     workspace,
                 })
                 .await

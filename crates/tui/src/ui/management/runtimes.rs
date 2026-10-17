@@ -1,10 +1,10 @@
-//! The `/runtime` panel: the selected session's runtime attachments with
-//! their instance status, attaching a template, detaching, and retrying a
-//! failed instance.
+//! The `/runtime` panel: the selected session's attachments with their
+//! instance status, attaching a runtime's capability, detaching, and
+//! retrying a failed instance.
 
 use cookie_agent_protocol::{
-    RuntimeAttachment, RuntimeId, RuntimeInstanceInfo, RuntimeInstanceStatus, RuntimeKind,
-    RuntimeTemplateInfo, RuntimesListResult,
+    CapabilityName, RuntimeAttachment, RuntimeCapabilityInfo, RuntimeId, RuntimeInstanceInfo,
+    RuntimeInstanceStatus, RuntimeKind, RuntimeListing, RuntimesListResult,
 };
 use ratatui::{
     Frame,
@@ -27,13 +27,16 @@ pub(in crate::ui) struct RuntimeRow {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::ui) enum RuntimeFormFocus {
-    Template,
+    Runtime,
+    Capability,
     Workspace,
 }
 
-/// The attach step: a template, and a workspace path when it takes one.
+/// The attach step: a runtime, one of its capabilities, and a workspace path
+/// when the capability takes one.
 pub(in crate::ui) struct RuntimeAttachForm {
-    pub(in crate::ui) template: usize,
+    pub(in crate::ui) runtime: usize,
+    pub(in crate::ui) capability: usize,
     pub(in crate::ui) workspace: InputState,
     pub(in crate::ui) focus: RuntimeFormFocus,
 }
@@ -41,11 +44,18 @@ pub(in crate::ui) struct RuntimeAttachForm {
 impl RuntimeAttachForm {
     fn new() -> Self {
         Self {
-            template: 0,
+            runtime: 0,
+            capability: 0,
             workspace: InputState::default(),
-            focus: RuntimeFormFocus::Template,
+            focus: RuntimeFormFocus::Runtime,
         }
     }
+}
+
+/// Whether the attach form asks for a workspace: the chosen capability takes
+/// one, or the runtime has not said what it offers yet.
+fn asks_workspace(capability: Option<&RuntimeCapabilityInfo>, known: bool) -> bool {
+    capability.map_or(!known, |capability| capability.takes_workspace)
 }
 
 #[derive(Default)]
@@ -62,114 +72,146 @@ impl RuntimePanel {
         self.refresh_in_flight = false;
     }
 
-    pub(in crate::ui) fn templates(&self) -> &[RuntimeTemplateInfo] {
+    pub(in crate::ui) fn runtimes(&self) -> &[RuntimeListing] {
         self.listing
             .as_ref()
-            .map_or(&[], |listing| listing.templates.as_slice())
+            .map_or(&[], |listing| listing.runtimes.as_slice())
     }
 
     /// Opens the attach step; there is nothing to attach before
     /// `runtimes.list` answered.
     pub(in crate::ui) fn begin_attach(&mut self) -> Result<(), String> {
-        if self.templates().is_empty() {
-            return Err("no runtime templates are available yet".into());
+        if self.runtimes().is_empty() {
+            return Err("no runtimes are available yet".into());
         }
         self.form = Some(RuntimeAttachForm::new());
         Ok(())
     }
 
-    pub(in crate::ui) fn selected_template(&self) -> Option<&RuntimeTemplateInfo> {
+    pub(in crate::ui) fn selected_runtime(&self) -> Option<&RuntimeListing> {
         let form = self.form.as_ref()?;
-        self.templates().get(form.template)
+        self.runtimes().get(form.runtime)
     }
 
-    pub(in crate::ui) fn cycle_template(&mut self, backward: bool) {
-        let count = self.templates().len();
+    /// The chosen capability; `None` while the runtime has not said what it
+    /// offers, when attaching takes its only capability.
+    pub(in crate::ui) fn selected_capability(&self) -> Option<&RuntimeCapabilityInfo> {
+        let form = self.form.as_ref()?;
+        self.selected_runtime()?.capabilities.get(form.capability)
+    }
+
+    fn asks_workspace(&self) -> bool {
+        let known = self
+            .selected_runtime()
+            .is_some_and(|runtime| !runtime.capabilities.is_empty());
+        asks_workspace(self.selected_capability(), known)
+    }
+
+    pub(in crate::ui) fn cycle_runtime(&mut self, backward: bool) {
+        let count = self.runtimes().len();
         let Some(form) = self.form.as_mut() else {
             return;
         };
         if count == 0 {
             return;
         }
-        form.template = if backward {
-            (form.template + count - 1) % count
-        } else {
-            (form.template + 1) % count
-        };
-        if form.focus == RuntimeFormFocus::Workspace
-            && !self
-                .selected_template()
-                .is_some_and(|template| template.takes_workspace)
-            && let Some(form) = self.form.as_mut()
+        form.runtime = cycle(form.runtime, count, backward);
+        form.capability = 0;
+    }
+
+    pub(in crate::ui) fn cycle_capability(&mut self, backward: bool) {
+        let count = self
+            .selected_runtime()
+            .map_or(0, |runtime| runtime.capabilities.len());
+        if let Some(form) = self.form.as_mut()
+            && count > 0
         {
-            form.focus = RuntimeFormFocus::Template;
+            form.capability = cycle(form.capability, count, backward);
         }
     }
 
-    /// Moves between the template and the workspace field; the workspace is
-    /// only reachable for a template that takes one.
+    /// Moves between the runtime, its capability, and the workspace field;
+    /// the capability is only reachable when the runtime offers several,
+    /// and the workspace only when the capability takes one.
     pub(in crate::ui) fn move_focus(&mut self) {
-        let takes_workspace = self
-            .selected_template()
-            .is_some_and(|template| template.takes_workspace);
+        let several = self
+            .selected_runtime()
+            .is_some_and(|runtime| runtime.capabilities.len() > 1);
+        let workspace = self.asks_workspace();
         if let Some(form) = self.form.as_mut() {
             form.focus = match form.focus {
-                RuntimeFormFocus::Template if takes_workspace => RuntimeFormFocus::Workspace,
-                _ => RuntimeFormFocus::Template,
+                RuntimeFormFocus::Runtime if several => RuntimeFormFocus::Capability,
+                RuntimeFormFocus::Runtime | RuntimeFormFocus::Capability if workspace => {
+                    RuntimeFormFocus::Workspace
+                }
+                _ => RuntimeFormFocus::Runtime,
             };
         }
     }
 
     /// The attach request the form describes.
-    pub(in crate::ui) fn attach_request(&self) -> Result<(RuntimeId, Option<String>), String> {
+    pub(in crate::ui) fn attach_request(
+        &self,
+    ) -> Result<(RuntimeId, Option<CapabilityName>, Option<String>), String> {
         let form = self.form.as_ref().ok_or("no attach in progress")?;
-        let template = self
-            .selected_template()
-            .ok_or("choose a runtime template")?;
+        let runtime = self.selected_runtime().ok_or("choose a runtime")?;
+        let capability = self.selected_capability();
         let workspace = form.workspace.as_str().trim();
-        let workspace = if template.takes_workspace {
-            if workspace.is_empty() {
-                return Err(format!(
-                    "runtime `{}` needs a workspace path",
-                    template.runtime_id
-                ));
+        let workspace = if self.asks_workspace() {
+            match (capability, workspace.is_empty()) {
+                (Some(capability), true) => {
+                    return Err(format!(
+                        "capability `{}` of runtime `{}` needs a workspace path",
+                        capability.name, runtime.runtime_id
+                    ));
+                }
+                (_, true) => None,
+                (_, false) => Some(workspace.to_owned()),
             }
-            Some(workspace.to_owned())
         } else {
             None
         };
-        Ok((template.runtime_id.clone(), workspace))
+        Ok((
+            runtime.runtime_id.clone(),
+            capability.map(|capability| capability.name.clone()),
+            workspace,
+        ))
     }
 
     /// The `runtimes.reconnect` request that retries `row`'s instance: its
-    /// workspace goes along exactly when its template takes one.
+    /// workspace goes along exactly when it has one.
     pub(in crate::ui) fn reconnect_request(
         &self,
         row: &RuntimeRow,
-    ) -> Result<(RuntimeId, Option<String>), String> {
-        let template = self
-            .templates()
+    ) -> Result<(RuntimeId, CapabilityName, Option<String>), String> {
+        if !self
+            .runtimes()
             .iter()
-            .find(|template| template.runtime_id == row.attachment.runtime_id)
-            .ok_or_else(|| {
-                format!(
-                    "runtime `{}` is not a known template",
-                    row.attachment.runtime_id
-                )
-            })?;
-        let workspace = if template.takes_workspace {
-            Some(row.attachment.workspace.clone().ok_or_else(|| {
-                format!("attachment `{}` records no workspace", row.attachment.name)
-            })?)
-        } else {
-            None
-        };
-        Ok((row.attachment.runtime_id.clone(), workspace))
+            .any(|runtime| runtime.runtime_id == row.attachment.runtime_id)
+        {
+            return Err(format!(
+                "runtime `{}` is not a known runtime",
+                row.attachment.runtime_id
+            ));
+        }
+        Ok((
+            row.attachment.runtime_id.clone(),
+            row.attachment.capability.clone(),
+            row.attachment.workspace.clone(),
+        ))
     }
 
     pub(in crate::ui) fn clamp(&mut self, rows: usize) {
         self.selection
             .select((rows > 0).then(|| self.selection.selected().unwrap_or(0).min(rows - 1)));
+    }
+}
+
+const fn cycle(index: usize, count: usize, backward: bool) -> usize {
+    if backward {
+        (index + count - 1) % count
+    } else {
+        (index + 1) % count
     }
 }
 
@@ -198,6 +240,7 @@ pub(in crate::ui) fn runtime_rows(
                     .iter()
                     .find(|instance| {
                         instance.runtime_id == attachment.runtime_id
+                            && instance.capability == attachment.capability
                             && instance.workspace == attachment.workspace
                     })
                     .cloned()
@@ -219,6 +262,7 @@ fn legacy_attachments(listing: Option<&RuntimesListResult>) -> Vec<RuntimeAttach
                     .find(|instance| instance.runtime_id == runtime_id)
             });
             Some(RuntimeAttachment {
+                capability: cookie_agent_protocol::default_capability(&runtime_id),
                 name: instance
                     .and_then(|instance| instance.attachment_name.clone())
                     .or_else(|| cookie_agent_protocol::AttachmentName::new(id).ok())?,
@@ -272,9 +316,10 @@ pub(in crate::ui) fn render_runtimes(
         .iter()
         .map(|row| {
             ListItem::new(format!(
-                "{}  {}  {}  {}",
+                "{}  {}/{}  {}  {}",
                 row.attachment.name,
                 row.attachment.runtime_id,
+                row.attachment.capability,
                 row.attachment
                     .workspace
                     .as_deref()
@@ -329,9 +374,10 @@ pub(in crate::ui) fn render_runtimes(
 fn row_detail(row: &RuntimeRow) -> String {
     let attachment = &row.attachment;
     let mut text = format!(
-        "{}\nruntime: {} ({})",
+        "{}\nruntime: {}\ncapability: {} ({})",
         attachment.name,
         attachment.runtime_id,
+        attachment.capability,
         attachment.kind.as_str()
     );
     if let Some(workspace) = &attachment.workspace {
@@ -377,13 +423,41 @@ fn render_attach_form(frame: &mut Frame, area: Rect, panel: &RuntimePanel, theme
             ),
         ])
     };
-    let template = panel.selected_template();
+    let runtime = panel.selected_runtime();
     let mut lines = vec![field(
-        RuntimeFormFocus::Template,
+        RuntimeFormFocus::Runtime,
         "Runtime",
-        template.map_or_else(String::new, |template| template.runtime_id.to_string()),
+        runtime.map_or_else(String::new, |runtime| runtime.runtime_id.to_string()),
     )];
-    if template.is_some_and(|template| template.takes_workspace) {
+    if let Some(message) = runtime
+        .filter(|runtime| !runtime.connected)
+        .and_then(|runtime| runtime.message.as_deref())
+    {
+        lines.push(Line::from(Span::styled(
+            format!("  Last connection failed: {message}"),
+            theme.muted(),
+        )));
+    }
+    match runtime.map(|runtime| runtime.capabilities.as_slice()) {
+        Some([]) | None => lines.push(Line::from(Span::styled(
+            "  Its capabilities are known once it has connected; attaching uses its only one.",
+            theme.muted(),
+        ))),
+        Some(_) => lines.push(field(
+            RuntimeFormFocus::Capability,
+            "Capability",
+            panel
+                .selected_capability()
+                .map_or_else(String::new, |capability| {
+                    if capability.description.is_empty() {
+                        capability.name.to_string()
+                    } else {
+                        format!("{} - {}", capability.name, capability.description)
+                    }
+                }),
+        )),
+    }
+    if panel.asks_workspace() {
         lines.push(field(
             RuntimeFormFocus::Workspace,
             "Workspace path",
@@ -391,7 +465,7 @@ fn render_attach_form(frame: &mut Frame, area: Rect, panel: &RuntimePanel, theme
         ));
     } else {
         lines.push(Line::from(Span::styled(
-            "  This runtime takes no workspace.",
+            "  This capability takes no workspace.",
             theme.muted(),
         )));
     }
@@ -402,7 +476,7 @@ fn render_attach_form(frame: &mut Frame, area: Rect, panel: &RuntimePanel, theme
                 .title(crate::ui::panel_title("Attach runtime"))
                 .title_bottom(crate::ui::panel_title(
                     Line::from(Span::styled(
-                        "arrows runtime | tab fields | enter attach | esc cancel",
+                        "arrows choose | tab fields | enter attach | esc cancel",
                         theme.internal(),
                     ))
                     .right_aligned(),

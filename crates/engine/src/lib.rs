@@ -51,7 +51,7 @@ pub use runtime::{
 pub use runtime_snapshot::PublishedRuntime;
 pub use runtimes::{
     McpServerFailure, RuntimeFailure, RuntimeInstanceStatus, RuntimeInstanceSummary,
-    RuntimeTemplate, RuntimeTemplateSummary, StartedRuntime, ToolLayer,
+    RuntimeListingState, RuntimeTemplate, RuntimeTemplateSummary, StartedRuntime, ToolLayer,
 };
 pub use session::TailOwner;
 

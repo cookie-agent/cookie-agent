@@ -23,7 +23,7 @@ fn a_template_parses_every_field() {
     let loaded = load(
         r#"
 [runtimes.labpc]
-command = ["ssh", "labpc", "cookie", "runtime", "coding", "--stdio", "--workspace", "{workspace}"]
+command = ["ssh", "labpc", "cookie", "runtime", "serve", "--stdio"]
 env = { SSH_ASKPASS = "/bin/false" }
 startup_timeout_ms = 1
 shutdown_grace_ms = 2
@@ -34,8 +34,10 @@ command = "rust-analyzer-mcp"
     )
     .expect("template");
     let template = &loaded.runtimes[&RuntimeId::new("labpc").unwrap()];
-    assert_eq!(template.command[0], "ssh");
-    assert_eq!(template.command.len(), 8);
+    assert_eq!(
+        template.command,
+        ["ssh", "labpc", "cookie", "runtime", "serve", "--stdio"]
+    );
     assert_eq!(template.env["SSH_ASKPASS"], "/bin/false");
     assert_eq!(template.startup_timeout_ms, 1);
     assert_eq!(template.shutdown_grace_ms, 2);
@@ -43,35 +45,16 @@ command = "rust-analyzer-mcp"
         template.mcp_servers["rust_analyzer"].command.as_deref(),
         Some("rust-analyzer-mcp")
     );
-    assert!(template.takes_workspace());
-    assert_eq!(
-        template.argv(Some("~/my repo")),
-        [
-            "ssh",
-            "labpc",
-            "cookie",
-            "runtime",
-            "coding",
-            "--stdio",
-            "--workspace",
-            "~/my repo"
-        ]
-    );
 }
 
 #[test]
-fn only_a_whole_placeholder_element_takes_a_workspace() {
-    let loaded = load("[runtimes.fixed]\ncommand = [\"runtime\", \"--stdio\"]\n").unwrap();
-    let template = &loaded.runtimes[&RuntimeId::new("fixed").unwrap()];
-    assert!(!template.takes_workspace());
-    assert_eq!(template.argv(None), ["runtime", "--stdio"]);
-
+fn the_removed_workspace_placeholder_is_refused() {
     for command in [
+        r#"["runtime", "{workspace}"]"#,
         r#"["runtime", "--workspace={workspace}"]"#,
-        r#"["runtime", "{workspace}/sub"]"#,
     ] {
-        let error = rejected(&format!("[runtimes.partial]\ncommand = {command}\n"));
-        assert!(error.contains("whole element"), "{error}");
+        let error = rejected(&format!("[runtimes.labpc]\ncommand = {command}\n"));
+        assert!(error.contains("no longer substituted"), "{error}");
     }
 }
 
@@ -191,7 +174,6 @@ fn global_is_reserved_and_local_takes_only_mcp_servers() {
         load("[runtimes.local.mcp.servers.docs]\ncommand = \"docs-mcp\"\n").expect("local MCP");
     let local = &loaded.runtimes[&RuntimeId::local()];
     assert!(local.command.is_empty());
-    assert!(!local.takes_workspace());
     assert_eq!(local.mcp_servers.len(), 1);
 }
 

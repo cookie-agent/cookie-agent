@@ -1,9 +1,8 @@
 //! Runtimes in child processes: the connector a configured
 //! `[runtimes.<id>]` template starts its instances with.
 //!
-//! [`ProcessConnector`] spawns the template's command (with `{workspace}`
-//! replaced by the requested workspace, as one whole argument) in its own
-//! process group (a job object on Windows), with the daemon's environment
+//! [`ProcessConnector`] spawns the template's command in its own process
+//! group (a job object on Windows), with the daemon's environment
 //! plus the template's `env`. The runtime protocol runs over the child's
 //! stdout and stdin, one message per line. The child's stderr is captured
 //! into a bounded [`DiagnosticTail`] that failure reasons end with.
@@ -12,7 +11,7 @@
 //! runtime that is still running; it then gets the template's shutdown grace
 //! to exit before its process group is killed.
 
-use std::{collections::BTreeMap, path::Path, process::Stdio, time::Duration};
+use std::{collections::BTreeMap, process::Stdio, time::Duration};
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{MessageFrame, Transport, TransportError};
@@ -36,7 +35,7 @@ const EXIT_REPORT_WAIT: Duration = Duration::from_secs(2);
 
 /// Starts a runtime per connection by running a command.
 pub(crate) struct ProcessConnector {
-    /// The program and arguments; a `{workspace}` element is replaced.
+    /// The program and arguments.
     command: Vec<String>,
     env: BTreeMap<String, String>,
     /// The working directory; the daemon's when `None`.
@@ -63,25 +62,12 @@ impl ProcessConnector {
         self.cwd = Some(cwd);
         self
     }
-
-    fn argv(&self, workspace: Option<&Path>) -> Vec<std::ffi::OsString> {
-        self.command
-            .iter()
-            .map(|argument| match workspace {
-                Some(workspace) if argument == cookie_agent_config::WORKSPACE_PLACEHOLDER => {
-                    workspace.as_os_str().to_owned()
-                }
-                _ => argument.into(),
-            })
-            .collect()
-    }
 }
 
 #[async_trait]
 impl RuntimeConnector for ProcessConnector {
-    async fn connect(&self, workspace: Option<&Path>) -> Result<RuntimeConnection, String> {
-        let argv = self.argv(workspace);
-        let (program, arguments) = argv.split_first().ok_or("the command is empty")?;
+    async fn connect(&self) -> Result<RuntimeConnection, String> {
+        let (program, arguments) = self.command.split_first().ok_or("the command is empty")?;
         let mut command = tokio::process::Command::new(program);
         command
             .args(arguments)
@@ -99,7 +85,7 @@ impl RuntimeConnector for ProcessConnector {
         wrapped.wrap(JobObject);
         let mut child = wrapped
             .spawn()
-            .map_err(|error| format!("failed to run `{}`: {error}", program.to_string_lossy()))?;
+            .map_err(|error| format!("failed to run `{program}`: {error}"))?;
         let stdin = child.stdin().take();
         let stdout = child.stdout().take();
         let stderr = child.stderr().take();

@@ -346,9 +346,7 @@ mod tests {
             Some("jobs")
         );
         assert_eq!(
-            ProducerSource::runtime("local")
-                .unwrap()
-                .runtime_attachment(),
+            ProducerSource::runtime("local").unwrap().runtime_id(),
             Some("local")
         );
         for invalid in [
