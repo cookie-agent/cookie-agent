@@ -1,7 +1,9 @@
 #![cfg(unix)]
 //! A configured `[runtimes.<id>]` template whose command runs the real
-//! `cookie runtime coding --stdio` binary, as an ssh template would on the
-//! remote machine, driven by an in-process daemon and a scripted model.
+//! `cookie runtime serve --stdio` binary, as an ssh template would on the
+//! remote machine, and the same binary dialing in with
+//! `cookie runtime serve --daemon`, driven by an in-process daemon and a
+//! scripted model.
 
 use std::{
     collections::VecDeque,
@@ -753,5 +755,94 @@ async fn a_configured_runtime_hosts_its_template_mcp_servers() {
     })
     .await
     .expect("the server is connected again");
+    fixture.engine.shutdown().await;
+}
+
+/// The real binary dials in over the daemon's WebSocket endpoint with the
+/// daemon's token, serves a session's workspace, and shows as disconnected
+/// once it exits.
+#[tokio::test]
+async fn a_runtime_dials_in_and_serves_a_session() {
+    let fixture = Fixture::new(30_000).await;
+    let token = cookie_agent_server::generate_token().expect("token");
+    let token_file = fixture.root.path().join("token");
+    fs::write(&token_file, format!("{}\n", token.as_str())).expect("token file");
+    let server = Arc::new(cookie_agent_server::Server::new(fixture.engine.clone()));
+    let listening = server
+        .clone()
+        .serve(0, token)
+        .await
+        .expect("serve the daemon");
+    let url = format!("ws://{}/ws", listening.address());
+    let mut runtime = tokio::process::Command::new(env!("CARGO_BIN_EXE_cookie"))
+        .args([
+            "runtime",
+            "serve",
+            "--daemon",
+            &url,
+            "--id",
+            "labpc",
+            "--token-file",
+        ])
+        .arg(&token_file)
+        .env("HOME", &fixture.remote_home)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn the dialing runtime");
+    let labpc_connected = |engine: &Engine| {
+        engine
+            .runtime_templates()
+            .into_iter()
+            .find(|template| template.runtime_id == "labpc")
+            .map(|template| (template.lifetime, template.listing.connected))
+    };
+    tokio::time::timeout(WAIT, async {
+        while labpc_connected(&fixture.engine).is_none_or(|(_, connected)| !connected) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the runtime dials in");
+    assert_eq!(
+        labpc_connected(&fixture.engine),
+        Some((cookie_agent_protocol::RuntimeLifetime::DialIn, true))
+    );
+
+    let session = fixture
+        .engine
+        .create_session(Fixture::selection())
+        .expect("session")
+        .session_id;
+    let attachment = fixture
+        .engine
+        .attach_runtime(
+            session,
+            "labpc",
+            None,
+            Some("~/repo".into()),
+            EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("attach the dial-in runtime");
+    let canonical = fixture.repo.canonicalize().unwrap();
+    assert_eq!(attachment.name.as_str(), "labpc_repo");
+    assert_eq!(
+        attachment.workspace.as_deref(),
+        Some(canonical.to_string_lossy().as_ref())
+    );
+
+    runtime.kill().await.expect("stop the runtime");
+    tokio::time::timeout(WAIT, async {
+        while labpc_connected(&fixture.engine).is_some_and(|(_, connected)| connected) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the runtime shows disconnected");
+    server.shutdown();
+    listening.wait().await;
     fixture.engine.shutdown().await;
 }

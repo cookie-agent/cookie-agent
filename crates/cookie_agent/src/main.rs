@@ -99,8 +99,23 @@ enum Command {
     Daemon {
         /// Localhost port to bind. `0` selects an ephemeral port; the ready line
         /// reports the real one.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "listen")]
         port: Option<u16>,
+        /// Address and port to bind, such as `0.0.0.0:7419`, for clients and
+        /// runtimes on other machines. Without TLS the token crosses the
+        /// network in the clear: use it on a private network.
+        #[arg(long, value_name = "ADDR:PORT")]
+        listen: Option<std::net::SocketAddr>,
+        /// PEM certificate chain to serve `wss` with; needs `--tls-key`.
+        #[arg(long, value_name = "PATH", requires = "tls_key")]
+        tls_cert: Option<PathBuf>,
+        /// PEM private key of `--tls-cert`.
+        #[arg(long, value_name = "PATH", requires = "tls_cert")]
+        tls_key: Option<PathBuf>,
+        /// Read the bearer token from this private file, creating it with a
+        /// fresh token when it does not exist, so it survives restarts.
+        #[arg(long, value_name = "PATH")]
+        token_file: Option<PathBuf>,
     },
     /// Attach the TUI to an existing daemon.
     Attach {
@@ -149,11 +164,26 @@ enum RuntimeCommand {
     /// Serve this machine's runtime: the `coding` capability (`read`,
     /// `write`, `edit`, `bash`, `webfetch`) for every workspace sessions
     /// attach.
+    #[command(group(clap::ArgGroup::new("transport").required(true).args(["stdio", "daemon"])))]
     Serve {
         /// Speak the runtime protocol over standard input and output, one
-        /// JSON-RPC message per line. Required: it is the only transport.
-        #[arg(long, required = true)]
+        /// JSON-RPC message per line, as a template starts it.
+        #[arg(long)]
         stdio: bool,
+        /// Dial in to the daemon whose client URL this is (`ws://` or
+        /// `wss://` ending in `/ws`) and stay connected, reconnecting after
+        /// drops.
+        #[arg(long, value_name = "URL", requires = "id")]
+        daemon: Option<String>,
+        /// The runtime ID to dial in as.
+        #[arg(long, value_name = "RUNTIME_ID")]
+        id: Option<String>,
+        /// The daemon's bearer token, for `--daemon`.
+        #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+        /// A file holding the daemon's bearer token, for `--daemon`.
+        #[arg(long, value_name = "PATH", conflicts_with = "token")]
+        token_file: Option<PathBuf>,
         /// Limit `coding` to workspaces under this directory; repeat for
         /// several. A leading `~` is expanded. Any workspace when omitted.
         #[arg(long = "root", value_name = "DIR")]
@@ -331,10 +361,31 @@ async fn main_result() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Some(Command::Daemon { port }) => {
+        Some(Command::Daemon {
+            port,
+            listen,
+            tls_cert,
+            tls_key,
+            token_file,
+        }) => {
+            let tls = match tls_cert.zip(tls_key) {
+                Some((cert, key)) => {
+                    Some(cookie_agent_server::load_tls(&cert, &key).context("load TLS identity")?)
+                }
+                None => None,
+            };
+            let token = match &token_file {
+                Some(path) => read_or_create_token(path)?,
+                None => generate_token().context("generate daemon authentication token")?,
+            };
             run_daemon(
                 compose(workspace.as_deref().expect("daemon workspace")).await?,
-                port,
+                DaemonListen {
+                    port,
+                    listen,
+                    tls,
+                    token,
+                },
             )
             .await
         }
@@ -395,8 +446,14 @@ fn local_workspace(
 /// `runtime/shutdown` or closes standard input. Standard output carries only
 /// protocol messages; errors go to standard error.
 async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
-    let RuntimeCommand::Serve { stdio, roots } = command;
-    anyhow::ensure!(stdio, "`--stdio` is the only runtime transport");
+    let RuntimeCommand::Serve {
+        stdio,
+        daemon,
+        id,
+        token,
+        token_file,
+        roots,
+    } = command;
     let roots = roots
         .iter()
         .map(|root| {
@@ -408,6 +465,30 @@ async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
             Ok(root)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
+    if !stdio && let (Some(daemon), Some(id)) = (daemon, id) {
+        let token = match (token, token_file) {
+            (Some(token), _) => Zeroizing::new(token),
+            (None, Some(path)) => read_token_file(&path)?,
+            (None, None) => anyhow::bail!("`--daemon` needs `--token` or `--token-file`"),
+        };
+        cookie_agent_protocol::RuntimeId::new(id.as_str())
+            .map_err(|_| anyhow::anyhow!("invalid runtime ID `{id}`"))?;
+        cookie_agent_protocol::runtime_dial_in_url(&daemon, &id)?;
+        // A runtime that dials in hosts its own machine's MCP servers: those
+        // of `[runtimes.local.mcp]` in its configuration.
+        let mcp_servers = local_runtime_mcp_servers()?;
+        return dial_in(
+            &daemon,
+            &token,
+            &id,
+            cookie_agent_coding_runtime::server::ServeOptions {
+                roots,
+                mcp_servers,
+                ..Default::default()
+            },
+        )
+        .await;
+    }
     cookie_agent_coding_runtime::server::serve_stdio(
         cookie_agent_coding_runtime::server::ServeOptions {
             roots,
@@ -1237,10 +1318,132 @@ fn read_secret_line(prompt: &str) -> anyhow::Result<Zeroizing<String>> {
     Ok(Zeroizing::new(value))
 }
 
-async fn run_daemon(mut runtime: Runtime, port_override: Option<u16>) -> anyhow::Result<()> {
+/// Length of the base64url encoding of a 32-byte bearer token.
+const TOKEN_ENCODED_BYTES: usize = 43;
+
+fn valid_token(token: &str) -> bool {
+    token.len() == TOKEN_ENCODED_BYTES
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+/// The token a `--token-file` holds.
+fn read_token_file(path: &Path) -> anyhow::Result<Zeroizing<String>> {
+    let text = Zeroizing::new(
+        std::fs::read_to_string(path)
+            .with_context(|| format!("read token file {}", path.display()))?,
+    );
+    let token = Zeroizing::new(text.trim().to_owned());
+    anyhow::ensure!(
+        valid_token(&token),
+        "token file {} does not hold a daemon token",
+        path.display()
+    );
+    Ok(token)
+}
+
+/// The daemon's durable token: the one `path` holds, or a fresh one written
+/// there, readable by its owner only, when it does not exist.
+fn read_or_create_token(path: &Path) -> anyhow::Result<Zeroizing<String>> {
+    if path.exists() {
+        return read_token_file(path);
+    }
     let token = generate_token().context("generate daemon authentication token")?;
-    let port = port_override.unwrap_or(runtime.port);
-    let listener = match runtime.server.clone().serve(port, token.clone()).await {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("create token file {}", path.display()))?;
+    file.write_all(format!("{}\n", token.as_str()).as_bytes())
+        .with_context(|| format!("write token file {}", path.display()))?;
+    Ok(token)
+}
+
+/// `[runtimes.local.mcp]` of this machine's configuration, as a runtime
+/// that dials in hosts them.
+fn local_runtime_mcp_servers()
+-> anyhow::Result<Vec<cookie_agent_runtime_api::protocol::McpServerSettings>> {
+    let config = cookie_agent_config::load().context("load configuration")?;
+    Ok(config
+        .runtimes
+        .iter()
+        .find(|(id, _)| id.as_str() == cookie_agent_protocol::RuntimeId::LOCAL)
+        .map(|(_, template)| {
+            template
+                .mcp_servers
+                .iter()
+                .map(
+                    |(name, server)| cookie_agent_runtime_api::protocol::McpServerSettings {
+                        name: name.clone(),
+                        config: serde_json::to_value(server)
+                            .expect("MCP server configuration serializes"),
+                    },
+                )
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Dials in to the daemon at `daemon` as runtime `id` and serves it,
+/// connecting again after every drop with a growing wait, until stopped.
+async fn dial_in(
+    daemon: &str,
+    token: &str,
+    id: &str,
+    options: cookie_agent_coding_runtime::server::ServeOptions,
+) -> anyhow::Result<()> {
+    const LONGEST_WAIT: Duration = Duration::from_secs(30);
+    let mut wait = Duration::from_secs(1);
+    loop {
+        match cookie_agent_protocol::WebSocketTransport::connect_runtime(daemon, token, id).await {
+            Ok(transport) => {
+                eprintln!("cookie runtime: connected to {daemon} as `{id}`");
+                let started = std::time::Instant::now();
+                cookie_agent_coding_runtime::server::serve(Box::new(transport), options.clone())
+                    .await;
+                eprintln!("cookie runtime: disconnected from {daemon}");
+                if started.elapsed() > LONGEST_WAIT {
+                    wait = Duration::from_secs(1);
+                }
+            }
+            Err(error) => eprintln!("cookie runtime: cannot reach {daemon}: {error}"),
+        }
+        tokio::select! {
+            () = tokio::time::sleep(wait) => {}
+            signal = tokio::signal::ctrl_c() => return signal.context("wait for stop signal"),
+        }
+        wait = (wait * 2).min(LONGEST_WAIT);
+    }
+}
+
+/// Where and how `cookie daemon` listens.
+struct DaemonListen {
+    port: Option<u16>,
+    listen: Option<std::net::SocketAddr>,
+    tls: Option<cookie_agent_server::TlsConfig>,
+    token: Zeroizing<String>,
+}
+
+async fn run_daemon(mut runtime: Runtime, options: DaemonListen) -> anyhow::Result<()> {
+    let DaemonListen {
+        port,
+        listen,
+        tls,
+        token,
+    } = options;
+    let address = listen.unwrap_or_else(|| {
+        std::net::SocketAddr::from(([127, 0, 0, 1], port.unwrap_or(runtime.port)))
+    });
+    let scheme = if tls.is_some() { "wss" } else { "ws" };
+    let listener = match runtime
+        .server
+        .clone()
+        .serve_on(address, token.clone(), tls)
+        .await
+    {
         Ok(listener) => listener,
         Err(error) => {
             runtime.server.shutdown();
@@ -1249,7 +1452,7 @@ async fn run_daemon(mut runtime: Runtime, port_override: Option<u16>) -> anyhow:
             return Err(anyhow::Error::new(error).context("start WebSocket daemon"));
         }
     };
-    let url = format!("ws://{}/ws", listener.address());
+    let url = format!("{scheme}://{}/ws", listener.address());
     println!("{}", ready_line(&url, token.as_str()));
     drop(token);
     println!(

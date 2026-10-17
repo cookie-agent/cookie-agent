@@ -63,7 +63,8 @@ cookie attach --token '<43-char base64url>'
 `COOKIE_DAEMON_TOKEN` environment variable). There is no file to read and no
 interactive prompt, so a missing token is clap's standard required-argument
 error. The URL defaults to `ws://127.0.0.1:7419/ws` and may be changed with
-`--url`; only loopback WebSocket URLs with the exact `/ws` path are accepted.
+`--url` to any host, `ws://` or `wss://` (TLS), with the exact `/ws` path; a
+daemon on another machine listens with `--listen` (see [Server](../engine/server.md)).
 See [Server](../engine/server.md).
 
 One daemon serves sessions of any directory. The TUI, whether attached or

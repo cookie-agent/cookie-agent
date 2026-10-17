@@ -13,4 +13,6 @@ pub use transport::{
     TransportError, in_process_pair,
 };
 #[cfg(feature = "websocket")]
-pub use websocket::{WebSocketTransport, WebSocketUrlError, validate_websocket_url};
+pub use websocket::{
+    WebSocketTransport, WebSocketUrlError, runtime_dial_in_url, validate_websocket_url,
+};

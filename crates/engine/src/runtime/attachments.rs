@@ -463,6 +463,38 @@ impl Engine {
         self.inner.runtimes.register_template(template)
     }
 
+    /// Takes a runtime that dialed in as `runtime_id` over `transport`:
+    /// initializes it, makes it the runtime of that ID, and reopens the
+    /// instances its sessions use. An ID the daemon configures, or one whose
+    /// runtime is connected, is refused.
+    pub async fn accept_dial_in_runtime(
+        &self,
+        runtime_id: &str,
+        transport: Box<dyn cookie_agent_protocol::Transport>,
+    ) -> Result<(), EngineError> {
+        let registry = &self.inner.runtimes;
+        let template = registry.dial_in_template(runtime_id)?;
+        if template.is_connected() {
+            return Err(EngineError::Runtime(format!(
+                "runtime `{runtime_id}` is already connected"
+            )));
+        }
+        let settings = crate::runtimes::runtime_settings(&self.inner.config, runtime_id);
+        let client = template
+            .connect(
+                cookie_agent_runtime_api::RuntimeConnection::new(transport),
+                &settings,
+                Some(std::sync::Arc::clone(&self.inner.mcp_hub)),
+            )
+            .await
+            .map_err(|reason| {
+                EngineError::Runtime(format!("runtime `{runtime_id}` failed to start: {reason}"))
+            })?;
+        registry.watch_connection(&client);
+        registry.revive(runtime_id);
+        Ok(())
+    }
+
     /// Every registered runtime template.
     #[must_use]
     pub fn runtime_templates(&self) -> Vec<RuntimeTemplateSummary> {

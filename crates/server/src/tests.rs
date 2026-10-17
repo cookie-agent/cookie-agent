@@ -36,10 +36,10 @@ use cookie_agent_protocol::{
 
 use crate::Server;
 
-struct Harness {
+pub(crate) struct Harness {
     _directory: TempDir,
-    engine: Engine,
-    server: Arc<Server>,
+    pub(crate) engine: Engine,
+    pub(crate) server: Arc<Server>,
 }
 
 fn private_tempdir() -> TempDir {
@@ -105,7 +105,7 @@ async fn plugin_events_are_filtered_by_connection_session_subscription() {
     harness.engine.shutdown().await;
 }
 
-fn harness() -> Harness {
+pub(crate) fn harness() -> Harness {
     harness_with_mcp(BTreeMap::new())
 }
 

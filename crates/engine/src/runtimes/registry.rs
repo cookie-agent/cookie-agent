@@ -391,6 +391,8 @@ pub struct RuntimeInstanceSummary {
 pub(crate) struct RuntimeRegistry {
     base: Mutex<Vec<Arc<dyn ToolProvider>>>,
     templates: Mutex<BTreeMap<String, Arc<dyn RuntimeTemplate>>>,
+    /// The templates of runtimes that dialed in, also among `templates`.
+    dial_ins: Mutex<BTreeMap<String, Arc<super::DialInTemplate>>>,
     slots: Mutex<BTreeMap<InstanceKey, InstanceSlot>>,
     /// Workspace spellings that resolved to another canonical workspace when
     /// an instance started for them, by (runtime ID, requested workspace).
@@ -436,6 +438,7 @@ impl RuntimeRegistry {
         Self {
             base: Mutex::default(),
             templates: Mutex::new(templates),
+            dial_ins: Mutex::default(),
             slots: Mutex::new(slots),
             aliases: Mutex::default(),
             start: tokio::sync::Mutex::new(()),
@@ -487,6 +490,85 @@ impl RuntimeRegistry {
         drop(templates);
         self.notify();
         Ok(())
+    }
+
+    /// The template of dial-in runtime `runtime_id`, created on its first
+    /// connection. An ID a configured or built-in runtime uses cannot dial
+    /// in.
+    pub(crate) fn dial_in_template(
+        &self,
+        runtime_id: &str,
+    ) -> Result<Arc<super::DialInTemplate>, EngineError> {
+        cookie_agent_protocol::RuntimeId::new(runtime_id)
+            .map_err(|_| EngineError::Runtime(format!("invalid runtime ID `{runtime_id}`")))?;
+        let mut templates = self
+            .templates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut dial_ins = self
+            .dial_ins
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(template) = dial_ins.get(runtime_id) {
+            return Ok(Arc::clone(template));
+        }
+        if templates.contains_key(runtime_id) {
+            return Err(EngineError::Runtime(format!(
+                "runtime `{runtime_id}` is configured on the daemon and cannot dial in"
+            )));
+        }
+        let template = Arc::new(super::DialInTemplate::new(runtime_id));
+        templates.insert(runtime_id.to_owned(), template.clone());
+        dial_ins.insert(runtime_id.to_owned(), Arc::clone(&template));
+        drop((templates, dial_ins));
+        self.notify();
+        Ok(template)
+    }
+
+    /// Reopens the failed instances of `runtime_id`, as when it dialed in
+    /// again, and signals the change.
+    pub(crate) fn revive(self: &Arc<Self>, runtime_id: &str) {
+        let failed = self
+            .slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|(key, slot)| {
+                key.runtime_id == runtime_id && matches!(slot, InstanceSlot::Failed { .. })
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        self.notify();
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        for key in failed {
+            let registry = Arc::clone(self);
+            handle.spawn(async move {
+                let _ = registry
+                    .ensure(
+                        &key.runtime_id,
+                        Some(key.capability.as_str()),
+                        key.workspace.as_deref(),
+                    )
+                    .await;
+            });
+        }
+    }
+
+    /// Signals a change when `client`'s connection ends, so listings show
+    /// the runtime disconnected.
+    pub(crate) fn watch_connection(self: &Arc<Self>, client: &super::RuntimeClient) {
+        let closed = client.closed();
+        let registry = Arc::downgrade(self);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                closed.await;
+                if let Some(registry) = registry.upgrade() {
+                    registry.notify();
+                }
+            });
+        }
     }
 
     pub(crate) fn push_base(&self, provider: Arc<dyn ToolProvider>) {

@@ -71,6 +71,9 @@ pub struct ServeOptions {
     /// How dropped MCP servers are reconnected; the shared default when
     /// absent. Tests that cannot wait for the production backoff set it.
     pub mcp_reconnect: Option<ReconnectPolicy>,
+    /// MCP servers of the runtime's own machine, hosted when the daemon
+    /// sends none, as for a runtime that dials in.
+    pub mcp_servers: Vec<McpServerSettings>,
     /// Declare producer messaging: the runtime's tools get a
     /// [`ToolExecutionContext::producers`] channel to the sessions attached
     /// to the runtime. The runtime tracks no external work of its own, so
@@ -83,6 +86,7 @@ impl Default for ServeOptions {
     fn default() -> Self {
         Self {
             roots: Vec::new(),
+            mcp_servers: Vec::new(),
             tools: builtin_tools(),
             mcp_reconnect: None,
             producer_messaging: false,
@@ -454,7 +458,11 @@ impl Server {
     fn initialize_once(&self, params: InitializeParams) -> Result<InitializeResult, String> {
         cookie_agent_protocol::RuntimeId::new(params.runtime_id.as_str())
             .map_err(|_| format!("invalid runtime ID `{}`", params.runtime_id))?;
-        let mcp_servers = mcp_servers(&params.settings.mcp_servers)?;
+        let mcp_servers = if params.settings.mcp_servers.is_empty() {
+            mcp_servers(&self.options.mcp_servers)?
+        } else {
+            mcp_servers(&params.settings.mcp_servers)?
+        };
         if params.settings.agent_md.max_bytes > AGENT_MD_MAX_BYTES {
             return Err(format!("agent_md.max_bytes exceeds {AGENT_MD_MAX_BYTES}"));
         }

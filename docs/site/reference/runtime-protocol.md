@@ -19,6 +19,20 @@ client in the engine's `runtimes::remote` module. Plugins declare and run
 their tools with this protocol's tool messages over their own connection
 (see [Plugin development](../development/plugins.md#tools)).
 
+## Connections
+
+The daemon reaches a runtime in one of two ways, and speaks the same
+protocol over either:
+
+- **Spawned**: it runs a template's command and frames the child's stdio,
+  one message per line, as above.
+- **Dial-in**: the runtime opens a WebSocket to the daemon's
+  `/runtime?id=<runtime ID>` endpoint with the daemon's bearer token in an
+  `Authorization: Bearer` header, one message per text frame. The daemon
+  then sends `runtime/initialize` exactly as for a spawned runtime, with no
+  MCP servers: a dial-in runtime hosts its own. An ID the daemon configures,
+  or one already connected, is refused by closing the connection.
+
 ## Framing
 
 - **JSON-RPC 2.0**, one message per frame: a frame of an in-memory transport,

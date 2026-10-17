@@ -270,7 +270,7 @@ the runtime reported, and two spellings of one workspace share an instance.
 
 `runtimes.list` returns each runtime as a `RuntimeListing`: its `runtime_id`;
 its `lifetime` (`builtin` for `global` and `local`, `spawned` for a
-template); whether the daemon is `connected` to it now; its `capabilities`
+template, `dial_in` for a runtime that connected on its own); whether the daemon is `connected` to it now; its `capabilities`
 (`name`, `kind`, `takes_workspace`, `description`), empty until it has
 connected once; its `platform`; and a `message` saying why its last attempt
 to connect failed. Each instance has its `runtime_id`, `capability`, reported

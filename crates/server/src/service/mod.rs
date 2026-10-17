@@ -1,6 +1,7 @@
 mod routes;
 mod runtime_notifications;
 mod websocket;
+pub use websocket::{TlsConfig, load_tls};
 
 use std::{io, net::SocketAddr, sync::Arc};
 
@@ -68,6 +69,11 @@ impl RunningServer {
 
 #[derive(Debug, Error)]
 pub enum ServerError {
-    #[error("could not bind localhost websocket listener: {0}")]
+    #[error("could not bind websocket listener: {0}")]
     Listen(#[source] io::Error),
+    #[error("TLS certificate or key {path}: {reason}")]
+    Tls {
+        path: std::path::PathBuf,
+        reason: String,
+    },
 }

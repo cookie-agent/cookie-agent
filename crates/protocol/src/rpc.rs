@@ -585,6 +585,9 @@ pub enum RuntimeLifetime {
     Builtin,
     /// Started by the daemon from a `[runtimes.<id>]` template.
     Spawned,
+    /// Connected to the daemon on its own: a persistent runtime, or one a
+    /// client runs for as long as it does.
+    DialIn,
 }
 
 /// One capability a runtime offers.

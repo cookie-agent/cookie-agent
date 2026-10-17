@@ -1,6 +1,5 @@
-//! Client-side WebSocket transport for reaching a local cookie daemon.
-
-use std::net::IpAddr;
+//! Client-side WebSocket transport for reaching a cookie daemon, as a client
+//! (`/ws`) or as a dial-in runtime (`/runtime`).
 
 use async_trait::async_trait;
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -9,7 +8,7 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
     tungstenite::{Message, client::IntoClientRequest as _, protocol::WebSocketConfig},
 };
-use url::{Host, Url};
+use url::Url;
 use zeroize::Zeroizing;
 
 use super::{
@@ -35,16 +34,20 @@ pub enum WebSocketUrlError {
     /// The URL has no host.
     #[error("daemon WebSocket URL requires a host")]
     MissingHost,
-    /// The URL host is not loopback.
-    #[error("daemon WebSocket URL host must be loopback")]
-    NonLoopbackHost,
     /// The URL does not target the exact daemon endpoint.
     #[error("daemon WebSocket URL path must be exactly /ws without query or fragment")]
     InvalidEndpoint,
 }
 
-/// Validates that a URL targets the daemon's exact loopback WebSocket endpoint.
+/// Validates that a URL targets a daemon's exact client WebSocket endpoint:
+/// `ws://` or `wss://` (TLS), any host, the path `/ws`, no credentials. A
+/// `ws://` URL off loopback sends the token in the clear; the daemon decides
+/// where it listens.
 pub fn validate_websocket_url(value: &str) -> Result<(), WebSocketUrlError> {
+    parse_daemon_url(value).map(drop)
+}
+
+fn parse_daemon_url(value: &str) -> Result<Url, WebSocketUrlError> {
     let url = Url::parse(value).map_err(WebSocketUrlError::Parse)?;
     if !matches!(url.scheme(), "ws" | "wss") {
         return Err(WebSocketUrlError::InvalidScheme);
@@ -52,18 +55,20 @@ pub fn validate_websocket_url(value: &str) -> Result<(), WebSocketUrlError> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err(WebSocketUrlError::Credentials);
     }
-    let loopback = match url.host().ok_or(WebSocketUrlError::MissingHost)? {
-        Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
-        Host::Ipv4(address) => IpAddr::V4(address).is_loopback(),
-        Host::Ipv6(address) => IpAddr::V6(address).is_loopback(),
-    };
-    if !loopback {
-        return Err(WebSocketUrlError::NonLoopbackHost);
-    }
+    url.host().ok_or(WebSocketUrlError::MissingHost)?;
     if url.path() != "/ws" || url.query().is_some() || url.fragment().is_some() {
         return Err(WebSocketUrlError::InvalidEndpoint);
     }
-    Ok(())
+    Ok(url)
+}
+
+/// The dial-in endpoint for runtime `runtime_id` of the daemon whose client
+/// endpoint is `value`: the same host with the path `/runtime?id=<id>`.
+pub fn runtime_dial_in_url(value: &str, runtime_id: &str) -> Result<String, WebSocketUrlError> {
+    let mut url = parse_daemon_url(value)?;
+    url.set_path("/runtime");
+    url.query_pairs_mut().append_pair("id", runtime_id);
+    Ok(url.into())
 }
 
 impl Client {
@@ -90,6 +95,22 @@ impl WebSocketTransport {
     /// Connect to a validated daemon endpoint with an explicit per-run bearer token.
     pub async fn connect_with_token(url: &str, token: &str) -> Result<Self, TransportError> {
         validate_websocket_url(url).map_err(|error| TransportError::Other(error.to_string()))?;
+        Self::connect_request(url, token).await
+    }
+
+    /// Dial in to the daemon whose client endpoint is `url` as runtime
+    /// `runtime_id`, with the daemon's bearer token.
+    pub async fn connect_runtime(
+        url: &str,
+        token: &str,
+        runtime_id: &str,
+    ) -> Result<Self, TransportError> {
+        let url = runtime_dial_in_url(url, runtime_id)
+            .map_err(|error| TransportError::Other(error.to_string()))?;
+        Self::connect_request(&url, token).await
+    }
+
+    async fn connect_request(url: &str, token: &str) -> Result<Self, TransportError> {
         let request = authenticated_request(url, token)?;
         let config = WebSocketConfig::default()
             .max_message_size(Some(MAX_WEBSOCKET_MESSAGE_BYTES))

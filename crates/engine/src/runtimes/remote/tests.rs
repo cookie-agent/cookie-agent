@@ -136,6 +136,7 @@ impl RuntimeConnector for TestConnector {
             Box::new(runtime),
             ServeOptions {
                 roots: Vec::new(),
+                mcp_servers: Vec::new(),
                 tools: Arc::clone(&self.tools),
                 mcp_reconnect: None,
                 producer_messaging: self.producer_messaging,
@@ -1675,5 +1676,77 @@ async fn a_producing_runtime_sends_only_to_the_sessions_attached_to_it() {
     let after = producers(attached).await;
     assert!(after.producers.is_empty(), "{after:?}");
     assert!(after.sources.iter().all(|state| state.source != source));
+    fixture.engine.shutdown().await;
+}
+
+/// A runtime that dials in serves sessions until its connection drops; its
+/// instances fail meanwhile and come back when it dials in again.
+#[tokio::test]
+async fn a_dial_in_runtime_serves_sessions_and_comes_back_after_a_drop() {
+    let (fixture, selection) = custom_fixture();
+    let workspace = private_tempdir();
+    let engine = &fixture.engine;
+    let registry = &engine.inner.runtimes;
+    registry.set_reconnect_policy(crate::runtimes::ReconnectPolicy::with_delays(vec![
+        Duration::from_millis(20),
+    ]));
+    let connector = TestConnector::builtin();
+    let dial_in = || async {
+        let connection = connector.connect().await.unwrap();
+        engine
+            .accept_dial_in_runtime("labpc", connection.transport)
+            .await
+    };
+    dial_in().await.expect("labpc dials in");
+    let listing = || {
+        engine
+            .runtime_templates()
+            .into_iter()
+            .find(|template| template.runtime_id == "labpc")
+            .expect("labpc listed")
+    };
+    assert_eq!(
+        listing().lifetime,
+        cookie_agent_protocol::RuntimeLifetime::DialIn
+    );
+    assert!(listing().listing.connected);
+    assert_eq!(listing().listing.capabilities[0].name.as_str(), "coding");
+
+    // One connection per ID; configured IDs cannot dial in.
+    let error = dial_in().await.expect_err("already connected");
+    assert!(error.to_string().contains("already connected"), "{error}");
+    let connection = connector.connect().await.unwrap();
+    let error = engine
+        .accept_dial_in_runtime("local", connection.transport)
+        .await
+        .expect_err("local is built in");
+    assert!(error.to_string().contains("cannot dial in"), "{error}");
+
+    let session = engine.create_session(selection).unwrap().session_id;
+    let origin = cookie_agent_protocol::EventOrigin::new("user").unwrap();
+    let attachment = engine
+        .attach_runtime(
+            session,
+            "labpc",
+            None,
+            Some(workspace.path().to_owned()),
+            origin,
+        )
+        .await
+        .expect("attach labpc");
+    assert_eq!(attachment.capability.as_str(), "coding");
+
+    // The connection drops: the instance fails once reconnecting finds no
+    // connection, and the runtime shows as disconnected.
+    connector.cut();
+    wait_for_status(registry, "labpc", crate::RuntimeInstanceStatus::Failed).await;
+    assert!(!listing().listing.connected);
+    assert!(registry.instance(&attachment).is_none());
+
+    // Dialing in again reopens it.
+    dial_in().await.expect("labpc dials in again");
+    wait_for_status(registry, "labpc", crate::RuntimeInstanceStatus::Ready).await;
+    let instance = registry.instance(&attachment).expect("revived");
+    assert!(!instance.connection().unwrap().is_closed());
     fixture.engine.shutdown().await;
 }

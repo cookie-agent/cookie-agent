@@ -1,6 +1,6 @@
 # Persistent Daemon, Dial-in Runtimes, and Runtime Capabilities
 
-Status: **approved; phases 1 and 2 implemented** (decisions of 2026-10-16 below and
+Status: **approved; phases 1 to 3 implemented** (decisions of 2026-10-16 below and
 in [Review](#10-review); see [Implementation notes](#11-implementation-notes)). This spec extends the [runtimes spec](runtimes.md);
 where they differ, this one governs.
 
@@ -248,4 +248,16 @@ Confirmed in review 2026-10-16:
 both plain `cookie` and `cookie attach` create sessions for it and list only
 its sessions; a session list without a directory (tests, other clients)
 shows every session.
+
+**Phase 3** (2026-10-16): `cookie daemon --listen`, `--tls-cert`/`--tls-key`,
+`--token-file`; the `/runtime` endpoint; `cookie runtime serve --daemon --id`.
+
+- A dial-in runtime hosts the MCP servers of `[runtimes.local.mcp]` in its
+  own machine's configuration, rather than a new `[runtime.mcp]` table: on
+  that machine, those are the servers its local runtime hosts.
+- While a dial-in runtime is away, its instances follow the reconnect
+  policy (`reconnecting`, then `failed`, their tools dropped); dialing in
+  again reopens every failed one.
+- The daemon no longer checks that a client's address is loopback: the
+  token is the gate, and the listener decides who can reach it.
 

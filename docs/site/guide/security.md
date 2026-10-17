@@ -111,11 +111,19 @@ from privileged code such as `root`, `SYSTEM`, or an elevated administrator.
 
 ### Daemon authentication token
 
-The daemon binds only to IPv4 loopback and validates every WebSocket handshake
-with a constant-time compare of a bearer token. There is no token file: at
-startup the daemon draws a fresh 32-byte token from the operating system,
-keeps it only in process memory, and dies with it. It prints the token exactly
-once, inside the first stdout line:
+The daemon validates every WebSocket handshake, from clients and from
+dial-in runtimes alike, with a constant-time compare of a bearer token, and
+refuses requests that carry a browser `Origin` header. It binds IPv4 loopback
+unless `--listen` names another address; off loopback, serve TLS
+(`--tls-cert`, `--tls-key`) or keep the listener on a private network, since
+a plaintext `ws://` connection carries the token in the clear. Anyone holding
+the token is a fully trusted client and may also offer a runtime. By default
+there is no token file: at startup the daemon draws a fresh 32-byte token from
+the operating system, keeps it only in process memory, and dies with it.
+`--token-file` instead keeps a durable token in an owner-only file, which a
+runtime that dials in needs to reconnect after a daemon restart; protect that
+file like any credential. The daemon prints the token exactly once, inside the
+first stdout line:
 
 ```text
 daemon-ready {"url":"ws://127.0.0.1:<port>/ws","token":"<43-char base64url>"}

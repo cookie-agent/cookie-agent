@@ -177,7 +177,12 @@ asks for that path.
 
 ```sh
 cookie runtime serve --stdio [--root <dir>]...
+cookie runtime serve --daemon <url> --id <runtime ID> (--token <token> | --token-file <path>) [--root <dir>]...
 ```
+
+With `--daemon` it dials in instead (see
+[Runtimes that dial in](#runtimes-that-dial-in)); the rest of this section
+describes `--stdio`.
 
 Serves this machine's runtime over standard input and output with the
 [runtime protocol](../reference/runtime-protocol.md): the `coding` capability
@@ -189,3 +194,32 @@ machine it runs on. Standard output carries only protocol messages and
 diagnostics go to standard error. It exits on `runtime/shutdown` or when
 standard input closes. A template normally runs it; running it by hand is
 only useful for debugging.
+
+## Runtimes that dial in
+
+A runtime can also run on its own and connect to the daemon, instead of the
+daemon starting it. It needs no template: it names itself, and sessions
+attach it like any other runtime while it is connected.
+
+```sh
+# On the daemon's machine: a durable token, and a listener the runtime reaches.
+cookie daemon --listen 0.0.0.0:7419 --token-file ~/.cookie-agent/daemon-token
+
+# On labpc: dial in as `labpc` and stay connected.
+cookie runtime serve --daemon ws://laptop:7419/ws --id labpc --token-file ~/daemon-token
+```
+
+- **Identity.** `--id` is the runtime ID, `[a-z][a-z0-9_]{0,31}`. It must
+  not be `global`, `local`, or a configured `[runtimes.<id>]`, and only one
+  runtime may be connected under an ID at a time.
+- **Token.** The runtime presents the daemon's token (`--token`,
+  `COOKIE_DAEMON_TOKEN`, or `--token-file`). Give the daemon a
+  `--token-file` so the token survives its restarts.
+- **Reconnecting.** The runtime reconnects after every drop, waiting
+  1 s, 2 s, 4 s, and so on up to 30 s. While it is away, its instances go
+  `reconnecting` and then `failed`, and their tools leave the sessions' tool
+  lists; when it dials in again, the daemon reopens them over the new
+  connection. `runtimes.list` shows it with lifetime `dial_in`.
+- **MCP servers.** It hosts its own machine's MCP servers: those of
+  `[runtimes.local.mcp]` in that machine's `config.toml`.
+- **Roots.** `--root` limits its workspaces, as for `--stdio`.

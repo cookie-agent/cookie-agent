@@ -259,16 +259,61 @@ fn provider(state: ProviderSupportState) -> ProviderDescriptor {
 #[test]
 fn cli_commands_and_removed_flags_are_exact() {
     assert_eq!(Cli::try_parse_from(["cookie"]).unwrap().command, None);
+    let daemon = |port| Command::Daemon {
+        port,
+        listen: None,
+        tls_cert: None,
+        tls_key: None,
+        token_file: None,
+    };
     assert_eq!(
         Cli::try_parse_from(["cookie", "daemon"]).unwrap().command,
-        Some(Command::Daemon { port: None })
+        Some(daemon(None))
     );
     assert_eq!(
         Cli::try_parse_from(["cookie", "daemon", "--port", "0"])
             .unwrap()
             .command,
-        Some(Command::Daemon { port: Some(0) })
+        Some(daemon(Some(0)))
     );
+    assert_eq!(
+        Cli::try_parse_from([
+            "cookie",
+            "daemon",
+            "--listen",
+            "0.0.0.0:7419",
+            "--tls-cert",
+            "cert.pem",
+            "--tls-key",
+            "key.pem",
+            "--token-file",
+            "token"
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Daemon {
+            port: None,
+            listen: Some("0.0.0.0:7419".parse().unwrap()),
+            tls_cert: Some("cert.pem".into()),
+            tls_key: Some("key.pem".into()),
+            token_file: Some("token".into()),
+        })
+    );
+    for arguments in [
+        vec![
+            "cookie",
+            "daemon",
+            "--port",
+            "1",
+            "--listen",
+            "0.0.0.0:7419",
+        ],
+        vec!["cookie", "daemon", "--tls-cert", "cert.pem"],
+        vec!["cookie", "daemon", "--tls-key", "key.pem"],
+        vec!["cookie", "daemon", "--listen", "not-an-address"],
+    ] {
+        assert!(Cli::try_parse_from(&arguments).is_err(), "{arguments:?}");
+    }
     assert_eq!(
         Cli::try_parse_from([
             "cookie",
@@ -285,23 +330,59 @@ fn cli_commands_and_removed_flags_are_exact() {
         Some(Command::Runtime {
             command: RuntimeCommand::Serve {
                 stdio: true,
+                daemon: None,
+                id: None,
+                token: None,
+                token_file: None,
                 roots: vec!["~/my repo".into(), "/srv".into()],
             }
         })
     );
     assert_eq!(
-        Cli::try_parse_from(["cookie", "runtime", "serve", "--stdio"])
-            .unwrap()
-            .command,
+        Cli::try_parse_from([
+            "cookie",
+            "runtime",
+            "serve",
+            "--daemon",
+            "wss://daemon.example.com:7419/ws",
+            "--id",
+            "labpc",
+            "--token-file",
+            "token"
+        ])
+        .unwrap()
+        .command,
         Some(Command::Runtime {
             command: RuntimeCommand::Serve {
-                stdio: true,
+                stdio: false,
+                daemon: Some("wss://daemon.example.com:7419/ws".into()),
+                id: Some("labpc".into()),
+                token: None,
+                token_file: Some("token".into()),
                 roots: Vec::new(),
             }
         })
     );
     for arguments in [
+        vec!["cookie", "runtime", "serve"],
         vec!["cookie", "runtime", "serve", "--root", "/srv"],
+        vec![
+            "cookie",
+            "runtime",
+            "serve",
+            "--stdio",
+            "--daemon",
+            "ws://127.0.0.1:7419/ws",
+            "--id",
+            "labpc",
+        ],
+        vec![
+            "cookie",
+            "runtime",
+            "serve",
+            "--daemon",
+            "ws://127.0.0.1:7419/ws",
+        ],
         vec!["cookie", "runtime", "coding", "--stdio"],
         vec![
             "cookie",
@@ -491,6 +572,10 @@ fn attach_connect_and_disconnect_are_cwd_independent() {
         Command::Runtime {
             command: RuntimeCommand::Serve {
                 stdio: true,
+                daemon: None,
+                id: None,
+                token: None,
+                token_file: None,
                 roots: vec!["~/repo".into()],
             },
         },
@@ -530,22 +615,28 @@ fn websocket_subcommands_require_an_explicit_token() {
 }
 
 #[test]
-fn websocket_endpoints_are_loopback_only() {
+fn websocket_endpoints_name_the_exact_client_path() {
     for url in [
         "ws://127.0.0.1:7419/ws",
         "wss://localhost:7419/ws",
         "ws://[::1]:7419/ws",
+        "wss://daemon.example.com:7419/ws",
     ] {
         validate_websocket_url(url).unwrap();
     }
     for url in [
         "http://127.0.0.1:7419/ws",
-        "ws://example.com:7419/ws",
         "ws://user:pass@127.0.0.1:7419/ws",
         "ws://127.0.0.1:7419/other",
+        "ws://127.0.0.1:7419/ws?id=x",
     ] {
         assert!(validate_websocket_url(url).is_err(), "{url}");
     }
+    assert_eq!(
+        cookie_agent_protocol::runtime_dial_in_url("wss://daemon.example.com:7419/ws", "labpc")
+            .unwrap(),
+        "wss://daemon.example.com:7419/runtime?id=labpc"
+    );
 }
 
 #[test]
@@ -1271,4 +1362,30 @@ async fn hourly_catalog_refresh_skips_noops_publishes_fallback_once_and_cancels(
     assert_eq!(fetches.load(Ordering::SeqCst), before_shutdown);
     runtime.server.shutdown();
     runtime.engine.shutdown().await;
+}
+
+#[test]
+fn a_token_file_is_created_privately_and_reused() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("daemon-token");
+    let created = read_or_create_token(&path).expect("create the token");
+    assert_eq!(created.len(), 43);
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let reused = read_or_create_token(&path).expect("read the token");
+    assert_eq!(reused.as_str(), created.as_str());
+    assert_eq!(read_token_file(&path).unwrap().as_str(), created.as_str());
+
+    std::fs::write(&path, "not a token\n").unwrap();
+    let error = read_or_create_token(&path).expect_err("invalid token");
+    assert!(
+        error.to_string().contains("does not hold a daemon token"),
+        "{error}"
+    );
+    let error = read_token_file(&directory.path().join("missing")).expect_err("missing");
+    assert!(error.to_string().contains("read token file"), "{error}");
 }
