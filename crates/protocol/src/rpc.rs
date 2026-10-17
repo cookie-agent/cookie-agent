@@ -317,6 +317,11 @@ pub struct ServerHello {
     pub protocol_version: ProtocolVersion,
     /// The origin the daemon stamps on events this connection causes.
     pub origin: EventOrigin,
+    /// An opaque identity of the daemon's machine
+    /// (`paths::machine_id`), so a client can tell whether it runs on the
+    /// same machine; absent when the daemon cannot tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

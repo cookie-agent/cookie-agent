@@ -72,6 +72,13 @@ running the daemon itself, creates its sessions for the directory it was
 started in: they work there with `local`'s `coding` capability, and its
 session list shows that directory's sessions. Sessions stay in the store of
 the directory the daemon started in.
+
+When the daemon runs on another machine (its handshake reports another
+machine ID), `cookie attach` also offers this machine to it: it dials in a
+runtime named `client_<host name>` that serves the TUI's directory only, and
+the TUI's new sessions use its `coding` capability there instead of the
+daemon's `local`. The runtime lives as long as the TUI; sessions keep its
+attachment and find it again when the TUI attaches again from this machine.
 Configured plugins and eager MCP servers, which come only from the user
 `config.toml`, start during engine initialization, before a model tool call is
 approved. Repository `AGENTS.md` files and project skills still enter model

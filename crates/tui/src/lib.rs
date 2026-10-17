@@ -8,7 +8,7 @@ pub mod theme;
 pub mod ui;
 
 pub use cookie_agent_protocol::{Client, ClientDelivery, ClientError};
-pub use ui::{Reconnector, run_attached, run_with_client, run_with_new_session};
+pub use ui::{Reconnector, SessionPlacement, run_attached, run_with_client, run_with_new_session};
 
 #[cfg(test)]
 #[path = "../../../test-support/config_harness.rs"]

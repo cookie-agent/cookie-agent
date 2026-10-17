@@ -1,11 +1,11 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 40 is current-only. A client must call `handshake` before any other
+Protocol 45 is current-only. A client must call `handshake` before any other
 method:
 
 ```json
-{ "protocol_version": 42, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+{ "protocol_version": 45, "client": { "kind": "tui", "instance_id": "<uuid>" } }
 ```
 
 `client.kind` names the client program: a lowercase letter followed by up to 15
@@ -77,7 +77,9 @@ attached; `session.create` runtime entries, `session.runtime.attach`, and
 `runtimes.reconnect` take an optional `capability`; `runtimes.list` returns
 `runtimes` (each runtime's lifetime, connection state, and capabilities) in
 place of `templates`, and its instances and `runtimes.changed` failures name
-their capability; `session.create` takes the client's `cwd`. A runtime now
+their capability; `session.create` takes the client's `cwd`; the
+handshake reply carries the daemon's `machine_id`; and `runtimes.list` shows
+runtimes that dial in (`dial_in`). A runtime now
 produces as `runtime:<runtime ID>` rather
 than `runtime:<attachment name>`. Older clients are rejected.
 
@@ -174,7 +176,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 
 | Method | Parameters | Result summary |
 |---|---|---|
-| `handshake` | `protocol_version`, `client` identity | Server protocol version, the connection's event `origin` |
+| `handshake` | `protocol_version`, `client` identity | Server protocol version, the connection's event `origin`, and `machine_id`, an opaque identity of the daemon's machine when it has one |
 | `runtime.snapshot.get` | Empty object | One coherent runtime snapshot |
 | `provider.connect` | Provider, expected catalog revision, setup/auth values, client ID | Durable connection, effective auth, snapshot, replay state |
 | `provider.disconnect` | Provider, expected revisions/generation, client ID | Disconnect receipt, effective auth, snapshot, replay state |

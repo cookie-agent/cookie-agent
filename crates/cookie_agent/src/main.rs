@@ -649,6 +649,63 @@ fn data_dir() -> anyhow::Result<PathBuf> {
     paths::user_data_root().context("determine home directory for cookie agent data")
 }
 
+/// This machine's host name; empty when it is unavailable.
+#[cfg(feature = "tui")]
+fn host_name() -> String {
+    #[cfg(unix)]
+    {
+        let mut buffer = [0_u8; 256];
+        // SAFETY: the buffer is writable for its whole length, and
+        // gethostname writes at most that many bytes.
+        let result = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
+        if result != 0 {
+            return String::new();
+        }
+        let end = buffer
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(buffer.len());
+        String::from_utf8_lossy(&buffer[..end]).into_owned()
+    }
+    #[cfg(windows)]
+    {
+        std::env::var("COMPUTERNAME").unwrap_or_default()
+    }
+}
+
+/// The ID a TUI offers its machine's runtime under: `client_` and the host
+/// name, lowercased, every character outside `[a-z0-9_]` replaced by `_`,
+/// repeats collapsed, at most 32 bytes.
+#[cfg(feature = "tui")]
+fn client_runtime_id(host: &str) -> String {
+    let mut id = String::from("client");
+    for character in host.chars() {
+        let character = character.to_ascii_lowercase();
+        let character = if character.is_ascii_lowercase() || character.is_ascii_digit() {
+            character
+        } else {
+            '_'
+        };
+        if id.len() == 32 {
+            break;
+        }
+        if id.len() == "client".len() {
+            id.push('_');
+            if character == '_' {
+                continue;
+            }
+        }
+        if character == '_' && id.ends_with('_') {
+            continue;
+        }
+        if id.len() < 32 {
+            id.push(character);
+        }
+    }
+    id.truncate(id.trim_end_matches('_').len());
+    id
+}
+
 /// This process's canonical working directory, which the TUI sends as the
 /// directory of the sessions it creates; `None` when it is unavailable.
 #[cfg(feature = "tui")]
@@ -668,7 +725,14 @@ async fn run_local_frontend(mut runtime: Runtime) -> anyhow::Result<()> {
             .handshake_as(client_identity("tui"))
             .await
             .context("handshake with daemon")?;
-        cookie_agent_tui::run_with_new_session(client, client_directory()).await
+        cookie_agent_tui::run_with_new_session(
+            client,
+            cookie_agent_tui::SessionPlacement {
+                cwd: client_directory(),
+                runtime: None,
+            },
+        )
+        .await
     }
     .await;
     runtime.server.shutdown();
@@ -700,10 +764,32 @@ async fn run_attached_tui(url: &str, token: &str) -> anyhow::Result<()> {
     let client = Client::connect_websocket_with_token(url, token)
         .await
         .context("connect to daemon WebSocket")?;
-    client
+    let hello = client
         .handshake_as(identity.clone())
         .await
         .context("handshake with daemon")?;
+    let cwd = client_directory();
+    // A daemon on another machine cannot see this one: offer it this
+    // machine's directory as a runtime that lives as long as the TUI.
+    let runtime = match (
+        &hello.machine_id,
+        cookie_agent_protocol::paths::machine_id(),
+    ) {
+        (Some(daemon), Some(local)) if *daemon != local => {
+            let id = client_runtime_id(&host_name());
+            let options = cookie_agent_coding_runtime::server::ServeOptions {
+                roots: cwd.iter().map(PathBuf::from).collect(),
+                mcp_servers: local_runtime_mcp_servers()?,
+                ..Default::default()
+            };
+            let (url, token, dial_id) = (url.to_owned(), token.to_owned(), id.clone());
+            tokio::spawn(async move {
+                let _ = dial_in(&url, &token, &dial_id, options).await;
+            });
+            Some(id)
+        }
+        _ => None,
+    };
     let (url, token) = (url.to_owned(), token.to_owned());
     let reconnector: cookie_agent_tui::Reconnector = std::sync::Arc::new(move || {
         let (url, token, identity) = (url.clone(), token.clone(), identity.clone());
@@ -718,7 +804,12 @@ async fn run_attached_tui(url: &str, token: &str) -> anyhow::Result<()> {
             Ok(client)
         })
     });
-    cookie_agent_tui::run_attached(client, reconnector, client_directory()).await
+    cookie_agent_tui::run_attached(
+        client,
+        reconnector,
+        cookie_agent_tui::SessionPlacement { cwd, runtime },
+    )
+    .await
 }
 
 #[cfg(not(feature = "tui"))]

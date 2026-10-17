@@ -70,9 +70,15 @@ async fn app_with_replies(
         incoming: incoming_rx,
         sent,
     });
-    let mut app = App::new_with_config(client, false, None, TuiConfig::default(), Theme::default())
-        .await
-        .expect("app");
+    let mut app = App::new_with_config(
+        client,
+        false,
+        crate::SessionPlacement::default(),
+        TuiConfig::default(),
+        Theme::default(),
+    )
+    .await
+    .expect("app");
     install_draft_catalog(&mut app);
     recorded.lock().expect("requests").clear();
     (app, recorded)

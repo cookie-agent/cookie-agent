@@ -1389,3 +1389,21 @@ fn a_token_file_is_created_privately_and_reused() {
     let error = read_token_file(&directory.path().join("missing")).expect_err("missing");
     assert!(error.to_string().contains("read token file"), "{error}");
 }
+
+#[test]
+fn a_tui_offers_its_machine_under_a_sanitized_host_name() {
+    for (host, expected) in [
+        ("laptop", "client_laptop"),
+        ("My-MacBook.local", "client_my_macbook_local"),
+        ("--edge__", "client_edge"),
+        ("", "client"),
+        (
+            "a-very-long-host-name-that-goes-on-and-on",
+            "client_a_very_long_host_name_tha",
+        ),
+    ] {
+        let id = client_runtime_id(host);
+        assert_eq!(id, expected, "{host}");
+        cookie_agent_protocol::RuntimeId::new(id.as_str()).expect("a valid runtime ID");
+    }
+}

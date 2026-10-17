@@ -1,6 +1,6 @@
 # Persistent Daemon, Dial-in Runtimes, and Runtime Capabilities
 
-Status: **approved; phases 1 to 3 implemented** (decisions of 2026-10-16 below and
+Status: **implemented** (decisions of 2026-10-16 below and
 in [Review](#10-review); see [Implementation notes](#11-implementation-notes)). This spec extends the [runtimes spec](runtimes.md);
 where they differ, this one governs.
 
@@ -260,4 +260,14 @@ shows every session.
   again reopens every failed one.
 - The daemon no longer checks that a client's address is loopback: the
   token is the gate, and the listener decides who can reach it.
+
+**Phase 4** (2026-10-16): `ServerHello.machine_id` (a SHA-256 of the OS
+machine ID, or of a per-user random ID where there is none); `cookie attach`
+to a daemon with another machine ID dials in `client_<host name>`, limited
+to the TUI's directory with `--root`, and the TUI's sessions attach it.
+
+- The embedded runtime is limited to the TUI's directory rather than
+  offering the whole machine to a remote daemon.
+- Machine IDs fall back to a per-user file, so two users of one machine
+  without an OS machine ID look like two machines.
 

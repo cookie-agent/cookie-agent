@@ -471,6 +471,10 @@ async fn new_from_delegated_session_renders_and_submits_root_agent_candidates() 
     app.set_selected_session(child);
     let (client, recorded, incoming) = live_recording_client();
     app.client = client;
+    // A TUI attached from another machine works in its directory with the
+    // runtime it offers.
+    app.cwd = Some("/home/me/repo".into());
+    app.client_runtime = Some("client_laptop".into());
 
     app.run_command(SlashCommand::New).await;
     assert_eq!(app.modal, Modal::Agents);
@@ -520,6 +524,15 @@ async fn new_from_delegated_session_renders_and_submits_root_agent_candidates() 
         .cloned()
         .expect("session.create request");
     assert_eq!(request["params"]["selection"]["agent"], "reviewer");
+    assert_eq!(request["params"]["cwd"], "/home/me/repo");
+    assert_eq!(
+        request["params"]["runtimes"],
+        serde_json::json!([{
+            "runtime_id": "client_laptop",
+            "capability": "coding",
+            "workspace": "/home/me/repo",
+        }])
+    );
 }
 
 #[tokio::test]

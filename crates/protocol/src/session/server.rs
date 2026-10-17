@@ -107,6 +107,7 @@ impl ServerContext {
         ServerHello {
             protocol_version: crate::ProtocolVersion::current(),
             origin,
+            machine_id: crate::paths::machine_id(),
         }
     }
 

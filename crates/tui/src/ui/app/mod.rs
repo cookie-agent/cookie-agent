@@ -586,7 +586,10 @@ enum AgentPanelMode {
 pub struct App {
     /// The client's directory, when the binary gave one: sessions it
     /// creates record it, and the session list shows its sessions only.
-    cwd: Option<String>,
+    pub(in crate::ui) cwd: Option<String>,
+    /// The runtime this client offers the daemon, when it offers one: new
+    /// sessions work with its `coding` capability at `cwd`.
+    pub(in crate::ui) client_runtime: Option<String>,
     pub(super) client: Client,
     pub(super) deliveries: Option<tokio::sync::mpsc::UnboundedReceiver<ClientDelivery>>,
     pub(super) rpc_updates_tx: tokio::sync::mpsc::UnboundedSender<RpcUpdate>,
@@ -1146,13 +1149,20 @@ impl App {
     ) -> Result<Self, crate::config::TuiConfigError> {
         let tui_config = crate::config::load(None)?;
         let theme = crate::terminal_detect::theme_without_terminal_detection(tui_config.theme);
-        Self::new_with_config(client, create_new_session, None, tui_config, theme).await
+        Self::new_with_config(
+            client,
+            create_new_session,
+            SessionPlacement::default(),
+            tui_config,
+            theme,
+        )
+        .await
     }
 
     async fn new_with_config(
         client: Client,
         create_new_session: bool,
-        cwd: Option<String>,
+        placement: SessionPlacement,
         tui_config: TuiConfig,
         theme: Theme,
     ) -> Result<Self, crate::config::TuiConfigError> {
@@ -1164,7 +1174,8 @@ impl App {
         let (rpc_updates_tx, rpc_updates_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = Self {
             client,
-            cwd,
+            cwd: placement.cwd,
+            client_runtime: placement.runtime,
             deliveries: Some(deliveries),
             rpc_updates_tx,
             rpc_updates_rx,
@@ -1434,6 +1445,13 @@ impl App {
                 permission_mode: self.draft_permissions.mode,
                 permission_rules: self.draft_permissions.rules.clone(),
                 cwd: self.cwd.clone(),
+                runtimes: self.client_runtime.as_ref().and_then(|runtime| {
+                    Some(vec![cookie_agent_protocol::RuntimeAttachRequest {
+                        runtime_id: cookie_agent_protocol::RuntimeId::new(runtime.as_str()).ok()?,
+                        capability: Some(cookie_agent_protocol::CapabilityName::coding()),
+                        workspace: self.cwd.clone(),
+                    }])
+                }),
                 ..SessionCreateParams::new(selection)
             })
             .await
@@ -1589,33 +1607,46 @@ pub type Reconnector = std::sync::Arc<
 
 /// Run the terminal UI against a connected client.
 pub async fn run_with_client(client: Client) -> anyhow::Result<()> {
-    run_terminal(client, false, None, None).await
+    run_terminal(client, false, None, SessionPlacement::default()).await
+}
+
+/// Where the TUI's new sessions work.
+#[derive(Clone, Debug, Default)]
+pub struct SessionPlacement {
+    /// The client's directory: new sessions record it and work in it, and
+    /// the session list shows its sessions.
+    pub cwd: Option<String>,
+    /// A runtime this client offers the daemon, such as one it runs for its
+    /// own machine when the daemon is on another: new sessions attach its
+    /// `coding` capability at `cwd` instead of the daemon's `local`.
+    pub runtime: Option<String>,
 }
 
 /// Run the terminal UI against a daemon it reconnects to with
-/// `reconnector` whenever the connection drops.
-///
-/// `cwd` is the client's directory: new sessions record it and work in it by
-/// default, and the session list shows its sessions.
+/// `reconnector` whenever the connection drops; new sessions follow
+/// `placement`.
 pub async fn run_attached(
     client: Client,
     reconnector: Reconnector,
-    cwd: Option<String>,
+    placement: SessionPlacement,
 ) -> anyhow::Result<()> {
-    run_terminal(client, false, Some(reconnector), cwd).await
+    run_terminal(client, false, Some(reconnector), placement).await
 }
 
 /// Run the terminal UI with a newly created root session; see
-/// [`run_attached`] for `cwd`.
-pub async fn run_with_new_session(client: Client, cwd: Option<String>) -> anyhow::Result<()> {
-    run_terminal(client, true, None, cwd).await
+/// [`run_attached`] for `placement`.
+pub async fn run_with_new_session(
+    client: Client,
+    placement: SessionPlacement,
+) -> anyhow::Result<()> {
+    run_terminal(client, true, None, placement).await
 }
 
 async fn run_terminal(
     client: Client,
     create_new_session: bool,
     reconnector: Option<Reconnector>,
-    cwd: Option<String>,
+    placement: SessionPlacement,
 ) -> anyhow::Result<()> {
     crate::markdown::warm_up_syntax_assets();
     install_terminal_panic_hook();
@@ -1628,7 +1659,7 @@ async fn run_terminal(
         detection_source = %detection.source,
         "TUI theme selected"
     );
-    let mut app = App::new_with_config(client, create_new_session, cwd, tui_config, theme)
+    let mut app = App::new_with_config(client, create_new_session, placement, tui_config, theme)
         .await
         .context("initialize TUI")?;
     app.reconnector = reconnector;
