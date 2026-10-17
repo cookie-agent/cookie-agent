@@ -117,29 +117,27 @@ refuses requests that carry a browser `Origin` header. It binds IPv4 loopback
 unless `--listen` names another address; off loopback, serve TLS
 (`--tls-cert`, `--tls-key`) or keep the listener on a private network, since
 a plaintext `ws://` connection carries the token in the clear. Anyone holding
-the token is a fully trusted client and may also offer a runtime. By default
-there is no token file: at startup the daemon draws a fresh 32-byte token from
-the operating system, keeps it only in process memory, and dies with it.
-`--token-file` instead keeps a durable token in an owner-only file, which a
-runtime that dials in needs to reconnect after a daemon restart; protect that
-file like any credential. The daemon prints the token exactly once, inside the
-first stdout line:
+the token is a fully trusted client and may also offer a runtime.
+
+The token is durable: it is `[server] token` in the user `config.toml`. When
+the configuration has none, the daemon draws a fresh 32-byte token from the
+operating system at its first start and writes it there, rewriting the file
+owner-only (`0600` on Unix), so it stays the same across restarts and a
+runtime that dials in can reconnect after one. The WebSocket subcommands
+(`attach`, `connect`, `disconnect`, `mcp`) and `cookie runtime serve --daemon`
+read it from the same file unless given `--token` / `COOKIE_DAEMON_TOKEN`.
+Any process that can read your `config.toml` can therefore connect to the
+daemon; keep the file private, and replace the token (delete the line and
+restart the daemon) if it leaks. The daemon also prints the token in its first
+stdout line:
 
 ```text
 daemon-ready {"url":"ws://127.0.0.1:<port>/ws","token":"<43-char base64url>"}
 ```
 
-Clients receive the secret through a private stdout/pipe handoff or a human
-copying it to `--token` / `COOKIE_DAEMON_TOKEN`; the four WebSocket subcommands
-(`attach`, `connect`, `disconnect`, `mcp`) require it and have no readable
-fallback. This is stronger than a shared file: nothing persists on disk, two
-daemons can never share a stale secret, and a leaked token cannot outlive the
-run. The residual boundary is unchanged for a same-user process that can
-inspect the daemon's memory or the pipe; the removed class is a same-user
-process that could simply read a durable token file. Two caveats are documented
-rather than solved: a supervisor that logs daemon stdout verbatim persists the
-token in its logs, and a token pasted on a shell command line is visible in
-shell history. Treat the ready line as secret and do not archive it.
+A supervisor that logs daemon stdout verbatim persists the token in its
+logs, and a token pasted on a shell command line is visible in shell history.
+Treat the ready line as secret and do not archive it.
 
 ### AGENTS.md context files
 

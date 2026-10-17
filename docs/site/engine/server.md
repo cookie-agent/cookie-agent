@@ -7,6 +7,7 @@ Complete `config.toml`:
 [server]
 host = "127.0.0.1"
 port = 7419
+token = "<43-char base64url>"
 ```
 
 Omission keeps the defaults. An authored table replaces them completely;
@@ -15,10 +16,13 @@ Unknown fields fail. The port accepts `0` through `65535`; `0` asks the OS for
 an available port, so clients must use the actual bound port. `cookie daemon
 --port <N>` overrides the configured port for that run (including `--port 0`).
 
-By default the daemon binds IPv4 loopback at the configured port. Each run
-generates a fresh in-memory bearer token and prints it once as its first
-stdout line (`daemon-ready {"url":...,"token":...}`); clients connect with
-`--token` or `COOKIE_DAEMON_TOKEN`. See the
+By default the daemon binds IPv4 loopback at the configured port. Its bearer
+token is `[server] token`: when the configuration has none, the daemon
+generates one at its first start and writes it there, so it stays the same
+across restarts. It also prints it in its first stdout line
+(`daemon-ready {"url":...,"token":...}`). Clients and dial-in runtimes on this
+machine read it from the same `config.toml`; elsewhere, pass `--token`, set
+`COOKIE_DAEMON_TOKEN`, or copy it into that machine's `[server] token`. See the
 [security contract](../guide/security.md#daemon-authentication-token).
 
 For clients and runtimes on other machines, `cookie daemon` takes:
@@ -27,7 +31,6 @@ For clients and runtimes on other machines, `cookie daemon` takes:
 |---|---|
 | `--listen <addr:port>` | Bind this address instead, such as `0.0.0.0:7419`. Without TLS the token crosses the network in the clear, so a plaintext listener belongs on a private network such as a VPN. Conflicts with `--port`. |
 | `--tls-cert <path>`, `--tls-key <path>` | Serve `wss` with this PEM certificate chain and private key; the ready line then shows a `wss://` URL. Both or neither. |
-| `--token-file <path>` | Use the token this file holds, or create the file (owner-only, `0600` on Unix) with a fresh token when it does not exist, so the token survives restarts. Dial-in runtimes need it to reconnect after a daemon restart. |
 
 The daemon serves clients on `/ws` and [dial-in runtimes](../guide/runtimes.md#runtimes-that-dial-in)
 on `/runtime?id=<runtime ID>`. Both present the same bearer token; a request
@@ -37,3 +40,4 @@ carrying a browser `Origin` header is refused.
 |---|---|---|---|
 | `host` | string | `"127.0.0.1"` | Interface the daemon listens on. Must be non-empty and at most 255 characters. The `cookie` binary additionally requires exactly `"127.0.0.1"` at startup; use `--listen` to bind another address. |
 | `port` | integer | `7419` | TCP port for the WebSocket daemon. |
+| `token` | string | *(none)* | The daemon's bearer token, exactly 43 base64url characters. The daemon writes a fresh one here when there is none; clients and dial-in runtimes on this machine use it when given no `--token`. |

@@ -28,7 +28,7 @@ pub use cache::{
 pub use error::ConfigError;
 pub use loader::{ConfigLayerPaths, LoadedConfiguration, load, load_from_user_root};
 pub use loader::{LoadedMcpServer, McpServerSource};
-pub use mcp_store::write_mcp_server;
+pub use mcp_store::{write_mcp_server, write_server_token};
 pub use prompt_template::{
     DEFAULT_PROMPT_PLACEHOLDER, FOCUS_PLACEHOLDER, InternalPromptValues, render_internal_prompt,
 };
@@ -38,7 +38,7 @@ pub use runtime::{
     McpServerConfig, MessagingConfig, ModelPricing, ModelRetryConfig, PRODUCER_MAX_BODY_BYTES,
     PicoUsdPerMillion, PluginConfig, PluginsConfig, PricingConfig, ProducersConfig,
     SUBAGENT_OUTPUT_MAX_BYTES, ServerConfig, SessionTitleConfig, SubagentOutputConfig,
-    ToolOutputConfig,
+    ToolOutputConfig, valid_daemon_token,
 };
 pub use runtime_templates::RuntimeTemplateConfig;
 pub use skills::{

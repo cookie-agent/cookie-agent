@@ -264,7 +264,6 @@ fn cli_commands_and_removed_flags_are_exact() {
         listen: None,
         tls_cert: None,
         tls_key: None,
-        token_file: None,
     };
     assert_eq!(
         Cli::try_parse_from(["cookie", "daemon"]).unwrap().command,
@@ -285,9 +284,7 @@ fn cli_commands_and_removed_flags_are_exact() {
             "--tls-cert",
             "cert.pem",
             "--tls-key",
-            "key.pem",
-            "--token-file",
-            "token"
+            "key.pem"
         ])
         .unwrap()
         .command,
@@ -296,7 +293,6 @@ fn cli_commands_and_removed_flags_are_exact() {
             listen: Some("0.0.0.0:7419".parse().unwrap()),
             tls_cert: Some("cert.pem".into()),
             tls_key: Some("key.pem".into()),
-            token_file: Some("token".into()),
         })
     );
     for arguments in [
@@ -333,7 +329,6 @@ fn cli_commands_and_removed_flags_are_exact() {
                 daemon: None,
                 id: None,
                 token: None,
-                token_file: None,
                 roots: vec!["~/my repo".into(), "/srv".into()],
             }
         })
@@ -346,9 +341,7 @@ fn cli_commands_and_removed_flags_are_exact() {
             "--daemon",
             "wss://daemon.example.com:7419/ws",
             "--id",
-            "labpc",
-            "--token-file",
-            "token"
+            "labpc"
         ])
         .unwrap()
         .command,
@@ -358,7 +351,6 @@ fn cli_commands_and_removed_flags_are_exact() {
                 daemon: Some("wss://daemon.example.com:7419/ws".into()),
                 id: Some("labpc".into()),
                 token: None,
-                token_file: Some("token".into()),
                 roots: Vec::new(),
             }
         })
@@ -408,7 +400,7 @@ fn cli_commands_and_removed_flags_are_exact() {
                 server: "remote".into()
             },
             url: DEFAULT_WEBSOCKET_URL.into(),
-            token: TEST_TOKEN.into(),
+            token: Some(TEST_TOKEN.into()),
         })
     );
     assert_eq!(
@@ -552,22 +544,22 @@ fn attach_connect_and_disconnect_are_cwd_independent() {
     for command in [
         Command::Attach {
             url: DEFAULT_WEBSOCKET_URL.into(),
-            token: TEST_TOKEN.into(),
+            token: Some(TEST_TOKEN.into()),
         },
         Command::Connect {
             provider_id: None,
             url: DEFAULT_WEBSOCKET_URL.into(),
-            token: TEST_TOKEN.into(),
+            token: Some(TEST_TOKEN.into()),
         },
         Command::Disconnect {
             provider_id: None,
             url: DEFAULT_WEBSOCKET_URL.into(),
-            token: TEST_TOKEN.into(),
+            token: Some(TEST_TOKEN.into()),
         },
         Command::Mcp {
             command: McpCommand::List,
             url: DEFAULT_WEBSOCKET_URL.into(),
-            token: TEST_TOKEN.into(),
+            token: Some(TEST_TOKEN.into()),
         },
         Command::Runtime {
             command: RuntimeCommand::Serve {
@@ -575,7 +567,6 @@ fn attach_connect_and_disconnect_are_cwd_independent() {
                 daemon: None,
                 id: None,
                 token: None,
-                token_file: None,
                 roots: vec!["~/repo".into()],
             },
         },
@@ -589,29 +580,29 @@ fn attach_connect_and_disconnect_are_cwd_independent() {
 }
 
 #[test]
-fn websocket_subcommands_require_an_explicit_token() {
+fn websocket_subcommands_take_the_token_from_the_flag_or_the_configuration() {
     for arguments in [
         vec!["cookie", "attach"],
+        vec!["cookie", "attach", "--token", TEST_TOKEN],
         vec!["cookie", "connect"],
         vec!["cookie", "disconnect"],
         vec!["cookie", "mcp", "list"],
-    ] {
-        assert!(
-            Cli::try_parse_from(&arguments).is_err(),
-            "missing token accepted for {arguments:?}"
-        );
-    }
-    for arguments in [
-        vec!["cookie", "attach", "--token", TEST_TOKEN],
-        vec!["cookie", "connect", "--token", TEST_TOKEN],
-        vec!["cookie", "disconnect", "--token", TEST_TOKEN],
         vec!["cookie", "mcp", "--token", TEST_TOKEN, "list"],
     ] {
         assert!(
             Cli::try_parse_from(&arguments).is_ok(),
-            "token rejected for {arguments:?}"
+            "rejected {arguments:?}"
         );
     }
+    let explicit = resolve_client_token(Some("from-flag".into()), || {
+        panic!("the configuration is not read when a token is given")
+    })
+    .unwrap();
+    assert_eq!(explicit.as_str(), "from-flag");
+    let configured = resolve_client_token(None, || Ok(Some(TEST_TOKEN.into()))).unwrap();
+    assert_eq!(configured.as_str(), TEST_TOKEN);
+    let error = resolve_client_token(None, || Ok(None)).expect_err("no token anywhere");
+    assert!(error.to_string().contains("[server]"), "{error}");
 }
 
 #[test]
@@ -1365,32 +1356,6 @@ async fn hourly_catalog_refresh_skips_noops_publishes_fallback_once_and_cancels(
 }
 
 #[test]
-fn a_token_file_is_created_privately_and_reused() {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("daemon-token");
-    let created = read_or_create_token(&path).expect("create the token");
-    assert_eq!(created.len(), 43);
-    assert_eq!(
-        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    let reused = read_or_create_token(&path).expect("read the token");
-    assert_eq!(reused.as_str(), created.as_str());
-    assert_eq!(read_token_file(&path).unwrap().as_str(), created.as_str());
-
-    std::fs::write(&path, "not a token\n").unwrap();
-    let error = read_or_create_token(&path).expect_err("invalid token");
-    assert!(
-        error.to_string().contains("does not hold a daemon token"),
-        "{error}"
-    );
-    let error = read_token_file(&directory.path().join("missing")).expect_err("missing");
-    assert!(error.to_string().contains("read token file"), "{error}");
-}
-
-#[test]
 fn a_tui_offers_its_machine_under_a_sanitized_host_name() {
     for (host, expected) in [
         ("laptop", "client_laptop"),
@@ -1406,4 +1371,22 @@ fn a_tui_offers_its_machine_under_a_sanitized_host_name() {
         assert_eq!(id, expected, "{host}");
         cookie_agent_protocol::RuntimeId::new(id.as_str()).expect("a valid runtime ID");
     }
+}
+
+#[test]
+fn the_daemon_keeps_a_fresh_token_in_its_config_and_reuses_a_configured_one() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    std::fs::write(&path, "# mine\n").unwrap();
+    let created = daemon_token(None, Some(&path)).expect("create a token");
+    let reloaded = cookie_agent_config::load_from_user_root(Some(directory.path()))
+        .expect("reload the configuration");
+    assert_eq!(
+        reloaded.runtime.server.token.as_deref(),
+        Some(created.as_str())
+    );
+    assert!(std::fs::read_to_string(&path).unwrap().contains("# mine"));
+    let reused = daemon_token(Some(TEST_TOKEN.into()), Some(&path)).unwrap();
+    assert_eq!(reused.as_str(), TEST_TOKEN);
+    assert!(daemon_token(None, None).is_err());
 }

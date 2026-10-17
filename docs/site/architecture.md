@@ -22,12 +22,11 @@ has six top-level subcommands plus a default mode:
 | `mcp --token list` | List the MCP servers of every runtime with their state and hosting runtime |
 | `mcp --token auth <server>` | Start OAuth authorization for a remote MCP server |
 
-The daemon binds only to the configured port and authenticates every WebSocket
-with a fresh per-run bearer token. It generates the token at startup, keeps it
-only in memory, and prints it once as its first stdout line, so there is no
-token file on disk. `attach`, `connect`, `disconnect`, and `mcp` require the
-token via `--token` or `COOKIE_DAEMON_TOKEN` and accept only loopback `ws`/`wss`
-URLs whose path is exactly `/ws`. They use the same shared protocol client as
+The daemon authenticates every WebSocket with a bearer token kept in
+`[server] token` of `config.toml`, which it writes at its first start when
+there is none. `attach`, `connect`, `disconnect`, and `mcp` take the token
+from `--token`, `COOKIE_DAEMON_TOKEN`, or the same configuration, and accept
+`ws`/`wss` URLs whose path is exactly `/ws`. They use the same shared protocol client as
 the TUI, so the CLI keeps working even when built without the `tui` feature.
 
 Tools run in *runtimes* (see the [runtimes specification](specs/runtimes.md)).

@@ -82,10 +82,10 @@ kind; it reads what capabilities report.
   TLS is supported, not required: without it the token crosses the network
   in the clear, which the guide says plainly, so a plaintext listener off
   loopback belongs on a private network such as a VPN.
-- **One durable token.** `--token-file <path>` reads the bearer token from
-  a private file, creating one if it is missing, so it survives daemon
-  restarts. Without it the daemon mints a per-run token as today. Clients
-  and dial-in runtimes present the same token.
+- **One durable token.** The bearer token is `[server] token` in
+  `config.toml`, written there at the daemon's first start when missing, so
+  it survives restarts. Clients and dial-in runtimes present the same token,
+  read from their machine's configuration unless given `--token`.
 - **Endpoints.** `/ws` for clients and `/runtime` for dial-in runtimes.
 
 ## 4. Runtime protocol 5: capabilities
@@ -136,8 +136,7 @@ becomes `cookie runtime serve --stdio`, offering every built-in capability;
 
 ## 5. Dial-in runtimes
 
-- `cookie runtime serve --daemon <url> --token-file <path> --id <runtime ID>`
-  connects to the daemon's `/runtime` endpoint and presents the token and
+- `cookie runtime serve --daemon <url> --id <runtime ID>` connects to the daemon's `/runtime` endpoint and presents the token and
   its runtime ID. The daemon then drives the protocol exactly as for a
   spawned runtime: `runtime/initialize`, then `capability/open` for every
   attachment its sessions hold.
@@ -199,7 +198,7 @@ Each phase lands as its own commits with every gate green, and is pushed.
    capabilities, client protocol 45, the `/runtime` panel.
 2. **Directory-independent daemon.** `session.create` `cwd`, `local` serving
    any workspace, `cookie attach` sending its directory.
-3. **Listening and dial-in.** `--listen`, optional TLS, `--token-file`, the
+3. **Listening and dial-in.** `--listen`, optional TLS, the durable token, the
    `/runtime` endpoint, `cookie runtime serve --daemon`, reconnect.
 4. **TUI runtime.** `machine_id` and the TUI's embedded runtime when the
    daemon is remote.
@@ -270,4 +269,10 @@ to the TUI's directory with `--root`, and the TUI's sessions attach it.
   offering the whole machine to a remote daemon.
 - Machine IDs fall back to a per-user file, so two users of one machine
   without an OS machine ID look like two machines.
+
+**Token** (2026-10-17): at the user's request the durable token lives in
+`[server] token` of `config.toml` instead of a `--token-file`. The daemon
+writes a fresh one there at its first start when there is none and never
+regenerates it; clients and dial-in runtimes read it from their machine's
+configuration when given no `--token`.
 

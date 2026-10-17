@@ -177,7 +177,7 @@ asks for that path.
 
 ```sh
 cookie runtime serve --stdio [--root <dir>]...
-cookie runtime serve --daemon <url> --id <runtime ID> (--token <token> | --token-file <path>) [--root <dir>]...
+cookie runtime serve --daemon <url> --id <runtime ID> [--token <token>] [--root <dir>]...
 ```
 
 With `--daemon` it dials in instead (see
@@ -202,19 +202,21 @@ daemon starting it. It needs no template: it names itself, and sessions
 attach it like any other runtime while it is connected.
 
 ```sh
-# On the daemon's machine: a durable token, and a listener the runtime reaches.
-cookie daemon --listen 0.0.0.0:7419 --token-file ~/.cookie-agent/daemon-token
+# On the daemon's machine: a listener the runtime reaches.
+cookie daemon --listen 0.0.0.0:7419
 
-# On labpc: dial in as `labpc` and stay connected.
-cookie runtime serve --daemon ws://laptop:7419/ws --id labpc --token-file ~/daemon-token
+# On labpc, with the daemon's token copied into its ~/.cookie-agent/config.toml
+# as `token` under [server]: dial in as `labpc` and stay connected.
+cookie runtime serve --daemon ws://laptop:7419/ws --id labpc
 ```
 
 - **Identity.** `--id` is the runtime ID, `[a-z][a-z0-9_]{0,31}`. It must
   not be `global`, `local`, or a configured `[runtimes.<id>]`, and only one
   runtime may be connected under an ID at a time.
-- **Token.** The runtime presents the daemon's token (`--token`,
-  `COOKIE_DAEMON_TOKEN`, or `--token-file`). Give the daemon a
-  `--token-file` so the token survives its restarts.
+- **Token.** The runtime presents the daemon's token: `--token`,
+  `COOKIE_DAEMON_TOKEN`, or `[server] token` in its machine's `config.toml`.
+  The daemon keeps its token in its own `config.toml`, so it survives
+  restarts.
 - **Reconnecting.** The runtime reconnects after every drop, waiting
   1 s, 2 s, 4 s, and so on up to 30 s. While it is away, its instances go
   `reconnecting` and then `failed`, and their tools leave the sessions' tool

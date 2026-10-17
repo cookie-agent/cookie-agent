@@ -759,14 +759,20 @@ async fn a_configured_runtime_hosts_its_template_mcp_servers() {
 }
 
 /// The real binary dials in over the daemon's WebSocket endpoint with the
-/// daemon's token, serves a session's workspace, and shows as disconnected
-/// once it exits.
+/// daemon's token from its machine's configuration, serves a session's
+/// workspace, and shows as disconnected once it exits.
 #[tokio::test]
 async fn a_runtime_dials_in_and_serves_a_session() {
     let fixture = Fixture::new(30_000).await;
     let token = cookie_agent_server::generate_token().expect("token");
-    let token_file = fixture.root.path().join("token");
-    fs::write(&token_file, format!("{}\n", token.as_str())).expect("token file");
+    // The runtime's machine keeps the daemon's token in its configuration.
+    let remote_config = fixture.remote_home.join(".cookie-agent");
+    private_dir(&remote_config);
+    fs::write(
+        remote_config.join("config.toml"),
+        format!("[server]\ntoken = \"{}\"\n", token.as_str()),
+    )
+    .expect("remote config");
     let server = Arc::new(cookie_agent_server::Server::new(fixture.engine.clone()));
     let listening = server
         .clone()
@@ -775,17 +781,9 @@ async fn a_runtime_dials_in_and_serves_a_session() {
         .expect("serve the daemon");
     let url = format!("ws://{}/ws", listening.address());
     let mut runtime = tokio::process::Command::new(env!("CARGO_BIN_EXE_cookie"))
-        .args([
-            "runtime",
-            "serve",
-            "--daemon",
-            &url,
-            "--id",
-            "labpc",
-            "--token-file",
-        ])
-        .arg(&token_file)
+        .args(["runtime", "serve", "--daemon", &url, "--id", "labpc"])
         .env("HOME", &fixture.remote_home)
+        .env_remove("COOKIE_DAEMON_TOKEN")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())

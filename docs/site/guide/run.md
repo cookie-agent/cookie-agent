@@ -48,21 +48,22 @@ stdout to a pipe, reads exactly that one line, and ignores the rest:
 daemon-ready {"url":"ws://127.0.0.1:7419/ws","token":"<43-char base64url>"}
 ```
 
-The token is generated fresh for each run, kept only in daemon memory, and dies
-with the process. Treat the ready line as a secret: do not archive or log it.
+The token is `[server] token` in `config.toml`; the daemon writes a fresh one
+there at its first start when there is none, and keeps it across restarts.
+Treat it, and the ready line, as a secret: do not archive or log them.
 Pass `--port 0` to let the OS pick an ephemeral port; the ready line then
 carries the real port, and clients must use that URL rather than guessing 7419.
 
-Attach from another terminal with the token from the ready line:
+Attach from another terminal on the same machine:
 
 ```sh
-cookie attach --token '<43-char base64url>'
+cookie attach
 ```
 
-`attach`, `connect`, `disconnect`, and `mcp` require `--token` (or the
-`COOKIE_DAEMON_TOKEN` environment variable). There is no file to read and no
-interactive prompt, so a missing token is clap's standard required-argument
-error. The URL defaults to `ws://127.0.0.1:7419/ws` and may be changed with
+`attach`, `connect`, `disconnect`, and `mcp` read the token from `config.toml`;
+`--token` (or the `COOKIE_DAEMON_TOKEN` environment variable) overrides it,
+which a client on another machine needs unless its own `config.toml` holds
+the daemon's token. The URL defaults to `ws://127.0.0.1:7419/ws` and may be changed with
 `--url` to any host, `ws://` or `wss://` (TLS), with the exact `/ws` path; a
 daemon on another machine listens with `--listen` (see [Server](../engine/server.md)).
 See [Server](../engine/server.md).

@@ -378,21 +378,48 @@ impl Drop for RawRuntimeLayer {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     #[serde(default = "default_host")]
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    /// The daemon's bearer token: 43 base64url characters. Clients and
+    /// runtimes on this machine read it from here; the daemon writes a fresh
+    /// one here when there is none.
+    #[serde(default)]
+    pub token: Option<String>,
 }
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             host: default_host(),
             port: default_port(),
+            token: None,
         }
     }
+}
+
+impl std::fmt::Debug for ServerConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServerConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// Whether `token` is a daemon bearer token: 43 base64url characters, the
+/// encoding of 32 random bytes.
+#[must_use]
+pub fn valid_daemon_token(token: &str) -> bool {
+    token.len() == 43
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 fn default_host() -> String {
     DEFAULT_HOST.into()
@@ -860,6 +887,14 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
         (
             runtime.server.host.is_empty() || runtime.server.host.len() > 255,
             "server.host must contain 1..255 bytes",
+        ),
+        (
+            runtime
+                .server
+                .token
+                .as_deref()
+                .is_some_and(|token| !valid_daemon_token(token)),
+            "server.token must be 43 base64url characters",
         ),
         (
             runtime.tool_output.max_lines == 0,

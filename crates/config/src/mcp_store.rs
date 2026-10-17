@@ -42,14 +42,10 @@ fn write_mcp_server_observed(
     path: &Path,
     name: &str,
     config: &McpServerConfig,
-    mut observe: impl FnMut(CommitStep),
+    observe: impl FnMut(CommitStep),
 ) -> Result<(), ConfigError> {
     config.validate(name)?;
-    let (original, originally_existed) = match fs::read_to_string(path) {
-        Ok(text) => (text, true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
-        Err(error) => return Err(ConfigError::Io(error)),
-    };
+    let (original, originally_existed) = read_original(path)?;
     let mut document = original
         .parse::<DocumentMut>()
         .map_err(|error| ConfigError::Toml(format!("{}: {error}", path.display())))?;
@@ -74,9 +70,59 @@ fn write_mcp_server_observed(
         document["mcp"]["servers"] = Item::Table(Table::new());
     }
     document["mcp"]["servers"][name] = replacement;
-    let candidate = document.to_string();
+    commit(
+        path,
+        &original,
+        originally_existed,
+        &document.to_string(),
+        observe,
+    )
+}
 
-    let validation_root = tempfile_root(path, &candidate)?;
+/// Set `[server] token` to `token` while preserving every unrelated item and
+/// comment, as the daemon does when it has none. The file is written
+/// owner-only.
+pub fn write_server_token(path: &Path, token: &str) -> Result<(), ConfigError> {
+    if !crate::valid_daemon_token(token) {
+        return Err(ConfigError::InvalidRuntime(
+            "server.token must be 43 base64url characters",
+        ));
+    }
+    let (original, originally_existed) = read_original(path)?;
+    let mut document = original
+        .parse::<DocumentMut>()
+        .map_err(|error| ConfigError::Toml(format!("{}: {error}", path.display())))?;
+    if !document.as_table().contains_key("server") {
+        document["server"] = Item::Table(Table::new());
+    }
+    document["server"]["token"] = toml_edit::value(token);
+    commit(
+        path,
+        &original,
+        originally_existed,
+        &document.to_string(),
+        |_| {},
+    )
+}
+
+fn read_original(path: &Path) -> Result<(String, bool), ConfigError> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok((text, true)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((String::new(), false)),
+        Err(error) => Err(ConfigError::Io(error)),
+    }
+}
+
+/// Replaces `path` with `candidate` once the strict loader accepts it as a
+/// complete configuration layer and `path` still holds `original`.
+fn commit(
+    path: &Path,
+    original: &str,
+    originally_existed: bool,
+    candidate: &str,
+    mut observe: impl FnMut(CommitStep),
+) -> Result<(), ConfigError> {
+    let validation_root = tempfile_root(path, candidate)?;
     let validation = load_from_user_root(Some(&validation_root));
     let _ = fs::remove_dir_all(&validation_root);
     validation?;

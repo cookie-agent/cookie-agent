@@ -112,17 +112,15 @@ enum Command {
         /// PEM private key of `--tls-cert`.
         #[arg(long, value_name = "PATH", requires = "tls_cert")]
         tls_key: Option<PathBuf>,
-        /// Read the bearer token from this private file, creating it with a
-        /// fresh token when it does not exist, so it survives restarts.
-        #[arg(long, value_name = "PATH")]
-        token_file: Option<PathBuf>,
     },
     /// Attach the TUI to an existing daemon.
     Attach {
         #[arg(long, default_value = DEFAULT_WEBSOCKET_URL)]
         url: String,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
         #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
-        token: String,
+        token: Option<String>,
     },
     /// Securely create or update a durable global managed-provider connection.
     Connect {
@@ -130,8 +128,10 @@ enum Command {
         provider_id: Option<String>,
         #[arg(long, default_value = DEFAULT_WEBSOCKET_URL)]
         url: String,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
         #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
-        token: String,
+        token: Option<String>,
     },
     /// Remove a durable global managed-provider connection.
     Disconnect {
@@ -139,8 +139,10 @@ enum Command {
         provider_id: Option<String>,
         #[arg(long, default_value = DEFAULT_WEBSOCKET_URL)]
         url: String,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
         #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
-        token: String,
+        token: Option<String>,
     },
     /// Serve a runtime to a daemon over the runtime protocol, as a
     /// `[runtimes.<id>]` template runs it. Needs no provider configuration.
@@ -154,8 +156,10 @@ enum Command {
         command: McpCommand,
         #[arg(long, default_value = DEFAULT_WEBSOCKET_URL)]
         url: String,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
         #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
-        token: String,
+        token: Option<String>,
     },
 }
 
@@ -178,12 +182,10 @@ enum RuntimeCommand {
         /// The runtime ID to dial in as.
         #[arg(long, value_name = "RUNTIME_ID")]
         id: Option<String>,
-        /// The daemon's bearer token, for `--daemon`.
+        /// The daemon's bearer token, for `--daemon`; `[server] token` in
+        /// this machine's `config.toml` when omitted.
         #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
         token: Option<String>,
-        /// A file holding the daemon's bearer token, for `--daemon`.
-        #[arg(long, value_name = "PATH", conflicts_with = "token")]
-        token_file: Option<PathBuf>,
         /// Limit `coding` to workspaces under this directory; repeat for
         /// several. A leading `~` is expanded. Any workspace when omitted.
         #[arg(long = "root", value_name = "DIR")]
@@ -203,6 +205,10 @@ struct Runtime {
     engine: Engine,
     server: Arc<Server>,
     port: u16,
+    /// `[server] token`, when the configuration has one.
+    token: Option<String>,
+    /// The user `config.toml`, where the daemon keeps a token it creates.
+    config_path: Option<PathBuf>,
     catalog_refresh_shutdown: CancellationToken,
     catalog_refresh_task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -366,7 +372,6 @@ async fn main_result() -> anyhow::Result<()> {
             listen,
             tls_cert,
             tls_key,
-            token_file,
         }) => {
             let tls = match tls_cert.zip(tls_key) {
                 Some((cert, key)) => {
@@ -374,12 +379,10 @@ async fn main_result() -> anyhow::Result<()> {
                 }
                 None => None,
             };
-            let token = match &token_file {
-                Some(path) => read_or_create_token(path)?,
-                None => generate_token().context("generate daemon authentication token")?,
-            };
+            let runtime = compose(workspace.as_deref().expect("daemon workspace")).await?;
+            let token = daemon_token(runtime.token.clone(), runtime.config_path.as_deref())?;
             run_daemon(
-                compose(workspace.as_deref().expect("daemon workspace")).await?,
+                runtime,
                 DaemonListen {
                     port,
                     listen,
@@ -393,22 +396,22 @@ async fn main_result() -> anyhow::Result<()> {
             provider_id,
             url,
             token,
-        }) => run_connect(&url, &token, provider_id).await,
+        }) => run_connect(&url, &client_token(token)?, provider_id).await,
         Some(Command::Disconnect {
             provider_id,
             url,
             token,
-        }) => run_disconnect(&url, &token, provider_id).await,
+        }) => run_disconnect(&url, &client_token(token)?, provider_id).await,
         Some(Command::Mcp {
             command,
             url,
             token,
-        }) => run_mcp(&url, &token, command).await,
+        }) => run_mcp(&url, &client_token(token)?, command).await,
         Some(Command::Runtime { command }) => run_runtime(command).await,
         Some(Command::Attach { url, token }) => {
             #[cfg(feature = "tui")]
             cookie_agent_tui::markdown::warm_up_syntax_assets();
-            run_attached_tui(&url, &token).await
+            run_attached_tui(&url, &client_token(token)?).await
         }
         None => {
             // Syntax highlighting assets load while the runtime composes.
@@ -451,7 +454,6 @@ async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
         daemon,
         id,
         token,
-        token_file,
         roots,
     } = command;
     let roots = roots
@@ -466,11 +468,7 @@ async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     if !stdio && let (Some(daemon), Some(id)) = (daemon, id) {
-        let token = match (token, token_file) {
-            (Some(token), _) => Zeroizing::new(token),
-            (None, Some(path)) => read_token_file(&path)?,
-            (None, None) => anyhow::bail!("`--daemon` needs `--token` or `--token-file`"),
-        };
+        let token = client_token(token)?;
         cookie_agent_protocol::RuntimeId::new(id.as_str())
             .map_err(|_| anyhow::anyhow!("invalid runtime ID `{id}`"))?;
         cookie_agent_protocol::runtime_dial_in_url(&daemon, &id)?;
@@ -550,6 +548,8 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
         anyhow::bail!("server.host must be exactly 127.0.0.1");
     }
     let port = configuration.runtime.server.port;
+    let token = configuration.runtime.server.token.clone();
+    let config_path = configuration.config_paths.user.clone();
 
     // Startup never waits on the network: it serves the validated cache (or
     // the bundled catalog) and the refresh loop checks models.dev right away.
@@ -590,6 +590,8 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
         engine,
         server,
         port,
+        token,
+        config_path,
         catalog_refresh_shutdown,
         catalog_refresh_task: Some(catalog_refresh_task),
     })
@@ -1409,47 +1411,49 @@ fn read_secret_line(prompt: &str) -> anyhow::Result<Zeroizing<String>> {
     Ok(Zeroizing::new(value))
 }
 
-/// Length of the base64url encoding of a 32-byte bearer token.
-const TOKEN_ENCODED_BYTES: usize = 43;
-
-fn valid_token(token: &str) -> bool {
-    token.len() == TOKEN_ENCODED_BYTES
-        && token
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+/// The token a client or dial-in runtime presents: `--token` (or
+/// `COOKIE_DAEMON_TOKEN`), else `[server] token` in this machine's
+/// `config.toml`.
+fn client_token(explicit: Option<String>) -> anyhow::Result<Zeroizing<String>> {
+    resolve_client_token(explicit, || {
+        Ok(cookie_agent_config::load()
+            .context("load configuration")?
+            .runtime
+            .server
+            .token)
+    })
 }
 
-/// The token a `--token-file` holds.
-fn read_token_file(path: &Path) -> anyhow::Result<Zeroizing<String>> {
-    let text = Zeroizing::new(
-        std::fs::read_to_string(path)
-            .with_context(|| format!("read token file {}", path.display()))?,
-    );
-    let token = Zeroizing::new(text.trim().to_owned());
-    anyhow::ensure!(
-        valid_token(&token),
-        "token file {} does not hold a daemon token",
-        path.display()
-    );
-    Ok(token)
+fn resolve_client_token(
+    explicit: Option<String>,
+    configured: impl FnOnce() -> anyhow::Result<Option<String>>,
+) -> anyhow::Result<Zeroizing<String>> {
+    let token = match explicit {
+        Some(token) => token,
+        None => configured()?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "no daemon token: pass --token, set COOKIE_DAEMON_TOKEN, or set `token` \
+                 under [server] in config.toml"
+            )
+        })?,
+    };
+    Ok(Zeroizing::new(token))
 }
 
-/// The daemon's durable token: the one `path` holds, or a fresh one written
-/// there, readable by its owner only, when it does not exist.
-fn read_or_create_token(path: &Path) -> anyhow::Result<Zeroizing<String>> {
-    if path.exists() {
-        return read_token_file(path);
+/// The daemon's token: `[server] token` from its configuration, or a fresh
+/// one written there when there is none, so it stays the same across
+/// restarts.
+fn daemon_token(
+    configured: Option<String>,
+    config_path: Option<&Path>,
+) -> anyhow::Result<Zeroizing<String>> {
+    if let Some(token) = configured {
+        return Ok(Zeroizing::new(token));
     }
     let token = generate_token().context("generate daemon authentication token")?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options
-        .open(path)
-        .with_context(|| format!("create token file {}", path.display()))?;
-    file.write_all(format!("{}\n", token.as_str()).as_bytes())
-        .with_context(|| format!("write token file {}", path.display()))?;
+    let path = config_path.context("no user config.toml to keep the daemon token in")?;
+    cookie_agent_config::write_server_token(path, &token)
+        .with_context(|| format!("keep the daemon token in {}", path.display()))?;
     Ok(token)
 }
 
