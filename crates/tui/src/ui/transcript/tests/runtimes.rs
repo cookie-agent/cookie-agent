@@ -79,8 +79,8 @@ async fn the_runtime_panel_detaches_and_attaches_and_the_status_line_follows() {
     assert!(rendered.contains("Session runtimes"), "{rendered}");
     assert!(rendered.contains("ready"), "{rendered}");
     assert!(
-        rendered.contains(&format!("global, {}", names[1])),
-        "the status line names the attachments: {rendered}"
+        rendered.contains("local · "),
+        "the bottom bar names the one runtime besides global, with its workspace: {rendered}"
     );
 
     // Detach the selected first row, `global`.
@@ -152,6 +152,10 @@ async fn a_new_session_draft_chooses_its_runtimes_before_the_session_exists() {
     let rendered = rendered_frame(&mut app, 120, 40);
     assert!(rendered.contains("New session runtimes"), "{rendered}");
     assert!(rendered.contains("ready"), "{rendered}");
+    assert!(
+        rendered.contains("local · "),
+        "the bottom bar names the draft's runtime: {rendered}"
+    );
 
     // Removing and adding edit the draft only; an instance it already
     // attaches is refused.

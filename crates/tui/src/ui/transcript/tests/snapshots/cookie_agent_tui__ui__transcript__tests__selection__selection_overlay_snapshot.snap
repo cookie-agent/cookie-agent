@@ -1,5 +1,6 @@
 ---
 source: crates/tui/src/ui/transcript/tests/selection.rs
+assertion_line: 927
 expression: overlay
 ---
 ╭ Conversation · events ≥ warning ─────────────────────────────────────────────╮
@@ -25,4 +26,4 @@ transport closed
 ╭ primary • Arbitrary Model[base] ─────────────────────────────────────────────╮
 │Type a message · / for commands                                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-— · global, local                              auto-approve    `ctrl+p` commands
+local                                          auto-approve    `ctrl+p` commands

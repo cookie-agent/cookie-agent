@@ -445,9 +445,12 @@ When pricing is available, the bottom bar also shows the selected session's
 estimated cost between the permission mode and context usage. Click the cost to
 open the `/usage` dashboard. Unpriced sessions omit the segment.
 
-The left of the bottom bar shows the session's directory followed by the names
-of its runtime attachments, for example `~/web · global, local_web`, or
-`no runtimes` for a session with none.
+The left of the bottom bar shows the runtimes the selected session, or a new
+session before its first prompt, attaches besides `global`. With one, it
+shows the runtime and its workspace, for example `labpc · ~/api`; with
+several, their attachment names, for example `local_web, labpc_api`. It
+shows `global` when that is all the session attaches, and `no runtimes` for
+a session with none.
 
 ## Runtimes panel
 

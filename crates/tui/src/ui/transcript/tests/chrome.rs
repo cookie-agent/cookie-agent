@@ -182,7 +182,8 @@ async fn bottom_bar_working_indicator_tracks_running_queued_and_idle_states() {
     }
     app.store.sessions.get_mut(&session).unwrap().active_run = None;
     let idle = rendered_row(&mut app, 100, 24, 23);
-    assert!(idle.starts_with("/workspace"), "{idle}");
+    // A session created before runtimes works in `local` at its directory.
+    assert!(idle.starts_with("local · /workspace"), "{idle}");
     assert!(!idle.contains("working"));
     assert!(
         app.store

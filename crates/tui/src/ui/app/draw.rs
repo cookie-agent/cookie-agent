@@ -446,40 +446,7 @@ impl App {
             };
         }
 
-        let cwd = self
-            .selected_session_meta()
-            .map(|meta| meta.cwd_identity.as_str())
-            .or_else(|| {
-                self.selected
-                    .and_then(|session_id| self.store.sessions.get(&session_id))
-                    .and_then(|state| state.cwd_identity.as_ref())
-                    .map(cookie_agent_protocol::CwdIdentity::as_str)
-            })
-            .map(shorten_home)
-            .unwrap_or_else(|| "—".into());
-
-        // The session's attachment names follow its directory; a session
-        // created before runtimes is attached to `global` and `local`.
-        let attachments = self
-            .selected
-            .and_then(|session_id| self.store.sessions.get(&session_id))
-            .map(|state| match state.runtime_attachments.attachments() {
-                Some(attachments) => attachments
-                    .iter()
-                    .map(|attachment| attachment.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                None => format!(
-                    "{}, {}",
-                    cookie_agent_protocol::RuntimeId::GLOBAL,
-                    cookie_agent_protocol::RuntimeId::LOCAL
-                ),
-            });
-        let cwd = match attachments {
-            Some(attachments) if attachments.is_empty() => format!("{cwd} · no runtimes"),
-            Some(attachments) => format!("{cwd} · {attachments}"),
-            None => cwd,
-        };
+        let cwd = self.runtime_label();
         let cwd = self.working_state().map_or(cwd, |working| {
             let glyph = ['◐', '◓', '◑', '◒'][usize::from(self.clock_bucket())];
             let label = match working {
@@ -1690,6 +1657,154 @@ fn fence_emoji_spill(buffer: &mut ratatui::buffer::Buffer) {
                 cell.set_diff_option(CellDiffOption::AlwaysUpdate);
             }
         }
+    }
+}
+
+/// One runtime the bottom bar names.
+struct RuntimeLabelEntry {
+    runtime_id: String,
+    /// The attachment name, once known.
+    name: Option<String>,
+    workspace: Option<String>,
+}
+
+impl App {
+    /// The bottom bar's runtime label: the runtimes the selected session, or
+    /// the new-session draft, attaches besides `global`. With exactly one,
+    /// its runtime ID and workspace (`labpc · ~/repo`); with several, their
+    /// attachment names. `global` alone, `no runtimes`, or `—` with neither
+    /// a session nor a draft.
+    fn runtime_label(&self) -> String {
+        let entries = if self.new_session_draft.is_some() {
+            match &self.draft_runtimes {
+                Some(entries) => entries
+                    .iter()
+                    .map(|entry| RuntimeLabelEntry {
+                        runtime_id: entry.request.runtime_id.to_string(),
+                        name: match &entry.opened {
+                            Some(Ok(instance)) => {
+                                instance.attachment_name.as_ref().map(ToString::to_string)
+                            }
+                            _ => None,
+                        },
+                        workspace: entry.workspace().map(str::to_owned),
+                    })
+                    .collect::<Vec<_>>(),
+                None => std::iter::once(RuntimeLabelEntry {
+                    runtime_id: cookie_agent_protocol::RuntimeId::GLOBAL.to_owned(),
+                    name: None,
+                    workspace: None,
+                })
+                .chain(
+                    self.default_coding_runtime()
+                        .map(|request| RuntimeLabelEntry {
+                            runtime_id: request.runtime_id.to_string(),
+                            name: None,
+                            workspace: request.workspace,
+                        }),
+                )
+                .collect(),
+            }
+        } else {
+            let Some(state) = self
+                .selected
+                .and_then(|session_id| self.store.sessions.get(&session_id))
+            else {
+                return "—".into();
+            };
+            match state.runtime_attachments.attachments() {
+                Some(attachments) => attachments
+                    .iter()
+                    .map(|attachment| RuntimeLabelEntry {
+                        runtime_id: attachment.runtime_id.to_string(),
+                        name: Some(attachment.name.to_string()),
+                        workspace: attachment.workspace.clone(),
+                    })
+                    .collect(),
+                // A session created before runtimes is attached to `global`
+                // and to `local` at its directory.
+                None => vec![
+                    RuntimeLabelEntry {
+                        runtime_id: cookie_agent_protocol::RuntimeId::GLOBAL.to_owned(),
+                        name: None,
+                        workspace: None,
+                    },
+                    RuntimeLabelEntry {
+                        runtime_id: cookie_agent_protocol::RuntimeId::LOCAL.to_owned(),
+                        name: None,
+                        workspace: self
+                            .selected_session_meta()
+                            .map(|meta| meta.cwd_identity.as_str().to_owned())
+                            .or_else(|| {
+                                state
+                                    .cwd_identity
+                                    .as_ref()
+                                    .map(|cwd| cwd.as_str().to_owned())
+                            }),
+                    },
+                ],
+            }
+        };
+        runtime_label(&entries)
+    }
+}
+
+fn runtime_label(entries: &[RuntimeLabelEntry]) -> String {
+    let attached = entries
+        .iter()
+        .filter(|entry| entry.runtime_id != cookie_agent_protocol::RuntimeId::GLOBAL)
+        .collect::<Vec<_>>();
+    match attached.as_slice() {
+        [] if entries.is_empty() => "no runtimes".into(),
+        [] => cookie_agent_protocol::RuntimeId::GLOBAL.into(),
+        [only] => match &only.workspace {
+            Some(workspace) => format!("{} · {}", only.runtime_id, shorten_home(workspace)),
+            None => only.runtime_id.clone(),
+        },
+        several => several
+            .iter()
+            .map(|entry| entry.name.as_deref().unwrap_or(&entry.runtime_id))
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
+
+#[cfg(test)]
+mod runtime_label_tests {
+    use super::{RuntimeLabelEntry, runtime_label};
+
+    fn entry(runtime_id: &str, name: Option<&str>, workspace: Option<&str>) -> RuntimeLabelEntry {
+        RuntimeLabelEntry {
+            runtime_id: runtime_id.into(),
+            name: name.map(str::to_owned),
+            workspace: workspace.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn one_runtime_shows_its_workspace_and_several_show_their_names() {
+        let global = || entry("global", Some("global"), None);
+        assert_eq!(
+            runtime_label(&[
+                global(),
+                entry("labpc", Some("labpc_api"), Some("/srv/api"))
+            ]),
+            "labpc · /srv/api"
+        );
+        assert_eq!(
+            runtime_label(&[entry("computer", Some("computer"), None)]),
+            "computer"
+        );
+        assert_eq!(
+            runtime_label(&[
+                global(),
+                entry("local", Some("local_web"), Some("/srv/web")),
+                entry("labpc", None, Some("~/api")),
+            ]),
+            "local_web, labpc"
+        );
+        assert_eq!(runtime_label(&[global()]), "global");
+        assert_eq!(runtime_label(&[]), "no runtimes");
     }
 }
 
