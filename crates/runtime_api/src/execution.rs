@@ -15,23 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{ToolError, ToolOrigin, WorkspaceContext, media::validate_attachment};
 
-/// Exact model adapter family of a turn. Unlike [`AdaptorId`] it keeps
-/// compatible families apart, because their media delivery differs.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AdapterFamily {
-    Anthropic,
-    AnthropicCompatible,
-    OpenaiChat,
-    OpenaiResponses,
-    OpenaiCompatible,
-    GoogleGemini,
-    GoogleVertexGemini,
-    AwsBedrockConverse,
-    AzureOpenaiChat,
-    AzureOpenaiResponses,
-    CohereV2Chat,
-}
+pub use cookie_agent_protocol::runtime_protocol::AdapterFamily;
 
 /// Immutable harness context captured for one tool preparation/execution batch.
 ///

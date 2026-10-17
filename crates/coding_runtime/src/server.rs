@@ -43,10 +43,10 @@ use cookie_agent_runtime_api::{
         self, ContextParams, ContextResult, DetachableParams, Empty, ExecuteOutcome, ExecuteParams,
         ExecuteResult, InitializeParams, InitializeResult, InlineMedia, McpChangedParams,
         McpFailureReport, McpReconnectParams, McpServerReport, McpServerSettings, Outcome,
-        PrepareOutcome, PrepareParams, PrepareResult, PreparedCall, PreparedRef,
+        OutcomeExt as _, PrepareOutcome, PrepareParams, PrepareResult, PreparedCall, PreparedRef,
         PromptSectionDeclaration, RUNTIME_PROTOCOL_VERSION, RuntimeSettings, RuntimeSkills,
         RuntimeTools, SkillDeclaration, SkillDiscoveryDeclaration, ToolDeclaration,
-        ToolProgressParams, WireToolError, error_code, method,
+        ToolDeclarationExt as _, ToolProgressParams, WireToolError, error_code, method,
     },
     reconnect::ReconnectPolicy,
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
@@ -374,10 +374,10 @@ impl Server {
                 let peer = self.peer.clone();
                 tokio::spawn(async move {
                     let _ = peer
-                        .request::<_, cookie_agent_protocol::ExtensionRecoveryCompleteResult>(
+                        .request::<_, cookie_agent_protocol::RecoveryCompleteResult>(
                             method::PRODUCER_RECOVERY_COMPLETE,
-                            &cookie_agent_protocol::ExtensionRecoveryCompleteParams {
-                                outcome: cookie_agent_protocol::ExtensionRecoveryOutcome::Ready,
+                            &cookie_agent_protocol::RecoveryCompleteParams {
+                                outcome: cookie_agent_protocol::RecoveryOutcome::Ready,
                             },
                         )
                         .await;
@@ -1130,10 +1130,10 @@ impl cookie_agent_runtime_api::ProducerChannel for PeerProducers {
         session: SessionId,
         name: cookie_agent_protocol::ProducerName,
     ) -> Result<cookie_agent_protocol::ProducerId, ToolError> {
-        let result: cookie_agent_protocol::ExtensionProducerRegisterResult = self
+        let result: cookie_agent_protocol::ProducerRegisterResult = self
             .request(
                 method::PRODUCER_REGISTER,
-                &cookie_agent_protocol::ExtensionProducerRegisterParams {
+                &cookie_agent_protocol::ProducerRegisterParams {
                     session_id: session,
                     name,
                 },
@@ -1148,10 +1148,10 @@ impl cookie_agent_runtime_api::ProducerChannel for PeerProducers {
         producer: cookie_agent_protocol::ProducerId,
         message: cookie_agent_runtime_api::ProducerMessage,
     ) -> Result<cookie_agent_protocol::ProducerMessageId, ToolError> {
-        let result: cookie_agent_protocol::ExtensionProducerSendResult = self
+        let result: cookie_agent_protocol::ProducerSendResult = self
             .request(
                 method::PRODUCER_SEND,
-                &cookie_agent_protocol::ExtensionProducerSendParams {
+                &cookie_agent_protocol::ProducerSendParams {
                     session_id: session,
                     producer_id: producer,
                     mode: message.mode,
@@ -1169,10 +1169,10 @@ impl cookie_agent_runtime_api::ProducerChannel for PeerProducers {
         session: SessionId,
         producer: cookie_agent_protocol::ProducerId,
     ) -> Result<(), ToolError> {
-        let _: cookie_agent_protocol::ExtensionProducerUnregisterResult = self
+        let _: cookie_agent_protocol::ProducerUnregisterResult = self
             .request(
                 method::PRODUCER_UNREGISTER,
-                &cookie_agent_protocol::ExtensionProducerUnregisterParams {
+                &cookie_agent_protocol::ProducerUnregisterParams {
                     session_id: session,
                     producer_id: producer,
                 },
@@ -1186,10 +1186,10 @@ impl cookie_agent_runtime_api::ProducerChannel for PeerProducers {
         session: SessionId,
         message: cookie_agent_protocol::ProducerMessageId,
     ) -> Result<(), ToolError> {
-        let _: cookie_agent_protocol::ExtensionProducerDiscardResult = self
+        let _: cookie_agent_protocol::ProducerDiscardResult = self
             .request(
                 method::PRODUCER_DISCARD,
-                &cookie_agent_protocol::ExtensionProducerDiscardParams {
+                &cookie_agent_protocol::ProducerDiscardParams {
                     session_id: session,
                     message_id: message,
                 },

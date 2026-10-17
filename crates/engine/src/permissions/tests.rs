@@ -49,10 +49,6 @@ fn permission_names_map_to_actions_and_invalid_names_fail() {
         PermissionAction::MESSAGE
     );
     assert_eq!(
-        PermissionPipeline::action_for_permission_name("plugin:lint").expect("plugin tool"),
-        PermissionAction::PLUGIN
-    );
-    assert_eq!(
         PermissionPipeline::action_for_permission_name("browse")
             .expect("a runtime's own action")
             .as_str(),
@@ -1003,7 +999,10 @@ fn resource_names_do_not_override_configured_permission_effects() {
         (PermissionAction::BASH, &["cat .env", "rm -rf x"][..]),
         (PermissionAction::DELEGATE, &["reviewer"][..]),
         (PermissionAction::MCP, &["github_delete_repo"][..]),
-        (PermissionAction::PLUGIN, &["read .env"][..]),
+        (
+            PermissionAction::new("issue_read").expect("a plugin's own action"),
+            &["read .env"][..],
+        ),
         (PermissionAction::SKILL, &["review"][..]),
     ];
     for (action, names) in cases {
@@ -1388,79 +1387,6 @@ fn visibility_uses_any_rule_without_resource_precedence() {
         decide_loose(&policy(Vec::new()), PermissionAction::WEBFETCH).effect,
         PermissionEffect::Deny
     );
-}
-
-#[test]
-fn plugin_visibility_is_action_scoped_and_execution_remains_authoritative() {
-    let plugin_policy = policy(vec![rule(
-        "allow-echo",
-        PermissionAction::PLUGIN,
-        "echo *",
-        PermissionEffect::Allow,
-    )]);
-    assert!(PermissionPipeline::tool_visible(
-        &plugin_policy,
-        "plugin:echo"
-    ));
-    assert!(PermissionPipeline::tool_visible(
-        &plugin_policy,
-        "plugin:delete"
-    ));
-
-    let overlay = SessionPermissionOverlay {
-        rules: vec![rule(
-            "deny-echo",
-            PermissionAction::PLUGIN,
-            "echo *",
-            PermissionEffect::Deny,
-        )],
-    };
-    assert!(PermissionPipeline::tool_visible_with_overlay(
-        &plugin_policy,
-        Some(&overlay),
-        "plugin:echo",
-        None
-    ));
-
-    let grant = SessionPermissionOverlay {
-        rules: vec![rule(
-            "grant-delete",
-            PermissionAction::PLUGIN,
-            "delete *",
-            PermissionEffect::Allow,
-        )],
-    };
-    assert!(PermissionPipeline::tool_visible_with_grants(
-        &plugin_policy,
-        None,
-        Some(&grant),
-        "plugin:delete",
-        Some(std::path::Path::new("/workspace")),
-    ));
-
-    let read_only_grant = SessionPermissionOverlay {
-        rules: vec![rule(
-            "grant-issue-read",
-            PermissionAction::PLUGIN,
-            "issue_read *",
-            PermissionEffect::Allow,
-        )],
-    };
-    let empty = policy(Vec::new());
-    assert!(!PermissionPipeline::tool_visible_with_grants(
-        &empty,
-        None,
-        Some(&read_only_grant),
-        "plugin:issue_read",
-        Some(std::path::Path::new("/workspace")),
-    ));
-    assert!(!PermissionPipeline::tool_visible_with_grants(
-        &empty,
-        None,
-        Some(&read_only_grant),
-        "plugin:issue_delete",
-        Some(std::path::Path::new("/workspace")),
-    ));
 }
 
 #[test]

@@ -260,6 +260,8 @@ pub enum EngineError {
     /// A runtime could not be attached, detached, or started.
     #[error("runtime error: {0}")]
     Runtime(String),
+    #[error("plugin request rejected: {0}")]
+    Plugin(String),
     #[error(transparent)]
     ModelManager(#[from] cookie_agent_models::ModelManagerError),
     #[error(transparent)]
@@ -401,6 +403,14 @@ impl PreparedToolCall {
             .and_then(|context| context.attachment.as_ref())
     }
 
+    /// Where the call's tool comes from, as hooks see it; `None` for a call
+    /// that names no published tool.
+    fn hook_origin(&self) -> Option<cookie_agent_protocol::ExtensionToolOrigin> {
+        self.interception
+            .as_ref()
+            .map(ToolInterceptionContext::hook_origin)
+    }
+
     /// Layer or runtime that owns the prepared tool.
     fn origin(&self) -> Option<&crate::ToolOrigin> {
         self.interception
@@ -415,6 +425,21 @@ impl PreparedToolCall {
             .as_ref()
             .ok()
             .and_then(|prepared| prepared.serialization_key().cloned())
+    }
+}
+
+impl ToolInterceptionContext {
+    /// Where the tool comes from, as hooks see it.
+    fn hook_origin(&self) -> cookie_agent_protocol::ExtensionToolOrigin {
+        match (&self.attachment, &self.preparation.origin) {
+            (Some(attachment), crate::ToolOrigin::Runtime(runtime)) => {
+                cookie_agent_protocol::ExtensionToolOrigin::Runtime {
+                    attachment: attachment.to_string(),
+                    runtime_id: runtime.id().to_owned(),
+                }
+            }
+            _ => cookie_agent_protocol::ExtensionToolOrigin::Base,
+        }
     }
 }
 
@@ -862,19 +887,19 @@ impl Engine {
             .map_err(|error| EngineError::ToolFailed(error.to_string()))?,
         );
         reserve_provider_id(&mut provider_ids, mcp.as_ref())?;
-        // Inside the global runtime, MCP and plugin tools may not take the
-        // names of its other tools.
+        // Every plugin's tools share the `plugin` provenance ID.
+        provider_ids.insert(crate::plugin::PLUGIN_PROVIDER_ID);
+        // Inside the global runtime, MCP tools may not take the names of its
+        // other tools.
         for provider in &options.runtimes.global_tools {
             mcp.reserve_provider(provider.as_ref())
                 .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
         }
-        let plugins = Arc::new(crate::PluginRegistry::new(
-            options.config.plugins.clone(),
-            Arc::clone(&mcp),
-        ));
-        reserve_provider_id(&mut provider_ids, plugins.as_ref())?;
-        let mut global_providers: Vec<Arc<dyn ToolProvider>> = vec![mcp.clone(), plugins.clone()];
+        let plugins = Arc::new(crate::PluginRegistry::new(options.config.plugins.clone()));
+        let mut global_providers: Vec<Arc<dyn ToolProvider>> = vec![mcp.clone()];
         global_providers.extend(options.runtimes.global_tools.iter().cloned());
+        // Each plugin's tools compose under the plugin's name.
+        global_providers.extend(plugins.tool_providers());
         let runtimes = Arc::new(crate::runtimes::RuntimeRegistry::new(
             Arc::new(crate::runtimes::GlobalTemplate),
             crate::runtimes::GlobalTemplate::started(
@@ -955,7 +980,6 @@ impl Engine {
                     let Some(inner) = weak.upgrade() else {
                         return crate::plugin::PluginEmitOutcome {
                             bus: cookie_agent_protocol::ExtensionEmitStatus::Dropped,
-                            durable: cookie_agent_protocol::ExtensionEmitStatus::Rejected,
                             reason: Some("engine is shutting down".into()),
                         };
                     };
@@ -977,7 +1001,6 @@ impl Engine {
         // No session state is read here: delegation records, grants, and
         // producer state arrive with each tree's load (tree-local B1, C1).
         engine.install_tree_load_observer()?;
-        engine.install_producer_runtime();
         engine.install_runtime_producers();
         if let Some(runtime) = &engine.inner.runtime {
             engine.inner.mcp.start_eager(runtime);
@@ -1455,8 +1478,22 @@ impl Engine {
     }
 
     #[must_use]
-    pub fn plugin_statuses(&self) -> Vec<crate::PluginStatus> {
+    pub fn plugin_statuses(&self) -> Vec<cookie_agent_protocol::PluginInfo> {
         self.inner.plugins.statuses()
+    }
+
+    /// Starts plugin `name` again now: a failed one retries, and a connected
+    /// one is stopped and restarted.
+    pub fn restart_plugin(&self, name: &str) -> Result<(), EngineError> {
+        self.inner
+            .plugins
+            .restart(name)
+            .map_err(EngineError::Plugin)
+    }
+
+    /// Plugin status changes, coalesced.
+    pub fn subscribe_plugin_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.plugins.subscribe_changes()
     }
 
     #[cfg(test)]
@@ -1473,10 +1510,6 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn pending_plugin_diagnostic_keys_for_test(&self) -> usize {
         self.inner.plugin_diagnostics.accumulator.key_count()
-    }
-
-    pub async fn ping_plugin(&self, name: &str) -> Result<(), String> {
-        self.inner.plugins.ping(name).await
     }
 
     /// Stops new session mailbox traffic and cancels active work. Existing

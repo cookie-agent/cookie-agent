@@ -81,8 +81,8 @@ impl WebfetchArgs {
 impl ToolProvider for WebfetchTool {
     fn provider_id(&self) -> &'static str {
         match self.collision {
-            ToolCollision::Prefix => "builtin.webfetch",
             ToolCollision::Fallback => "global.webfetch",
+            ToolCollision::Prefix | ToolCollision::Override => "builtin.webfetch",
         }
     }
 

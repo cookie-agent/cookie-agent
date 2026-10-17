@@ -5,6 +5,7 @@ use serde_json::json;
 use tokio::io::AsyncWriteExt as _;
 
 use super::{Incoming, LineTransport, Peer, RpcError};
+use crate::protocol::ToolDeclarationExt as _;
 use crate::protocol::{
     self, Empty, ExecuteOutcome, ExecuteResult, MAX_FRAME_BYTES, Outcome, PrepareOutcome,
     PrepareResult, RuntimeSettings, ToolDeclaration, WireToolError, error_code,

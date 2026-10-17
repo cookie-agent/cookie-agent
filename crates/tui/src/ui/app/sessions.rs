@@ -488,7 +488,8 @@ impl App {
             | Modal::Permissions
             | Modal::Usage
             | Modal::GoalDetail
-            | Modal::Background => 0,
+            | Modal::Background
+            | Modal::Plugins => 0,
             Modal::ConnectDetails
             | Modal::ConnectSetup
             | Modal::ConnectError

@@ -1,4 +1,4 @@
-use cookie_agent_plugin_sdk::{PluginServer, ToolDecl, ToolOutput};
+use cookie_agent_plugin_sdk::{PermissionAction, PluginServer, ToolDecl, ToolFailure, ToolOutput};
 use serde_json::json;
 
 #[tokio::main(flavor = "current_thread")]
@@ -6,8 +6,10 @@ async fn main() -> Result<(), cookie_agent_plugin_sdk::PluginError> {
     PluginServer::builder("echo", env!("CARGO_PKG_VERSION"))
         .tool(
             ToolDecl {
-                output: Default::default(),
                 name: "echo".into(),
+                collision: Default::default(),
+                // A tool may need no permission; this one asks for its own.
+                permission: Some(PermissionAction::new("echo").expect("valid action")),
                 description: "Echo text back to the model".into(),
                 parameters: json!({
                     "type": "object",
@@ -15,13 +17,16 @@ async fn main() -> Result<(), cookie_agent_plugin_sdk::PluginError> {
                     "required": ["text"],
                     "additionalProperties": false
                 }),
-                permission_name: "echo".into(),
-                primary_resource_param: None,
+                concurrency: Default::default(),
+                result_truncation: Default::default(),
+                output: Default::default(),
+                background: false,
+                background_default: false,
             },
-            |_ctx, request| async move {
-                let text = request.arguments["text"]
+            |_call, arguments| async move {
+                let text = arguments["text"]
                     .as_str()
-                    .ok_or_else(|| cookie_agent_plugin_sdk::ToolFailure::new("text is required"))?;
+                    .ok_or_else(|| ToolFailure::new("text is required"))?;
                 Ok(ToolOutput::success(text))
             },
         )

@@ -9,7 +9,7 @@ source="${protocol_root}/src/extension.rs"
 temporary_root="$(mktemp -d)"
 trap 'rm -rf "${temporary_root}"' EXIT
 
-for mutation in actual-initialize-params removed-field shrunk-required newly-required nested-field removed-definition method-name tool-call-field tool-call-method event-field emit-context emit-status intercept-action intercept-method compact-additions agent-replacement compact-cancel user-transform model-messages provider-header-delete provider-payload provider-status message-content model-select-source fork-sequence revert-override; do
+for mutation in actual-initialize-params removed-field shrunk-required newly-required nested-field removed-definition method-name producer-field producer-method tool-origin event-field emit-context emit-status intercept-action intercept-method compact-additions agent-replacement compact-cancel user-transform model-messages provider-payload provider-status message-content model-select-source fork-sequence revert-override; do
   candidate_root="${temporary_root}/${mutation}"
   candidate_source="${temporary_root}/${mutation}.rs"
   mkdir "${candidate_root}"
@@ -36,7 +36,8 @@ mutation = sys.argv[2]
 source = pathlib.Path(sys.argv[3])
 params_path = root / "ExtensionInitializeParams.schema.json"
 result_path = root / "ExtensionInitializeResult.schema.json"
-call_path = root / "ExtensionToolCallParams.schema.json"
+producer_send_path = root / "ProducerSendParams.schema.json"
+before_path = root / "ExtensionToolBeforeCallParams.schema.json"
 event_path = root / "ExtensionEventParams.schema.json"
 emit_result_path = root / "ExtensionEmitResultParams.schema.json"
 emit_path = root / "ExtensionEmitParams.schema.json"
@@ -46,7 +47,6 @@ agent_result_path = root / "ExtensionAgentBeforeStartResult.schema.json"
 compact_result_path = root / "ExtensionSessionBeforeCompactResult.schema.json"
 user_result_path = root / "ExtensionUserBeforeInputResult.schema.json"
 model_request_path = root / "ExtensionModelBeforeRequestParams.schema.json"
-headers_result_path = root / "ExtensionProviderBeforeHeadersResult.schema.json"
 provider_request_path = root / "ExtensionProviderBeforeRequestParams.schema.json"
 provider_response_path = root / "ExtensionProviderAfterResponseParams.schema.json"
 message_result_path = root / "ExtensionMessageEndResult.schema.json"
@@ -55,7 +55,8 @@ fork_path = root / "ExtensionSessionBeforeForkParams.schema.json"
 revert_result_path = root / "ExtensionSessionBeforeRevertResult.schema.json"
 params = json.loads(params_path.read_text())
 result = json.loads(result_path.read_text())
-call = json.loads(call_path.read_text())
+producer_send = json.loads(producer_send_path.read_text())
+before = json.loads(before_path.read_text())
 event = json.loads(event_path.read_text())
 emit_result = json.loads(emit_result_path.read_text())
 emit = json.loads(emit_path.read_text())
@@ -65,7 +66,6 @@ agent_result = json.loads(agent_result_path.read_text())
 compact_result = json.loads(compact_result_path.read_text())
 user_result = json.loads(user_result_path.read_text())
 model_request = json.loads(model_request_path.read_text())
-headers_result = json.loads(headers_result_path.read_text())
 provider_request = json.loads(provider_request_path.read_text())
 provider_response = json.loads(provider_response_path.read_text())
 message_result = json.loads(message_result_path.read_text())
@@ -82,15 +82,17 @@ elif mutation == "newly-required":
     result["properties"]["future_required"] = {"type": "string"}
     result["required"].append("future_required")
 elif mutation == "nested-field":
-    result["$defs"]["ExtensionToolDeclaration"]["properties"]["permission_name"] = {"type": "integer"}
+    result["$defs"]["ToolDeclaration"]["properties"]["name"] = {"type": "integer"}
 elif mutation == "removed-definition":
     result["$defs"].pop("ExtensionPluginCapabilities")
 elif mutation == "method-name":
-    source.write_text(source.read_text().replace('"plugin/ping"', '"plugin/pong"'))
-elif mutation == "tool-call-field":
-    call["properties"]["arguments"] = {"type": "string"}
-elif mutation == "tool-call-method":
-    source.write_text(source.read_text().replace('"plugin/tools/call"', '"plugin/tools/run"'))
+    source.write_text(source.read_text().replace('"plugin/shutdown"', '"plugin/stop"'))
+elif mutation == "producer-field":
+    producer_send["properties"].pop("idempotency_key")
+elif mutation == "producer-method":
+    source.write_text(source.read_text().replace('"producer/register"', '"producer/add"'))
+elif mutation == "tool-origin":
+    before["properties"].pop("origin")
 elif mutation == "event-field":
     event["properties"].pop("seq")
 elif mutation == "emit-context":
@@ -111,8 +113,6 @@ elif mutation == "user-transform":
     user_result["$defs"]["ExtensionUserBeforeInputAction"]["enum"].remove("transform")
 elif mutation == "model-messages":
     model_request["properties"].pop("messages")
-elif mutation == "provider-header-delete":
-    headers_result["properties"].pop("delete")
 elif mutation == "provider-payload":
     provider_request["properties"].pop("payload")
 elif mutation == "provider-status":
@@ -127,7 +127,8 @@ elif mutation == "revert-override":
     revert_result["$defs"]["ExtensionSessionBeforeRevertAction"]["enum"].remove("override")
 params_path.write_text(json.dumps(params))
 result_path.write_text(json.dumps(result))
-call_path.write_text(json.dumps(call))
+producer_send_path.write_text(json.dumps(producer_send))
+before_path.write_text(json.dumps(before))
 event_path.write_text(json.dumps(event))
 emit_result_path.write_text(json.dumps(emit_result))
 emit_path.write_text(json.dumps(emit))
@@ -137,7 +138,6 @@ agent_result_path.write_text(json.dumps(agent_result))
 compact_result_path.write_text(json.dumps(compact_result))
 user_result_path.write_text(json.dumps(user_result))
 model_request_path.write_text(json.dumps(model_request))
-headers_result_path.write_text(json.dumps(headers_result))
 provider_request_path.write_text(json.dumps(provider_request))
 provider_response_path.write_text(json.dumps(provider_response))
 message_result_path.write_text(json.dumps(message_result))

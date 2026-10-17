@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 43 with versionless session events.
+//! Exact cookie-agent protocol 44 with versionless session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders, except
 //! the few that keep versionless session event history readable.
@@ -113,10 +113,12 @@ mod model;
 #[cfg(feature = "oauth-callback")]
 pub mod oauth_callback;
 pub mod paths;
+pub mod peer;
 mod producer;
 mod provider;
 mod rpc;
 mod runtime;
+pub mod runtime_protocol;
 mod session;
 mod session_model;
 mod setup_value;
@@ -150,7 +152,7 @@ pub use session_model::*;
 pub use setup_value::*;
 
 /// The only protocol version supported by this build.
-pub const PROTOCOL_VERSION: u32 = 43;
+pub const PROTOCOL_VERSION: u32 = 44;
 /// The only coherent runtime snapshot schema supported by this build.
 pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 6;
 
@@ -214,7 +216,7 @@ macro_rules! exact_numeric_wire_type {
     };
 }
 
-exact_numeric_wire_type!(ProtocolVersion, 43, "The exact protocol wire version.");
+exact_numeric_wire_type!(ProtocolVersion, 44, "The exact protocol wire version.");
 exact_numeric_wire_type!(
     RuntimeSnapshotSchemaVersion,
     6,

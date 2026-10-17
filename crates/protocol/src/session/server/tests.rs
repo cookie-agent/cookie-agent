@@ -315,6 +315,18 @@ impl ServerProtocol for StubServer {
     ) -> Result<crate::RuntimesReconnectResult, ServerFault> {
         Err(ServerFault::method_not_found())
     }
+    async fn list_plugins(
+        &self,
+        _: crate::PluginsListParams,
+    ) -> Result<crate::PluginsListResult, ServerFault> {
+        Err(ServerFault::method_not_found())
+    }
+    async fn restart_plugin(
+        &self,
+        _: crate::PluginsRestartParams,
+    ) -> Result<crate::PluginsRestartResult, ServerFault> {
+        Err(ServerFault::method_not_found())
+    }
     async fn background_tool(
         &self,
         _: crate::RunToolBackgroundParams,

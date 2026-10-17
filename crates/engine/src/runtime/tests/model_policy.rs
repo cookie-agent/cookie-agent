@@ -612,8 +612,8 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
         );
     let marker = tempfile::tempdir().unwrap();
     let provider_file = marker.path().join("provider.jsonl");
-    let model_capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["model_before_request"]}"#;
-    let provider_capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["provider_before_headers","provider_after_response"]}"#;
+    let model_capabilities = r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":["model_before_request"]}"#;
+    let provider_capabilities = r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":["provider_after_response"]}"#;
     let replacement = serde_json::json!({
         "action": "replace",
         "messages": [
@@ -680,10 +680,6 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
                     &[
                         ("FIXTURE_CAPABILITIES", provider_capabilities.into()),
                         (
-                            "FIXTURE_PROVIDER_BEFORE_HEADERS_RESULT",
-                            r#"{"set":{"x-test":"value"},"delete":[]}"#.into(),
-                        ),
-                        (
                             "FIXTURE_INTERCEPT_FILE",
                             provider_file.display().to_string(),
                         ),
@@ -737,21 +733,14 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
         session.session_id,
         "plugin diagnostics",
         |projection| {
-            let events = projection.log.events();
-            let invalid = events.iter().any(|event| {
+            projection.log.events().iter().any(|event| {
                 matches!(
                     &event.payload,
                     EventPayload::PluginDiagnostic { kind, message, .. }
                         if *kind == cookie_agent_protocol::PluginDiagnosticKind::InvalidModification
                             && message.contains("replace requires messages")
                 )
-            });
-            let unsupported = events.iter().any(|event| matches!(
-                &event.payload,
-                EventPayload::PluginDiagnostic { kind, .. }
-                    if *kind == cookie_agent_protocol::PluginDiagnosticKind::UnsupportedCapability
-            ));
-            invalid && unsupported
+            })
         },
     )
     .await;
@@ -762,7 +751,6 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
         .find(|call| call["method"] == "plugin/intercept/provider_after_response")
         .expect("provider response observation");
     assert_eq!(after["params"]["status"], 200);
-    assert_eq!(after["params"]["headers"], serde_json::json!({}));
     fixture.engine.shutdown().await;
 }
 

@@ -122,19 +122,17 @@ impl PermissionAction {
     pub const DELEGATE: Self = Self(Cow::Borrowed("delegate"));
     pub const MESSAGE: Self = Self(Cow::Borrowed("message"));
     pub const MCP: Self = Self(Cow::Borrowed("mcp"));
-    pub const PLUGIN: Self = Self(Cow::Borrowed("plugin"));
     pub const SKILL: Self = Self(Cow::Borrowed("skill"));
     pub const WEBFETCH: Self = Self(Cow::Borrowed("webfetch"));
 
     /// The actions of the tools cookie agent ships, in display order.
-    pub const BUILT_IN: [Self; 9] = [
+    pub const BUILT_IN: [Self; 8] = [
         Self::READ,
         Self::WRITE,
         Self::BASH,
         Self::DELEGATE,
         Self::MESSAGE,
         Self::MCP,
-        Self::PLUGIN,
         Self::SKILL,
         Self::WEBFETCH,
     ];

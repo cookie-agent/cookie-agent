@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fs, sync::Arc, time::Duration};
 
 use cookie_agent_config::load_from_user_root;
-use cookie_agent_engine::{Engine, EngineOptions, PluginState};
+use cookie_agent_engine::{Engine, EngineOptions};
 use cookie_agent_identity::CatalogRevision;
 use cookie_agent_models::{
     ModelManager,
@@ -10,17 +10,14 @@ use cookie_agent_models::{
     },
     provider_store::ProviderStore,
 };
+use cookie_agent_protocol::{PluginInfo, PluginState};
 use jiff::Timestamp;
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
-const MCP_FIXTURE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../mcp/tests/fixtures/mcp_server.py"
-);
 
 fn tools(name: &str) -> String {
     format!(
-        r#"[{{"name":"{name}","description":"Fixture tool","parameters":{{"type":"object","properties":{{}}}},"permission_name":"{name}","primary_resource_param":null}}]"#
+        r#"[{{"name":"{name}","description":"Fixture tool","parameters":{{"type":"object","properties":{{}}}}}}]"#
     )
 }
 
@@ -39,17 +36,9 @@ fn plugin_table(name: &str, env: &[(&str, String)], extra: &str) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "[plugins.{name}]\ncommand = {}\nargs = [{}]\nenv = {{ {environment} }}\n{extra}\n",
+        "[plugins.{name}]\ncommand = [{}, {}]\nenv = {{ {environment} }}\n{extra}\n",
         toml_string(python_command()),
         toml_string(FIXTURE)
-    )
-}
-
-fn mcp_table(name: &str) -> String {
-    format!(
-        "[mcp.servers.{name}]\ncommand = {}\nargs = [{}]\n",
-        toml_string(python_command()),
-        toml_string(MCP_FIXTURE)
     )
 }
 
@@ -159,7 +148,7 @@ async fn wait_for_state(engine: &Engine, plugin: &str, expected: PluginState) {
             if engine
                 .plugin_statuses()
                 .into_iter()
-                .any(|status| status.plugin == plugin && status.state == expected)
+                .any(|status| status.name == plugin && status.state == expected)
             {
                 break;
             }
@@ -174,29 +163,12 @@ async fn wait_for_state(engine: &Engine, plugin: &str, expected: PluginState) {
     );
 }
 
-fn status(engine: &Engine, plugin: &str) -> cookie_agent_engine::PluginStatus {
+fn status(engine: &Engine, plugin: &str) -> PluginInfo {
     engine
         .plugin_statuses()
         .into_iter()
-        .find(|status| status.plugin == plugin)
+        .find(|status| status.name == plugin)
         .expect("plugin status")
-}
-
-async fn wait_for_mcp_connected(engine: &Engine, server: &str) {
-    // MCP lifecycle state likewise has no public transition subscription.
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if engine.mcp_statuses().into_iter().any(|status| {
-                status.server == server
-                    && status.state == cookie_agent_engine::McpServerState::Connected
-            }) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("MCP state timeout");
 }
 
 /// The fixture publishes its pid atomically once Python is running, so a
@@ -233,7 +205,7 @@ async fn assert_process_reaped(pid: u32) {
 }
 
 #[tokio::test]
-async fn happy_path_discovers_claims_pings_and_shuts_down() {
+async fn a_plugin_connects_declares_its_tools_and_shuts_down() {
     let marker_directory = tempfile::tempdir().expect("marker directory");
     let path = marker_directory.path().join("shutdown");
     let config = plugin_table(
@@ -248,11 +220,14 @@ async fn happy_path_discovers_claims_pings_and_shuts_down() {
     let harness = open_engine(&config);
     wait_for_state(&harness.engine, "fixture", PluginState::Connected).await;
     assert_eq!(status(&harness.engine, "fixture").tools, ["fixture_tool"]);
-    harness.engine.ping_plugin("fixture").await.expect("ping");
     harness.engine.shutdown().await;
     assert_eq!(
         fs::read_to_string(path).expect("shutdown marker"),
         "shutdown"
+    );
+    assert_eq!(
+        status(&harness.engine, "fixture").state,
+        PluginState::Stopped
     );
 }
 
@@ -288,57 +263,19 @@ async fn plugin_environment_inherits_the_engine_and_adds_configured_values() {
 }
 
 #[tokio::test]
-async fn ping_dispatches_interleaved_notifications_and_requests() {
-    let marker_directory = tempfile::tempdir().expect("marker directory");
-    let rejected = marker_directory.path().join("request-rejected");
-    let config = plugin_table(
-        "fixture",
-        &[
-            ("FIXTURE_NAME", "fixture".into()),
-            ("FIXTURE_INTERLEAVE_PING", "1".into()),
-            (
-                "FIXTURE_REQUEST_REJECTED_FILE",
-                rejected.display().to_string(),
-            ),
-        ],
-        "",
-    );
-    let harness = open_engine(&config);
-    wait_for_state(&harness.engine, "fixture", PluginState::Connected).await;
-    harness.engine.ping_plugin("fixture").await.expect("ping");
-    // The fixture reports this protocol response through an external marker
-    // file, so there is no in-process event to subscribe to.
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while !rejected.exists()
-            || fs::read_to_string(&rejected).is_ok_and(|contents| contents.is_empty())
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("plugin request rejection");
-    assert_eq!(fs::read_to_string(rejected).expect("rejection"), "-32601");
-    harness.engine.shutdown().await;
-}
-
-#[tokio::test]
 async fn exact_version_mismatch_fails_without_stopping_engine() {
     let config = plugin_table(
         "fixture",
         &[
             ("FIXTURE_NAME", "fixture".into()),
-            ("FIXTURE_PROTOCOL_VERSION", "0.0.3".into()),
+            ("FIXTURE_PROTOCOL_VERSION", "7".into()),
         ],
         "",
     );
     let harness = open_engine(&config);
-    wait_for_state(&harness.engine, "fixture", PluginState::Failed).await;
-    assert!(
-        status(&harness.engine, "fixture")
-            .reason
-            .unwrap()
-            .contains("0.0.3")
-    );
+    wait_for_state(&harness.engine, "fixture", PluginState::Reconnecting).await;
+    let reason = status(&harness.engine, "fixture").reason.unwrap();
+    assert!(reason.contains("found 7"), "{reason}");
     harness
         .engine
         .runtime_snapshot()
@@ -373,20 +310,12 @@ async fn timeout_and_malformed_handshakes_fail_without_panicking() {
         )
     );
     let harness = open_engine(&config);
-    wait_for_state(&harness.engine, "slow", PluginState::Failed).await;
-    wait_for_state(&harness.engine, "malformed", PluginState::Failed).await;
-    assert!(
-        status(&harness.engine, "slow")
-            .reason
-            .unwrap()
-            .contains("timeout")
-    );
-    assert!(
-        status(&harness.engine, "malformed")
-            .reason
-            .unwrap()
-            .contains("malformed")
-    );
+    wait_for_state(&harness.engine, "slow", PluginState::Reconnecting).await;
+    wait_for_state(&harness.engine, "malformed", PluginState::Reconnecting).await;
+    let slow = status(&harness.engine, "slow").reason.unwrap();
+    assert!(slow.contains("did not start within 50 ms"), "{slow}");
+    let malformed = status(&harness.engine, "malformed").reason.unwrap();
+    assert!(malformed.contains("handshake failed"), "{malformed}");
     #[cfg(target_os = "linux")]
     {
         // A loaded machine can hit the 50 ms handshake timeout before Python
@@ -400,229 +329,20 @@ async fn timeout_and_malformed_handshakes_fail_without_panicking() {
 }
 
 #[tokio::test]
-async fn oversized_and_invalid_utf8_frames_fail_plugins() {
-    let config = format!(
-        "{}{}",
-        plugin_table(
-            "oversized",
-            &[
-                ("FIXTURE_NAME", "oversized".into()),
-                ("FIXTURE_OVERSIZED_AFTER_INITIALIZE", "1".into()),
-            ],
-            "",
-        ),
-        plugin_table(
-            "invalid_utf8",
-            &[
-                ("FIXTURE_NAME", "invalid_utf8".into()),
-                ("FIXTURE_INVALID_UTF8_AFTER_INITIALIZE", "1".into()),
-            ],
-            "",
-        )
-    );
-    let harness = open_engine(&config);
-    wait_for_state(&harness.engine, "oversized", PluginState::Failed).await;
-    wait_for_state(&harness.engine, "invalid_utf8", PluginState::Failed).await;
-    assert!(
-        status(&harness.engine, "oversized")
-            .reason
-            .unwrap()
-            .contains("4194304")
-    );
-    assert!(
-        status(&harness.engine, "invalid_utf8")
-            .reason
-            .unwrap()
-            .contains("UTF-8")
-    );
-    harness.engine.shutdown().await;
-}
-
-#[tokio::test]
-async fn malformed_schema_and_unknown_primary_resource_fail_plugins() {
-    let malformed_schemas = [
-        ("bad_type", r#"{"type":42}"#),
-        ("bad_length_type", r#"{"type":"string","minLength":"bad"}"#),
-        ("bad_negative_length", r#"{"type":"string","minLength":-1}"#),
-        ("bad_enum", r#"{"enum":"bad"}"#),
-        ("bad_numeric", r#"{"type":"number","multipleOf":0}"#),
-    ];
-    let unknown_resource = r#"[{"name":"bad_resource","description":"bad","parameters":{"type":"object","properties":{}},"permission_name":"bad_resource","primary_resource_param":"path"}]"#;
-    let mut config = malformed_schemas
-        .iter()
-        .map(|(name, parameters)| {
-            let declaration = format!(
-                r#"[{{"name":"{name}","description":"bad","parameters":{parameters},"permission_name":"{name}","primary_resource_param":null}}]"#
-            );
-            plugin_table(
-                name,
-                &[
-                    ("FIXTURE_NAME", (*name).into()),
-                    ("FIXTURE_TOOLS", declaration),
-                ],
-                "",
-            )
-        })
-        .collect::<String>();
-    config.push_str(&plugin_table(
-        "bad_resource",
+async fn a_dropped_plugin_reconnects_and_reports_what_it_wrote_to_stderr() {
+    let config = plugin_table(
+        "crashing",
         &[
-            ("FIXTURE_NAME", "bad_resource".into()),
-            ("FIXTURE_TOOLS", unknown_resource.into()),
+            ("FIXTURE_NAME", "crashing".into()),
+            ("FIXTURE_STDERR", "fixture lost its database".into()),
+            ("FIXTURE_CRASH_AFTER_INITIALIZE", "1".into()),
         ],
         "",
-    ));
-    let harness = open_engine(&config);
-    for (name, _) in malformed_schemas {
-        wait_for_state(&harness.engine, name, PluginState::Failed).await;
-        assert!(
-            status(&harness.engine, name)
-                .reason
-                .unwrap()
-                .contains("JSON Schema")
-        );
-    }
-    wait_for_state(&harness.engine, "bad_resource", PluginState::Failed).await;
-    assert!(
-        status(&harness.engine, "bad_resource")
-            .reason
-            .unwrap()
-            .contains("primary_resource_param")
-    );
-    harness.engine.shutdown().await;
-}
-
-// This test terminates the fixture with the Unix `kill -KILL` command.
-#[cfg(unix)]
-#[tokio::test]
-async fn crash_clears_claims_and_leaves_other_plugin_connected() {
-    let pid_directory = tempfile::tempdir().expect("pid directory");
-    let pid_file = pid_directory.path().join("crasher.pid");
-    let config = format!(
-        "{}{}",
-        plugin_table(
-            "crasher",
-            &[
-                ("FIXTURE_NAME", "crasher".into()),
-                ("FIXTURE_TOOLS", tools("released_tool")),
-                ("FIXTURE_PID_FILE", pid_file.display().to_string()),
-            ],
-            "",
-        ),
-        plugin_table(
-            "steady",
-            &[
-                ("FIXTURE_NAME", "steady".into()),
-                ("FIXTURE_TOOLS", tools("steady_tool")),
-            ],
-            "",
-        )
     );
     let harness = open_engine(&config);
-    wait_for_state(&harness.engine, "crasher", PluginState::Connected).await;
-    wait_for_state(&harness.engine, "steady", PluginState::Connected).await;
-    let pid = read_pid(&pid_file).expect("plugin pid").to_string();
-    let exit = std::process::Command::new("kill")
-        .args(["-KILL", pid.as_str()])
-        .status()
-        .expect("kill plugin");
-    assert!(exit.success());
-    wait_for_state(&harness.engine, "crasher", PluginState::Failed).await;
-    assert!(status(&harness.engine, "crasher").tools.is_empty());
-    harness
-        .engine
-        .runtime_snapshot()
-        .expect("engine remains usable");
-    harness.engine.shutdown().await;
-}
-
-#[tokio::test]
-async fn plugin_tools_may_share_names_with_other_runtimes_and_the_base_layer() {
-    // `read` belongs to the local coding runtime and `skill` to the base
-    // layer: composition prefixes the plugin's tools instead of failing it.
-    let config = format!(
-        "{}{}",
-        plugin_table(
-            "shadow_read",
-            &[
-                ("FIXTURE_NAME", "shadow_read".into()),
-                ("FIXTURE_TOOLS", tools("read")),
-            ],
-            "",
-        ),
-        plugin_table(
-            "shadow_skill",
-            &[
-                ("FIXTURE_NAME", "shadow_skill".into()),
-                ("FIXTURE_TOOLS", tools("skill")),
-            ],
-            "",
-        )
-    );
-    let harness = open_engine(&config);
-    wait_for_state(&harness.engine, "shadow_read", PluginState::Connected).await;
-    wait_for_state(&harness.engine, "shadow_skill", PluginState::Connected).await;
-    harness
-        .engine
-        .runtime_snapshot()
-        .expect("engine remains composed");
-    harness.engine.shutdown().await;
-}
-
-#[tokio::test]
-async fn eager_mcp_preempts_plugin_claim_regardless_of_startup_order() {
-    let config = format!(
-        "{}{}",
-        mcp_table("fixture"),
-        plugin_table(
-            "collision",
-            &[
-                ("FIXTURE_NAME", "collision".into()),
-                ("FIXTURE_TOOLS", tools("fixture_echo_text")),
-            ],
-            "",
-        )
-    );
-    let harness = open_engine(&config);
-    wait_for_mcp_connected(&harness.engine, "fixture").await;
-    wait_for_state(&harness.engine, "collision", PluginState::Failed).await;
-    harness.engine.shutdown().await;
-}
-
-#[tokio::test]
-async fn later_plugin_registration_wins_only_the_duplicate_tool() {
-    let first_tools = r#"[{"name":"shared_tool","description":"Shared","parameters":{"type":"object","properties":{}},"permission_name":"first_permission","primary_resource_param":null},{"name":"first_only","description":"First only","parameters":{"type":"object","properties":{}},"permission_name":"first_only","primary_resource_param":null}]"#;
-    let config = format!(
-        "{}{}",
-        plugin_table(
-            "first",
-            &[
-                ("FIXTURE_NAME", "first".into()),
-                ("FIXTURE_TOOLS", first_tools.into()),
-            ],
-            "",
-        ),
-        plugin_table(
-            "second",
-            &[
-                ("FIXTURE_NAME", "second".into()),
-                ("FIXTURE_TOOLS", tools("shared_tool")),
-                ("FIXTURE_DELAY_MS", "100".into()),
-            ],
-            "",
-        )
-    );
-    let harness = open_engine(&config);
-    wait_for_state(&harness.engine, "first", PluginState::Connected).await;
-    wait_for_state(&harness.engine, "second", PluginState::Connected).await;
-    assert_eq!(status(&harness.engine, "first").tools, ["first_only"]);
-    assert!(
-        status(&harness.engine, "first")
-            .reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("later plugin `second`"))
-    );
-    assert_eq!(status(&harness.engine, "second").tools, ["shared_tool"]);
+    wait_for_state(&harness.engine, "crashing", PluginState::Reconnecting).await;
+    let reason = status(&harness.engine, "crashing").reason.unwrap();
+    assert!(reason.contains("fixture lost its database"), "{reason}");
     harness.engine.shutdown().await;
 }
 
@@ -640,11 +360,11 @@ async fn shutdown_during_pending_initialize_is_bounded() {
         "startup_timeout_ms = 10000\nshutdown_grace_ms = 50",
     );
     let harness = open_engine(&config);
-    wait_for_state(&harness.engine, "slow", PluginState::Connecting).await;
-    // `Connecting` is published before the spawn; the pid proves Python is
+    wait_for_state(&harness.engine, "slow", PluginState::Starting).await;
+    // `Starting` is published before the spawn; the pid proves Python is
     // running and parked in its delayed initialize.
     let pid = wait_for_pid(&pid_file).await;
-    tokio::time::timeout(Duration::from_secs(1), harness.engine.shutdown())
+    tokio::time::timeout(Duration::from_secs(2), harness.engine.shutdown())
         .await
         .expect("bounded shutdown");
     #[cfg(target_os = "linux")]

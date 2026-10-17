@@ -154,7 +154,7 @@ async fn setup_append_terminal_failure_retains_active_tombstone_until_retry() {
     for inject_message in [false, true] {
         let (mut fixture, selection) = custom_fixture_with_endpoint("http://127.0.0.1:9/v1");
         if inject_message {
-            let capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["agent_before_start"]}"#;
+            let capabilities = r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":["agent_before_start"]}"#;
             reopen_with_interception_plugins(
                 &mut fixture,
                 vec![(

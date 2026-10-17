@@ -16,7 +16,7 @@ const WRITE_ALLOWED_AGENT: &str = "---\ndescription: Interception chain test\nmo
 
 fn intercepting(hook: &str) -> String {
     format!(
-        r#"{{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["{hook}"]}}"#
+        r#"{{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":["{hook}"]}}"#
     )
 }
 

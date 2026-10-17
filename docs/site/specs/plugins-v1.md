@@ -1,6 +1,8 @@
 # Plugins: Tools, Hooks, Events, and Producers
 
-Status: **approved, being implemented** (decisions of 2026-10-16). This document is the governing
+Status: **implemented** (decisions of 2026-10-16). Section
+[Implementation notes](#9-implementation-notes) records where the code
+settled details differently. This document is the governing
 specification for cleaning up the plugin protocol, host, SDK, and
 configuration: plugin tools speak the runtime protocol's tool messages, the
 host runs on the runtime stack, and dead or half-built parts go.
@@ -124,9 +126,9 @@ crate, used by both protocols. The plugin methods become `producer/register`,
 protocol's names.
 
 **Hook payloads.** `tool_before_call` and `tool_after_result` gain the
-call's `origin`: `{ "attachment": "<name>", "runtime_id": "<id>" }` for a
-runtime tool, `{ "base": true }` for a daemon base tool, so a hook can tell
-`local`'s `bash` from a remote runtime's.
+call's `origin`: `{ "kind": "runtime", "attachment": "<name>", "runtime_id":
+"<id>" }` for a runtime's or plugin's tool, `{ "kind": "base" }` for a daemon
+base tool, so a hook can tell `local`'s `bash` from a remote runtime's.
 
 ## 4. Host fixes
 
@@ -164,10 +166,10 @@ runtime stack's:
   with the runtime reconnect policy (1 s, 2 s, 4 s, then failed until the
   user retries). A restarted plugin gets a new connection epoch; its
   producers register again and recover as on first start.
-- **Status.** Client RPCs `plugin.list` (name, state, capabilities and hooks,
-  last failure with the stderr tail) and `plugin.restart`, a
-  `plugins.changed` notification, and a TUI plugins view next to the
-  runtimes view.
+- **Status.** Client RPCs `plugins.list` (name, state, capabilities and
+  hooks, last failure with the stderr tail) and `plugins.restart`, a
+  `plugins.changed` notification, and a TUI plugins view (`/plugins`) next
+  to the runtimes view.
 
 ## 6. Configuration
 
@@ -196,7 +198,7 @@ Each phase lands as its own commits with every gate green, and is pushed.
    integer version 1, origins in tool hooks, and the host fixes; the SDK and
    fixtures follow.
 2. **Runtime stack and status.** Section 5 and 6: process, transport,
-   restart, stderr capture, `plugin.list` / `plugin.restart` /
+   restart, stderr capture, `plugins.list` / `plugins.restart` /
    `plugins.changed`, the TUI view, the `command` array.
 3. **Plugin tools.** Section 2: the wire types moved to the protocol crate,
    plugin tools over the runtime tool messages and the daemon's runtime tool
@@ -230,3 +232,24 @@ Confirmed in review 2026-10-16:
 - A colliding plugin tool is prefixed with its plugin's name, or, when it
   declares `collision: override`, takes the bare name and pushes the other
   tool to its prefix.
+
+## 9. Implementation notes
+
+Landed 2026-10-16, with phases 1 to 3 in one change because the host's tests
+would otherwise have been rewritten twice.
+
+- The status RPCs are `plugins.list` and `plugins.restart`, matching
+  `runtimes.list` and `runtimes.reconnect`. They, the `engine_diagnostic`
+  event, and the removed `plugin` action are client protocol 44.
+- Hook failures are `timeout`, `disconnected` (not connected, or the
+  connection ended during the hook, recorded as `interception_crash`),
+  `rejected` (an error answer), and `malformed`; the last two record the new
+  `interception_rejected` diagnostic. `unsupported_capability` is kept only
+  for old logs.
+- `EventParamsRef` and `BusEventParamsRef` stay: they borrow the event so it
+  is serialized once for every subscribed plugin, and a test pins them to
+  the protocol structs' wire form.
+- A plugin's first failed start is `reconnecting` like a later drop, and is
+  `failed` once the reconnect policy is exhausted.
+- Plugin request IDs are integers, as the shared peer requires.
+- Every plugin's tool provider shares the reserved provenance ID `plugin`.

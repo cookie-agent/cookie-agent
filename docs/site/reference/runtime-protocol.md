@@ -10,20 +10,24 @@ template runs a command, typically `ssh host cookie runtime coding --stdio
 local and remote paths are one code path. The global runtime does not speak
 it; the engine calls it in-process.
 
-The wire types live in `cookie_agent_runtime_api::protocol`, the JSON-RPC peer
-both ends run in `cookie_agent_runtime_api::rpc`, the coding runtime's server
-in `cookie_agent_coding_runtime::server`, and the daemon's client in the
-engine's `runtimes::remote` module.
+The wire types live in the Apache-2.0 protocol crate's
+`cookie_agent_protocol::runtime_protocol` and the JSON-RPC peer both ends run
+in `cookie_agent_protocol::peer`, so the plugin SDK shares them;
+`cookie_agent_runtime_api::protocol` and `::rpc` re-export them. The coding
+runtime's server is in `cookie_agent_coding_runtime::server` and the daemon's
+client in the engine's `runtimes::remote` module. Plugins declare and run
+their tools with this protocol's tool messages over their own connection
+(see [Plugin development](../development/plugins.md#tools)).
 
 ## Framing
 
 - **JSON-RPC 2.0**, one message per frame: a frame of an in-memory transport,
   or one line of newline-delimited JSON over a byte stream such as a child's
-  stdio (`rpc::LineTransport`).
+  stdio (`peer::LineTransport`).
 - **Both ends send requests.** The daemon drives tools; a runtime reports
   progress back while a call runs. Request IDs are
   unsigned integers chosen by the sender.
-- **Bounded.** No frame exceeds 48 MiB (`protocol::MAX_FRAME_BYTES`), which fits
+- **Bounded.** No frame exceeds 48 MiB (`runtime_protocol::MAX_FRAME_BYTES`), which fits
   an execute reply carrying the largest attachment as base64 next to a full
   tool result. A sender refuses to send a larger message; a receiver that gets
   one closes the connection.
@@ -35,7 +39,7 @@ engine's `runtimes::remote` module.
 ## Version
 
 The protocol version is an integer, currently **4**
-(`protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its version in
+(`runtime_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its version in
 `runtime/initialize`; a runtime that speaks another version fails the request
 with code `-32010` and a message naming both versions, and the daemon checks
 the version in the reply the same way. There is no negotiation.
@@ -142,7 +146,7 @@ OAuth is never used: a remote server connects with its static headers only.
 | `attachment_name` | The name sessions attach the instance under: `<runtime ID>_<workspace basename>`, sanitized, for a coding runtime. |
 | `workspace` | The canonical workspace on the runtime's machine; absent for a runtime without one. `AGENTS.md` is loaded only from runtimes that report one. |
 | `platform` | Optional: the operating system, as Rust's `std::env::consts::OS` names it, for a runtime where it matters. Shown in the system prompt's `<runtimes>` block. Version 1 required it and also carried `shell`. |
-| `tools.tools` | Tool declarations: `name`, `collision` (`prefix` or `fallback`), `permission`, `description`, `parameters` (JSON Schema), `concurrency`, `result_truncation`, `output`, and optionally `background` and `background_default`. `background` says the tool supports the background: the daemon adds a `background` argument to its schema, strips it before `tool/prepare`, and may detach its calls (see [Background calls](#background-calls)); `background_default` is that argument's default and is only valid with `background`. `permission` is the action the tool is checked under: a label matching `[a-z][a-z0-9_]{0,31}`, either one the daemon's own tools use (such as `bash` or `read`, which takes file paths) or the runtime's own (such as `browse`). An action no rule names is denied, so its tools stay hidden until an agent grants it. A tool without `permission` needs none: it is always published and every call is allowed without rules or approval, and its prepared calls report no `permission` either. Version 1 allowed only the nine built-in actions, and versions before 3 required `permission`. |
+| `tools.tools` | Tool declarations: `name`, `collision` (`prefix`, `override`, or `fallback`; see [collisions](../specs/runtimes.md#63-collisions)), `permission`, `description`, `parameters` (JSON Schema), `concurrency`, `result_truncation`, `output`, and optionally `background` and `background_default`. `background` says the tool supports the background: the daemon adds a `background` argument to its schema, strips it before `tool/prepare`, and may detach its calls (see [Background calls](#background-calls)); `background_default` is that argument's default and is only valid with `background`. `permission` is the action the tool is checked under: a label matching `[a-z][a-z0-9_]{0,31}`, either one the daemon's own tools use (such as `bash` or `read`, which takes file paths) or the runtime's own (such as `browse`). An action no rule names is denied, so its tools stay hidden until an agent grants it. A tool without `permission` needs none: it is always published and every call is allowed without rules or approval, and its prepared calls report no `permission` either. Version 1 allowed only the nine built-in actions, and versions before 3 required `permission`. |
 | `tools.prompt_sections` | System prompt sections (`title`, `body`) the tools contribute. |
 | `skills.skills` | Project skills: the `SKILL.md` text, `source`, absolute `path` and `base_dir` on the runtime's machine, and a sample of `supporting_files`. The daemon parses the text with the same rules as local discovery. |
 | `skills.discoveries` | Every `SKILL.md` found, with `precedence_winner`. |
@@ -286,8 +290,8 @@ from the connection, and the runtime names each producer it registers.
    returns `message_id` once the message is durably accepted; an identical
    retry returns the same receipt. `producer/unregister` (`session_id`,
    `producer_id`) and `producer/discard` (`session_id`, `message_id`) return
-   `{}`. The params and results are the plugin protocol's
-   `ExtensionProducer*` types.
+   `{}`. The params and results are the protocol crate's `Producer*` and
+   `Recovery*` types, which the plugin protocol shares.
 3. Every request may only address a session attached to the runtime's
    instance; any other fails with `-32016`. The body must be non-empty and at
    most [`[producers] max_body_bytes`](../engine/producers.md).

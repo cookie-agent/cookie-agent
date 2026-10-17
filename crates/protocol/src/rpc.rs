@@ -390,6 +390,9 @@ pub const SESSION_RUNTIME_DETACH_METHOD: &str = "session.runtime.detach";
 pub const RUNTIMES_LIST_METHOD: &str = "runtimes.list";
 pub const RUNTIMES_CHANGED_METHOD: &str = "runtimes.changed";
 pub const RUNTIMES_RECONNECT_METHOD: &str = "runtimes.reconnect";
+pub const PLUGINS_LIST_METHOD: &str = "plugins.list";
+pub const PLUGINS_RESTART_METHOD: &str = "plugins.restart";
+pub const PLUGINS_CHANGED_METHOD: &str = "plugins.changed";
 pub const RUN_TOOL_BACKGROUND_METHOD: &str = "run.tool_background";
 pub const SESSION_BACKGROUND_LIST_METHOD: &str = "session.background.list";
 pub const SESSION_BACKGROUND_STOP_METHOD: &str = "session.background.stop";
@@ -574,6 +577,75 @@ pub enum RuntimeInstanceStatus {
     Ready,
     Reconnecting,
     Failed,
+    Stopped,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginsListParams {}
+
+/// The configured plugins, in the order their hooks run.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginsListResult {
+    pub plugins: Vec<PluginInfo>,
+}
+
+/// Start a plugin again now: a failed or stopped plugin restarts, and a
+/// connected one is stopped and restarted.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginsRestartParams {
+    pub name: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginsRestartResult {}
+
+/// A plugin's status changed; refetch `plugins.list`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginsChangedNotification {}
+
+/// One configured plugin as clients see it.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginInfo {
+    pub name: String,
+    pub state: PluginState,
+    /// Why the plugin failed or last disconnected, or what it could not do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The names its tools are declared under.
+    pub tools: Vec<String>,
+    /// The hooks it intercepts, in no particular order.
+    pub hooks: Vec<ExtensionInterceptionHook>,
+    pub subscribe_events: bool,
+    pub subscribe_bus: bool,
+    pub publish_bus: bool,
+    /// Its producer messaging is open: the plugin declares it and its
+    /// configuration enables it.
+    pub producer_messaging: bool,
+    /// Events and bus notifications dropped because it fell behind.
+    pub dropped_events: u64,
+    /// What the plugin last wrote to standard error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginState {
+    /// Configured with `enabled = false`.
+    Disabled,
+    Starting,
+    Connected,
+    /// The connection dropped and the daemon is restarting it.
+    Reconnecting,
+    /// Every start attempt failed; `plugins.restart` tries again.
+    Failed,
+    /// Stopped with the daemon.
     Stopped,
 }
 

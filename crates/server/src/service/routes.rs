@@ -38,6 +38,7 @@ impl ServerProtocol for Server {
         self.start_session_change_notifications(context.clone());
         self.start_mcp_change_notifications(context.clone());
         self.start_runtime_instance_notifications(context.clone());
+        self.start_plugin_notifications(context.clone());
         self.start_background_notifications(context.clone());
         self.start_engine_event_notifications(context);
     }
@@ -590,6 +591,25 @@ impl ServerProtocol for Server {
         _params: cookie_agent_protocol::RuntimesListParams,
     ) -> Result<cookie_agent_protocol::RuntimesListResult> {
         Ok(crate::runtimes::runtimes_list(&self.engine))
+    }
+
+    async fn list_plugins(
+        &self,
+        _params: cookie_agent_protocol::PluginsListParams,
+    ) -> Result<cookie_agent_protocol::PluginsListResult> {
+        Ok(cookie_agent_protocol::PluginsListResult {
+            plugins: self.engine.plugin_statuses(),
+        })
+    }
+
+    async fn restart_plugin(
+        &self,
+        params: cookie_agent_protocol::PluginsRestartParams,
+    ) -> Result<cookie_agent_protocol::PluginsRestartResult> {
+        self.engine
+            .restart_plugin(&params.name)
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::PluginsRestartResult {})
     }
 
     async fn reconnect_runtime(

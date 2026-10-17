@@ -118,6 +118,7 @@ intact.
 | `/mcp` | Manage MCP servers; see [MCP servers](mcp.md) |
 | `/runtime` (also `runtimes`) | Attach and detach the selected session's runtimes; see [Runtimes panel](#runtimes-panel) |
 | `/background` (also `bg`) | List and stop the selected session's background calls; see [Background calls](#background-calls) |
+| `/plugins` (also `plugin`) | Show each plugin's status, tools, hooks, and last failure, and restart one with `r`; see [Plugins](plugins.md#status-and-restarts) |
 | `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](agents.md#permissions) |
 | `/sessions` (also `resume`, `load`, `continue`) | Choose a session |
 | `/skills` | Search user-invocable skills, pick one, then enter optional arguments; see [Skills](skills.md) |

@@ -58,6 +58,7 @@ origin class. This keeps the origin grammar restricted to `user`, `engine`,
 | Session | `session_created`, `session_reverted` (legacy), `session_permission_overlay_set`, `runtime_attached`, `runtime_detached`, `skill_loaded`, `skill_invocation_noted`, `session_title_committed`, `delegated_context_seeded` |
 | AGENTS.md context | `agent_md_loaded`, `agent_md_skipped` |
 | Plugins | `plugin_event_added`, `plugin_diagnostic` |
+| Engine | `engine_diagnostic` |
 | Goals | `goal_activated`, `goal_checklist_revised`, `goal_lifecycle_changed` |
 | Producer messaging | `producer_message_accepted`, `producer_diagnostic`, `producer_message_admitted`, `producer_messages_claimed`, `producer_messages_released`, `producer_message_consumed`, `producer_message_discarded` |
 | User input | `message_injected`, `user_input_admitted`, `user_input_submitted`, `user_input_transformed`, `user_input_recalled`, `user_input_recalled_v2`, `user_input_applied`, `user_input_queued`, `user_input_queue_recalled`, `user_input_queue_voided`, `session_model_selected` |
@@ -278,10 +279,20 @@ Legacy `plugin_event_added` is a runless plugin publication containing `plugin`,
 JSON `payload`. Plugin-originated payloads are capped at 256 KiB, names at 128 characters, and the
 complete serialized event at 272 KiB; per-plugin/session rate and byte quotas apply. The event is normal
 branch content: it survives reopen and fork, is visible to model history and compaction, and is
-tombstoned by revert. `plugin_diagnostic` records operational notices such as interception
-timeouts, hook blocks, invalid modifications, oversized publications, and dropped stream counts.
-Current model-bound plugin sends must use an explicitly registered producer;
-`plugin/emit` cannot append model-visible session publications. Bus traffic is unchanged.
+tombstoned by revert. It is no longer written: model-bound plugin sends use an explicitly
+registered producer, and `plugin/emit` publishes to the bus only.
+
+`plugin_diagnostic { plugin, kind, message, count }` records a plugin's operational notices,
+coalesced by `count`. `kind` is `interception_timeout`, `interception_crash` (the plugin was not
+connected or exited during the hook), `interception_rejected` (it answered with an error or a
+malformed result), `hook_blocked`, `invalid_modification`, `oversized_event`, `event_drop`,
+`context_mismatch`, or `rate_limited`. `unsupported_capability` (the removed
+`provider_before_headers` hook), `recovery_failed`, and `recovery_disabled` are only in old logs.
+
+`engine_diagnostic { kind, message }` is a runless notice of something the engine itself turned
+off for the session. Its one `kind`, `auto_compaction_disabled`, is written when automatic context
+compaction failed three times in a row and stays off for the rest of the run. Logs written before
+it record the same notice as a `plugin_diagnostic` of plugin `engine:auto-compact`.
 
 Delegation persistence includes `delegate_queued` and `delegate_finished`. The completion event is
 written to the parent run and carries `{ session_id, status, preview, short_id,

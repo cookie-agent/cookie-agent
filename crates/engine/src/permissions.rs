@@ -211,16 +211,13 @@ pub struct PermissionPipeline {
 }
 
 impl PermissionPipeline {
-    /// The action a tool's permission name checks: the name itself when it
-    /// is an action label, or `plugin` for a plugin tool's `plugin:<tool>`.
+    /// The action a tool's permission name checks: the name itself, which
+    /// must be an action label.
     pub fn action_for_permission_name(
         permission_name: &str,
     ) -> Result<PermissionAction, PermissionError> {
-        match permission_name.strip_prefix("plugin:") {
-            Some(tool) if !tool.is_empty() => Ok(PermissionAction::PLUGIN),
-            _ => PermissionAction::new(permission_name)
-                .map_err(|_| PermissionError::UnknownAction(permission_name.into())),
-        }
+        PermissionAction::new(permission_name)
+            .map_err(|_| PermissionError::UnknownAction(permission_name.into()))
     }
 
     #[must_use]
@@ -388,15 +385,11 @@ impl PermissionPipeline {
         let Ok(action) = Self::action_for_permission_name(permission_name) else {
             return false;
         };
-        let plugin_permission = permission_name.strip_prefix("plugin:");
         grants.is_some_and(|grants| {
             grants.rules.iter().any(|grant| {
                 grant.action == action
                     && grant.effect == PermissionEffect::Allow
                     && grant.applies_to(scope.runtime)
-                    && plugin_permission.is_none_or(|permission| {
-                        plugin_rule_governs(grant.resource.as_str(), permission)
-                    })
                     && effective_permission_with_overlay(
                         policy,
                         overlay,
@@ -588,14 +581,6 @@ fn permission_pattern_matches(
         None if action.is_path() && !Path::new(resource).is_absolute() => false,
         None => simple_wildcard_match(pattern, resource),
     }
-}
-
-fn plugin_rule_governs(pattern: &str, permission_name: &str) -> bool {
-    pattern == "*"
-        || simple_wildcard_match(pattern, permission_name)
-        || pattern
-            .strip_prefix(permission_name)
-            .is_some_and(|suffix| suffix.starts_with(' '))
 }
 
 fn expand_workspace_pattern(pattern: &str, workspace: &Path) -> String {

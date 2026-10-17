@@ -64,11 +64,17 @@ producers spec](../specs/external-producers.md)). Stored `plugin` owners
 decode as `external` with name `default`. `session.producers` returns
 `sources` (the recovery state of each producer source) in place of
 `plugin_recovery`, and a source that cannot recover records a
-`producer_diagnostic` event. Older clients are rejected.
+`producer_diagnostic` event. Protocol 44 added `plugins.list`,
+`plugins.restart`, and the `plugins.changed` notification (see
+[Plugins](#plugins)), and the `engine_diagnostic` event, which replaces the
+`plugin_diagnostic` automatic compaction used to record under the name
+`engine:auto-compact`. It removed the built-in `plugin` permission action:
+plugin tools declare their own actions, and a rule naming `plugin` is an
+ordinary label that governs nothing. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 43.
+members of protocol 44.
 
 ## Error diagnostics
 
@@ -91,7 +97,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 43 alongside independent display and output references. The
+preserved in protocol 44 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -183,6 +189,8 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.runtime.detach` | Session ID, attachment `name` | The session's `runtimes` |
 | `runtimes.list` | Empty object | Runtime `templates` and live `instances` with status |
 | `runtimes.reconnect` | `runtime_id`, `workspace` when the template takes one | The `instance` afterwards, as `runtimes.list` reports it |
+| `plugins.list` | Empty object | The configured `plugins`, in hook order |
+| `plugins.restart` | Plugin `name` | Empty object, once the restart is under way |
 | `session.set_permission_mode` | Any session ID in the target tree, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo`; updates the runtime-only tree mode | Empty object |
 | `skills.list` | Session ID | Discovered skills with source, precedence, visibility, and permission effect |
 | `skills.get` | Session ID, skill name, arguments | Permission-checked rendered preview and descriptor |
@@ -257,6 +265,22 @@ running is started; a `ready` or `reconnecting` one is left as it is.
 the reason, and is also reported in `runtimes.changed`. Retrying `global`
 also retries its failed MCP servers.
 
+### Plugins
+
+`plugins.list` returns every configured [plugin](../guide/plugins.md) in the
+order its hooks run. A `PluginInfo` is `{ name, state, reason?, tools,
+hooks, subscribe_events, subscribe_bus, publish_bus, producer_messaging,
+dropped_events, stderr? }`: its `state` (`disabled`, `starting`,
+`connected`, `reconnecting`, `failed`, or `stopped`), why it failed or last
+disconnected, the tools and hooks it declares, what it streams and
+publishes, whether its producer messaging is open, how many notifications it
+dropped for falling behind, and the tail of its standard error.
+
+`plugins.restart` starts a plugin again now: a `failed` or reconnecting
+plugin is started at once, and a `connected` one is stopped and started. An
+unknown or disabled plugin is an error (`plugin request rejected`). Status
+changes arrive as `plugins.changed`.
+
 ### Model availability
 
 Protocol 24 (runtime snapshot schema 6) makes unusable models visible instead
@@ -286,8 +310,7 @@ The engine implements these methods through its per-session actor. Goal mutation
 are root-only; producer inspection is available for any owned session.
 Goal/producer request shapes remain unchanged. Session protocol 18 added declared
 tool-output channels, terminal output
-references, and independent UI display. Plugin extension `0.0.8` uses typed
-terminal single/named output and final display; package versions are unchanged.
+references, and independent UI display.
 
 | Surface | Public contract | Implementation owner |
 |---|---|---|
@@ -297,8 +320,8 @@ terminal single/named output and final display; package versions are unchanged.
 | Lifecycle | `SessionGoalLifecycleParams/Result`, `change_session_goal_lifecycle`, `GoalLifecycleAction` | User-only root pause/resume/cancel; reject stale/terminal goal |
 | Model tools | `GoalGetParams/Result`, `GoalUpdateParams/Result` | Root-only `goal_get`/`goal_update`, frozen at run admission |
 | Runtime inspection | `SessionProducersParams/Result`, `session_producers`, `ProducerRegistration`, `ProducerSourceState` | Session runtime snapshot, not global catalog snapshot or persistence |
-| Plugin messaging | `ExtensionProducer{Register,Send,Discard,Unregister}Params/Result` | Engine request handlers; SDK mirrors register/send/discard/unregister |
-| Recovery handshake | `ExtensionRecoveryStartParams`, `ExtensionRecoveryCompleteParams/Result`, `ExtensionRecoveryOutcome` | `plugin/recovery/start` engine notification (no deadline/response); plugin completion request |
+| Producer messaging | `Producer{Register,Send,Discard,Unregister}Params/Result` | `producer/*` requests of plugins and runtimes; SDK mirrors register/send/discard/unregister |
+| Recovery handshake | `RecoveryStartParams`, `RecoveryCompleteParams/Result`, `RecoveryOutcome` | `producer/recovery/start` daemon notification (no deadline/response); completion request |
 
 Goal activation accepts an optional `selection: RunSelection`, including agent,
 model, variant, and preset. The engine validates and persists this selection
@@ -332,7 +355,7 @@ state. Recovery repairs a missing completion event after a committed all-finishe
 checklist. Empty checklists never complete through this rule.
 
 See [Events](events.md#goal-and-producer-contracts) for admission/commit
-coverage and owned-message discard, and [Plugins](../development/plugins.md#producer-messaging-contracts)
+coverage and owned-message discard, and [Plugin development](../development/plugins.md#producers)
 for method names, idempotency, recovery, and the no-implicit-registration requirement.
 
 ### User steering
@@ -434,6 +457,7 @@ the title, and continues with new physical sequences.
 | `mcp.changed` | MCP server configuration or status changed; optional `failures` |
 | `runtimes.changed` | A runtime template was registered or an instance's status changed; optional `failures` |
 | `background.changed` | A subscribed session's background calls changed: `session_id` and its current `calls` |
+| `plugins.changed` | A plugin's status changed; an empty object |
 
 A background call in `session.background.list` and `background.changed` is
 `{ job, tool, tool_call_id, display?, started_at, detached_at, by }`: the job
@@ -446,7 +470,7 @@ subscribed session's list again.
 
 ### Daemon-wide changes
 
-`runtime.changed`, `sessions.changed`, `mcp.changed`, and `runtimes.changed` reach every connection
+`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, and `plugins.changed` reach every connection
 from its handshake on, whether or not it subscribed to any session, so each
 client sharing a daemon stays current with what the others do. Clients ignore
 notification methods they do not know.
@@ -470,7 +494,8 @@ null `previous_revision`, the current snapshot, and the reason `resync`; a
 client that holds a different revision refetches `runtime.snapshot.get` rather
 than trusting either. A status `mcp.changed` is an empty object;
 bursts coalesce into one notification, and a client refetches `mcp.server.list`.
-`runtimes.changed` works the same way for `runtimes.list`.
+`runtimes.changed` and `plugins.changed` work the same way for
+`runtimes.list` and `plugins.list`.
 
 ### Connection failures
 

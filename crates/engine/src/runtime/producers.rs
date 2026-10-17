@@ -107,82 +107,6 @@ pub(super) struct SessionProducers {
 }
 
 impl Engine {
-    pub(super) fn install_producer_runtime(&self) {
-        let weak = Arc::downgrade(&self.inner);
-        self.inner
-            .plugins
-            .set_producer_handler(Arc::new(move |authority, request| {
-                let weak = weak.clone();
-                Box::pin(async move {
-                    let inner = weak
-                        .upgrade()
-                        .ok_or_else(|| producer_fault(EngineError::ActorStopped))?;
-                    Engine { inner }
-                        .dispatch_plugin_producer(authority, request)
-                        .await
-                })
-            }));
-        let Some(runtime) = self.inner.runtime.clone() else {
-            return;
-        };
-        let weak = Arc::downgrade(&self.inner);
-        let mut changes = self.inner.plugins.subscribe_producer_changes();
-        self.spawn_admission_task(&runtime, async move {
-            loop {
-                if let Some(inner) = weak.upgrade() {
-                    Engine { inner }
-                        .reconcile_external_producer_sessions()
-                        .await;
-                } else {
-                    return;
-                }
-                if changes.changed().await.is_err() {
-                    return;
-                }
-            }
-        });
-    }
-
-    async fn dispatch_plugin_producer(
-        &self,
-        authenticated: crate::plugin::PluginConnectionAuthority,
-        request: crate::plugin::PluginProducerRequest,
-    ) -> Result<crate::plugin::PluginProducerResponse, JsonRpcError> {
-        use crate::plugin::{PluginProducerRequest as Request, PluginProducerResponse as Response};
-        let connection = ExternalConnection {
-            source: ProducerSource::plugin(&authenticated.plugin)
-                .map_err(|error| producer_fault(EngineError::Producer(error.to_string())))?,
-            epoch: authenticated.connection_epoch,
-        };
-        let operation = match request {
-            Request::Register(params) => ExternalProducerOperation::Register(params),
-            Request::Send(params) => ExternalProducerOperation::Send(params),
-            Request::Unregister(params) => ExternalProducerOperation::Unregister(params),
-            Request::Discard(params) => ExternalProducerOperation::Discard(params),
-            Request::RecoveryComplete(params) => {
-                self.inner
-                    .plugins
-                    .complete_producer_recovery(&authenticated, &params.outcome)?;
-                self.reconcile_external_producer_sessions().await;
-                return Ok(Response::RecoveryComplete(
-                    ExtensionRecoveryCompleteResult {},
-                ));
-            }
-        };
-        Ok(
-            match self
-                .dispatch_external_producer(connection, operation)
-                .await
-                .map_err(producer_fault)?
-            {
-                ExternalProducerResult::Register(result) => Response::Register(result),
-                ExternalProducerResult::Send(result) => Response::Send(result),
-                ExternalProducerResult::Unregister(result) => Response::Unregister(result),
-                ExternalProducerResult::Discard(result) => Response::Discard(result),
-            },
-        )
-    }
-
     /// One producer operation of an external sender, whatever connection
     /// carried it.
     pub(crate) async fn dispatch_external_producer(
@@ -197,9 +121,9 @@ impl Engine {
                 let producer_id = self
                     .register_producer(params.session_id, connection.authority(params.name))
                     .await?;
-                Ok(ExternalProducerResult::Register(
-                    ExtensionProducerRegisterResult { producer_id },
-                ))
+                Ok(ExternalProducerResult::Register(ProducerRegisterResult {
+                    producer_id,
+                }))
             }
             ExternalProducerOperation::Send(params) => {
                 self.ensure_external_scope(&connection, params.session_id)?;
@@ -225,7 +149,7 @@ impl Engine {
                         params.body,
                     )
                     .await?;
-                Ok(ExternalProducerResult::Send(ExtensionProducerSendResult {
+                Ok(ExternalProducerResult::Send(ProducerSendResult {
                     message_id,
                 }))
             }
@@ -239,7 +163,7 @@ impl Engine {
                 self.unregister_producer(params.session_id, authority, params.producer_id)
                     .await?;
                 Ok(ExternalProducerResult::Unregister(
-                    ExtensionProducerUnregisterResult {},
+                    ProducerUnregisterResult {},
                 ))
             }
             ExternalProducerOperation::Discard(params) => {
@@ -249,9 +173,7 @@ impl Engine {
                 let authority = connection.authority(ProducerName::default_name());
                 self.discard_producer_message(params.session_id, authority, params.message_id)
                     .await?;
-                Ok(ExternalProducerResult::Discard(
-                    ExtensionProducerDiscardResult {},
-                ))
+                Ok(ExternalProducerResult::Discard(ProducerDiscardResult {}))
             }
         }
     }
@@ -324,7 +246,7 @@ impl Engine {
             return self
                 .inner
                 .plugins
-                .producer_connection_is_current(plugin, &epoch);
+                .producer_connection_is_current(plugin, epoch);
         }
         if source.runtime_attachment().is_some() {
             return self.runtime_source_is_current(source, epoch);
@@ -473,7 +395,7 @@ impl Engine {
             };
             self.accept_producer_direct(
                 &authority,
-                ExtensionProducerSendParams {
+                ProducerSendParams {
                     session_id: session,
                     producer_id,
                     mode: ProducerDeliveryMode::Queue,
@@ -951,7 +873,7 @@ impl Engine {
         self.on_actor(session, move |engine| {
             engine.accept_producer_direct(
                 &authority,
-                ExtensionProducerSendParams {
+                ProducerSendParams {
                     session_id: session,
                     producer_id,
                     mode,
@@ -1248,7 +1170,7 @@ impl Engine {
         let producer_id = self.register_producer_direct(session, authority.clone())?;
         let accepted = self.accept_producer_direct(
             &authority,
-            ExtensionProducerSendParams {
+            ProducerSendParams {
                 session_id: session,
                 producer_id,
                 mode: ProducerDeliveryMode::Steer,
@@ -1415,7 +1337,7 @@ impl Engine {
     fn accept_producer_direct(
         &self,
         authority: &ProducerAuthority,
-        params: ExtensionProducerSendParams,
+        params: ProducerSendParams,
         reminder: Option<GoalReminderIdentity>,
     ) -> Result<ProducerMessageId, EngineError> {
         self.accept_producer_with_output_direct(authority, params, reminder, None)
@@ -1425,11 +1347,11 @@ impl Engine {
     pub(super) fn accept_producer_with_output_direct(
         &self,
         authority: &ProducerAuthority,
-        params: ExtensionProducerSendParams,
+        params: ProducerSendParams,
         reminder: Option<GoalReminderIdentity>,
         retained_output: Option<RetainedToolOutput>,
     ) -> Result<ProducerMessageId, EngineError> {
-        let ExtensionProducerSendParams {
+        let ProducerSendParams {
             session_id: session,
             producer_id,
             mode,
@@ -1687,7 +1609,7 @@ impl Engine {
             })?;
             self.accept_producer_direct(
                 &authority,
-                ExtensionProducerSendParams {
+                ProducerSendParams {
                     session_id: session,
                     producer_id,
                     mode: ProducerDeliveryMode::Steer,
@@ -2114,25 +2036,17 @@ pub(crate) fn agent_message_guard(
 /// A producer operation an external sender requests.
 #[derive(Clone, Debug)]
 pub(crate) enum ExternalProducerOperation {
-    Register(ExtensionProducerRegisterParams),
-    Send(ExtensionProducerSendParams),
-    Unregister(ExtensionProducerUnregisterParams),
-    Discard(ExtensionProducerDiscardParams),
+    Register(ProducerRegisterParams),
+    Send(ProducerSendParams),
+    Unregister(ProducerUnregisterParams),
+    Discard(ProducerDiscardParams),
 }
 
 /// The answer to an [`ExternalProducerOperation`].
 #[derive(Clone, Debug)]
 pub(crate) enum ExternalProducerResult {
-    Register(ExtensionProducerRegisterResult),
-    Send(ExtensionProducerSendResult),
-    Unregister(ExtensionProducerUnregisterResult),
-    Discard(ExtensionProducerDiscardResult),
-}
-
-fn producer_fault(error: EngineError) -> JsonRpcError {
-    JsonRpcError {
-        code: -32000,
-        message: error.to_string(),
-        data: None,
-    }
+    Register(ProducerRegisterResult),
+    Send(ProducerSendResult),
+    Unregister(ProducerUnregisterResult),
+    Discard(ProducerDiscardResult),
 }

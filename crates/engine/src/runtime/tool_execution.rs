@@ -593,6 +593,7 @@ impl Engine {
                                 session_id: active.session,
                                 context_id: context_id.clone(),
                                 tool: call.name.clone(),
+                                origin: interception.hook_origin(),
                                 arguments: call.arguments.clone(),
                                 permission_name: interception.permission_name.clone(),
                                 resource: interception.permission_resource.clone(),
@@ -604,13 +605,12 @@ impl Engine {
                     let result = match result {
                         Ok(result) => result,
                         Err(error) => {
-                            let kind =
-                                if error.contains("crashed") || error.contains("not connected") {
-                                    PluginDiagnosticKind::InterceptionCrash
-                                } else {
-                                    PluginDiagnosticKind::InterceptionTimeout
-                                };
-                            engine.record_plugin_diagnostic(active.session, plugin, kind, error);
+                            engine.record_plugin_diagnostic(
+                                active.session,
+                                plugin,
+                                error.kind(),
+                                error.to_string(),
+                            );
                             continue;
                         }
                     };
@@ -1250,9 +1250,7 @@ pub(crate) fn apply_permission_resource(
     };
     let permission_name = permission_name.as_deref();
     let matches = match (permission_name, expected_permission_name) {
-        (Some(actual), Some(expected)) => {
-            actual == expected || (actual == "plugin" && expected.starts_with("plugin:"))
-        }
+        (Some(actual), Some(expected)) => actual == expected,
         (None, None) => true,
         _ => false,
     };

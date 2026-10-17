@@ -159,19 +159,12 @@ authority remains runtime-only. `GoalControl` identifies engine-authored lifecyc
 steering, separate from the goal controller's continuation reminders. The
 destination is fixed at registration and checked on every send.
 
-Plugins must declare a new protocol capability to register producers (the
-current plugin request surface rejects unknown requests — see
-`crates/engine/src/plugin.rs` `PendingRequest` and the capability model in
-`docs/site/development/plugins.md`; an extension protocol bump beyond `0.0.4`
-is required). Only **live, owned** registrations authorize post-turn
-model-message sends. The existing plugin `emit_session` path
-(`enable_session_publishing`, `ctx.emit_session`) must **not** remain a
-bypass for model-bound messages: emitting content that enters model history
-requires an explicitly supplied live producer registration. The engine must
-not create an implicit registration to authorize an otherwise unregistered
-emission. Legacy `emit_session` is restricted to non-model content or removed
-in favor of the explicit producer API. Pure
-bus events (`emit_bus`) are unaffected — non-model bus traffic is separate.
+Plugins declare the `producer_messaging` capability to register producers
+(see [Plugin development](plugins.md#producers)). Only **live, owned**
+registrations authorize post-turn model-message sends. `plugin/emit`
+publishes to the bus only; content that enters model history requires an
+explicitly supplied live producer registration, and the engine never creates
+an implicit registration to authorize an emission.
 
 ### 2.3 Message persistence and acknowledgment
 
@@ -463,12 +456,12 @@ History transforms:
 
 ## 7. APIs, permissions, and surfaces
 
-- **Protocol/SDK**: extension protocol `0.0.5` adds the producer capability,
-  plugin requests `plugin/producer/register`, `plugin/producer/send`,
-  `plugin/producer/unregister`, and `plugin/recovery/complete`, plus the
-  deadline-free `plugin/recovery/start` notification. The SDK exposes
-  explicit producer handles and removes the legacy session-publishing
-  helpers. See `docs/site/development/plugins.md` for the public contract.
+- **Protocol/SDK**: the plugin protocol's producer capability, the
+  `producer/register`, `producer/send`, `producer/unregister`,
+  `producer/discard`, and `producer/recovery/complete` requests, and the
+  deadline-free `producer/recovery/start` notification, shared with the
+  runtime protocol. The SDK exposes explicit producer handles. See
+  [Plugin development](plugins.md#producers) for the public contract.
 - **Permissions**: `goal_get`/`goal_update` follow the existing tool
   permission model (`crates/engine/src/permissions.rs`); they are root-only
   by construction, not by permission config, and are not configurable
@@ -486,7 +479,7 @@ History transforms:
   editing. Pause/Resume and Cancel buttons are the primary lifecycle controls;
   terminal goals retain a read-only bar and detail view, while absent goals
   hide the bar. Notifications for goal completion and failed/disabled
-  producer-capable plugins remain separate from this persistent surface.
+  producer sources remain separate from this persistent surface.
   Pending/admitted producer steer and queue messages share the existing queue
   strip above the goal bar and composer, using its existing automatic show/hide
   behavior.

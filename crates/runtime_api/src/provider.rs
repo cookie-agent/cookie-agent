@@ -88,34 +88,9 @@ pub struct ToolSpec {
     pub background_default: bool,
 }
 
-/// How a runtime tool behaves when another source offers the same name.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolCollision {
-    /// Stays published. Two such tools with one name are a composition error
-    /// until collision prefixing lands.
-    #[default]
-    Prefix,
-    /// Hidden whenever a non-fallback tool with the same name is published.
-    Fallback,
-}
-
-/// Declares whether calls to a tool may overlap with sibling calls from one model turn.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolConcurrency {
-    #[default]
-    Exclusive,
-    Parallel,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolResultTruncationPolicy {
-    #[default]
-    Bounded,
-    OptOut,
-}
+pub use cookie_agent_protocol::runtime_protocol::{
+    ToolCollision, ToolConcurrency, ToolResultTruncationPolicy,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolCall {
@@ -135,6 +110,13 @@ pub trait ToolProvider: Send + Sync {
     }
 
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError>;
+
+    /// The source this provider's tools compose under: the prefix a
+    /// colliding tool of it is published with. `None` composes it under the
+    /// attachment that offers it; a plugin names itself.
+    fn composition_source(&self) -> Option<String> {
+        None
+    }
     /// Claims a currently undiscovered dynamic tool, allowing preparation to make it available.
     fn permission_for_unlisted_tool(
         &self,

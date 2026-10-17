@@ -13,8 +13,8 @@
 use std::time::Duration;
 
 use cookie_agent_protocol::{
-    ExtensionProducerSendParams, ProducerDeliveryMode, ProducerIdempotencyKey, ProducerOwner,
-    RunId, SessionId, SessionOrigin, SessionStatus,
+    ProducerDeliveryMode, ProducerIdempotencyKey, ProducerOwner, ProducerSendParams, RunId,
+    SessionId, SessionOrigin, SessionStatus,
 };
 
 use super::{Engine, EngineError, Event, producers::ProducerAuthority};
@@ -132,7 +132,7 @@ impl Engine {
                 engine
                     .accept_producer_with_output_direct(
                         &authority,
-                        ExtensionProducerSendParams {
+                        ProducerSendParams {
                             session_id: parent_session_id,
                             producer_id,
                             mode: ProducerDeliveryMode::Steer,

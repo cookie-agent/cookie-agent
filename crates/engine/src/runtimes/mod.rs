@@ -47,14 +47,15 @@ pub(crate) use composition::{ComposedTool, Composition, compose};
 pub(crate) use cookie_agent_runtime_api::reconnect::{ReconnectOutcome, ReconnectPolicy};
 pub(crate) use mcp_hub::McpHub;
 pub use mcp_hub::McpServerFailure;
+pub(crate) use process::ProcessConnector;
 pub use registry::{
     RuntimeFailure, RuntimeInstanceStatus, RuntimeInstanceSummary, RuntimeTemplate,
     RuntimeTemplateSummary, StartedRuntime,
 };
 pub(crate) use registry::{RuntimeInstance, RuntimeRegistry};
 pub(crate) use remote::{
-    HostedMcpServer, ProtocolTemplate, RuntimeClient, RuntimeProducerCall, RuntimeProducerHost,
-    register_configured_templates, runtime_settings,
+    ClientExtension, HostedMcpServer, ProtocolTemplate, RuntimeClient, RuntimeProducerCall,
+    RuntimeProducerHost, register_configured_templates, runtime_settings,
 };
 
 /// One-line description of where a tool runs, for the approval reviewer.

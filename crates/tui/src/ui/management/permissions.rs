@@ -309,7 +309,6 @@ fn resource_noun(action: &PermissionAction) -> std::borrow::Cow<'static, str> {
         (PermissionAction::DELEGATE, "delegations to agents"),
         (PermissionAction::MESSAGE, "messages to sessions"),
         (PermissionAction::MCP, "MCP tools"),
-        (PermissionAction::PLUGIN, "plugin tools"),
         (PermissionAction::SKILL, "skills"),
         (PermissionAction::WEBFETCH, "fetches of URLs"),
     ];
@@ -886,7 +885,6 @@ pub(in crate::ui) fn sample_permissions() -> SessionPermissionGetResult {
             action(PermissionAction::DELEGATE, Allow, AgentDocument, vec![]),
             action(PermissionAction::MESSAGE, Deny, Default, vec![]),
             action(PermissionAction::MCP, Ask, AgentDocument, vec![]),
-            action(PermissionAction::PLUGIN, Deny, Default, vec![]),
             action(PermissionAction::SKILL, Allow, AgentDocument, vec![]),
             action(PermissionAction::WEBFETCH, Ask, SessionOverlay, vec![]),
         ],

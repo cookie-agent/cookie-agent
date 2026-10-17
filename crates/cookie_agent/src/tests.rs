@@ -349,7 +349,10 @@ fn cli_commands_and_removed_flags_are_exact() {
                 model: Some("custom.local/test".parse().unwrap()),
                 variant: Some("base".into()),
                 permission_mode: run::PermissionModeArg::Ask,
-                allowed_tools: vec![run::AllowedTool::Read, run::AllowedTool::Bash],
+                allowed_tools: vec![
+                    run::AllowedTool::Action(cookie_agent_protocol::PermissionAction::READ),
+                    run::AllowedTool::Action(cookie_agent_protocol::PermissionAction::BASH)
+                ],
                 skill: None,
                 skill_args: None,
                 max_turns: 7,
@@ -389,9 +392,9 @@ fn cli_commands_and_removed_flags_are_exact() {
     assert_eq!(
         args.allowed_tools,
         [
-            run::AllowedTool::Read,
-            run::AllowedTool::Bash,
-            run::AllowedTool::Mcp,
+            run::AllowedTool::Action(cookie_agent_protocol::PermissionAction::READ),
+            run::AllowedTool::Action(cookie_agent_protocol::PermissionAction::BASH),
+            run::AllowedTool::Action(cookie_agent_protocol::PermissionAction::MCP),
         ]
     );
     assert_eq!(args.output_mode(), run::OutputMode::Json);

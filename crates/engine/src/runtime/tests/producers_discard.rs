@@ -35,53 +35,50 @@ for line in sys.stdin:
     method = frame.get('method')
     request_id = frame.get('id')
     if method == 'plugin/initialize':
-        assert frame['params']['protocol_version'] == '0.0.8'
+        assert frame['params']['protocol_version'] == 1
         assert frame['params']['capabilities']['producer_messaging'] is True
         send({'jsonrpc':'2.0','id':request_id,'result':{
-            'protocol_version':'0.0.8','name':'discard_callback','version':'1',
-            'capabilities':{'producer_messaging':True,'tools':False,'resources':False,
-                'subscribe_events':True,'subscribe_bus':False,'publish_bus':False,
-                'publish_session_events':False,'intercept':[]},'tools':[]}})
-    elif method == 'plugin/recovery/start':
+            'protocol_version':1,'name':'discard_callback','version':'1',
+            'capabilities':{'producer_messaging':True,
+                'subscribe_events':True,'subscribe_bus':False,'publish_bus':False,'intercept':[]}}})
+    elif method == 'producer/recovery/start':
         assert 'id' not in frame and frame['params'] == {}
-        send({'jsonrpc':'2.0','id':'register','method':'plugin/producer/register',
+        send({'jsonrpc':'2.0','id':1001,'method':'producer/register',
             'params':{'session_id':session,'name':'default'}})
-    elif request_id == 'register':
+    elif request_id == 1001:
         producer_id = frame['result']['producer_id']
     elif method == 'plugin/event':
         params = frame['params']
         if (not started and producer_id is not None and params['session_id'] == session
                 and params['event']['type'] == 'model_request_prepared'):
             started = True
-            send({'jsonrpc':'2.0','id':'send','method':'plugin/producer/send','params':{
+            send({'jsonrpc':'2.0','id':1002,'method':'producer/send','params':{
                 'session_id':session,'producer_id':producer_id,'mode':'queue',
                 'idempotency_key':'discard-after-unregister',
                 'description':'Discardable plugin result',
                 'body':'plugin callback body must never reach the model'}})
-    elif request_id == 'send':
+    elif request_id == 1002:
         message_id = frame['result']['message_id']
-        send({'jsonrpc':'2.0','id':'unregister','method':'plugin/producer/unregister',
+        send({'jsonrpc':'2.0','id':1003,'method':'producer/unregister',
             'params':{'session_id':session,'producer_id':producer_id}})
-    elif request_id == 'unregister':
+    elif request_id == 1003:
         assert frame['result'] == {}
-        send({'jsonrpc':'2.0','id':'discard-first','method':'plugin/producer/discard',
+        send({'jsonrpc':'2.0','id':1004,'method':'producer/discard',
             'params':{'session_id':session,'message_id':message_id}})
-    elif request_id == 'discard-first':
+    elif request_id == 1004:
         assert frame['result'] == {}
         first_discarded = True
-        send({'jsonrpc':'2.0','id':'discard-repeat','method':'plugin/producer/discard',
+        send({'jsonrpc':'2.0','id':1005,'method':'producer/discard',
             'params':{'session_id':session,'message_id':message_id}})
-    elif request_id == 'discard-repeat':
+    elif request_id == 1005:
         assert frame['result'] == {} and first_discarded
-        send({'jsonrpc':'2.0','id':'complete','method':'plugin/recovery/complete',
+        send({'jsonrpc':'2.0','id':1006,'method':'producer/recovery/complete',
             'params':{'outcome':{'status':'ready'}}})
-    elif request_id == 'complete':
+    elif request_id == 1006:
         assert frame['result'] == {}
         with open(receipt_file, 'w', encoding='utf-8') as output:
             json.dump({'message_id':message_id,'unregistered':True,
                 'first_discard':True,'repeat_discard':True,'ready':True}, output)
-    elif method == 'plugin/ping':
-        send({'jsonrpc':'2.0','id':request_id,'result':{}})
     elif method == 'plugin/shutdown':
         break
 "#;
@@ -779,8 +776,11 @@ async fn installed_plugin_callback_discards_after_unregister_and_repeats_success
     fixture.config.plugins.insert(
         "discard_callback".into(),
         PluginConfig {
-            command: Some(python_command().into()),
-            args: vec!["-c".into(), DISCARD_CALLBACK_PLUGIN.into()],
+            command: vec![
+                python_command().into(),
+                "-c".into(),
+                DISCARD_CALLBACK_PLUGIN.into(),
+            ],
             env: BTreeMap::from([
                 ("SESSION_ID".into(), session_id.to_string()),
                 ("RECEIPT_FILE".into(), receipt_file.display().to_string()),
@@ -791,7 +791,6 @@ async fn installed_plugin_callback_discards_after_unregister_and_repeats_success
             interception_timeout_ms: 2_000,
             startup_timeout_ms: 10_000,
             shutdown_grace_ms: 3_000,
-            tool_timeout_ms: 30_000,
         },
     );
     drop(fixture.engine);

@@ -449,12 +449,12 @@ impl Engine {
                     }
                 }
                 Err(error) => {
-                    let kind = if error.contains("crashed") || error.contains("not connected") {
-                        PluginDiagnosticKind::InterceptionCrash
-                    } else {
-                        PluginDiagnosticKind::InterceptionTimeout
-                    };
-                    self.record_plugin_diagnostic(input.session, plugin, kind, error);
+                    self.record_plugin_diagnostic(
+                        input.session,
+                        plugin,
+                        error.kind(),
+                        error.to_string(),
+                    );
                 }
             }
         }
@@ -773,13 +773,23 @@ impl Engine {
                     .auto_compaction_diagnostic_emitted
                     .swap(true, Ordering::Relaxed)
             {
-                self.record_plugin_diagnostic(
-                    input.session,
-                    "engine:auto-compact".into(),
-                    PluginDiagnosticKind::UnsupportedCapability,
-                    "automatic context compaction disabled after 3 consecutive failures for this run"
-                        .to_string(),
-                );
+                let engine = self.clone();
+                let session = input.session;
+                tokio::spawn(async move {
+                    let _ = engine
+                        .on_actor(session, move |engine| {
+                            engine.append_direct(
+                                session,
+                                None,
+                                super::event_origin("engine:auto-compact"),
+                                Event::EngineDiagnostic {
+                                    kind: cookie_agent_protocol::EngineDiagnosticKind::AutoCompactionDisabled,
+                                    message: "automatic context compaction disabled after 3 consecutive failures for this run".into(),
+                                },
+                            )
+                        })
+                        .await;
+                });
             }
             return Ok(events);
         };

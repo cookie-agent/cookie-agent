@@ -238,6 +238,11 @@ Names are computed from the current tool set every time it is composed:
   `local_web_bash` back into `bash`.
 - A runtime tool that collides with a base layer name is published as
   `<attachment>_<name>`; the base tool keeps its name.
+- An `override` tool keeps the bare name, and the other tools of that name
+  are prefixed (or hidden, if `fallback`). Several overrides of one name are
+  all prefixed, with a diagnostic. An override never takes a base layer
+  name. Each plugin composes as its own source, prefixed with the plugin's
+  name (see the [plugins spec](plugins-v1.md)).
 - `fallback` tools are hidden whenever a non-fallback tool offers the same
   name. When both declare the same parameters schema, as both `webfetch`
   tools do, the model sees no change.

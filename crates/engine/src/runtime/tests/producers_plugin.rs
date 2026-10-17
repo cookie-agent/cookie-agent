@@ -12,16 +12,24 @@ use cookie_agent_protocol::{
 };
 
 const PRODUCER_PLUGIN: &str = r#"
-import json, os, sys
+import json, os, sys, threading, time
+
+lock = threading.Lock()
 
 def send(value):
-    print(json.dumps(value), flush=True)
+    with lock:
+        print(json.dumps(value), flush=True)
+
+def complete_when_released():
+    while not os.path.exists(release_file):
+        time.sleep(0.01)
+    send({'jsonrpc':'2.0','id':1001,'method':'producer/recovery/complete',
+        'params':{'outcome':{'status':'ready'}}})
 
 session = os.environ['SESSION_ID']
 receipt_file = os.environ['RECEIPT_FILE']
 release_file = os.environ['RELEASE_FILE']
 message_id = None
-recovery_pending = False
 for line in sys.stdin:
     frame = json.loads(line)
     method = frame.get('method')
@@ -30,40 +38,33 @@ for line in sys.stdin:
         send({'jsonrpc':'2.0','id':frame['id'],'result':{
             'protocol_version':frame['params']['protocol_version'],
             'name':'producer_fixture','version':'1',
-            'capabilities':{'producer_messaging':True,'tools':False,'resources':False,
-                'subscribe_events':False,'subscribe_bus':False,'publish_bus':False,
-                'publish_session_events':False,'intercept':[]},'tools':[]}})
-    elif method == 'plugin/recovery/start':
+            'capabilities':{'producer_messaging':True,
+                'subscribe_events':False,'subscribe_bus':False,'publish_bus':False,'intercept':[]}}})
+    elif method == 'producer/recovery/start':
         assert 'id' not in frame and frame['params'] == {}
-        send({'jsonrpc':'2.0','id':'register','method':'plugin/producer/register',
+        send({'jsonrpc':'2.0','id':1002,'method':'producer/register',
             'params':{'session_id':session,'name':'default'}})
-    elif frame.get('id') == 'register':
+    elif frame.get('id') == 1002:
         producer_id = frame['result']['producer_id']
-        send({'jsonrpc':'2.0','id':'send','method':'plugin/producer/send','params':{
+        send({'jsonrpc':'2.0','id':1003,'method':'producer/send','params':{
             'session_id':session,'producer_id':producer_id,'mode':'queue',
             'description':'External plugin work completed',
             'idempotency_key':'plugin-engine-integration','body':'real plugin producer input'}})
-    elif frame.get('id') == 'send':
+    elif frame.get('id') == 1003:
         message_id = frame['result']['message_id']
-        send({'jsonrpc':'2.0','id':'unregister','method':'plugin/producer/unregister',
+        send({'jsonrpc':'2.0','id':1004,'method':'producer/unregister',
             'params':{'session_id':session,'producer_id':producer_id}})
-    elif frame.get('id') == 'unregister':
+    elif frame.get('id') == 1004:
         assert frame['result'] == {}
-        recovery_pending = True
         with open(receipt_file, 'w', encoding='utf-8') as output:
             json.dump({'message_id':message_id}, output)
-    elif frame.get('id') == 'complete':
+        threading.Thread(target=complete_when_released, daemon=True).start()
+    elif frame.get('id') == 1001:
         assert frame['result'] == {}
-    elif method == 'plugin/ping':
-        send({'jsonrpc':'2.0','id':frame['id'],'result':{}})
     elif method == 'plugin/shutdown':
         break
     else:
         raise AssertionError(frame)
-    if recovery_pending and os.path.exists(release_file):
-        recovery_pending = False
-        send({'jsonrpc':'2.0','id':'complete','method':'plugin/recovery/complete',
-            'params':{'outcome':{'status':'ready'}}})
 "#;
 
 #[tokio::test]
@@ -148,8 +149,7 @@ async fn installed_plugin_producer_callbacks_are_durable_and_drive_a_model_turn(
     fixture.config.plugins.insert(
         "producer_fixture".into(),
         PluginConfig {
-            command: Some(python_command().into()),
-            args: vec!["-c".into(), PRODUCER_PLUGIN.into()],
+            command: vec![python_command().into(), "-c".into(), PRODUCER_PLUGIN.into()],
             env: BTreeMap::from([
                 ("SESSION_ID".into(), session_id.to_string()),
                 ("RECEIPT_FILE".into(), receipt_file.display().to_string()),
@@ -161,7 +161,6 @@ async fn installed_plugin_producer_callbacks_are_durable_and_drive_a_model_turn(
             interception_timeout_ms: 2_000,
             startup_timeout_ms: 10_000,
             shutdown_grace_ms: 3_000,
-            tool_timeout_ms: 30_000,
         },
     );
     drop(fixture.engine);
@@ -261,12 +260,6 @@ async fn installed_plugin_producer_callbacks_are_durable_and_drive_a_model_turn(
     );
 
     write_private_test_file(&release_file, b"ready");
-    engine
-        .inner
-        .plugins
-        .ping("producer_fixture")
-        .await
-        .expect("plugin transport remains healthy");
     tokio::time::timeout(test_timeout(5), async {
         loop {
             let inspection = engine
@@ -323,45 +316,42 @@ for line in sys.stdin:
         send({'jsonrpc':'2.0','id':request_id,'result':{
             'protocol_version':frame['params']['protocol_version'],
             'name':'named_fixture','version':'1',
-            'capabilities':{'producer_messaging':True,'tools':False,'resources':False,
-                'subscribe_events':False,'subscribe_bus':False,'publish_bus':False,
-                'publish_session_events':False,'intercept':[]},'tools':[]}})
-    elif method == 'plugin/recovery/start':
-        send({'jsonrpc':'2.0','id':'alpha','method':'plugin/producer/register',
+            'capabilities':{'producer_messaging':True,
+                'subscribe_events':False,'subscribe_bus':False,'publish_bus':False,'intercept':[]}}})
+    elif method == 'producer/recovery/start':
+        send({'jsonrpc':'2.0','id':1005,'method':'producer/register',
             'params':{'session_id':session,'name':'alpha'}})
-    elif request_id == 'alpha':
+    elif request_id == 1005:
         state['alpha'] = frame['result']['producer_id']
-        send({'jsonrpc':'2.0','id':'beta','method':'plugin/producer/register',
+        send({'jsonrpc':'2.0','id':1006,'method':'producer/register',
             'params':{'session_id':session,'name':'beta'}})
-    elif request_id == 'beta':
+    elif request_id == 1006:
         state['beta'] = frame['result']['producer_id']
-        send({'jsonrpc':'2.0','id':'send-alpha','method':'plugin/producer/send',
+        send({'jsonrpc':'2.0','id':1007,'method':'producer/send',
             'params':message(state['alpha'], 'from alpha')})
-    elif request_id == 'send-alpha':
+    elif request_id == 1007:
         state['alpha_message'] = frame['result']['message_id']
-        send({'jsonrpc':'2.0','id':'send-beta','method':'plugin/producer/send',
+        send({'jsonrpc':'2.0','id':1008,'method':'producer/send',
             'params':message(state['beta'], 'from beta')})
-    elif request_id == 'send-beta':
+    elif request_id == 1008:
         state['beta_message'] = frame['result']['message_id']
-        send({'jsonrpc':'2.0','id':'too-big','method':'plugin/producer/send',
+        send({'jsonrpc':'2.0','id':1009,'method':'producer/send',
             'params':message(state['alpha'], 'x' * 65)})
-    elif request_id == 'too-big':
+    elif request_id == 1009:
         state['too_big_rejected'] = 'error' in frame
-        send({'jsonrpc':'2.0','id':'bad-name','method':'plugin/producer/register',
+        send({'jsonrpc':'2.0','id':1010,'method':'producer/register',
             'params':{'session_id':session,'name':'Bad'}})
-    elif request_id == 'bad-name':
+    elif request_id == 1010:
         state['bad_name_rejected'] = 'error' in frame
-        send({'jsonrpc':'2.0','id':'discard','method':'plugin/producer/discard',
+        send({'jsonrpc':'2.0','id':1011,'method':'producer/discard',
             'params':{'session_id':session,'message_id':state['alpha_message']}})
-    elif request_id == 'discard':
+    elif request_id == 1011:
         state['discarded'] = frame.get('result') == {}
-        send({'jsonrpc':'2.0','id':'complete','method':'plugin/recovery/complete',
+        send({'jsonrpc':'2.0','id':1001,'method':'producer/recovery/complete',
             'params':{'outcome':{'status':'ready'}}})
-    elif request_id == 'complete':
+    elif request_id == 1001:
         with open(receipt_file, 'w', encoding='utf-8') as output:
             json.dump(state, output)
-    elif method == 'plugin/ping':
-        send({'jsonrpc':'2.0','id':request_id,'result':{}})
     elif method == 'plugin/shutdown':
         break
 "#;
@@ -387,8 +377,11 @@ async fn a_plugin_runs_named_producers_each_with_its_own_keys() {
     fixture.config.plugins.insert(
         "named_fixture".into(),
         PluginConfig {
-            command: Some(python_command().into()),
-            args: vec!["-c".into(), NAMED_PRODUCERS_PLUGIN.into()],
+            command: vec![
+                python_command().into(),
+                "-c".into(),
+                NAMED_PRODUCERS_PLUGIN.into(),
+            ],
             env: BTreeMap::from([
                 ("SESSION_ID".into(), session_id.to_string()),
                 ("RECEIPT_FILE".into(), receipt_file.display().to_string()),
@@ -399,7 +392,6 @@ async fn a_plugin_runs_named_producers_each_with_its_own_keys() {
             interception_timeout_ms: 2_000,
             startup_timeout_ms: 10_000,
             shutdown_grace_ms: 3_000,
-            tool_timeout_ms: 30_000,
         },
     );
     drop(fixture.engine);

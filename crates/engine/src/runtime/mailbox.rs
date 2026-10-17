@@ -498,17 +498,11 @@ impl Engine {
         }
         if !was_persisted && self.inner.store.is_persisted(session)? {
             for durable in self.inner.store.log(session)?.all_events().iter() {
-                let drops = self
-                    .inner
-                    .plugins
-                    .stream_session_event(durable, durable.origin.as_ref());
+                let drops = self.inner.plugins.stream_session_event(durable);
                 self.record_plugin_drops(session, drops);
             }
         } else {
-            let drops = self
-                .inner
-                .plugins
-                .stream_session_event(&envelope, envelope.origin.as_ref());
+            let drops = self.inner.plugins.stream_session_event(&envelope);
             self.record_plugin_drops(session, drops);
         }
         Ok(envelope)
@@ -625,17 +619,16 @@ impl Engine {
             }
             return crate::plugin::PluginEmitOutcome {
                 bus: ExtensionEmitStatus::Dropped,
-                durable: ExtensionEmitStatus::Rejected,
                 reason: Some(reason.clone()),
             };
         }
         let payload_bytes =
             serde_json::to_vec(&request.payload).map_or(usize::MAX, |bytes| bytes.len());
-        let event_bytes = serde_json::to_vec(&Event::PluginEventAdded {
-            plugin: request.plugin.clone(),
-            name: request.name.clone(),
-            payload: request.payload.clone(),
-        })
+        let event_bytes = serde_json::to_vec(&serde_json::json!({
+            "plugin": request.plugin,
+            "name": request.name,
+            "payload": request.payload,
+        }))
         .map_or(usize::MAX, |bytes| bytes.len());
         let invalid_name = request.name.is_empty()
             || request.name.chars().count() > crate::plugin::MAX_PLUGIN_EVENT_NAME_CHARS
@@ -653,7 +646,6 @@ impl Engine {
             );
             return crate::plugin::PluginEmitOutcome {
                 bus: ExtensionEmitStatus::Dropped,
-                durable: ExtensionEmitStatus::Rejected,
                 reason: Some(format!(
                     "event name must be 1-{} control-free characters, payload at most {} bytes, and total event at most {} bytes",
                     crate::plugin::MAX_PLUGIN_EVENT_NAME_CHARS,
@@ -676,15 +668,17 @@ impl Engine {
             );
             return crate::plugin::PluginEmitOutcome {
                 bus: ExtensionEmitStatus::Dropped,
-                durable: ExtensionEmitStatus::Rejected,
                 reason: Some(reason.into()),
             };
         }
 
-        let mut bus = ExtensionEmitStatus::Rejected;
-        let durable = ExtensionEmitStatus::Rejected;
-        let mut reason = None;
-        if request.publish_bus {
+        if !request.publish_bus {
+            return crate::plugin::PluginEmitOutcome {
+                bus: ExtensionEmitStatus::Rejected,
+                reason: Some("plugin did not declare `publish_bus`".into()),
+            };
+        }
+        {
             let event = crate::EngineEvent::PluginEvent {
                 session_id,
                 plugin: request.plugin.clone(),
@@ -703,18 +697,10 @@ impl Engine {
                 Some(&request.plugin),
             );
             self.record_plugin_drops(session_id, drops);
-            bus = ExtensionEmitStatus::Published;
-        }
-        if request.publish_session_events {
-            reason = Some("model-bound session emission requires explicit producer.register and producer.send".into());
-        }
-        if !request.publish_bus && !request.publish_session_events {
-            reason = Some("plugin did not declare an event publishing capability".into());
         }
         crate::plugin::PluginEmitOutcome {
-            bus,
-            durable,
-            reason,
+            bus: ExtensionEmitStatus::Published,
+            reason: None,
         }
     }
 

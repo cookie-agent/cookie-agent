@@ -406,9 +406,9 @@ async fn cancellation_after_successful_finalization_is_reconciled_at_terminal_co
             (
                 "FIXTURE_CAPABILITIES",
                 serde_json::json!({
-                    "producer_messaging":false,"tools":false,"resources":false,
+                    "producer_messaging":false,
                     "subscribe_events":false,"subscribe_bus":false,"publish_bus":false,
-                    "publish_session_events":false,"intercept":["tool_after_result"]
+                    "intercept":["tool_after_result"]
                 })
                 .to_string(),
             ),
@@ -564,7 +564,7 @@ async fn plugin_named_output_contract_reaches_capture_manifest_and_model_history
         .unwrap();
     let (mut fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\ndescription: Plugin named output\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  plugin: allow\n---\nUse the named plugin output.\n",
+        "---\ndescription: Plugin named output\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  named_output: allow\n---\nUse the named plugin output.\n",
     );
     let full = "r".repeat(70_000);
     let plugin = interception_plugin(
@@ -573,9 +573,9 @@ async fn plugin_named_output_contract_reaches_capture_manifest_and_model_history
             (
                 "FIXTURE_CAPABILITIES",
                 serde_json::json!({
-                    "producer_messaging":false,"tools":true,"resources":false,
+                    "producer_messaging":false,
                     "subscribe_events":false,"subscribe_bus":false,"publish_bus":false,
-                    "publish_session_events":false,"intercept":[]
+                    "intercept":[]
                 })
                 .to_string(),
             ),
@@ -584,23 +584,21 @@ async fn plugin_named_output_contract_reaches_capture_manifest_and_model_history
                 serde_json::json!([{
                     "name":"fixture_named","description":"Named output fixture",
                     "parameters":{"type":"object","additionalProperties":false},
-                    "permission_name":"named_output","primary_resource_param":null,
+                    "permission":"named_output",
                     "output":{"kind":"named","streams":["results","diagnostics","empty"]}
                 }])
                 .to_string(),
             ),
             (
-                "FIXTURE_TOOL_RESULT",
-                serde_json::json!({
-                    "output":{"kind":"named","streams":[
-                        {"stream":"empty","text":""},
-                        {"stream":"diagnostics","text":"warning\n"},
-                        {"stream":"results","text":full}
-                    ]},
-                    "display":"PLUGIN_UI_ONLY","is_error":false
-                })
+                "FIXTURE_TOOL_OUTPUT",
+                serde_json::json!({"kind":"named","streams":[
+                    {"stream":"empty","text":""},
+                    {"stream":"diagnostics","text":"warning\n"},
+                    {"stream":"results","text":full}
+                ]})
                 .to_string(),
             ),
+            ("FIXTURE_TOOL_DISPLAY", "PLUGIN_UI_ONLY".to_owned()),
         ],
     );
     reopen_with_interception_plugins(&mut fixture, vec![("named_plugin".into(), plugin)]).await;

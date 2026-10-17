@@ -1,11 +1,32 @@
+//! The plugin host (`docs/site/specs/plugins-v1.md`).
+//!
+//! A plugin is a trusted, local, daemon-wide extension in a child process.
+//! Each configured plugin gets a [`PluginRuntime`] that starts the process
+//! with the runtime stack's [`ProcessConnector`] (its own process group,
+//! stderr captured), connects a [`RuntimeClient`] with the `plugin/initialize`
+//! handshake, and restarts it with the [`ReconnectPolicy`] when it drops.
+//!
+//! The runtime client carries everything a plugin shares with a runtime: its
+//! tools run over the runtime protocol's `tool/*` messages, and its producers
+//! over `producer/*` as `plugin:<name>`. This module adds what only plugins
+//! do:
+//!
+//! - **hooks**: [`PluginRegistry::intercept_named`] calls one plugin's hook
+//!   with a fresh one-shot context grant and its interception timeout;
+//! - **event and bus streams**: a bounded per-plugin queue that evicts by
+//!   priority (output chunks first, terminal events last) and a writer that
+//!   sends it with a context grant per notification;
+//! - **emits**: `plugin/emit` checks the context grant and the plugin's
+//!   publishing quota, then hands the event to the engine.
+
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     future::Future,
+    path::PathBuf,
     pin::Pin,
-    process::Stdio,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -13,56 +34,33 @@ use std::{
 use async_trait::async_trait;
 use cookie_agent_config::PluginConfig;
 use cookie_agent_protocol::{
-    ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, EXTENSION_PROTOCOL_VERSION,
-    ErrorResponse, ExtensionBusEventParams, ExtensionEmitParams, ExtensionEmitResultParams,
-    ExtensionEmitStatus, ExtensionInitializeResult, ExtensionInterceptionHook, ExtensionPingParams,
-    ExtensionPingResult, ExtensionPluginCapabilities, ExtensionToolCallParams,
-    ExtensionToolCallResult, ExtensionToolDeclaration, JsonRpcError, JsonRpcId, JsonRpcVersion,
-    Notification, PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD,
-    PLUGIN_EVENT_METHOD, PLUGIN_PING_METHOD, PLUGIN_TOOLS_CALL_METHOD, PermissionAction,
-    PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
-    PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, Request, Response,
-    SafeDisplayText, Sha256Digest, SuccessResponse, extension_initialize_request,
-    extension_shutdown_notification,
+    ExtensionBusEventParams, ExtensionEmitParams, ExtensionEmitResultParams, ExtensionEmitStatus,
+    ExtensionInterceptionHook, ExtensionPluginCapabilities, PLUGIN_BUS_EVENT_METHOD,
+    PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD, PluginInfo, PluginState,
+    ProducerSourceState, ProducerSourceStatus, ToolCallPresentation,
 };
-use cookie_agent_protocol::{
-    ExtensionInitializeParams, ExtensionProducerDiscardParams, ExtensionProducerDiscardResult,
-    ExtensionProducerRegisterParams, ExtensionProducerRegisterResult, ExtensionProducerSendParams,
-    ExtensionProducerSendResult, ExtensionProducerUnregisterParams,
-    ExtensionProducerUnregisterResult, ExtensionRecoveryCompleteParams,
-    ExtensionRecoveryCompleteResult, ExtensionRecoveryOutcome, PLUGIN_PRODUCER_DISCARD_METHOD,
-    PLUGIN_PRODUCER_REGISTER_METHOD, PLUGIN_PRODUCER_SEND_METHOD,
-    PLUGIN_PRODUCER_UNREGISTER_METHOD, PLUGIN_RECOVERY_COMPLETE_METHOD, ProducerSource,
-    ProducerSourceState, ProducerSourceStatus, extension_recovery_start_notification,
+use cookie_agent_runtime_api::{
+    PreparedTool, PromptSection, RuntimeConnector as _, SessionToolContext, ToolCall, ToolError,
+    ToolPreparationContext, ToolProvider, ToolSpec,
+    reconnect::{ReconnectOutcome, ReconnectPolicy},
+    rpc::IncomingNotification,
 };
-use futures_util::StreamExt as _;
 use indexmap::IndexMap;
-use oven_sdk::JsonSchema;
-#[cfg(windows)]
-use process_wrap::tokio::JobObject;
-#[cfg(unix)]
-use process_wrap::tokio::ProcessGroup;
-use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
-use serde_json::Value;
+use serde_json::{Value, value::RawValue};
 use tokio::{
-    io::AsyncWriteExt as _,
-    sync::{Notify, mpsc, oneshot, watch},
-    task::{JoinHandle, JoinSet},
+    sync::{Notify, watch},
+    task::JoinHandle,
     time::Instant,
 };
-use tokio_util::codec::{FramedRead, LinesCodec};
+use tokio_util::sync::CancellationToken;
 
-use cookie_agent_runtime_api::{
-    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProvider, ToolSpec,
-};
+use crate::runtimes::{ClientExtension, ProcessConnector, RuntimeClient};
 
-const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_PLUGIN_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_PLUGIN_EVENT_NAME_CHARS: usize = 128;
 pub(crate) const MAX_PLUGIN_EVENT_TOTAL_BYTES: usize = 272 * 1024;
-const PLUGIN_OUTBOUND_CAPACITY: usize = 1024;
-const PLUGIN_PRODUCER_CONCURRENCY: usize = 32;
+/// The provenance ID every plugin's tool provider shares.
+pub(crate) const PLUGIN_PROVIDER_ID: &str = "plugin";
 const PLUGIN_NOTIFICATION_CAPACITY: usize = 1024;
 const PLUGIN_CONTEXT_CAPACITY: usize = 1024;
 const PLUGIN_SPENT_CONTEXT_CAPACITY: usize = 256;
@@ -79,6 +77,45 @@ struct PublishQuota {
     bytes_this_minute: usize,
 }
 
+/// Why a hook produced no result. Each failure is recorded as a plugin
+/// diagnostic of its [`Self::kind`], and the hook fails open.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum InterceptError {
+    /// No answer within the plugin's `interception_timeout_ms`.
+    Timeout,
+    /// The plugin is not connected, or its connection ended during the hook.
+    Disconnected,
+    /// The plugin answered with an error.
+    Rejected(String),
+    /// The plugin's answer does not match the hook's result.
+    Malformed(String),
+}
+
+impl InterceptError {
+    /// The diagnostic this failure is recorded as.
+    pub(crate) fn kind(&self) -> cookie_agent_protocol::PluginDiagnosticKind {
+        use cookie_agent_protocol::PluginDiagnosticKind;
+        match self {
+            Self::Timeout => PluginDiagnosticKind::InterceptionTimeout,
+            Self::Disconnected => PluginDiagnosticKind::InterceptionCrash,
+            Self::Rejected(_) | Self::Malformed(_) => PluginDiagnosticKind::InterceptionRejected,
+        }
+    }
+}
+
+impl std::fmt::Display for InterceptError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Timeout => formatter.write_str("plugin interception timed out"),
+            Self::Disconnected => formatter.write_str("plugin is not connected"),
+            Self::Rejected(message) => write!(formatter, "plugin interception rejected: {message}"),
+            Self::Malformed(message) => {
+                write!(formatter, "malformed interception result: {message}")
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PluginEmitRequest {
     pub plugin: String,
@@ -87,7 +124,6 @@ pub(crate) struct PluginEmitRequest {
     pub name: String,
     pub payload: Value,
     pub publish_bus: bool,
-    pub publish_session_events: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -102,7 +138,6 @@ pub(crate) enum PluginEmitContext {
 #[derive(Clone, Debug)]
 pub(crate) struct PluginEmitOutcome {
     pub bus: ExtensionEmitStatus,
-    pub durable: ExtensionEmitStatus,
     pub reason: Option<String>,
 }
 
@@ -125,75 +160,6 @@ pub(crate) type PluginEmitHandler = Arc<
         + Sync,
 >;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PluginConnectionAuthority {
-    pub plugin: String,
-    pub connection_epoch: u64,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum PluginProducerRequest {
-    Register(ExtensionProducerRegisterParams),
-    Send(ExtensionProducerSendParams),
-    Unregister(ExtensionProducerUnregisterParams),
-    Discard(ExtensionProducerDiscardParams),
-    RecoveryComplete(ExtensionRecoveryCompleteParams),
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum PluginProducerResponse {
-    Register(ExtensionProducerRegisterResult),
-    Send(ExtensionProducerSendResult),
-    Unregister(ExtensionProducerUnregisterResult),
-    Discard(ExtensionProducerDiscardResult),
-    RecoveryComplete(ExtensionRecoveryCompleteResult),
-}
-
-pub(crate) type PluginProducerHandler = Arc<
-    dyn Fn(
-            PluginConnectionAuthority,
-            PluginProducerRequest,
-        )
-            -> Pin<Box<dyn Future<Output = Result<PluginProducerResponse, JsonRpcError>> + Send>>
-        + Send
-        + Sync,
->;
-
-struct ProducerConnection {
-    epoch: Option<u64>,
-    live: bool,
-    recovery: Option<ProducerSourceStatus>,
-    outcome: Option<ExtensionRecoveryOutcome>,
-}
-
-/// Invalidates authority even when the supervisor is aborted during shutdown.
-struct ProducerConnectionLease(Arc<PluginRuntime>, u64);
-
-impl Drop for ProducerConnectionLease {
-    fn drop(&mut self) {
-        let mut connection = self
-            .0
-            .producer_connection
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        if connection.epoch != Some(self.1) {
-            return;
-        }
-        connection.epoch = None;
-        connection.live = false;
-        if connection
-            .recovery
-            .is_some_and(|status| status != ProducerSourceStatus::Disabled)
-        {
-            connection.recovery = Some(ProducerSourceStatus::Failed);
-        }
-        drop(connection);
-        self.0
-            .producer_changes
-            .send_modify(|revision| *revision = revision.wrapping_add(1));
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum EngineEvent {
     PluginEvent {
@@ -204,54 +170,77 @@ pub enum EngineEvent {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PluginState {
-    Disabled,
-    Disconnected,
-    Connecting,
-    Connected,
-    Failed,
+/// A notification waiting for a plugin, with the context grant it carries.
+struct QueuedNotification {
+    method: &'static str,
+    /// The serialized params, shared by every plugin it goes to.
+    params: Arc<RawValue>,
+    session_id: cookie_agent_protocol::SessionId,
+    context_id: String,
+    class: PluginDeliveryClass,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
-pub struct PluginStatus {
-    pub plugin: String,
-    pub state: PluginState,
-    pub reason: Option<String>,
-    pub tools: Vec<String>,
-    pub dropped_events: u64,
+/// A plugin's bounded outbound notification queue. When it is full, a new
+/// notification evicts the oldest one of the lowest priority it outranks.
+struct PluginNotificationQueue {
+    capacity: usize,
+    queued: Mutex<VecDeque<QueuedNotification>>,
+    notify: Notify,
 }
 
-struct PluginRuntime {
-    name: String,
-    /// The origin of the session events this plugin publishes.
-    origin: cookie_agent_protocol::EventOrigin,
-    config: PluginConfig,
-    status: Mutex<PluginStatus>,
-    control: Mutex<Option<mpsc::Sender<Control>>>,
-    notifications: Mutex<Arc<PluginNotificationQueue>>,
-    declarations: Mutex<Vec<ExtensionToolDeclaration>>,
-    capabilities: Mutex<Option<ExtensionPluginCapabilities>>,
-    dropped_events: AtomicU64,
-    forced_failure: Mutex<Option<String>>,
-    forced_failure_notify: Notify,
-    ready: Arc<Notify>,
-    mcp: Arc<crate::McpRegistry>,
-    emit_handler: Arc<Mutex<Option<PluginEmitHandler>>>,
-    producer_handler: Arc<Mutex<Option<PluginProducerHandler>>>,
-    producer_connection: Mutex<ProducerConnection>,
-    producer_changes: watch::Sender<u64>,
-    contexts: Mutex<PluginContexts>,
-    publish_quotas: Mutex<HashMap<cookie_agent_protocol::SessionId, PublishQuota>>,
+impl PluginNotificationQueue {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            queued: Mutex::new(VecDeque::new()),
+            notify: Notify::new(),
+        }
+    }
+
+    /// Queues `item`; returns the class of the notification dropped to make
+    /// room, or the item's own when nothing it outranks is queued.
+    fn push(&self, item: QueuedNotification) -> Option<PluginDeliveryClass> {
+        let mut queued = lock(&self.queued);
+        let dropped = if queued.len() < self.capacity {
+            None
+        } else {
+            let position = |class| queued.iter().position(|queued| queued.class == class);
+            let index = match item.class {
+                PluginDeliveryClass::Chunk => position(PluginDeliveryClass::Chunk),
+                PluginDeliveryClass::Ordinary => position(PluginDeliveryClass::Chunk)
+                    .or_else(|| position(PluginDeliveryClass::Ordinary)),
+                PluginDeliveryClass::Terminal => position(PluginDeliveryClass::Chunk)
+                    .or_else(|| position(PluginDeliveryClass::Ordinary))
+                    .or_else(|| position(PluginDeliveryClass::Terminal)),
+            };
+            let Some(index) = index else {
+                return Some(item.class);
+            };
+            queued.remove(index).map(|removed| removed.class)
+        };
+        queued.push_back(item);
+        drop(queued);
+        self.notify.notify_one();
+        dropped
+    }
+
+    fn pop(&self) -> Option<QueuedNotification> {
+        lock(&self.queued).pop_front()
+    }
+
+    fn clear(&self) {
+        lock(&self.queued).clear();
+    }
 }
 
 #[derive(Debug, Default)]
 struct PluginContexts {
     active: VecDeque<PluginContextGrant>,
-    spent: VecDeque<PluginSpentContext>,
+    spent: VecDeque<PluginContextGrant>,
 }
 
+/// One-shot authority to emit for a session, granted with a hook or a
+/// streamed notification.
 #[derive(Debug)]
 struct PluginContextGrant {
     id: String,
@@ -259,13 +248,7 @@ struct PluginContextGrant {
     expires_at: Instant,
 }
 
-#[derive(Debug)]
-struct PluginSpentContext {
-    id: String,
-    session_id: cookie_agent_protocol::SessionId,
-    expires_at: Instant,
-}
-
+/// Revokes a hook's context grant once the hook has answered.
 struct PluginContextLease {
     runtime: Arc<PluginRuntime>,
     context_id: String,
@@ -279,191 +262,48 @@ impl Drop for PluginContextLease {
     }
 }
 
-enum Control {
-    ReplyFrame(Response),
-    Ping(oneshot::Sender<Result<(), String>>),
-    ToolCall {
-        params: ExtensionToolCallParams,
-        context_lifetime: Duration,
-        reply: oneshot::Sender<Result<ExtensionToolCallResult, String>>,
-    },
-    Notify {
-        /// The serialized notification, shared by every plugin it goes to.
-        frame: Arc<str>,
-        session_id: cookie_agent_protocol::SessionId,
-        context_id: String,
-        context_lifetime: Duration,
-    },
-    Intercept {
-        method: &'static str,
-        params: Value,
-        session_id: Option<cookie_agent_protocol::SessionId>,
-        context_id: Option<String>,
-        context_lifetime: Option<Duration>,
-        reply: oneshot::Sender<Result<Value, String>>,
-    },
-    Shutdown,
+/// The current connection of a plugin and what it declared.
+struct Connected {
+    client: RuntimeClient,
+    capabilities: ExtensionPluginCapabilities,
 }
 
-struct QueuedPluginNotification {
-    control: Control,
-    class: PluginDeliveryClass,
-}
-
-struct PluginNotificationQueue {
-    capacity: usize,
-    queued: Mutex<VecDeque<QueuedPluginNotification>>,
-    notify: Notify,
-}
-
-impl PluginNotificationQueue {
-    fn new(capacity: usize) -> Self {
-        Self {
-            capacity: capacity.max(1),
-            queued: Mutex::new(VecDeque::new()),
-            notify: Notify::new(),
-        }
-    }
-
-    fn push(&self, control: Control, class: PluginDeliveryClass) -> Option<PluginDeliveryClass> {
-        let mut queued = self
-            .queued
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dropped = if queued.len() < self.capacity {
-            None
-        } else {
-            let index = match class {
-                PluginDeliveryClass::Chunk => queued
-                    .iter()
-                    .position(|item| item.class == PluginDeliveryClass::Chunk),
-                PluginDeliveryClass::Ordinary => queued
-                    .iter()
-                    .position(|item| item.class == PluginDeliveryClass::Chunk)
-                    .or_else(|| {
-                        queued
-                            .iter()
-                            .position(|item| item.class == PluginDeliveryClass::Ordinary)
-                    }),
-                PluginDeliveryClass::Terminal => queued
-                    .iter()
-                    .position(|item| item.class == PluginDeliveryClass::Chunk)
-                    .or_else(|| {
-                        queued
-                            .iter()
-                            .position(|item| item.class == PluginDeliveryClass::Ordinary)
-                    })
-                    .or_else(|| {
-                        queued
-                            .iter()
-                            .position(|item| item.class == PluginDeliveryClass::Terminal)
-                    }),
-            };
-            let Some(index) = index else {
-                return Some(class);
-            };
-            queued.remove(index).map(|item| item.class)
-        };
-        queued.push_back(QueuedPluginNotification { control, class });
-        drop(queued);
-        self.notify.notify_one();
-        dropped
-    }
-
-    #[cfg(test)]
-    fn pop(&self) -> Option<Control> {
-        self.queued
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .pop_front()
-            .map(|item| item.control)
-    }
-
-    async fn notified(&self) {
-        self.notify.notified().await;
-    }
-
-    fn drain(&self) -> VecDeque<Control> {
-        std::mem::take(
-            &mut *self
-                .queued
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        )
-        .into_iter()
-        .map(|item| item.control)
-        .collect()
-    }
-
-    fn clear(&self) {
-        self.queued
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
-    }
-}
-
-enum ReaderEvent {
-    Message(String),
-    Failed(String),
-    Eof,
-}
-
-enum PendingRequest {
-    Initialize {
-        deadline: Instant,
-    },
-    Ping {
-        deadline: Instant,
-        reply: oneshot::Sender<Result<(), String>>,
-    },
-    ToolCall {
-        deadline: Instant,
-        reply: oneshot::Sender<Result<ExtensionToolCallResult, String>>,
-    },
-    Intercept {
-        deadline: Instant,
-        reply: oneshot::Sender<Result<Value, String>>,
-    },
-}
-
-impl PendingRequest {
-    fn deadline(&self) -> Instant {
-        match self {
-            Self::Initialize { deadline }
-            | Self::Ping { deadline, .. }
-            | Self::ToolCall { deadline, .. }
-            | Self::Intercept { deadline, .. } => *deadline,
-        }
-    }
+/// One configured plugin.
+struct PluginRuntime {
+    name: String,
+    config: PluginConfig,
+    state: Mutex<PluginState>,
+    reason: Mutex<Option<String>>,
+    connection: Mutex<Option<Connected>>,
+    notifications: PluginNotificationQueue,
+    dropped_events: AtomicU64,
+    contexts: Mutex<PluginContexts>,
+    publish_quotas: Mutex<HashMap<cookie_agent_protocol::SessionId, PublishQuota>>,
+    /// Set once the first start attempt has finished, connected or not.
+    first_attempt_done: AtomicBool,
+    /// Cancelled to restart the plugin; replaced with every connection.
+    restart: Mutex<CancellationToken>,
+    registry: Weak<PluginRegistryInner>,
 }
 
 struct PluginRegistryInner {
     plugins: IndexMap<String, Arc<PluginRuntime>>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
-    ready: Arc<Notify>,
-    emit_handler: Arc<Mutex<Option<PluginEmitHandler>>>,
-    producer_handler: Arc<Mutex<Option<PluginProducerHandler>>>,
-    producer_changes: watch::Sender<u64>,
+    ready: Notify,
+    emit_handler: Mutex<Option<PluginEmitHandler>>,
+    changes: watch::Sender<u64>,
+    shutdown: CancellationToken,
+    reconnect: Mutex<ReconnectPolicy>,
 }
 
-fn record_plugin_delivery_drop(
-    runtime: &PluginRuntime,
-    drops: &mut Vec<PluginDeliveryDrop>,
-    class: PluginDeliveryClass,
-) {
-    let count = runtime.dropped_events.fetch_add(1, Ordering::AcqRel) + 1;
-    runtime
-        .status
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .dropped_events = count;
-    drops.push(PluginDeliveryDrop {
-        plugin: runtime.name.clone(),
-        class,
-    });
+impl PluginRegistryInner {
+    fn changed(&self) {
+        self.changes
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
 }
 
+/// Every configured plugin, in the order their hooks run.
 #[derive(Clone)]
 pub struct PluginRegistry {
     inner: Arc<PluginRegistryInner>,
@@ -477,292 +317,186 @@ impl std::fmt::Debug for PluginRegistry {
     }
 }
 
-pub(crate) fn plugin_event_origin(name: &str) -> cookie_agent_protocol::EventOrigin {
-    cookie_agent_protocol::EventOrigin::new(format!("plugin:{name}")).unwrap_or_else(|_| {
-        cookie_agent_protocol::EventOrigin::new(format!(
-            "plugin:{}",
-            cookie_agent_protocol::Sha256Digest::of_bytes(name.as_bytes())
-        ))
-        .expect("SHA-256 digest is a valid event origin slug")
-    })
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl PluginRegistry {
-    pub(crate) fn new(
-        plugins: IndexMap<String, PluginConfig>,
-        mcp: Arc<crate::McpRegistry>,
-    ) -> Self {
-        let ready = Arc::new(Notify::new());
-        let emit_handler = Arc::new(Mutex::new(None));
-        let producer_handler = Arc::new(Mutex::new(None));
-        let (producer_changes, _) = watch::channel(0);
-        let plugins: IndexMap<String, Arc<PluginRuntime>> = plugins
-            .into_iter()
-            .map(|(name, config)| {
-                let state = if config.enabled {
-                    PluginState::Disconnected
-                } else {
-                    PluginState::Disabled
-                };
-                let runtime = Arc::new(PluginRuntime {
-                    name: name.clone(),
-                    origin: plugin_event_origin(&name),
-                    producer_connection: Mutex::new(ProducerConnection {
-                        epoch: None,
-                        live: false,
-                        recovery: config.producer_messaging.then_some(if config.enabled {
-                            ProducerSourceStatus::Starting
-                        } else {
-                            ProducerSourceStatus::Disabled
-                        }),
-                        outcome: None,
-                    }),
-                    producer_handler: Arc::clone(&producer_handler),
-                    producer_changes: producer_changes.clone(),
-                    config,
-                    status: Mutex::new(PluginStatus {
-                        plugin: name.clone(),
-                        state,
-                        reason: None,
-                        tools: Vec::new(),
-                        dropped_events: 0,
-                    }),
-                    control: Mutex::new(None),
-                    notifications: Mutex::new(Arc::new(PluginNotificationQueue::new(
-                        PLUGIN_NOTIFICATION_CAPACITY,
-                    ))),
-                    declarations: Mutex::new(Vec::new()),
-                    capabilities: Mutex::new(None),
-                    dropped_events: AtomicU64::new(0),
-                    forced_failure: Mutex::new(None),
-                    forced_failure_notify: Notify::new(),
-                    ready: Arc::clone(&ready),
-                    mcp: Arc::clone(&mcp),
-                    emit_handler: Arc::clone(&emit_handler),
-                    contexts: Mutex::new(PluginContexts::default()),
-                    publish_quotas: Mutex::new(HashMap::new()),
-                });
-                (name, runtime)
-            })
-            .collect();
-        let inner = Arc::new(PluginRegistryInner {
-            plugins,
-            tasks: Mutex::new(Vec::new()),
-            ready,
-            emit_handler,
-            producer_handler,
-            producer_changes,
-        });
-        let weak = Arc::downgrade(&inner);
-        mcp.set_plugin_collision_handler(Arc::new(move |plugin, tool, replacement| {
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
-            let Some(runtime) = inner.plugins.get(plugin) else {
-                return;
-            };
-            if let Some(replacement) = replacement {
-                let mut status = runtime
-                    .status
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                status.tools.retain(|name| name != tool);
-                status.reason = Some(format!(
-                    "tool `{tool}` was replaced by later plugin `{replacement}`"
-                ));
-                return;
+    pub(crate) fn new(plugins: IndexMap<String, PluginConfig>) -> Self {
+        let (changes, _) = watch::channel(0);
+        let inner = Arc::new_cyclic(|registry: &Weak<PluginRegistryInner>| {
+            let plugins = plugins
+                .into_iter()
+                .map(|(name, config)| {
+                    let state = if config.enabled {
+                        PluginState::Starting
+                    } else {
+                        PluginState::Disabled
+                    };
+                    let runtime = Arc::new(PluginRuntime {
+                        name: name.clone(),
+                        first_attempt_done: AtomicBool::new(!config.enabled),
+                        config,
+                        state: Mutex::new(state),
+                        reason: Mutex::new(None),
+                        connection: Mutex::new(None),
+                        notifications: PluginNotificationQueue::new(PLUGIN_NOTIFICATION_CAPACITY),
+                        dropped_events: AtomicU64::new(0),
+                        contexts: Mutex::new(PluginContexts::default()),
+                        publish_quotas: Mutex::new(HashMap::new()),
+                        restart: Mutex::new(CancellationToken::new()),
+                        registry: registry.clone(),
+                    });
+                    (name, runtime)
+                })
+                .collect();
+            PluginRegistryInner {
+                plugins,
+                tasks: Mutex::new(Vec::new()),
+                ready: Notify::new(),
+                emit_handler: Mutex::new(None),
+                changes,
+                shutdown: CancellationToken::new(),
+                reconnect: Mutex::new(ReconnectPolicy::default()),
             }
-            *runtime
-                .forced_failure
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(format!(
-                "plugin `{plugin}` tool `{tool}` was preempted by MCP"
-            ));
-            runtime.forced_failure_notify.notify_one();
-        }));
+        });
         Self { inner }
     }
 
+    /// Starts every enabled plugin on `runtime`.
     pub(crate) fn start_eager(&self, runtime: &tokio::runtime::Handle) {
-        for plugin in self
-            .inner
-            .plugins
-            .values()
-            .filter(|plugin| plugin.config.enabled)
-        {
-            let plugin = Arc::clone(plugin);
-            let (control, receiver) = mpsc::channel(PLUGIN_OUTBOUND_CAPACITY);
-            let notifications = plugin
-                .notifications
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            *plugin
-                .control
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(control);
-            let task = runtime.spawn(async move {
-                plugin.run(receiver, notifications).await;
-            });
-            self.inner
-                .tasks
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .push(task);
+        for plugin in self.inner.plugins.values() {
+            if plugin.config.enabled {
+                let plugin = Arc::clone(plugin);
+                let task = runtime.spawn(async move { plugin.supervise().await });
+                lock(&self.inner.tasks).push(task);
+            }
         }
     }
 
+    /// How a dropped plugin is restarted; tests shorten it.
+    #[cfg(test)]
+    pub(crate) fn set_reconnect_policy(&self, policy: ReconnectPolicy) {
+        *lock(&self.inner.reconnect) = policy;
+    }
+
+    /// Waits until every enabled plugin's first start attempt has finished,
+    /// connected or failed.
     pub(crate) async fn await_eager_ready(&self) {
         loop {
             let notified = self.inner.ready.notified();
-            let ready = self.inner.plugins.values().all(|plugin| {
-                !plugin.config.enabled
-                    || matches!(
-                        plugin
-                            .status
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .state,
-                        PluginState::Connected | PluginState::Failed
-                    )
-            });
-            if ready {
+            if self
+                .inner
+                .plugins
+                .values()
+                .all(|plugin| plugin.first_attempt_done.load(Ordering::Acquire))
+            {
                 return;
             }
             notified.await;
         }
     }
 
+    /// Every configured plugin as clients see it, in hook order.
     #[must_use]
-    pub fn statuses(&self) -> Vec<PluginStatus> {
+    pub fn statuses(&self) -> Vec<PluginInfo> {
         self.inner
             .plugins
             .values()
-            .map(|plugin| {
-                plugin
-                    .status
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone()
-            })
+            .map(|plugin| plugin.info())
             .collect()
     }
 
-    pub async fn ping(&self, name: &str) -> Result<(), String> {
+    /// Restarts plugin `name` now.
+    pub(crate) fn restart(&self, name: &str) -> Result<(), String> {
         let plugin = self
             .inner
             .plugins
             .get(name)
             .ok_or_else(|| format!("unknown plugin `{name}`"))?;
-        let sender = plugin
-            .control
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-            .ok_or_else(|| format!("plugin `{name}` is not running"))?;
-        let (reply, receive) = oneshot::channel();
-        sender
-            .send(Control::Ping(reply))
-            .await
-            .map_err(|_| format!("plugin `{name}` is not running"))?;
-        receive
-            .await
-            .map_err(|_| format!("plugin `{name}` stopped during ping"))?
+        if !plugin.config.enabled {
+            return Err(format!("plugin `{name}` is disabled"));
+        }
+        lock(&plugin.restart).cancel();
+        Ok(())
+    }
+
+    /// Plugin status changes and producer connection changes, coalesced.
+    pub(crate) fn subscribe_changes(&self) -> watch::Receiver<u64> {
+        self.inner.changes.subscribe()
     }
 
     pub(crate) fn set_emit_handler(&self, handler: PluginEmitHandler) {
-        *self
-            .inner
-            .emit_handler
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handler);
+        *lock(&self.inner.emit_handler) = Some(handler);
     }
 
-    pub(crate) fn set_producer_handler(&self, handler: PluginProducerHandler) {
-        *self
-            .inner
-            .producer_handler
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some(handler);
+    /// The tool provider of each enabled plugin, in hook order. Each composes
+    /// under the plugin's name and publishes the tools of its current
+    /// connection.
+    pub(crate) fn tool_providers(&self) -> Vec<Arc<dyn ToolProvider>> {
+        self.inner
+            .plugins
+            .values()
+            .filter(|plugin| plugin.config.enabled)
+            .map(|plugin| {
+                Arc::new(PluginToolProvider {
+                    plugin: Arc::clone(plugin),
+                }) as Arc<dyn ToolProvider>
+            })
+            .collect()
     }
 
-    /// Coalescing wakeups, not a lifecycle event log. On every change reconcile
-    /// readiness and revoke registrations whose name/epoch is no longer current.
-    pub(crate) fn subscribe_producer_changes(&self) -> watch::Receiver<u64> {
-        self.inner.producer_changes.subscribe()
+    /// The live connection of every connected plugin.
+    pub(crate) fn connections(&self) -> Vec<RuntimeClient> {
+        self.inner
+            .plugins
+            .values()
+            .filter_map(|plugin| plugin.client())
+            .collect()
     }
 
-    /// Snapshot of configured or declared producer plugins, including unavailable
-    /// ones. Failed/disabled external work is unknown, never proof of completion.
+    /// Whether `epoch` is the live connection of plugin `name`, and it
+    /// produces.
+    pub(crate) fn producer_connection_is_current(&self, name: &str, epoch: u64) -> bool {
+        self.inner
+            .plugins
+            .get(name)
+            .and_then(|plugin| plugin.client())
+            .is_some_and(|client| {
+                client.epoch() == epoch && !client.is_closed() && client.produces()
+            })
+    }
+
+    /// The recovery state of every plugin configured for producer
+    /// messaging. One that is not connected is `starting`, or `failed` once
+    /// it stopped retrying; failed or disabled external work is unknown,
+    /// never proof of completion.
     #[must_use]
     pub fn producer_recovery_states(&self) -> Vec<ProducerSourceState> {
         self.inner
             .plugins
             .values()
+            .filter(|plugin| plugin.config.producer_messaging)
             .filter_map(|plugin| {
-                let connection = plugin
-                    .producer_connection
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                let status = connection.recovery?;
+                let status = if !plugin.config.enabled {
+                    ProducerSourceStatus::Disabled
+                } else if let Some(client) = plugin.client() {
+                    client
+                        .producer_status()
+                        .unwrap_or(ProducerSourceStatus::Disabled)
+                } else if *lock(&plugin.state) == PluginState::Failed {
+                    ProducerSourceStatus::Failed
+                } else {
+                    ProducerSourceStatus::Starting
+                };
                 Some(ProducerSourceState {
-                    source: ProducerSource::plugin(&plugin.name).ok()?,
+                    source: cookie_agent_protocol::ProducerSource::plugin(&plugin.name).ok()?,
                     status,
                 })
             })
             .collect()
-    }
-
-    /// Runtime actor operations must also check registration owner and session.
-    pub(crate) fn producer_connection_is_current(&self, plugin: &str, epoch: &u64) -> bool {
-        self.inner.plugins.get(plugin).is_some_and(|plugin| {
-            let connection = plugin
-                .producer_connection
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            connection.live && connection.epoch == Some(*epoch)
-        })
-    }
-
-    /// Call inside the runtime RecoveryComplete handler before reconciling actors
-    /// and acknowledging. Exact repeats are idempotent; conflicting outcomes fail.
-    pub(crate) fn complete_producer_recovery(
-        &self,
-        authority: &PluginConnectionAuthority,
-        outcome: &ExtensionRecoveryOutcome,
-    ) -> Result<(), JsonRpcError> {
-        let plugin = self
-            .inner
-            .plugins
-            .get(&authority.plugin)
-            .ok_or_else(|| producer_error(-32600, "unknown plugin connection"))?;
-        let mut connection = plugin
-            .producer_connection
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        if !connection.live || connection.epoch != Some(authority.connection_epoch) {
-            return Err(producer_error(-32600, "stale plugin connection"));
-        }
-        if let Some(previous) = &connection.outcome {
-            return if previous == outcome {
-                Ok(())
-            } else {
-                Err(producer_error(-32600, "recovery outcome already reported"))
-            };
-        }
-        connection.recovery = Some(match outcome {
-            ExtensionRecoveryOutcome::Ready => ProducerSourceStatus::Ready,
-            ExtensionRecoveryOutcome::Failed { .. } => ProducerSourceStatus::Failed,
-        });
-        connection.outcome = Some(outcome.clone());
-        drop(connection);
-        if let ExtensionRecoveryOutcome::Failed { message } = outcome {
-            self.note_offender_diagnostic(&authority.plugin, message.to_string());
-        }
-        plugin
-            .producer_changes
-            .send_modify(|revision| *revision = revision.wrapping_add(1));
-        Ok(())
     }
 
     pub(crate) fn check_publish_quota(
@@ -777,10 +511,7 @@ impl PluginRegistry {
             .get(plugin)
             .ok_or("plugin is not registered")?;
         let now = Instant::now();
-        let mut quotas = runtime
-            .publish_quotas
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut quotas = lock(&runtime.publish_quotas);
         let quota = quotas.entry(session_id).or_insert(PublishQuota {
             second_started: now,
             minute_started: now,
@@ -806,35 +537,19 @@ impl PluginRegistry {
         Ok(())
     }
 
+    /// Records `reason` as what plugin `plugin` last could not do.
     pub(crate) fn note_offender_diagnostic(&self, plugin: &str, reason: String) {
         if let Some(runtime) = self.inner.plugins.get(plugin) {
-            runtime
-                .status
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .reason = Some(reason);
+            *lock(&runtime.reason) = Some(reason);
+            self.inner.changed();
         }
     }
 
     pub(crate) fn stream_session_event(
         &self,
         event: &cookie_agent_protocol::StoredEvent,
-        origin: Option<&cookie_agent_protocol::EventOrigin>,
     ) -> Vec<PluginDeliveryDrop> {
-        let source_plugin = origin.and_then(|origin| {
-            self.inner
-                .plugins
-                .values()
-                .find(|runtime| runtime.origin == *origin)
-                .map(|runtime| runtime.name.as_str())
-        });
-        self.stream_event_payload(
-            event.session_id,
-            event.seq,
-            &event.payload,
-            event.timestamp,
-            source_plugin,
-        )
+        self.stream_event_payload(event.session_id, event.seq, &event.payload, event.timestamp)
     }
 
     /// Streams live-only output to event subscribers. It carries the
@@ -848,7 +563,6 @@ impl PluginRegistry {
             event.after_seq,
             &event.payload,
             event.timestamp,
-            None,
         )
     }
 
@@ -858,7 +572,6 @@ impl PluginRegistry {
         seq: u64,
         payload: &cookie_agent_protocol::EventPayload,
         timestamp: jiff::Timestamp,
-        source_plugin: Option<&str>,
     ) -> Vec<PluginDeliveryDrop> {
         let class = match payload {
             cookie_agent_protocol::EventPayload::ToolCallProgress {
@@ -871,24 +584,23 @@ impl PluginRegistry {
         };
         self.stream_notification(
             session_id,
-            source_plugin,
+            None,
+            PLUGIN_EVENT_METHOD,
             class,
             |capabilities| capabilities.subscribe_events,
             |context_id| {
-                notification_frame(
-                    PLUGIN_EVENT_METHOD,
-                    &EventParamsRef {
-                        session_id,
-                        context_id,
-                        seq,
-                        event: payload,
-                        timestamp,
-                    },
-                )
+                raw_params(&EventParamsRef {
+                    session_id,
+                    context_id,
+                    seq,
+                    event: payload,
+                    timestamp,
+                })
             },
         )
     }
 
+    /// Streams a bus event to every bus subscriber except its source.
     pub(crate) fn stream_bus_event(
         &self,
         event: &ExtensionBusEventParams,
@@ -897,100 +609,89 @@ impl PluginRegistry {
         self.stream_notification(
             event.session_id,
             source_plugin,
+            PLUGIN_BUS_EVENT_METHOD,
             PluginDeliveryClass::Ordinary,
             |capabilities| capabilities.subscribe_bus,
             |context_id| {
-                notification_frame(
-                    PLUGIN_BUS_EVENT_METHOD,
-                    &BusEventParamsRef {
-                        session_id: event.session_id,
-                        context_id,
-                        plugin: &event.plugin,
-                        name: &event.name,
-                        payload: &event.payload,
-                    },
-                )
+                raw_params(&BusEventParamsRef {
+                    session_id: event.session_id,
+                    context_id,
+                    plugin: &event.plugin,
+                    name: &event.name,
+                    payload: &event.payload,
+                })
             },
         )
     }
 
     /// Queues one notification for every connected plugin `subscribed`
-    /// selects, except its source. The notification and its context are
-    /// built only once a plugin wants them, and then shared by all of them.
+    /// selects, except its source. The params and their context are built
+    /// only once a plugin wants them, and then shared by all of them.
     fn stream_notification(
         &self,
         session_id: cookie_agent_protocol::SessionId,
         source_plugin: Option<&str>,
+        method: &'static str,
         class: PluginDeliveryClass,
         subscribed: impl Fn(&ExtensionPluginCapabilities) -> bool,
-        build: impl FnOnce(&str) -> Arc<str>,
+        build: impl FnOnce(&str) -> Arc<RawValue>,
     ) -> Vec<PluginDeliveryDrop> {
         let mut drops = Vec::new();
         let mut build = Some(build);
-        let mut built: Option<(String, Arc<str>)> = None;
+        let mut built: Option<(String, Arc<RawValue>)> = None;
         for runtime in self.inner.plugins.values() {
             if source_plugin == Some(runtime.name.as_str()) {
                 continue;
             }
-            let enabled = runtime
-                .capabilities
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+            let wanted = lock(&runtime.connection)
                 .as_ref()
-                .is_some_and(&subscribed);
-            if !enabled {
+                .is_some_and(|connected| subscribed(&connected.capabilities));
+            if !wanted {
                 continue;
             }
-            if runtime
-                .control
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_none()
-            {
-                continue;
-            }
-            let (context_id, frame) = built.get_or_insert_with(|| {
+            let (context_id, params) = built.get_or_insert_with(|| {
                 let context_id = plugin_context_id();
                 let build = build.take().expect("the notification is built once");
-                let frame = build(&context_id);
-                (context_id, frame)
+                let params = build(&context_id);
+                (context_id, params)
             });
-            let notifications = runtime
-                .notifications
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            if let Some(dropped) = notifications.push(
-                Control::Notify {
-                    frame: Arc::clone(frame),
-                    session_id,
-                    context_id: context_id.clone(),
-                    context_lifetime: PLUGIN_NOTIFICATION_CONTEXT_LIFETIME,
-                },
+            if let Some(dropped) = runtime.notifications.push(QueuedNotification {
+                method,
+                params: Arc::clone(params),
+                session_id,
+                context_id: context_id.clone(),
                 class,
-            ) {
-                record_plugin_delivery_drop(runtime, &mut drops, dropped);
+            }) {
+                if runtime.dropped_events.fetch_add(1, Ordering::AcqRel) == 0 {
+                    self.inner.changed();
+                }
+                drops.push(PluginDeliveryDrop {
+                    plugin: runtime.name.clone(),
+                    class: dropped,
+                });
             }
         }
         drops
     }
 
+    /// The connected plugins that intercept `hook`, in hook order.
     pub(crate) fn interception_plugins(&self, hook: ExtensionInterceptionHook) -> Vec<String> {
         self.inner
             .plugins
             .values()
             .filter(|runtime| {
-                runtime
-                    .capabilities
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                lock(&runtime.connection)
                     .as_ref()
-                    .is_some_and(|capabilities| capabilities.intercept.contains(&hook))
+                    .is_some_and(|connected| connected.capabilities.intercept.contains(&hook))
             })
             .map(|runtime| runtime.name.clone())
             .collect()
     }
 
+    /// Runs hook `method` of `plugin` with `params`. When `context_id` is
+    /// given, the call gets its own fresh context grant, written over the
+    /// params' `context_id`, so a plugin that handles several hooks of one
+    /// model attempt can emit from each.
     pub(crate) async fn intercept_named<P, R>(
         &self,
         plugin: &str,
@@ -998,7 +699,7 @@ impl PluginRegistry {
         params: &P,
         session_id: Option<cookie_agent_protocol::SessionId>,
         context_id: Option<&str>,
-    ) -> Result<R, String>
+    ) -> Result<R, InterceptError>
     where
         P: serde::Serialize,
         R: serde::de::DeserializeOwned,
@@ -1007,133 +708,45 @@ impl PluginRegistry {
             .inner
             .plugins
             .get(plugin)
-            .ok_or_else(|| format!("unknown plugin `{plugin}`"))?;
-        let params = serde_json::to_value(params).expect("interception params serialize");
-        self.intercept_runtime(runtime, method, params, session_id, context_id)
-            .await
-    }
-
-    async fn intercept_runtime<R>(
-        &self,
-        runtime: &Arc<PluginRuntime>,
-        method: &'static str,
-        params: Value,
-        session_id: Option<cookie_agent_protocol::SessionId>,
-        context_id: Option<&str>,
-    ) -> Result<R, String>
-    where
-        R: serde::de::DeserializeOwned,
-    {
-        let sender = runtime
-            .control
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-            .ok_or_else(|| "plugin is not connected".to_owned())?;
-        let (reply, receive) = oneshot::channel();
-        let context_lifetime = context_id.map(|_| {
-            Duration::from_millis(runtime.config.interception_timeout_ms.saturating_add(100))
-        });
-        sender
-            .try_send(Control::Intercept {
-                method,
-                params,
-                session_id,
-                context_id: context_id.map(str::to_owned),
-                context_lifetime,
-                reply,
-            })
-            .map_err(|_| "plugin interception queue is full".to_owned())?;
+            .ok_or(InterceptError::Disconnected)?;
+        let client = runtime.client().ok_or(InterceptError::Disconnected)?;
+        let mut params = serde_json::to_value(params).expect("interception params serialize");
+        let timeout = Duration::from_millis(runtime.config.interception_timeout_ms);
         let _lease = match (session_id, context_id) {
-            (Some(session_id), Some(context_id)) => Some(PluginContextLease {
-                runtime: Arc::clone(runtime),
-                context_id: context_id.to_owned(),
-                session_id,
-            }),
+            (Some(session_id), Some(_)) => {
+                let context_id = plugin_context_id();
+                if let Some(fields) = params.as_object_mut() {
+                    fields.insert("context_id".into(), Value::String(context_id.clone()));
+                }
+                runtime.register_context(
+                    &context_id,
+                    session_id,
+                    Instant::now() + timeout + Duration::from_millis(100),
+                );
+                Some(PluginContextLease {
+                    runtime: Arc::clone(runtime),
+                    context_id,
+                    session_id,
+                })
+            }
             _ => None,
         };
-        match tokio::time::timeout(
-            Duration::from_millis(runtime.config.interception_timeout_ms + 50),
-            receive,
-        )
-        .await
+        let value = match tokio::time::timeout(timeout, client.request_value(method, &params)).await
         {
-            Ok(Ok(Ok(value))) => serde_json::from_value(value)
-                .map_err(|error| format!("malformed interception result: {error}")),
-            Ok(Ok(Err(error))) => Err(error),
-            Ok(Err(_)) => Err("plugin crashed during interception".into()),
-            Err(_) => Err("plugin interception timed out".into()),
-        }
-    }
-
-    fn resolve_tool(
-        &self,
-        tool: &str,
-    ) -> Result<(Arc<PluginRuntime>, ExtensionToolDeclaration), ToolError> {
-        for runtime in self.inner.plugins.values() {
-            if !runtime.mcp.plugin_owns_tool(&runtime.name, tool) {
-                continue;
+            Ok(Ok(value)) => value,
+            Ok(Err(cookie_agent_runtime_api::rpc::RpcError::Closed(_))) => {
+                return Err(InterceptError::Disconnected);
             }
-            let declaration = runtime
-                .declarations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .iter()
-                .find(|declaration| declaration.name == tool)
-                .cloned();
-            if let Some(declaration) = declaration {
-                return Ok((Arc::clone(runtime), declaration));
-            }
-        }
-        Err(ToolError::execution(format!(
-            "plugin tool `{tool}` is no longer available"
-        )))
-    }
-
-    async fn call_tool(
-        &self,
-        plugin: &str,
-        params: ExtensionToolCallParams,
-    ) -> Result<ExtensionToolCallResult, ToolError> {
-        let (runtime, _) = self.resolve_tool(&params.tool)?;
-        if runtime.name != plugin {
-            return Err(ToolError::operation_changed(
-                "plugin tool ownership changed after approval",
-            ));
-        }
-        let sender = runtime
-            .control
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-            .ok_or_else(|| ToolError::execution(format!("plugin `{plugin}` is not running")))?;
-        let (reply, receive) = oneshot::channel();
-        let context_id = params.context_id.clone();
-        let session_id = params.session_id;
-        let context_lifetime =
-            Duration::from_millis(runtime.config.tool_timeout_ms.saturating_add(100));
-        sender
-            .send(Control::ToolCall {
-                params,
-                context_lifetime,
-                reply,
-            })
-            .await
-            .map_err(|_| ToolError::execution(format!("plugin `{plugin}` is not running")))?;
-        let _lease = PluginContextLease {
-            runtime: Arc::clone(&runtime),
-            context_id: context_id.clone(),
-            session_id,
+            Ok(Err(error)) => return Err(InterceptError::Rejected(error.to_string())),
+            Err(_) => return Err(InterceptError::Timeout),
         };
-        match receive.await {
-            Ok(result) => result.map_err(ToolError::execution),
-            Err(_) => Err(ToolError::execution(format!(
-                "plugin `{plugin}` stopped during tool call"
-            ))),
-        }
+        serde_json::from_value(value).map_err(|error| InterceptError::Malformed(error.to_string()))
     }
 
+    /// Stops every plugin: each gets `plugin/shutdown` and its shutdown
+    /// grace before its process group is killed.
     pub async fn shutdown(&self) {
+        self.inner.shutdown.cancel();
         let task_timeout = self
             .inner
             .plugins
@@ -1141,28 +754,9 @@ impl PluginRegistry {
             .map(|plugin| plugin.config.shutdown_grace_ms)
             .max()
             .unwrap_or(0)
-            .saturating_add(6_000);
-        let senders = self
-            .inner
-            .plugins
-            .values()
-            .filter_map(|plugin| {
-                plugin
-                    .control
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone()
-            })
-            .collect::<Vec<_>>();
-        for sender in senders {
-            let _ = sender.try_send(Control::Shutdown);
-        }
-        let tasks = self
-            .inner
-            .tasks
-            .lock()
-            .map(|mut tasks| tasks.drain(..).collect::<Vec<_>>())
-            .unwrap_or_default();
+            .saturating_mul(2)
+            .saturating_add(1_000);
+        let tasks = std::mem::take(&mut *lock(&self.inner.tasks));
         for mut task in tasks {
             if tokio::time::timeout(Duration::from_millis(task_timeout), &mut task)
                 .await
@@ -1175,7 +769,235 @@ impl PluginRegistry {
     }
 }
 
+/// How one connection of a plugin ended.
+enum Ended {
+    Shutdown,
+    Restart,
+    Dropped(String),
+}
+
 impl PluginRuntime {
+    fn registry(&self) -> Option<Arc<PluginRegistryInner>> {
+        self.registry.upgrade()
+    }
+
+    fn client(&self) -> Option<RuntimeClient> {
+        lock(&self.connection)
+            .as_ref()
+            .map(|connected| connected.client.clone())
+    }
+
+    fn info(&self) -> PluginInfo {
+        let connection = lock(&self.connection);
+        let capabilities = connection.as_ref().map(|connected| &connected.capabilities);
+        PluginInfo {
+            name: self.name.clone(),
+            state: *lock(&self.state),
+            reason: lock(&self.reason).clone(),
+            tools: connection
+                .as_ref()
+                .and_then(|connected| {
+                    connected
+                        .client
+                        .tool_provider()
+                        .tools_for_session(&SessionToolContext::new(
+                            cookie_agent_protocol::SessionId::new_v7(),
+                        ))
+                        .ok()
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .map(|spec| spec.name)
+                .collect(),
+            hooks: capabilities
+                .map_or_else(Vec::new, |capabilities| capabilities.intercept.clone()),
+            subscribe_events: capabilities
+                .is_some_and(|capabilities| capabilities.subscribe_events),
+            subscribe_bus: capabilities.is_some_and(|capabilities| capabilities.subscribe_bus),
+            publish_bus: capabilities.is_some_and(|capabilities| capabilities.publish_bus),
+            producer_messaging: connection
+                .as_ref()
+                .is_some_and(|connected| connected.client.produces()),
+            dropped_events: self.dropped_events.load(Ordering::Acquire),
+            stderr: connection
+                .as_ref()
+                .and_then(|connected| connected.client.diagnostics()),
+        }
+    }
+
+    fn set_state(&self, state: PluginState, reason: Option<String>) {
+        *lock(&self.state) = state;
+        if reason.is_some() || state == PluginState::Connected {
+            *lock(&self.reason) = reason;
+        }
+        if let Some(registry) = self.registry() {
+            registry.changed();
+        }
+    }
+
+    fn finish_first_attempt(&self) {
+        if !self.first_attempt_done.swap(true, Ordering::AcqRel)
+            && let Some(registry) = self.registry()
+        {
+            registry.ready.notify_waiters();
+        }
+    }
+
+    /// Starts the plugin, serves it, and restarts it when it drops, until
+    /// the daemon stops.
+    async fn supervise(self: Arc<Self>) {
+        let Some(registry) = self.registry() else {
+            return;
+        };
+        let shutdown = registry.shutdown.clone();
+        drop(registry);
+        let mut connection = self.connect().await;
+        self.finish_first_attempt();
+        loop {
+            let restart = shutdown.child_token();
+            *lock(&self.restart) = restart.clone();
+            let reason = match connection {
+                Ok(connected) => match self.serve(connected, &restart).await {
+                    Ended::Shutdown => return,
+                    Ended::Restart => {
+                        self.set_state(PluginState::Starting, None);
+                        connection = self.connect().await;
+                        continue;
+                    }
+                    Ended::Dropped(reason) => reason,
+                },
+                Err(reason) => reason,
+            };
+            if shutdown.is_cancelled() {
+                self.set_state(PluginState::Stopped, None);
+                return;
+            }
+            self.set_state(PluginState::Reconnecting, Some(reason));
+            let policy = self
+                .registry()
+                .map(|registry| lock(&registry.reconnect).clone())
+                .unwrap_or_default();
+            let attempt = Arc::clone(&self);
+            let outcome = policy
+                .run(&restart, move |_| {
+                    let attempt = Arc::clone(&attempt);
+                    async move { attempt.connect().await }
+                })
+                .await;
+            connection = match outcome {
+                ReconnectOutcome::Reconnected(connected) => Ok(connected),
+                ReconnectOutcome::Exhausted { last_error, .. } => {
+                    self.set_state(PluginState::Failed, Some(last_error));
+                    tokio::select! {
+                        () = restart.cancelled() => {}
+                        () = shutdown.cancelled() => {}
+                    }
+                    if shutdown.is_cancelled() {
+                        self.set_state(PluginState::Stopped, None);
+                        return;
+                    }
+                    self.set_state(PluginState::Starting, None);
+                    self.connect().await
+                }
+                ReconnectOutcome::Cancelled => {
+                    if shutdown.is_cancelled() {
+                        self.set_state(PluginState::Stopped, None);
+                        return;
+                    }
+                    self.set_state(PluginState::Starting, None);
+                    self.connect().await
+                }
+            };
+        }
+    }
+
+    /// Starts the process and runs the handshake. The caller owns the
+    /// state: a failed attempt inside a reconnect stays `reconnecting`.
+    async fn connect(self: &Arc<Self>) -> Result<Connected, String> {
+        let grace = Duration::from_millis(self.config.shutdown_grace_ms);
+        let mut connector =
+            ProcessConnector::new(self.config.command.clone(), self.config.env.clone(), grace);
+        if let Some(cwd) = &self.config.cwd {
+            connector = connector.with_cwd(PathBuf::from(cwd));
+        }
+        let startup = Duration::from_millis(self.config.startup_timeout_ms);
+        let extension = Arc::new(PluginExtension {
+            plugin: Arc::downgrade(self),
+        });
+        let name = self.name.clone();
+        let producer_messaging = self.config.producer_messaging;
+        let attempt = async move {
+            let connection = connector.connect(None).await?;
+            RuntimeClient::initialize_plugin(
+                connection,
+                &name,
+                producer_messaging,
+                grace,
+                extension,
+            )
+            .await
+        };
+        let result = tokio::time::timeout(startup, attempt)
+            .await
+            .unwrap_or_else(|_| {
+                Err(format!(
+                    "the plugin did not start within {} ms",
+                    startup.as_millis()
+                ))
+            });
+        result.map(|(client, initialized)| Connected {
+            client,
+            capabilities: initialized.capabilities,
+        })
+    }
+
+    /// Serves one connection until it drops, the plugin is restarted, or the
+    /// daemon stops.
+    async fn serve(self: &Arc<Self>, connected: Connected, restart: &CancellationToken) -> Ended {
+        let client = connected.client.clone();
+        *lock(&self.connection) = Some(connected);
+        self.set_state(PluginState::Connected, None);
+        self.finish_first_attempt();
+        let writer = tokio::spawn(Arc::clone(self).write_notifications(client.clone()));
+        let ended = tokio::select! {
+            reason = client.closed() => Ended::Dropped(reason),
+            () = restart.cancelled() => {
+                let shutdown = self
+                    .registry()
+                    .is_none_or(|registry| registry.shutdown.is_cancelled());
+                client.shutdown_plugin().await;
+                if shutdown { Ended::Shutdown } else { Ended::Restart }
+            }
+        };
+        writer.abort();
+        *lock(&self.connection) = None;
+        self.notifications.clear();
+        if matches!(ended, Ended::Shutdown) {
+            self.set_state(PluginState::Stopped, None);
+        } else if let Some(registry) = self.registry() {
+            registry.changed();
+        }
+        ended
+    }
+
+    /// Sends queued notifications, each with its context grant.
+    async fn write_notifications(self: Arc<Self>, client: RuntimeClient) {
+        loop {
+            let notified = self.notifications.notify.notified();
+            while let Some(item) = self.notifications.pop() {
+                self.register_context(
+                    &item.context_id,
+                    item.session_id,
+                    Instant::now() + PLUGIN_NOTIFICATION_CONTEXT_LIFETIME,
+                );
+                if client.notify_raw(item.method, &item.params).await.is_err() {
+                    return;
+                }
+            }
+            notified.await;
+        }
+    }
+
     fn register_context(
         &self,
         context_id: &str,
@@ -1183,20 +1005,13 @@ impl PluginRuntime {
         expires_at: Instant,
     ) {
         let now = Instant::now();
-        let mut contexts = self
-            .contexts
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut contexts = lock(&self.contexts);
         prune_plugin_contexts(&mut contexts, now);
         if contexts
             .spent
             .iter()
             .any(|context| context.id == context_id)
         {
-            return;
-        }
-        if expires_at <= now {
-            remember_spent_context(&mut contexts, context_id.to_owned(), session_id, now);
             return;
         }
         contexts.active.push_back(PluginContextGrant {
@@ -1213,10 +1028,7 @@ impl PluginRuntime {
 
     fn revoke_context(&self, context_id: &str, session_id: cookie_agent_protocol::SessionId) {
         let now = Instant::now();
-        let mut contexts = self
-            .contexts
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut contexts = lock(&self.contexts);
         prune_plugin_contexts(&mut contexts, now);
         if let Some(index) = contexts
             .active
@@ -1240,10 +1052,7 @@ impl PluginRuntime {
         session_id: cookie_agent_protocol::SessionId,
     ) -> PluginEmitContext {
         let now = Instant::now();
-        let mut contexts = self
-            .contexts
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut contexts = lock(&self.contexts);
         prune_plugin_contexts(&mut contexts, now);
         if let Some(index) = contexts
             .active
@@ -1279,681 +1088,167 @@ impl PluginRuntime {
         }
     }
 
-    async fn run(
-        self: Arc<Self>,
-        receiver: mpsc::Receiver<Control>,
-        notifications: Arc<PluginNotificationQueue>,
-    ) {
-        static NEXT_CONNECTION_EPOCH: AtomicU64 = AtomicU64::new(1);
-        // A compare-exchange loop rather than `fetch_update`, which Rust 1.99
-        // deprecates in favour of a `try_update` the 1.88 MSRV lacks.
-        let mut epoch = NEXT_CONNECTION_EPOCH.load(Ordering::Acquire);
-        loop {
-            let next = epoch
-                .checked_add(1)
-                .expect("plugin connection epoch space exhausted");
-            match NEXT_CONNECTION_EPOCH.compare_exchange_weak(
-                epoch,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => break,
-                Err(actual) => epoch = actual,
-            }
-        }
-        {
-            let mut connection = self
-                .producer_connection
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            connection.epoch = Some(epoch);
-            connection.live = false;
-            connection.outcome = None;
-        }
-        let lease = ProducerConnectionLease(Arc::clone(&self), epoch);
-        self.set_status(PluginState::Connecting, None, Vec::new());
-        let result = self.spawn_and_supervise(receiver, &notifications).await;
-        drop(lease);
-        *self
-            .control
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        notifications.clear();
-        *self
-            .contexts
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = PluginContexts::default();
-        self.declarations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
-        *self
-            .capabilities
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        self.mcp.release_plugin_tools(&self.name);
-        match result {
-            Ok(()) => self.set_status(PluginState::Disconnected, None, Vec::new()),
-            Err(reason) => self.set_status(PluginState::Failed, Some(reason), Vec::new()),
-        }
-    }
-
-    async fn spawn_and_supervise(
-        self: &Arc<Self>,
-        receiver: mpsc::Receiver<Control>,
-        notifications: &Arc<PluginNotificationQueue>,
-    ) -> Result<(), String> {
-        let epoch = self
-            .producer_connection
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .epoch
-            .expect("supervisor owns a connection epoch");
-        let command = self
-            .config
-            .command
+    /// Handles `plugin/emit`: checks the context grant, hands the event to
+    /// the engine, and answers with `plugin/emit_result`.
+    async fn emit(self: Arc<Self>, client: RuntimeClient, params: ExtensionEmitParams) {
+        let handler = self
+            .registry()
+            .and_then(|registry| lock(&registry.emit_handler).clone());
+        let publish_bus = lock(&self.connection)
             .as_ref()
-            .expect("enabled plugins are validated");
-        let mut process = tokio::process::Command::new(command);
-        process
-            .args(&self.config.args)
-            .envs(&self.config.env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        if let Some(cwd) = &self.config.cwd {
-            process.current_dir(cwd);
-        }
-        let mut wrapped = CommandWrap::from(process);
-        #[cfg(unix)]
-        wrapped.wrap(ProcessGroup::leader());
-        #[cfg(windows)]
-        wrapped.wrap(JobObject);
-        wrapped.wrap(KillOnDrop);
-        let mut child = wrapped
-            .spawn()
-            .map_err(|error| format!("spawn failure for command `{command}`: {error}"))?;
-        let result = self
-            .supervise_spawned(&mut child, receiver, notifications)
-            .await;
-        // Revoke before process cleanup, which may wait for the shutdown grace.
-        drop(ProducerConnectionLease(Arc::clone(self), epoch));
-        let cleanup = terminate_and_reap(&mut child).await;
-        match (result, cleanup) {
-            (Err(reason), Err(cleanup)) => Err(format!("{reason}; cleanup failed: {cleanup}")),
-            (result, Ok(())) => result,
-            (Ok(()), Err(cleanup)) => Err(format!("cleanup failed: {cleanup}")),
-        }
-    }
-
-    async fn supervise_spawned(
-        self: &Arc<Self>,
-        child: &mut Box<dyn ChildWrapper>,
-        receiver: mpsc::Receiver<Control>,
-        notifications: &Arc<PluginNotificationQueue>,
-    ) -> Result<(), String> {
-        let stdin = child
-            .stdin()
-            .take()
-            .ok_or_else(|| "spawn failure: child stdin unavailable".to_owned())?;
-        let stdout = child
-            .stdout()
-            .take()
-            .ok_or_else(|| "spawn failure: child stdout unavailable".to_owned())?;
-        let (reader_task, inbound) = spawn_reader(stdout);
-        let result = self
-            .run_host_loop(child, stdin, receiver, notifications, inbound)
-            .await;
-        reader_task.abort();
-        let _ = reader_task.await;
-        result
-    }
-
-    async fn run_host_loop(
-        self: &Arc<Self>,
-        child: &mut Box<dyn ChildWrapper>,
-        mut stdin: tokio::process::ChildStdin,
-        mut control: mpsc::Receiver<Control>,
-        notifications: &Arc<PluginNotificationQueue>,
-        mut inbound: mpsc::Receiver<ReaderEvent>,
-    ) -> Result<(), String> {
-        let mut initialize = extension_initialize_request(env!("CARGO_PKG_VERSION"));
-        let mut params: ExtensionInitializeParams =
-            serde_json::from_value(initialize.params.take().expect("initialize has params"))
-                .expect("initialize params are typed");
-        params.capabilities.producer_messaging = self.config.producer_messaging
-            && self
-                .producer_handler
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .is_some();
-        initialize.params =
-            Some(serde_json::to_value(params).expect("initialize params serialize"));
-        write_json(&mut stdin, &initialize).await?;
-        let mut pending = HashMap::from([(
-            1_i64,
-            PendingRequest::Initialize {
-                deadline: Instant::now() + Duration::from_millis(self.config.startup_timeout_ms),
+            .is_some_and(|connected| connected.capabilities.publish_bus);
+        let outcome = match handler {
+            Some(handler) => {
+                let context = self.consume_context(&params.context_id, params.session_id);
+                handler(PluginEmitRequest {
+                    plugin: self.name.clone(),
+                    session_id: params.session_id,
+                    context,
+                    name: params.name.clone(),
+                    payload: params.payload,
+                    publish_bus,
+                })
+                .await
+            }
+            None => PluginEmitOutcome {
+                bus: ExtensionEmitStatus::Rejected,
+                reason: Some("plugin event publisher is unavailable".into()),
             },
-        )]);
-        let mut next_request_id = 2_i64;
-        let mut connected = false;
-        let mut producer_tasks = JoinSet::new();
-
-        loop {
-            if let Some(reason) = self
-                .forced_failure
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .take()
-            {
-                return Err(reason);
-            }
-            let deadline = pending.values().map(PendingRequest::deadline).min();
-            tokio::select! {
-                status = child.wait() => {
-                    return Err(match status {
-                        Ok(status) => format!("process exited with {status}"),
-                        Err(error) => format!("process wait failed: {error}"),
-                    });
-                }
-                event = inbound.recv() => match event {
-                    Some(ReaderEvent::Message(message)) => {
-                        self.dispatch_message(
-                            &message,
-                            &mut stdin,
-                            &mut pending,
-                            &mut connected,
-                            &mut producer_tasks,
-                        ).await?;
-                    }
-                    Some(ReaderEvent::Failed(reason)) => return Err(reason),
-                    Some(ReaderEvent::Eof) | None => return Err("plugin stdout reached EOF".into()),
-                },
-                () = notifications.notified() => {
-                    for notification in notifications.drain() {
-                        match notification {
-                            Control::Notify { frame, session_id, context_id, context_lifetime } if connected => {
-                                self.register_context(
-                                    &context_id,
-                                    session_id,
-                                    Instant::now() + context_lifetime,
-                                );
-                                write_line(&mut stdin, frame.as_bytes()).await?;
-                            }
-                            Control::Notify { .. } => {}
-                            _ => unreachable!("notification queue accepts only notifications"),
-                        }
-                    }
-                },
-                command = control.recv() => match command {
-                    Some(Control::ReplyFrame(response)) => write_json(&mut stdin, &response).await?,
-                    Some(Control::Ping(reply)) if connected => {
-                        let id = next_request_id;
-                        next_request_id = next_request_id.checked_add(1)
-                            .ok_or_else(|| "plugin request id space exhausted".to_owned())?;
-                        let request = Request::new(
-                            JsonRpcId::Number(id),
-                            PLUGIN_PING_METHOD,
-                            Some(serde_json::to_value(ExtensionPingParams {})
-                                .expect("ping params serialize")),
-                        );
-                        write_json(&mut stdin, &request).await?;
-                        pending.insert(id, PendingRequest::Ping {
-                            deadline: Instant::now()
-                                + Duration::from_millis(self.config.interception_timeout_ms),
-                            reply,
-                        });
-                    }
-                    Some(Control::Ping(reply)) => {
-                        let _ = reply.send(Err(format!("plugin `{}` is not connected", self.name)));
-                    }
-                    Some(Control::ToolCall { params, context_lifetime, reply }) if connected => {
-                        self.register_context(
-                            &params.context_id,
-                            params.session_id,
-                            Instant::now() + context_lifetime,
-                        );
-                        let id = next_request_id;
-                        next_request_id = next_request_id.checked_add(1)
-                            .ok_or_else(|| "plugin request id space exhausted".to_owned())?;
-                        let request = Request::new(
-                            JsonRpcId::Number(id),
-                            PLUGIN_TOOLS_CALL_METHOD,
-                            Some(serde_json::to_value(params)
-                                .expect("plugin tool call params serialize")),
-                        );
-                        write_json(&mut stdin, &request).await?;
-                        pending.insert(id, PendingRequest::ToolCall {
-                            deadline: Instant::now()
-                                + Duration::from_millis(self.config.tool_timeout_ms),
-                            reply,
-                        });
-                    }
-                    Some(Control::ToolCall { reply, .. }) => {
-                        let _ = reply.send(Err(format!("plugin `{}` is not connected", self.name)));
-                    }
-                    Some(Control::Notify { frame, session_id, context_id, context_lifetime }) if connected => {
-                        self.register_context(
-                            &context_id,
-                            session_id,
-                            Instant::now() + context_lifetime,
-                        );
-                        write_line(&mut stdin, frame.as_bytes()).await?;
-                    }
-                    Some(Control::Notify { .. }) => {}
-                    Some(Control::Intercept { method, params, session_id, context_id, context_lifetime, reply }) if connected => {
-                        if let (Some(session_id), Some(context_id), Some(context_lifetime)) =
-                            (session_id, context_id.as_deref(), context_lifetime)
-                        {
-                            self.register_context(
-                                context_id,
-                                session_id,
-                                Instant::now() + context_lifetime,
-                            );
-                        }
-                        let id = next_request_id;
-                        next_request_id = next_request_id.checked_add(1)
-                            .ok_or_else(|| "plugin request id space exhausted".to_owned())?;
-                        write_json(&mut stdin, &Request::new(
-                            JsonRpcId::Number(id), method, Some(params),
-                        )).await?;
-                        pending.insert(id, PendingRequest::Intercept {
-                            deadline: Instant::now()
-                                + Duration::from_millis(self.config.interception_timeout_ms),
-                            reply,
-                        });
-                    }
-                    Some(Control::Intercept { reply, .. }) => {
-                        let _ = reply.send(Err(format!("plugin `{}` is not connected", self.name)));
-                    }
-                    Some(Control::Shutdown) | None => {
-                        return graceful_shutdown(
-                            child,
-                            &mut stdin,
-                            self.config.shutdown_grace_ms,
-                        ).await;
-                    }
-                },
-                () = self.forced_failure_notify.notified() => {}
-                completed = producer_tasks.join_next(), if !producer_tasks.is_empty() => {
-                    completed.expect("task set is nonempty")
-                        .map_err(|error| format!("plugin producer handler failed: {error}"))?;
-                }
-                () = wait_for_deadline(deadline) => {
-                    let now = Instant::now();
-                    let expired = pending
-                        .iter()
-                        .filter_map(|(id, request)| (request.deadline() <= now).then_some(*id))
-                        .collect::<Vec<_>>();
-                    for id in expired {
-                        match pending.remove(&id).expect("expired pending request exists") {
-                            PendingRequest::Initialize { .. } => return Err("handshake timeout".into()),
-                            PendingRequest::Ping { reply, .. } => {
-                                let _ = reply.send(Err("plugin ping timed out".into()));
-                            }
-                            PendingRequest::ToolCall { reply, .. } => {
-                                let _ = reply.send(Err("plugin tool call timed out".into()));
-                            }
-                            PendingRequest::Intercept { reply, .. } => {
-                                let _ = reply.send(Err("plugin interception timed out".into()));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    async fn dispatch_message(
-        self: &Arc<Self>,
-        message: &str,
-        stdin: &mut tokio::process::ChildStdin,
-        pending: &mut HashMap<i64, PendingRequest>,
-        connected: &mut bool,
-        producer_tasks: &mut JoinSet<()>,
-    ) -> Result<(), String> {
-        let value: Value = serde_json::from_str(message)
-            .map_err(|error| format!("malformed plugin message: {error}"))?;
-        if value.get("method").is_some() {
-            if value.get("id").is_some() {
-                let request: Request = serde_json::from_value(value)
-                    .map_err(|error| format!("malformed plugin request: {error}"))?;
-                if let Some(response) = self.dispatch_producer_request(request, producer_tasks) {
-                    write_json(stdin, &response).await?;
-                }
-            } else {
-                let notification = serde_json::from_value::<Notification>(value)
-                    .map_err(|error| format!("malformed plugin notification: {error}"))?;
-                if notification.method == PLUGIN_EMIT_METHOD {
-                    let params: ExtensionEmitParams =
-                        serde_json::from_value(notification.params.unwrap_or(Value::Null))
-                            .map_err(|error| {
-                                format!("malformed plugin emit notification: {error}")
-                            })?;
-                    let capabilities = self
-                        .capabilities
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .clone();
-                    let handler = self
-                        .emit_handler()
-                        .ok_or_else(|| "plugin event publisher is unavailable".to_owned())?;
-                    let outcome = if let Some(capabilities) = capabilities {
-                        let context = self.consume_context(&params.context_id, params.session_id);
-                        handler(PluginEmitRequest {
-                            plugin: self.name.clone(),
-                            session_id: params.session_id,
-                            context,
-                            name: params.name.clone(),
-                            payload: params.payload,
-                            publish_bus: capabilities.publish_bus,
-                            publish_session_events: capabilities.publish_session_events,
-                        })
-                        .await
-                    } else {
-                        PluginEmitOutcome {
-                            bus: ExtensionEmitStatus::Rejected,
-                            durable: ExtensionEmitStatus::Rejected,
-                            reason: Some("plugin is not initialized".into()),
-                        }
-                    };
-                    write_json(
-                        stdin,
-                        &Notification::new(
-                            PLUGIN_EMIT_RESULT_METHOD,
-                            Some(
-                                serde_json::to_value(ExtensionEmitResultParams {
-                                    name: params.name,
-                                    bus: outcome.bus,
-                                    durable: outcome.durable,
-                                    reason: outcome.reason,
-                                })
-                                .expect("emit result params serialize"),
-                            ),
-                        ),
-                    )
-                    .await?;
-                }
-            }
-            return Ok(());
-        }
-
-        let response: Response = serde_json::from_value(value)
-            .map_err(|error| format!("malformed plugin response: {error}"))?;
-        let id = match &response {
-            Response::Success(response) => &response.id,
-            Response::Error(response) => &response.id,
         };
-        let JsonRpcId::Number(id) = id else {
-            return Ok(());
+        let result = ExtensionEmitResultParams {
+            name: params.name,
+            bus: outcome.bus,
+            reason: outcome.reason,
         };
-        let Some(request) = pending.remove(id) else {
-            return Ok(());
-        };
-        match request {
-            PendingRequest::Initialize { .. } => {
-                let initialize = parse_initialize(response, &self.name)?;
-                validate_tools(&initialize)?;
-                let names = initialize
-                    .tools
-                    .iter()
-                    .map(|tool| tool.name.clone())
-                    .collect::<Vec<_>>();
-                self.mcp
-                    .claim_plugin_tools(&self.name, &names)
-                    .map_err(|error| error.to_string())?;
-                *self
-                    .declarations
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = initialize.tools;
-                *self
-                    .capabilities
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                    Some(initialize.capabilities);
-                self.set_status(PluginState::Connected, None, names);
-                *connected = true;
-                let capable = self
-                    .capabilities
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .as_ref()
-                    .is_some_and(|capabilities| capabilities.producer_messaging);
-                let handler_available = self
-                    .producer_handler
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .is_some();
-                {
-                    let mut connection = self
-                        .producer_connection
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
-                    connection.live =
-                        capable && self.config.producer_messaging && handler_available;
-                    if capable || self.config.producer_messaging {
-                        connection.recovery = Some(if connection.live {
-                            ProducerSourceStatus::Starting
-                        } else if capable && self.config.producer_messaging {
-                            ProducerSourceStatus::Failed
-                        } else {
-                            ProducerSourceStatus::Disabled
-                        });
-                    }
-                }
-                self.producer_changes
-                    .send_modify(|revision| *revision = revision.wrapping_add(1));
-                if capable && self.config.producer_messaging && handler_available {
-                    write_json(stdin, &extension_recovery_start_notification()).await?;
-                }
-                Ok(())
-            }
-            PendingRequest::Ping { reply, .. } => {
-                let result = parse_ping(response);
-                let _ = reply.send(result);
-                Ok(())
-            }
-            PendingRequest::ToolCall { reply, .. } => {
-                let result = parse_tool_call(response);
-                let _ = reply.send(result);
-                Ok(())
-            }
-            PendingRequest::Intercept { reply, .. } => {
-                let result = match response {
-                    Response::Success(success) => Ok(success.result),
-                    Response::Error(error) => Err(format!(
-                        "plugin interception rejected: {}",
-                        error.error.message
-                    )),
-                };
-                let _ = reply.send(result);
-                Ok(())
-            }
-        }
-    }
-
-    fn dispatch_producer_request(
-        self: &Arc<Self>,
-        request: Request,
-        tasks: &mut JoinSet<()>,
-    ) -> Option<Response> {
-        let id = request.id;
-        let reject = |error| Some(producer_response(id.clone(), Err(error)));
-        let decoded =
-            match decode_producer_request(&request.method, request.params.unwrap_or(Value::Null)) {
-                Ok(decoded) => decoded,
-                Err(error) => return reject(error),
-            };
-        let authority = {
-            let connection = self
-                .producer_connection
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            if !connection.live {
-                return reject(producer_error(
-                    -32600,
-                    "producer messaging is not enabled on this connection",
-                ));
-            }
-            PluginConnectionAuthority {
-                plugin: self.name.clone(),
-                connection_epoch: connection.epoch.expect("live connection has an epoch"),
-            }
-        };
-        let Some(handler) = self
-            .producer_handler
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
-        else {
-            return reject(producer_error(
-                -32601,
-                "plugin producer handler is unavailable",
-            ));
-        };
-        // Never wait for capacity on the reader: callbacks may themselves need
-        // replies from this connection. Overload is an explicit rejection.
-        if tasks.len() >= PLUGIN_PRODUCER_CONCURRENCY {
-            return reject(producer_error(
-                -32000,
-                "plugin producer handler capacity exceeded",
-            ));
-        }
-        let Some(control) = self
-            .control
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
-        else {
-            return reject(producer_error(-32600, "plugin connection is closed"));
-        };
-        let runtime = Arc::clone(self);
-        tasks.spawn(async move {
-            let current = || {
-                let connection = runtime
-                    .producer_connection
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                connection.live && connection.epoch == Some(authority.connection_epoch)
-            };
-            let result = if current() {
-                handler(authority.clone(), decoded)
-                    .await
-                    .and_then(|response| producer_result(&request.method, response))
-            } else {
-                Err(producer_error(-32600, "stale plugin connection"))
-            };
-            let result = if current() {
-                result
-            } else {
-                Err(producer_error(-32600, "stale plugin connection"))
-            };
-            // A closed receiver means the transport disconnected; the caller sees
-            // EOF, not a fabricated ACK. A full queue is awaited without dropping.
-            let _ = control
-                .send(Control::ReplyFrame(producer_response(id, result)))
-                .await;
-        });
-        None
-    }
-
-    fn set_status(&self, state: PluginState, reason: Option<String>, tools: Vec<String>) {
-        let reason =
-            reason.map(|reason| cookie_agent_protocol::diagnostics::detail(&reason).to_string());
-        let mut status = self
-            .status
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        status.state = state;
-        status.reason = reason;
-        status.tools = tools;
-        drop(status);
-        self.ready.notify_waiters();
-    }
-
-    fn emit_handler(&self) -> Option<PluginEmitHandler> {
-        self.emit_handler
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+        let _ = client
+            .notify_raw(PLUGIN_EMIT_RESULT_METHOD, &raw_params(&result))
+            .await;
     }
 }
 
-fn producer_error(code: i32, message: &str) -> JsonRpcError {
-    JsonRpcError {
-        code,
-        message: message.into(),
-        data: None,
+/// What a plugin connection handles beyond the runtime protocol.
+struct PluginExtension {
+    plugin: Weak<PluginRuntime>,
+}
+
+impl ClientExtension for PluginExtension {
+    fn notification(&self, client: RuntimeClient, notification: IncomingNotification) {
+        if notification.method != PLUGIN_EMIT_METHOD {
+            return;
+        }
+        let Some(plugin) = self.plugin.upgrade() else {
+            return;
+        };
+        match notification.params::<ExtensionEmitParams>() {
+            Ok(params) => {
+                tokio::spawn(plugin.emit(client, params));
+            }
+            Err(error) => {
+                if let Some(registry) = plugin.registry() {
+                    PluginRegistry { inner: registry }
+                        .note_offender_diagnostic(&plugin.name, format!("malformed emit: {error}"));
+                }
+            }
+        }
     }
 }
 
-fn decode_producer_request(
-    method: &str,
-    params: Value,
-) -> Result<PluginProducerRequest, JsonRpcError> {
-    let decoded = match method {
-        PLUGIN_PRODUCER_REGISTER_METHOD => {
-            serde_json::from_value(params).map(PluginProducerRequest::Register)
-        }
-        PLUGIN_PRODUCER_SEND_METHOD => {
-            serde_json::from_value(params).map(PluginProducerRequest::Send)
-        }
-        PLUGIN_PRODUCER_UNREGISTER_METHOD => {
-            serde_json::from_value(params).map(PluginProducerRequest::Unregister)
-        }
-        PLUGIN_PRODUCER_DISCARD_METHOD => {
-            serde_json::from_value(params).map(PluginProducerRequest::Discard)
-        }
-        PLUGIN_RECOVERY_COMPLETE_METHOD => {
-            serde_json::from_value(params).map(PluginProducerRequest::RecoveryComplete)
-        }
-        _ => return Err(producer_error(-32601, "unknown plugin request method")),
-    };
-    decoded
-        .map_err(|error| producer_error(-32602, &format!("invalid producer parameters: {error}")))
+/// One plugin's tools: those its current connection declares, composed
+/// under the plugin's name.
+struct PluginToolProvider {
+    plugin: Arc<PluginRuntime>,
 }
 
-fn producer_result(method: &str, response: PluginProducerResponse) -> Result<Value, JsonRpcError> {
-    let result = match (method, response) {
-        (PLUGIN_PRODUCER_REGISTER_METHOD, PluginProducerResponse::Register(result)) => {
-            serde_json::to_value(result)
-        }
-        (PLUGIN_PRODUCER_SEND_METHOD, PluginProducerResponse::Send(result)) => {
-            serde_json::to_value(result)
-        }
-        (PLUGIN_PRODUCER_UNREGISTER_METHOD, PluginProducerResponse::Unregister(result)) => {
-            serde_json::to_value(result)
-        }
-        (PLUGIN_PRODUCER_DISCARD_METHOD, PluginProducerResponse::Discard(result)) => {
-            serde_json::to_value(result)
-        }
-        (PLUGIN_RECOVERY_COMPLETE_METHOD, PluginProducerResponse::RecoveryComplete(result)) => {
-            serde_json::to_value(result)
-        }
-        _ => {
-            return Err(producer_error(
-                -32603,
-                "plugin producer handler returned the wrong response variant",
-            ));
-        }
-    };
-    result.map_err(|error| producer_error(-32603, &error.to_string()))
+impl PluginToolProvider {
+    fn current(&self) -> Result<Arc<dyn ToolProvider>, ToolError> {
+        self.plugin
+            .client()
+            .map(|client| client.tool_provider())
+            .ok_or_else(|| {
+                ToolError::runtime_unavailable(format!(
+                    "plugin `{}` is not connected",
+                    self.plugin.name
+                ))
+            })
+    }
 }
 
-fn producer_response(id: JsonRpcId, result: Result<Value, JsonRpcError>) -> Response {
-    match result {
-        Ok(result) => Response::Success(SuccessResponse {
-            jsonrpc: JsonRpcVersion::current(),
-            id,
-            result,
-        }),
-        Err(error) => Response::Error(ErrorResponse {
-            jsonrpc: JsonRpcVersion::current(),
-            id,
-            error,
-        }),
+#[async_trait]
+impl ToolProvider for PluginToolProvider {
+    fn provider_id(&self) -> &'static str {
+        PLUGIN_PROVIDER_ID
+    }
+
+    fn prompt_sections(&self, ctx: &SessionToolContext) -> Result<Vec<PromptSection>, ToolError> {
+        self.current()
+            .map_or_else(|_| Ok(Vec::new()), |provider| provider.prompt_sections(ctx))
+    }
+
+    fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        self.current().map_or_else(
+            |_| Ok(Vec::new()),
+            |provider| provider.tools_for_session(ctx),
+        )
+    }
+
+    fn composition_source(&self) -> Option<String> {
+        Some(self.plugin.name.clone())
+    }
+
+    fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError>
+    where
+        Self: Sized,
+    {
+        Err(ToolError::execution(
+            "a plugin tool's permission is declared by its plugin",
+        ))
+    }
+
+    fn get_permission_resource(
+        &self,
+        tool_name: &str,
+        arguments: &Value,
+    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
+        self.current()?
+            .get_permission_resource(tool_name, arguments)
+    }
+
+    fn get_display_argument(&self, name: &str, arguments: &Value) -> Result<String, ToolError> {
+        self.current()?.get_display_argument(name, arguments)
+    }
+
+    fn presentation(&self, call: &ToolCall) -> ToolCallPresentation {
+        match self.current() {
+            Ok(provider) => provider.presentation(call),
+            Err(_) => cookie_agent_runtime_api::tool_title_only(&call.name),
+        }
+    }
+
+    async fn prepare(
+        &self,
+        ctx: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        self.current()?.prepare(ctx, call).await
+    }
+
+    async fn prepare_parallel(
+        &self,
+        ctx: ToolPreparationContext,
+        calls: Vec<ToolCall>,
+    ) -> Vec<Result<PreparedTool, ToolError>> {
+        match self.current() {
+            Ok(provider) => provider.prepare_parallel(ctx, calls).await,
+            Err(_) => calls
+                .iter()
+                .map(|_| {
+                    Err(ToolError::runtime_unavailable(format!(
+                        "plugin `{}` is not connected",
+                        self.plugin.name
+                    )))
+                })
+                .collect(),
+        }
     }
 }
 
@@ -1961,8 +1256,7 @@ fn prune_plugin_contexts(contexts: &mut PluginContexts, now: Instant) {
     let mut active = VecDeque::with_capacity(contexts.active.len());
     while let Some(context) = contexts.active.pop_front() {
         if context.expires_at <= now {
-            let expired = context;
-            remember_spent_context(contexts, expired.id, expired.session_id, now);
+            remember_spent_context(contexts, context.id, context.session_id, now);
         } else {
             active.push_back(context);
         }
@@ -1977,7 +1271,7 @@ fn remember_spent_context(
     session_id: cookie_agent_protocol::SessionId,
     now: Instant,
 ) {
-    contexts.spent.push_back(PluginSpentContext {
+    contexts.spent.push_back(PluginContextGrant {
         id,
         session_id,
         expires_at: now + PLUGIN_SPENT_CONTEXT_LIFETIME,
@@ -1991,415 +1285,14 @@ pub(crate) fn plugin_context_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
-fn spawn_reader(
-    stdout: tokio::process::ChildStdout,
-) -> (JoinHandle<()>, mpsc::Receiver<ReaderEvent>) {
-    let (sender, receiver) = mpsc::channel(32);
-    let task = tokio::spawn(async move {
-        let mut frames = FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_FRAME_BYTES));
-        while let Some(frame) = frames.next().await {
-            let event = match frame {
-                Ok(message) => ReaderEvent::Message(message),
-                Err(error) => ReaderEvent::Failed(format!(
-                    "plugin stdout frame is invalid UTF-8 or exceeds {MAX_FRAME_BYTES} bytes: {error}"
-                )),
-            };
-            let failed = matches!(event, ReaderEvent::Failed(_));
-            if sender.send(event).await.is_err() || failed {
-                return;
-            }
-        }
-        let _ = sender.send(ReaderEvent::Eof).await;
-    });
-    (task, receiver)
-}
-
-fn parse_initialize(
-    response: Response,
-    expected_name: &str,
-) -> Result<ExtensionInitializeResult, String> {
-    let success = match response {
-        Response::Success(success) => success,
-        Response::Error(error) => {
-            return Err(format!(
-                "handshake rejected: {}",
-                cookie_agent_protocol::diagnostics::rpc(&error.error)
-            ));
-        }
-    };
-    let found_version = success
-        .result
-        .get("protocol_version")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            "malformed handshake result: protocol_version must be a string".to_owned()
-        })?;
-    if found_version != EXTENSION_PROTOCOL_VERSION {
-        return Err(format!(
-            "version mismatch: expected {EXTENSION_PROTOCOL_VERSION}, found {found_version}"
-        ));
-    }
-    let result: ExtensionInitializeResult = serde_json::from_value(success.result)
-        .map_err(|error| format!("malformed handshake result: {error}"))?;
-    if result.name != expected_name {
-        return Err(format!(
-            "plugin name mismatch: configured `{expected_name}`, reported `{}`",
-            result.name
-        ));
-    }
-    Ok(result)
-}
-
-fn parse_ping(response: Response) -> Result<(), String> {
-    match response {
-        Response::Success(SuccessResponse { result, .. }) => {
-            serde_json::from_value::<ExtensionPingResult>(result)
-                .map_err(|error| format!("malformed plugin ping result: {error}"))?;
-            Ok(())
-        }
-        Response::Error(error) => Err(format!(
-            "plugin ping rejected: {}",
-            cookie_agent_protocol::diagnostics::rpc(&error.error)
-        )),
-    }
-}
-
-fn parse_tool_call(response: Response) -> Result<ExtensionToolCallResult, String> {
-    match response {
-        Response::Success(SuccessResponse { result, .. }) => serde_json::from_value(result)
-            .map_err(|error| format!("malformed plugin tool call result: {error}")),
-        Response::Error(error) => Err(format!(
-            "plugin tool call rejected: {}",
-            cookie_agent_protocol::diagnostics::rpc(&error.error)
-        )),
-    }
-}
-
-#[async_trait]
-impl ToolProvider for PluginRegistry {
-    fn provider_id(&self) -> &'static str {
-        "plugin"
-    }
-
-    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
-        let mut tools = Vec::new();
-        for runtime in self.inner.plugins.values() {
-            let declarations = runtime
-                .declarations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            tools.extend(
-                declarations
-                    .into_iter()
-                    .filter(|tool| runtime.mcp.plugin_owns_tool(&runtime.name, &tool.name))
-                    .map(|tool| ToolSpec {
-                        background: false,
-                        background_default: false,
-                        collision: Default::default(),
-                        output: tool.output,
-                        concurrency: Default::default(),
-                        // External opt-out requires a future extension-protocol capability.
-                        result_truncation: Default::default(),
-                        name: tool.name,
-                        permission_name: Some(format!("plugin:{}", tool.permission_name)),
-                        description: tool.description,
-                        parameters: tool.parameters,
-                    }),
-            );
-        }
-        Ok(tools)
-    }
-
-    fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError> {
-        Ok(Some("plugin"))
-    }
-
-    fn get_permission_resource(
-        &self,
-        tool_name: &str,
-        arguments: &Value,
-    ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
-        let (_, declaration) = self.resolve_tool(tool_name)?;
-        let primary = primary_resource(&declaration, arguments)?;
-        Ok((
-            Some("plugin"),
-            Some(permission_resource(
-                &declaration.permission_name,
-                primary.as_deref(),
-            )),
-        ))
-    }
-
-    fn get_display_argument(&self, name: &str, arguments: &Value) -> Result<String, ToolError> {
-        let (_, declaration) = self.resolve_tool(name)?;
-        Ok(primary_resource(&declaration, arguments)?.unwrap_or_else(|| name.to_owned()))
-    }
-
-    async fn prepare(
-        &self,
-        ctx: ToolPreparationContext,
-        call: ToolCall,
-    ) -> Result<PreparedTool, ToolError> {
-        let (runtime, declaration) = self.resolve_tool(&call.name)?;
-        if !call.arguments.is_object() {
-            return Err(ToolError::execution(
-                "plugin tool arguments must be an object",
-            ));
-        }
-        let normalized = call.arguments.clone();
-        let argument_bytes = serde_json::to_vec(&normalized)
-            .map_err(|error| ToolError::execution(error.to_string()))?;
-        let primary = primary_resource(&declaration, &normalized)?;
-        let permission_label =
-            permission_resource(&declaration.permission_name, primary.as_deref());
-        let resource = PreparedApprovalResource {
-            capability: PermissionAction::PLUGIN,
-            canonical: PreparedResourceIdentity::new(format!(
-                "plugin-tool:{}",
-                Sha256Digest::of_bytes(permission_label.as_bytes())
-            ))
-            .map_err(|error| ToolError::execution(error.to_string()))?,
-            binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
-                permission_label.as_bytes(),
-            ),
-            binding_lifetime: PreparedBindingLifetime::RestartStable,
-            boundary: ApprovalBoundary::Exact,
-            source: ApprovalResourceSource::PrimaryOperation,
-        };
-        let operation = PreparedOperationIdentity::new(
-            Sha256Digest::of_bytes(&argument_bytes),
-            vec![ApprovalCapability {
-                action: PermissionAction::PLUGIN,
-                operation: PreparedCapabilityOperation::new(format!(
-                    "{}:call",
-                    declaration.permission_name
-                ))
-                .map_err(|error| ToolError::execution(error.to_string()))?,
-            }],
-            vec![resource],
-            Sha256Digest::of_bytes(&ctx.context_bytes()),
-        )
-        .map_err(|error| ToolError::execution(error.to_string()))?;
-        PreparedTool::new(
-            operation,
-            normalized,
-            None,
-            Box::new(PluginExecutor {
-                registry: self.clone(),
-                plugin: runtime.name.clone(),
-                declaration,
-                session: ctx.session,
-                call,
-                resource: primary,
-                timeout: Duration::from_millis(runtime.config.tool_timeout_ms),
-            }),
-        )
-    }
-}
-
-struct PluginExecutor {
-    registry: PluginRegistry,
-    plugin: String,
-    declaration: ExtensionToolDeclaration,
-    session: cookie_agent_protocol::SessionId,
-    call: ToolCall,
-    resource: Option<String>,
-    timeout: Duration,
-}
-
-#[async_trait]
-impl PreparedExecutor for PluginExecutor {
-    async fn revalidate(&self) -> Result<(), ToolError> {
-        let (runtime, declaration) = self.registry.resolve_tool(&self.call.name)?;
-        if runtime.name != self.plugin || declaration != self.declaration {
-            return Err(ToolError::operation_changed(
-                "plugin tool changed after approval",
-            ));
-        }
-        Ok(())
-    }
-
-    async fn execute(
-        self: Box<Self>,
-        context: ToolExecutionContext,
-    ) -> Result<crate::ToolCompletion, ToolError> {
-        self.revalidate().await?;
-        let params = ExtensionToolCallParams {
-            tool: self.call.name.clone(),
-            session_id: self.session,
-            context_id: plugin_context_id(),
-            invocation_id: self.call.id,
-            arguments: self.call.arguments.clone(),
-            resource: self.resource.clone(),
-            cancellation_token: Some(self.call.id.to_string()),
-        };
-        let call = self.registry.call_tool(&self.plugin, params);
-        tokio::pin!(call);
-        let result = tokio::select! {
-            result = &mut call => result,
-            () = context.cancellation.cancelled() => {
-                Err(ToolError::execution("plugin tool call cancelled"))
-            }
-            () = tokio::time::sleep(self.timeout) => {
-                Err(ToolError::execution("plugin tool call timed out"))
-            }
-        }?;
-        if matches!(
-            result.output,
-            cookie_agent_protocol::ToolCompletionOutput::Streamed
-        ) {
-            return Err(ToolError::execution(
-                "plugin transport requires terminal output",
-            ));
-        }
-        Ok(crate::ToolCompletion {
-            failed: result.is_error,
-            output: result.output,
-            result: cookie_agent_protocol::PersistedToolResult {
-                display: Some(result.display),
-                retained_output: None,
-                title: safe_title(&self.call.name),
-                output: String::new(),
-                metadata: serde_json::json!({
-                    "plugin": {
-                        "is_error": result.is_error,
-                    }
-                }),
-                truncation: None,
-                attachments: Vec::new(),
-                additional_messages: Vec::new(),
-            },
-        })
-    }
-}
-
-fn primary_resource(
-    declaration: &ExtensionToolDeclaration,
-    arguments: &Value,
-) -> Result<Option<String>, ToolError> {
-    let Some(parameter) = &declaration.primary_resource_param else {
-        return Ok(None);
-    };
-    let value = arguments
-        .as_object()
-        .and_then(|arguments| arguments.get(parameter));
-    value
-        .map(|value| match value {
-            Value::String(value) => Ok(value.clone()),
-            value => serde_json::to_string(value)
-                .map_err(|error| ToolError::execution(error.to_string())),
-        })
-        .transpose()
-}
-
-fn permission_resource(permission_name: &str, primary: Option<&str>) -> String {
-    primary.map_or_else(
-        || permission_name.to_owned(),
-        |primary| format!("{permission_name} {primary}"),
+fn raw_params(params: &impl serde::Serialize) -> Arc<RawValue> {
+    Arc::from(
+        serde_json::value::to_raw_value(params).expect("plugin notification params serialize"),
     )
 }
 
-fn safe_title(value: &str) -> SafeDisplayText {
-    let mut title = String::new();
-    for character in value.chars() {
-        let character = if character.is_control() {
-            ' '
-        } else {
-            character
-        };
-        if title.len() + character.len_utf8() > SafeDisplayText::MAX_BYTES {
-            break;
-        }
-        title.push(character);
-    }
-    SafeDisplayText::new(title).expect("sanitized plugin title")
-}
-
-fn validate_tools(initialize: &ExtensionInitializeResult) -> Result<(), String> {
-    let mut names = HashSet::new();
-    for tool in &initialize.tools {
-        if !is_snake_case(&tool.name) || !names.insert(&tool.name) {
-            return Err(format!(
-                "plugin declared invalid or duplicate tool name `{}`",
-                tool.name
-            ));
-        }
-        if tool.description.is_empty() || !is_snake_case(&tool.permission_name) {
-            return Err(format!("plugin tool `{}` is malformed", tool.name));
-        }
-        let schema = JsonSchema::new(tool.parameters.clone()).map_err(|error| {
-            format!(
-                "plugin tool `{}` has invalid JSON Schema: {error}",
-                tool.name
-            )
-        })?;
-        jsonschema::draft202012::meta::validate(schema.as_value()).map_err(|error| {
-            format!(
-                "plugin tool `{}` has invalid JSON Schema: {error}",
-                tool.name
-            )
-        })?;
-        let properties = schema
-            .as_value()
-            .as_object()
-            .and_then(|schema| schema.get("properties"))
-            .and_then(Value::as_object);
-        if let Some(parameter) = &tool.primary_resource_param
-            && !properties.is_some_and(|properties| properties.contains_key(parameter))
-        {
-            return Err(format!(
-                "plugin tool `{}` primary_resource_param `{parameter}` is not declared in properties",
-                tool.name
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn is_snake_case(value: &str) -> bool {
-    !value.is_empty()
-        && value.split('_').all(|word| {
-            !word.is_empty()
-                && word
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        })
-        && value.as_bytes()[0].is_ascii_lowercase()
-}
-
-async fn write_json(
-    stdin: &mut tokio::process::ChildStdin,
-    message: &impl serde::Serialize,
-) -> Result<(), String> {
-    let bytes = serde_json::to_vec(message).map_err(|error| error.to_string())?;
-    write_line(stdin, &bytes).await
-}
-
-/// Writes one already-serialized message and its line terminator.
-async fn write_line(stdin: &mut tokio::process::ChildStdin, line: &[u8]) -> Result<(), String> {
-    for bytes in [line, b"\n"] {
-        stdin
-            .write_all(bytes)
-            .await
-            .map_err(|error| format!("plugin write failed: {error}"))?;
-    }
-    stdin
-        .flush()
-        .await
-        .map_err(|error| format!("plugin flush failed: {error}"))
-}
-
-/// A plugin notification's JSON text. Every field is plain data, so it
-/// always serializes.
-fn notification_frame(method: &str, params: &impl serde::Serialize) -> Arc<str> {
-    cookie_agent_protocol::NotificationRef::new(method, params)
-        .to_text()
-        .expect("plugin notification serializes")
-        .into()
-}
-
-/// [`cookie_agent_protocol::ExtensionEventParams`] borrowing the event it carries.
+/// [`cookie_agent_protocol::ExtensionEventParams`] borrowing the event it
+/// carries, so one event is serialized once for every plugin.
 #[derive(serde::Serialize)]
 struct EventParamsRef<'a> {
     session_id: cookie_agent_protocol::SessionId,
@@ -2418,51 +1311,6 @@ struct BusEventParamsRef<'a> {
     name: &'a str,
     payload: &'a Value,
 }
-
-async fn wait_for_deadline(deadline: Option<Instant>) {
-    match deadline {
-        Some(deadline) => tokio::time::sleep_until(deadline).await,
-        None => std::future::pending().await,
-    }
-}
-
-async fn graceful_shutdown(
-    child: &mut Box<dyn ChildWrapper>,
-    stdin: &mut tokio::process::ChildStdin,
-    grace_ms: u64,
-) -> Result<(), String> {
-    let notification: Notification = extension_shutdown_notification();
-    let _ = write_json(stdin, &notification).await;
-    let _ = stdin.shutdown().await;
-    match tokio::time::timeout(Duration::from_millis(grace_ms), child.wait()).await {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(error)) => Err(format!("plugin wait failed during shutdown: {error}")),
-        Err(_) => Err("plugin shutdown grace period expired".into()),
-    }
-}
-
-async fn terminate_and_reap(child: &mut Box<dyn ChildWrapper>) -> Result<(), String> {
-    let status_error = match child.try_wait() {
-        Ok(Some(_)) => return Ok(()),
-        Ok(None) => None,
-        Err(error) => Some(error),
-    };
-    let kill_error = child.start_kill().err();
-    let wait = tokio::time::timeout(Duration::from_secs(5), child.wait())
-        .await
-        .map_err(|_| "timed out waiting to reap plugin".to_owned())?
-        .map_err(|error| format!("plugin reap failed: {error}"));
-    if let Some(error) = status_error {
-        return Err(format!("plugin status check failed before reap: {error}"));
-    }
-    if let Some(error) = kill_error {
-        return Err(format!("plugin termination failed: {error}"));
-    }
-    wait.map(|_| ())
-}
-
-#[cfg(test)]
-mod producer_tests;
 
 #[cfg(test)]
 mod tests;

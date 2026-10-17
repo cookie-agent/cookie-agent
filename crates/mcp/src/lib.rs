@@ -12,7 +12,7 @@
 //! failure is broadcast (`docs/site/specs/runtimes.md` section 6.4). Names
 //! are unique inside one registry: a server whose generated name collides
 //! with a reserved name (the hosting runtime's other tools) or with another
-//! server's or plugin's tool fails.
+//! server's tool fails.
 //!
 //! The daemon's global runtime hosts the top-level `[mcp]` servers with one
 //! registry, and each coding runtime hosts its template's servers with
@@ -228,7 +228,6 @@ struct RegistryInner {
     servers: Mutex<BTreeMap<String, Arc<ServerRuntime>>>,
     reserved_names: Mutex<HashSet<String>>,
     claimed_names: Mutex<HashMap<String, String>>,
-    plugin_collision_handler: Mutex<Option<PluginCollisionHandler>>,
     /// The daemon's OAuth credential store; without one no server uses
     /// OAuth.
     #[cfg(feature = "oauth")]
@@ -286,9 +285,6 @@ pub struct McpRegistryOptions {
     pub oauth_store: Option<std::path::PathBuf>,
     pub observer: Option<Arc<dyn McpObserver>>,
 }
-
-/// See [`McpRegistry::set_plugin_collision_handler`].
-pub type PluginCollisionHandler = Arc<dyn Fn(&str, &str, Option<&str>) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct McpRegistry {
@@ -497,92 +493,6 @@ fn unsupported_server_request(method: &str) -> ErrorData {
 }
 
 impl McpRegistry {
-    /// Calls `handler(plugin, tool, replacement)` when a plugin's tool name
-    /// is taken over by another plugin (`Some(replacement)`) or by an MCP
-    /// server (`None`).
-    pub fn set_plugin_collision_handler(&self, handler: PluginCollisionHandler) {
-        *self
-            .inner
-            .plugin_collision_handler
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handler);
-    }
-
-    /// Claims `names` for `plugin`'s tools in the same runtime. A name that a
-    /// reserved tool or an MCP server holds is a collision; one another plugin
-    /// holds moves to `plugin`.
-    pub fn claim_plugin_tools(&self, plugin: &str, names: &[String]) -> Result<(), ToolError> {
-        let reserved = self
-            .inner
-            .reserved_names
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut claimed = self
-            .inner
-            .claimed_names
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let owner = format!("plugin:{plugin}");
-        let mut local = HashSet::new();
-        let mut displaced = Vec::new();
-        for name in names {
-            if reserved.contains(name) || !local.insert(name) {
-                return Err(ToolError::execution(format!(
-                    "plugin `{plugin}` declared colliding tool name `{name}`"
-                )));
-            }
-            if let Some(current) = claimed.get(name) {
-                if let Some(previous) = current.strip_prefix("plugin:") {
-                    if previous != plugin {
-                        displaced.push((previous.to_owned(), name.clone()));
-                    }
-                } else {
-                    return Err(ToolError::execution(format!(
-                        "plugin `{plugin}` declared colliding tool name `{name}`"
-                    )));
-                }
-            }
-        }
-        for name in names {
-            claimed.insert(name.clone(), owner.clone());
-        }
-        drop(claimed);
-        drop(reserved);
-        let collision_handler = self
-            .inner
-            .plugin_collision_handler
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        if let Some(handler) = collision_handler {
-            for (previous, tool) in displaced {
-                handler(&previous, &tool, Some(plugin));
-            }
-        }
-        Ok(())
-    }
-
-    /// Whether `plugin` holds the claim on `tool`.
-    #[must_use]
-    pub fn plugin_owns_tool(&self, plugin: &str, tool: &str) -> bool {
-        self.inner
-            .claimed_names
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(tool)
-            .is_some_and(|owner| owner == &format!("plugin:{plugin}"))
-    }
-
-    /// Releases every name `plugin` claimed.
-    pub fn release_plugin_tools(&self, plugin: &str) {
-        let owner = format!("plugin:{plugin}");
-        self.inner
-            .claimed_names
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .retain(|_, current| current != &owner);
-    }
-
     /// A registry for `servers`; [`Self::start_eager`] connects them.
     /// Server names must stay distinct after sanitization.
     pub fn new(
@@ -600,7 +510,6 @@ impl McpRegistry {
             // other runtimes and the base layer are resolved by prefixing.
             reserved_names: Mutex::new(HashSet::new()),
             claimed_names: Mutex::new(HashMap::new()),
-            plugin_collision_handler: Mutex::new(None),
             #[cfg(feature = "oauth")]
             oauth_credentials,
             observer: options.observer,
@@ -1729,11 +1638,7 @@ impl ServerRuntime {
             .unwrap_or_else(|p| p.into_inner());
         claimed.retain(|_, owner| owner != &self.name);
         let mut local = HashSet::new();
-        let mut preempted_plugins = Vec::new();
         for tool in &converted {
-            let claimed_by_plugin = claimed
-                .get(&tool.spec.name)
-                .and_then(|owner| owner.strip_prefix("plugin:"));
             if reserved.contains(&tool.spec.name) || !local.insert(tool.spec.name.clone()) {
                 drop(claimed);
                 drop(reserved);
@@ -1743,9 +1648,7 @@ impl ServerRuntime {
                 ));
                 return;
             }
-            if let Some(plugin) = claimed_by_plugin {
-                preempted_plugins.push((plugin.to_owned(), tool.spec.name.clone()));
-            } else if claimed.contains_key(&tool.spec.name) {
+            if claimed.contains_key(&tool.spec.name) {
                 drop(claimed);
                 drop(reserved);
                 self.fail(format!(
@@ -1760,16 +1663,6 @@ impl ServerRuntime {
         }
         drop(claimed);
         drop(reserved);
-        let collision_handler = registry
-            .plugin_collision_handler
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        if let Some(handler) = collision_handler {
-            for (plugin, tool) in preempted_plugins {
-                handler(&plugin, &tool, None);
-            }
-        }
         *self.tools.lock().unwrap_or_else(|p| p.into_inner()) = converted;
         drop(publication);
         if self.current_state() == McpServerState::Connected {

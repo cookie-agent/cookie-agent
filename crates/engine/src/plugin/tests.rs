@@ -1,100 +1,684 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 
 use cookie_agent_config::PluginConfig;
 use cookie_agent_protocol::{
-    AgentId, AssistantToolCallRef, CancellationCapability, EventPayload,
-    ExtensionAgentBeforeStartParams, ExtensionAgentBeforeStartResult, ExtensionBusEventParams,
-    ExtensionInterceptionHook, ExtensionSessionBeforeCompactParams,
-    ExtensionSessionBeforeCompactResult, ExtensionToolAfterResultAction,
-    ExtensionToolAfterResultParams, ExtensionToolAfterResultResult, ExtensionToolBeforeCallAction,
-    ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult, Modality, ModelCallId,
-    ModelCapabilities, PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
-    PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD, PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
-    PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD, PersistedToolResult, PluginDiagnosticKind,
-    ReplayCapability, RunId, SafeDisplayText, SessionId, StoredEvent, ToolCallId,
-    ToolCallTermination, ToolTerminationOutcome,
+    EventPayload, ExtensionBusEventParams, ExtensionEmitStatus, ExtensionInterceptionHook,
+    ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult, ExtensionToolOrigin,
+    PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD, PluginDiagnosticKind, PluginState, SessionId,
+    StoredEvent,
 };
+use cookie_agent_runtime_api::reconnect::ReconnectPolicy;
 use indexmap::IndexMap;
 use serde_json::Value;
-use tokio_util::sync::CancellationToken;
+use tokio::time::Instant;
 
 use super::{
-    Control, PluginDeliveryClass, PluginRegistry, PluginState, plugin_context_id,
-    plugin_event_origin,
+    InterceptError, PluginDeliveryClass, PluginEmitContext, PluginEmitOutcome,
+    PluginNotificationQueue, PluginRegistry, QueuedNotification, raw_params,
 };
+use crate::SessionToolContext;
 
-#[test]
-fn plugin_rpc_rejections_preserve_selected_diagnostics() {
-    let response = || {
-        serde_json::from_value(serde_json::json!({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"initialization failed","data":{"reason":"Executable missing","path":"/work/helper","token":"private-token"}}})).unwrap()
-    };
-    for error in [
-        super::parse_initialize(response(), "fixture").unwrap_err(),
-        super::parse_ping(response()).unwrap_err(),
-        super::parse_tool_call(response()).unwrap_err(),
-    ] {
-        assert!(error.contains("Executable missing"));
-        assert!(error.contains("/work/helper"));
-        assert!(!error.contains("private-token"));
+const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
+const DECLARATION: &str = r#"[{"name":"fixture_echo","description":"Echo","parameters":{"type":"object","properties":{"text":{"type":"string"}}}}]"#;
+#[cfg(unix)]
+const PYTHON: &str = "python3";
+#[cfg(windows)]
+const PYTHON: &str = "python";
+
+/// A liveness bound on the Python fixture, not a latency assertion.
+const WAIT: Duration = Duration::from_secs(10);
+
+fn capabilities(subscribe_events: bool, subscribe_bus: bool, intercept: &[&str]) -> String {
+    serde_json::json!({
+        "producer_messaging": false,
+        "subscribe_events": subscribe_events,
+        "subscribe_bus": subscribe_bus,
+        "publish_bus": false,
+        "intercept": intercept,
+    })
+    .to_string()
+}
+
+fn config(name: &str, env: &[(&str, &str)]) -> PluginConfig {
+    let mut variables = BTreeMap::from([
+        ("FIXTURE_NAME".to_owned(), name.to_owned()),
+        ("FIXTURE_TOOLS".to_owned(), "[]".to_owned()),
+        (
+            "FIXTURE_CAPABILITIES".to_owned(),
+            capabilities(false, false, &[]),
+        ),
+    ]);
+    variables.extend(
+        env.iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned())),
+    );
+    PluginConfig {
+        command: vec![PYTHON.into(), FIXTURE.into()],
+        env: variables,
+        cwd: None,
+        enabled: true,
+        producer_messaging: false,
+        interception_timeout_ms: 2_000,
+        startup_timeout_ms: 10_000,
+        shutdown_grace_ms: 3_000,
     }
 }
 
-#[test]
-fn borrowed_event_frames_decode_as_the_extension_params() {
-    let session_id = SessionId::new_v7();
-    let timestamp = jiff::Timestamp::now();
-    let event = EventPayload::PluginDiagnostic {
-        plugin: "engine".into(),
-        kind: PluginDiagnosticKind::HookBlocked,
-        message: "blocked".into(),
-        count: 2,
-    };
-    let frame = super::notification_frame(
-        cookie_agent_protocol::PLUGIN_EVENT_METHOD,
-        &super::EventParamsRef {
-            session_id,
-            context_id: "context-1",
-            seq: 7,
-            event: &event,
-            timestamp,
+/// Starts `plugins` with fast reconnects and waits for each first attempt.
+async fn start(plugins: Vec<(&str, PluginConfig)>) -> PluginRegistry {
+    let registry = PluginRegistry::new(
+        plugins
+            .into_iter()
+            .map(|(name, config)| (name.to_owned(), config))
+            .collect::<IndexMap<_, _>>(),
+    );
+    registry.set_reconnect_policy(ReconnectPolicy::with_delays([Duration::from_millis(1); 2]));
+    registry.start_eager(&tokio::runtime::Handle::current());
+    tokio::time::timeout(WAIT, registry.await_eager_ready())
+        .await
+        .expect("first start attempts");
+    registry
+}
+
+async fn wait_for(registry: &PluginRegistry, plugin: &str, state: PluginState) {
+    let reached = tokio::time::timeout(WAIT, async {
+        loop {
+            if registry
+                .statuses()
+                .iter()
+                .any(|status| status.name == plugin && status.state == state)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(
+        reached.is_ok(),
+        "`{plugin}` never reached {state:?}: {:?}",
+        registry.statuses()
+    );
+}
+
+/// Waits until `path` holds at least `count` lines and returns them.
+async fn lines(path: &Path, count: usize) -> Vec<Value> {
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let lines = std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("fixture JSON line"))
+                .collect::<Vec<Value>>();
+            if lines.len() >= count {
+                return lines;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{} never held {count} lines", path.display()))
+}
+
+fn stored_event(session_id: SessionId, seq: u64) -> StoredEvent {
+    StoredEvent {
+        engine_version: None,
+        origin: None,
+        session_id,
+        run_id: None,
+        seq,
+        timestamp: jiff::Timestamp::now(),
+        payload: EventPayload::PluginDiagnostic {
+            plugin: "engine".into(),
+            kind: PluginDiagnosticKind::HookBlocked,
+            message: format!("event {seq}"),
+            count: 1,
         },
+    }
+}
+
+fn tool_before_call(session_id: SessionId) -> ExtensionToolBeforeCallParams {
+    ExtensionToolBeforeCallParams {
+        session_id,
+        context_id: "caller-context".into(),
+        tool: "example".into(),
+        origin: ExtensionToolOrigin::Base,
+        arguments: serde_json::json!({"step": "original"}),
+        permission_name: Some("read".into()),
+        resource: None,
+    }
+}
+
+async fn intercept(
+    registry: &PluginRegistry,
+    plugin: &str,
+    session_id: SessionId,
+) -> Result<ExtensionToolBeforeCallResult, InterceptError> {
+    registry
+        .intercept_named(
+            plugin,
+            PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
+            &tool_before_call(session_id),
+            Some(session_id),
+            Some("caller-context"),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn restart_replaces_the_process_and_reports_the_change() {
+    let marker = tempfile::tempdir().expect("marker directory");
+    let pid_file = marker.path().join("pid");
+    let pid_path = pid_file.to_str().expect("pid path");
+    let mut disabled = config("off", &[]);
+    disabled.enabled = false;
+    let registry = start(vec![
+        (
+            "fixture",
+            config("fixture", &[("FIXTURE_PID_FILE", pid_path)]),
+        ),
+        ("off", disabled),
+    ])
+    .await;
+    wait_for(&registry, "fixture", PluginState::Connected).await;
+    assert_eq!(registry.statuses()[1].state, PluginState::Disabled);
+    let first = std::fs::read_to_string(&pid_file).expect("first pid");
+    let mut changes = registry.subscribe_changes();
+    changes.mark_unchanged();
+
+    registry
+        .restart("fixture")
+        .expect("restart a connected plugin");
+    tokio::time::timeout(WAIT, async {
+        while std::fs::read_to_string(&pid_file).is_ok_and(|pid| pid == first) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("a new process");
+    wait_for(&registry, "fixture", PluginState::Connected).await;
+    assert!(changes.has_changed().expect("change channel"));
+
+    assert!(
+        registry
+            .restart("missing")
+            .is_err_and(|error| error.contains("unknown plugin"))
     );
-    let notification: cookie_agent_protocol::Notification =
-        serde_json::from_str(&frame).expect("event notification");
-    assert_eq!(
-        notification.method,
-        cookie_agent_protocol::PLUGIN_EVENT_METHOD
+    assert!(
+        registry
+            .restart("off")
+            .is_err_and(|error| error.contains("disabled"))
     );
-    let params: cookie_agent_protocol::ExtensionEventParams =
-        serde_json::from_value(notification.params.expect("params")).expect("event params");
+    registry.shutdown().await;
+    assert_eq!(registry.statuses()[0].state, PluginState::Stopped);
+}
+
+#[tokio::test]
+async fn a_plugin_that_never_connects_fails_until_restarted() {
+    let marker = tempfile::tempdir().expect("marker directory");
+    let gate = marker.path().join("gate");
+    let registry = start(vec![(
+        "fixture",
+        config(
+            "fixture",
+            &[(
+                "FIXTURE_VERSION_GATE_FILE",
+                gate.to_str().expect("gate path"),
+            )],
+        ),
+    )])
+    .await;
+    wait_for(&registry, "fixture", PluginState::Failed).await;
+    let failed = &registry.statuses()[0];
+    assert!(
+        failed
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("999")),
+        "{failed:?}"
+    );
+    assert!(failed.tools.is_empty());
+
+    std::fs::write(&gate, "open").expect("open the gate");
+    registry
+        .restart("fixture")
+        .expect("restart a failed plugin");
+    wait_for(&registry, "fixture", PluginState::Connected).await;
+    assert_eq!(registry.statuses()[0].reason, None);
+    registry.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_plugins_tools_compose_under_its_name_while_connected() {
+    let registry = start(vec![(
+        "fixture",
+        config("fixture", &[("FIXTURE_TOOLS", DECLARATION)]),
+    )])
+    .await;
+    wait_for(&registry, "fixture", PluginState::Connected).await;
+    let providers = registry.tool_providers();
+    assert_eq!(providers.len(), 1);
     assert_eq!(
-        params,
+        providers[0].composition_source().as_deref(),
+        Some("fixture")
+    );
+    let context = SessionToolContext::new(SessionId::new_v7());
+    let names = |provider: &Arc<dyn crate::ToolProvider>| {
+        provider
+            .tools_for_session(&context)
+            .expect("tool listing")
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&providers[0]), ["fixture_echo"]);
+    assert_eq!(registry.statuses()[0].tools, ["fixture_echo"]);
+    registry.shutdown().await;
+    // Without a connection the plugin publishes nothing.
+    assert!(names(&providers[0]).is_empty());
+}
+
+#[tokio::test]
+async fn events_stream_in_order_and_bus_events_skip_their_source() {
+    let marker = tempfile::tempdir().expect("marker directory");
+    let event_file = marker.path().join("events.jsonl");
+    let bus_file = marker.path().join("bus.jsonl");
+    let registry = start(vec![(
+        "fixture",
+        config(
+            "fixture",
+            &[
+                ("FIXTURE_CAPABILITIES", &capabilities(true, true, &[])),
+                (
+                    "FIXTURE_EVENT_FILE",
+                    event_file.to_str().expect("event path"),
+                ),
+                (
+                    "FIXTURE_BUS_EVENT_FILE",
+                    bus_file.to_str().expect("bus path"),
+                ),
+            ],
+        ),
+    )])
+    .await;
+    wait_for(&registry, "fixture", PluginState::Connected).await;
+    let session_id = SessionId::new_v7();
+    for seq in [2, 3] {
+        assert!(
+            registry
+                .stream_session_event(&stored_event(session_id, seq))
+                .is_empty()
+        );
+    }
+    for source in ["fixture", "other"] {
+        let event = ExtensionBusEventParams {
+            session_id,
+            context_id: None,
+            plugin: source.into(),
+            name: "notice".into(),
+            payload: serde_json::json!({"from": source}),
+        };
+        assert!(registry.stream_bus_event(&event, Some(source)).is_empty());
+    }
+
+    let events = lines(&event_file, 2).await;
+    assert_eq!(
+        events.iter().map(|event| &event["seq"]).collect::<Vec<_>>(),
+        [&serde_json::json!(2), &serde_json::json!(3)]
+    );
+    assert_ne!(events[0]["context_id"], events[1]["context_id"]);
+    let bus = lines(&bus_file, 1).await;
+    // The plugin's own bus event, queued first, never reached it.
+    assert_eq!(bus.len(), 1);
+    assert_eq!(bus[0]["plugin"], "other");
+    registry.shutdown().await;
+}
+
+#[tokio::test]
+async fn each_hook_call_gets_its_own_context() {
+    let marker = tempfile::tempdir().expect("marker directory");
+    let intercept_file = marker.path().join("intercept.jsonl");
+    let registry = start(vec![(
+        "fixture",
+        config(
+            "fixture",
+            &[
+                (
+                    "FIXTURE_CAPABILITIES",
+                    &capabilities(false, false, &["tool_before_call"]),
+                ),
+                (
+                    "FIXTURE_INTERCEPT_FILE",
+                    intercept_file.to_str().expect("intercept path"),
+                ),
+            ],
+        ),
+    )])
+    .await;
+    wait_for(&registry, "fixture", PluginState::Connected).await;
+    let session_id = SessionId::new_v7();
+    for _ in 0..2 {
+        intercept(&registry, "fixture", session_id)
+            .await
+            .expect("hook result");
+    }
+    let calls = lines(&intercept_file, 2).await;
+    let contexts = calls
+        .iter()
+        .map(|call| call["params"]["context_id"].as_str().expect("context ID"))
+        .collect::<Vec<_>>();
+    assert_ne!(contexts[0], contexts[1]);
+    assert!(!contexts.contains(&"caller-context"));
+    assert_eq!(
+        calls[0]["params"]["origin"],
+        serde_json::json!({"kind": "base"})
+    );
+    registry.shutdown().await;
+}
+
+#[tokio::test]
+async fn hook_failures_fail_open_with_their_diagnostic_kind() {
+    let hook = capabilities(false, false, &["tool_before_call"]);
+    let mut slow = config(
+        "slow",
+        &[
+            ("FIXTURE_CAPABILITIES", &hook),
+            ("FIXTURE_INTERCEPT_DELAY_MS", "500"),
+        ],
+    );
+    slow.interception_timeout_ms = 30;
+    let registry = start(vec![
+        (
+            "rejecting",
+            config(
+                "rejecting",
+                &[
+                    ("FIXTURE_CAPABILITIES", &hook),
+                    ("FIXTURE_INTERCEPT_ERROR", "not today"),
+                ],
+            ),
+        ),
+        (
+            "malformed",
+            config(
+                "malformed",
+                &[
+                    ("FIXTURE_CAPABILITIES", &hook),
+                    ("FIXTURE_TOOL_BEFORE_RESULT", r#"{"action":"explode"}"#),
+                ],
+            ),
+        ),
+        ("slow", slow),
+        (
+            "crashing",
+            config(
+                "crashing",
+                &[
+                    ("FIXTURE_CAPABILITIES", &hook),
+                    ("FIXTURE_CRASH_DURING_INTERCEPT", "1"),
+                ],
+            ),
+        ),
+        ("passive", config("passive", &[])),
+    ])
+    .await;
+    for plugin in ["rejecting", "malformed", "slow", "crashing", "passive"] {
+        wait_for(&registry, plugin, PluginState::Connected).await;
+    }
+    assert_eq!(
+        registry.interception_plugins(ExtensionInterceptionHook::ToolBeforeCall),
+        ["rejecting", "malformed", "slow", "crashing"]
+    );
+    let session_id = SessionId::new_v7();
+
+    let rejected = intercept(&registry, "rejecting", session_id)
+        .await
+        .expect_err("an error answer");
+    assert!(
+        matches!(&rejected, InterceptError::Rejected(message) if message.contains("not today"))
+    );
+    assert_eq!(rejected.kind(), PluginDiagnosticKind::InterceptionRejected);
+
+    let malformed = intercept(&registry, "malformed", session_id)
+        .await
+        .expect_err("a malformed answer");
+    assert!(matches!(malformed, InterceptError::Malformed(_)));
+    assert_eq!(malformed.kind(), PluginDiagnosticKind::InterceptionRejected);
+
+    let timeout = intercept(&registry, "slow", session_id)
+        .await
+        .expect_err("no answer in time");
+    assert_eq!(timeout, InterceptError::Timeout);
+    assert_eq!(timeout.kind(), PluginDiagnosticKind::InterceptionTimeout);
+
+    let crashed = intercept(&registry, "crashing", session_id)
+        .await
+        .expect_err("the plugin exited");
+    assert_eq!(crashed, InterceptError::Disconnected);
+    assert_eq!(crashed.kind(), PluginDiagnosticKind::InterceptionCrash);
+
+    assert_eq!(
+        intercept(&registry, "missing", session_id).await,
+        Err(InterceptError::Disconnected)
+    );
+    registry.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_emit_spends_the_context_it_was_delivered_with() {
+    let marker = tempfile::tempdir().expect("marker directory");
+    let result_file = marker.path().join("emit-results.jsonl");
+    let registry = start(vec![(
+        "fixture",
+        config(
+            "fixture",
+            &[
+                ("FIXTURE_CAPABILITIES", &capabilities(true, false, &[])),
+                (
+                    "FIXTURE_EMIT_ON_EVENT",
+                    r#"{"name":"note","payload":{"n":1}}"#,
+                ),
+                ("FIXTURE_EMIT_COUNT", "2"),
+                (
+                    "FIXTURE_EMIT_RESULT_FILE",
+                    result_file.to_str().expect("result path"),
+                ),
+            ],
+        ),
+    )])
+    .await;
+    let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
+    registry.set_emit_handler(Arc::new(move |request: super::PluginEmitRequest| {
+        let requests = requests.clone();
+        Box::pin(async move {
+            let granted = matches!(request.context, PluginEmitContext::Granted);
+            let _ = requests.send(request);
+            PluginEmitOutcome {
+                bus: if granted {
+                    ExtensionEmitStatus::Published
+                } else {
+                    ExtensionEmitStatus::Rejected
+                },
+                reason: None,
+            }
+        })
+    }));
+    wait_for(&registry, "fixture", PluginState::Connected).await;
+    let session_id = SessionId::new_v7();
+    assert!(
+        registry
+            .stream_session_event(&stored_event(session_id, 1))
+            .is_empty()
+    );
+
+    let mut contexts = Vec::new();
+    for _ in 0..2 {
+        let request = tokio::time::timeout(WAIT, received.recv())
+            .await
+            .expect("an emit")
+            .expect("emit channel");
+        assert_eq!(
+            (request.plugin.as_str(), request.name.as_str()),
+            ("fixture", "note")
+        );
+        assert_eq!(request.session_id, session_id);
+        assert_eq!(request.payload, serde_json::json!({"n": 1}));
+        contexts.push(request.context);
+    }
+    assert_eq!(
+        contexts
+            .iter()
+            .filter(|context| matches!(context, PluginEmitContext::Granted))
+            .count(),
+        1
+    );
+    assert!(contexts.iter().any(|context| matches!(
+        context,
+        PluginEmitContext::Rejected { reason, .. } if reason.contains("already consumed")
+    )));
+    let mut statuses = lines(&result_file, 2)
+        .await
+        .into_iter()
+        .map(|result| result["bus"].as_str().expect("bus status").to_owned())
+        .collect::<Vec<_>>();
+    statuses.sort();
+    assert_eq!(statuses, ["published", "rejected"]);
+    registry.shutdown().await;
+}
+
+#[tokio::test]
+async fn contexts_are_one_shot_per_session_and_expire() {
+    let registry = PluginRegistry::new(IndexMap::from([(
+        "fixture".to_owned(),
+        config("fixture", &[]),
+    )]));
+    let runtime = registry
+        .inner
+        .plugins
+        .get("fixture")
+        .expect("fixture runtime");
+    let (owner, other) = (SessionId::new_v7(), SessionId::new_v7());
+    let later = || Instant::now() + Duration::from_secs(5);
+
+    runtime.register_context("granted", owner, later());
+    assert!(matches!(
+        runtime.consume_context("granted", owner),
+        PluginEmitContext::Granted
+    ));
+    assert!(matches!(
+        runtime.consume_context("granted", owner),
+        PluginEmitContext::Rejected { diagnostic_session_id: Some(session), reason }
+            if session == owner && reason.contains("already consumed")
+    ));
+
+    runtime.register_context("misused", owner, later());
+    assert!(matches!(
+        runtime.consume_context("misused", other),
+        PluginEmitContext::Rejected { diagnostic_session_id: Some(session), reason }
+            if session == owner && reason.contains("does not match")
+    ));
+
+    runtime.register_context("expiring", owner, Instant::now() + Duration::from_millis(1));
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert!(matches!(
+        runtime.consume_context("expiring", owner),
+        PluginEmitContext::Rejected { diagnostic_session_id: Some(session), .. } if session == owner
+    ));
+
+    // A context revoked before its notification was written stays spent.
+    runtime.revoke_context("revoked", owner);
+    runtime.register_context("revoked", owner, later());
+    assert!(matches!(
+        runtime.consume_context("revoked", owner),
+        PluginEmitContext::Rejected { .. }
+    ));
+
+    assert!(matches!(
+        runtime.consume_context("unknown", owner),
+        PluginEmitContext::Rejected {
+            diagnostic_session_id: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_full_queue_evicts_what_a_notification_outranks_and_keeps_order() {
+    let queue = PluginNotificationQueue::new(3);
+    let session_id = SessionId::new_v7();
+    let params = raw_params(&serde_json::json!({}));
+    let item = |label: &str, class| QueuedNotification {
+        method: "plugin/event",
+        params: Arc::clone(&params),
+        session_id,
+        context_id: label.to_owned(),
+        class,
+    };
+    assert_eq!(queue.push(item("chunk", PluginDeliveryClass::Chunk)), None);
+    assert_eq!(
+        queue.push(item("first", PluginDeliveryClass::Ordinary)),
+        None
+    );
+    assert_eq!(
+        queue.push(item("second", PluginDeliveryClass::Ordinary)),
+        None
+    );
+    // Full: an ordinary event evicts the chunk.
+    assert_eq!(
+        queue.push(item("third", PluginDeliveryClass::Ordinary)),
+        Some(PluginDeliveryClass::Chunk)
+    );
+    // A chunk outranks nothing left, so it is the one dropped.
+    assert_eq!(
+        queue.push(item("late chunk", PluginDeliveryClass::Chunk)),
+        Some(PluginDeliveryClass::Chunk)
+    );
+    // A terminal event evicts the oldest ordinary one.
+    assert_eq!(
+        queue.push(item("terminal", PluginDeliveryClass::Terminal)),
+        Some(PluginDeliveryClass::Ordinary)
+    );
+    let delivered = std::iter::from_fn(|| queue.pop())
+        .map(|item| item.context_id)
+        .collect::<Vec<_>>();
+    assert_eq!(delivered, ["second", "third", "terminal"]);
+}
+
+/// The borrowed params serialize each event once for every plugin; they
+/// must stay wire-identical to the protocol's own params.
+#[test]
+fn borrowed_params_decode_as_the_protocol_params() {
+    let session_id = SessionId::new_v7();
+    let event = stored_event(session_id, 7);
+    let params = raw_params(&super::EventParamsRef {
+        session_id,
+        context_id: "context-1",
+        seq: event.seq,
+        event: &event.payload,
+        timestamp: event.timestamp,
+    });
+    assert_eq!(
+        serde_json::from_str::<cookie_agent_protocol::ExtensionEventParams>(params.get())
+            .expect("event params"),
         cookie_agent_protocol::ExtensionEventParams {
             session_id,
             context_id: "context-1".into(),
             seq: 7,
-            event,
-            timestamp,
+            event: event.payload.clone(),
+            timestamp: event.timestamp,
         }
     );
 
     let payload = serde_json::json!({"ok": true});
-    let frame = super::notification_frame(
-        cookie_agent_protocol::PLUGIN_BUS_EVENT_METHOD,
-        &super::BusEventParamsRef {
-            session_id,
-            context_id: "context-2",
-            plugin: "other",
-            name: "notice",
-            payload: &payload,
-        },
-    );
-    let notification: cookie_agent_protocol::Notification =
-        serde_json::from_str(&frame).expect("bus notification");
-    let params: ExtensionBusEventParams =
-        serde_json::from_value(notification.params.expect("params")).expect("bus params");
+    let params = raw_params(&super::BusEventParamsRef {
+        session_id,
+        context_id: "context-2",
+        plugin: "other",
+        name: "notice",
+        payload: &payload,
+    });
     assert_eq!(
-        params,
+        serde_json::from_str::<ExtensionBusEventParams>(params.get()).expect("bus params"),
         ExtensionBusEventParams {
             session_id,
             context_id: Some("context-2".into()),
@@ -103,1036 +687,4 @@ fn borrowed_event_frames_decode_as_the_extension_params() {
             payload,
         }
     );
-}
-
-#[test]
-fn plugin_event_origins_preserve_valid_names_and_hash_legacy_names() {
-    assert_eq!(plugin_event_origin("fixture").as_str(), "plugin:fixture");
-    let legacy = plugin_event_origin("command_handler");
-    assert_eq!(legacy.plugin_name().expect("plugin origin").len(), 64);
-    assert_eq!(legacy, plugin_event_origin("command_handler"));
-}
-use crate::{
-    ProgressSink, ToolCall, ToolExecutionContext, ToolPreparationContext, ToolProvider,
-    TurnAgentContext,
-};
-
-const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
-const DECLARATION: &str = r#"[{"name":"fixture_echo","description":"Echo","parameters":{"type":"object","properties":{"text":{"type":"string"},"path":{"type":"string"}}},"permission_name":"fixture_echo","primary_resource_param":"path"}]"#;
-const CAPABILITIES: &str = r#"{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
-#[cfg(unix)]
-const PYTHON: &str = "python3";
-#[cfg(windows)]
-const PYTHON: &str = "python";
-
-/// Upper bound on how long the Python fixture may take to hand-shake. This is
-/// a liveness bound, not a latency assertion: an oversubscribed test run needs
-/// far longer than a quiet one, and the host's own `startup_timeout_ms` is
-/// 10_000, so anything shorter fails the test before the host gives up.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-
-struct Harness {
-    directory: tempfile::TempDir,
-    registry: PluginRegistry,
-}
-
-async fn harness(extra_env: &[(&str, &str)], timeout_ms: u64) -> Harness {
-    let directory = tempfile::tempdir().expect("plugin test directory");
-    let mcp = Arc::new(
-        crate::McpRegistry::new(
-            BTreeMap::new(),
-            cookie_agent_mcp::McpRegistryOptions::default(),
-        )
-        .expect("MCP registry"),
-    );
-    let mut env = BTreeMap::from([
-        ("FIXTURE_NAME".into(), "fixture".into()),
-        ("FIXTURE_TOOLS".into(), DECLARATION.into()),
-        ("FIXTURE_CAPABILITIES".into(), CAPABILITIES.into()),
-    ]);
-    #[cfg(windows)]
-    for name in ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"] {
-        if let Ok(value) = std::env::var(name) {
-            env.insert(name.to_owned(), value);
-        }
-    }
-    env.extend(
-        extra_env
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
-    );
-    let registry = PluginRegistry::new(
-        BTreeMap::from([(
-            "fixture".into(),
-            PluginConfig {
-                producer_messaging: false,
-                command: Some(PYTHON.into()),
-                args: vec![FIXTURE.into()],
-                env,
-                cwd: None,
-                enabled: true,
-                interception_timeout_ms: 2_000,
-                startup_timeout_ms: 10_000,
-                shutdown_grace_ms: 3_000,
-                tool_timeout_ms: timeout_ms,
-            },
-        )])
-        .into_iter()
-        .collect(),
-        mcp,
-    );
-    registry.start_eager(&tokio::runtime::Handle::current());
-    let connected = tokio::time::timeout(CONNECT_TIMEOUT, async {
-        loop {
-            if registry
-                .statuses()
-                .iter()
-                .any(|status| status.state == PluginState::Connected)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await;
-    if connected.is_err() {
-        panic!(
-            "plugin failed to connect with interpreter `{PYTHON}` and fixture `{FIXTURE}`; statuses: {:?}",
-            registry.statuses()
-        );
-    }
-    Harness {
-        directory,
-        registry,
-    }
-}
-
-async fn multi_harness(plugins: &[(&str, &[(&str, &str)])]) -> Harness {
-    let directory = tempfile::tempdir().expect("plugin test directory");
-    let mcp = Arc::new(
-        crate::McpRegistry::new(
-            BTreeMap::new(),
-            cookie_agent_mcp::McpRegistryOptions::default(),
-        )
-        .expect("MCP registry"),
-    );
-    let plugins: IndexMap<String, PluginConfig> = plugins
-        .iter()
-        .map(|(name, extra_env)| {
-            let mut env = BTreeMap::from([
-                ("FIXTURE_NAME".into(), (*name).to_owned()),
-                ("FIXTURE_TOOLS".into(), "[]".into()),
-                ("FIXTURE_CAPABILITIES".into(), CAPABILITIES.into()),
-            ]);
-            env.extend(
-                extra_env
-                    .iter()
-                    .map(|(key, value)| ((*key).to_owned(), (*value).to_owned())),
-            );
-            #[cfg(windows)]
-            for name in ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"] {
-                if let Ok(value) = std::env::var(name) {
-                    env.insert(name.to_owned(), value);
-                }
-            }
-            let interception_timeout_ms = env
-                .remove("FIXTURE_HOST_INTERCEPTION_TIMEOUT_MS")
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(2_000);
-            (
-                (*name).to_owned(),
-                PluginConfig {
-                    producer_messaging: false,
-                    command: Some(PYTHON.into()),
-                    args: vec![FIXTURE.into()],
-                    env,
-                    cwd: None,
-                    enabled: true,
-                    interception_timeout_ms,
-                    startup_timeout_ms: 10_000,
-                    shutdown_grace_ms: 3_000,
-                    tool_timeout_ms: 1_000,
-                },
-            )
-        })
-        .collect();
-    let registry = PluginRegistry::new(plugins, mcp);
-    registry.start_eager(&tokio::runtime::Handle::current());
-    registry.await_eager_ready().await;
-    assert!(
-        registry
-            .statuses()
-            .iter()
-            .all(|status| status.state == PluginState::Connected)
-    );
-    Harness {
-        directory,
-        registry,
-    }
-}
-
-fn turn_context() -> Arc<TurnAgentContext> {
-    Arc::new(TurnAgentContext {
-        agent: AgentId::new("test").expect("agent ID"),
-        model: "test/model".parse().expect("model key"),
-        adapter: cookie_agent_protocol::AdaptorId::OpenaiChat,
-        adapter_family: cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
-        capabilities: ModelCapabilities {
-            input: [Modality::Text].into_iter().collect(),
-            output: [Modality::Text].into_iter().collect(),
-            context_tokens: 8_192,
-            output_tokens: 2_048,
-            tool_calling: true,
-            parallel_tool_calls: true,
-            structured_output: false,
-            reasoning: false,
-            temperature: true,
-            top_p: true,
-            seed: false,
-            native_replay: ReplayCapability::Optional,
-            cancellation: CancellationCapability::LocalOnly,
-            media: BTreeMap::new(),
-        },
-    })
-}
-
-async fn prepared(harness: &Harness) -> crate::PreparedTool {
-    harness
-        .registry
-        .prepare(
-            ToolPreparationContext {
-                session: SessionId::new_v7(),
-                run: RunId::new_v7(),
-                origin: crate::ToolOrigin::Runtime(std::sync::Arc::new(
-                    cookie_agent_runtime_api::RuntimeInfo::global(),
-                )),
-                turn_context: turn_context(),
-            },
-            ToolCall {
-                id: ToolCallId::new_v7(),
-                name: "fixture_echo".into(),
-                arguments: serde_json::json!({"text":"hello", "path":"src/lib.rs"}),
-            },
-        )
-        .await
-        .expect("prepare plugin call")
-}
-
-async fn execute(
-    harness: &Harness,
-    prepared: crate::PreparedTool,
-    cancellation: CancellationToken,
-) -> Result<cookie_agent_protocol::PersistedToolResult, crate::ToolError> {
-    let executor = prepared
-        .executor()
-        .lock()
-        .await
-        .take()
-        .expect("prepared executor");
-    let (progress, _receiver) = tokio::sync::mpsc::channel(1);
-    executor
-        .execute(ToolExecutionContext {
-            background: false,
-            session: SessionId::new_v7(),
-            run: RunId::new_v7(),
-            progress: ProgressSink::new(progress),
-            cancellation,
-            turn_context: turn_context(),
-            artifacts: crate::ArtifactRouter::open_flat(harness.directory.path().join("artifacts"))
-                .expect("artifact store"),
-            detach: cookie_agent_runtime_api::DetachPoint::channel().0,
-            producers: None,
-        })
-        .await?
-        .into_result_for_test()
-}
-
-#[tokio::test]
-async fn plugin_executor_maps_success_and_error_results() {
-    let success = harness(&[], 1_000).await;
-    let arguments = serde_json::json!({"text":"hello", "path":"src/lib.rs"});
-    assert_eq!(
-        success
-            .registry
-            .get_display_argument("fixture_echo", &arguments)
-            .expect("display argument"),
-        "src/lib.rs"
-    );
-    assert_eq!(
-        success
-            .registry
-            .get_permission_resource("fixture_echo", &arguments)
-            .expect("permission resource"),
-        (Some("plugin"), Some("fixture_echo src/lib.rs".into()))
-    );
-    let result = execute(&success, prepared(&success).await, CancellationToken::new())
-        .await
-        .expect("plugin result");
-    assert_eq!(result.output, "hello");
-    assert_eq!(
-        result.metadata,
-        serde_json::json!({"plugin": {"is_error": false}})
-    );
-    success.registry.shutdown().await;
-
-    let error = harness(&[("FIXTURE_TOOL_ERROR", "1")], 1_000).await;
-    let result = execute(&error, prepared(&error).await, CancellationToken::new())
-        .await
-        .expect("plugin error result");
-    assert_eq!(
-        result.metadata,
-        serde_json::json!({"plugin": {"is_error": true}})
-    );
-    error.registry.shutdown().await;
-}
-
-#[tokio::test]
-async fn plugin_executor_maps_rpc_error_timeout_and_cancellation() {
-    let rpc = harness(&[("FIXTURE_TOOL_RPC_ERROR", "1")], 1_000).await;
-    let error = execute(&rpc, prepared(&rpc).await, CancellationToken::new())
-        .await
-        .expect_err("RPC error");
-    assert!(error.to_string().contains("fixture tool RPC error"));
-    rpc.registry.shutdown().await;
-
-    let slow = harness(&[("FIXTURE_TOOL_DELAY_MS", "200")], 20).await;
-    let error = execute(&slow, prepared(&slow).await, CancellationToken::new())
-        .await
-        .expect_err("timeout");
-    assert!(error.to_string().contains("timed out"));
-    slow.registry.shutdown().await;
-
-    let cancelled = harness(&[("FIXTURE_TOOL_DELAY_MS", "200")], 1_000).await;
-    let cancellation = CancellationToken::new();
-    cancellation.cancel();
-    let error = execute(&cancelled, prepared(&cancelled).await, cancellation)
-        .await
-        .expect_err("cancellation");
-    assert!(error.to_string().contains("cancelled"));
-    cancelled.registry.shutdown().await;
-}
-
-#[tokio::test]
-async fn crash_during_call_invalidates_prepared_tool_and_listing() {
-    let harness = harness(&[("FIXTURE_CRASH_DURING_TOOL", "1")], 1_000).await;
-    let stale = prepared(&harness).await;
-    let error = execute(&harness, prepared(&harness).await, CancellationToken::new())
-        .await
-        .expect_err("crash");
-    assert!(error.to_string().contains("stopped during tool call"));
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while harness.registry.statuses()[0].state != PluginState::Failed {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("failed state");
-    assert!(
-        harness
-            .registry
-            .tools_for_session(&crate::SessionToolContext::new(SessionId::new_v7()))
-            .expect("tool listing")
-            .is_empty()
-    );
-    let executor = stale
-        .executor()
-        .lock()
-        .await
-        .take()
-        .expect("stale executor");
-    assert!(executor.revalidate().await.is_err());
-    harness.registry.shutdown().await;
-}
-
-#[tokio::test]
-async fn streams_ordered_events_and_bus_without_self_echo() {
-    let marker = tempfile::tempdir().expect("marker directory");
-    let event_file = marker.path().join("events.jsonl");
-    let bus_file = marker.path().join("bus.jsonl");
-    let capabilities = r#"{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":true,"subscribe_bus":true,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
-    let harness = harness(
-        &[
-            ("FIXTURE_CAPABILITIES", capabilities),
-            (
-                "FIXTURE_EVENT_FILE",
-                event_file.to_str().expect("event path"),
-            ),
-            (
-                "FIXTURE_BUS_EVENT_FILE",
-                bus_file.to_str().expect("bus path"),
-            ),
-        ],
-        1_000,
-    )
-    .await;
-    let session_id = SessionId::new_v7();
-    for seq in [2, 3] {
-        let event = StoredEvent {
-            engine_version: None,
-            origin: None,
-            session_id,
-            run_id: None,
-            seq,
-            timestamp: jiff::Timestamp::now(),
-            payload: if seq == 2 {
-                EventPayload::ToolCallProgress {
-                    tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
-                    message: cookie_agent_protocol::SafeDisplayText::new("bash stdout")
-                        .expect("message"),
-                    display: Some("partial output".into()),
-                }
-            } else {
-                EventPayload::PluginDiagnostic {
-                    plugin: "engine".into(),
-                    kind: PluginDiagnosticKind::HookBlocked,
-                    message: format!("event {seq}"),
-                    count: 1,
-                }
-            },
-        };
-        assert!(
-            harness
-                .registry
-                .stream_session_event(&event, None)
-                .is_empty()
-        );
-    }
-    assert!(
-        harness
-            .registry
-            .stream_bus_event(
-                &ExtensionBusEventParams {
-                    session_id,
-                    context_id: None,
-                    plugin: "other".into(),
-                    name: "notice".into(),
-                    payload: serde_json::json!({"ok": true}),
-                },
-                None,
-            )
-            .is_empty()
-    );
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !event_file.exists()
-            || std::fs::read_to_string(&event_file).map_or(0, |contents| contents.lines().count())
-                < 2
-            || !bus_file.exists()
-        {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("streamed notifications");
-    let records = std::fs::read_to_string(&event_file)
-        .expect("event file")
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("event JSON"))
-        .collect::<Vec<_>>();
-    let seqs = records
-        .iter()
-        .map(|record| record["seq"].clone())
-        .collect::<Vec<_>>();
-    assert_eq!(seqs, [serde_json::json!(2), serde_json::json!(3)]);
-    assert_eq!(records[0]["event"]["display"], "partial output");
-
-    let self_event = StoredEvent {
-        engine_version: None,
-        origin: Some(cookie_agent_protocol::EventOrigin::new("plugin:fixture").unwrap()),
-        session_id,
-        run_id: None,
-        seq: 4,
-        timestamp: jiff::Timestamp::now(),
-        payload: EventPayload::PluginEventAdded {
-            plugin: "fixture".into(),
-            name: "self".into(),
-            payload: Value::Null,
-        },
-    };
-    harness
-        .registry
-        .stream_session_event(&self_event, self_event.origin.as_ref());
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    assert_eq!(
-        std::fs::read_to_string(event_file)
-            .expect("event file")
-            .lines()
-            .count(),
-        2
-    );
-    harness.registry.shutdown().await;
-}
-
-/// Sends one hook call to every plugin registered for `hook`, in registry order, through the
-/// production `intercept_named` path. Chaining (short-circuit, accumulated params) belongs to the
-/// runtime call sites and is covered by the engine-flow tests under `runtime/tests`.
-async fn intercept_each<P, R>(
-    registry: &PluginRegistry,
-    hook: ExtensionInterceptionHook,
-    method: &'static str,
-    params: &P,
-    session_id: SessionId,
-    context_id: &str,
-) -> Vec<(String, Result<R, String>)>
-where
-    P: serde::Serialize,
-    R: serde::de::DeserializeOwned,
-{
-    let mut results = Vec::new();
-    for plugin in registry.interception_plugins(hook) {
-        let result = registry
-            .intercept_named(&plugin, method, params, Some(session_id), Some(context_id))
-            .await;
-        results.push((plugin, result));
-    }
-    results
-}
-
-async fn intercept_tool_before_call(
-    registry: &PluginRegistry,
-    params: &ExtensionToolBeforeCallParams,
-) -> Vec<(String, Result<ExtensionToolBeforeCallResult, String>)> {
-    intercept_each(
-        registry,
-        ExtensionInterceptionHook::ToolBeforeCall,
-        PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
-        params,
-        params.session_id,
-        &params.context_id,
-    )
-    .await
-}
-
-#[tokio::test]
-async fn dispatches_all_interception_hooks_and_fails_open_on_crash() {
-    let capabilities = r#"{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call","tool_after_result","agent_before_start","session_before_compact"]}"#;
-    let active = harness(
-            &[
-                ("FIXTURE_CAPABILITIES", capabilities),
-                (
-                    "FIXTURE_TOOL_BEFORE_RESULT",
-                    r#"{"action":"allow","modified_arguments":{"text":"modified","path":"src/lib.rs"}}"#,
-                ),
-                (
-                    "FIXTURE_TOOL_AFTER_RESULT",
-                    r#"{"action":"replace","replacement_content":"replaced"}"#,
-                ),
-                (
-                    "FIXTURE_AGENT_BEFORE_RESULT",
-                    r#"{"addendum":"agent addendum"}"#,
-                ),
-                (
-                    "FIXTURE_COMPACT_BEFORE_RESULT",
-                    r#"{"addendum":"compact addendum"}"#,
-                ),
-            ],
-            1_000,
-        )
-        .await;
-    let session_id = SessionId::new_v7();
-    let before = intercept_tool_before_call(
-        &active.registry,
-        &ExtensionToolBeforeCallParams {
-            session_id,
-            context_id: plugin_context_id(),
-            tool: "fixture_echo".into(),
-            arguments: serde_json::json!({"text":"original","path":"src/lib.rs"}),
-            permission_name: Some("fixture_echo".into()),
-            resource: Some("src/lib.rs".into()),
-        },
-    )
-    .await;
-    assert!(matches!(
-        &before[0].1,
-        Ok(result)
-            if result.action == ExtensionToolBeforeCallAction::Allow
-                && result.modified_arguments.as_ref().is_some_and(|value| value["text"] == "modified")
-    ));
-    let context_id = plugin_context_id();
-    let after: Vec<(String, Result<ExtensionToolAfterResultResult, String>)> = intercept_each(
-        &active.registry,
-        ExtensionInterceptionHook::ToolAfterResult,
-        PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
-        &ExtensionToolAfterResultParams {
-            session_id,
-            context_id: context_id.clone(),
-            tool: "fixture_echo".into(),
-            arguments: Value::Null,
-            result_content: "original".into(),
-            is_error: false,
-        },
-        session_id,
-        &context_id,
-    )
-    .await;
-    assert!(matches!(
-        &after[0].1,
-        Ok(result)
-            if result.action == ExtensionToolAfterResultAction::Replace
-                && result.replacement_content.as_deref() == Some("replaced")
-    ));
-    let context_id = plugin_context_id();
-    let agent: Vec<(String, Result<ExtensionAgentBeforeStartResult, String>)> = intercept_each(
-        &active.registry,
-        ExtensionInterceptionHook::AgentBeforeStart,
-        PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
-        &ExtensionAgentBeforeStartParams {
-            session_id,
-            context_id: context_id.clone(),
-            agent_path: "primary".into(),
-            prompt_context: Value::Null,
-        },
-        session_id,
-        &context_id,
-    )
-    .await;
-    assert_eq!(
-        agent[0]
-            .1
-            .as_ref()
-            .expect("agent interception")
-            .addendum
-            .as_deref(),
-        Some("agent addendum")
-    );
-    let context_id = plugin_context_id();
-    let compact: Vec<(String, Result<ExtensionSessionBeforeCompactResult, String>)> =
-        intercept_each(
-            &active.registry,
-            ExtensionInterceptionHook::SessionBeforeCompact,
-            PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD,
-            &ExtensionSessionBeforeCompactParams {
-                session_id,
-                context_id: context_id.clone(),
-                checkpoint_id: "checkpoint".into(),
-                additions: Vec::new(),
-                instructions: None,
-            },
-            session_id,
-            &context_id,
-        )
-        .await;
-    assert_eq!(
-        compact[0]
-            .1
-            .as_ref()
-            .expect("compaction interception")
-            .addendum
-            .as_deref(),
-        Some("compact addendum")
-    );
-    active.registry.shutdown().await;
-
-    let crashed = harness(
-        &[
-            ("FIXTURE_CAPABILITIES", capabilities),
-            ("FIXTURE_CRASH_DURING_INTERCEPT", "1"),
-        ],
-        1_000,
-    )
-    .await;
-    let result = intercept_tool_before_call(
-        &crashed.registry,
-        &ExtensionToolBeforeCallParams {
-            session_id,
-            context_id: plugin_context_id(),
-            tool: "fixture_echo".into(),
-            arguments: serde_json::json!({}),
-            permission_name: Some("fixture_echo".into()),
-            resource: None,
-        },
-    )
-    .await;
-    assert!(
-        result[0]
-            .1
-            .as_ref()
-            .is_err_and(|error| error.contains("crashed"))
-    );
-    crashed.registry.shutdown().await;
-}
-
-#[tokio::test]
-async fn interception_plugins_follow_registry_order() {
-    let marker = tempfile::tempdir().expect("marker directory");
-    let second_file = marker.path().join("second.jsonl");
-    let capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}"#;
-    let first_env = [("FIXTURE_CAPABILITIES", capabilities)];
-    let second_path = second_file.to_str().expect("second path");
-    let second_env = [
-        ("FIXTURE_CAPABILITIES", capabilities),
-        ("FIXTURE_INTERCEPT_FILE", second_path),
-    ];
-    let harness = multi_harness(&[("zeta", &first_env), ("alpha", &second_env)]).await;
-    assert_eq!(
-        harness
-            .registry
-            .interception_plugins(ExtensionInterceptionHook::ToolBeforeCall),
-        ["zeta", "alpha"]
-    );
-    assert!(
-        harness
-            .registry
-            .interception_plugins(ExtensionInterceptionHook::ToolAfterResult)
-            .is_empty()
-    );
-    let results = intercept_tool_before_call(
-        &harness.registry,
-        &ExtensionToolBeforeCallParams {
-            session_id: SessionId::new_v7(),
-            context_id: plugin_context_id(),
-            tool: "example".into(),
-            arguments: serde_json::json!({"step":"original"}),
-            permission_name: Some("read".into()),
-            resource: None,
-        },
-    )
-    .await;
-    assert_eq!(results.len(), 2);
-    assert!(results.iter().all(|(_, result)| result.is_ok()));
-    let second: Value = serde_json::from_str(
-        std::fs::read_to_string(&second_file)
-            .expect("second interception")
-            .lines()
-            .next()
-            .expect("second line"),
-    )
-    .expect("second JSON");
-    assert_eq!(second["params"]["arguments"]["step"], "original");
-    harness.registry.shutdown().await;
-}
-
-#[tokio::test]
-async fn interception_timeout_fails_open_and_remaining_hooks_continue() {
-    let marker = tempfile::tempdir().expect("marker directory");
-    let second_file = marker.path().join("second.jsonl");
-    let capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}"#;
-    let slow_env = [
-        ("FIXTURE_CAPABILITIES", capabilities),
-        ("FIXTURE_INTERCEPT_DELAY_MS", "200"),
-        ("FIXTURE_HOST_INTERCEPTION_TIMEOUT_MS", "30"),
-    ];
-    let second_path = second_file.to_str().expect("second path");
-    let steady_env = [
-        ("FIXTURE_CAPABILITIES", capabilities),
-        ("FIXTURE_INTERCEPT_FILE", second_path),
-    ];
-    let harness = multi_harness(&[("first", &slow_env), ("second", &steady_env)]).await;
-    let results = intercept_tool_before_call(
-        &harness.registry,
-        &ExtensionToolBeforeCallParams {
-            session_id: SessionId::new_v7(),
-            context_id: plugin_context_id(),
-            tool: "example".into(),
-            arguments: serde_json::json!({}),
-            permission_name: Some("read".into()),
-            resource: None,
-        },
-    )
-    .await;
-    assert_eq!(results.len(), 2);
-    assert!(
-        results[0]
-            .1
-            .as_ref()
-            .is_err_and(|error| error.contains("timed out"))
-    );
-    assert!(results[1].1.is_ok());
-    assert!(second_file.exists());
-    harness.registry.shutdown().await;
-}
-
-#[tokio::test]
-async fn full_plugin_buffer_drops_without_blocking_and_counts_loss() {
-    let capabilities = r#"{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":true,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
-    let harness = harness(&[("FIXTURE_CAPABILITIES", capabilities)], 1_000).await;
-    let runtime = harness
-        .registry
-        .inner
-        .plugins
-        .get("fixture")
-        .expect("fixture runtime");
-    let original = runtime
-        .notifications
-        .lock()
-        .expect("notification lock")
-        .clone();
-    *runtime.notifications.lock().expect("notification lock") =
-        Arc::new(super::PluginNotificationQueue::new(1));
-    let event = StoredEvent {
-        engine_version: None,
-        origin: None,
-        session_id: SessionId::new_v7(),
-        run_id: None,
-        seq: 2,
-        timestamp: jiff::Timestamp::now(),
-        payload: EventPayload::ToolCallProgress {
-            tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
-            message: cookie_agent_protocol::SafeDisplayText::new("bash stdout").expect("message"),
-            display: Some("flood chunk".into()),
-        },
-    };
-    assert!(
-        harness
-            .registry
-            .stream_session_event(&event, None)
-            .is_empty()
-    );
-    let started = std::time::Instant::now();
-    let drops = harness.registry.stream_session_event(&event, None);
-    assert!(started.elapsed() < Duration::from_millis(50));
-    assert_eq!(drops.len(), 1);
-    assert_eq!(drops[0].plugin, "fixture");
-    assert_eq!(
-        runtime.contexts.lock().expect("contexts lock").active.len(),
-        0,
-        "queued or failed delivery registered a context grant before host dequeue"
-    );
-    assert_eq!(harness.registry.statuses()[0].dropped_events, 1);
-    *runtime.notifications.lock().expect("notification lock") = original;
-    harness.registry.shutdown().await;
-}
-
-#[tokio::test]
-async fn chunk_flood_evicts_by_priority_without_reordering_terminal() {
-    let capabilities = r#"{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":true,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
-    let harness = harness(&[("FIXTURE_CAPABILITIES", capabilities)], 1_000).await;
-    let runtime = harness
-        .registry
-        .inner
-        .plugins
-        .get("fixture")
-        .expect("fixture runtime");
-    let original = runtime
-        .notifications
-        .lock()
-        .expect("notification lock")
-        .clone();
-    let notifications = Arc::new(super::PluginNotificationQueue::new(17));
-    *runtime.notifications.lock().expect("notification lock") = Arc::clone(&notifications);
-    let session_id = SessionId::new_v7();
-    let call_id = ToolCallId::new_v7();
-    let owner = AssistantToolCallRef {
-        model_turn_seq: 1,
-        content_index: 0,
-        model_call_id: ModelCallId::new("plugin-flood-call").expect("model call id"),
-        provider_item_id: None,
-    };
-    let event = |seq, payload| StoredEvent {
-        engine_version: None,
-        origin: None,
-        session_id,
-        run_id: None,
-        seq,
-        timestamp: jiff::Timestamp::now(),
-        payload,
-    };
-
-    let chunk = |seq| {
-        event(
-            seq,
-            EventPayload::ToolCallProgress {
-                tool_call_id: call_id,
-                message: SafeDisplayText::new("bash stdout").expect("message"),
-                display: Some(format!("chunk {seq}")),
-            },
-        )
-    };
-    assert!(
-        harness
-            .registry
-            .stream_session_event(&chunk(1), None)
-            .is_empty()
-    );
-    for seq in 2..=17 {
-        assert!(
-            harness
-                .registry
-                .stream_session_event(
-                    &event(
-                        seq,
-                        EventPayload::PluginDiagnostic {
-                            plugin: "engine".into(),
-                            kind: PluginDiagnosticKind::HookBlocked,
-                            message: format!("ordinary {seq}"),
-                            count: 1,
-                        },
-                    ),
-                    None,
-                )
-                .is_empty()
-        );
-    }
-    let first_overflow = harness.registry.stream_session_event(
-        &event(
-            18,
-            EventPayload::PluginDiagnostic {
-                plugin: "engine".into(),
-                kind: PluginDiagnosticKind::HookBlocked,
-                message: "ordinary overflow".into(),
-                count: 1,
-            },
-        ),
-        None,
-    );
-    assert_eq!(first_overflow.len(), 1);
-    assert_eq!(first_overflow[0].class, PluginDeliveryClass::Chunk);
-    let second_overflow = harness.registry.stream_session_event(
-        &event(
-            19,
-            EventPayload::PluginDiagnostic {
-                plugin: "engine".into(),
-                kind: PluginDiagnosticKind::HookBlocked,
-                message: "second ordinary overflow".into(),
-                count: 1,
-            },
-        ),
-        None,
-    );
-    assert_eq!(second_overflow.len(), 1);
-    assert_eq!(second_overflow[0].class, PluginDeliveryClass::Ordinary);
-    let terminal_drops = harness.registry.stream_session_event(
-        &event(
-            20,
-            EventPayload::ToolCallTerminated {
-                termination: ToolCallTermination {
-                    tool_call_id: call_id,
-                    owner,
-                    outcome: ToolTerminationOutcome::Completed,
-                    result: Some(PersistedToolResult {
-                        display: None,
-                        retained_output: None,
-                        title: SafeDisplayText::new("Bash").expect("title"),
-                        output: "done".into(),
-                        metadata: Value::Null,
-                        truncation: None,
-                        attachments: Vec::new(),
-                        additional_messages: Vec::new(),
-                    }),
-                    error: None,
-                },
-            },
-        ),
-        None,
-    );
-
-    assert_eq!(terminal_drops.len(), 1);
-    assert_eq!(terminal_drops[0].class, PluginDeliveryClass::Ordinary);
-    assert_eq!(harness.registry.statuses()[0].dropped_events, 3);
-    let mut delivered = Vec::new();
-    while let Some(control) = notifications.pop() {
-        let Control::Notify { frame, .. } = control else {
-            panic!("event notification")
-        };
-        let notification: serde_json::Value = serde_json::from_str(&frame).expect("frame JSON");
-        let params = &notification["params"];
-        delivered.push((
-            params["seq"].as_u64().expect("sequence"),
-            params["event"]["type"]
-                .as_str()
-                .expect("event type")
-                .to_owned(),
-        ));
-    }
-    assert!(delivered.windows(2).all(|pair| pair[0].0 < pair[1].0));
-    assert_eq!(delivered.last(), Some(&(20, "tool_call_terminated".into())));
-
-    *runtime.notifications.lock().expect("notification lock") = original;
-    harness.registry.shutdown().await;
-}
-
-#[tokio::test]
-async fn expired_context_is_spent_and_keeps_only_its_known_session() {
-    let capabilities = r#"{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
-    let harness = harness(&[("FIXTURE_CAPABILITIES", capabilities)], 1_000).await;
-    let runtime = harness
-        .registry
-        .inner
-        .plugins
-        .get("fixture")
-        .expect("fixture runtime");
-    let session_id = SessionId::new_v7();
-    runtime.register_context(
-        "expiring-context",
-        session_id,
-        tokio::time::Instant::now() + Duration::from_millis(1),
-    );
-    tokio::time::sleep(Duration::from_millis(5)).await;
-    assert!(matches!(
-        runtime.consume_context("expiring-context", SessionId::new_v7()),
-        super::PluginEmitContext::Rejected {
-            diagnostic_session_id: Some(known_session),
-            ..
-        } if known_session == session_id
-    ));
-    harness.registry.shutdown().await;
-}
-
-#[tokio::test]
-async fn context_lifetime_starts_at_delivery_and_cancelled_queue_entry_stays_spent() {
-    let harness = harness(&[], 1_000).await;
-    let runtime = harness
-        .registry
-        .inner
-        .plugins
-        .get("fixture")
-        .expect("fixture runtime");
-    let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
-    let session_id = SessionId::new_v7();
-    sender
-        .try_send(Control::Notify {
-            frame: r#"{"jsonrpc":"2.0","method":"plugin/test"}"#.into(),
-            session_id,
-            context_id: "delayed".into(),
-            context_lifetime: Duration::from_millis(5),
-        })
-        .expect("queue delayed context");
-    tokio::time::sleep(Duration::from_millis(10)).await;
-    let Control::Notify {
-        context_id,
-        context_lifetime,
-        ..
-    } = receiver.recv().await.expect("delayed control")
-    else {
-        panic!("expected notification control");
-    };
-    runtime.register_context(
-        &context_id,
-        session_id,
-        tokio::time::Instant::now() + context_lifetime,
-    );
-    assert!(matches!(
-        runtime.consume_context(&context_id, session_id),
-        super::PluginEmitContext::Granted
-    ));
-
-    sender
-        .try_send(Control::Notify {
-            frame: r#"{"jsonrpc":"2.0","method":"plugin/test"}"#.into(),
-            session_id,
-            context_id: "cancelled".into(),
-            context_lifetime: Duration::from_secs(1),
-        })
-        .expect("queue cancelled context");
-    runtime.revoke_context("cancelled", session_id);
-    let Control::Notify {
-        context_id,
-        context_lifetime,
-        ..
-    } = receiver.recv().await.expect("cancelled control")
-    else {
-        panic!("expected notification control");
-    };
-    runtime.register_context(
-        &context_id,
-        session_id,
-        tokio::time::Instant::now() + context_lifetime,
-    );
-    assert!(matches!(
-        runtime.consume_context(&context_id, session_id),
-        super::PluginEmitContext::Rejected {
-            diagnostic_session_id: Some(known_session),
-            ..
-        } if known_session == session_id
-    ));
-    harness.registry.shutdown().await;
 }

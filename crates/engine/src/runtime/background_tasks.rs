@@ -21,9 +21,9 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    ExtensionProducerSendParams, PersistedToolResult, ProducerDeliveryMode, ProducerId,
-    ProducerIdempotencyKey, ProducerOwner, RetainedToolOutput, SessionId, ToolCallId,
-    ToolCallTermination, ToolTerminationOutcome,
+    PersistedToolResult, ProducerDeliveryMode, ProducerId, ProducerIdempotencyKey, ProducerOwner,
+    ProducerSendParams, RetainedToolOutput, SessionId, ToolCallId, ToolCallTermination,
+    ToolTerminationOutcome,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -767,7 +767,7 @@ impl Engine {
         }
         self.accept_producer_with_output_direct(
             &authority,
-            ExtensionProducerSendParams {
+            ProducerSendParams {
                 session_id: session,
                 producer_id,
                 mode: ProducerDeliveryMode::Steer,

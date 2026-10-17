@@ -1,20 +1,20 @@
-use std::{borrow::Cow, collections::BTreeMap};
+use std::borrow::Cow;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const EXTENSION_PROTOCOL_VERSION: &str = "0.0.8";
-pub const PLUGIN_PRODUCER_REGISTER_METHOD: &str = "plugin/producer/register";
-pub const PLUGIN_PRODUCER_SEND_METHOD: &str = "plugin/producer/send";
-pub const PLUGIN_PRODUCER_UNREGISTER_METHOD: &str = "plugin/producer/unregister";
-pub const PLUGIN_PRODUCER_DISCARD_METHOD: &str = "plugin/producer/discard";
-pub const PLUGIN_RECOVERY_START_METHOD: &str = "plugin/recovery/start";
-pub const PLUGIN_RECOVERY_COMPLETE_METHOD: &str = "plugin/recovery/complete";
+/// The plugin protocol version. Both ends must speak exactly this version.
+pub const EXTENSION_PROTOCOL_VERSION: u32 = 1;
+// Producer messaging uses the runtime protocol's method names.
+pub const PLUGIN_PRODUCER_REGISTER_METHOD: &str = "producer/register";
+pub const PLUGIN_PRODUCER_SEND_METHOD: &str = "producer/send";
+pub const PLUGIN_PRODUCER_UNREGISTER_METHOD: &str = "producer/unregister";
+pub const PLUGIN_PRODUCER_DISCARD_METHOD: &str = "producer/discard";
+pub const PLUGIN_RECOVERY_START_METHOD: &str = "producer/recovery/start";
+pub const PLUGIN_RECOVERY_COMPLETE_METHOD: &str = "producer/recovery/complete";
 pub const PLUGIN_INITIALIZE_METHOD: &str = "plugin/initialize";
-pub const PLUGIN_PING_METHOD: &str = "plugin/ping";
 pub const PLUGIN_SHUTDOWN_METHOD: &str = "plugin/shutdown";
-pub const PLUGIN_TOOLS_CALL_METHOD: &str = "plugin/tools/call";
 pub const PLUGIN_EVENT_METHOD: &str = "plugin/event";
 pub const PLUGIN_BUS_EVENT_METHOD: &str = "plugin/bus_event";
 pub const PLUGIN_EMIT_METHOD: &str = "plugin/emit";
@@ -27,8 +27,6 @@ pub const PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD: &str =
 pub const PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD: &str = "plugin/intercept/user_before_input";
 pub const PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD: &str =
     "plugin/intercept/model_before_request";
-pub const PLUGIN_INTERCEPT_PROVIDER_BEFORE_HEADERS_METHOD: &str =
-    "plugin/intercept/provider_before_headers";
 pub const PLUGIN_INTERCEPT_PROVIDER_BEFORE_REQUEST_METHOD: &str =
     "plugin/intercept/provider_before_request";
 pub const PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD: &str =
@@ -56,7 +54,7 @@ impl Serialize for ExtensionProtocolVersion {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(EXTENSION_PROTOCOL_VERSION)
+        serializer.serialize_u32(EXTENSION_PROTOCOL_VERSION)
     }
 }
 
@@ -65,7 +63,7 @@ impl<'de> Deserialize<'de> for ExtensionProtocolVersion {
     where
         D: serde::Deserializer<'de>,
     {
-        let found = String::deserialize(deserializer)?;
+        let found = u32::deserialize(deserializer)?;
         if found == EXTENSION_PROTOCOL_VERSION {
             Ok(Self::current())
         } else {
@@ -86,20 +84,16 @@ impl JsonSchema for ExtensionProtocolVersion {
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"string","const":"0.0.8"})
+        json_schema!({"type":"integer","const":EXTENSION_PROTOCOL_VERSION})
     }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionEngineCapabilities {
+    /// The daemon accepts this plugin's producer messages: the plugin's
+    /// configuration enables them.
     pub producer_messaging: bool,
-    pub ping: bool,
-    pub shutdown: bool,
-    pub tools: bool,
-    pub event_streaming: bool,
-    pub event_publishing: bool,
-    pub interception: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
@@ -111,7 +105,6 @@ pub enum ExtensionInterceptionHook {
     SessionBeforeCompact,
     UserBeforeInput,
     ModelBeforeRequest,
-    ProviderBeforeHeaders,
     ProviderBeforeRequest,
     ProviderAfterResponse,
     MessageEnd,
@@ -125,12 +118,9 @@ pub enum ExtensionInterceptionHook {
 pub struct ExtensionPluginCapabilities {
     // Explicit opt-in, off by default in plugin configuration and SDK builders.
     pub producer_messaging: bool,
-    pub tools: bool,
-    pub resources: bool,
     pub subscribe_events: bool,
     pub subscribe_bus: bool,
     pub publish_bus: bool,
-    pub publish_session_events: bool,
     pub intercept: Vec<ExtensionInterceptionHook>,
 }
 
@@ -144,200 +134,21 @@ pub struct ExtensionInitializeParams {
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExtensionToolDeclaration {
-    pub name: String,
-    pub description: String,
-    pub parameters: Value,
-    pub permission_name: String,
-    #[serde(default)]
-    pub output: crate::ToolOutputDeclaration,
-    #[serde(deserialize_with = "crate::deserialize_required_option")]
-    #[schemars(with = "crate::NullableSchema<String>", required)]
-    pub primary_resource_param: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionInitializeResult {
     pub protocol_version: ExtensionProtocolVersion,
     pub name: String,
     pub version: String,
     pub capabilities: ExtensionPluginCapabilities,
-    pub tools: Vec<ExtensionToolDeclaration>,
+    /// The plugin's tools and their prompt sections, declared as a runtime
+    /// declares them; it runs them with the runtime protocol's `tool/*`
+    /// messages.
+    #[serde(default)]
+    pub tools: crate::runtime_protocol::RuntimeTools,
 }
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionPingParams {}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionPingResult {}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionShutdownParams {}
-
-/// Sender-to-engine request; the connection supplies the producer's source,
-/// and `name` labels this producer among the source's others. Registration is
-/// allowed during recovery and does not wait for goal readiness.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionProducerRegisterParams {
-    pub session_id: crate::SessionId,
-    pub name: crate::ProducerName,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionProducerRegisterResult {
-    pub producer_id: crate::ProducerId,
-}
-
-/// Send requires a live registration owned by this connection and session.
-/// Identical (session, stable owner, key) retries return the original receipt;
-/// different description, body, or mode is rejected. A missing ACK is commit-uncertain.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionProducerSendParams {
-    pub session_id: crate::SessionId,
-    pub producer_id: crate::ProducerId,
-    pub mode: crate::ProducerDeliveryMode,
-    pub idempotency_key: crate::ProducerIdempotencyKey,
-    #[serde(deserialize_with = "deserialize_producer_description")]
-    pub description: crate::SafeDisplayText,
-    pub body: String,
-}
-
-fn deserialize_producer_description<'de, D>(
-    deserializer: D,
-) -> Result<crate::SafeDisplayText, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let description = crate::SafeDisplayText::deserialize(deserializer)?;
-    if description.as_str().trim().is_empty() {
-        return Err(serde::de::Error::custom("description must not be blank"));
-    }
-    Ok(description)
-}
-
-/// Returned only after durable ProducerMessageAccepted append. Retries return
-/// this same receipt, including after consumption, with no second acceptance.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionProducerSendResult {
-    pub message_id: crate::ProducerMessageId,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionProducerUnregisterParams {
-    pub session_id: crate::SessionId,
-    pub producer_id: crate::ProducerId,
-}
-
-/// Unregister does not remove accepted messages; zero-send unregister is valid.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionProducerUnregisterResult {}
-
-/// Discard an owned message only while it remains waiting. Authority is the live
-/// connection's source and the session, not a registration: any message of the
-/// source, whatever its producer name.
-///
-/// A durable actor claim reserves the message and removes it from waiting before
-/// request preparation and hooks. Discard rejects until that claim is released,
-/// even before network activity; a claim does not prove provider receipt or execution.
-/// Release after failed preparation or cancellation may return an unconsumed
-/// message to waiting. Consumed messages cannot return or be discarded.
-/// Discard rejection makes no exactly-once claim about execution or external effects.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionProducerDiscardParams {
-    pub session_id: crate::SessionId,
-    pub message_id: crate::ProducerMessageId,
-}
-
-/// Already-discarded owned messages succeed; consumed or currently claimed messages reject.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionProducerDiscardResult {}
-
-/// Engine-to-plugin notification, never a deadlineful pending request. Restore
-/// from plugin-owned storage/services and report completion on the same connection.
-/// No response, recovery deadline, replay, or eager session adoption is implied.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionRecoveryStartParams {}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ExtensionRecoveryOutcome {
-    Ready,
-    Failed { message: crate::SafeErrorMessage },
-}
-
-/// Plugin-to-engine completion request. The engine owns starting/disabled states.
-/// The transport supplies authenticated plugin name + connection epoch out of band.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionRecoveryCompleteParams {
-    pub outcome: ExtensionRecoveryOutcome,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionRecoveryCompleteResult {}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionToolCallParams {
-    pub tool: String,
-    pub session_id: crate::SessionId,
-    pub context_id: String,
-    pub invocation_id: crate::ToolCallId,
-    pub arguments: Value,
-    #[serde(deserialize_with = "crate::deserialize_required_option")]
-    #[schemars(with = "crate::NullableSchema<String>", required)]
-    pub resource: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cancellation_token: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionToolCallResult {
-    pub output: crate::ToolCompletionOutput,
-    pub display: String,
-    pub is_error: bool,
-}
-
-impl ExtensionToolCallResult {
-    /// Successful single output whose display previews the text.
-    #[must_use]
-    pub fn success(text: impl Into<String>) -> Self {
-        Self::single(text.into(), false)
-    }
-
-    /// Single output marked as a tool-level error whose display previews the text.
-    #[must_use]
-    pub fn error(text: impl Into<String>) -> Self {
-        Self::single(text.into(), true)
-    }
-
-    fn single(text: String, is_error: bool) -> Self {
-        let mut end = text.len().min(crate::MAX_TOOL_DISPLAY_BYTES);
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        Self {
-            display: text[..end].into(),
-            output: crate::ToolCompletionOutput::Single { text },
-            is_error,
-        }
-    }
-}
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -386,9 +197,22 @@ pub enum ExtensionEmitStatus {
 pub struct ExtensionEmitResultParams {
     pub name: String,
     pub bus: ExtensionEmitStatus,
-    pub durable: ExtensionEmitStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// Where a tool a hook sees comes from.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExtensionToolOrigin {
+    /// The daemon's base layer.
+    Base,
+    /// A runtime the session is attached to.
+    Runtime {
+        /// The session's attachment name.
+        attachment: String,
+        runtime_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
@@ -397,6 +221,7 @@ pub struct ExtensionToolBeforeCallParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
     pub tool: String,
+    pub origin: ExtensionToolOrigin,
     pub arguments: Value,
     /// `null` for a tool that needs no permission.
     #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -432,6 +257,10 @@ pub struct ExtensionToolAfterResultParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
     pub tool: String,
+    /// `null` for a call that names no published tool.
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<ExtensionToolOrigin>", required)]
+    pub origin: Option<ExtensionToolOrigin>,
     pub arguments: Value,
     pub result_content: String,
     pub is_error: bool,
@@ -450,8 +279,6 @@ pub struct ExtensionToolAfterResultResult {
     pub action: ExtensionToolAfterResultAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replacement_content: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
@@ -466,8 +293,6 @@ pub struct ExtensionAgentBeforeStartParams {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionAgentBeforeStartResult {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub addendum: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub append_to_system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -588,24 +413,6 @@ pub struct ExtensionModelBeforeRequestResult {
     pub params_adjustments: Option<ExtensionModelParamsAdjustments>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionProviderBeforeHeadersParams {
-    pub session_id: crate::SessionId,
-    pub context_id: String,
-    pub attempt_id: crate::AttemptId,
-    pub headers: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionProviderBeforeHeadersResult {
-    #[serde(default)]
-    pub set: BTreeMap<String, String>,
-    #[serde(default)]
-    pub delete: Vec<String>,
-}
-
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProviderBeforeRequestParams {
@@ -637,7 +444,6 @@ pub struct ExtensionProviderAfterResponseParams {
     pub context_id: String,
     pub attempt_id: crate::AttemptId,
     pub status: u16,
-    pub headers: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -650,7 +456,6 @@ pub struct ExtensionMessageEndParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
     pub attempt_id: crate::AttemptId,
-    pub role: ExtensionMessageRole,
     pub content: Vec<crate::PersistedAssistantPart>,
 }
 
@@ -674,7 +479,8 @@ pub struct ExtensionMessageEndResult {
 pub enum ExtensionModelSelectSource {
     User,
     Config,
-    FallbackRestore,
+    /// The engine moves to the next model of the fallback chain.
+    Fallback,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
@@ -748,12 +554,6 @@ pub fn extension_initialize_request(engine_version: impl Into<String>) -> crate:
         engine_version: engine_version.into(),
         capabilities: ExtensionEngineCapabilities {
             producer_messaging: true,
-            ping: true,
-            shutdown: true,
-            tools: true,
-            event_streaming: true,
-            event_publishing: true,
-            interception: true,
         },
     };
     crate::Request::new(
@@ -768,7 +568,7 @@ pub fn extension_recovery_start_notification() -> crate::Notification {
     crate::Notification::new(
         PLUGIN_RECOVERY_START_METHOD,
         Some(
-            serde_json::to_value(ExtensionRecoveryStartParams {})
+            serde_json::to_value(crate::RecoveryStartParams {})
                 .expect("recovery start params serialize"),
         ),
     )
@@ -785,13 +585,13 @@ mod tests {
 
     #[test]
     fn producer_discard_is_strict_and_registration_independent() {
-        let params = ExtensionProducerDiscardParams {
+        let params = crate::ProducerDiscardParams {
             session_id: crate::SessionId::new_v7(),
             message_id: crate::ProducerMessageId::new_v7(),
         };
         let wire = serde_json::to_value(params).unwrap();
         assert_eq!(
-            serde_json::from_value::<ExtensionProducerDiscardParams>(wire.clone()).unwrap(),
+            serde_json::from_value::<crate::ProducerDiscardParams>(wire.clone()).unwrap(),
             params
         );
         assert_eq!(
@@ -801,26 +601,26 @@ mod tests {
         for field in ["producer_id", "plugin", "connection_epoch"] {
             let mut forged = wire.clone();
             forged[field] = serde_json::json!("foreign");
-            assert!(serde_json::from_value::<ExtensionProducerDiscardParams>(forged).is_err());
+            assert!(serde_json::from_value::<crate::ProducerDiscardParams>(forged).is_err());
         }
         for field in ["session_id", "message_id"] {
             let mut missing = wire.clone();
             missing.as_object_mut().unwrap().remove(field);
-            assert!(serde_json::from_value::<ExtensionProducerDiscardParams>(missing).is_err());
+            assert!(serde_json::from_value::<crate::ProducerDiscardParams>(missing).is_err());
             let mut invalid = wire.clone();
             invalid[field] = serde_json::json!("not-a-uuid");
-            assert!(serde_json::from_value::<ExtensionProducerDiscardParams>(invalid).is_err());
+            assert!(serde_json::from_value::<crate::ProducerDiscardParams>(invalid).is_err());
         }
-        assert_eq!(PLUGIN_PRODUCER_DISCARD_METHOD, "plugin/producer/discard");
+        assert_eq!(PLUGIN_PRODUCER_DISCARD_METHOD, "producer/discard");
         assert_eq!(
-            serde_json::to_value(ExtensionProducerDiscardResult {}).unwrap(),
+            serde_json::to_value(crate::ProducerDiscardResult {}).unwrap(),
             serde_json::json!({})
         );
         assert!(
-            serde_json::from_value::<ExtensionProducerDiscardResult>(serde_json::json!({})).is_ok()
+            serde_json::from_value::<crate::ProducerDiscardResult>(serde_json::json!({})).is_ok()
         );
         assert!(
-            serde_json::from_value::<ExtensionProducerDiscardResult>(
+            serde_json::from_value::<crate::ProducerDiscardResult>(
                 serde_json::json!({"message_id": params.message_id})
             )
             .is_err()
@@ -829,8 +629,9 @@ mod tests {
 
     #[test]
     fn protocol_version_rejection_reports_found_value() {
-        let error = serde_json::from_str::<ExtensionProtocolVersion>("\"0.0.1\"")
-            .expect_err("version mismatch");
-        assert!(error.to_string().contains("0.0.1"));
+        let error =
+            serde_json::from_str::<ExtensionProtocolVersion>("7").expect_err("version mismatch");
+        assert!(error.to_string().contains('7'));
+        assert!(serde_json::from_str::<ExtensionProtocolVersion>("\"1\"").is_err());
     }
 }

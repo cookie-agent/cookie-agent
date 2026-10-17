@@ -1602,7 +1602,7 @@ pub(crate) fn interception_plugin(name: &str, extra_env: &[(&str, String)]) -> P
         ("FIXTURE_TOOLS".into(), "[]".into()),
         (
             "FIXTURE_CAPABILITIES".into(),
-            r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}"#.into(),
+            r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":["tool_before_call"]}"#.into(),
         ),
     ]);
     env.extend(
@@ -1612,8 +1612,7 @@ pub(crate) fn interception_plugin(name: &str, extra_env: &[(&str, String)]) -> P
             .map(|(key, value)| (key.into(), value)),
     );
     PluginConfig {
-        command: Some(python_command().into()),
-        args: vec![PLUGIN_FIXTURE.into()],
+        command: vec![python_command().into(), PLUGIN_FIXTURE.into()],
         env,
         cwd: None,
         enabled: true,
@@ -1621,7 +1620,6 @@ pub(crate) fn interception_plugin(name: &str, extra_env: &[(&str, String)]) -> P
         interception_timeout_ms: 2_000,
         startup_timeout_ms: 10_000,
         shutdown_grace_ms: 3_000,
-        tool_timeout_ms: 30_000,
     }
 }
 

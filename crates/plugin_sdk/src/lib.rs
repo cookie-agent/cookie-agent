@@ -1,13 +1,14 @@
 //! Official Rust SDK for cookie-agent out-of-process plugins.
 //!
-//! Plugins exchange newline-delimited JSON-RPC 2.0 messages with the engine over standard I/O.
-//! Build a server by registering handlers and publishing targets; its extension capabilities are
-//! derived automatically.
+//! Plugins exchange newline-delimited JSON-RPC 2.0 messages with the engine over standard I/O,
+//! with the same JSON-RPC peer the runtime protocol uses. Build a server by registering tools,
+//! hooks, event handlers, and publishing targets; its capabilities are derived automatically.
+//! Tools run over the runtime protocol's `tool/*` messages: the SDK prepares each call's
+//! approval identity, and a tool handler gets progress, a detach point, and cancellation.
 
 #![deny(missing_docs)]
 
 mod error;
-mod framing;
 mod server;
 
 pub use cookie_agent_protocol::{
@@ -18,33 +19,57 @@ pub use cookie_agent_protocol::{
     ExtensionMessageRole, ExtensionModelBeforeRequestAction, ExtensionModelBeforeRequestParams,
     ExtensionModelBeforeRequestResult, ExtensionModelBeforeSelectParams, ExtensionModelMessage,
     ExtensionModelParamsAdjustments, ExtensionProviderAfterResponseParams,
-    ExtensionProviderAfterResponseResult, ExtensionProviderBeforeHeadersParams,
-    ExtensionProviderBeforeHeadersResult, ExtensionProviderBeforeRequestAction,
+    ExtensionProviderAfterResponseResult, ExtensionProviderBeforeRequestAction,
     ExtensionProviderBeforeRequestParams, ExtensionProviderBeforeRequestResult,
     ExtensionSessionBeforeCompactParams, ExtensionSessionBeforeCompactResult,
     ExtensionSessionBeforeForkParams, ExtensionSessionBeforeForkResult,
     ExtensionSessionBeforeRevertAction, ExtensionSessionBeforeRevertParams,
     ExtensionSessionBeforeRevertResult, ExtensionToolAfterResultAction,
     ExtensionToolAfterResultParams, ExtensionToolAfterResultResult, ExtensionToolBeforeCallAction,
-    ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult, ExtensionToolCallParams,
+    ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult, ExtensionToolOrigin,
     ExtensionUserBeforeInputAction, ExtensionUserBeforeInputParams, ExtensionUserBeforeInputResult,
-    ProducerDeliveryMode, ProducerId, ProducerIdempotencyKey, ProducerMessageId, ProducerName,
-    SessionId, ToolCompletionOutput, ToolOutputChunk, ToolOutputDeclaration,
+    PermissionAction, ProducerDeliveryMode, ProducerId, ProducerIdempotencyKey, ProducerMessageId,
+    ProducerName, RunId, SessionId, ToolCallId, ToolOutputDeclaration,
+    runtime_protocol::{ToolCollision, ToolConcurrency, ToolResultTruncationPolicy},
 };
 pub use error::{PluginError, ToolFailure};
 pub use server::{
     PluginContext, PluginServer, PluginServerBuilder, ProducerHandle, RecoveryFailure,
-    RecoveryResult,
+    RecoveryResult, ToolContext,
 };
 
-/// A tool declaration sent to the engine during initialization.
-pub type ToolDecl = cookie_agent_protocol::ExtensionToolDeclaration;
+/// A tool declaration sent to the engine during initialization: the runtime
+/// protocol's tool declaration.
+pub type ToolDecl = cookie_agent_protocol::runtime_protocol::ToolDeclaration;
 
-/// Structured output from a plugin tool handler, sent to the engine as-is.
-///
-/// [`ToolOutput::success`] and [`ToolOutput::error`] build single outputs whose display previews
-/// the text.
-pub type ToolOutput = cookie_agent_protocol::ExtensionToolCallResult;
+/// What a plugin tool returns to the model.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToolOutput {
+    /// The text the model reads.
+    pub text: String,
+    /// The tool reports a failure the model should see as one.
+    pub failed: bool,
+}
+
+impl ToolOutput {
+    /// A successful result.
+    #[must_use]
+    pub fn success(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            failed: false,
+        }
+    }
+
+    /// A result that reports a tool-level failure.
+    #[must_use]
+    pub fn error(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            failed: true,
+        }
+    }
+}
 
 /// A system-prompt or compaction-instruction addendum.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -65,8 +90,7 @@ impl Addendum {
 impl From<Addendum> for ExtensionAgentBeforeStartResult {
     fn from(value: Addendum) -> Self {
         Self {
-            addendum: value.into_option(),
-            append_to_system_prompt: None,
+            append_to_system_prompt: value.into_option(),
             replace_system_prompt: None,
             inject_message: None,
         }
@@ -123,7 +147,6 @@ pub fn replace(content: impl Into<String>) -> ExtensionToolAfterResultResult {
     ExtensionToolAfterResultResult {
         action: ExtensionToolAfterResultAction::Replace,
         replacement_content: Some(content.into()),
-        note: None,
     }
 }
 
@@ -137,7 +160,6 @@ pub fn addendum(text: impl Into<String>) -> Addendum {
 #[must_use]
 pub fn append_system_prompt(text: impl Into<String>) -> ExtensionAgentBeforeStartResult {
     ExtensionAgentBeforeStartResult {
-        addendum: None,
         append_to_system_prompt: Some(text.into()),
         replace_system_prompt: None,
         inject_message: None,
@@ -148,7 +170,6 @@ pub fn append_system_prompt(text: impl Into<String>) -> ExtensionAgentBeforeStar
 #[must_use]
 pub fn replace_system_prompt(text: impl Into<String>) -> ExtensionAgentBeforeStartResult {
     ExtensionAgentBeforeStartResult {
-        addendum: None,
         append_to_system_prompt: None,
         replace_system_prompt: Some(text.into()),
         inject_message: None,
@@ -162,7 +183,6 @@ pub fn inject_message(
     content: impl Into<String>,
 ) -> ExtensionAgentBeforeStartResult {
     ExtensionAgentBeforeStartResult {
-        addendum: None,
         append_to_system_prompt: None,
         replace_system_prompt: None,
         inject_message: Some(ExtensionInjectedMessage {

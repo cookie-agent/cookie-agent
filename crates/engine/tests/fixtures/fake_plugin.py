@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sys
@@ -8,6 +9,11 @@ def send(message):
     sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")
     sys.stdout.flush()
 
+
+stderr_line = os.environ.get("FIXTURE_STDERR")
+if stderr_line:
+    sys.stderr.write(stderr_line + "\n")
+    sys.stderr.flush()
 
 pid_file = os.environ.get("FIXTURE_PID_FILE")
 if pid_file:
@@ -40,6 +46,73 @@ def emit_from_context(context):
     for _ in range(int(os.environ.get("FIXTURE_EMIT_COUNT", "1"))):
         send({"jsonrpc": "2.0", "method": "plugin/emit", "params": emit})
 
+prepared = {}
+next_prepared = 1
+
+
+def digest(value):
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def declarations():
+    return json.loads(os.environ.get("FIXTURE_TOOLS", "[]"))
+
+
+def prepare(call):
+    """A prepared call as the runtime protocol's `tool/prepare` reports it."""
+    global next_prepared
+    declaration = next((tool for tool in declarations() if tool["name"] == call["name"]), None)
+    if declaration is None:
+        return {
+            "status": "failed",
+            "error": {"kind": "failed", "message": "unknown fixture tool"},
+            "presentation": {"title": call["name"], "primary_argument": None},
+        }
+    permission = declaration.get("permission")
+    action = permission or call["name"]
+    arguments = call["arguments"]
+    resource = None
+    primary = os.environ.get("FIXTURE_TOOL_RESOURCE_PARAM")
+    if primary and isinstance(arguments, dict) and isinstance(arguments.get(primary), str):
+        resource = arguments[primary]
+    label = resource or call["name"]
+    prepared_id = next_prepared
+    next_prepared += 1
+    prepared[prepared_id] = {"call": call}
+    return {
+        "status": "prepared",
+        "prepared_id": prepared_id,
+        "operation": {
+            "normalized_arguments_digest": digest(json.dumps(arguments, sort_keys=True)),
+            "capabilities": [{"action": action, "operation": call["name"] + ":call"}],
+            "resources": [{
+                "capability": action,
+                "canonical": "plugin-tool:" + digest(label),
+                "binding_digest": {"digest": digest("fixture\0" + label)},
+                "binding_lifetime": "process_local",
+                "boundary": {"type": "exact"},
+                "source": "primary_operation",
+            }],
+            "execution_context_digest": digest("plugin:fixture"),
+            "capability_lifetime": "process_local",
+        },
+        "policy_labels": [resource],
+        "normalized_arguments": arguments,
+        "permission": permission,
+        "permission_resource": resource if permission else None,
+        "presentation": {"title": call["name"], "primary_argument": resource},
+        "serialization_key": None,
+    }
+
+
+def protocol_version():
+    # Until the gate file exists, the plugin speaks an unknown version.
+    gate = os.environ.get("FIXTURE_VERSION_GATE_FILE")
+    if gate and not os.path.exists(gate):
+        return 999
+    return json.loads(os.environ.get("FIXTURE_PROTOCOL_VERSION", "1"))
+
+
 for line in sys.stdin:
     message = json.loads(line)
     method = message.get("method")
@@ -54,14 +127,14 @@ for line in sys.stdin:
             "jsonrpc": "2.0",
             "id": request_id,
             "result": {
-                "protocol_version": os.environ.get("FIXTURE_PROTOCOL_VERSION", "0.0.8"),
+                "protocol_version": protocol_version(),
                 "name": os.environ.get("FIXTURE_NAME", "fixture"),
                 "version": "1.0.0",
                 "capabilities": json.loads(os.environ.get(
                     "FIXTURE_CAPABILITIES",
-                    '{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}',
+                    '{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[]}',
                 )),
-                "tools": json.loads(os.environ.get("FIXTURE_TOOLS", "[]")),
+                "tools": {"tools": declarations(), "prompt_sections": []},
             },
         })
         if os.environ.get("FIXTURE_CRASH_AFTER_INITIALIZE") == "1":
@@ -73,12 +146,22 @@ for line in sys.stdin:
         if os.environ.get("FIXTURE_INVALID_UTF8_AFTER_INITIALIZE") == "1":
             sys.stdout.buffer.write(b"\xff\n")
             sys.stdout.buffer.flush()
-    elif method == "plugin/tools/call":
+    elif method == "tool/prepare":
         params = message.get("params", {})
+        send({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {"results": [prepare(call) for call in params.get("calls", [])]},
+        })
+    elif method == "tool/revalidate":
+        send({"jsonrpc": "2.0", "id": request_id, "result": {}})
+    elif method == "tool/execute":
+        params = message.get("params", {})
+        call = prepared.pop(params.get("prepared_id"), {}).get("call", {})
         call_file = os.environ.get("FIXTURE_TOOL_CALL_FILE")
         if call_file:
             with open(call_file, "w", encoding="utf-8") as output:
-                json.dump(params, output)
+                json.dump({"execute": params, "call": call}, output)
         time.sleep(int(os.environ.get("FIXTURE_TOOL_DELAY_MS", "0")) / 1000)
         if os.environ.get("FIXTURE_CRASH_DURING_TOOL") == "1":
             os._exit(18)
@@ -89,22 +172,33 @@ for line in sys.stdin:
                 "error": {"code": -32000, "message": "fixture tool RPC error"},
             })
             continue
-        arguments = params.get("arguments", {})
+        arguments = call.get("arguments", {})
         content = arguments.get("text", json.dumps(arguments, separators=(",", ":")))
+        output = json.loads(os.environ.get(
+            "FIXTURE_TOOL_OUTPUT", json.dumps({"kind": "single", "text": content})
+        ))
         send({
             "jsonrpc": "2.0",
             "id": request_id,
-            "result": json.loads(os.environ["FIXTURE_TOOL_RESULT"]) if "FIXTURE_TOOL_RESULT" in os.environ else {
-                "output": {"kind": "single", "text": content},
-                "display": content[:65536],
-                "is_error": os.environ.get("FIXTURE_TOOL_ERROR") == "1",
+            "result": {
+                "outcome": {
+                    "status": "completed",
+                    "output": output,
+                    "result": {
+                        "title": call.get("name", "tool"),
+                        "output": "",
+                        "display": os.environ.get("FIXTURE_TOOL_DISPLAY", content[:65536]),
+                        "metadata": None,
+                        "truncation": None,
+                        "attachments": [],
+                    },
+                    "failed": os.environ.get("FIXTURE_TOOL_ERROR") == "1",
+                },
+                "media": [],
             },
         })
-    elif method == "plugin/ping":
-        if os.environ.get("FIXTURE_INTERLEAVE_PING") == "1":
-            send({"jsonrpc": "2.0", "method": "plugin/future_notice", "params": {}})
-            send({"jsonrpc": "2.0", "id": 900, "method": "plugin/future_request", "params": {}})
-        send({"jsonrpc": "2.0", "id": request_id, "result": {}})
+    elif method in ("tool/release", "tool/cancel"):
+        pass
     elif method == "plugin/event":
         context = message.get("params", {})
         event_file = os.environ.get("FIXTURE_EVENT_FILE")
@@ -146,6 +240,14 @@ for line in sys.stdin:
                 time.sleep(0.01)
         if os.environ.get("FIXTURE_CRASH_DURING_INTERCEPT") == "1":
             os._exit(19)
+        intercept_error = os.environ.get("FIXTURE_INTERCEPT_ERROR")
+        if intercept_error:
+            send({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32000, "message": intercept_error},
+            })
+            continue
         result_env = {
             "plugin/intercept/tool_before_call": "FIXTURE_TOOL_BEFORE_RESULT",
             "plugin/intercept/tool_after_result": "FIXTURE_TOOL_AFTER_RESULT",
@@ -153,7 +255,6 @@ for line in sys.stdin:
             "plugin/intercept/session_before_compact": "FIXTURE_COMPACT_BEFORE_RESULT",
             "plugin/intercept/user_before_input": "FIXTURE_USER_BEFORE_INPUT_RESULT",
             "plugin/intercept/model_before_request": "FIXTURE_MODEL_BEFORE_REQUEST_RESULT",
-            "plugin/intercept/provider_before_headers": "FIXTURE_PROVIDER_BEFORE_HEADERS_RESULT",
             "plugin/intercept/provider_before_request": "FIXTURE_PROVIDER_BEFORE_REQUEST_RESULT",
             "plugin/intercept/provider_after_response": "FIXTURE_PROVIDER_AFTER_RESPONSE_RESULT",
             "plugin/intercept/message_end": "FIXTURE_MESSAGE_END_RESULT",
@@ -168,7 +269,6 @@ for line in sys.stdin:
             "plugin/intercept/session_before_compact": {},
             "plugin/intercept/user_before_input": {"action": "allow"},
             "plugin/intercept/model_before_request": {"action": "keep"},
-            "plugin/intercept/provider_before_headers": {"set": {}, "delete": []},
             "plugin/intercept/provider_before_request": {"action": "keep"},
             "plugin/intercept/provider_after_response": {},
             "plugin/intercept/message_end": {"action": "keep"},
@@ -194,11 +294,6 @@ for line in sys.stdin:
             with open(marker, "w", encoding="utf-8") as output:
                 output.write("shutdown")
         break
-    elif request_id == 900 and "error" in message:
-        marker = os.environ.get("FIXTURE_REQUEST_REJECTED_FILE")
-        if marker:
-            with open(marker, "w", encoding="utf-8") as output:
-                output.write(str(message["error"].get("code")))
     elif request_id is not None:
         send({
             "jsonrpc": "2.0",

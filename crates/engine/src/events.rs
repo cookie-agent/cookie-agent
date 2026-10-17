@@ -1890,8 +1890,10 @@ fn validate_record_local(path: &Path, record: &StoredEvent) -> Result<(), EventL
         {
             return corrupt(path, "plugin events must be runless");
         }
-        EventPayload::ProducerDiagnostic { .. } if record.run_id.is_some() => {
-            return corrupt(path, "producer diagnostics must be runless");
+        EventPayload::ProducerDiagnostic { .. } | EventPayload::EngineDiagnostic { .. }
+            if record.run_id.is_some() =>
+        {
+            return corrupt(path, "diagnostics must be runless");
         }
         EventPayload::SessionTitleCommitted { change, .. } => {
             let runless = matches!(
@@ -2838,9 +2840,9 @@ fn validate_record_incremental(
                 return corrupt(path, "plugin events must be runless");
             }
         }
-        EventPayload::ProducerDiagnostic { .. } => {
+        EventPayload::ProducerDiagnostic { .. } | EventPayload::EngineDiagnostic { .. } => {
             if record.run_id.is_some() {
-                return corrupt(path, "producer diagnostics must be runless");
+                return corrupt(path, "diagnostics must be runless");
             }
         }
         // The queue belongs to the session: entries outlive the run they

@@ -1,13 +1,18 @@
 //! Tool-name composition across the base layer and a session's attachments
 //! (`docs/site/specs/runtimes.md` section 6.3).
 //!
-//! Names are computed from the current tool set every time it is composed:
+//! Names are computed from the current tool set every time it is composed.
+//! A runtime tool composes under its *source*: the attachment that offers
+//! it, or the plugin that declares it.
 //!
 //! - a name offered by exactly one source is published bare;
-//! - when several `prefix` runtime tools offer one name, each is published as
-//!   `<attachment>_<name>` and the bare name is removed;
+//! - when several `prefix` tools offer one name, each is published as
+//!   `<source>_<name>` and the bare name is removed;
+//! - an `override` tool takes the bare name; the `prefix` tools of that name
+//!   are published as `<source>_<name>` and its `fallback` tools are hidden.
+//!   Two `override` tools of one name are both prefixed, with a diagnostic;
 //! - a runtime tool with a base-layer name is published as
-//!   `<attachment>_<name>`; the base tool keeps its name;
+//!   `<source>_<name>`; the base tool keeps its name;
 //! - a `fallback` tool is hidden whenever a non-fallback tool offers its name;
 //! - a published name longer than [`MAX_TOOL_NAME_BYTES`] is dropped with a
 //!   diagnostic.
@@ -54,39 +59,66 @@ pub(crate) fn compose(
 ) -> Result<Composition, String> {
     let mut per_source = HashSet::new();
     let mut base_names = reserved.clone();
-    // Per name: runtime tools that do not yield, and fallback tools.
+    // Per name: runtime tools that do not yield, overriding tools, and
+    // fallback tools.
     let mut regular = HashMap::<&str, usize>::new();
+    let mut overriding = HashMap::<&str, usize>::new();
     let mut fallback = HashMap::<&str, usize>::new();
-    for (source, spec) in &candidates {
-        if !per_source.insert((source.attachment.clone(), spec.name.as_str())) {
+    let labels = candidates
+        .iter()
+        .map(|(source, _)| composition_source(source))
+        .collect::<Vec<_>>();
+    for ((_, spec), label) in candidates.iter().zip(&labels) {
+        if !per_source.insert((label.clone(), spec.name.as_str())) {
             return Err(spec.name.clone());
         }
-        match (&source.attachment, spec.collision) {
+        let counts = match (label, spec.collision) {
             (None, _) => {
                 base_names.insert(spec.name.clone());
+                continue;
             }
-            (Some(_), ToolCollision::Prefix) => *regular.entry(&spec.name).or_default() += 1,
-            (Some(_), ToolCollision::Fallback) => *fallback.entry(&spec.name).or_default() += 1,
-        }
+            (Some(_), ToolCollision::Prefix) => &mut regular,
+            (Some(_), ToolCollision::Override) => &mut overriding,
+            (Some(_), ToolCollision::Fallback) => &mut fallback,
+        };
+        *counts.entry(&spec.name).or_default() += 1;
     }
+    let count = |counts: &HashMap<&str, usize>, name: &str| counts.get(name).copied().unwrap_or(0);
     let mut tools = Vec::with_capacity(candidates.len());
-    for (source, spec) in &candidates {
+    let mut overridden = Vec::new();
+    for ((source, spec), label) in candidates.iter().zip(&labels) {
         let name = spec.name.as_str();
-        let published = match (&source.attachment, spec.collision) {
+        let published = match (label, spec.collision) {
             (None, _) => name.to_owned(),
-            (Some(attachment), ToolCollision::Prefix) => {
-                if base_names.contains(name) || regular[name] > 1 {
-                    format!("{attachment}_{name}")
+            (Some(label), ToolCollision::Override) => {
+                if base_names.contains(name) || count(&overriding, name) > 1 {
+                    if count(&overriding, name) > 1 && !overridden.contains(&name) {
+                        overridden.push(name);
+                    }
+                    format!("{label}_{name}")
                 } else {
                     name.to_owned()
                 }
             }
-            (Some(attachment), ToolCollision::Fallback) => {
-                if base_names.contains(name) || regular.contains_key(name) {
+            (Some(label), ToolCollision::Prefix) => {
+                if base_names.contains(name)
+                    || count(&overriding, name) == 1
+                    || count(&regular, name) > 1
+                {
+                    format!("{label}_{name}")
+                } else {
+                    name.to_owned()
+                }
+            }
+            (Some(label), ToolCollision::Fallback) => {
+                if base_names.contains(name)
+                    || count(&regular, name) > 0
+                    || count(&overriding, name) > 0
+                {
                     continue;
                 }
-                if fallback[name] > 1 {
-                    format!("{attachment}_{name}")
+                if count(&fallback, name) > 1 {
+                    format!("{label}_{name}")
                 } else {
                     name.to_owned()
                 }
@@ -98,7 +130,12 @@ pub(crate) fn compose(
             spec: spec.clone(),
         });
     }
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = overridden
+        .into_iter()
+        .map(|name| {
+            format!("several tools override `{name}`; each is published under its source's prefix")
+        })
+        .collect::<Vec<_>>();
     let mut published = HashSet::new();
     tools.retain(|tool| {
         let label = |reason: &str| match &tool.source.attachment {
@@ -144,6 +181,17 @@ pub(crate) fn compose(
         true
     });
     Ok(Composition { tools, diagnostics })
+}
+
+/// The source `source`'s tools compose under; `None` for the base layer.
+fn composition_source(source: &SourcedProvider) -> Option<String> {
+    let attachment = source.attachment.as_ref()?;
+    Some(
+        source
+            .provider
+            .composition_source()
+            .unwrap_or_else(|| attachment.to_string()),
+    )
 }
 
 #[cfg(test)]
@@ -202,6 +250,122 @@ mod tests {
             origin: ToolOrigin::Base,
             provider: Arc::new(Nothing),
         }
+    }
+
+    /// A provider that composes under its own source, as a plugin does.
+    struct Plugin(&'static str);
+
+    #[async_trait]
+    impl ToolProvider for Plugin {
+        fn provider_id(&self) -> &'static str {
+            "test.plugin"
+        }
+        fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+            Ok(Vec::new())
+        }
+        fn composition_source(&self) -> Option<String> {
+            Some(self.0.to_owned())
+        }
+        fn get_permission_name(_: &str) -> Result<Option<&'static str>, ToolError> {
+            Ok(None)
+        }
+        fn get_permission_resource(
+            &self,
+            _: &str,
+            _: &serde_json::Value,
+        ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
+            Ok((None, None))
+        }
+        fn get_display_argument(
+            &self,
+            _: &str,
+            _: &serde_json::Value,
+        ) -> Result<String, ToolError> {
+            Ok(String::new())
+        }
+        async fn prepare(
+            &self,
+            _: ToolPreparationContext,
+            _: ToolCall,
+        ) -> Result<PreparedTool, ToolError> {
+            Err(ToolError::execution("unused"))
+        }
+    }
+
+    /// A tool of plugin `name`, which the `global` runtime hosts.
+    fn plugin(name: &'static str) -> SourcedProvider {
+        SourcedProvider {
+            provider: Arc::new(Plugin(name)),
+            ..source(Some("global"))
+        }
+    }
+
+    #[test]
+    fn plugin_tools_compose_under_the_plugins_name() {
+        assert_eq!(
+            published(vec![
+                (plugin("audit"), spec("webfetch", ToolCollision::Prefix)),
+                (plugin("audit"), spec("lint", ToolCollision::Prefix)),
+                (
+                    source(Some("local")),
+                    spec("webfetch", ToolCollision::Prefix)
+                ),
+            ]),
+            ["audit_webfetch", "lint", "local_webfetch"]
+        );
+    }
+
+    #[test]
+    fn an_override_takes_the_bare_name_and_prefixes_what_it_overrides() {
+        assert_eq!(
+            published(vec![
+                (source(Some("local")), spec("bash", ToolCollision::Prefix)),
+                (
+                    source(Some("global")),
+                    spec("bash", ToolCollision::Fallback)
+                ),
+                (plugin("sandbox"), spec("bash", ToolCollision::Override)),
+            ]),
+            ["local_bash", "bash"]
+        );
+    }
+
+    #[test]
+    fn competing_overrides_are_both_prefixed_with_a_diagnostic() {
+        let composition = compose(
+            vec![
+                (plugin("first"), spec("bash", ToolCollision::Override)),
+                (plugin("second"), spec("bash", ToolCollision::Override)),
+                (source(Some("local")), spec("bash", ToolCollision::Prefix)),
+            ],
+            &HashSet::new(),
+        )
+        .expect("composes");
+        assert_eq!(
+            composition
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first_bash", "second_bash", "bash"]
+        );
+        assert_eq!(
+            composition.diagnostics.len(),
+            1,
+            "{:?}",
+            composition.diagnostics
+        );
+    }
+
+    #[test]
+    fn an_override_never_takes_a_base_name() {
+        assert_eq!(
+            published(vec![
+                (source(None), spec("skill", ToolCollision::Prefix)),
+                (plugin("audit"), spec("skill", ToolCollision::Override)),
+            ]),
+            ["skill", "audit_skill"]
+        );
     }
 
     fn spec(name: &str, collision: ToolCollision) -> ToolSpec {

@@ -458,7 +458,6 @@ impl Engine {
                     }
                     if let Some(addendum) = result
                         .append_to_system_prompt
-                        .or(result.addendum)
                         .filter(|value| !value.is_empty())
                     {
                         if run_policy.agent.composed_prompt.len()
@@ -494,12 +493,12 @@ impl Engine {
                     }
                 }
                 Err(error) => {
-                    let kind = if error.contains("crashed") || error.contains("not connected") {
-                        PluginDiagnosticKind::InterceptionCrash
-                    } else {
-                        PluginDiagnosticKind::InterceptionTimeout
-                    };
-                    self.record_plugin_diagnostic(params.session_id, plugin, kind, error);
+                    self.record_plugin_diagnostic(
+                        params.session_id,
+                        plugin,
+                        error.kind(),
+                        error.to_string(),
+                    );
                 }
             }
         }
@@ -1481,6 +1480,7 @@ impl Engine {
             engine: self.clone(),
             call_id: id,
         };
+        let mut hook_origin = None;
         let (mut result, arguments) = if active.cancellation.is_cancelled() {
             (
                 Err(ToolFailure {
@@ -1493,6 +1493,7 @@ impl Engine {
         } else {
             match task {
                 PendingTool::Prepared { prepared, .. } => {
+                    hook_origin = prepared.hook_origin();
                     let intercepted_arguments = prepared.intercepted_arguments.clone();
                     let result = self
                         .execute_approved_tool(active.clone(), run, *prepared, turn_context, true)
@@ -1530,6 +1531,7 @@ impl Engine {
                         session_id: active.session,
                         context_id: context_id.clone(),
                         tool: tool.to_string(),
+                        origin: hook_origin.clone(),
                         arguments: arguments.clone(),
                         result_content: result_content.clone(),
                         is_error,
@@ -1561,12 +1563,12 @@ impl Engine {
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    let kind = if error.contains("crashed") || error.contains("not connected") {
-                        PluginDiagnosticKind::InterceptionCrash
-                    } else {
-                        PluginDiagnosticKind::InterceptionTimeout
-                    };
-                    self.record_plugin_diagnostic(active.session, plugin, kind, error);
+                    self.record_plugin_diagnostic(
+                        active.session,
+                        plugin,
+                        error.kind(),
+                        error.to_string(),
+                    );
                 }
             }
         }
@@ -1815,33 +1817,6 @@ impl Engine {
                     }
                 }
                 request = model.apply_prompt_cache_strategy(request, cache_strategy.as_ref());
-                for plugin in self.inner.plugins.interception_plugins(
-                    cookie_agent_protocol::ExtensionInterceptionHook::ProviderBeforeHeaders,
-                ) {
-                    let result = self.inner.plugins.intercept_named::<_, cookie_agent_protocol::ExtensionProviderBeforeHeadersResult>(
-                        &plugin,
-                        cookie_agent_protocol::PLUGIN_INTERCEPT_PROVIDER_BEFORE_HEADERS_METHOD,
-                        &cookie_agent_protocol::ExtensionProviderBeforeHeadersParams {
-                            session_id: session,
-                            context_id: context_id.clone(),
-                            attempt_id,
-                            headers: std::collections::BTreeMap::new(),
-                        },
-                        Some(session), Some(&context_id),
-                    ).await;
-                    match result {
-                        Ok(result) if !result.set.is_empty() || !result.delete.is_empty() => self
-                            .record_plugin_diagnostic(
-                                session,
-                                plugin,
-                                PluginDiagnosticKind::UnsupportedCapability,
-                                "provider header mutation is unavailable with pinned Oven adapters"
-                                    .into(),
-                            ),
-                        Ok(_) => {}
-                        Err(error) => self.record_interception_error(session, plugin, error),
-                    }
-                }
                 let mut provider_payload = None;
                 for plugin in self.inner.plugins.interception_plugins(
                     cookie_agent_protocol::ExtensionInterceptionHook::ProviderBeforeRequest,
@@ -1939,7 +1914,6 @@ impl Engine {
                                         context_id: context_id.clone(),
                                         attempt_id,
                                         status,
-                                        headers: std::collections::BTreeMap::new(),
                                     },
                                     Some(session), Some(&context_id),
                                 ).await;
@@ -2110,7 +2084,6 @@ impl Engine {
                                     session_id: session,
                                     context_id: context_id.clone(),
                                     attempt_id,
-                                    role: cookie_agent_protocol::ExtensionMessageRole::Assistant,
                                     content: turn.content.clone(),
                                 },
                                 Some(session), Some(&context_id),
@@ -2418,8 +2391,7 @@ impl Engine {
                             context_id: context_id.clone(),
                             from: Some(binding.selection.clone()),
                             to: next.selection.clone(),
-                            source:
-                                cookie_agent_protocol::ExtensionModelSelectSource::FallbackRestore,
+                            source: cookie_agent_protocol::ExtensionModelSelectSource::Fallback,
                         },
                         Some(session),
                         Some(&context_id),
@@ -2478,14 +2450,9 @@ impl Engine {
         &self,
         session: SessionId,
         plugin: String,
-        error: String,
+        error: crate::plugin::InterceptError,
     ) {
-        let kind = if error.contains("crashed") || error.contains("not connected") {
-            PluginDiagnosticKind::InterceptionCrash
-        } else {
-            PluginDiagnosticKind::InterceptionTimeout
-        };
-        self.record_plugin_diagnostic(session, plugin, kind, error);
+        self.record_plugin_diagnostic(session, plugin, error.kind(), error.to_string());
     }
 
     async fn sleep_before_model_retry(&self, delay: std::time::Duration) {

@@ -29,8 +29,8 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::{McpServerConfig, SkillDiscovery, SkillRegistry};
 use cookie_agent_protocol::{
-    ExtensionRecoveryCompleteParams, ExtensionRecoveryOutcome, ProducerSourceStatus, SessionId,
-    ToolCallId, ToolCallPresentation,
+    ProducerSourceStatus, RecoveryCompleteParams, RecoveryOutcome, SessionId, ToolCallId,
+    ToolCallPresentation,
 };
 use cookie_agent_runtime_api::{
     DetachPoint, DiagnosticTail, PreparedDeclaration, PreparedExecutor, PreparedSerializationKey,
@@ -41,9 +41,10 @@ use cookie_agent_runtime_api::{
     protocol::{
         self, ContextParams, ContextResult, DetachableParams, Empty, ExecuteOutcome, ExecuteParams,
         ExecuteResult, InitializeParams, InitializeResult, InlineMedia, McpChangedParams,
-        McpReconnectParams, McpServerReport, Outcome, PrepareOutcome, PrepareParams, PrepareResult,
-        PreparedCall, PreparedRef, RUNTIME_PROTOCOL_VERSION, RuntimeSettings, RuntimeSkills,
-        RuntimeTools, ToolProgressParams, WireToolCall, error_code, method,
+        McpReconnectParams, McpServerReport, Outcome, OutcomeExt as _, PrepareOutcome,
+        PrepareParams, PrepareResult, PreparedCall, PreparedRef, RUNTIME_PROTOCOL_VERSION,
+        RuntimeSettings, RuntimeSkills, RuntimeTools, ToolDeclarationExt as _, ToolProgressParams,
+        WireToolCall, error_code, method,
     },
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
 };
@@ -247,6 +248,13 @@ pub(crate) fn register_configured_templates(
     Ok(())
 }
 
+/// What a plugin connection handles beyond the runtime protocol.
+pub(crate) trait ClientExtension: Send + Sync {
+    /// A notification the runtime protocol does not define, such as
+    /// `plugin/emit`.
+    fn notification(&self, client: RuntimeClient, notification: IncomingNotification);
+}
+
 /// Distinguishes every runtime connection of this process from every other,
 /// so a producer registration made over one never passes for another's.
 static NEXT_CONNECTION_EPOCH: AtomicU64 = AtomicU64::new(1);
@@ -254,8 +262,9 @@ static NEXT_CONNECTION_EPOCH: AtomicU64 = AtomicU64::new(1);
 /// One producer request a runtime sent: which connection, which method, and
 /// its params as sent.
 pub(crate) struct RuntimeProducerCall {
-    /// The attachment name the runtime reported.
-    pub(crate) attachment: String,
+    /// The connection's producer source: `runtime:<attachment name>` or
+    /// `plugin:<name>`.
+    pub(crate) source: cookie_agent_protocol::ProducerSource,
     pub(crate) epoch: u64,
     pub(crate) method: String,
     pub(crate) params: serde_json::Value,
@@ -282,7 +291,7 @@ struct ProducerState {
     /// Set when the engine opens producer messaging on the connection.
     host: Option<Arc<RuntimeProducerHost>>,
     status: Option<ProducerSourceStatus>,
-    outcome: Option<ExtensionRecoveryOutcome>,
+    outcome: Option<RecoveryOutcome>,
 }
 
 /// One connection to a runtime instance. Dropping the last handle closes it.
@@ -296,8 +305,11 @@ struct ClientInner {
     runtime_id: String,
     /// This connection's producer epoch; see [`NEXT_CONNECTION_EPOCH`].
     epoch: u64,
-    /// The attachment name the runtime reported, once initialized.
-    attachment_name: OnceLock<String>,
+    /// The producer source of the connection, once initialized:
+    /// `runtime:<attachment name>`, or `plugin:<name>` for a plugin.
+    producer_source: OnceLock<cookie_agent_protocol::ProducerSource>,
+    /// Handles what the runtime protocol does not define, for a plugin.
+    extension: OnceLock<Arc<dyn ClientExtension>>,
     producers: Mutex<ProducerState>,
     /// What the runtime writes outside the protocol, such as its stderr.
     diagnostics: Option<DiagnosticTail>,
@@ -415,7 +427,8 @@ impl RuntimeClient {
             peer,
             runtime_id: runtime_id.to_owned(),
             epoch: NEXT_CONNECTION_EPOCH.fetch_add(1, Ordering::Relaxed),
-            attachment_name: OnceLock::new(),
+            producer_source: OnceLock::new(),
+            extension: OnceLock::new(),
             producers: Mutex::default(),
             diagnostics: connection.diagnostics,
             shutdown_grace,
@@ -451,7 +464,10 @@ impl RuntimeClient {
                 result.version
             ));
         }
-        let _ = inner.attachment_name.set(result.attachment_name.clone());
+        if let Ok(source) = cookie_agent_protocol::ProducerSource::runtime(&result.attachment_name)
+        {
+            let _ = inner.producer_source.set(source);
+        }
         lock(&inner.producers).declared = result.producer_messaging;
         // A notification the runtime sent after its reply may already have
         // been handled; it is newer than the reply.
@@ -482,6 +498,114 @@ impl RuntimeClient {
             }
         }
         Ok((Self { inner }, result))
+    }
+
+    /// Connects a plugin over `connection` and runs its `plugin/initialize`
+    /// handshake. The plugin's tools then run over the runtime protocol's
+    /// `tool/*` messages and its producers as `plugin:<name>`; what only
+    /// plugins send goes to `extension`. `producer_messaging` is whether its
+    /// configuration lets it produce.
+    pub(crate) async fn initialize_plugin(
+        connection: RuntimeConnection,
+        name: &str,
+        producer_messaging: bool,
+        shutdown_grace: Duration,
+        extension: Arc<dyn ClientExtension>,
+    ) -> Result<(Self, cookie_agent_protocol::ExtensionInitializeResult), String> {
+        let (peer, incoming) = Peer::start(connection.transport);
+        let source = cookie_agent_protocol::ProducerSource::plugin(name)
+            .map_err(|error| format!("invalid plugin name: {error}"))?;
+        let inner = Arc::new(ClientInner {
+            peer,
+            runtime_id: name.to_owned(),
+            epoch: NEXT_CONNECTION_EPOCH.fetch_add(1, Ordering::Relaxed),
+            producer_source: OnceLock::from(source),
+            extension: OnceLock::from(extension),
+            producers: Mutex::default(),
+            diagnostics: connection.diagnostics,
+            shutdown_grace,
+            tools: Mutex::default(),
+            executions: Mutex::default(),
+            presentations: Mutex::default(),
+            mcp: Mutex::default(),
+            mcp_hub: None,
+            mcp_retries: AtomicUsize::new(0),
+            mcp_settled: Notify::new(),
+        });
+        tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
+        let client = Self { inner };
+        let result: cookie_agent_protocol::ExtensionInitializeResult = client
+            .inner
+            .peer
+            .request(
+                cookie_agent_protocol::PLUGIN_INITIALIZE_METHOD,
+                &cookie_agent_protocol::ExtensionInitializeParams {
+                    protocol_version: cookie_agent_protocol::ExtensionProtocolVersion::current(),
+                    engine_version: env!("CARGO_PKG_VERSION").to_owned(),
+                    capabilities: cookie_agent_protocol::ExtensionEngineCapabilities {
+                        producer_messaging,
+                    },
+                },
+            )
+            .await
+            .map_err(|error| client.inner.annotate(&format!("handshake failed: {error}")))?;
+        if result.name != name {
+            return Err(format!(
+                "plugin name mismatch: configured `{name}`, reported `{}`",
+                result.name
+            ));
+        }
+        lock(&client.inner.tools).get_or_insert_with(|| Arc::new(result.tools.clone().into()));
+        lock(&client.inner.producers).declared =
+            producer_messaging && result.capabilities.producer_messaging;
+        Ok((client, result))
+    }
+
+    /// Sends request `method` with `params` and returns its raw result.
+    pub(crate) async fn request_value<P: serde::Serialize + Sync>(
+        &self,
+        method: &str,
+        params: &P,
+    ) -> Result<serde_json::Value, RpcError> {
+        self.inner.peer.request(method, params).await
+    }
+
+    /// Sends notification `method` with `params` as they are.
+    pub(crate) async fn notify_raw(
+        &self,
+        method: &str,
+        params: &serde_json::value::RawValue,
+    ) -> Result<(), RpcError> {
+        self.inner.peer.notify(method, params).await
+    }
+
+    /// The tools this connection's runtime or plugin declares, as one
+    /// provider.
+    pub(crate) fn tool_provider(&self) -> Arc<dyn ToolProvider> {
+        Arc::new(RemoteToolProvider {
+            client: self.clone(),
+        })
+    }
+
+    /// What the process last wrote outside the protocol.
+    pub(crate) fn diagnostics(&self) -> Option<String> {
+        self.inner
+            .diagnostics
+            .as_ref()
+            .and_then(DiagnosticTail::text)
+    }
+
+    /// Tells a plugin to stop (`plugin/shutdown`) and closes the connection
+    /// once it has gone or its shutdown grace has passed; a process that has
+    /// not exited after another grace is killed.
+    pub(crate) async fn shutdown_plugin(&self) {
+        let _ = self
+            .inner
+            .peer
+            .notify(cookie_agent_protocol::PLUGIN_SHUTDOWN_METHOD, &Empty {})
+            .await;
+        let _ = tokio::time::timeout(self.inner.shutdown_grace, self.inner.peer.closed()).await;
+        self.inner.peer.close();
     }
 
     /// This connection's producer epoch.
@@ -759,7 +883,18 @@ async fn handle_incoming(
             Incoming::Request(request) => {
                 tokio::spawn(async move { client.handle_request(request).await });
             }
-            Incoming::Notification(notification) => client.handle_notification(&notification),
+            Incoming::Notification(notification) => {
+                if !client.handle_notification(&notification)
+                    && let Some(extension) = client.extension.get().cloned()
+                {
+                    extension.notification(
+                        RuntimeClient {
+                            inner: Arc::clone(&client),
+                        },
+                        notification,
+                    );
+                }
+            }
         }
     }
     if let Some(client) = client.upgrade() {
@@ -768,6 +903,14 @@ async fn handle_incoming(
 }
 
 impl ClientInner {
+    /// `reason` followed by what the process last wrote outside the protocol.
+    fn annotate(&self, reason: &str) -> String {
+        match &self.diagnostics {
+            Some(tail) => tail.annotate(reason),
+            None => reason.to_owned(),
+        }
+    }
+
     fn mcp_failure(&self, server: String, reason: String) -> McpServerFailure {
         McpServerFailure {
             runtime_id: self.runtime_id.clone(),
@@ -811,7 +954,9 @@ impl ClientInner {
         };
     }
 
-    fn handle_notification(&self, notification: &IncomingNotification) {
+    /// Handles a notification the runtime protocol defines; returns whether
+    /// it was one.
+    fn handle_notification(&self, notification: &IncomingNotification) -> bool {
         match notification.method.as_str() {
             method::TOOLS_CHANGED => {
                 if let Ok(tools) = notification.params::<RuntimeTools>() {
@@ -844,8 +989,9 @@ impl ClientInner {
                         });
                 }
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     /// Hands a producer operation to the engine once it opened producer
@@ -860,14 +1006,14 @@ impl ClientInner {
                 "producer messaging has not started on this connection",
             )
         })?;
-        let attachment = self.attachment_name.get().cloned().ok_or_else(|| {
+        let source = self.producer_source.get().cloned().ok_or_else(|| {
             RpcError::remote(
                 error_code::NOT_INITIALIZED,
                 "the runtime is not initialized",
             )
         })?;
         (host.call)(RuntimeProducerCall {
-            attachment,
+            source,
             epoch: self.epoch,
             method: request.method.clone(),
             params: request.params()?,
@@ -879,7 +1025,7 @@ impl ClientInner {
     /// Records the runtime's recovery outcome. A repeat of the same outcome
     /// is accepted; a different one is not.
     fn complete_producer_recovery(&self, request: &IncomingRequest) -> Result<(), RpcError> {
-        let ExtensionRecoveryCompleteParams { outcome } = request.params()?;
+        let RecoveryCompleteParams { outcome } = request.params()?;
         let host = {
             let mut state = lock(&self.producers);
             let Some(host) = state.host.clone() else {
@@ -899,8 +1045,8 @@ impl ClientInner {
                 };
             }
             state.status = Some(match outcome {
-                ExtensionRecoveryOutcome::Ready => ProducerSourceStatus::Ready,
-                ExtensionRecoveryOutcome::Failed { .. } => ProducerSourceStatus::Failed,
+                RecoveryOutcome::Ready => ProducerSourceStatus::Ready,
+                RecoveryOutcome::Failed { .. } => ProducerSourceStatus::Failed,
             });
             state.outcome = Some(outcome);
             host

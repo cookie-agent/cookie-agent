@@ -2,7 +2,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    GoalId, InvocationId, ProducerId, ProducerName, ProducerSource, SessionId, ToolCallId,
+    GoalId, InvocationId, ProducerId, ProducerIdempotencyKey, ProducerName, ProducerSource,
+    SessionId, ToolCallId,
 };
 
 /// Stable identity used with session + idempotency key for durable deduplication.
@@ -175,6 +176,122 @@ pub struct ProducerSourceState {
     pub source: ProducerSource,
     pub status: ProducerSourceStatus,
 }
+
+// --- producer operations, shared by the plugin and runtime protocols ----------
+
+/// Sender-to-engine request; the connection supplies the producer's source,
+/// and `name` labels this producer among the source's others. Registration is
+/// allowed during recovery and does not wait for goal readiness.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProducerRegisterParams {
+    pub session_id: SessionId,
+    pub name: crate::ProducerName,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProducerRegisterResult {
+    pub producer_id: ProducerId,
+}
+
+/// Send requires a live registration owned by this connection and session.
+/// Identical (session, stable owner, key) retries return the original receipt;
+/// different description, body, or mode is rejected. A missing ACK is commit-uncertain.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProducerSendParams {
+    pub session_id: SessionId,
+    pub producer_id: ProducerId,
+    pub mode: crate::ProducerDeliveryMode,
+    pub idempotency_key: ProducerIdempotencyKey,
+    #[serde(deserialize_with = "deserialize_producer_description")]
+    pub description: crate::SafeDisplayText,
+    pub body: String,
+}
+
+fn deserialize_producer_description<'de, D>(
+    deserializer: D,
+) -> Result<crate::SafeDisplayText, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let description = crate::SafeDisplayText::deserialize(deserializer)?;
+    if description.as_str().trim().is_empty() {
+        return Err(serde::de::Error::custom("description must not be blank"));
+    }
+    Ok(description)
+}
+
+/// Returned only after durable ProducerMessageAccepted append. Retries return
+/// this same receipt, including after consumption, with no second acceptance.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProducerSendResult {
+    pub message_id: crate::ProducerMessageId,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProducerUnregisterParams {
+    pub session_id: SessionId,
+    pub producer_id: ProducerId,
+}
+
+/// Unregister does not remove accepted messages; zero-send unregister is valid.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProducerUnregisterResult {}
+
+/// Discard an owned message only while it remains waiting. Authority is the live
+/// connection's source and the session, not a registration: any message of the
+/// source, whatever its producer name.
+///
+/// A durable actor claim reserves the message and removes it from waiting before
+/// request preparation and hooks. Discard rejects until that claim is released,
+/// even before network activity; a claim does not prove provider receipt or execution.
+/// Release after failed preparation or cancellation may return an unconsumed
+/// message to waiting. Consumed messages cannot return or be discarded.
+/// Discard rejection makes no exactly-once claim about execution or external effects.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProducerDiscardParams {
+    pub session_id: SessionId,
+    pub message_id: crate::ProducerMessageId,
+}
+
+/// Already-discarded owned messages succeed; consumed or currently claimed messages reject.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProducerDiscardResult {}
+
+/// `producer/recovery/start`: the daemon to a producer source (a plugin or a
+/// runtime), never a deadlineful pending request. Restore from the source's
+/// own storage or services and report completion on the same connection. No
+/// response, recovery deadline, replay, or eager session adoption is implied.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryStartParams {}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RecoveryOutcome {
+    Ready,
+    Failed { message: crate::SafeErrorMessage },
+}
+
+/// `producer/recovery/complete`: a producer source's recovery outcome. The
+/// daemon owns the starting and disabled states; the connection supplies the
+/// source and its epoch out of band.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryCompleteParams {
+    pub outcome: RecoveryOutcome,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryCompleteResult {}
 
 #[cfg(test)]
 mod tests {

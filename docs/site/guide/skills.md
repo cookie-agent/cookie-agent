@@ -96,9 +96,9 @@ Every other name is the permission action itself, lowercased: `Read`, `Bash`,
 as `Browse(https://docs.rs/*)`. A name that lowercases to no valid action
 (see [permissions](agents.md#permissions)) is an error. The older Cookie Agent `action:pattern` list form is not accepted.
 
-`Plugin` grants the complete plugin permission group. `Plugin(name:*)` grants
-both `name` and `name *`, where `name` is a plugin-declared permission prefix;
-this is the same prefix expansion used by `Mcp(name:*)`.
+A plugin's tools are granted by the actions their plugin declares, like a
+runtime's: `Issue_read` grants every `issue_read` call, and
+`Issue_read(42)` only the calls on resource `42`.
 
 Claude's `prefix:*` convention is translated to Cookie Agent's full-resource
 glob semantics. For example, `Bash(git:*)` creates grants for both `git` and

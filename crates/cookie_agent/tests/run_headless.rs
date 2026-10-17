@@ -570,14 +570,14 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
         let release = markers.path().join("release");
         let plugin =
             serde_json::from_value::<cookie_agent_config::PluginConfig>(serde_json::json!({
-                "command":"/usr/bin/python3","args":[PLUGIN_FIXTURE],
+                "command":["/usr/bin/python3", PLUGIN_FIXTURE],
                 "interception_timeout_ms":30000,
                 "env":{
                     "FIXTURE_NAME":"opt_out_gate","FIXTURE_TOOLS":"[]",
                     "FIXTURE_CAPABILITIES":serde_json::json!({
-                        "producer_messaging":false,"tools":false,"resources":false,
+                        "producer_messaging":false,
                         "subscribe_events":false,"subscribe_bus":false,"publish_bus":false,
-                        "publish_session_events":false,"intercept":["tool_after_result"]
+                        "intercept":["tool_after_result"]
                     }).to_string(),
                     "FIXTURE_INTERCEPT_FILE":reached.to_str().unwrap(),
                     "FIXTURE_INTERCEPT_RELEASE_FILE":release.to_str().unwrap(),
@@ -591,7 +591,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
                 .engine
                 .plugin_statuses()
                 .iter()
-                .any(|plugin| plugin.state == cookie_agent_engine::PluginState::Connected)
+                .any(|plugin| plugin.state == cookie_agent_protocol::PluginState::Connected)
             {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
@@ -915,7 +915,9 @@ async fn headless_outputs_prompt_sources_selection_and_verbose_tool_output() {
     let mut args = run_args("tool prompt");
     args.output = Some(OutputMode::Json);
     args.verbose = true;
-    args.allowed_tools = vec![AllowedTool::Bash];
+    args.allowed_tools = vec![AllowedTool::Action(
+        cookie_agent_protocol::PermissionAction::BASH,
+    )];
     let tool = fixture.run(args, "").await;
     assert_eq!(tool.code, 0, "{}", tool.stderr);
     assert!(!tool.stderr.contains('\u{1b}'));
@@ -1241,7 +1243,9 @@ async fn background_bash_returns_at_once_and_reports_when_it_exits() {
         .enqueue(MockResponse::Sse(final_response("noted")));
     let mut args = run_args("start a background job");
     args.output = Some(OutputMode::Json);
-    args.allowed_tools = vec![AllowedTool::Bash];
+    args.allowed_tools = vec![AllowedTool::Action(
+        cookie_agent_protocol::PermissionAction::BASH,
+    )];
     let started = Instant::now();
     let run = fixture.run(args, "").await;
     assert_eq!(run.code, 0, "{}", run.stderr);
@@ -1419,7 +1423,9 @@ async fn fork_skill_uses_delegate_approval_and_installs_only_in_child() {
         .enqueue(MockResponse::Sse(final_response("parent done")));
     let mut allowed = run_args("fork with approval grant");
     allowed.agent = Some("skill-host".parse().expect("agent"));
-    allowed.allowed_tools = vec![AllowedTool::Delegate];
+    allowed.allowed_tools = vec![AllowedTool::Action(
+        cookie_agent_protocol::PermissionAction::DELEGATE,
+    )];
     allowed.output = Some(OutputMode::Json);
     let allowed = fixture.run(allowed, "").await;
     assert_eq!(allowed.code, 0, "{}", allowed.stderr);
@@ -1497,7 +1503,9 @@ async fn direct_fork_skill_uses_prepared_delegate_path() {
     let mut args = run_args("direct fork");
     args.agent = Some("skill-host".parse().expect("agent"));
     args.skill = Some("fork-skill".into());
-    args.allowed_tools = vec![AllowedTool::Delegate];
+    args.allowed_tools = vec![AllowedTool::Action(
+        cookie_agent_protocol::PermissionAction::DELEGATE,
+    )];
     args.output = Some(OutputMode::Json);
     let result = fixture.run(args, "").await;
     assert_eq!(result.code, 0, "{}", result.stderr);
@@ -1923,10 +1931,10 @@ async fn nonzero_bash_exit_returns_output_without_a_tool_error() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_scoped_plugin_diagnostic_is_visible_without_verbose_output() {
     let plugin = serde_json::from_value::<cookie_agent_config::PluginConfig>(serde_json::json!({
-        "command":"/usr/bin/python3", "args":[PLUGIN_FIXTURE],
+        "command":["/usr/bin/python3", PLUGIN_FIXTURE],
         "env": {
             "FIXTURE_NAME":"review_guard", "FIXTURE_TOOLS":"[]",
-            "FIXTURE_CAPABILITIES": serde_json::json!({"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}).to_string(),
+            "FIXTURE_CAPABILITIES": serde_json::json!({"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":["tool_before_call"]}).to_string(),
             "FIXTURE_TOOL_BEFORE_RESULT": serde_json::json!({"action":"block", "reason":"Review hook rejected; password=\"review\\\"secret-tail\""}).to_string()
         }
     })).unwrap();
@@ -1936,7 +1944,7 @@ async fn session_scoped_plugin_diagnostic_is_visible_without_verbose_output() {
             .engine
             .plugin_statuses()
             .iter()
-            .any(|plugin| plugin.state == cookie_agent_engine::PluginState::Connected)
+            .any(|plugin| plugin.state == cookie_agent_protocol::PluginState::Connected)
         {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -2341,7 +2349,9 @@ async fn terminal_events_determine_failure_permission_and_cancellation_codes() {
     )));
     let mut turns_args = run_args("turn cap prompt");
     turns_args.max_turns = 1;
-    turns_args.allowed_tools = vec![AllowedTool::Bash];
+    turns_args.allowed_tools = vec![AllowedTool::Action(
+        cookie_agent_protocol::PermissionAction::BASH,
+    )];
     let turns = fixture.run(turns_args, "").await;
     assert_eq!(turns.code, 4, "{}", turns.stderr);
 
@@ -2675,9 +2685,8 @@ fn cookie_binary_treats_plugin_handled_input_as_success_without_a_run() {
         file,
         r#"
 [plugins.command_handler]
-command = "/usr/bin/python3"
-args = ['{PLUGIN_FIXTURE}']
-env = {{ FIXTURE_NAME = 'command_handler', FIXTURE_CAPABILITIES = '{{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["user_before_input"]}}', FIXTURE_USER_BEFORE_INPUT_RESULT = '{{"action":"handled","reason":"command consumed"}}' }}
+command = ["/usr/bin/python3", '{PLUGIN_FIXTURE}']
+env = {{ FIXTURE_NAME = 'command_handler', FIXTURE_CAPABILITIES = '{{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":["user_before_input"]}}', FIXTURE_USER_BEFORE_INPUT_RESULT = '{{"action":"handled","reason":"command consumed"}}' }}
 "#
     )
     .expect("plugin config");
@@ -2711,9 +2720,8 @@ fn cookie_binary_treats_blocked_model_selection_as_failure() {
         file,
         r#"
 [plugins.model_guard]
-command = "/usr/bin/python3"
-args = ['{PLUGIN_FIXTURE}']
-env = {{ FIXTURE_NAME = 'model_guard', FIXTURE_CAPABILITIES = '{{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["model_before_select"]}}', FIXTURE_MODEL_BEFORE_SELECT_RESULT = '{{"action":"block","reason":"model denied"}}' }}
+command = ["/usr/bin/python3", '{PLUGIN_FIXTURE}']
+env = {{ FIXTURE_NAME = 'model_guard', FIXTURE_CAPABILITIES = '{{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":["model_before_select"]}}', FIXTURE_MODEL_BEFORE_SELECT_RESULT = '{{"action":"block","reason":"model denied"}}' }}
 "#
     )
     .expect("plugin config");

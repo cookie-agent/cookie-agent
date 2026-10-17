@@ -2067,6 +2067,12 @@ pub enum EventPayload {
         kind: ProducerDiagnosticKind,
         message: String,
     },
+    /// Something the engine itself turned off or could not do for the
+    /// session.
+    EngineDiagnostic {
+        kind: EngineDiagnosticKind,
+        message: String,
+    },
     GoalActivated {
         goal_id: GoalId,
         objective: String,
@@ -2581,6 +2587,7 @@ impl EventPayload {
                 | Self::PluginEventAdded { .. }
                 | Self::PluginDiagnostic { .. }
                 | Self::ProducerDiagnostic { .. }
+                | Self::EngineDiagnostic { .. }
                 | Self::GoalActivated { .. }
                 | Self::GoalChecklistRevised { .. }
                 | Self::GoalLifecycleChanged { .. }
@@ -2994,11 +3001,28 @@ pub enum PluginDiagnosticKind {
     HookBlocked,
     OversizedEvent,
     InvalidModification,
+    /// Written for the removed `provider_before_headers` hook; kept for old
+    /// logs.
     UnsupportedCapability,
     ContextMismatch,
     RateLimited,
+    /// Written before producer recovery moved to `producer_diagnostic`;
+    /// kept for old logs.
     RecoveryFailed,
+    /// Written before producer recovery moved to `producer_diagnostic`;
+    /// kept for old logs.
     RecoveryDisabled,
+    /// A plugin answered a hook with an error or a malformed result.
+    InterceptionRejected,
+}
+
+/// What an [`EventPayload::EngineDiagnostic`] reports.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EngineDiagnosticKind {
+    /// Automatic context compaction failed repeatedly and is off for the
+    /// rest of the run.
+    AutoCompactionDisabled,
 }
 
 /// Why a producer source is unavailable.

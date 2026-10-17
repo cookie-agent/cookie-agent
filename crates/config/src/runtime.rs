@@ -32,9 +32,9 @@ pub struct PluginsConfig {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginConfig {
-    pub command: Option<String>,
+    /// The program and its arguments.
     #[serde(default)]
-    pub args: Vec<String>,
+    pub command: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     pub cwd: Option<String>,
@@ -48,24 +48,13 @@ pub struct PluginConfig {
     pub startup_timeout_ms: u64,
     #[serde(default = "default_plugin_shutdown_grace_ms")]
     pub shutdown_grace_ms: u64,
-    #[serde(default = "default_plugin_tool_timeout_ms")]
-    pub tool_timeout_ms: u64,
 }
 
 impl PluginConfig {
-    pub fn validate(&self, name: &str) -> Result<(), ConfigError> {
-        self.invalid_field(name).map_or(Ok(()), |field| {
-            Err(ConfigError::Plugin {
-                plugin: name.to_owned(),
-                reason: format!("field `{field}` is invalid"),
-            })
-        })
-    }
-
     pub(crate) fn invalid_field(&self, name: &str) -> Option<&'static str> {
         if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
             Some("name")
-        } else if self.command.as_ref().is_none_or(String::is_empty) {
+        } else if self.command.first().is_none_or(String::is_empty) {
             Some("command")
         } else if self.cwd.as_ref().is_some_and(String::is_empty) {
             Some("cwd")
@@ -75,8 +64,6 @@ impl PluginConfig {
             Some("startup_timeout_ms")
         } else if self.shutdown_grace_ms == 0 {
             Some("shutdown_grace_ms")
-        } else if self.tool_timeout_ms == 0 {
-            Some("tool_timeout_ms")
         } else {
             None
         }
@@ -93,10 +80,6 @@ const fn default_plugin_startup_timeout_ms() -> u64 {
 
 const fn default_plugin_shutdown_grace_ms() -> u64 {
     3_000
-}
-
-const fn default_plugin_tool_timeout_ms() -> u64 {
-    30_000
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

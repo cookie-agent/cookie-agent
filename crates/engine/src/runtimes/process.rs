@@ -39,6 +39,8 @@ pub(crate) struct ProcessConnector {
     /// The program and arguments; a `{workspace}` element is replaced.
     command: Vec<String>,
     env: BTreeMap<String, String>,
+    /// The working directory; the daemon's when `None`.
+    cwd: Option<std::path::PathBuf>,
     shutdown_grace: Duration,
 }
 
@@ -51,8 +53,15 @@ impl ProcessConnector {
         Self {
             command,
             env,
+            cwd: None,
             shutdown_grace,
         }
+    }
+
+    /// Runs the command in `cwd`.
+    pub(crate) fn with_cwd(mut self, cwd: std::path::PathBuf) -> Self {
+        self.cwd = Some(cwd);
+        self
     }
 
     fn argv(&self, workspace: Option<&Path>) -> Vec<std::ffi::OsString> {
@@ -80,6 +89,9 @@ impl RuntimeConnector for ProcessConnector {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(cwd) = &self.cwd {
+            command.current_dir(cwd);
+        }
         let mut wrapped = CommandWrap::from(command);
         #[cfg(unix)]
         wrapped.wrap(ProcessGroup::leader());
@@ -93,7 +105,7 @@ impl RuntimeConnector for ProcessConnector {
         let stderr = child.stderr().take();
         let (Some(stdin), Some(stdout), Some(stderr)) = (stdin, stdout, stderr) else {
             let _ = child.start_kill();
-            return Err("the runtime process has no stdio pipes".into());
+            return Err("the process has no stdio pipes".into());
         };
         let diagnostics = DiagnosticTail::default();
         let stderr_done = CancellationToken::new();

@@ -572,6 +572,7 @@ impl App {
                     Err(error) => self.status = format!("MCP refresh failed: {error}"),
                 }
             }
+            RpcUpdate::PluginsRefreshed { result } => self.install_plugins(result),
             RpcUpdate::RuntimesRefreshed { result } => {
                 self.runtime_panel.refresh_in_flight = false;
                 match result {
@@ -892,6 +893,9 @@ impl App {
         }
         if matches!(delivery, ClientDelivery::RuntimesChanged(_)) {
             self.poll_runtimes();
+        }
+        if matches!(delivery, ClientDelivery::PluginsChanged(_)) {
+            self.poll_plugins();
         }
         if let ClientDelivery::RuntimeChanged(changed) = &delivery {
             let duplicate = self.runtime.revision() == Some(&changed.snapshot.runtime_revision);

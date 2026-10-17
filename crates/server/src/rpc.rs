@@ -253,6 +253,11 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
             message: "producer operation rejected",
             data: Some(json!({"reason": cookie_agent_protocol::diagnostics::detail(&reason)})),
         },
+        EngineError::Plugin(reason) => RpcFault {
+            code: -32602,
+            message: "plugin request rejected",
+            data: Some(json!({"reason": cookie_agent_protocol::diagnostics::detail(&reason)})),
+        },
         error => RpcFault {
             data: Some(json!({"detail": error.user_message()})),
             ..RpcFault::engine()
@@ -321,6 +326,7 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::Producer(_) => "producer",
         EngineError::Messaging(_) => "messaging",
         EngineError::Runtime(_) => "runtime",
+        EngineError::Plugin(_) => "plugin",
         EngineError::ModelManager(_) => "model_manager",
         EngineError::Manifest(_) => "manifest",
     }
@@ -372,7 +378,6 @@ fn config_debug_code(error: &cookie_agent_config::ConfigError) -> &'static str {
         ConfigError::InvalidRuntime(_) => "config_invalid_runtime",
         ConfigError::FileIo { .. } => "config_io",
         ConfigError::McpServer { .. } => "config_mcp_server",
-        ConfigError::Plugin { .. } => "config_plugin",
         ConfigError::RuntimeTemplate { .. } => "config_runtime_template",
         ConfigError::Interpolation(_) => "config_interpolation",
         ConfigError::MissingEnvironment { .. } => "config_missing_environment",

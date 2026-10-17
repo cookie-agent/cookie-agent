@@ -33,7 +33,7 @@ pub use base_tools::base_layer_tool_specs;
 pub use cookie_agent_mcp::{McpRegistry, McpServerState, McpServerStatus};
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
-pub use plugin::{EngineEvent, PluginRegistry, PluginState, PluginStatus};
+pub use plugin::{EngineEvent, PluginRegistry};
 pub use runtime::attachments::{SessionRuntimeRequest, SessionRuntimes};
 /// Stable `send_message:<code>` error strings carried by
 /// [`EngineError::Messaging`]. The tool layer surfaces them verbatim so sending

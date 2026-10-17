@@ -1464,6 +1464,9 @@ pub(super) fn reduce_event_from(
             },
             timestamp,
         ),
+        EventPayload::EngineDiagnostic { message, .. } => {
+            push_event(state, EventLevel::Warning, message, timestamp);
+        }
         EventPayload::ProducerDiagnostic {
             source, message, ..
         } => push_event(

@@ -698,11 +698,13 @@ name = "cookie_agent_plugin_sdk"
 version = "0.3.0"
 dependencies = [
  "cookie_agent_protocol",
+ "jiff",
  "jsonschema",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

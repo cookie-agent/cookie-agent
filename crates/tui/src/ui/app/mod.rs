@@ -8,6 +8,7 @@ mod draw;
 mod emoji_backend;
 mod keys;
 mod pickers;
+mod plugins;
 mod providers;
 mod refresh;
 mod sessions;
@@ -145,6 +146,7 @@ pub(super) enum Modal {
     GoalDetail,
     /// The selected session's background calls.
     Background,
+    Plugins,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -700,6 +702,7 @@ pub struct App {
     pub(super) goal_notices: HashMap<SessionId, Vec<String>>,
     goal_detail: goal::GoalDetailState,
     background_panel: background::BackgroundPanelState,
+    plugin_panel: plugins::PluginPanelState,
     pub(super) goal_focus: Option<GoalBarAction>,
     pub(super) picker_state: ListState,
     pub(super) session_search: SearchPickerState,
@@ -904,6 +907,9 @@ pub(in crate::ui) enum RpcUpdate {
     },
     RuntimesRefreshed {
         result: Result<cookie_agent_protocol::RuntimesListResult, String>,
+    },
+    PluginsRefreshed {
+        result: Result<Vec<cookie_agent_protocol::PluginInfo>, String>,
     },
     /// An attach or detach finished; `Ok` carries the status line.
     RuntimeAttachmentChanged {
@@ -1238,6 +1244,7 @@ impl App {
             goal_notices: HashMap::new(),
             goal_detail: goal::GoalDetailState::default(),
             background_panel: background::BackgroundPanelState::default(),
+            plugin_panel: plugins::PluginPanelState::default(),
             goal_focus: None,
             picker_state: ListState::default().with_selected(Some(0)),
             session_search: SearchPickerState::default(),

@@ -1,17 +1,24 @@
 # Plugin Development
 
-Plugins are executable processes that extend cookie agent without loading code
-into the engine process. They communicate with the engine over newline-delimited
-JSON-RPC 2.0 on standard input and standard output.
+A plugin is a local program the daemon starts and talks to over its standard
+input and output: newline-delimited JSON-RPC 2.0, one message per line. A
+plugin can:
 
-This page documents authoring with the Rust SDK and the extension protocol. To
-install, enable, or configure an existing plugin, see the
-[user plugin guide](../guide/plugins.md).
+- declare **tools**, which it prepares and runs with the
+  [runtime protocol](../reference/runtime-protocol.md)'s tool messages;
+- **intercept** engine hooks, such as a tool call or a model request;
+- **stream** session events and a bus other plugins publish to;
+- **produce** messages to any session.
+
+This page covers the Rust SDK and the plugin protocol. To install or
+configure a plugin, see the [user guide](../guide/plugins.md). The protocol's
+design and history are in the [plugins spec](../specs/plugins-v1.md).
 
 ## Rust SDK
 
-Rust plugins can use the official `cookie_agent_plugin_sdk` workspace crate. Until the SDK is
-published separately, add it as a path dependency together with `serde_json` and Tokio:
+The `cookie_agent_plugin_sdk` crate (Apache-2.0) handles the handshake,
+framing, tool preparation, hooks, and producer requests. Until it is
+published, add it as a path dependency:
 
 ```toml
 [dependencies]
@@ -20,515 +27,270 @@ serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
-Register handlers with `PluginServer`; the SDK validates tool parameter schemas and handles the
-initialize, ping, shutdown, framing, and JSON-RPC messages:
+A plugin with one tool:
 
 ```rust
-use cookie_agent_plugin_sdk::{PluginServer, ToolDecl, ToolOutput};
+use cookie_agent_plugin_sdk::{PermissionAction, PluginServer, ToolDecl, ToolFailure, ToolOutput};
 use serde_json::json;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), cookie_agent_plugin_sdk::PluginError> {
-    PluginServer::builder("echo", "0.1.0")
-        .tool(
-            ToolDecl {
-                output: Default::default(),
-                name: "echo".into(),
-                description: "Echo text back to the model".into(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": { "text": { "type": "string" } },
-                    "required": ["text"]
-                }),
-                permission_name: "echo".into(),
-                primary_resource_param: None,
-            },
-            |_ctx, request| async move {
-                let text = request.arguments["text"].as_str().unwrap_or_default();
-                Ok(ToolOutput::success(text))
-            },
-        )
+    let mut echo: ToolDecl = serde_json::from_value(json!({
+        "name": "echo",
+        "description": "Echo text back to the model",
+        "parameters": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"]
+        }
+    }))?;
+    echo.permission = Some(PermissionAction::new("echo").expect("valid action"));
+    PluginServer::builder("echo", env!("CARGO_PKG_VERSION"))
+        .tool(echo, |_call, arguments| async move {
+            let text = arguments["text"]
+                .as_str()
+                .ok_or_else(|| ToolFailure::new("text is required"))?;
+            Ok(ToolOutput::success(text))
+        })
         .run_stdio()
         .await
 }
 ```
 
-Event and bus handlers are registered with `on_event` and `on_bus_event`. A handler can publish
-once from its automatically tracked context grant with
-`ctx.emit_bus(event.session_id, "name", payload)`. Bus publishing is off by default
-and is enabled explicitly with `enable_bus_publishing`; it is non-model traffic.
-The SDK no longer exposes `enable_session_publishing` or `emit_session`. Model
-messages use the explicit producer API below. Each bus handler context is scoped to its triggering token, so
-concurrent callbacks for one session cannot consume each other's grants. Notification grants expire
-four seconds after the SDK reader decodes the frame, so inbound queue delay consumes the local
-window. The one-second safety margin assumes the engine-to-SDK delivery interval is under one
-second; the engine remains authoritative, and a timing rejection is surfaced as
-`ExtensionEmitStatus::Rejected`.
+The name given to `builder` must be the plugin's configured name. The SDK
+derives the plugin's capabilities from what is registered and validates each
+tool's name and parameter schema when the server is built.
 
-### Producer SDK
+- **Tools.** `tool(declaration, handler)` registers a tool whose calls are
+  approved under its declared permission with no resource;
+  `tool_with_resource(declaration, resource, handler)` also derives each
+  call's permission resource, such as a path or an issue number, from its
+  arguments. A handler gets a `ToolContext` (the session, run, and call IDs,
+  whether the model asked for the background, cancellation, `progress`, and
+  `detachable`) and the call's arguments, and returns a `ToolOutput` or a
+  `ToolFailure`. `ToolOutput::error` is a result the model should see as a
+  failure.
+- **Hooks.** One builder method per hook, named after it, such as
+  `tool_before_call`; helpers like `allow()`, `block(reason)`, `modify`,
+  `replace`, `append_system_prompt`, `inject_message`, and
+  `cancel_compaction` build results.
+- **Events.** `on_event` and `on_bus_event` receive streamed notifications.
+  A handler may publish one bus event with `context.emit_bus(...)` after
+  `enable_bus_publishing()`.
+- **Producers.** `enable_producers()` and, optionally, `on_recovery(...)`.
+  See [Producers](#producers).
 
-Opt in with `PluginServer::builder(...).enable_producers()`. From a tool, event,
-or recovery callback, call `ctx.register_producer(session_id).await` to obtain a
-`ProducerHandle`. Keep the handle for the lifetime of external work; it is not a
-one-shot context grant and remains usable after the triggering callback or turn.
+The examples `echo_plugin.rs` and `producer_plugin.rs` in
+`crates/plugin_sdk/examples` build with
+`cargo check -p cookie_agent_plugin_sdk --examples`.
 
-- `handle.send(message, description, ProducerDeliveryMode::{Steer, Queue}, key).await` returns
-  the durable `ProducerMessageId` receipt.
-- `handle.steer(message, description, key).await` and `handle.queue(message, description, key).await` are
-  per-send conveniences. Construct a validated key with
-  `ProducerIdempotencyKey::new(stable_message_key)`.
-- Every send requires a nonblank, control-free description of at most 1024 UTF-8
-  bytes for compact display. The message body remains the full model-facing input.
-- `handle.id()` and `handle.session_id()` expose the runtime registration and
-  destination. Do not persist registration IDs for reuse after reconnect.
-- `handle.unregister().await` explicitly closes the registration. Zero-send
-  unregistration is valid. Dropping a handle does not unregister it, and
-  unregistration never removes already accepted messages. The method borrows the
-  handle, so a rejected close can be retried; the engine rejects sends after close.
-- `handle.discard(message_id).await` discards a waiting message in the handle's
-  session and remains usable after `handle.unregister().await`. Discard does not
-  unregister the producer, and dropping a handle never discards messages.
-- `ctx.discard_producer_message(session_id, message_id).await` discards by durable
-  receipt without a registration, including during recovery on a new connection
-  with the same configured plugin name.
+## Handshake
 
-Use `.on_recovery(|ctx| async move { ... })` to restore from plugin-owned storage
-or external services. The callback returns `RecoveryResult`: `Ok(())` reports
-ready; `Err(RecoveryFailure)` reports failed. `PluginError` converts into
-`RecoveryFailure`, so producer calls can use `?`. The SDK sends a separate
-`plugin/recovery/complete` request after the callback returns, without a deadline.
-The callback can await registrations and sends while restoring. Producer-capable
-plugins without a recovery callback immediately report ready when recovery starts.
+The daemon starts the plugin's `command` in its own process group (a job
+object on Windows), with the daemon's environment plus the plugin's `env`,
+and sends `plugin/initialize` within `startup_timeout_ms`:
 
-The SDK services responses independently of callbacks. It bounds ordinary
-callbacks at 64 concurrent handlers, producer requests at 128 pending replies,
-the inbound queue at 32 frames, and the outbound queue at 128 frames. Recovery
-has its own single callback slot. Callback saturation rejects requests explicitly
-and drops observational notifications with a stderr diagnostic; it never drops a
-producer ACK. Disconnect fails pending producer calls with `TransportClosed`.
-Missing send ACKs remain commit-uncertain: register again after reconnect and
-retry the same body, mode, and stable key.
-
-The workspace example `crates/plugin_sdk/examples/producer_plugin.rs` compiles
-with `cargo check --locked -p cookie_agent_plugin_sdk --example producer_plugin`.
-It reads an optional `COOKIE_SESSION_ID` from its configured environment and shows
-registration, a stable-key steer, explicit unregister, and recovery completion.
-With `COOKIE_DISCARD_MESSAGE_ID` also set to a saved message receipt, it instead
-discards that owned waiting message during recovery without registering a producer.
-Consumed or currently claimed receipts fail recovery visibly rather than reporting a
-successful discard.
-
-Interception handlers use builder methods named after every hook, including `user_before_input`,
-`model_before_request`, `provider_before_headers`, `provider_before_request`,
-`provider_after_response`, `message_end`, `model_before_select`, `session_before_fork`, and
-`session_before_revert`. Helpers cover allow/block, replacement, prompt append/replacement,
-message injection, compaction cancellation, and instruction override. Tool, subscription, explicitly enabled publishing,
-and interception capabilities are derived by the SDK; plugin authors do not construct capability
-flags or set the extension protocol version. See [Protocol](#protocol) for delivery, grant, quota,
-and hook-chaining details.
-
-## Protocol
-
-The extension protocol version is the semantic-version string `0.0.8`. Before version 1.0,
-cookie agent requires an exact version match: additive method or schema changes bump the patch
-version, and plugins must update before connecting to the new engine. A plugin reporting any
-other value is refused and its status contains the reported mismatch.
-
-The host advertises `producer_messaging: true` on a connection only when its
-configuration opts in and the runtime producer handler is installed. The session
-protocol is 19, and the crate/package version is unchanged. Event history
-remains additive and versionless.
-
-The engine sends `plugin/initialize` with the protocol version, engine version, and engine
-capabilities. The plugin returns its exact protocol version, configured plugin name, plugin
-version, capabilities, and tool declarations. Tool names must be unique within the plugin and
-use `snake_case`. The reported plugin name must exactly match the configuration entry.
-
-During `plugin/initialize`, this executable must declare every capability it uses. A tool-only
-plugin sets `tools: true`, leaves subscription and publishing flags false, and returns an empty
-`intercept` array plus its tool declarations. The agent document must then enable each declared
-permission and resource, for example:
-
-```yaml
-permissions:
-  plugin:
-    "issue_read *": allow
-    "issue_delete *": ask
+```json
+{"jsonrpc":"2.0","id":1,"method":"plugin/initialize","params":{
+  "protocol_version":1,"engine_version":"0.3.0",
+  "capabilities":{"producer_messaging":false}}}
 ```
 
-The protocol also supports `plugin/ping` for liveness and sends the `plugin/shutdown`
-notification during engine shutdown.
+`capabilities.producer_messaging` is true when the plugin's configuration
+enables producers. The plugin answers with the same protocol version, its
+configured name, its own version, its capabilities, and its tools:
 
-The initialize result declares `subscribe_events`, `subscribe_bus`, `publish_bus`,
-`publish_session_events`, `producer_messaging`, and an `intercept` hook-name array in addition to tool and resource
-capabilities. Capabilities are fixed for the process lifetime.
-
-## Producer messaging contracts
-
-Producer messaging requires explicit plugin capability opt-in and
-`plugins.<name>.producer_messaging = true` in configuration, both off by default.
-A plugin produces under `external { source, name }` owners (see the [external
-producers spec](../specs/external-producers.md)): the engine derives `source`,
-`plugin:<configured name>`, from the connection and checks the live
-connection's ownership, so senders cannot choose or impersonate a source. The
-plugin names each producer it registers (`[a-z0-9][a-z0-9_.-]{0,63}`), so one
-plugin may run any number of producers, each with its own idempotency keys.
-The SDK's `register_producer` registers under `default`;
-`register_named_producer` takes a name. A body must be non-empty and at most
-[`[producers] max_body_bytes`](../engine/producers.md).
-
-| Wire method | Direction | Parameters | Result |
-|---|---|---|---|
-| `plugin/producer/register` | Plugin to engine | `ExtensionProducerRegisterParams { session_id, name }` | `ExtensionProducerRegisterResult { producer_id }` |
-| `plugin/producer/send` | Plugin to engine | `ExtensionProducerSendParams { session_id, producer_id, mode, idempotency_key, description, body }` | `ExtensionProducerSendResult { message_id }` |
-| `plugin/producer/unregister` | Plugin to engine | `ExtensionProducerUnregisterParams { session_id, producer_id }` | `ExtensionProducerUnregisterResult {}` |
-| `plugin/producer/discard` | Plugin to engine | `ExtensionProducerDiscardParams { session_id, message_id }` | `ExtensionProducerDiscardResult {}` |
-| `plugin/recovery/start` | Engine to plugin notification | `ExtensionRecoveryStartParams {}` | None; no request ID or response |
-| `plugin/recovery/complete` | Plugin to engine | `ExtensionRecoveryCompleteParams { outcome }` | `ExtensionRecoveryCompleteResult {}` |
-
-Producer operations and recovery completion are JSON-RPC requests with strict
-parameters/results. Recovery start is a notification created by
-`extension_recovery_start_notification()` using `PLUGIN_RECOVERY_START_METHOD`.
-It never enters the engine's deadlineful `PendingRequest` map. `outcome` is
-`{ "status": "ready" }` or `{ "status": "failed", "message": "..." }`.
-The SDK starts restoration asynchronously without blocking its reader; completion
-is a separate explicit request on that connection after restoration from
-plugin-owned storage/services. There is no recovery deadline or start ACK.
-Registration during restoration must not wait for goal readiness or eager session
-adoption. There are no timers, replay methods, or engine-owned recovery blobs.
-
-`ProducerId` is a fresh runtime UUID, never a durable identity. Each send chooses
-`ProducerDeliveryMode` (`steer` or `queue`). Its sender-chosen
-`ProducerIdempotencyKey` is 1-256 control-free bytes. A live, owned registration is
-required even for retries; closed/foreign registrations and closing sessions reject
-sends. Zero-send unregister is valid and unregister never removes accepted messages.
-
-Discard addresses a message receipt, not a registration. It requires a live,
-producer-capable connection, and the message must belong to the plugin's source
-in that session, under any of its producer names. The original registration may already be closed, and the current
-connection epoch need not match the epoch that accepted the message. Runtime
-rejects foreign-owner or wrong-session receipts and consumed messages. A durable
-claim by the session actor reserves a message and removes it from waiting before
-request preparation and hooks. Discard rejects while that claim is held, even
-before any network request is sent; the claim is not proof that a provider received
-or executed the request. If preparation fails or the attempt is cancelled, releasing
-the claim may return an unconsumed message to waiting, where discard is available
-again. Consumed messages do not return to waiting. Repeating a discard of an
-already-discarded owned message succeeds. Discard never cancels a model request
-or undoes model execution or external effects.
-
-The ACK follows durable acceptance only. Identical retries scoped to
-`(session, stable producer owner, idempotency_key)` return the original message ID;
-different description, body, or mode rejects key reuse. Missing ACKs are commit-uncertain. These
-contracts make no exactly-once claim about model calls or external effects.
-
-`ProducerSourceStatus` has exactly `starting`, `ready`, `failed`, `disabled`.
-Readiness inspection is runtime-only through `session.producers` (`sources`).
-Failed/disabled sources record a `producer_diagnostic` (`recovery_failed`/
-`recovery_disabled`) and a TUI notice; unrecovered external work remains unknown, not completed. Accepted
-messages recover independently of registration or plugin readiness. The engine
-cannot distinguish no pending work from lost plugin state.
-
-Model-bound messages require explicit producer sends. `plugin/emit` is for
-non-model publication; the runtime rejects the legacy durable model-history route.
-No implicit registration authorizes an emission. Pure bus publication is unchanged.
-
-### Transport/runtime worker boundary
-
-The plugin transport exposes the following crate-private Rust callback boundary in
-`engine::plugin`, following the existing `PluginEmitHandler` pattern. These are
-runtime handoff signatures, not additional protocol wire types. The core runtime
-installs the callback before starting plugins.
-
-```rust
-use std::{future::Future, pin::Pin, sync::Arc};
-use cookie_agent_protocol::*;
-
-pub(crate) struct PluginConnectionAuthority {
-    pub plugin: String,
-    pub connection_epoch: u64,
-}
-
-pub(crate) enum PluginProducerRequest {
-    Register(ExtensionProducerRegisterParams),
-    Send(ExtensionProducerSendParams),
-    Unregister(ExtensionProducerUnregisterParams),
-    Discard(ExtensionProducerDiscardParams),
-    RecoveryComplete(ExtensionRecoveryCompleteParams),
-}
-
-pub(crate) enum PluginProducerResponse {
-    Register(ExtensionProducerRegisterResult),
-    Send(ExtensionProducerSendResult),
-    Unregister(ExtensionProducerUnregisterResult),
-    Discard(ExtensionProducerDiscardResult),
-    RecoveryComplete(ExtensionRecoveryCompleteResult),
-}
-
-pub(crate) type PluginProducerHandler = Arc<
-    dyn Fn(PluginConnectionAuthority, PluginProducerRequest)
-        -> Pin<Box<dyn Future<Output = Result<PluginProducerResponse, JsonRpcError>> + Send>>
-        + Send + Sync,
->;
+```json
+{"jsonrpc":"2.0","id":1,"result":{
+  "protocol_version":1,"name":"issues","version":"1.2.0",
+  "capabilities":{"producer_messaging":false,"subscribe_events":false,
+    "subscribe_bus":false,"publish_bus":false,"intercept":["tool_before_call"]},
+  "tools":{"tools":[],"prompt_sections":[]}}}
 ```
 
-The host derives `plugin` from the authenticated configured name and assigns a
-fresh, non-reused epoch per connection within its lifetime. Neither value is
-accepted from request parameters. Bind registrations and recovery readiness to
-name + epoch; reject stale-connection sends/completions. A disconnect must revoke
-only that epoch's registrations, not a replacement connection's registrations.
-Durable deduplication uses `ProducerOwner::External { source, name }` with
-session and idempotency key, never the connection epoch. Mode remains per send.
-For `Discard`, runtime checks the current authenticated epoch and the message's
-source and session, not an active producer registration or its original epoch.
+The protocol version is the integer `1` and must match exactly; a different
+version or name fails the start. Capabilities are fixed for the connection;
+`tools` is the runtime protocol's `RuntimeTools`.
 
-Decode each method into its exact protocol parameters, invoke the handler without
-blocking the transport reader, and correlate the matching typed response with the
-original JSON-RPC ID. Serialize only the response's inner protocol result, never
-the private enum. The runtime returns `Send` success only after durable acceptance.
-Recovery start uses the control notification path, not the lossy event stream or
-`PendingRequest`; restoration is not wrapped in a timeout. Registration during
-restoration must remain serviceable. Do not implement protocol aliases or implicit
-producer registration to authorize `emit`.
+Request IDs are integers. Every frame is at most 48 MiB, parsed strictly,
+and a malformed frame ends the connection. Standard output carries only
+protocol messages; standard error is kept as a bounded tail (the last 32
+lines, at most 4 KiB) that clients see in plugin status.
 
-Runtime integration helpers in `PluginRegistry` (transport implementation):
-
-- `set_producer_handler(PluginProducerHandler)` installs the exact callback above;
-  absent handlers reject requests, including recovery completion.
-- `producer_recovery_states() -> Vec<ProducerSourceState>` returns configured or
-  declared producer plugins, including disabled/failed entries.
-- `producer_connection_is_current(plugin: &str, epoch: &u64) -> bool` checks live
-  capability-authorized connection ownership. Check it inside actor operations,
-  including register, send, unregister, discard, and recovery completion.
-- `complete_producer_recovery(&PluginConnectionAuthority,
-  &ExtensionRecoveryOutcome) -> Result<(), JsonRpcError>` is called by the runtime
-  `RecoveryComplete` handler before actor reconciliation and its typed ACK. Exact
-  repeated outcomes are idempotent; stale epochs and changed outcomes reject.
-- `subscribe_producer_changes() -> tokio::sync::watch::Receiver<u64>` provides
-  coalescing wakeups on handshake, completion, and disconnect, including supervisor
-  cancellation. Subscribe before starting plugins and reconcile the initial snapshot
-  as well as every change. Runtime must inspect current recovery states, revoke
-  registrations whose owner name/epoch is no longer current, reconcile loaded
-  sessions, and emit `producer_diagnostic` events. This is a
-  state watch, not an event log; no engine event enum or callback variants change.
-
-Producer handlers run in at most 32 concurrent tasks per connection. Overload
-returns an explicit JSON-RPC error. Accepted handler tasks await the bounded control
-queue for `Control::ReplyFrame`; ACKs are never silently dropped. The single host
-loop remains the stdin writer. Recovery start is written once immediately after
-the successful handshake on this same reliable writer, outside `PendingRequest`.
-
-## Event streaming
-
-A plugin with `subscribe_events: true` receives `plugin/event` notifications containing
-`session_id`, physical `seq`, the raw `EventPayload` JSON as `event`, and `timestamp`. Delivery
-starts after initialization and has no replay. Events are sent only after their session append is
-durable; a buffered session's newly persisted prefix is sent in sequence after atomic publication.
-Per-session sequence order is preserved, while cross-session ordering is unspecified.
-
-Live-only stream output (`tool_call_progress`, `text_delta`, `reasoning_delta`,
-`internal_agent_text_delta`, `native_compaction_started`,
-`native_compaction_finished`)
-is delivered through this same stream as it happens, although it is never stored.
-It carries the `seq` of the durable event it follows, so its `seq` repeats that
-event's rather than advancing. `tool_call_progress` includes optional sanitized
-bash output chunks, so event-subscribed plugins observe live tool output. Chunk bursts do
-not consume plugin publication quotas, which apply in the plugin-to-engine
-direction. They use one 1024-entry FIFO delivery queue. When full, admission
-evicts the oldest lowest-priority record: chunk first, then ordinary non-chunk,
-and terminal only when the queue contains nothing else. Accepted records always
-append at the tail, so retained events preserve per-session sequence order while
-tool termination survives chunk and ordinary floods. Drops are counted separately
-by chunk, ordinary, or terminal class in their diagnostic message.
-
-This stream is observational and not durable. Each plugin has an independent bounded 1024-message
-queue. A full queue drops delivery for that plugin, increments its dropped-event status counter,
-and records a session diagnostic. It cannot delay session persistence, another plugin, or the
-engine. There is no event-type filter in protocol 0.0.8; replay and filtered subscriptions remain
-future work.
-
-Plugins with `subscribe_bus: true` also receive non-durable `plugin/bus_event` notifications.
-These real-time notifications have the source plugin, session, name, and arbitrary JSON payload,
-and carry no cursor or delivery guarantee.
-
-## Event publishing
-
-`plugin/emit` publishes `{ session_id, context_id, name, payload }`. The session and opaque context
-token must exactly match a recent engine notification or request delivered to that plugin. This
-keeps interleaved session A and B callbacks correlated without mutable ambient session state;
-mismatches are rejected and diagnosed. Context tokens are short-lived one-shot grants: the first
-emit atomically consumes the token, replay is rejected, request tokens are revoked when the
-request ends, and notification tokens expire five seconds after wire delivery. Queued controls
-carry a lifetime duration; grants are activated immediately around successful host wire delivery,
-so queue delay does not consume their lifetime. Cancellation before dequeue records the token as
-spent and prevents later activation. Unknown tokens never use the plugin-supplied
-session as a diagnostic target; only a known triggering session may receive a durable diagnostic.
-With `publish_bus`, the
-engine emits an `EngineEvent::PluginEvent`, forwards it to other subscribed plugins, and sends an
-`events.plugin` notification only to RPC connections subscribed to that session.
-The legacy `publish_session_events` model-history route is rejected; use
-`plugin/producer/send` with a live registration for model-bound messages. Existing
-`plugin_event_added` history retains its replay semantics, but new `plugin/emit`
-calls do not authorize model messages.
-
-Payload JSON is limited to 256 KiB, names to 128 control-free characters, and the complete
-serialized event to 272 KiB. Each plugin/session pair may publish 40 events per second and 4 MiB
-per minute; another plugin or session has independent quotas. `plugin/emit_result` reports separate
-`bus` and `durable`
-statuses as `published`, `dropped`, or `rejected`, with a reason when applicable. Oversized bus
-or rate-limited bus payloads are dropped and durable payloads are rejected. Repeated violations
-and stream drops increment a coalescing counter keyed by session, plugin, kind, and message. The
-message key is control-normalized and truncated to 200 characters. At most 256 detailed keys are
-retained per batch; additional distinct messages coalesce into an exact `(overflow)` counter per
-session/plugin/kind. The map is swapped and flushed every 100 ms off the session append path;
-increments cannot be lost to queue saturation. Diagnostic appends have a 250 ms timeout and engine
-shutdown allows at most five seconds for draining before aborting the flusher and marking affected
-plugin statuses as incomplete. A plugin
-never receives its own
-published event through either subscription, preventing accidental feedback loops; other plugins
-receive it normally.
-
-## Interception
-
-Plugins register hook names in `capabilities.intercept`. The complete 0.0.8 set is
-`tool_before_call`, `tool_after_result`, `agent_before_start`, `session_before_compact`,
-`user_before_input`, `model_before_request`, `provider_before_headers`,
-`provider_before_request`, `provider_after_response`, `message_end`, `model_before_select`,
-`session_before_fork`, and `session_before_revert`. An unlisted hook is never delivered. Hooks run synchronously in configured
-registration order, which is their order in the user `config.toml`. Each hook has
-`interception_timeout_ms` (2000 by default); timeout, process
-exit, or a full plugin queue fails open, records a diagnostic, and allows remaining hooks to run.
-
-`plugin/intercept/tool_before_call` runs only after the original operation passes policy and any
-user/model approval. It may allow, block, or return modified arguments. Each modification is
-schema-validated and re-prepared through the pinned provider before later hooks see it; its
-permission capabilities, resources, and labels must remain identical to the approved operation.
-A block short-circuits later hooks and returns a tool error to the
-model, so the turn continues without executing the tool. Modified arguments are validated against
-the pinned `ToolSpec` JSON Schema. `permission_name` is `null` for a tool that declares no
-permission. Hooks cannot alter `permission_name` or `resource`, denied calls
-are never disclosed to plugins, and an allow hook never grants permission.
-
-`plugin/intercept/tool_after_result` observes the tool result and may replace its content before
-termination is committed. Replacements affect model-facing content, not the
-independent final UI display or the retained original stream artifacts.
-`agent_before_start` may append to or replace the system prompt and may
-inject a role-preserving text message. Prompt replacements and appends compose in plugin order.
-Accepted injections are committed as `message_injected` during run setup, before the submitted
-input, so restart, replay, fork, and versionless projection see the same message.
-
-`user_before_input` runs for initial root-session input and active-run steering before
-the corresponding input commit, including `cookie run`. It may allow, transform to non-empty text,
-or handle the input without starting or steering an agent run. A real final transform commits the
-transformed text and writes an adjacent `user_input_transformed` audit event containing both
-original and transformed values. A no-op transform, including a chain that returns to the original
-text, writes no audit event. Delegated sessions and subagent steering do not receive this hook.
-
-`model_before_request` runs for every user-facing root or delegated agent model attempt after
-history assembly and before provider conversion. Internal title, approval, and compaction agents
-do not receive it. It receives role-tagged messages whose `content` is Oven's complete
-serialized role-specific content, the resolved model, attempt ID, and inference parameters. A full
-replacement becomes the request sent to the model and the request used for prompt-size accounting.
-Replacement history and inference controls must pass Oven's structural and model-capability
-validation before later plugins see them. Parameter adjustments apply with either `keep` or
-`replace`; `replace` requires a complete message list. Prompt-cache markers are placed only after
-the final validated model-hook result.
-
-Pinned Oven adapters in 0.0.8 do not expose their adapter-assembled HTTP headers or raw provider
-JSON. Accordingly, `provider_before_headers` receives an empty map; requesting a non-empty `set` or
-`delete` mutation records an `unsupported_capability` diagnostic and does not mutate the HTTP
-request. `provider_before_request` operates on Oven's normalized request JSON, not the adapter's raw
-wire body. Replacement validation guarantees a JSON object, successful normalized-request
-deserialization, and Oven's model invariants. `provider_after_response` is observe-only, runs after
-the response head and before stream consumption, and exposes HTTP status with an empty header map.
-It never receives body data.
-
-`message_end` receives the complete assembled assistant content after streaming and before
-`model_turn_committed`. It may replace content but not the assistant role. The replacement is
-validated as a complete persisted turn and becomes the durable turn; text and reasoning deltas
-already streamed were live-only and are not kept. TUI and replay projections
-replace accumulated partials with that committed content. It does not run for a turn an interrupt
-cut off: the engine commits that partial text and reasoning as an `aborted` turn without
-interception, because a replacement assumes a finished message.
-
-`model_before_select`, `session_before_fork`, and `session_before_revert` may block their operation
-with a user-facing reason. Model selection interception occurs when the configured selection is
-first used to start a run, when a later run changes selection, and before a fallback transition. It
-does not run for unchanged selections, draft UI changes before run start, skill-scoped model
-overrides, or internal-agent model choices. A blocked model selection retains the current selection.
-Revert may also chain an instruction override. `session_before_compact` may append instructions,
-replace the current instructions, or cancel compaction with a reason; cancellation leaves the engine
-and session usable and the RPC returns that reason. Appended and replacement instructions become the
-compaction prompt's `{{focus}}` value; they do not replace the `compaction` agent's prompt template.
-
-All mutation chains pass only validated current state to the next plugin. Invalid modifications are
-diagnosed and skipped. Timeout, crash, malformed response, or queue failure is fail-open per plugin,
-and later plugins still run. Hooks receive the same short-lived context grant used by plugin emit.
-Except for root-only `user_before_input`, user-facing agent hooks also run for delegated sessions.
-Internal title, approval, and compaction agents remain outside extension interception.
-
-## Tools
-
-Each tool declaration contains its verbatim `name`, description, JSON Schema parameters,
-verbatim `permission_name`, and an optional `primary_resource_param`. Names are not prefixed or
-rewritten. The primary resource parameter supplies the approval display argument and call
-resource when present.
-
-At execution time the engine sends `plugin/tools/call` with the tool name, session and invocation
-IDs, arguments, resource, and an optional cancellation token. The plugin returns
-typed `output`, final UI-only `display`, and `is_error`. Its declaration's `output`
-is single by default, or named with 1 to 8 unique URI-safe stream names. Terminal
-output is `{"kind":"single","text":"..."}` or
-`{"kind":"named","streams":[{"stream":"results","text":"..."}]}`;
-named output supplies every declared stream, including empty ones. The plugin
-transport uses terminal responses; in-process `PreparedExecutor` tools can also
-emit typed deltas and return the `Streamed` completion mode.
-
-The runtime owns capture, previews, manifests, and read hints for plugin output.
-`ToolOutput::success` and `ToolOutput::error` are single-output SDK conveniences;
-authors can set `display` independently. A JSON-RPC error, transport failure,
-timeout, cancellation, plugin exit, or `is_error` marks the call failed/cancelled
-as appropriate. Accepted output is retained as incomplete. `is_error` also remains
-structured metadata, parallel to MCP tool results; UI display is not copied into
-model-facing error text.
-
-Plugin tools use the deny-by-default permission pipeline. They are hidden until
-the agent policy or a session overlay has any `allow` or `ask` rule for the
-`plugin` action; visibility is action-level and does not match the declared
-permission. Each call is then checked against the declared permission and
-resource, and unmatched calls are denied. The permission resource is the
-declared permission name followed by the primary resource when one is
-present. The [user plugin guide](../guide/plugins.md#allow-plugin-tools) shows the corresponding
-agent permission configuration.
-
-[Skill `allowed-tools`](../guide/skills.md#invocation-and-permissions) entries `Plugin` and
-`Plugin(name:*)` govern plugin tools in the same way as the existing MCP group. A pinned call to a
-connected but disallowed plugin tool reports that the tool is not enabled instead of treating it
-as undiscovered.
+At shutdown the daemon sends the `plugin/shutdown` notification, waits
+`shutdown_grace_ms`, and kills the process group.
 
 ## Lifecycle
 
-Plugin state progresses through `disconnected`, `connecting`, and `connected`, or to `failed`
-with a diagnostic reason. Spawn failures, handshake timeouts, malformed responses, version or
-name mismatches, declaration errors, name collisions, unexpected EOF, and process exits affect
-only that plugin; the engine and other plugins continue running.
+A plugin is `starting`, `connected`, `reconnecting`, `failed`, `disabled`,
+or `stopped`. When it exits or its connection drops, the daemon starts it
+again after 1 s, 2 s, and 4 s, and marks it `failed` when every attempt
+fails. A failed plugin stays failed until a client restarts it
+(`plugins.restart`); a restart of a connected plugin stops and starts it.
+Each start is a new connection: the plugin answers `plugin/initialize`
+again, and a producing plugin recovers again.
 
-Plugins live in the global runtime, and discovered tool names share its namespace with top-level
-MCP tools and the global `webfetch`. MCP claims take precedence over plugin claims; a plugin
-collision with them fails, and an MCP server that connects or relists later preempts the plugin. A name shared with
-another runtime (such as the local coding runtime's `read`) or with a base-layer tool (such as
-`skill`) is not a collision inside the runtime: the plugin's tool is published as
-`global_<name>` instead (see [tool composition](../specs/runtimes.md#63-collisions)). When plugins collide with each other, the last plugin to finish
-registration wins that tool; the earlier plugin remains connected for its other tools and publishes
-a status diagnostic. The winner's permission declaration applies. Claims and listings are removed
-immediately when the owning process exits or standard output closes, and prepared calls fail
-revalidation after removal. Crashed plugins stay failed until engine restart.
+Clients read status with `plugins.list` and are told of changes with
+`plugins.changed` ([client protocol](../reference/protocol.md)). A status
+carries the plugin's state, why it last failed, its tools and hooks, its
+dropped-notification count, and its standard error tail.
 
-Each call is bounded by `tool_timeout_ms`, which defaults to 30000. During shutdown, the engine
-sends `plugin/shutdown`, closes plugin standard input, waits for `shutdown_grace_ms`, and then
-terminates the process if needed. Shutdown remains bounded when initialization is still pending.
+## Tools
 
-## Current limitation
+A plugin's tools are a runtime's tools. It declares them in the initialize
+result and later with `runtime/tools_changed`, and the daemon runs them with
+the same client it uses for a runtime:
 
-Plugin resource methods remain deferred. Protocol 0.0.8 event subscriptions have no replay or
-per-event-type filters.
+| Message | Direction | Purpose |
+|---|---|---|
+| `tool/prepare` | daemon → plugin | Prepare one turn's calls: the plugin reports each call's approval identity, normalized arguments, permission and resource, and presentation. |
+| `tool/revalidate` | daemon → plugin | Check a prepared call is still valid before it runs. |
+| `tool/execute` | daemon → plugin | Run a prepared call; the result is its output and persisted result. |
+| `tool/release` | daemon → plugin | Forget a prepared call that will not run. |
+| `tool/cancel` | daemon → plugin | Cancel an executing call. |
+| `tool/progress` | plugin → daemon | Report a running call's status and output. |
+| `tool/detachable` | plugin → daemon | The call may now move to the background. |
+| `runtime/tools_changed` | plugin → daemon | Replace the plugin's tool list. |
+
+Their params and results are in the
+[runtime protocol reference](../reference/runtime-protocol.md#methods); the
+types are in the protocol crate's `runtime_protocol` module. A declaration
+has a `name`, `description`, and JSON Schema `parameters`, and optionally a
+free-form `permission` action (a tool may need none), `collision`,
+`concurrency`, `result_truncation`, an `output` of one or up to 8 named
+streams, and `background` support. The SDK fills in `tool/prepare`; a
+plugin written without it must compute each call's approval identity as a
+runtime does.
+
+**Names.** Plugin tools join the `global` runtime, but each plugin composes
+as its own source, prefixed with the plugin's name. A tool keeps its name
+unless another tool has it. Then the declared `collision` decides: with
+`prefix` (the default), every tool of that name is published under its
+source's prefix (`<plugin>_<tool>`, `<attachment>_<tool>`); with `override`,
+the tool keeps the bare name and the others are prefixed (or hidden, if they
+are `fallback`). Two overrides of one name are both prefixed, with a
+diagnostic. Base-layer
+names, such as `skill`, are never taken. While a plugin is not connected its
+tools are not published.
+
+**Permissions.** A call is approved under the action its declaration names
+and the resource its preparation reports, like a runtime tool; the agent
+policy names the action (`issue_read: allow`). A tool that declares no
+permission runs without approval.
+
+## Hooks
+
+A plugin lists the hooks it handles in `capabilities.intercept`; it is never
+sent another. Each hook is a request `plugin/intercept/<hook>`:
+
+| Hook | Runs | May |
+|---|---|---|
+| `tool_before_call` | after a call passes policy and approval | allow, block, or modify the arguments |
+| `tool_after_result` | after a call finishes, before it is committed | replace the model-facing content |
+| `agent_before_start` | at a run's start | append to or replace the system prompt, inject a message |
+| `session_before_compact` | before compaction | add or replace its instructions, or cancel it |
+| `user_before_input` | before root user input or steering is committed | allow, transform it, or handle it without a run |
+| `model_before_request` | before each user-facing model attempt | replace the messages, adjust inference parameters |
+| `provider_before_request` | before the normalized request is sent | replace it |
+| `provider_after_response` | after the response status arrives | observe the status |
+| `message_end` | after an assistant message is assembled | replace its content |
+| `model_before_select` | before a run's model selection changes, or a fallback | block it |
+| `session_before_fork` | before a fork | block it |
+| `session_before_revert` | before a revert | block it, or override its instructions |
+
+Hooks run in the order the configuration lists the plugins, each within its
+`interception_timeout_ms`. A modification is validated before the next
+plugin sees it, and an invalid one is skipped with a diagnostic. A hook that
+times out, whose plugin is not connected or exits, or that answers with an
+error or a malformed result **fails open**: the operation goes on, later
+plugins still run, and the session records a `plugin_diagnostic`
+(`interception_timeout`, `interception_crash`, or `interception_rejected`).
+A block stops later hooks.
+
+`tool_before_call` and `tool_after_result` carry the call's `origin`:
+`{"kind":"base"}` for a daemon base tool, or
+`{"kind":"runtime","attachment":"local","runtime_id":"local"}` for a
+runtime's or plugin's tool. `permission_name` is `null` for a tool that
+needs no permission. A hook cannot change a call's permission or resource,
+never sees calls policy denied, and never grants permission.
+
+Internal agents (title, approval, compaction) are never intercepted.
+`user_before_input` runs for root sessions only; the other agent hooks also
+run for delegated sessions.
+
+## Events and the bus
+
+With `subscribe_events`, a plugin receives `plugin/event` notifications:
+`{ session_id, context_id, seq, event, timestamp }`, where `event` is the
+stored `EventPayload` ([events](../reference/events.md)). Durable events
+arrive after they are appended, in sequence order per session. Live-only
+output (tool progress, text and reasoning deltas, native compaction) arrives
+as it happens and carries the `seq` of the durable event it follows. There
+is no replay and no filter.
+
+With `subscribe_bus`, it receives `plugin/bus_event` notifications that
+other plugins publish: `{ session_id, context_id, plugin, name, payload }`.
+A plugin never receives its own bus events.
+
+Each plugin has a queue of 1024 notifications. When it is full, a new
+notification evicts the oldest of the lowest class it outranks: live output
+first, then ordinary events, and a tool's termination only when nothing else
+is queued. Drops are counted in the plugin's status and recorded as
+diagnostics. A slow plugin never delays the daemon or another plugin.
+
+## Publishing
+
+A plugin with `publish_bus` publishes with the `plugin/emit` notification:
+`{ session_id, context_id, name, payload }`. The `context_id` must come from
+a notification or hook request the daemon sent it for that session; each one
+may be used once. A notification's context expires five seconds after it is
+written to the plugin, a hook's when the hook is answered, and every hook
+call gets its own. The daemon answers with a `plugin/emit_result`
+notification: `{ name, bus, reason }`, with `bus` `published`, `dropped`, or
+`rejected`.
+
+A published event goes to the other plugins subscribed to the bus and to
+clients subscribed to the session (`events.plugin`); it is not stored and
+never reaches a model. Payloads are at most 256 KiB, names 128 control-free
+characters, and a whole event 272 KiB; each plugin may publish 40 events per
+second and 4 MiB per minute per session.
+
+## Producers
+
+A plugin sends messages to sessions as a producer, with the runtime
+protocol's producer methods and types:
+
+| Method | Direction | Params → result |
+|---|---|---|
+| `producer/register` | plugin → daemon | `{ session_id, name }` → `{ producer_id }` |
+| `producer/send` | plugin → daemon | `{ session_id, producer_id, mode, idempotency_key, description, body }` → `{ message_id }` |
+| `producer/unregister` | plugin → daemon | `{ session_id, producer_id }` → `{}` |
+| `producer/discard` | plugin → daemon | `{ session_id, message_id }` → `{}` |
+| `producer/recovery/start` | daemon → plugin | notification, `{}` |
+| `producer/recovery/complete` | plugin → daemon | `{ outcome }` → `{}` |
+
+Producing needs both the plugin's `producer_messaging` capability and its
+configuration's `producer_messaging = true`. A plugin may produce to any
+session. The daemon names its source `plugin:<name>` from the connection, so
+a plugin cannot speak for another. A plugin may run any number of named
+producers (`[a-z0-9][a-z0-9_.-]{0,63}`), each with its own idempotency keys;
+the SDK's `register_producer` registers `default`.
+
+Each send chooses `steer` (the next safe model request) or `queue` (a later
+run), and carries a description of at most 1024 bytes for display. The body
+is at most [`[producers] max_body_bytes`](../engine/producers.md). The
+answer follows durable acceptance; a retry with the same key and the same
+body, description, and mode returns the original message ID, and a missing
+answer is commit-uncertain. Discard works on a waiting message the plugin's
+source sent in that session, under any producer name, even after unregister
+or a restart. A producer ID lasts only as long as the connection.
+
+After each successful start the daemon sends `producer/recovery/start`. The
+plugin restores its pending work from its own storage, registers producers
+and sends as needed, and then completes recovery with
+`{"status":"ready"}` or `{"status":"failed","message":"..."}`. There is no
+deadline; goals wait for a starting source, and a failed or disabled source
+leaves its work unknown. The SDK runs `on_recovery` and completes recovery
+when it returns, or reports ready at once when there is none. The external
+producers spec has the whole contract:
+[external producers](../specs/external-producers.md).

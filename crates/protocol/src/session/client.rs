@@ -99,6 +99,8 @@ pub enum ClientDelivery {
     RuntimesChanged(crate::RuntimesChangedNotification),
     /// A subscribed session's background calls changed.
     BackgroundChanged(crate::BackgroundChangedNotification),
+    /// A plugin's status changed; refetch `plugins.list`.
+    PluginsChanged(crate::PluginsChangedNotification),
 }
 
 type Deliveries = mpsc::UnboundedSender<ClientDelivery>;
@@ -723,6 +725,24 @@ impl Client {
         params: crate::RuntimesReconnectParams,
     ) -> Result<crate::RuntimesReconnectResult, ClientError> {
         self.call(crate::RUNTIMES_RECONNECT_METHOD, &params).await
+    }
+
+    /// The configured plugins, in the order their hooks run.
+    pub async fn list_plugins(&self) -> Result<crate::PluginsListResult, ClientError> {
+        self.call(crate::PLUGINS_LIST_METHOD, &crate::PluginsListParams {})
+            .await
+    }
+
+    /// Starts plugin `name` again now.
+    pub async fn restart_plugin(
+        &self,
+        name: String,
+    ) -> Result<crate::PluginsRestartResult, ClientError> {
+        self.call(
+            crate::PLUGINS_RESTART_METHOD,
+            &crate::PluginsRestartParams { name },
+        )
+        .await
     }
 
     pub async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError> {
@@ -1532,6 +1552,10 @@ async fn handle_frame(
         Some(crate::BACKGROUND_CHANGED_METHOD) => {
             let changed: crate::BackgroundChangedNotification = serde_json::from_str(params.get())?;
             let _ = deliveries.send(ClientDelivery::BackgroundChanged(changed));
+        }
+        Some(crate::PLUGINS_CHANGED_METHOD) => {
+            let changed: crate::PluginsChangedNotification = serde_json::from_str(params.get())?;
+            let _ = deliveries.send(ClientDelivery::PluginsChanged(changed));
         }
         _ => {}
     }

@@ -499,7 +499,7 @@ fn historical_checklist_item_ids_are_ignored_only_by_event_history_decoding() {
 fn producer_identity_and_send_contracts_are_strict() {
     let session_id = SessionId::new_v7();
     let producer_id = ProducerId::new_v7();
-    strict::<ExtensionProducerRegisterParams>(json!({"session_id":session_id,"name":"ci-watcher"}));
+    strict::<ProducerRegisterParams>(json!({"session_id":session_id,"name":"ci-watcher"}));
     for name in [
         json!(null),
         json!(""),
@@ -508,21 +508,19 @@ fn producer_identity_and_send_contracts_are_strict() {
         json!("a".repeat(65)),
     ] {
         assert!(
-            serde_json::from_value::<ExtensionProducerRegisterParams>(
+            serde_json::from_value::<ProducerRegisterParams>(
                 json!({"session_id":session_id,"name":name})
             )
             .is_err(),
             "{name}"
         );
     }
-    strict::<ExtensionProducerRegisterResult>(json!({"producer_id":producer_id}));
-    strict::<ExtensionProducerUnregisterParams>(
-        json!({"session_id":session_id,"producer_id":producer_id}),
-    );
-    strict::<ExtensionProducerUnregisterResult>(json!({}));
-    strict::<ExtensionProducerSendResult>(json!({"message_id":ProducerMessageId::new_v7()}));
+    strict::<ProducerRegisterResult>(json!({"producer_id":producer_id}));
+    strict::<ProducerUnregisterParams>(json!({"session_id":session_id,"producer_id":producer_id}));
+    strict::<ProducerUnregisterResult>(json!({}));
+    strict::<ProducerSendResult>(json!({"message_id":ProducerMessageId::new_v7()}));
     for mode in [ProducerDeliveryMode::Steer, ProducerDeliveryMode::Queue] {
-        let send = ExtensionProducerSendParams {
+        let send = ProducerSendParams {
             session_id,
             producer_id,
             mode,
@@ -531,11 +529,11 @@ fn producer_identity_and_send_contracts_are_strict() {
             body: "Result\ncomplete".into(),
         };
         let value = serde_json::to_value(&send).unwrap();
-        strict::<ExtensionProducerSendParams>(value.clone());
+        strict::<ProducerSendParams>(value.clone());
         round_trip(send);
         let mut missing = value.clone();
         missing.as_object_mut().unwrap().remove("description");
-        assert!(serde_json::from_value::<ExtensionProducerSendParams>(missing).is_err());
+        assert!(serde_json::from_value::<ProducerSendParams>(missing).is_err());
         for description in [
             "".into(),
             "   ".into(),
@@ -546,19 +544,19 @@ fn producer_identity_and_send_contracts_are_strict() {
         ] {
             let mut invalid = value.clone();
             invalid["description"] = json!(description);
-            assert!(serde_json::from_value::<ExtensionProducerSendParams>(invalid).is_err());
+            assert!(serde_json::from_value::<ProducerSendParams>(invalid).is_err());
         }
         let mut boundary = value.clone();
         boundary["description"] = json!("x".repeat(1024));
-        assert!(serde_json::from_value::<ExtensionProducerSendParams>(boundary).is_ok());
+        assert!(serde_json::from_value::<ProducerSendParams>(boundary).is_ok());
         for field in ["producer_owner", "connection_epoch", "reminder", "priority"] {
             let mut forged = value.clone();
             forged[field] = json!("forged");
-            assert!(serde_json::from_value::<ExtensionProducerSendParams>(forged).is_err());
+            assert!(serde_json::from_value::<ProducerSendParams>(forged).is_err());
         }
         let mut wrong = value;
         wrong["mode"] = json!("immediate");
-        assert!(serde_json::from_value::<ExtensionProducerSendParams>(wrong).is_err());
+        assert!(serde_json::from_value::<ProducerSendParams>(wrong).is_err());
     }
     for owner in [
         ProducerOwner::external(
@@ -773,28 +771,28 @@ fn reminder_metadata_is_not_send_identity_and_is_best_effort_on_read() {
 
 #[test]
 fn recovery_handshake_has_only_explicit_completion_outcomes_and_exact_version() {
-    strict::<ExtensionRecoveryStartParams>(json!({}));
+    strict::<RecoveryStartParams>(json!({}));
     let notification = serde_json::to_value(extension_recovery_start_notification()).unwrap();
     assert_eq!(
         notification,
-        json!({"jsonrpc": "2.0", "method": "plugin/recovery/start", "params": {}})
+        json!({"jsonrpc": "2.0", "method": "producer/recovery/start", "params": {}})
     );
     assert!(serde_json::from_value::<Request>(notification).is_err());
     let schema_names = json_schema_documents()
         .into_iter()
         .map(|(name, _)| name)
         .collect::<Vec<_>>();
-    assert!(schema_names.contains(&"ExtensionRecoveryStartParams.schema.json"));
+    assert!(schema_names.contains(&"RecoveryStartParams.schema.json"));
     assert!(!schema_names.contains(&"ExtensionRecoveryParams.schema.json"));
     assert!(!schema_names.contains(&"ExtensionRecoveryResult.schema.json"));
-    strict::<ExtensionRecoveryCompleteResult>(json!({}));
+    strict::<RecoveryCompleteResult>(json!({}));
     for outcome in [
         json!({"status":"ready"}),
         json!({"status":"failed","message":"external state unavailable"}),
     ] {
-        strict::<ExtensionRecoveryCompleteParams>(json!({"outcome":outcome}));
+        strict::<RecoveryCompleteParams>(json!({"outcome":outcome}));
         assert!(
-            serde_json::from_value::<ExtensionRecoveryCompleteParams>(
+            serde_json::from_value::<RecoveryCompleteParams>(
                 json!({"outcome":outcome,"connection_epoch":1})
             )
             .is_err()
@@ -802,10 +800,8 @@ fn recovery_handshake_has_only_explicit_completion_outcomes_and_exact_version() 
     }
     for status in ["starting", "disabled", "complete"] {
         assert!(
-            serde_json::from_value::<ExtensionRecoveryCompleteParams>(
-                json!({"outcome":{"status":status}})
-            )
-            .is_err()
+            serde_json::from_value::<RecoveryCompleteParams>(json!({"outcome":{"status":status}}))
+                .is_err()
         );
     }
     for status in [
@@ -819,9 +815,9 @@ fn recovery_handshake_has_only_explicit_completion_outcomes_and_exact_version() 
             status,
         });
     }
-    assert_eq!(EXTENSION_PROTOCOL_VERSION, "0.0.8");
+    assert_eq!(EXTENSION_PROTOCOL_VERSION, 1);
     round_trip(ExtensionProtocolVersion::current());
-    assert!(serde_json::from_value::<ExtensionProtocolVersion>(json!("0.0.4")).is_err());
+    assert!(serde_json::from_value::<ExtensionProtocolVersion>(json!("1")).is_err());
     let params: ExtensionInitializeParams =
         serde_json::from_value(extension_initialize_request("phase1").params.unwrap()).unwrap();
     assert!(
@@ -830,7 +826,7 @@ fn recovery_handshake_has_only_explicit_completion_outcomes_and_exact_version() 
     );
     strict::<ExtensionEngineCapabilities>(serde_json::to_value(params.capabilities).unwrap());
     strict::<ExtensionPluginCapabilities>(
-        json!({"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}),
+        json!({"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[]}),
     );
 }
 

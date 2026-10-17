@@ -32,7 +32,6 @@ fn config_agent_wire_types_match_protocol() {
         (ConfigPermissionAction::BASH, PermissionAction::BASH),
         (ConfigPermissionAction::DELEGATE, PermissionAction::DELEGATE),
         (ConfigPermissionAction::MCP, PermissionAction::MCP),
-        (ConfigPermissionAction::PLUGIN, PermissionAction::PLUGIN),
     ] {
         assert_same_json(&config, &protocol);
     }

@@ -32,13 +32,12 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
     fixture.config.plugins.insert(
         "fixture".into(),
         PluginConfig {
-            command: Some(python_command().into()),
-            args: vec![PLUGIN_FIXTURE.into()],
+            command: vec![python_command().into(), PLUGIN_FIXTURE.into()],
             env: BTreeMap::from([
                 ("FIXTURE_NAME".into(), "fixture".into()),
                 (
                     "FIXTURE_CAPABILITIES".into(),
-                    r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":true,"subscribe_bus":true,"publish_bus":true,"publish_session_events":true,"intercept":[]}"#.into(),
+                    r#"{"producer_messaging":false,"subscribe_events":true,"subscribe_bus":true,"publish_bus":true,"intercept":[]}"#.into(),
                 ),
                 (
                     "FIXTURE_EMIT_ON_EVENT".into(),
@@ -59,7 +58,6 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
             interception_timeout_ms: 2_000,
             startup_timeout_ms: 10_000,
             shutdown_grace_ms: 3_000,
-            tool_timeout_ms: 30_000,
         },
     );
     let mut other = fixture.config.plugins["fixture"].clone();
@@ -109,7 +107,7 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
     })
     .await
     .expect("plugin emit receipt");
-    assert_eq!(receipt["durable"], "rejected");
+    assert_eq!(receipt["bus"], "published");
     assert!(
         engine
             .inner
@@ -146,16 +144,11 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
             name: "oversized".into(),
             payload: serde_json::Value::String("x".repeat(256 * 1024 + 1)),
             publish_bus: true,
-            publish_session_events: true,
         })
         .await;
     assert_eq!(
         oversized.bus,
         cookie_agent_protocol::ExtensionEmitStatus::Dropped
-    );
-    assert_eq!(
-        oversized.durable,
-        cookie_agent_protocol::ExtensionEmitStatus::Rejected
     );
     let mismatched = engine
         .publish_plugin_emit(crate::plugin::PluginEmitRequest {
@@ -168,12 +161,11 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
             name: "mismatched".into(),
             payload: serde_json::json!({}),
             publish_bus: true,
-            publish_session_events: true,
         })
         .await;
     assert_eq!(
-        mismatched.durable,
-        cookie_agent_protocol::ExtensionEmitStatus::Rejected
+        mismatched.bus,
+        cookie_agent_protocol::ExtensionEmitStatus::Dropped
     );
     assert!(
         mismatched
@@ -192,7 +184,6 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
                 name: format!("spam_{ordinal}"),
                 payload: serde_json::json!({"ordinal": ordinal}),
                 publish_bus: true,
-                publish_session_events: false,
             })
             .await;
         if outcome.bus == cookie_agent_protocol::ExtensionEmitStatus::Dropped {
@@ -213,7 +204,6 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
             name: "other_notice".into(),
             payload: serde_json::json!({"ok": true}),
             publish_bus: true,
-            publish_session_events: false,
         })
         .await;
     assert_eq!(
@@ -293,13 +283,12 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
     fixture.config.plugins.insert(
         "fixture".into(),
         PluginConfig {
-            command: Some(python_command().into()),
-            args: vec![PLUGIN_FIXTURE.into()],
+            command: vec![python_command().into(), PLUGIN_FIXTURE.into()],
             env: BTreeMap::from([
                 ("FIXTURE_NAME".into(), "fixture".into()),
                 (
                     "FIXTURE_CAPABILITIES".into(),
-                    r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":true,"subscribe_bus":false,"publish_bus":true,"publish_session_events":true,"intercept":[]}"#.into(),
+                    r#"{"producer_messaging":false,"subscribe_events":true,"subscribe_bus":false,"publish_bus":true,"intercept":[]}"#.into(),
                 ),
                 (
                     "FIXTURE_EMIT_ON_EVENT".into(),
@@ -314,7 +303,6 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
             interception_timeout_ms: 2_000,
             startup_timeout_ms: 10_000,
             shutdown_grace_ms: 3_000,
-            tool_timeout_ms: 30_000,
         },
     );
     drop(fixture.engine);
@@ -400,12 +388,11 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
             name: "unknown".into(),
             payload: serde_json::json!({}),
             publish_bus: false,
-            publish_session_events: true,
         })
         .await;
     assert_eq!(
-        unknown.durable,
-        cookie_agent_protocol::ExtensionEmitStatus::Rejected
+        unknown.bus,
+        cookie_agent_protocol::ExtensionEmitStatus::Dropped
     );
     // This negative assertion covers the plugin replay-token expiry window.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
@@ -429,7 +416,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
     );
     assert!(
         engine.plugin_statuses().iter().any(|status| {
-            status.plugin == "fixture"
+            status.name == "fixture"
                 && status
                     .reason
                     .as_deref()
@@ -580,7 +567,7 @@ async fn plugin_diagnostic_wedge_does_not_block_shutdown() {
         .await
         .expect("diagnostic wedge blocked shutdown");
     assert!(fixture.engine.plugin_statuses().iter().any(|status| {
-        status.plugin == "fixture"
+        status.name == "fixture"
             && status
                 .reason
                 .as_deref()
@@ -589,13 +576,9 @@ async fn plugin_diagnostic_wedge_does_not_block_shutdown() {
 }
 
 #[tokio::test]
-async fn a_late_mcp_connection_rejects_the_plugin_tool_published_to_the_model() {
+async fn a_plugin_tool_is_prepared_and_executed_like_a_runtime_tool() {
     const PLUGIN_FIXTURE: &str =
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
-    const MCP_FIXTURE: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../mcp/tests/fixtures/mcp_server.py"
-    );
 
     let first = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"plugin-call\",\"type\":\"function\",\"function\":{\"name\":\"fixture_echo_text\",\"arguments\":\"{\\\"plugin_arg\\\":\\\"published-schema\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n".to_owned();
     let second = "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned();
@@ -603,43 +586,34 @@ async fn a_late_mcp_connection_rejects_the_plugin_tool_published_to_the_model() 
         scripted_server_with_delayed_response(vec![first, second], 0).await;
     let markers = tempfile::tempdir().expect("call markers");
     let plugin_call = markers.path().join("plugin-call.json");
-    let mcp_call = markers.path().join("mcp-call.json");
     let declaration = serde_json::json!([{
         "name": "fixture_echo_text",
+        "permission": "issue_read",
         "description": "Plugin schema",
         "parameters": {
             "type": "object",
             "properties": {"plugin_arg": {"type": "string"}},
             "required": ["plugin_arg"]
-        },
-        "permission_name": "issue_read",
-        "primary_resource_param": "plugin_arg"
+        }
     }]);
     let toml_string = |value: &str| toml::Value::String(value.to_owned()).to_string();
     let extra_config = format!(
         r#"
-[plugins.collision]
-command = {}
-args = [{}]
-env = {{ FIXTURE_NAME = "collision", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {} }}
-
-[mcp.servers.fixture]
-command = {}
-args = [{}]
-env = {{ MCP_FIXTURE_CALL_FILE = {} }}
-enabled = false
+[plugins.issues]
+command = [{}, {}]
+env = {{ FIXTURE_NAME = "issues", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {}, FIXTURE_TOOL_RESOURCE_PARAM = "plugin_arg" }}
 "#,
         toml_string(python_command()),
         toml_string(PLUGIN_FIXTURE),
         toml_string(&declaration.to_string()),
         toml_string(&plugin_call.display().to_string()),
-        toml_string(python_command()),
-        toml_string(MCP_FIXTURE),
-        toml_string(&mcp_call.display().to_string()),
     );
-    let agent = "---\ndescription: Plugin preemption test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/a-model\", variant: null }]\npermissions:\n  plugin:\n    \"issue_read *\": allow\n---\nTest plugin ownership pinning.\n";
+    // The plugin declares its own permission action, which a rule names
+    // like any other.
+    let agent = "---\ndescription: Plugin tool test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/a-model\", variant: null }]\npermissions:\n  issue_read:\n    \"published-*\": allow\n---\nUse the plugin tool.\n";
     let fixture = synthetic_default_fixture_with_config(Some(agent), &endpoint, &extra_config)
         .expect("engine");
+    fixture.engine.inner.plugins.await_eager_ready().await;
     let snapshot = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
     let agent = snapshot
         .agents
@@ -661,7 +635,7 @@ enabled = false
             RunStartParams {
                 reset_fallback: false,
                 session_id: session.session_id,
-                client_run_id: ClientRunId::new("plugin-mcp-preemption").expect("run ID"),
+                client_run_id: ClientRunId::new("plugin-tool").expect("run ID"),
                 selection,
                 input: "use the plugin".into(),
             },
@@ -673,28 +647,6 @@ enabled = false
         .await
         .expect("model request reached")
         .expect("model reach signal");
-
-    // Enabling the server mid-turn connects it, and its tool claims the
-    // name the plugin's published tool holds.
-    fixture
-        .engine
-        .set_mcp_server_enabled("fixture".into(), true)
-        .await
-        .expect("enable MCP");
-    // Plugin lifecycle changes are not session events; this is the only
-    // observation API available for asynchronous MCP/plugin preemption.
-    tokio::time::timeout(test_timeout(3), async {
-        loop {
-            if fixture.engine.plugin_statuses().iter().any(|status| {
-                status.plugin == "collision" && status.state == crate::PluginState::Failed
-            }) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("plugin preempted");
     release.notify_one();
 
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -702,6 +654,12 @@ enabled = false
         .await
         .expect("model server");
     assert_eq!(requests.len(), 2);
+    // The model saw the plugin's own tool, under its bare name.
+    assert!(
+        requests[0].contains("\"fixture_echo_text\""),
+        "{}",
+        requests[0]
+    );
     let projection = fixture
         .engine
         .inner
@@ -716,12 +674,13 @@ enabled = false
             _ => None,
         })
         .expect("tool termination");
-    assert_eq!(termination.outcome, ToolTerminationOutcome::Failed);
-    let error = termination.error.as_ref().expect("tool error");
-    assert_eq!(error.code.as_str(), "operation_changed");
-    assert!(error.message.as_str().contains("tool definition changed"));
-    assert!(!plugin_call.exists(), "preempted plugin must not execute");
-    assert!(!mcp_call.exists(), "replacement MCP tool must not execute");
+    assert_eq!(termination.outcome, ToolTerminationOutcome::Completed);
+    let call: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&plugin_call).expect("plugin executed"))
+            .expect("call record");
+    assert_eq!(call["call"]["name"], "fixture_echo_text");
+    assert_eq!(call["call"]["arguments"]["plugin_arg"], "published-schema");
+    assert_eq!(call["execute"]["session"], session.session_id.to_string());
     fixture.engine.shutdown().await;
 }
 

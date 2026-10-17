@@ -1102,9 +1102,9 @@ impl StateStore {
                     .background_calls = changed.calls;
                 DeliveryOutcome::Applied
             }
-            ClientDelivery::RuntimeChanged(_) | ClientDelivery::SessionsChanged(_) => {
-                DeliveryOutcome::Applied
-            }
+            ClientDelivery::RuntimeChanged(_)
+            | ClientDelivery::SessionsChanged(_)
+            | ClientDelivery::PluginsChanged(_) => DeliveryOutcome::Applied,
         }
     }
 

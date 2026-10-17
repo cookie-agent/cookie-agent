@@ -17,13 +17,13 @@ fn enabled_plugin_requires_command() {
 
 #[test]
 fn producer_messaging_defaults_off_and_accepts_boolean_opt_in() {
-    let defaults = root("[plugins.demo]\ncommand = \"plugin\"\n");
+    let defaults = root("[plugins.demo]\ncommand = [\"plugin\"]\n");
     let loaded = load_from_user_root(Some(defaults.path())).expect("default capability");
     assert!(!loaded.plugins["demo"].producer_messaging);
 
     for (configured, expected) in [("true", true), ("false", false)] {
         let directory = root(&format!(
-            "[plugins.demo]\ncommand = \"plugin\"\nproducer_messaging = {configured}\n"
+            "[plugins.demo]\ncommand = [\"plugin\"]\nproducer_messaging = {configured}\n"
         ));
         let loaded = load_from_user_root(Some(directory.path())).expect("boolean capability");
         assert_eq!(loaded.plugins["demo"].producer_messaging, expected);
@@ -32,13 +32,13 @@ fn producer_messaging_defaults_off_and_accepts_boolean_opt_in() {
 
 #[test]
 fn plugin_fields_are_strict() {
-    let directory = root("[plugins.demo]\ncommand = \"plugin\"\nunknown = true\n");
+    let directory = root("[plugins.demo]\ncommand = [\"plugin\"]\nunknown = true\n");
     let error = load_from_user_root(Some(directory.path())).expect_err("unknown field");
     assert!(error.to_string().contains("unknown"));
 
     for value in ["\"true\"", "1", "[]", "{}"] {
         let directory = root(&format!(
-            "[plugins.demo]\ncommand = \"plugin\"\nproducer_messaging = {value}\n"
+            "[plugins.demo]\ncommand = [\"plugin\"]\nproducer_messaging = {value}\n"
         ));
         let error = load_from_user_root(Some(directory.path())).expect_err("non-boolean field");
         assert!(
@@ -55,10 +55,9 @@ fn plugin_timeouts_must_be_positive() {
         "interception_timeout_ms = 0",
         "startup_timeout_ms = 0",
         "shutdown_grace_ms = 0",
-        "tool_timeout_ms = 0",
     ] {
         let directory = root(&format!(
-            "[plugins.demo]\ncommand = \"plugin\"\n{timeout}\n"
+            "[plugins.demo]\ncommand = [\"plugin\"]\n{timeout}\n"
         ));
         let error = load_from_user_root(Some(directory.path())).expect_err("invalid timeout");
         assert!(error.to_string().contains("invalid field"));
@@ -73,7 +72,7 @@ fn plugin_timeouts_must_be_positive() {
 
 #[test]
 fn disabled_plugin_with_valid_fields_is_accepted() {
-    let directory = root("[plugins.demo]\ncommand = \"plugin\"\nenabled = false\n");
+    let directory = root("[plugins.demo]\ncommand = [\"plugin\"]\nenabled = false\n");
     let loaded = load_from_user_root(Some(directory.path())).expect("disabled plugin");
     assert!(!loaded.plugins["demo"].enabled);
 }
@@ -82,7 +81,7 @@ fn disabled_plugin_with_valid_fields_is_accepted() {
 fn disabled_plugin_still_rejects_invalid_fields() {
     for invalid in ["cwd = \"\"", "startup_timeout_ms = 0"] {
         let directory = root(&format!(
-            "[plugins.demo]\ncommand = \"plugin\"\nenabled = false\n{invalid}\n"
+            "[plugins.demo]\ncommand = [\"plugin\"]\nenabled = false\n{invalid}\n"
         ));
         let error = load_from_user_root(Some(directory.path())).expect_err("invalid disabled");
         assert!(error.to_string().contains("invalid field"));
@@ -93,13 +92,10 @@ fn disabled_plugin_still_rejects_invalid_fields() {
 #[test]
 fn plugins_keep_their_authored_order() {
     let user = root(
-        "[plugins.zeta]\ncommand = \"zeta\"\n[plugins.demo]\ncommand = \"user-plugin\"\nproducer_messaging = true\n[plugins.alpha]\ncommand = \"alpha\"\n",
+        "[plugins.zeta]\ncommand = [\"zeta\"]\n[plugins.demo]\ncommand = [\"user-plugin\"]\nproducer_messaging = true\n[plugins.alpha]\ncommand = [\"alpha\"]\n",
     );
     let loaded = load_from_user_root(Some(user.path())).expect("plugins");
-    assert_eq!(
-        loaded.plugins["demo"].command.as_deref(),
-        Some("user-plugin")
-    );
+    assert_eq!(loaded.plugins["demo"].command, ["user-plugin"]);
     assert!(loaded.plugins["demo"].producer_messaging);
     assert_eq!(
         loaded
@@ -109,4 +105,22 @@ fn plugins_keep_their_authored_order() {
             .collect::<Vec<_>>(),
         ["zeta", "demo", "alpha"]
     );
+}
+
+#[test]
+fn plugin_command_is_an_argv_array() {
+    let directory = root("[plugins.demo]\ncommand = [\"python3\", \"plugin.py\"]\n");
+    let loaded = load_from_user_root(Some(directory.path())).expect("argv command");
+    assert_eq!(loaded.plugins["demo"].command, ["python3", "plugin.py"]);
+    for retired in [
+        "command = \"plugin\"",
+        "command = [\"plugin\"]\nargs = []",
+        "command = [\"plugin\"]\ntool_timeout_ms = 1",
+    ] {
+        let directory = root(&format!("[plugins.demo]\n{retired}\n"));
+        assert!(
+            load_from_user_root(Some(directory.path())).is_err(),
+            "{retired}"
+        );
+    }
 }

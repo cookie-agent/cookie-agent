@@ -1,4 +1,4 @@
-//! Runtimes as producer sources (`docs/site/specs/external-producers.md`
+//! Runtimes and plugins as producer sources (`docs/site/specs/external-producers.md`
 //! section 5): a runtime that declares `producer_messaging` produces as
 //! `runtime:<attachment name>`, over its live connection, and only for the
 //! sessions attached to it.
@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use cookie_agent_protocol::{
-    ExtensionProducerDiscardParams, ExtensionProducerRegisterParams, ExtensionProducerSendParams,
-    ExtensionProducerUnregisterParams, ProducerSource, ProducerSourceState, SessionId,
+    ProducerDiscardParams, ProducerRegisterParams, ProducerSendParams, ProducerSource,
+    ProducerSourceState, ProducerUnregisterParams, SessionId,
 };
 use cookie_agent_runtime_api::protocol::method;
 
@@ -44,6 +44,7 @@ impl Engine {
         });
         let weak = Arc::downgrade(&self.inner);
         let mut instances = self.inner.runtimes.subscribe();
+        let mut plugins = self.inner.plugins.subscribe_changes();
         self.spawn_admission_task(&runtime, async move {
             loop {
                 let Some(inner) = weak.upgrade() else {
@@ -55,10 +56,14 @@ impl Engine {
                         connection.start_producers(&host);
                     }
                 }
+                for connection in engine.inner.plugins.connections() {
+                    connection.start_producers(&host);
+                }
                 engine.reconcile_external_producer_sessions().await;
                 drop(engine);
                 tokio::select! {
                     changed = instances.changed() => if changed.is_err() { return },
+                    changed = plugins.changed() => if changed.is_err() { return },
                     changed = changes.changed() => if changed.is_err() { return },
                 }
             }
@@ -69,24 +74,21 @@ impl Engine {
         &self,
         call: RuntimeProducerCall,
     ) -> Result<serde_json::Value, EngineError> {
-        let source = ProducerSource::runtime(&call.attachment)
-            .map_err(|error| EngineError::Producer(error.to_string()))?;
+        let source = call.source;
         let params = call.params;
         let decode = |error: serde_json::Error| EngineError::Producer(error.to_string());
         let operation = match call.method.as_str() {
             method::PRODUCER_REGISTER => ExternalProducerOperation::Register(
-                serde_json::from_value::<ExtensionProducerRegisterParams>(params)
-                    .map_err(decode)?,
+                serde_json::from_value::<ProducerRegisterParams>(params).map_err(decode)?,
             ),
             method::PRODUCER_SEND => ExternalProducerOperation::Send(
-                serde_json::from_value::<ExtensionProducerSendParams>(params).map_err(decode)?,
+                serde_json::from_value::<ProducerSendParams>(params).map_err(decode)?,
             ),
             method::PRODUCER_UNREGISTER => ExternalProducerOperation::Unregister(
-                serde_json::from_value::<ExtensionProducerUnregisterParams>(params)
-                    .map_err(decode)?,
+                serde_json::from_value::<ProducerUnregisterParams>(params).map_err(decode)?,
             ),
             method::PRODUCER_DISCARD => ExternalProducerOperation::Discard(
-                serde_json::from_value::<ExtensionProducerDiscardParams>(params).map_err(decode)?,
+                serde_json::from_value::<ProducerDiscardParams>(params).map_err(decode)?,
             ),
             other => {
                 return Err(EngineError::Producer(format!(

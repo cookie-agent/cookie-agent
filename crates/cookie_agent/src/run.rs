@@ -58,35 +58,26 @@ impl From<PermissionModeArg> for PermissionMode {
     }
 }
 
+/// One `--allowed-tools` entry: every tool of a permission action, or one
+/// skill.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum AllowedTool {
-    Read,
-    Write,
-    Bash,
-    Delegate,
-    Mcp,
-    Plugin,
-    PluginPermission(String),
+    Action(PermissionAction),
     Skill(String),
 }
 
 impl AllowedTool {
-    const fn action(&self) -> PermissionAction {
+    fn action(&self) -> PermissionAction {
         match self {
-            Self::Read => PermissionAction::READ,
-            Self::Write => PermissionAction::WRITE,
-            Self::Bash => PermissionAction::BASH,
-            Self::Delegate => PermissionAction::DELEGATE,
-            Self::Mcp => PermissionAction::MCP,
-            Self::Plugin | Self::PluginPermission(_) => PermissionAction::PLUGIN,
+            Self::Action(action) => action.clone(),
             Self::Skill(_) => PermissionAction::SKILL,
         }
     }
 
     fn resource(&self) -> &str {
         match self {
-            Self::Skill(name) | Self::PluginPermission(name) => name,
-            _ => "*",
+            Self::Skill(name) => name,
+            Self::Action(_) => "*",
         }
     }
 }
@@ -95,28 +86,18 @@ impl std::str::FromStr for AllowedTool {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "read" => Ok(Self::Read),
-            "write" => Ok(Self::Write),
-            "bash" => Ok(Self::Bash),
-            "delegate" => Ok(Self::Delegate),
-            "mcp" => Ok(Self::Mcp),
-            "plugin" => Ok(Self::Plugin),
-            _ => value
-                .strip_prefix("skill:")
-                .filter(|name| !name.is_empty())
-                .map(|name| Self::Skill(name.to_owned()))
-                .or_else(|| {
-                    value
-                        .strip_prefix("plugin:")
-                        .filter(|name| !name.is_empty())
-                        .map(|name| Self::PluginPermission(name.to_owned()))
-                })
-                .ok_or_else(|| {
-                    "expected read, write, bash, delegate, mcp, plugin, plugin:<name>, or skill:<name>"
-                        .into()
-                }),
+        if let Some(name) = value.strip_prefix("skill:") {
+            return if name.is_empty() {
+                Err("expected skill:<name>".into())
+            } else {
+                Ok(Self::Skill(name.to_owned()))
+            };
         }
+        PermissionAction::new(value).map(Self::Action).map_err(|_| {
+            "expected a permission action, such as read, write, bash, delegate, or mcp, or \
+             skill:<name>"
+                .into()
+        })
     }
 }
 
@@ -883,7 +864,9 @@ fn event_belongs_to_run(event: &StoredEvent, session_id: SessionId, run_id: RunI
     let session_diagnostic = event.run_id.is_none()
         && matches!(
             &event.payload,
-            EventPayload::PluginDiagnostic { .. } | EventPayload::ProducerDiagnostic { .. }
+            EventPayload::PluginDiagnostic { .. }
+                | EventPayload::ProducerDiagnostic { .. }
+                | EventPayload::EngineDiagnostic { .. }
         );
     event.session_id == session_id && (event.run_id == Some(run_id) || session_diagnostic)
 }
@@ -1028,6 +1011,13 @@ async fn process_event(
             writeln!(
                 stderr,
                 "cookie plugin {plugin}: {}",
+                cookie_agent_protocol::diagnostics::detail(&message)
+            )?;
+        }
+        EventPayload::EngineDiagnostic { message, .. } => {
+            writeln!(
+                stderr,
+                "cookie: {}",
                 cookie_agent_protocol::diagnostics::detail(&message)
             )?;
         }

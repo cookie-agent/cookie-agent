@@ -79,10 +79,10 @@ The TUI's own tests still drive a real `server` through a dev-dependency.
 |---|---|
 | `identity` | Strict shared identities: agent IDs, provider IDs, model keys, variants, wildcard patterns, revisions. The bottom of the stack with no `cookie_agent_*` dependencies. |
 | `protocol` | Current-only wire contracts **and the protocol session layer**: RPC roots, events, session metadata, agent snapshots, JSON Schema bindings, the frame-level `Transport` trait, the in-memory `InProcessStream` pair, the `ServerProtocol` trait, the shared `Client`, `ServerContext`, protocol-owned `serve`, and shared setup-value parsing. The opt-in `websocket` feature adds the daemon client transport (`WebSocketTransport`, `Client::connect_websocket_with_token`, `validate_websocket_url`). Re-exports `identity` and hosts the unified wire types. |
-| `plugin_sdk` | Official Rust SDK for out-of-process plugins: JSON-RPC framing, handler registration, tool declarations, event publication, and interception hooks. |
+| `plugin_sdk` | Official Rust SDK for out-of-process plugins, on the protocol crate's JSON-RPC peer: handler registration, tools over the runtime protocol's tool messages, interception hooks, event and bus handlers, and producers. |
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
 | `config` | Strict runtime configuration and Markdown agent documents from the user layer, with secret zeroization; also the `SKILL.md` parser and project skill discovery that coding runtimes use. Re-exports `AgentMode`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |
-| `runtime_api` | The contract between the engine and the tools it runs: `ToolProvider`, `ToolSpec`, prepared calls, preparation and execution contexts, progress, the traits through which the engine provides output capture and artifact retention, the detach point through which a background-capable tool says when it may be backgrounded, runtime identity (`ToolOrigin`, `RuntimeInfo`, `WorkspaceContext`), tool attachment validation, and the `AGENTS.md` lookup. It also holds the [runtime protocol](reference/runtime-protocol.md): its wire types (`protocol`), the symmetric JSON-RPC peer both ends run with a newline-delimited stdio transport (`rpc`), and `RuntimeConnector`, which starts a runtime for a requested workspace and returns its transport with a bounded `DiagnosticTail` of what it writes outside the protocol. Depends on `protocol` only. |
+| `runtime_api` | The contract between the engine and the tools it runs: `ToolProvider`, `ToolSpec`, prepared calls, preparation and execution contexts, progress, the traits through which the engine provides output capture and artifact retention, the detach point through which a background-capable tool says when it may be backgrounded, runtime identity (`ToolOrigin`, `RuntimeInfo`, `WorkspaceContext`), tool attachment validation, and the `AGENTS.md` lookup. It re-exports the [runtime protocol](reference/runtime-protocol.md)'s wire types (`protocol`) and the symmetric JSON-RPC peer both ends run with a newline-delimited stdio transport (`rpc`), which live in the protocol crate so the plugin SDK shares them, and holds `RuntimeConnector`, which starts a runtime for a requested workspace and returns its transport with a bounded `DiagnosticTail` of what it writes outside the protocol. Depends on `protocol` only. |
 | `mcp` | The MCP client (`cookie_agent_mcp`): an `McpRegistry` per runtime that connects its servers eagerly over stdio or Streamable HTTP, publishes their tools as `<server>_<tool>` with untrusted-output markings, maps result media to attachments, reconnects dropped servers with the shared reconnect policy, and reports status and failures to subscribers and an `McpObserver`. The `oauth` feature, which only the engine enables, adds OAuth for remote servers and the `mcp-oauth.json` credential store. Depends on `runtime_api` and `config`, never on the engine. |
 | `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence, the base layer tools (delegation: `delegate_subagent`, `get_subagent_result`; messaging: `send_message`; `skill`; goals; `read_artifact`; `stop_background`), background calls (`runtime/background_tasks.rs`), subagent reports (`runtime/subagent_reports.rs`), and the runtime registry with the runtime protocol client (`runtimes::remote`), the child-process connector of configured templates (`runtimes::process`), instance reconnects, and the global runtime's `McpRegistry` with the TUI's runtime-layer MCP edits and their write-back (`config_store`). |
 | `coding_runtime` | The coding runtime: its `read`, `write`, `edit`, `bash`, and `webfetch` tools, working in the runtime's workspace, the global runtime's fallback `webfetch`, and the runtime protocol server (`server::serve`) that answers a daemon with them, the workspace's project skills, and its `AGENTS.md`, plus the in-process connector the daemon's `local` runtime uses and `server::serve_stdio`, which `cookie runtime coding --stdio` runs. The server hosts its template's MCP servers with an `McpRegistry` without OAuth. Depends on `runtime_api`, `mcp`, and `config` (the skill parser), never on the engine. |
@@ -549,7 +549,7 @@ source's tree and therefore needs that tree's lock, taking it when it is free
 and failing as foreign-owned when it is not. Grants and grant invalidations
 committed by another process become
 visible after restart. Concurrent MCP configuration edits remain last-writer
-wins. Ownership failures in protocol 43 use an ordinary fault
+wins. Ownership failures in protocol 44 use an ordinary fault
 message rather than a new wire error.
 
 The data directory must be on a local filesystem with correct `flock` or
@@ -568,8 +568,8 @@ These streams are best-effort observers and never participate in consistency or
 backpressure. The non-durable engine bus accepts plugin sources as
 `EngineEvent::PluginEvent`; it fans out to RPC frontends and other subscribed
 plugins with session identity but without replay or cursor semantics. RPC fan-out
-is connection-local and requires a successful event subscription for that session. A plugin's
-own publication is excluded from both plugin fan-out paths.
+is connection-local and requires a successful event subscription for that session. A plugin
+never receives its own bus events.
 
 Plugin diagnostics use a mutex-protected coalescing counter rather than a
 message queue. Producers only increment a normalized key and wake a periodic
@@ -587,7 +587,7 @@ details.
 ## Protocol surface
 
 The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
-an authenticated WebSocket at `/ws`, protocol 43 current-only, `handshake` first.
+an authenticated WebSocket at `/ws`, protocol 44 current-only, `handshake` first.
 Discovery is a single `runtime.snapshot.get` call that returns one coherent
 runtime snapshot (schema 5). Session events stream through `events.subscribe`
 and plugin bus events through `events.plugin`. Raw tool output is not streamed
