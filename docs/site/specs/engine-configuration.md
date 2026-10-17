@@ -1,7 +1,7 @@
 # Live Engine Configuration
 
-Status: **draft** (2026-10-17), awaiting review of the
-[open questions](#9-open-questions).
+Status: **draft** (2026-10-17); open questions decided, see
+[Review](#9-review).
 
 ## 1. Goal and scope
 
@@ -27,6 +27,11 @@ It also fixes the provider-connect defects found while reviewing `/connect`
   here moves or exposes them.
 - Provider setup values (endpoint, region, project) are not secret: the
   `safe_to_project` distinction is removed, and every client shows them.
+- Clients edit whole documents and, in `config.toml`, single keys.
+- Hand edits apply on an explicit reload; there is no file watcher.
+- `[runtimes]` and `[plugins]` changes are reported as needing a restart;
+  making them live is a follow-up.
+- The TUI edits documents in `$VISUAL`/`$EDITOR`.
 
 **Out of scope:** project-level configuration (the daemon still reads only
 the user root), skills (still re-read when a runtime instance starts), the
@@ -137,6 +142,13 @@ Client protocol bump; additive schema check updated.
     otherwise.
   - `{"delete": {path, expected_fingerprint}}`: remove a document. Removing
     the last document of a preset removes its directory.
+  - `{"set": {key, value}}`: set one key of `config.toml`. `key` is the path
+    of table and key names (`["context_compaction", "threshold"]`,
+    `["mcp", "servers", "docs", "command"]`); `value` is JSON mapped to TOML
+    (string, integer, float, boolean, array, or object as an inline table),
+    and `null` removes the key. The edit goes through `toml_edit`, so the
+    rest of the file, comments included, is untouched. A `set` and a `put`
+    of `config.toml` in one change set are refused.
 
   `path` is `config.toml`, `agents/<id>.md`, or `agents/<preset>/<id>.md`;
   anything else is refused.
@@ -179,8 +191,9 @@ Client protocol bump; additive schema check updated.
   `d` deletes one, `r` runs `config.reload`. Because the text travels over the
   protocol, this works against a remote daemon.
 - **CLI.** `cookie config edit [<path>]` (default `config.toml`) does the
-  same in the terminal; `cookie config reload` and `cookie config status`
-  report the status.
+  same in the terminal; `cookie config set <dotted.key> <TOML value>` and
+  `cookie config unset <dotted.key>` send a single `set`;
+  `cookie config reload` and `cookie config status` report the status.
 
 ## 7. Phases
 
@@ -192,8 +205,9 @@ Each phase lands as its own commit, with every gate, docs, and tests.
    capture, `apply_configuration` for the live parts, restart-required
    status, `config.reload`, `config_revision`. The MCP writer's validation
    moves from a temporary directory to `load_from_tree`.
-3. **Writes:** `config.get` / `config.apply` with the set-atomic commit and
-   rollback; `mcp.server.persist` on the same path, including removals.
+3. **Writes:** `config.get` / `config.apply` (`put`, `delete`, `set`) with
+   the set-atomic commit and rollback; `mcp.server.persist` on the same path,
+   including removals.
 4. **Clients:** TUI `/config` and `cookie config`.
 
 ## 8. Tests
@@ -206,20 +220,19 @@ Each phase lands as its own commit, with every gate, docs, and tests.
   back as documented; restart-required parts are reported only when they
   differ.
 - Protocol: conflicts on revision and fingerprint, a change set that is only
-  valid as a whole, rollback when a write fails, refused paths.
+  valid as a whole, rollback when a write fails, refused paths; `set` keeps
+  comments and other keys, removes with `null`, and is refused for a value
+  that fails validation.
 - Provider fixes: per-provider task slots, the retry on a catalog conflict,
   each error code, and that the server wipes received credentials.
 
-## 9. Open questions
+## 9. Review
 
-1. **Edit unit.** Whole documents (TOML and Markdown text, edited in an
-   editor), as above, or structured edits of single keys
-   (`config.set {path: ["context_compaction", "threshold"], value}`) as well?
-   Recommendation: whole documents only; key edits can come later.
-2. **Hand edits.** An explicit `config.reload` (above) or a file watcher that
-   reloads on its own? Recommendation: explicit reload, no watcher.
-3. **`runtimes` and `plugins`.** Report them as restart-required (above), or
-   make them live in this spec (register and unregister templates, start and
-   stop plugins)? Recommendation: restart-required now, live in a follow-up.
-4. **Editing in the TUI.** `$EDITOR` (above) or an editor built into the TUI?
-   Recommendation: `$EDITOR`.
+Decided 2026-10-17:
+
+1. **Edit unit:** whole documents and single-key `set` edits of
+   `config.toml`, both in `config.apply`.
+2. **Hand edits:** explicit `config.reload`; no file watcher.
+3. **`runtimes` and `plugins`:** restart required for now; live in a
+   follow-up.
+4. **TUI editing:** `$VISUAL`/`$EDITOR`.
