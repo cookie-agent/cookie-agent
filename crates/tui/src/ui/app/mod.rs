@@ -622,6 +622,11 @@ pub struct App {
     /// The new-session draft's permission mode and overlay rules, sent with
     /// `session.create` so its first run already sees them.
     pub(super) draft_permissions: DraftPermissions,
+    /// The runtimes the new-session draft attaches, sent with
+    /// `session.create`; `None` until `/runtime` edits them, when the
+    /// session attaches `session.create`'s defaults.
+    pub(super) draft_runtimes: Option<Vec<crate::ui::management::DraftRuntime>>,
+    pub(super) next_draft_runtime: u64,
     /// Revision of the current agent descriptor snapshot; refreshed
     /// coherently with the model revision.
     pub(super) agent_revision: Option<cookie_agent_protocol::AgentRevision>,
@@ -921,6 +926,12 @@ pub(in crate::ui) enum RpcUpdate {
     RuntimeAttachmentChanged {
         result: Result<String, String>,
     },
+    /// The instance of the new-session draft's runtime `id` opened, or why
+    /// it could not.
+    DraftRuntimeOpened {
+        id: u64,
+        result: Result<cookie_agent_protocol::RuntimeInstanceInfo, String>,
+    },
     McpMutation {
         result: Box<Result<Option<McpServerInfo>, String>>,
     },
@@ -1193,6 +1204,8 @@ impl App {
             selected_preset: None,
             new_session_draft: None,
             draft_permissions: DraftPermissions::default(),
+            draft_runtimes: None,
+            next_draft_runtime: 0,
             agent_revision: None,
             models: Vec::new(),
             model_revision: None,
@@ -1439,19 +1452,36 @@ impl App {
 
     async fn create_root_session(&mut self, selection: RunSelection) -> bool {
         let agent = selection.agent.clone();
+        let (global, runtimes) = match &self.draft_runtimes {
+            Some(entries) => (
+                entries
+                    .iter()
+                    .any(crate::ui::management::DraftRuntime::is_global),
+                Some(
+                    entries
+                        .iter()
+                        .filter(|entry| !entry.is_global())
+                        .map(|entry| entry.request.clone())
+                        .collect(),
+                ),
+            ),
+            None => (
+                true,
+                self.client_runtime
+                    .is_some()
+                    .then(|| self.default_coding_runtime())
+                    .flatten()
+                    .map(|request| vec![request]),
+            ),
+        };
         match self
             .client
             .create_session(SessionCreateParams {
                 permission_mode: self.draft_permissions.mode,
                 permission_rules: self.draft_permissions.rules.clone(),
                 cwd: self.cwd.clone(),
-                runtimes: self.client_runtime.as_ref().and_then(|runtime| {
-                    Some(vec![cookie_agent_protocol::RuntimeAttachRequest {
-                        runtime_id: cookie_agent_protocol::RuntimeId::new(runtime.as_str()).ok()?,
-                        capability: Some(cookie_agent_protocol::CapabilityName::coding()),
-                        workspace: self.cwd.clone(),
-                    }])
-                }),
+                runtimes,
+                global,
                 ..SessionCreateParams::new(selection)
             })
             .await
@@ -1462,6 +1492,7 @@ impl App {
                     self.permission_modes.insert(session_id, mode);
                 }
                 self.draft_permissions = DraftPermissions::default();
+                self.draft_runtimes = None;
                 self.note_title_sequence(&result.session);
                 self.sessions.push(result.session);
                 self.note_sessions_changed();

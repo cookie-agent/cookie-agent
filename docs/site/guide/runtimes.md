@@ -27,7 +27,9 @@ startup_timeout_ms = 20000
 
 Start `cookie`, open `/runtime`, press `a`, choose `labpc`, Tab to the
 workspace path, type a path on the remote machine such as `~/cookie-agent`,
-and press Enter. The daemon runs the command once, the remote
+and press Enter. Before the first prompt this chooses the runtimes the new
+session starts with; in an existing session it attaches `labpc` to it. The
+daemon runs the command once, the remote
 `cookie runtime serve` resolves the path on its own machine and opens its
 `coding` capability there, and the session gains an attachment named after
 the runtime ID and the workspace's directory name, here

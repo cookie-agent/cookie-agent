@@ -596,6 +596,10 @@ impl App {
                 };
                 self.poll_runtimes();
             }
+            RpcUpdate::DraftRuntimeOpened { id, result } => {
+                self.install_draft_runtime(id, result);
+                self.poll_runtimes();
+            }
             RpcUpdate::McpMutation { result } => match *result {
                 Ok(_) => {
                     self.status = "MCP server state updated.".into();

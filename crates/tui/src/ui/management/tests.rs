@@ -861,6 +861,7 @@ fn runtime_panel_renders_attachments_with_status_and_failure_reason() {
                 frame.area(),
                 &mut panel,
                 &rows,
+                false,
                 &crate::theme::Theme::default(),
             );
         })

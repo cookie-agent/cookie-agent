@@ -119,3 +119,92 @@ async fn the_runtime_panel_detaches_and_attaches_and_the_status_line_follows() {
     .await;
     assert!(app.status.contains("already attached"), "{}", app.status);
 }
+
+/// Before the first prompt, `/runtime` edits the runtimes the new session
+/// will attach: they open at once, so their status shows, and the session
+/// is created with exactly them.
+#[tokio::test]
+async fn a_new_session_draft_chooses_its_runtimes_before_the_session_exists() {
+    let (_directory, server) = crate::tests::in_process_server();
+    let client = server.connect_in_process();
+    client.handshake().await.expect("handshake");
+    let mut app = App::new_with_new_session(client.clone())
+        .await
+        .expect("app");
+    let mut deliveries = app.take_deliveries();
+    assert!(app.new_session_draft.is_some());
+    assert!(app.selected.is_none());
+
+    app.run_command(SlashCommand::Runtime).await;
+    assert_eq!(app.modal, Modal::Runtimes);
+    // `local` opens before any session attaches it.
+    pump_until(&mut app, &mut deliveries, |app| {
+        app.runtime_panel.listing.is_some()
+            && app
+                .runtime_rows()
+                .iter()
+                .any(|row| row.attachment.name.as_str().starts_with("local_"))
+    })
+    .await;
+    let names = attachment_names(&app);
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert_eq!(names[0], "global");
+    let rendered = rendered_frame(&mut app, 120, 40);
+    assert!(rendered.contains("New session runtimes"), "{rendered}");
+    assert!(rendered.contains("ready"), "{rendered}");
+
+    // Removing and adding edit the draft only; an instance it already
+    // attaches is refused.
+    app.handle_key(key(KeyCode::Char('a'))).await;
+    app.handle_key(key(KeyCode::Enter)).await;
+    assert!(app.status.contains("already attaches"), "{}", app.status);
+    app.handle_key(key(KeyCode::Esc)).await;
+    app.handle_key(key(KeyCode::Char('d'))).await;
+    assert_eq!(attachment_names(&app), [names[1].clone()]);
+    app.handle_key(key(KeyCode::Char('a'))).await;
+    app.handle_key(key(KeyCode::Enter)).await;
+    assert_eq!(
+        attachment_names(&app),
+        [names[1].clone(), "global".to_owned()]
+    );
+    app.handle_key(key(KeyCode::Char('a'))).await;
+    app.handle_key(key(KeyCode::Enter)).await;
+    assert!(app.status.contains("already attaches"), "{}", app.status);
+    app.handle_key(key(KeyCode::Esc)).await;
+    app.handle_key(key(KeyCode::Down)).await;
+    app.handle_key(key(KeyCode::Char('d'))).await;
+    assert_eq!(attachment_names(&app), [names[1].clone()]);
+    app.handle_key(key(KeyCode::Esc)).await;
+    assert!(
+        client
+            .list_sessions(cookie_agent_protocol::SessionListParams::default())
+            .await
+            .expect("sessions")
+            .sessions
+            .is_empty(),
+        "the draft creates no session"
+    );
+
+    // The first prompt creates the session with the draft's runtimes: here
+    // without `global`.
+    type_input(&mut app, "hello").await;
+    app.handle_key(key(KeyCode::Enter)).await;
+    let created = app.selected.expect("created session");
+    assert!(app.draft_runtimes.is_none());
+    pump_until(&mut app, &mut deliveries, |app| {
+        app.store
+            .sessions
+            .get(&created)
+            .and_then(|state| state.runtime_attachments.attachments())
+            .is_some()
+    })
+    .await;
+    let attached = app.store.sessions[&created]
+        .runtime_attachments
+        .attachments()
+        .expect("attachments")
+        .iter()
+        .map(|attachment| attachment.name.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(attached, [names[1].clone()]);
+}

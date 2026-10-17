@@ -179,6 +179,31 @@ impl App {
                     self.status = error;
                 }
             }
+            KeyCode::Char('d') if self.new_session_draft.is_some() => {
+                if let Some(index) = self.runtime_panel.selection.selected()
+                    && let Some(entries) = self.draft_runtimes.as_mut()
+                    && index < entries.len()
+                {
+                    let entry = entries.remove(index);
+                    self.status = format!(
+                        "the new session will not attach runtime `{}`",
+                        entry.request.runtime_id
+                    );
+                }
+            }
+            KeyCode::Char('r') if self.new_session_draft.is_some() => {
+                if let Some(index) = self.runtime_panel.selection.selected()
+                    && let Some(entry) = self
+                        .draft_runtimes
+                        .as_mut()
+                        .and_then(|entries| entries.get_mut(index))
+                {
+                    entry.opened = None;
+                    let entry = entry.clone();
+                    self.status = format!("retrying runtime `{}`...", entry.request.runtime_id);
+                    self.open_draft_runtime(&entry);
+                }
+            }
             KeyCode::Char('d') => {
                 if let Some(row) = self
                     .runtime_panel
@@ -250,6 +275,14 @@ impl App {
                 return;
             }
         };
+        if self.new_session_draft.is_some() {
+            self.add_draft_runtime(cookie_agent_protocol::RuntimeAttachRequest {
+                runtime_id,
+                capability,
+                workspace,
+            });
+            return;
+        }
         let Some(session_id) = self.selected else {
             self.status = "select a session before attaching a runtime".into();
             return;
@@ -292,8 +325,150 @@ impl App {
         });
     }
 
-    /// The selected session's attachments with their instances.
+    /// The `coding` capability a new session attaches by default: the
+    /// runtime this client offers, else `local`, at the client's directory.
+    pub(super) fn default_coding_runtime(
+        &self,
+    ) -> Option<cookie_agent_protocol::RuntimeAttachRequest> {
+        let runtime = self
+            .client_runtime
+            .as_deref()
+            .unwrap_or(cookie_agent_protocol::RuntimeId::LOCAL);
+        Some(cookie_agent_protocol::RuntimeAttachRequest {
+            runtime_id: cookie_agent_protocol::RuntimeId::new(runtime).ok()?,
+            capability: Some(cookie_agent_protocol::CapabilityName::coding()),
+            workspace: self.cwd.clone(),
+        })
+    }
+
+    /// Gives the new-session draft its own runtimes, starting from what
+    /// `session.create` attaches by default, and opens their instances.
+    pub(super) fn materialize_draft_runtimes(&mut self) {
+        if self.draft_runtimes.is_some() {
+            return;
+        }
+        self.draft_runtimes = Some(Vec::new());
+        let global =
+            cookie_agent_protocol::RuntimeId::new(cookie_agent_protocol::RuntimeId::GLOBAL)
+                .ok()
+                .map(|runtime_id| cookie_agent_protocol::RuntimeAttachRequest {
+                    capability: Some(cookie_agent_protocol::default_capability(&runtime_id)),
+                    runtime_id,
+                    workspace: None,
+                });
+        for request in global.into_iter().chain(self.default_coding_runtime()) {
+            let entry = self.push_draft_runtime(request);
+            // `global` is always running; opening it would only retry its
+            // MCP servers.
+            if !entry.is_global() {
+                self.open_draft_runtime(&entry);
+            }
+        }
+    }
+
+    fn push_draft_runtime(
+        &mut self,
+        request: cookie_agent_protocol::RuntimeAttachRequest,
+    ) -> crate::ui::management::DraftRuntime {
+        self.next_draft_runtime += 1;
+        let entry = crate::ui::management::DraftRuntime {
+            id: self.next_draft_runtime,
+            request,
+            opened: None,
+        };
+        self.draft_runtimes
+            .get_or_insert_with(Vec::new)
+            .push(entry.clone());
+        entry
+    }
+
+    fn add_draft_runtime(&mut self, request: cookie_agent_protocol::RuntimeAttachRequest) {
+        self.materialize_draft_runtimes();
+        if self
+            .draft_runtimes
+            .iter()
+            .flatten()
+            .any(|entry| entry.same_instance(&request))
+        {
+            self.status = format!(
+                "the new session already attaches runtime `{}` there",
+                request.runtime_id
+            );
+            return;
+        }
+        self.runtime_panel.form = None;
+        self.status = format!("opening runtime `{}`...", request.runtime_id);
+        let entry = self.push_draft_runtime(request);
+        self.open_draft_runtime(&entry);
+    }
+
+    /// Opens (or retries) the instance of a draft runtime, so the panel
+    /// shows its status before the session attaches it.
+    fn open_draft_runtime(&self, entry: &crate::ui::management::DraftRuntime) {
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        let (id, request) = (entry.id, entry.request.clone());
+        self.spawn_rpc(async move {
+            let result = client
+                .reconnect_runtime(cookie_agent_protocol::RuntimesReconnectParams {
+                    runtime_id: request.runtime_id,
+                    capability: request.capability,
+                    workspace: request.workspace,
+                })
+                .await
+                .map(|result| result.instance)
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::DraftRuntimeOpened { id, result });
+        });
+    }
+
+    /// Records what opening draft runtime `id` answered. An instance that
+    /// turns out to be one the draft already attaches, under another
+    /// spelling of its workspace, leaves the draft.
+    pub(super) fn install_draft_runtime(
+        &mut self,
+        id: u64,
+        result: Result<cookie_agent_protocol::RuntimeInstanceInfo, String>,
+    ) {
+        let Some(entries) = self.draft_runtimes.as_mut() else {
+            return;
+        };
+        let Some(index) = entries.iter().position(|entry| entry.id == id) else {
+            return;
+        };
+        let runtime_id = entries[index].request.runtime_id.clone();
+        if let Ok(instance) = &result {
+            let request = cookie_agent_protocol::RuntimeAttachRequest {
+                runtime_id: instance.runtime_id.clone(),
+                capability: Some(instance.capability.clone()),
+                workspace: instance.workspace.clone(),
+            };
+            if entries
+                .iter()
+                .enumerate()
+                .any(|(other, entry)| other != index && entry.same_instance(&request))
+            {
+                entries.remove(index);
+                self.status =
+                    format!("the new session already attaches runtime `{runtime_id}` there");
+                return;
+            }
+        }
+        if let Err(error) = &result {
+            self.status = format!("runtime `{runtime_id}` cannot start: {error}");
+        }
+        entries[index].opened = Some(result);
+    }
+
+    /// The selected session's attachments with their instances, or the
+    /// new-session draft's runtimes.
     pub(in crate::ui) fn runtime_rows(&self) -> Vec<crate::ui::management::RuntimeRow> {
+        if self.new_session_draft.is_some() {
+            return crate::ui::management::draft_runtime_rows(
+                self.draft_runtimes.as_deref().unwrap_or_default(),
+                self.runtime_panel.listing.as_ref(),
+            );
+        }
         let attachments = self
             .selected
             .and_then(|session_id| self.store.sessions.get(&session_id))

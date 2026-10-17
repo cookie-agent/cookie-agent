@@ -1,10 +1,12 @@
-//! The `/runtime` panel: the selected session's attachments with their
-//! instance status, attaching a runtime's capability, detaching, and
-//! retrying a failed instance.
+//! The `/runtime` panel: the selected session's attachments, or the
+//! runtimes a new-session draft will attach, with their instance status;
+//! attaching a runtime's capability, detaching, and retrying a failed
+//! instance.
 
 use cookie_agent_protocol::{
-    CapabilityName, RuntimeAttachment, RuntimeCapabilityInfo, RuntimeId, RuntimeInstanceInfo,
-    RuntimeInstanceStatus, RuntimeKind, RuntimeListing, RuntimesListResult,
+    AttachmentName, CapabilityName, RuntimeAttachRequest, RuntimeAttachment, RuntimeCapabilityInfo,
+    RuntimeId, RuntimeInstanceInfo, RuntimeInstanceStatus, RuntimeKind, RuntimeListing,
+    RuntimesListResult,
 };
 use ratatui::{
     Frame,
@@ -23,6 +25,40 @@ use super::super::app::paint_panel;
 pub(in crate::ui) struct RuntimeRow {
     pub(in crate::ui) attachment: RuntimeAttachment,
     pub(in crate::ui) instance: Option<RuntimeInstanceInfo>,
+}
+
+/// A runtime a new-session draft attaches. Its instance is opened as soon as
+/// it joins the draft, so its status, and why it failed, show before the
+/// session exists.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::ui) struct DraftRuntime {
+    /// Matches the answer of the open request to this entry.
+    pub(in crate::ui) id: u64,
+    pub(in crate::ui) request: RuntimeAttachRequest,
+    /// The instance the open request answered, or why it failed.
+    pub(in crate::ui) opened: Option<Result<RuntimeInstanceInfo, String>>,
+}
+
+impl DraftRuntime {
+    pub(in crate::ui) fn is_global(&self) -> bool {
+        self.request.runtime_id.as_str() == RuntimeId::GLOBAL
+    }
+
+    /// The opened instance's canonical workspace, else the one requested.
+    pub(in crate::ui) fn workspace(&self) -> Option<&str> {
+        match &self.opened {
+            Some(Ok(instance)) => instance.workspace.as_deref(),
+            _ => self.request.workspace.as_deref(),
+        }
+    }
+
+    /// Whether `other` names the same instance as this entry.
+    pub(in crate::ui) fn same_instance(&self, other: &RuntimeAttachRequest) -> bool {
+        self.request.runtime_id == other.runtime_id
+            && self.request.capability == other.capability
+            && (self.request.workspace == other.workspace
+                || self.workspace() == other.workspace.as_deref())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -249,6 +285,71 @@ pub(in crate::ui) fn runtime_rows(
         .collect()
 }
 
+/// The rows for a new-session draft: each entry with its live instance from
+/// `listing`, else the one its open request answered. Until the instance
+/// reports its attachment name and kind, the row shows the runtime ID and the
+/// capability.
+pub(in crate::ui) fn draft_runtime_rows(
+    entries: &[DraftRuntime],
+    listing: Option<&RuntimesListResult>,
+) -> Vec<RuntimeRow> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let capability = match (&entry.request.capability, &entry.opened) {
+                (Some(capability), _) => capability.clone(),
+                (None, Some(Ok(instance))) => instance.capability.clone(),
+                (None, _) => cookie_agent_protocol::default_capability(&entry.request.runtime_id),
+            };
+            let workspace = entry.workspace().map(str::to_owned);
+            let live = listing.and_then(|listing| {
+                listing
+                    .instances
+                    .iter()
+                    .find(|instance| {
+                        instance.runtime_id == entry.request.runtime_id
+                            && instance.capability == capability
+                            && instance.workspace == workspace
+                    })
+                    .cloned()
+            });
+            let instance = live.or_else(|| match &entry.opened {
+                Some(Ok(instance)) => Some(instance.clone()),
+                Some(Err(message)) => Some(RuntimeInstanceInfo {
+                    runtime_id: entry.request.runtime_id.clone(),
+                    capability: capability.clone(),
+                    attachment_name: None,
+                    kind: None,
+                    workspace: workspace.clone(),
+                    platform: None,
+                    status: RuntimeInstanceStatus::Failed,
+                    message: Some(message.clone()),
+                }),
+                None => None,
+            });
+            Some(RuntimeRow {
+                attachment: RuntimeAttachment {
+                    name: match instance
+                        .as_ref()
+                        .and_then(|instance| instance.attachment_name.clone())
+                    {
+                        Some(name) => name,
+                        None => AttachmentName::new(entry.request.runtime_id.as_str()).ok()?,
+                    },
+                    kind: match instance.as_ref().and_then(|instance| instance.kind.clone()) {
+                        Some(kind) => kind,
+                        None => RuntimeKind::new(capability.as_str()).ok()?,
+                    },
+                    runtime_id: entry.request.runtime_id.clone(),
+                    capability,
+                    workspace,
+                },
+                instance,
+            })
+        })
+        .collect()
+}
+
 /// What a session created before runtimes is attached to.
 fn legacy_attachments(listing: Option<&RuntimesListResult>) -> Vec<RuntimeAttachment> {
     [RuntimeId::GLOBAL, RuntimeId::LOCAL]
@@ -295,11 +396,13 @@ const fn status_label(status: Option<RuntimeInstanceStatus>) -> &'static str {
     }
 }
 
+/// Renders the panel; `draft` when `rows` are a new-session draft's.
 pub(in crate::ui) fn render_runtimes(
     frame: &mut Frame,
     area: Rect,
     panel: &mut RuntimePanel,
     rows: &[RuntimeRow],
+    draft: bool,
     theme: &Theme,
 ) {
     paint_panel(frame, area, theme);
@@ -335,7 +438,11 @@ pub(in crate::ui) fn render_runtimes(
             .block(
                 crate::ui::panel_block()
                     .border_style(theme.panel_border())
-                    .title(crate::ui::panel_title("Session runtimes"))
+                    .title(crate::ui::panel_title(if draft {
+                        "New session runtimes"
+                    } else {
+                        "Session runtimes"
+                    }))
                     .title_bottom(crate::ui::panel_title(
                         Line::from(Span::styled(
                             "a attach | d detach | r retry | esc close",

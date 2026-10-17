@@ -189,7 +189,7 @@ intact.
 | `/model` | Choose the model for the next run, then its variant; nothing applies until the variant is chosen, and Esc in the variant list returns to the models |
 | `/connect` | Connect or update a managed provider |
 | `/mcp` | Manage MCP servers; see [MCP servers](mcp.md) |
-| `/runtime` (also `runtimes`) | Attach and detach the selected session's runtimes; see [Runtimes panel](#runtimes-panel) |
+| `/runtime` (also `runtimes`) | Attach and detach the selected session's runtimes, or choose a new session's before its first prompt; see [Runtimes panel](#runtimes-panel) |
 | `/background` (also `bg`) | List and stop the selected session's background calls; see [Background calls](#background-calls) |
 | `/plugins` (also `plugin`) | Show each plugin's status, tools, hooks, and last failure, and restart one with `r`; see [Plugins](plugins.md#status-and-restarts) |
 | `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](agents.md#permissions) |
@@ -471,6 +471,16 @@ failed (`runtimes.reconnect`). The daemon refuses both
 while the session has an active run, and refuses attaching an instance the
 session already has; the refusal appears in the status line. Attaching starts
 the instance first and records nothing when it fails to start.
+
+Before a new session's first prompt (at startup, or after `/new`), the panel
+is titled *New session runtimes* and edits the runtimes that session will
+attach, starting from the defaults: `global`, and the `coding` capability at
+the TUI's directory (`local`'s, or this machine's when the daemon is remote).
+Each instance opens as soon as it joins the list, so its status and any
+failure show before the session exists, and an instance the list already
+holds is refused. `a`, `d`, and `r` edit the list and contact no session;
+the first prompt creates the session with exactly the listed runtimes, and
+fails without a session when one of them cannot start.
 
 When an MCP server or runtime instance a session uses fails to connect, or
 drops and does not reconnect, the TUI adds an error row to each affected

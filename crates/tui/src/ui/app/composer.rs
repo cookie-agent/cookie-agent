@@ -970,6 +970,7 @@ impl App {
                 self.new_session_draft =
                     self.draft_selection_for_preset(self.selected_preset.as_deref(), None);
                 self.draft_permissions = DraftPermissions::default();
+                self.draft_runtimes = None;
                 // The conversation pane now shows the fresh session; a drag
                 // selection addresses lines of the one it replaced.
                 if matches!(self.selection, Some(TextSelection::Conversation { .. })) {
@@ -1012,8 +1013,16 @@ impl App {
             SlashCommand::Background => self.open_background_panel(),
             SlashCommand::Plugins => self.open_plugin_panel(),
             SlashCommand::Runtime => {
-                if self.selected.is_none() {
-                    self.status = "select a session before managing its runtimes".into();
+                if self.new_session_draft.is_some() {
+                    // The draft's runtimes, opened now so their status shows
+                    // before the session exists.
+                    self.modal = Modal::Runtimes;
+                    self.runtime_panel.form = None;
+                    self.materialize_draft_runtimes();
+                    self.poll_runtimes();
+                } else if self.selected.is_none() {
+                    self.status =
+                        "start a new session (/new) or select one to manage its runtimes".into();
                 } else {
                     self.modal = Modal::Runtimes;
                     self.runtime_panel.form = None;
