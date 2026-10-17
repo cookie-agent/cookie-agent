@@ -50,7 +50,8 @@ daemon-ready {"url":"ws://127.0.0.1:7419/ws","token":"<43-char base64url>"}
 
 The token is `[server] token` in `config.toml`; the daemon writes a fresh one
 there at its first start when there is none, and keeps it across restarts.
-Treat it, and the ready line, as a secret: do not archive or log them.
+Treat it, and the ready line, as a secret: anyone who reads either can
+connect to the daemon.
 Pass `--port 0` to let the OS pick an ephemeral port; the ready line then
 carries the real port, and clients must use that URL rather than guessing 7419.
 
@@ -73,6 +74,57 @@ cookie attach --url wss://laptop.example:7419/ws --token '<43-char base64url>'
 
 A daemon on another machine listens with `--listen`; see
 [Server](../engine/server.md).
+
+The daemon, `cookie runtime serve`, and the TUI stop cleanly on a stop
+signal: `SIGINT`, `SIGTERM` (`kill`, systemd), or `SIGHUP` (a closed
+terminal); on Windows Ctrl-C, Ctrl-Break, a closed console, logoff, or
+shutdown. The daemon stops listening and shuts down its engine and the
+runtimes it started; a runtime cancels its calls and stops its MCP servers; the
+TUI restores the terminal. A second signal during that shutdown exits the
+daemon or runtime at once.
+
+### Running as a service
+
+Both the daemon and a runtime that dials in run until stopped, so each can
+be a systemd user service. On the daemon's machine,
+`~/.config/systemd/user/cookie-daemon.service`:
+
+```ini
+[Unit]
+Description=cookie agent daemon
+
+[Service]
+ExecStart=%h/.cargo/bin/cookie daemon --listen 0.0.0.0:7419
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+On a machine whose `config.toml` names the daemon (`[server] url` and
+`token`; see [Runtimes that dial in](runtimes.md#runtimes-that-dial-in)),
+`~/.config/systemd/user/cookie-runtime.service`:
+
+```ini
+[Unit]
+Description=cookie agent runtime
+
+[Service]
+ExecStart=%h/.cargo/bin/cookie runtime serve --daemon
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+Enable each with `systemctl --user enable --now <name>`, and run
+`loginctl enable-linger` so they run without a login session. Either may
+start first: the runtime retries until the daemon answers. The journal keeps
+the daemon's ready line, token included, readable by whoever can read your
+user journal. A daemon running as a service has
+no `SSH_AUTH_SOCK` from your shell, so an ssh `[runtimes.<id>]` template
+needs a key file in its arguments (`-i`) or an agent socket set with the
+unit's `Environment=`.
 
 One daemon serves sessions of any directory. The TUI, whether attached or
 running the daemon itself, creates its sessions for the directory it was
@@ -481,7 +533,9 @@ without rewriting the session's creation selection. See
 `--data-dir <path>` selects the session and artifact store. `--max-turns` and
 `--timeout` are positive guards and default to 100 root model turns and 600
 seconds. Reaching either guard cancels the run and waits for its terminal event.
-`SIGINT` follows the same cancellation path.
+A stop signal (`SIGINT`, `SIGTERM`, or `SIGHUP`; on Windows Ctrl-C,
+Ctrl-Break, a closed console, logoff, or shutdown) follows the same
+cancellation path.
 
 ### Permissions
 
@@ -544,5 +598,5 @@ syntax errors use Clap's exit code `2` before the runtime starts.
 | `0` | `RunCompleted`, or `user_before_input` intentionally handled the input without starting a run |
 | `1` | `RunFailed`, blocked model selection, or an unrecoverable active-driver failure |
 | `3` | `RunCancelled` after the engine accepted a permission-triggered cancellation |
-| `4` | Other `RunCancelled` outcomes and every `RunInterrupted`, including `SIGINT`, timeout, and turn-limit cancellation |
+| `4` | Other `RunCancelled` outcomes and every `RunInterrupted`, including a stop signal, timeout, and turn-limit cancellation |
 | `5` | Environment or setup failure before the run becomes active |

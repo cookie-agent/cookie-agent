@@ -1663,6 +1663,9 @@ async fn run_terminal(
         .await
         .context("initialize TUI")?;
     app.reconnector = reconnector;
+    // A stop signal quits like `/quit`, so the terminal is restored and an
+    // in-process daemon shuts down.
+    let signals = cookie_agent_protocol::StopSignals::new().context("listen for stop signals")?;
     let mut restore = TerminalRestore;
     enable_raw_mode().context("enable terminal raw mode")?;
     restore.raw_mode_enabled();
@@ -1682,7 +1685,7 @@ async fn run_terminal(
     let backend = EmojiBackend::new(CrosstermBackend::new(stdout));
     let mut terminal = Terminal::new(backend).context("create terminal")?;
     let deliveries = app.take_deliveries();
-    let (result, session_errors) = event_loop(&mut terminal, app, deliveries).await;
+    let (result, session_errors) = event_loop(&mut terminal, app, deliveries, signals).await;
     drop(terminal);
     drop(restore);
     for message in post_teardown_messages(&result, &session_errors) {
@@ -1709,6 +1712,7 @@ async fn event_loop(
     terminal: &mut Terminal<EmojiBackend<CrosstermBackend<io::Stdout>>>,
     mut app: App,
     mut deliveries: tokio::sync::mpsc::UnboundedReceiver<ClientDelivery>,
+    mut signals: cookie_agent_protocol::StopSignals,
 ) -> (anyhow::Result<()>, SessionErrorSummary) {
     let mut events = EventStream::new();
     let mut replay_watchdog = tokio::time::interval(std::time::Duration::from_millis(250));
@@ -1745,6 +1749,7 @@ async fn event_loop(
         let animating = app.animation_active();
         let frame_due = animating || render.pending();
         tokio::select! {
+            () = signals.recv() => return (Ok(()), app.session_errors.clone()),
             Some(event) = events.next() => match event {
                 Ok(CrosstermEvent::Key(key)) => {
                     app.handle_key(key).await;

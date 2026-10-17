@@ -122,6 +122,7 @@ pub mod runtime_protocol;
 mod session;
 mod session_model;
 mod setup_value;
+mod stop;
 
 pub use agent::*;
 pub use approval::*;
@@ -150,6 +151,7 @@ pub use runtime::*;
 pub use session::*;
 pub use session_model::*;
 pub use setup_value::*;
+pub use stop::StopSignals;
 
 /// The only protocol version supported by this build.
 pub const PROTOCOL_VERSION: u32 = 45;

@@ -191,8 +191,8 @@ to workspaces under those directories; a root that does not exist fails at
 start. It needs no provider configuration and reads no `config.toml`; a
 leading `~` in a workspace or root is expanded, and paths are resolved on the
 machine it runs on. Standard output carries only protocol messages and
-diagnostics go to standard error. It exits on `runtime/shutdown` or when
-standard input closes. A template normally runs it; running it by hand is
+diagnostics go to standard error. It exits on `runtime/shutdown`, when
+standard input closes, or on a stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`). A template normally runs it; running it by hand is
 only useful for debugging.
 
 ## Runtimes that dial in
@@ -232,7 +232,9 @@ cookie runtime serve --daemon
   1 s, 2 s, 4 s, and so on up to 30 s. While it is away, its instances go
   `reconnecting` and then `failed`, and their tools leave the sessions' tool
   lists; when it dials in again, the daemon reopens them over the new
-  connection. `runtimes.list` shows it with lifetime `dial_in`.
+  connection. `runtimes.list` shows it with lifetime `dial_in`. It stops
+  on a stop signal (`SIGINT`, `SIGTERM`, `SIGHUP`), so it runs as a
+  service; see [Running as a service](run.md#running-as-a-service).
 - **MCP servers.** It hosts its own machine's MCP servers: those of
   `[runtimes.local.mcp]` in that machine's `config.toml`.
 - **Roots.** `--root` limits its workspaces, as for `--stdio`.

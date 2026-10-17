@@ -79,6 +79,9 @@ pub struct ServeOptions {
     /// to the runtime. The runtime tracks no external work of its own, so
     /// it reports its recovery ready as soon as the daemon starts it.
     pub producer_messaging: bool,
+    /// Stops serving when cancelled, as `runtime/shutdown` does: calls still
+    /// running are cancelled and the MCP servers shut down.
+    pub stop: CancellationToken,
 }
 
 impl Default for ServeOptions {
@@ -90,6 +93,7 @@ impl Default for ServeOptions {
             tools: builtin_tools(),
             mcp_reconnect: None,
             producer_messaging: false,
+            stop: CancellationToken::new(),
         }
     }
 }
@@ -166,10 +170,12 @@ pub async fn serve_stdio(options: ServeOptions) {
     .await;
 }
 
-/// Serves one daemon over `transport` until it sends `runtime/shutdown` or
-/// the transport ends. Calls still running are cancelled when it returns.
+/// Serves one daemon over `transport` until it sends `runtime/shutdown`,
+/// the transport ends, or [`ServeOptions::stop`] is cancelled. Calls still
+/// running are cancelled when it returns.
 pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
     let (peer, mut incoming) = Peer::start(transport);
+    let stop = options.stop.child_token();
     let server = Arc::new(Server {
         peer: peer.clone(),
         options,
@@ -181,7 +187,7 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) {
         prepared: Mutex::default(),
         executions: Mutex::default(),
         next_prepared: AtomicU64::new(1),
-        stop: CancellationToken::new(),
+        stop,
     });
     loop {
         tokio::select! {

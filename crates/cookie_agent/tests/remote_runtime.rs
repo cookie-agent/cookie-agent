@@ -759,8 +759,8 @@ async fn a_configured_runtime_hosts_its_template_mcp_servers() {
 }
 
 /// The real binary dials in to the daemon its machine's configuration names,
-/// with the token it holds, serves a session's workspace, and shows as
-/// disconnected once it exits.
+/// with the token it holds, serves a session's workspace, stops cleanly on
+/// `SIGTERM`, and shows as disconnected once it exits.
 #[tokio::test]
 async fn a_runtime_dials_in_and_serves_a_session() {
     let fixture = Fixture::new(30_000).await;
@@ -836,7 +836,14 @@ async fn a_runtime_dials_in_and_serves_a_session() {
         Some(canonical.to_string_lossy().as_ref())
     );
 
-    runtime.kill().await.expect("stop the runtime");
+    let pid = i32::try_from(runtime.id().expect("runtime pid")).expect("pid fits");
+    // SAFETY: plain signal delivery to a child process this test started.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0, "signal {pid}");
+    let status = tokio::time::timeout(WAIT, runtime.wait())
+        .await
+        .expect("the runtime stops")
+        .expect("exit status");
+    assert!(status.success(), "{status}");
     tokio::time::timeout(WAIT, async {
         while labpc_connected(&fixture.engine).is_some_and(|(_, connected)| connected) {
             tokio::time::sleep(Duration::from_millis(20)).await;

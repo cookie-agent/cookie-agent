@@ -135,11 +135,9 @@ impl RuntimeConnector for TestConnector {
         tokio::spawn(serve(
             Box::new(runtime),
             ServeOptions {
-                roots: Vec::new(),
-                mcp_servers: Vec::new(),
                 tools: Arc::clone(&self.tools),
-                mcp_reconnect: None,
                 producer_messaging: self.producer_messaging,
+                ..Default::default()
             },
         ));
         Ok(cookie_agent_runtime_api::RuntimeConnection::new(Box::new(

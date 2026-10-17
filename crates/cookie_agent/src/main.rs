@@ -495,21 +495,28 @@ async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
         // A runtime that dials in hosts its own machine's MCP servers: those
         // of `[runtimes.local.mcp]` in its configuration.
         let mcp_servers = local_runtime_mcp_servers()?;
-        return dial_in(
+        let stop = CancellationToken::new();
+        stop_on_signal(stop.clone())?;
+        dial_in(
             &daemon,
             &token,
             &id,
             cookie_agent_coding_runtime::server::ServeOptions {
                 roots,
                 mcp_servers,
+                stop,
                 ..Default::default()
             },
         )
         .await;
+        return Ok(());
     }
+    let stop = CancellationToken::new();
+    stop_on_signal(stop.clone())?;
     cookie_agent_coding_runtime::server::serve_stdio(
         cookie_agent_coding_runtime::server::ServeOptions {
             roots,
+            stop,
             ..Default::default()
         },
     )
@@ -812,9 +819,7 @@ async fn run_attached_tui(url: &str, token: &str) -> anyhow::Result<()> {
                 ..Default::default()
             };
             let (url, token, dial_id) = (url.to_owned(), token.to_owned(), id.clone());
-            tokio::spawn(async move {
-                let _ = dial_in(&url, &token, &dial_id, options).await;
-            });
+            tokio::spawn(async move { dial_in(&url, &token, &dial_id, options).await });
             Some(id)
         }
         _ => None,
@@ -1039,6 +1044,8 @@ async fn authorize_mcp_server(client: &Client, server: String) -> anyhow::Result
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let mut stdin_open = true;
     let mut status_poll = tokio::time::interval(Duration::from_secs(2));
+    let mut signals =
+        cookie_agent_protocol::StopSignals::new().context("listen for stop signals")?;
     loop {
         let completed = tokio::select! {
             callback = listener.accept() => {
@@ -1061,8 +1068,7 @@ async fn authorize_mcp_server(client: &Client, server: String) -> anyhow::Result
                 }
                 continue;
             }
-            signal = tokio::signal::ctrl_c() => {
-                signal.context("wait for Ctrl-C")?;
+            () = signals.recv() => {
                 let _ = client
                     .cancel_mcp_auth(McpAuthCancelParams { server: server.clone() })
                     .await;
@@ -1531,16 +1537,24 @@ async fn dial_in(
     token: &str,
     id: &str,
     options: cookie_agent_coding_runtime::server::ServeOptions,
-) -> anyhow::Result<()> {
+) {
     const LONGEST_WAIT: Duration = Duration::from_secs(30);
+    let stop = options.stop.clone();
     let mut wait = Duration::from_secs(1);
     loop {
-        match cookie_agent_protocol::WebSocketTransport::connect_runtime(daemon, token, id).await {
+        let connected = tokio::select! {
+            () = stop.cancelled() => return,
+            connected = cookie_agent_protocol::WebSocketTransport::connect_runtime(daemon, token, id) => connected,
+        };
+        match connected {
             Ok(transport) => {
                 eprintln!("cookie runtime: connected to {daemon} as `{id}`");
                 let started = std::time::Instant::now();
                 cookie_agent_coding_runtime::server::serve(Box::new(transport), options.clone())
                     .await;
+                if stop.is_cancelled() {
+                    return;
+                }
                 eprintln!("cookie runtime: disconnected from {daemon}");
                 if started.elapsed() > LONGEST_WAIT {
                     wait = Duration::from_secs(1);
@@ -1550,7 +1564,7 @@ async fn dial_in(
         }
         tokio::select! {
             () = tokio::time::sleep(wait) => {}
-            signal = tokio::signal::ctrl_c() => return signal.context("wait for stop signal"),
+            () = stop.cancelled() => return,
         }
         wait = (wait * 2).min(LONGEST_WAIT);
     }
@@ -1575,18 +1589,23 @@ async fn run_daemon(mut runtime: Runtime, options: DaemonListen) -> anyhow::Resu
         std::net::SocketAddr::from(([127, 0, 0, 1], port.unwrap_or(runtime.port)))
     });
     let scheme = if tls.is_some() { "wss" } else { "ws" };
-    let listener = match runtime
-        .server
-        .clone()
-        .serve_on(address, token.clone(), tls)
-        .await
-    {
-        Ok(listener) => listener,
+    let started = match cookie_agent_protocol::StopSignals::new() {
+        Ok(signals) => runtime
+            .server
+            .clone()
+            .serve_on(address, token.clone(), tls)
+            .await
+            .map(|listener| (signals, listener))
+            .map_err(|error| anyhow::Error::new(error).context("start WebSocket daemon")),
+        Err(error) => Err(anyhow::Error::new(error).context("listen for stop signals")),
+    };
+    let (mut signals, listener) = match started {
+        Ok(started) => started,
         Err(error) => {
             runtime.server.shutdown();
             runtime.stop_catalog_refresh().await;
             runtime.engine.shutdown().await;
-            return Err(anyhow::Error::new(error).context("start WebSocket daemon"));
+            return Err(error);
         }
     };
     let url = format!("{scheme}://{}/ws", listener.address());
@@ -1596,12 +1615,35 @@ async fn run_daemon(mut runtime: Runtime, options: DaemonListen) -> anyhow::Resu
         "cookie daemon listening on {url} (protocol {})",
         cookie_agent_protocol::PROTOCOL_VERSION
     );
-    let signal = tokio::signal::ctrl_c().await;
+    signals.recv().await;
+    exit_on_next_stop(signals);
     runtime.server.shutdown();
     runtime.stop_catalog_refresh().await;
     listener.wait().await;
     runtime.engine.shutdown().await;
-    signal.context("wait for daemon shutdown signal")
+    Ok(())
+}
+
+/// Exits at once on the next stop signal, for a graceful stop that hangs.
+fn exit_on_next_stop(mut signals: cookie_agent_protocol::StopSignals) {
+    tokio::spawn(async move {
+        signals.recv().await;
+        eprintln!("cookie: stopping at once");
+        std::process::exit(1);
+    });
+}
+
+/// Cancels `stop` on the first stop signal; see [`exit_on_next_stop`] for
+/// the second.
+fn stop_on_signal(stop: CancellationToken) -> anyhow::Result<()> {
+    let mut signals =
+        cookie_agent_protocol::StopSignals::new().context("listen for stop signals")?;
+    tokio::spawn(async move {
+        signals.recv().await;
+        stop.cancel();
+        exit_on_next_stop(signals);
+    });
+    Ok(())
 }
 
 #[cfg(test)]

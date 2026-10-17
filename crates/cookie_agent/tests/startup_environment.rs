@@ -135,3 +135,45 @@ fn connect_is_cwd_independent_and_rejects_non_tty_before_credentials() {
     assert!(!report.contains("load user configuration"), "{report}");
     assert!(!report.contains("expected-process-credential"), "{report}");
 }
+
+/// The daemon shuts down and exits cleanly on each signal that asks it to
+/// stop, as `kill`, systemd, or a closed terminal sends.
+#[test]
+fn the_daemon_exits_cleanly_on_each_stop_signal() {
+    use std::io::BufRead as _;
+
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        let home = TestHome::new();
+        let mut daemon = Command::new(env!("CARGO_BIN_EXE_cookie"))
+            .args(["daemon", "--listen", "127.0.0.1:0"])
+            .current_dir(home.path())
+            .env_clear()
+            .env("HOME", home.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn the daemon");
+        // Kept open until the daemon exits, so its later lines still write.
+        let mut stdout = std::io::BufReader::new(daemon.stdout.take().expect("stdout"));
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).expect("read the ready line");
+        assert!(ready.starts_with("daemon-ready "), "{ready:?}");
+        let pid = i32::try_from(daemon.id()).expect("pid fits");
+        // SAFETY: plain signal delivery to a child process this test started.
+        assert_eq!(unsafe { libc::kill(pid, signal) }, 0, "signal {pid}");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = daemon.try_wait().expect("daemon status") {
+                break status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the daemon did not stop"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(status.success(), "signal {signal}: {status}");
+        drop(stdout);
+    }
+}

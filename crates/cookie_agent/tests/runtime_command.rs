@@ -124,6 +124,23 @@ async fn the_runtime_opens_workspaces_expanding_home_and_stops_on_shutdown() {
     exits_successfully(&mut child).await;
 }
 
+/// A signal that asks the runtime to stop, as `kill`, systemd, or a closed
+/// terminal sends, stops it serving and it exits cleanly.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_runtime_exits_cleanly_on_each_stop_signal() {
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        let home = tempfile::tempdir().unwrap();
+        let mut child = runtime(home.path(), &[]);
+        let peer = connect(&mut child);
+        initialize(&peer).await;
+        let pid = i32::try_from(child.id().expect("runtime pid")).expect("pid fits");
+        // SAFETY: plain signal delivery to a child process this test started.
+        assert_eq!(unsafe { libc::kill(pid, signal) }, 0, "signal {pid}");
+        exits_successfully(&mut child).await;
+    }
+}
+
 #[tokio::test]
 async fn the_runtime_refuses_workspaces_outside_its_roots_and_exits_on_stdin_eof() {
     let home = tempfile::tempdir().unwrap();

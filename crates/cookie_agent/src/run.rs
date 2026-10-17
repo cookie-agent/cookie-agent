@@ -286,8 +286,12 @@ pub async fn execute(engine: &Engine, args: RunArgs) -> i32 {
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
+    let signals = cookie_agent_protocol::StopSignals::new();
     execute_with_io(engine, args, &mut stdin, &mut stdout, &mut stderr, async {
-        let _ = tokio::signal::ctrl_c().await;
+        match signals {
+            Ok(mut signals) => signals.recv().await,
+            Err(_) => std::future::pending().await,
+        }
     })
     .await
 }
