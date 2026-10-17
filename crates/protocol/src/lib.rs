@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 46 with versionless session events.
+//! Exact cookie-agent protocol 47 with versionless session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders, except
 //! the few that keep versionless session event history readable.
@@ -102,6 +102,7 @@ mod agent;
 mod approval;
 mod attachment;
 mod bindings;
+mod config;
 pub mod diagnostics;
 mod event;
 mod extension;
@@ -128,14 +129,15 @@ pub use agent::*;
 pub use approval::*;
 pub use attachment::*;
 pub use bindings::*;
+pub use config::*;
 pub use cookie_agent_identity::{
     AdapterId, AgentId, AgentRevision, AttachmentName, AuthFieldName, AuthMethodId,
     AuthParameterId, AuthRecipeId, CacheEntryId, CacheRevision, CanonicalModelId, CapabilityName,
-    CatalogRevision, IdentityError, ManifestEntryId, ManifestRevision, ModelKey, ModelRevision,
-    ModelSelection, ModelSnapshotRevision, ProtocolRecipeId, ProviderId, ProviderModelId,
-    ProviderRecipeId, ProviderSetupRecipeId, ProviderStateRevision, ProviderStoreRevision,
-    RecipeCompilerVersion, RecipeRegistryRevision, RuntimeId, RuntimeRevision, SafeCode,
-    SetupFieldId, StoreEntryId, VariantId, WildcardPattern,
+    CatalogRevision, ConfigRevision, IdentityError, ManifestEntryId, ManifestRevision, ModelKey,
+    ModelRevision, ModelSelection, ModelSnapshotRevision, ProtocolRecipeId, ProviderId,
+    ProviderModelId, ProviderRecipeId, ProviderSetupRecipeId, ProviderStateRevision,
+    ProviderStoreRevision, RecipeCompilerVersion, RecipeRegistryRevision, RuntimeId,
+    RuntimeRevision, SafeCode, SetupFieldId, StoreEntryId, VariantId, WildcardPattern,
 };
 pub use event::*;
 pub use extension::*;
@@ -154,7 +156,7 @@ pub use setup_value::*;
 pub use stop::StopSignals;
 
 /// The only protocol version supported by this build.
-pub const PROTOCOL_VERSION: u32 = 46;
+pub const PROTOCOL_VERSION: u32 = 47;
 /// The only coherent runtime snapshot schema supported by this build.
 pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 6;
 
@@ -218,7 +220,7 @@ macro_rules! exact_numeric_wire_type {
     };
 }
 
-exact_numeric_wire_type!(ProtocolVersion, 46, "The exact protocol wire version.");
+exact_numeric_wire_type!(ProtocolVersion, 47, "The exact protocol wire version.");
 exact_numeric_wire_type!(
     RuntimeSnapshotSchemaVersion,
     6,

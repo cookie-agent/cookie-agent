@@ -18,6 +18,7 @@ pub(crate) fn build_runtime_snapshot(
     models: &CompiledModelRuntime,
     agents: &AgentRegistry,
     agent_presets: &BTreeMap<String, std::sync::Arc<AgentRegistry>>,
+    config_revision: &protocol::ConfigRevision,
 ) -> Result<protocol::RuntimeSnapshotV1, EngineError> {
     let mut compiled_by_provider =
         BTreeMap::<protocol::ProviderId, Vec<&cookie_agent_models::CompiledRuntimeModel>>::new();
@@ -67,6 +68,7 @@ pub(crate) fn build_runtime_snapshot(
         &models.provider_state_revision(),
         models.model_revision(),
         &agent_revision,
+        config_revision,
     )?;
     let catalog = models.catalog();
     let quarantine = quarantine_summary(models)?;
@@ -125,6 +127,7 @@ pub(crate) fn build_runtime_snapshot(
         .map_err(|_| EngineError::RuntimeCompileFailed)?,
         model_revision: models.model_revision().clone(),
         agent_revision,
+        config_revision: config_revision.clone(),
         runtime_revision,
         providers,
         models: available_models,
@@ -193,15 +196,17 @@ pub(crate) fn runtime_revision(
     provider_state_revision: &protocol::ProviderStateRevision,
     model_revision: &protocol::ModelRevision,
     agent_revision: &protocol::AgentRevision,
+    config_revision: &protocol::ConfigRevision,
 ) -> Result<protocol::RuntimeRevision, EngineError> {
     revision::<protocol::RuntimeRevision, _>(
-        "cookie-agent/engine-runtime/v1",
+        "cookie-agent/engine-runtime/v2",
         &(
             recipe_registry_revision,
             catalog_revision,
             provider_state_revision,
             model_revision,
             agent_revision,
+            config_revision,
         ),
         protocol::RuntimeRevision::new,
     )

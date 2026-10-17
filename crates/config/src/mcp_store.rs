@@ -7,7 +7,7 @@ use std::{
 use serde::Serialize;
 use toml_edit::{DocumentMut, Item, Table};
 
-use crate::{ConfigError, McpServerConfig, load_from_user_root};
+use crate::{ConfigError, ConfigPath, ConfigTree, McpServerConfig, load_from_tree};
 
 #[derive(Serialize)]
 struct ServerDocument<'a> {
@@ -113,8 +113,10 @@ fn read_original(path: &Path) -> Result<(String, bool), ConfigError> {
     }
 }
 
-/// Replaces `path` with `candidate` once the strict loader accepts it as a
-/// complete configuration layer and `path` still holds `original`.
+/// Replaces `path` with `candidate` once the strict loader accepts it, with
+/// the agent documents beside it, as a complete configuration, and `path`
+/// still holds `original`. Validation runs in memory: nothing but the final
+/// file is written.
 fn commit(
     path: &Path,
     original: &str,
@@ -122,10 +124,9 @@ fn commit(
     candidate: &str,
     mut observe: impl FnMut(CommitStep),
 ) -> Result<(), ConfigError> {
-    let validation_root = tempfile_root(path, candidate)?;
-    let validation = load_from_user_root(Some(&validation_root));
-    let _ = fs::remove_dir_all(&validation_root);
-    validation?;
+    let mut tree = ConfigTree::read(path.parent())?;
+    tree.put(ConfigPath::config(), candidate.as_bytes().to_vec())?;
+    load_from_tree(&tree)?;
 
     let parent = path.parent().ok_or(ConfigError::UnsafePath)?;
     fs::create_dir_all(parent).map_err(ConfigError::Io)?;
@@ -271,18 +272,6 @@ fn sync_directory(path: &Path) -> std::io::Result<()> {
             }
             Err(error) => Err(error),
         })
-}
-
-fn tempfile_root(path: &Path, candidate: &str) -> Result<std::path::PathBuf, ConfigError> {
-    let parent = path.parent().ok_or(ConfigError::UnsafePath)?;
-    fs::create_dir_all(parent).map_err(ConfigError::Io)?;
-    let root = parent.join(format!(".cookie-agent-validate-{}", std::process::id()));
-    if root.exists() {
-        fs::remove_dir_all(&root).map_err(ConfigError::Io)?;
-    }
-    fs::create_dir(&root).map_err(ConfigError::Io)?;
-    fs::write(root.join("config.toml"), candidate).map_err(ConfigError::Io)?;
-    Ok(root)
 }
 
 #[cfg(test)]

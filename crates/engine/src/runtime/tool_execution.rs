@@ -120,7 +120,9 @@ impl Engine {
                         // The user-facing approval window comes from
                         // `[approval].timeout_ms`, not the internal approval
                         // agent's classifier model-call budget.
-                        expires_at: approval_expiry(self.inner.config.runtime.approval.timeout_ms),
+                        expires_at: approval_expiry(
+                            self.inner.config.load().runtime.approval.timeout_ms,
+                        ),
                     },
                 )
                 .map_err(|error| ToolFailure {

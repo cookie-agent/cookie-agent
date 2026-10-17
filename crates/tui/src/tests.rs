@@ -346,6 +346,8 @@ fn build_in_process_server(
         plugins: Default::default(),
         runtimes: Default::default(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
+        revision: cookie_agent_protocol::ConfigRevision::new(format!("sha256:{}", "0".repeat(64)))
+            .unwrap(),
         skills,
     };
     let engine = Engine::open(EngineOptions {

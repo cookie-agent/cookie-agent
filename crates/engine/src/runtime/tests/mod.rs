@@ -7,6 +7,7 @@ mod approvals;
 mod artifacts;
 mod background_tasks;
 mod compaction;
+mod configuration;
 mod delegation;
 mod delegation_queue;
 mod delegation_revert;

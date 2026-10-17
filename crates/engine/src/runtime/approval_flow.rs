@@ -155,7 +155,7 @@ impl Engine {
             // The user-facing approval window comes from `[approval].timeout_ms`.
             // The internal approval agent's own `limits.timeout_ms` is only the
             // classifier model-call budget (see `run_internal_history_agent`).
-            approval_expiry(self.inner.config.runtime.approval.timeout_ms),
+            approval_expiry(self.inner.config.load().runtime.approval.timeout_ms),
         );
         self.await_user_approval(active, run, request, input.executor, false, input.tool)
             .await

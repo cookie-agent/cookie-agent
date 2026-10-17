@@ -17,18 +17,13 @@ use crate::{
     ModelRetryConfig, ServerConfig, SessionTitleConfig, SubagentOutputConfig, ToolOutputConfig,
     agent_document::parse_agent,
     runtime::{RawRuntimeLayer, apply_settings, validate_runtime},
-    secure_fs::{
-        LayerRoot, open_layer_root, open_optional_directory, read_optional_file,
-        read_required_file, regular_file_at,
-    },
     toml_values::{
         SensitiveJsonValue, SensitiveProviderValues, SensitiveTomlValue,
         interpolate_provider_values, safe_toml_error, validate_toml_value, zeroize_toml_value,
     },
+    tree::{CONFIG_FILE, ConfigDocument, ConfigPath, ConfigTree},
 };
 
-const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
-const MAX_AGENT_BYTES: u64 = 256 * 1024;
 const BUILT_IN_CONFIG: &str = include_str!("defaults.toml");
 
 #[derive(Clone, Debug)]
@@ -47,6 +42,8 @@ pub struct LoadedConfiguration {
     /// The `[runtimes.<id>]` templates, `local` included when authored.
     pub runtimes: BTreeMap<cookie_agent_identity::RuntimeId, crate::RuntimeTemplateConfig>,
     pub config_paths: ConfigLayerPaths,
+    /// The revision of the documents this configuration was decoded from.
+    pub revision: cookie_agent_identity::ConfigRevision,
     /// User skills, contributed by the global runtime.
     pub skills: crate::SkillRegistry,
 }
@@ -98,10 +95,13 @@ pub fn load() -> Result<LoadedConfiguration, ConfigError> {
 /// Loads the built-in defaults and an explicit user layer root, primarily for
 /// composition and adversarial tests. Skills are not discovered.
 pub fn load_from_user_root(user_root: Option<&Path>) -> Result<LoadedConfiguration, ConfigError> {
-    let user = user_root
-        .map(|path| open_layer_root(path, AgentDocumentSource::User))
-        .transpose()?
-        .flatten();
+    load_from_tree(&ConfigTree::read(user_root)?)
+}
+
+/// Decodes and validates the built-in defaults and the documents of `tree`
+/// exactly as [`load_from_user_root`] does for the same files, without
+/// touching the disk. Skills are not discovered.
+pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigError> {
     let mut runtime = EngineConfig {
         server: ServerConfig::default(),
         tool_output: ToolOutputConfig::default(),
@@ -138,8 +138,13 @@ pub fn load_from_user_root(user_root: Option<&Path>) -> Result<LoadedConfigurati
     interpolate_provider_values(&mut built_in_value, &mut Vec::new())?;
     let built_in_layer = decode_runtime_layer(&mut built_in_value, &built_in_text, built_in_path)?;
     apply_settings(&mut runtime, &built_in_layer);
-    if let Some(root) = &user {
-        if let Some((mut layer, source_text)) = root.load_runtime()? {
+    let config_path = tree.display_path(&ConfigPath::config());
+    {
+        if let Some((mut layer, source_text)) = tree
+            .get(&ConfigPath::config())
+            .map(|bytes| load_runtime(bytes, &config_path))
+            .transpose()?
+        {
             apply_settings(&mut runtime, &layer);
             if let Some(mcp) = layer.mcp.take() {
                 for (name, config) in mcp.servers {
@@ -158,11 +163,7 @@ pub fn load_from_user_root(user_root: Option<&Path>) -> Result<LoadedConfigurati
                     |(name, config)| {
                         (
                             name,
-                            (
-                                config,
-                                root.path.join("config.toml"),
-                                Arc::clone(&source_text),
-                            ),
+                            (config, config_path.clone(), Arc::clone(&source_text)),
                         )
                     },
                 ));
@@ -173,21 +174,32 @@ pub fn load_from_user_root(user_root: Option<&Path>) -> Result<LoadedConfigurati
             for (id, mut value) in std::mem::take(&mut layer.providers) {
                 let json = SensitiveJsonValue::from_toml(value.take());
                 let provider = ProviderDefinition::deserialize(json.value()).map_err(|error| {
-                    config_decode_error(
-                        &root.path.join("config.toml"),
-                        None,
-                        &format!("provider `{id}`: {error}"),
-                    )
+                    config_decode_error(&config_path, None, &format!("provider `{id}`: {error}"))
                 })?;
                 runtime.providers.insert(id, provider);
             }
         }
-        let layer_agents = root.load_agents()?;
-        for (id, document) in layer_agents.shared {
-            agents.insert(id, document);
+        for (path, bytes) in tree.documents() {
+            let ConfigDocument::Agent { preset, id } = path.document() else {
+                continue;
+            };
+            let id = AgentId::new(id).expect("validated agent path");
+            let document = parse_agent(
+                id.clone(),
+                bytes,
+                AgentDocumentSource::User,
+                &tree.display_path(path),
+            )?;
+            match preset {
+                None => agents.insert(id, document),
+                Some(preset) => preset_agents
+                    .entry(preset.to_owned())
+                    .or_default()
+                    .insert(id, document),
+            };
         }
-        for (preset, documents) in layer_agents.presets {
-            preset_agents.entry(preset).or_default().extend(documents);
+        for preset in tree.empty_presets() {
+            preset_agents.entry(preset.to_owned()).or_default();
         }
     }
     AgentRegistry::validate_ref(&agents)?;
@@ -251,8 +263,9 @@ pub fn load_from_user_root(user_root: Option<&Path>) -> Result<LoadedConfigurati
         plugins,
         runtimes,
         config_paths: ConfigLayerPaths {
-            user: user_root.map(|root| root.join("config.toml")),
+            user: tree.root().map(|root| root.join(CONFIG_FILE)),
         },
+        revision: tree.revision(),
         skills: crate::SkillRegistry::default(),
     })
 }
@@ -277,109 +290,26 @@ fn plugins_in_authored_order(
     })
 }
 
-impl LayerRoot {
-    fn load_runtime(&self) -> Result<Option<(RawRuntimeLayer, Arc<str>)>, ConfigError> {
-        let Some(bytes) = read_optional_file(&self.path, "config.toml", MAX_CONFIG_BYTES)? else {
-            return Ok(None);
-        };
-        let path = self.path.join("config.toml");
-        let text = std::str::from_utf8(&bytes)
-            .map_err(|_| ConfigError::Toml(format!("{}: content is not UTF-8", path.display())))?;
-        let value = text.parse::<toml::Value>().map_err(|error| {
-            ConfigError::Toml(format!(
-                "{}: {}",
-                path.display(),
-                safe_toml_error(text, &error)
-            ))
-        })?;
-        let mut value = SensitiveTomlValue::new(value);
-        validate_toml_value(value.value()).map_err(|_| {
-            ConfigError::Toml(format!(
-                "{}: TOML resource limit or unsupported datetime exceeded",
-                path.display()
-            ))
-        })?;
-        interpolate_provider_values(value.value_mut(), &mut Vec::new())?;
-        let layer = decode_runtime_layer(value.value_mut(), text, &path)?;
-        Ok(Some((layer, Arc::from(text))))
-    }
-
-    fn load_agents(&self) -> Result<AgentLayer, ConfigError> {
-        let Some(directory) = open_optional_directory(&self.path, "agents")? else {
-            return Ok(AgentLayer::default());
-        };
-        let names = sorted_entry_names(&directory)?;
-        let mut layer = AgentLayer::default();
-        for name in names {
-            if name.ends_with(".md") {
-                load_agent_document(&directory, &name, self.source, &mut layer.shared)?;
-                continue;
-            }
-            if regular_file_at(&directory, &name)? {
-                continue;
-            }
-            let preset_directory =
-                open_optional_directory(&directory, &name)?.ok_or(ConfigError::UnsafePath)?;
-            AgentId::new(&name).map_err(|_| ConfigError::AgentPresetName {
-                path: preset_directory.clone(),
-                name: name.clone(),
-            })?;
-            let mut documents = BTreeMap::new();
-            for document_name in sorted_entry_names(&preset_directory)? {
-                if !document_name.ends_with(".md") {
-                    return Err(ConfigError::UnsafePath);
-                }
-                load_agent_document(
-                    &preset_directory,
-                    &document_name,
-                    self.source,
-                    &mut documents,
-                )?;
-            }
-            layer.presets.insert(name, documents);
-        }
-        Ok(layer)
-    }
-}
-
-#[derive(Default)]
-struct AgentLayer {
-    shared: BTreeMap<AgentId, AgentDocument>,
-    presets: BTreeMap<String, BTreeMap<AgentId, AgentDocument>>,
-}
-
-fn sorted_entry_names(directory: &Path) -> Result<Vec<String>, ConfigError> {
-    let mut names = std::fs::read_dir(directory)
-        .map_err(ConfigError::Io)?
-        .map(|entry| {
-            entry
-                .map_err(ConfigError::Io)?
-                .file_name()
-                .into_string()
-                .map_err(|_| ConfigError::UnsafePath)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    names.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
-    Ok(names)
-}
-
-fn load_agent_document(
-    directory: &Path,
-    name: &str,
-    source: AgentDocumentSource,
-    documents: &mut BTreeMap<AgentId, AgentDocument>,
-) -> Result<(), ConfigError> {
-    if !regular_file_at(directory, name)? {
-        return Err(ConfigError::UnsafePath);
-    }
-    let stem = name.strip_suffix(".md").expect("suffix checked");
-    let id = AgentId::new(stem).map_err(|_| ConfigError::AgentFilename(name.to_owned()))?;
-    let bytes = read_required_file(directory, name, MAX_AGENT_BYTES)?;
-    let document = parse_agent(id.clone(), &bytes, source, &directory.join(name))?;
-    if documents.insert(id.clone(), document).is_some() {
-        return Err(ConfigError::DuplicateAgent(id));
-    }
-    Ok(())
+fn load_runtime(bytes: &[u8], path: &Path) -> Result<(RawRuntimeLayer, Arc<str>), ConfigError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| ConfigError::Toml(format!("{}: content is not UTF-8", path.display())))?;
+    let value = text.parse::<toml::Value>().map_err(|error| {
+        ConfigError::Toml(format!(
+            "{}: {}",
+            path.display(),
+            safe_toml_error(text, &error)
+        ))
+    })?;
+    let mut value = SensitiveTomlValue::new(value);
+    validate_toml_value(value.value()).map_err(|_| {
+        ConfigError::Toml(format!(
+            "{}: TOML resource limit or unsupported datetime exceeded",
+            path.display()
+        ))
+    })?;
+    interpolate_provider_values(value.value_mut(), &mut Vec::new())?;
+    let layer = decode_runtime_layer(value.value_mut(), text, path)?;
+    Ok((layer, Arc::from(text)))
 }
 
 fn decode_runtime_layer(
@@ -511,36 +441,4 @@ fn key_line(text: &str, key: &str) -> Option<usize> {
 
 fn user_root() -> Option<PathBuf> {
     paths::user_data_root().ok()
-}
-
-#[cfg(test)]
-mod agent_loader_tests {
-    use super::*;
-
-    #[test]
-    fn duplicate_agent_ids_in_one_preset_map_are_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(
-            directory.path().join("worker.md"),
-            "---\ndescription: Worker\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nPrompt.\n",
-        )
-        .unwrap();
-        let mut documents = BTreeMap::new();
-        load_agent_document(
-            directory.path(),
-            "worker.md",
-            AgentDocumentSource::User,
-            &mut documents,
-        )
-        .unwrap();
-        assert!(matches!(
-            load_agent_document(
-                directory.path(),
-                "worker.md",
-                AgentDocumentSource::User,
-                &mut documents,
-            ),
-            Err(ConfigError::DuplicateAgent(id)) if id.as_str() == "worker"
-        ));
-    }
 }

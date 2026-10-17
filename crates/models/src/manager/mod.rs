@@ -1273,13 +1273,31 @@ impl ModelManager {
         catalog: Arc<CatalogSnapshot>,
         prepare_publication: impl FnOnce(&Arc<CompiledModelRuntime>) -> Result<P, ModelManagerError>,
     ) -> Result<(Arc<CompiledModelRuntime>, P), ModelManagerError> {
+        let headers = self.current().global_headers.as_ref().clone();
+        self.reload_configuration(authored, headers, catalog, prepare_publication)
+    }
+
+    /// [`Self::reload_inputs`] with new global headers as well, as a
+    /// configuration reload brings them.
+    pub fn reload_configuration<P>(
+        &self,
+        authored: BTreeMap<ProviderId, ProviderDefinition>,
+        global_headers: BTreeMap<crate::HeaderName, crate::SafeStaticHeaderValue>,
+        catalog: Arc<CatalogSnapshot>,
+        prepare_publication: impl FnOnce(&Arc<CompiledModelRuntime>) -> Result<P, ModelManagerError>,
+    ) -> Result<(Arc<CompiledModelRuntime>, P), ModelManagerError> {
         let _guard = lock(&self.mutation);
         let current = self.current();
         let store = self.store.load()?;
+        let global_headers = if *current.global_headers == global_headers {
+            Arc::clone(&current.global_headers)
+        } else {
+            Arc::new(global_headers)
+        };
         let candidate = Arc::new(compile_runtime(
             Some(&current),
             Arc::new(authored),
-            Arc::clone(&current.global_headers),
+            global_headers,
             catalog,
             store,
         )?);

@@ -315,7 +315,7 @@ impl Engine {
             ),
         )
         .unwrap_or(context_limit);
-        let config = &self.inner.config.runtime.context_compaction;
+        let config = &self.inner.config.load().runtime.context_compaction;
         let trigger_tokens = resolve_compaction_trigger(input_budget, &config.trigger);
         if !compaction_gate(input.force, config.auto_compaction, trigger_tokens) {
             return Ok(input.events);

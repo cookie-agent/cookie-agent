@@ -127,7 +127,7 @@ impl Engine {
             }
             ExternalProducerOperation::Send(params) => {
                 self.ensure_external_scope(&connection, params.session_id)?;
-                let limit = self.inner.config.runtime.producers.max_body_bytes;
+                let limit = self.inner.config.load().runtime.producers.max_body_bytes;
                 if params.body.is_empty() || params.body.len() > limit {
                     return Err(EngineError::Producer(format!(
                         "body must be 1 to {limit} bytes ([producers] max_body_bytes)"
@@ -1497,7 +1497,7 @@ impl Engine {
             &projection,
             &authority.owner,
             hop,
-            &self.inner.config.runtime.messaging,
+            &self.inner.config.load().runtime.messaging,
         )
         .map_err(|code| EngineError::Messaging(code.to_owned()))?;
         let message_id = ProducerMessageId::new_v7();

@@ -252,6 +252,7 @@ mod tests {
                 .expect("generation"),
             model_revision: revision(),
             agent_revision: revision(),
+            config_revision: revision(),
             runtime_revision: revision(),
             providers: Vec::new(),
             models: if with_model { vec![model] } else { Vec::new() },

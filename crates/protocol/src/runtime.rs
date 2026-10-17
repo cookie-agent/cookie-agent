@@ -53,6 +53,9 @@ pub struct RuntimeSnapshotV1 {
     pub provider_store_generation: ProviderStoreGeneration,
     pub model_revision: ModelRevision,
     pub agent_revision: AgentRevision,
+    /// The revision of the daemon's applied configuration (`config.toml`
+    /// and the agent documents); see `config.get`.
+    pub config_revision: ConfigRevision,
     pub runtime_revision: RuntimeRevision,
     #[schemars(length(max = 4096))]
     pub providers: Vec<ProviderDescriptor>,
@@ -118,6 +121,7 @@ impl<'de> Deserialize<'de> for RuntimeSnapshotV1 {
             provider_store_generation: ProviderStoreGeneration,
             model_revision: ModelRevision,
             agent_revision: AgentRevision,
+            config_revision: ConfigRevision,
             runtime_revision: RuntimeRevision,
             providers: Vec<ProviderDescriptor>,
             models: Vec<AvailableModelDescriptor>,
@@ -134,6 +138,7 @@ impl<'de> Deserialize<'de> for RuntimeSnapshotV1 {
             provider_store_generation: wire.provider_store_generation,
             model_revision: wire.model_revision,
             agent_revision: wire.agent_revision,
+            config_revision: wire.config_revision,
             runtime_revision: wire.runtime_revision,
             providers: wire.providers,
             models: wire.models,

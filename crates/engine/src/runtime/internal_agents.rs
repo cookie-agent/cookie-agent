@@ -234,7 +234,7 @@ impl Engine {
                     let estimated_cost_pico_usd = crate::usage::estimated_cost_pico_usd(
                         &resolved_model,
                         &usage,
-                        &self.inner.config.runtime.pricing,
+                        &self.inner.config.load().runtime.pricing,
                         &self.catalog_pricing(),
                     );
                     self.append_internal_agent_event(

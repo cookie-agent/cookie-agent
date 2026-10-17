@@ -306,7 +306,7 @@ impl Engine {
         &self,
         invocation: AgentMessageInvocation,
     ) -> Result<AgentMessageHandle, EngineError> {
-        let messaging = &self.inner.config.runtime.messaging;
+        let messaging = &self.inner.config.load().runtime.messaging;
         if !messaging.enabled {
             return Err(messaging_error(MESSAGE_DISABLED));
         }

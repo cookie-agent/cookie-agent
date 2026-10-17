@@ -172,6 +172,8 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
         plugins: Default::default(),
         runtimes: Default::default(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
+        revision: cookie_agent_protocol::ConfigRevision::new(format!("sha256:{}", "0".repeat(64)))
+            .unwrap(),
         skills: cookie_agent_config::SkillRegistry::default(),
     };
     let engine = Engine::open(EngineOptions {
@@ -413,6 +415,8 @@ fn harness_with_catalog_and_mcp(
         plugins: Default::default(),
         runtimes: Default::default(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
+        revision: cookie_agent_protocol::ConfigRevision::new(format!("sha256:{}", "0".repeat(64)))
+            .unwrap(),
         skills: cookie_agent_config::SkillRegistry::default(),
     };
     let engine = Engine::open(EngineOptions {

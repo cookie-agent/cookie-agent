@@ -462,6 +462,7 @@ revision_identity!(
     ModelSnapshotRevision,
     RuntimeRevision,
     AgentRevision,
+    ConfigRevision,
     ManifestRevision,
     CacheRevision,
 );

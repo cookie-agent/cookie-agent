@@ -66,9 +66,9 @@ impl Engine {
             agents,
             Arc::clone(&runtime),
             &selection.model,
-            self.inner.config.runtime.delegation.max_depth,
-            policy::ResultLimits::from_config(&self.inner.config.runtime),
-            self.inner.config.runtime.model_retry,
+            self.inner.config.load().runtime.delegation.max_depth,
+            policy::ResultLimits::from_config(&self.inner.config.load().runtime),
+            self.inner.config.load().runtime.model_retry,
         )?;
         Ok((runtime, policy))
     }
@@ -236,10 +236,11 @@ impl Engine {
     }
     pub fn session_usage(&self, id: SessionId) -> Result<SessionUsageResult, EngineError> {
         let catalog = self.catalog_pricing();
-        Ok(self
-            .inner
-            .store
-            .session_usage(id, &self.inner.config.runtime.pricing, &catalog)?)
+        Ok(self.inner.store.session_usage(
+            id,
+            &self.inner.config.load().runtime.pricing,
+            &catalog,
+        )?)
     }
     pub fn session_tree_usage(&self, id: SessionId) -> Result<SessionTreeUsageResult, EngineError> {
         // A cold root's index is only a cache. Complete the tree before using
@@ -271,7 +272,7 @@ impl Engine {
             session_id: id,
             usage: crate::usage::with_pricing(
                 usage,
-                &self.inner.config.runtime.pricing,
+                &self.inner.config.load().runtime.pricing,
                 &self.catalog_pricing(),
             ),
             session_count,

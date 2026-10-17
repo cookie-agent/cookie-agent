@@ -53,8 +53,8 @@ impl Engine {
             suffix,
             agents,
             runtime,
-            crate::policy::ResultLimits::from_config(&self.inner.config.runtime),
-            self.inner.config.runtime.model_retry,
+            crate::policy::ResultLimits::from_config(&self.inner.config.load().runtime),
+            self.inner.config.load().runtime.model_retry,
         )?;
         policy.preset = preset;
         policy.internal_agents = internal_agents;
@@ -70,7 +70,7 @@ impl Engine {
         cancellation: &CancellationToken,
         internal_policy: &FrozenInternalAgentPolicy,
     ) -> Result<(), EngineError> {
-        let policy = &self.inner.config.runtime.session_title;
+        let policy = &self.inner.config.load().runtime.session_title;
         if !policy.generate_on_first_turn {
             return Ok(());
         }

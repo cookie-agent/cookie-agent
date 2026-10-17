@@ -616,6 +616,21 @@ impl ServerProtocol for Server {
         Ok(cookie_agent_protocol::PluginsRestartResult {})
     }
 
+    async fn reload_config(
+        &self,
+        _params: cookie_agent_protocol::ConfigReloadParams,
+    ) -> Result<cookie_agent_protocol::ConfigReloadResult> {
+        // A configuration that fails validation is reported in the status;
+        // the daemon keeps running on the applied one.
+        match self.engine.reload_configuration().await {
+            Ok(_) | Err(cookie_agent_engine::EngineError::Config(_)) => {}
+            Err(error) => return Err(protocol_fault(error)),
+        }
+        Ok(cookie_agent_protocol::ConfigReloadResult {
+            status: crate::config::status_to_wire(self.engine.configuration_status()),
+        })
+    }
+
     async fn reconnect_runtime(
         &self,
         params: cookie_agent_protocol::RuntimesReconnectParams,

@@ -21,7 +21,7 @@ impl Engine {
         preset: Option<&str>,
         agent_override: Option<bool>,
     ) -> Result<Vec<AttachmentAgentMd>, EngineError> {
-        if !agent_override.unwrap_or(self.inner.config.runtime.agent_md.enabled) {
+        if !agent_override.unwrap_or(self.inner.config.load().runtime.agent_md.enabled) {
             return Ok(Vec::new());
         }
         let mut loaded = Vec::new();

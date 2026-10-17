@@ -134,6 +134,8 @@ pub(crate) fn production_provider_harness(
         plugins: Default::default(),
         runtimes: Default::default(),
         config_paths: cookie_agent_config::ConfigLayerPaths::default(),
+        revision: cookie_agent_protocol::ConfigRevision::new(format!("sha256:{}", "0".repeat(64)))
+            .unwrap(),
         skills: cookie_agent_config::SkillRegistry::default(),
     };
     let engine = Engine::open(EngineOptions {
@@ -1233,6 +1235,7 @@ pub(crate) fn runtime_snapshot(
             .expect("store generation"),
         model_revision: protocol_revision(digit),
         agent_revision: protocol_revision(digit),
+        config_revision: protocol_revision(digit),
         runtime_revision: protocol_revision(digit),
         providers,
         models,

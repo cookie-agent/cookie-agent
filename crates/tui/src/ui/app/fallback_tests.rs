@@ -67,7 +67,7 @@ impl Harness {
             "snapshot_schema_version":cookie_agent_protocol::RuntimeSnapshotSchemaVersion::current(),
             "recipe_registry_revision":revision,"catalog_revision":revision,"catalog_source":"network",
             "catalog_state":{"stale":false,"age":"current","provider_quarantine_count":0,"model_quarantine_count":0,"quarantine_digest":digest,"last_error":null},
-            "provider_state_revision":revision,"provider_store_generation":1,"model_revision":revision,"agent_revision":revision,"runtime_revision":revision,
+            "provider_state_revision":revision,"provider_store_generation":1,"model_revision":revision,"agent_revision":revision,"config_revision":revision,"runtime_revision":revision,
             "providers":[],"models":models,"agents":[{"id":selection.agent,"preset":null,"description":"Fixture agent","mode":"primary","enabled":true,"runnable_as_root":true,"resolved_fallback":selected_suffix.iter().map(|binding| binding.selection.clone()).collect::<Vec<_>>(),"delegation_targets":[]}],
         })).unwrap();
         let (responses, incoming) = mpsc::unbounded_channel();

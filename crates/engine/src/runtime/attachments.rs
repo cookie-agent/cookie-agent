@@ -479,7 +479,7 @@ impl Engine {
                 "runtime `{runtime_id}` is already connected"
             )));
         }
-        let settings = crate::runtimes::runtime_settings(&self.inner.config, runtime_id);
+        let settings = crate::runtimes::runtime_settings(&self.inner.config.load(), runtime_id);
         let client = template
             .connect(
                 cookie_agent_runtime_api::RuntimeConnection::new(transport),

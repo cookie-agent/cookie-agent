@@ -1,11 +1,11 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 46 is current-only. A client must call `handshake` before any other
+Protocol 47 is current-only. A client must call `handshake` before any other
 method:
 
 ```json
-{ "protocol_version": 46, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+{ "protocol_version": 47, "client": { "kind": "tui", "instance_id": "<uuid>" } }
 ```
 
 `client.kind` names the client program: a lowercase letter followed by up to 15
@@ -86,11 +86,14 @@ than `runtime:<attachment name>`. Protocol 46 removed
 projected), added the `provider.connect` error codes
 `custom_provider_not_store_backed`, and removed the connect code
 `quarantined_provider` and the disconnect code `invalid_provider`, which
-nothing produced. Older clients are rejected.
+nothing produced. Protocol 47 added `config.reload` and the snapshot's
+`config_revision` (part of `runtime_revision`); a reload publishes
+`runtime.changed` with `config_reloaded`, and `agent_reloaded` when an agent
+document changed. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 46.
+members of protocol 47.
 
 ## Error diagnostics
 
@@ -113,7 +116,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 46 alongside independent display and output references. The
+preserved in protocol 47 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -185,6 +188,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `runtime.snapshot.get` | Empty object | One coherent runtime snapshot |
 | `provider.connect` | Provider, expected catalog revision, setup/auth values, client ID | Durable connection, effective auth, snapshot, replay state |
 | `provider.disconnect` | Provider, expected revisions/generation, client ID | Disconnect receipt, effective auth, snapshot, replay state |
+| `config.reload` | Empty object | `status`: `applied_revision`, `restart_required` (`server`, `plugins`, `runtimes`), and `error` when the configuration on disk failed validation and was not applied |
 | `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory) | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
 | `session.list` | Optional cwd identity | Root session metadata list with skipped-event diagnostics |
 | `session.get` | Session ID | Session metadata with skipped-event diagnostics, and the session's `runtimes` |

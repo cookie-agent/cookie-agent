@@ -112,7 +112,7 @@ impl Engine {
                     &projection.creation_agent,
                     projection.meta.creation_selection.preset.as_deref(),
                     &selection,
-                    crate::policy::ResultLimits::from_config(&self.inner.config.runtime),
+                    crate::policy::ResultLimits::from_config(&self.inner.config.load().runtime),
                 )?;
                 if frozen != selection {
                     return Err(EngineError::UnavailableAgentModel {

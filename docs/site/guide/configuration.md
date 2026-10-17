@@ -59,6 +59,24 @@ and so on, never `[runtime.messaging]` or another nested spelling. Older docs
 used the `[runtime.messaging]` form; a nested table such as that is an unknown
 top-level field and fails strict validation.
 
+## Changes while the daemon runs
+
+The daemon reads `config.toml` and the agent documents when it starts. After
+editing them by hand, reload them with the `config.reload` protocol method; a
+configuration that fails validation is not applied, the daemon keeps running
+on the one it has, and the reload reports the error. A reload applies:
+
+| Part | When it takes effect |
+|---|---|
+| `tool_output`, `subagent_output`, `agent_md`, `loop_warning`, `approval`, `model_retry`, `context_compaction`, `session_title`, `delegation`, `messaging`, `producers` | At once, from each setting's next use; a run keeps the result limits, retry policy, and delegation depth it started with |
+| Agent documents and presets | At once for new runs; a run in progress keeps its agent, and its delegated children resolve against the agents it started with |
+| `providers`, `headers` | At once: models are recompiled |
+| `mcp` | At once: changed servers restart, removed ones stop; servers added or changed at runtime (`/mcp`) stay on top |
+| `tool_output` for runtime instances | When an instance next starts or reconnects |
+| `server`, `plugins`, `runtimes` | Only after the daemon restarts; the reload reports them as needing a restart |
+
+Skills are not reloaded.
+
 ## Strictness and limits
 
 Every authored file is parsed strictly. Unknown keys, leftover `schema` or

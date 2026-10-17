@@ -58,6 +58,7 @@ mod subagent_reports;
 pub(crate) use background_tasks::{BackgroundActor, Stopped};
 mod blocking_io;
 pub(crate) mod compaction;
+pub(crate) mod configuration;
 mod delegation;
 mod get_history;
 pub(crate) mod handles;
@@ -736,7 +737,15 @@ impl SessionCommand {
 const MAX_COMPACTION_DEFERRED_COMMANDS: usize = 4;
 
 pub(crate) struct Inner {
-    config: LoadedConfiguration,
+    /// The applied configuration generation; see `runtime/configuration.rs`.
+    pub(crate) config: ArcSwap<LoadedConfiguration>,
+    /// The generation the engine opened with, for the parts that apply only
+    /// when the daemon restarts.
+    pub(crate) started_config: Arc<LoadedConfiguration>,
+    /// Serializes configuration reloads and writes.
+    pub(crate) config_mutation: tokio::sync::Mutex<()>,
+    /// Why the last configuration reload failed, until one succeeds.
+    pub(crate) config_error: Mutex<Option<String>>,
     pub(crate) config_store: Mutex<crate::config_store::ConfigStore>,
     pub(crate) artifacts: Arc<ArtifactRouter>,
     mutation_locks: Mutex<HashMap<PreparedSerializationKey, Arc<tokio::sync::Mutex<()>>>>,
@@ -865,7 +874,12 @@ impl Engine {
         let current_models = options.model_manager.current();
         let (agents, agent_presets) = resolve_agent_registries(&options.config, &current_models)?;
         let current_manifest = prepare_runtime_manifest(&current_models)?;
-        let snapshot = build_runtime_snapshot(&current_models, &agents, &agent_presets)?;
+        let snapshot = build_runtime_snapshot(
+            &current_models,
+            &agents,
+            &agent_presets,
+            &options.config.revision,
+        )?;
         let published_runtime = Arc::new(PublishedRuntime {
             result: RuntimeSnapshotResult { snapshot },
             models: Arc::clone(&current_models),
@@ -930,7 +944,10 @@ impl Engine {
         )?;
         let engine = Self {
             inner: Arc::new(Inner {
-                config: options.config,
+                started_config: Arc::new(options.config.clone()),
+                config: ArcSwap::from_pointee(options.config),
+                config_mutation: tokio::sync::Mutex::new(()),
+                config_error: Mutex::new(None),
                 config_store: Mutex::new(config_store),
                 artifacts,
                 mutation_locks: Mutex::new(HashMap::new()),
@@ -1107,6 +1124,7 @@ impl Engine {
         let previous = self.current_runtime();
         let result = self.inner.model_manager.connect(request, |candidate, _| {
             self.prepare_publication(
+                &self.inner.config.load(),
                 candidate,
                 &previous,
                 vec![RuntimeChangeReason::ProviderConnected],
@@ -1181,6 +1199,7 @@ impl Engine {
             .model_manager
             .disconnect(request, |candidate, _| {
                 self.prepare_publication(
+                    &self.inner.config.load(),
                     candidate,
                     &previous,
                     vec![RuntimeChangeReason::ProviderDisconnected],
@@ -1228,6 +1247,7 @@ impl Engine {
             .model_manager
             .reload_store_if_changed(|candidate| {
                 self.prepare_publication(
+                    &self.inner.config.load(),
                     candidate,
                     &previous,
                     vec![
@@ -1271,14 +1291,22 @@ impl Engine {
             self.inner
                 .model_manager
                 .reload_inputs(authored, catalog, |candidate| {
-                    self.prepare_publication(candidate, &previous, vec![reason])
-                        .map_err(|_| cookie_agent_models::ModelManagerError::RuntimeCompileFailed)
+                    self.prepare_publication(
+                        &self.inner.config.load(),
+                        candidate,
+                        &previous,
+                        vec![reason],
+                    )
+                    .map_err(|_| cookie_agent_models::ModelManagerError::RuntimeCompileFailed)
                 })?;
         Ok(self.publish(publication).result.clone())
     }
 
-    fn prepare_publication(
+    /// Resolves agents of `config` against `models` into the next published
+    /// runtime.
+    pub(crate) fn prepare_publication(
         &self,
+        config: &LoadedConfiguration,
         models: &Arc<cookie_agent_models::CompiledModelRuntime>,
         previous: &Arc<PublishedRuntime>,
         mut reasons: Vec<RuntimeChangeReason>,
@@ -1292,9 +1320,9 @@ impl Engine {
         {
             return Err(EngineError::RuntimeCompileFailed);
         }
-        let (agents, agent_presets) = resolve_agent_registries(&self.inner.config, models)?;
+        let (agents, agent_presets) = resolve_agent_registries(config, models)?;
         let current_manifest = prepare_runtime_manifest(models)?;
-        let snapshot = build_runtime_snapshot(models, &agents, &agent_presets)?;
+        let snapshot = build_runtime_snapshot(models, &agents, &agent_presets, &config.revision)?;
         self.inner
             .runtime_revision_index
             .lock()
@@ -1322,7 +1350,7 @@ impl Engine {
         })
     }
 
-    fn publish(&self, publication: RuntimePublication) -> Arc<PublishedRuntime> {
+    pub(crate) fn publish(&self, publication: RuntimePublication) -> Arc<PublishedRuntime> {
         self.inner
             .published_runtime
             .store(Arc::clone(&publication.runtime));

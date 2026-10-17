@@ -552,7 +552,7 @@ impl Engine {
             &child_selection,
             inherited,
             parent_delegation.effective_depth_ceiling,
-            policy::ResultLimits::from_config(&self.inner.config.runtime),
+            policy::ResultLimits::from_config(&self.inner.config.load().runtime),
         )?;
         let seeded_context = if invocation.inherit_context {
             self.delegated_context_seed(invocation.parent_session_id)
@@ -562,7 +562,7 @@ impl Engine {
         };
         let proposed_title = super::titles::delegated_title(
             &invocation.description,
-            self.inner.config.runtime.session_title.max_chars,
+            self.inner.config.load().runtime.session_title.max_chars,
         )?;
         let title = resume_child
             .as_ref()
@@ -637,6 +637,7 @@ impl Engine {
                 "delegate admission denied: background queue is full for concurrency limit {}",
                 self.inner
                     .config
+                    .load()
                     .runtime
                     .delegation
                     .max_concurrency
@@ -1544,7 +1545,7 @@ impl Engine {
     }
 
     fn background_slot_unavailable(&self, root_session_id: SessionId) -> Result<bool, EngineError> {
-        let Some(limit) = self.inner.config.runtime.delegation.max_concurrency else {
+        let Some(limit) = self.inner.config.load().runtime.delegation.max_concurrency else {
             return Ok(false);
         };
         let running = self
@@ -1605,7 +1606,7 @@ impl Engine {
     }
 
     fn background_queue_full(&self, root_session_id: SessionId) -> Result<bool, EngineError> {
-        let Some(limit) = self.inner.config.runtime.delegation.max_concurrency else {
+        let Some(limit) = self.inner.config.load().runtime.delegation.max_concurrency else {
             return Ok(false);
         };
         let queued = self
@@ -3479,7 +3480,7 @@ fn delegation_producer_authority(invocation_id: InvocationId) -> ProducerAuthori
 impl Engine {
     /// How subagent reports are previewed, per `[subagent_output]`.
     pub(super) fn subagent_preview_limits(&self) -> PreviewLimits {
-        (&self.inner.config.runtime.subagent_output).into()
+        (&self.inner.config.load().runtime.subagent_output).into()
     }
 }
 

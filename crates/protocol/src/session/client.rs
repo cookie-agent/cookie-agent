@@ -761,6 +761,12 @@ impl Client {
         .await
     }
 
+    /// Re-reads the daemon's configuration from disk and applies it.
+    pub async fn reload_config(&self) -> Result<crate::ConfigReloadResult, ClientError> {
+        self.call(crate::CONFIG_RELOAD_METHOD, &crate::ConfigReloadParams {})
+            .await
+    }
+
     pub async fn list_mcp_servers(&self) -> Result<McpServerListResult, ClientError> {
         self.call("mcp.server.list", &McpServerListParams {}).await
     }

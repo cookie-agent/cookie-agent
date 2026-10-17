@@ -1,6 +1,6 @@
 ---
 source: crates/protocol/src/tests.rs
-assertion_line: 2051
+assertion_line: 2053
 expression: schema_for!(RuntimeSnapshotResult)
 ---
 {
@@ -883,6 +883,13 @@ expression: schema_for!(RuntimeSnapshotResult)
         "catalog_state": {
           "$ref": "#/$defs/CatalogRuntimeState"
         },
+        "config_revision": {
+          "description": "The revision of the daemon's applied configuration (`config.toml`\nand the agent documents); see `config.get`.",
+          "type": "string",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
         "model_revision": {
           "type": "string",
           "maxLength": 71,
@@ -943,6 +950,7 @@ expression: schema_for!(RuntimeSnapshotResult)
         "provider_store_generation",
         "model_revision",
         "agent_revision",
+        "config_revision",
         "runtime_revision",
         "providers",
         "models",

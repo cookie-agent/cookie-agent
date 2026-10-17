@@ -110,9 +110,9 @@ impl Engine {
             Arc::clone(&agents),
             runtime,
             &selection.model,
-            self.inner.config.runtime.delegation.max_depth,
-            policy::ResultLimits::from_config(&self.inner.config.runtime),
-            self.inner.config.runtime.model_retry,
+            self.inner.config.load().runtime.delegation.max_depth,
+            policy::ResultLimits::from_config(&self.inner.config.load().runtime),
+            self.inner.config.load().runtime.model_retry,
         )?;
         Ok((policy, selection))
     }
@@ -175,7 +175,7 @@ impl Engine {
         }
         .ok_or(EngineError::NoRunnableModel)?;
         let ceiling = creation_agent.delegation.as_ref().map_or(
-            self.inner.config.runtime.delegation.max_depth,
+            self.inner.config.load().runtime.delegation.max_depth,
             |delegation| delegation.effective_depth_ceiling,
         );
         let policy = policy::freeze_delegated_agent_policy(
@@ -187,7 +187,7 @@ impl Engine {
             ceiling,
             policy::FreezeOptions {
                 result_limits,
-                model_retry: self.inner.config.runtime.model_retry,
+                model_retry: self.inner.config.load().runtime.model_retry,
                 inherited_cache_strategies: None,
             },
         )?;
@@ -287,7 +287,7 @@ impl Engine {
             return Err(EngineError::SessionRunning(params.session_id));
         }
         self.resolve_interrupted_direct(params.session_id).await?;
-        let result_limits = policy::ResultLimits::from_config(&self.inner.config.runtime);
+        let result_limits = policy::ResultLimits::from_config(&self.inner.config.load().runtime);
         let is_root = matches!(session.meta.origin, SessionOrigin::Root);
         let mut run_policy = match &session.meta.origin {
             SessionOrigin::Root => {
@@ -1574,7 +1574,7 @@ impl Engine {
         }
         if let Ok(result) = &mut result
             && !cancelled
-            && self.inner.config.runtime.loop_warning.enabled
+            && self.inner.config.load().runtime.loop_warning.enabled
             && let Some(warning) = super::loop_guard::loop_warning(
                 &self.inner.store.log(active.session)?.event_snapshot(),
                 run,
@@ -2123,7 +2123,7 @@ impl Engine {
                         let estimated_cost_pico_usd = crate::usage::estimated_cost_pico_usd(
                             &resolved_model,
                             &turn.usage,
-                            &self.inner.config.runtime.pricing,
+                            &self.inner.config.load().runtime.pricing,
                             &self.catalog_pricing(),
                         );
                         let model_turn_seq = self.next_model_turn_seq(session)?;

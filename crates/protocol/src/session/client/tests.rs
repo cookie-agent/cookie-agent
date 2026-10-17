@@ -45,6 +45,7 @@ fn runtime_snapshot_json(digit: &str) -> Value {
         "provider_store_generation": 1,
         "model_revision": revision,
         "agent_revision": revision,
+        "config_revision": revision,
         "runtime_revision": revision,
         "providers": [],
         "models": [],

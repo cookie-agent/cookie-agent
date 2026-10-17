@@ -50,8 +50,20 @@ impl Engine {
     }
 
     pub(super) async fn evict_idle_subagents(&self) -> Result<Vec<SessionId>, EngineError> {
-        let cap = self.inner.config.runtime.delegation.max_resident_subagents;
-        let idle_after = self.inner.config.runtime.delegation.idle_eviction_after;
+        let cap = self
+            .inner
+            .config
+            .load()
+            .runtime
+            .delegation
+            .max_resident_subagents;
+        let idle_after = self
+            .inner
+            .config
+            .load()
+            .runtime
+            .delegation
+            .idle_eviction_after;
         self.evict_idle_subagents_with(cap, idle_after).await
     }
 

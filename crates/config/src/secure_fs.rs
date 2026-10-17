@@ -4,11 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{AgentDocumentSource, ConfigError};
+use crate::ConfigError;
 use zeroize::Zeroizing;
 
 pub(crate) struct LayerRoot {
-    pub(crate) source: AgentDocumentSource,
     pub(crate) path: PathBuf,
 }
 
@@ -18,13 +17,9 @@ pub(crate) fn regular_file_at(parent: &Path, name: &str) -> Result<bool, ConfigE
         .map_err(ConfigError::Io)
 }
 
-pub(crate) fn open_layer_root(
-    path: &Path,
-    source: AgentDocumentSource,
-) -> Result<Option<LayerRoot>, ConfigError> {
+pub(crate) fn open_layer_root(path: &Path) -> Result<Option<LayerRoot>, ConfigError> {
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_dir() => Ok(Some(LayerRoot {
-            source,
             path: path.to_path_buf(),
         })),
         Ok(_) => Err(ConfigError::UnsafePath),

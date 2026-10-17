@@ -27,6 +27,34 @@ impl ConfigStore {
         }
     }
 
+    /// Replaces the user layer, as a configuration reload does, and returns
+    /// each server whose effective configuration changed: its new one, or
+    /// `None` when it is gone. The runtime overlay, tombstones included,
+    /// stays on top.
+    pub(crate) fn rebase(
+        &mut self,
+        user: BTreeMap<String, McpServerConfig>,
+    ) -> Vec<(String, Option<LoadedMcpServer>)> {
+        let before = self.effective_all();
+        self.user = user;
+        let after = self.effective_all();
+        before
+            .keys()
+            .chain(after.keys())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .filter_map(|name| {
+                let (old, new) = (before.get(name), after.get(name));
+                let changed = match (old, new) {
+                    (Some(old), Some(new)) => old.config != new.config || old.source != new.source,
+                    (None, None) => false,
+                    _ => true,
+                };
+                changed.then(|| (name.clone(), new.cloned()))
+            })
+            .collect()
+    }
+
     fn effective(&self, name: &str) -> Option<LoadedMcpServer> {
         if let Some(runtime) = self.runtime.get(name) {
             return runtime.clone().map(|config| LoadedMcpServer {

@@ -12,6 +12,7 @@ mod runtime_templates;
 mod secure_fs;
 mod skills;
 mod toml_values;
+mod tree;
 mod wildcard;
 
 pub use agent_document::{AgentDocument, AgentDocumentSource};
@@ -26,7 +27,9 @@ pub use cache::{
     OpenAiCacheMode, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, RollingCacheTtl,
 };
 pub use error::ConfigError;
-pub use loader::{ConfigLayerPaths, LoadedConfiguration, load, load_from_user_root};
+pub use loader::{
+    ConfigLayerPaths, LoadedConfiguration, load, load_from_tree, load_from_user_root,
+};
 pub use loader::{LoadedMcpServer, McpServerSource};
 pub use mcp_store::{write_mcp_server, write_server_token};
 pub use prompt_template::{
@@ -46,4 +49,5 @@ pub use skills::{
     SkillFrontmatter, SkillRegistry, load_project_skills, load_skill_roots, load_user_skills,
     parse_skill_document, render_available_skills,
 };
+pub use tree::{CONFIG_FILE, ConfigDocument, ConfigPath, ConfigTree};
 pub use wildcard::simple_wildcard_match;
