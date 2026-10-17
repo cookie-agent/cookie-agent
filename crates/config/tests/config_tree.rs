@@ -189,3 +189,132 @@ fn documents_are_bounded_and_fingerprinted() {
     tree.delete(&path("agents/b.md"));
     assert_eq!(tree.revision(), before);
 }
+
+fn key(path: &str) -> Vec<String> {
+    path.split('.').map(str::to_owned).collect()
+}
+
+#[test]
+fn key_edits_keep_the_rest_of_config_toml() {
+    let mut tree = ConfigTree::new(None);
+    tree.put(
+        path("config.toml"),
+        b"# my settings\n[loop_warning]\nenabled = true # inline note\n\n[model_retry]\nstandard_retries = 1\n"
+            .to_vec(),
+    )
+    .unwrap();
+    tree.set_key(
+        &key("loop_warning.enabled"),
+        Some(toml::Value::Boolean(false)),
+    )
+    .unwrap();
+    tree.set_key(&key("model_retry.standard_retries"), None)
+        .unwrap();
+    tree.set_key(
+        &key("mcp.servers.docs"),
+        Some(toml::Value::Table(toml::Table::from_iter([(
+            "command".to_owned(),
+            toml::Value::String("docs-mcp".into()),
+        )]))),
+    )
+    .unwrap();
+    let text = String::from_utf8(tree.get(&path("config.toml")).unwrap().to_vec()).unwrap();
+    assert!(text.contains("# my settings"), "{text}");
+    assert!(text.contains("enabled = false"), "{text}");
+    assert!(!text.contains("standard_retries"), "{text}");
+    assert!(text.contains("[mcp.servers.docs]"), "{text}");
+    assert!(
+        !text.contains("[mcp]\n"),
+        "intermediate tables stay implicit: {text}"
+    );
+    let loaded = load_from_tree(&tree).expect("valid");
+    assert!(!loaded.runtime.loop_warning.enabled);
+    assert_eq!(
+        loaded.mcp_servers["docs"].config.command.as_deref(),
+        Some("docs-mcp")
+    );
+
+    // Nothing below a value, and no empty key.
+    assert!(
+        tree.set_key(
+            &key("loop_warning.enabled.deeper"),
+            Some(toml::Value::Integer(1))
+        )
+        .is_err()
+    );
+    assert!(tree.set_key(&[], None).is_err());
+}
+
+#[test]
+fn a_tree_is_written_together_and_put_back_when_a_document_changed() {
+    let root = user_root();
+    let original = ConfigTree::read(Some(root.path())).unwrap();
+    let mut candidate = original.clone();
+    candidate
+        .put(
+            path("agents/python/reviewer.md"),
+            agent("subagent", "{}").into_bytes(),
+        )
+        .unwrap();
+    candidate.delete(&path("agents/primary.md"));
+    candidate
+        .set_key(
+            &key("loop_warning.enabled"),
+            Some(toml::Value::Boolean(true)),
+        )
+        .unwrap();
+    load_from_tree(&candidate).expect("valid candidate");
+
+    // A document edited since it was read stops the write, and what was
+    // already written is put back.
+    fs::write(root.path().join("config.toml"), "# edited elsewhere\n").unwrap();
+    assert!(matches!(
+        cookie_agent_config::write_tree(&original, &candidate),
+        Err(ConfigError::ChangedOnDisk(_))
+    ));
+    assert!(root.path().join("agents/primary.md").exists());
+    assert!(!root.path().join("agents/python/reviewer.md").exists());
+    assert_eq!(
+        fs::read_to_string(root.path().join("config.toml")).unwrap(),
+        "# edited elsewhere\n"
+    );
+
+    let original = ConfigTree::read(Some(root.path())).unwrap();
+    let mut candidate = original.clone();
+    candidate
+        .put(
+            path("agents/python/reviewer.md"),
+            agent("subagent", "{}").into_bytes(),
+        )
+        .unwrap();
+    candidate.delete(&path("agents/primary.md"));
+    // Removing a preset's last document removes the preset.
+    candidate.delete(&path("agents/python/primary.md"));
+    candidate.delete(&path("agents/python/reviewer.md"));
+    cookie_agent_config::write_tree(&original, &candidate).expect("write");
+    assert!(!root.path().join("agents/primary.md").exists());
+    assert!(!root.path().join("agents/python").exists());
+    let reread = ConfigTree::read(Some(root.path())).unwrap();
+    assert_eq!(reread.revision(), candidate.revision());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut with_agent = reread.clone();
+        with_agent
+            .put(
+                path("agents/new/worker.md"),
+                agent("subagent", "{}").into_bytes(),
+            )
+            .unwrap();
+        cookie_agent_config::write_tree(&reread, &with_agent).expect("write");
+        let mode = |path: &str| {
+            fs::metadata(root.path().join(path))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode("agents/new"), 0o700);
+        assert_eq!(mode("agents/new/worker.md"), 0o600);
+    }
+}

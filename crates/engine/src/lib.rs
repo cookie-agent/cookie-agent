@@ -35,7 +35,9 @@ pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
 pub use plugin::{EngineEvent, PluginRegistry};
 pub use runtime::attachments::{SessionRuntimeRequest, SessionRuntimes};
-pub use runtime::configuration::{ConfigurationStatus, RestartRequiredPart};
+pub use runtime::configuration::{
+    ConfigChange, ConfigDocumentText, ConfigDocuments, ConfigurationStatus, RestartRequiredPart,
+};
 /// Stable `send_message:<code>` error strings carried by
 /// [`EngineError::Messaging`]. The tool layer surfaces them verbatim so sending
 /// models can react predictably (retry, back off, or give up).

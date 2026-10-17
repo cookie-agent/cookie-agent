@@ -176,6 +176,12 @@ pub enum EngineError {
     },
     #[error("configuration error: {0}")]
     Config(#[source] Box<cookie_agent_config::ConfigError>),
+    /// The configuration changed since the caller read it.
+    #[error("configuration conflict: {0}")]
+    ConfigConflict(String),
+    /// A configuration change that cannot be made as asked.
+    #[error("configuration change refused: {0}")]
+    ConfigChangeRefused(String),
     #[error("agent `{0}` is not eligible in this session origin")]
     IneligibleAgent(AgentId),
     #[error(

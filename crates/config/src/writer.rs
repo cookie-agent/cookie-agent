@@ -1,34 +1,16 @@
+//! Writing configuration documents: each one is replaced atomically and
+//! owner-only, only while it still holds what was read, and a set of
+//! documents is written together or not at all.
+
 use std::{
     fs::{self, OpenOptions},
     io::Write as _,
     path::Path,
 };
 
-use serde::Serialize;
 use toml_edit::{DocumentMut, Item, Table};
 
-use crate::{ConfigError, ConfigPath, ConfigTree, McpServerConfig, load_from_tree};
-
-#[derive(Serialize)]
-struct ServerDocument<'a> {
-    mcp: McpDocument<'a>,
-}
-
-#[derive(Serialize)]
-struct McpDocument<'a> {
-    servers: std::collections::BTreeMap<&'a str, &'a McpServerConfig>,
-}
-
-/// Replace one `[mcp.servers.<name>]` table while preserving every unrelated
-/// item and comment. The candidate is accepted only when the strict loader can
-/// parse it as a complete configuration layer.
-pub fn write_mcp_server(
-    path: &Path,
-    name: &str,
-    config: &McpServerConfig,
-) -> Result<(), ConfigError> {
-    write_mcp_server_observed(path, name, config, |_| {})
-}
+use crate::{ConfigError, ConfigPath, ConfigTree, load_from_tree};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommitStep {
@@ -36,47 +18,6 @@ enum CommitStep {
     IdentityChecked,
     Renamed,
     ParentSynced,
-}
-
-fn write_mcp_server_observed(
-    path: &Path,
-    name: &str,
-    config: &McpServerConfig,
-    observe: impl FnMut(CommitStep),
-) -> Result<(), ConfigError> {
-    config.validate(name)?;
-    let (original, originally_existed) = read_original(path)?;
-    let mut document = original
-        .parse::<DocumentMut>()
-        .map_err(|error| ConfigError::Toml(format!("{}: {error}", path.display())))?;
-    let encoded = toml::to_string(&ServerDocument {
-        mcp: McpDocument {
-            servers: std::collections::BTreeMap::from([(name, config)]),
-        },
-    })
-    .map_err(|error| ConfigError::Toml(format!("{}: {error}", path.display())))?;
-    let encoded = encoded
-        .parse::<DocumentMut>()
-        .map_err(|error| ConfigError::Toml(format!("{}: {error}", path.display())))?;
-    let replacement = encoded["mcp"]["servers"][name].clone();
-
-    if !document.as_table().contains_key("mcp") {
-        document["mcp"] = Item::Table(Table::new());
-    }
-    if !document["mcp"]
-        .as_table()
-        .is_some_and(|table| table.contains_key("servers"))
-    {
-        document["mcp"]["servers"] = Item::Table(Table::new());
-    }
-    document["mcp"]["servers"][name] = replacement;
-    commit(
-        path,
-        &original,
-        originally_existed,
-        &document.to_string(),
-        observe,
-    )
 }
 
 /// Set `[server] token` to `token` while preserving every unrelated item and
@@ -88,47 +29,125 @@ pub fn write_server_token(path: &Path, token: &str) -> Result<(), ConfigError> {
             "server.token must be 43 base64url characters",
         ));
     }
-    let (original, originally_existed) = read_original(path)?;
-    let mut document = original
+    let original = read_original(path)?;
+    let text = original
+        .as_deref()
+        .map(std::str::from_utf8)
+        .transpose()
+        .map_err(|_| ConfigError::Toml(format!("{}: content is not UTF-8", path.display())))?
+        .unwrap_or_default();
+    let mut document = text
         .parse::<DocumentMut>()
         .map_err(|error| ConfigError::Toml(format!("{}: {error}", path.display())))?;
     if !document.as_table().contains_key("server") {
         document["server"] = Item::Table(Table::new());
     }
     document["server"]["token"] = toml_edit::value(token);
+    let candidate = document.to_string();
+    let mut tree = ConfigTree::read(path.parent())?;
+    tree.put(ConfigPath::config(), candidate.as_bytes().to_vec())?;
+    load_from_tree(&tree)?;
     commit(
         path,
-        &original,
-        originally_existed,
-        &document.to_string(),
+        original.as_deref(),
+        Some(candidate.as_bytes()),
         |_| {},
     )
 }
 
-fn read_original(path: &Path) -> Result<(String, bool), ConfigError> {
-    match fs::read_to_string(path) {
-        Ok(text) => Ok((text, true)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((String::new(), false)),
+/// Writes the documents of `candidate` that differ from `original`, which
+/// must be what is on disk: each document is checked against its original
+/// before it is replaced, and when one fails, the ones already written are
+/// put back. A preset directory left without documents is removed. The
+/// caller validates `candidate` first.
+///
+/// # Errors
+///
+/// [`ConfigError::ChangedOnDisk`] when a document no longer holds what was
+/// read, and I/O errors.
+pub fn write_tree(original: &ConfigTree, candidate: &ConfigTree) -> Result<(), ConfigError> {
+    let root = candidate.root().ok_or(ConfigError::UnsafePath)?;
+    let paths = original
+        .documents()
+        .map(|(path, _)| path)
+        .chain(candidate.documents().map(|(path, _)| path))
+        .filter(|path| original.get(path) != candidate.get(path))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut written = Vec::new();
+    for path in &paths {
+        let file = root.join(path.as_str());
+        let result = file
+            .parent()
+            .ok_or(ConfigError::UnsafePath)
+            .and_then(create_private_directories)
+            .and_then(|()| commit(&file, original.get(path), candidate.get(path), |_| {}));
+        if let Err(error) = result {
+            for path in written.iter().rev() {
+                let file = root.join(ConfigPath::as_str(path));
+                let _ = commit(&file, candidate.get(path), original.get(path), |_| {});
+            }
+            return Err(error);
+        }
+        written.push(path.clone());
+    }
+    for path in &paths {
+        if let crate::ConfigDocument::Agent {
+            preset: Some(preset),
+            ..
+        } = path.document()
+            && candidate.get(path).is_none()
+            && !candidate.has_preset(preset)
+        {
+            match fs::remove_dir(root.join("agents").join(preset)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(ConfigError::Io(error)),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn create_private_directories(path: &Path) -> Result<(), ConfigError> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder.create(path).map_err(ConfigError::Io)
+}
+
+fn read_original(path: &Path) -> Result<Option<Vec<u8>>, ConfigError> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(ConfigError::Io(error)),
     }
 }
 
-/// Replaces `path` with `candidate` once the strict loader accepts it, with
-/// the agent documents beside it, as a complete configuration, and `path`
-/// still holds `original`. Validation runs in memory: nothing but the final
-/// file is written.
+/// Replaces `path` with `candidate`, or removes it when `candidate` is
+/// `None`, while `path` still holds `original` (`None`: does not exist).
 fn commit(
     path: &Path,
-    original: &str,
-    originally_existed: bool,
-    candidate: &str,
+    original: Option<&[u8]>,
+    candidate: Option<&[u8]>,
     mut observe: impl FnMut(CommitStep),
 ) -> Result<(), ConfigError> {
-    let mut tree = ConfigTree::read(path.parent())?;
-    tree.put(ConfigPath::config(), candidate.as_bytes().to_vec())?;
-    load_from_tree(&tree)?;
-
     let parent = path.parent().ok_or(ConfigError::UnsafePath)?;
+    let Some(candidate) = candidate else {
+        if read_original(path)?.as_deref() != original {
+            return Err(ConfigError::ChangedOnDisk(path.to_owned()));
+        }
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(ConfigError::Io(error)),
+        }
+        return sync_directory(parent).map_err(ConfigError::Io);
+    };
     fs::create_dir_all(parent).map_err(ConfigError::Io)?;
     #[cfg(unix)]
     let temporary = parent.join(format!(
@@ -161,7 +180,7 @@ fn commit(
         }
     }
     if let Err(error) = temporary_file
-        .write_all(candidate.as_bytes())
+        .write_all(candidate)
         .and_then(|()| temporary_file.sync_all())
     {
         let _ = fs::remove_file(&temporary);
@@ -170,12 +189,11 @@ fn commit(
     drop(temporary_file);
     observe(CommitStep::TemporarySynced);
 
-    let unchanged = match fs::read_to_string(path) {
-        Ok(current) => originally_existed && current == original,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => !originally_existed,
+    let unchanged = match read_original(path) {
+        Ok(current) => current.as_deref() == original,
         Err(error) => {
             let _ = fs::remove_file(&temporary);
-            return Err(ConfigError::Io(error));
+            return Err(error);
         }
     };
     if !unchanged {
@@ -278,22 +296,10 @@ fn sync_directory(path: &Path) -> std::io::Result<()> {
 mod tests {
     use std::{cell::RefCell, fs};
 
-    use super::{CommitStep, write_mcp_server_observed};
-    use crate::{ConfigError, McpServerConfig};
+    use super::{CommitStep, commit};
+    use crate::ConfigError;
 
-    fn server(command: &str) -> McpServerConfig {
-        McpServerConfig {
-            command: Some(command.into()),
-            args: Vec::new(),
-            env: Default::default(),
-            cwd: None,
-            url: None,
-            headers: Default::default(),
-            oauth: Default::default(),
-            enabled: true,
-            timeout_ms: None,
-        }
-    }
+    const CANDIDATE: &[u8] = b"[mcp.servers.demo]\ncommand = \"new\"\n";
 
     #[test]
     fn durable_replace_orders_sync_identity_rename_and_directory_sync() {
@@ -302,7 +308,7 @@ mod tests {
         fs::write(&path, "# retained\n").expect("initial config");
         let steps = RefCell::new(Vec::new());
 
-        let result = write_mcp_server_observed(&path, "demo", &server("new"), |step| {
+        let result = commit(&path, Some(b"# retained\n"), Some(CANDIDATE), |step| {
             steps.borrow_mut().push(step);
             #[cfg(windows)]
             if step == CommitStep::TemporarySynced {
@@ -335,11 +341,7 @@ mod tests {
                 CommitStep::ParentSynced,
             ]
         );
-        let persisted = fs::read_to_string(&path).expect("read replaced configuration");
-        assert!(
-            persisted.contains("[mcp.servers.demo]"),
-            "replacement content missing from {path:?}: {persisted}"
-        );
+        assert_eq!(fs::read(&path).expect("replaced configuration"), CANDIDATE);
     }
 
     #[test]
@@ -348,7 +350,7 @@ mod tests {
         let path = directory.path().join("config.toml");
         fs::write(&path, "# original\n").expect("initial config");
 
-        let error = write_mcp_server_observed(&path, "demo", &server("new"), |step| {
+        let error = commit(&path, Some(b"# original\n"), Some(CANDIDATE), |step| {
             if step == CommitStep::TemporarySynced {
                 fs::write(&path, "# external edit\n").expect("external edit");
             }
@@ -360,5 +362,18 @@ mod tests {
             fs::read_to_string(&path).expect("read preserved external edit"),
             "# external edit\n"
         );
+    }
+
+    #[test]
+    fn a_removal_checks_the_original_too() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("worker.md");
+        fs::write(&path, "edited").expect("document");
+        assert!(matches!(
+            commit(&path, Some(b"original"), None, |_| {}),
+            Err(ConfigError::ChangedOnDisk(_))
+        ));
+        commit(&path, Some(b"edited"), None, |_| {}).expect("remove");
+        assert!(!path.exists());
     }
 }

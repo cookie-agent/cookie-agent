@@ -6,7 +6,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::ConfigRevision;
 
+pub const CONFIG_GET_METHOD: &str = "config.get";
+pub const CONFIG_APPLY_METHOD: &str = "config.apply";
 pub const CONFIG_RELOAD_METHOD: &str = "config.reload";
+/// The JSON-RPC error code of a refused `config.apply`; its data is a
+/// [`ConfigApplyError`].
+pub const CONFIG_APPLY_ERROR_CODE: i32 = -32040;
 
 /// A configuration part that takes effect only when the daemon restarts.
 #[derive(
@@ -46,4 +51,98 @@ pub struct ConfigReloadParams {}
 #[serde(deny_unknown_fields)]
 pub struct ConfigReloadResult {
     pub status: ConfigStatus,
+}
+
+/// Read the configuration documents on disk.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigGetParams {}
+
+/// One configuration document: `config.toml`, `agents/<id>.md`, or
+/// `agents/<preset>/<id>.md`.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigDocument {
+    pub path: String,
+    pub text: String,
+    /// `sha256:<hex>` of the document's bytes, for `config.apply`.
+    pub fingerprint: String,
+}
+
+/// The configuration on disk, which differs from the applied one until it is
+/// reloaded when it was edited by hand.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigGetResult {
+    /// The revision of the documents on disk, for `config.apply`.
+    pub revision: ConfigRevision,
+    pub documents: Vec<ConfigDocument>,
+    /// Preset directories that hold no document.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub empty_presets: Vec<String>,
+    pub status: ConfigStatus,
+}
+
+/// One change of a `config.apply` set.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum ConfigChange {
+    /// Create (no `expected_fingerprint`) or replace a document.
+    Put {
+        path: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_fingerprint: Option<String>,
+    },
+    /// Remove a document; removing a preset's last document removes the
+    /// preset.
+    Delete {
+        path: String,
+        expected_fingerprint: String,
+    },
+    /// Set one key of `config.toml`, given as its path of table and key
+    /// names; `null` removes it, an object is a table.
+    Set {
+        #[schemars(length(min = 1, max = 32))]
+        key: Vec<String>,
+        value: serde_json::Value,
+    },
+}
+
+/// Change the configuration: the set is checked against `expected_revision`
+/// and each document's fingerprint, validated whole, written, and applied.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigApplyParams {
+    pub expected_revision: ConfigRevision,
+    #[schemars(length(min = 1, max = 256))]
+    pub changes: Vec<ConfigChange>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigApplyResult {
+    /// The revision of the documents now on disk.
+    pub revision: ConfigRevision,
+    pub status: ConfigStatus,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigApplyErrorCode {
+    /// The configuration changed since it was read: refetch and merge.
+    Conflict,
+    /// The result is not a valid configuration.
+    InvalidConfiguration,
+    /// A change cannot be made as asked, such as a path that is not a
+    /// document.
+    InvalidChange,
+}
+
+/// Why a `config.apply` changed nothing.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigApplyError {
+    pub code: ConfigApplyErrorCode,
+    pub message: String,
 }

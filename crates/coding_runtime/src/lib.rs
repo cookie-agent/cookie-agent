@@ -1,4 +1,4 @@
-//! The coding runtime's tools for cookie-agent protocol 47: `read`, `write`,
+//! The coding runtime's tools for cookie-agent protocol 48: `read`, `write`,
 //! `edit`, `bash`, and `webfetch`, prepared against the workspace of the
 //! runtime that offers them. They implement the `cookie_agent_runtime_api`
 //! contract and never depend on the engine.

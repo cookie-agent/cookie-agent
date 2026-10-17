@@ -761,6 +761,20 @@ impl Client {
         .await
     }
 
+    /// The daemon's configuration documents on disk.
+    pub async fn get_config(&self) -> Result<crate::ConfigGetResult, ClientError> {
+        self.call(crate::CONFIG_GET_METHOD, &crate::ConfigGetParams {})
+            .await
+    }
+
+    /// Changes the daemon's configuration; see [`crate::ConfigApplyParams`].
+    pub async fn apply_config(
+        &self,
+        params: crate::ConfigApplyParams,
+    ) -> Result<crate::ConfigApplyResult, ClientError> {
+        self.call(crate::CONFIG_APPLY_METHOD, &params).await
+    }
+
     /// Re-reads the daemon's configuration from disk and applies it.
     pub async fn reload_config(&self) -> Result<crate::ConfigReloadResult, ClientError> {
         self.call(crate::CONFIG_RELOAD_METHOD, &crate::ConfigReloadParams {})

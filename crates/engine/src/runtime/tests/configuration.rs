@@ -172,3 +172,217 @@ async fn mcp_servers_follow_the_reloaded_file_under_the_runtime_layer() {
     fixture.engine.reload_configuration().await.expect("reload");
     assert!(names(&fixture.engine).is_empty());
 }
+
+fn path(path: &str) -> cookie_agent_config::ConfigPath {
+    cookie_agent_config::ConfigPath::new(path).expect("valid path")
+}
+
+#[tokio::test]
+async fn a_change_set_is_written_validated_and_applied_together() {
+    use crate::ConfigChange;
+    let fixture = reloadable();
+    let read = fixture
+        .engine
+        .configuration_documents()
+        .await
+        .expect("read");
+    let primary = read
+        .documents
+        .iter()
+        .find(|document| document.path.as_str() == "agents/primary.md")
+        .expect("primary")
+        .clone();
+
+    // The delegator and its new subagent go in together.
+    let revision = fixture
+        .engine
+        .apply_config_changes(
+            read.revision.clone(),
+            vec![
+                ConfigChange::Put {
+                    path: path("agents/reviewer.md"),
+                    text: REVIEWER.into(),
+                    expected_fingerprint: None,
+                },
+                ConfigChange::Put {
+                    path: path("agents/primary.md"),
+                    text: PRIMARY.replace(
+                        "permissions: {}",
+                        "permissions:\n  delegate:\n    reviewer: allow",
+                    ),
+                    expected_fingerprint: Some(primary.fingerprint.clone()),
+                },
+                ConfigChange::Set {
+                    key: vec!["loop_warning".into(), "enabled".into()],
+                    value: serde_json::json!(false),
+                },
+            ],
+        )
+        .await
+        .expect("apply");
+    assert_eq!(fixture.engine.configuration().revision, revision);
+    assert!(!fixture.engine.configuration().runtime.loop_warning.enabled);
+    assert!(fixture.root.join("agents/reviewer.md").exists());
+    assert!(
+        std::fs::read_to_string(fixture.root.join("config.toml"))
+            .unwrap()
+            .contains("enabled = false")
+    );
+    assert!(
+        fixture
+            .snapshot()
+            .agents
+            .iter()
+            .any(|agent| agent.id.as_str() == "reviewer")
+    );
+    let reread = fixture
+        .engine
+        .configuration_documents()
+        .await
+        .expect("read");
+    assert_eq!(reread.revision, revision);
+
+    // A stale revision, a create of an existing document, and a stale
+    // fingerprint each change nothing.
+    let delete_reviewer = |fingerprint: String| ConfigChange::Delete {
+        path: path("agents/reviewer.md"),
+        expected_fingerprint: fingerprint,
+    };
+    for (expected, change) in [
+        (read.revision.clone(), delete_reviewer(String::new())),
+        (
+            revision.clone(),
+            ConfigChange::Put {
+                path: path("agents/reviewer.md"),
+                text: REVIEWER.into(),
+                expected_fingerprint: None,
+            },
+        ),
+        (
+            revision.clone(),
+            delete_reviewer(primary.fingerprint.clone()),
+        ),
+    ] {
+        assert!(matches!(
+            fixture
+                .engine
+                .apply_config_changes(expected, vec![change])
+                .await,
+            Err(EngineError::ConfigConflict(_))
+        ));
+    }
+    // A result that is not a valid configuration changes nothing: the
+    // primary still delegates to the reviewer.
+    let reviewer = reread
+        .documents
+        .iter()
+        .find(|document| document.path.as_str() == "agents/reviewer.md")
+        .unwrap()
+        .fingerprint
+        .clone();
+    assert!(matches!(
+        fixture
+            .engine
+            .apply_config_changes(revision.clone(), vec![delete_reviewer(reviewer)])
+            .await,
+        Err(EngineError::Config(_))
+    ));
+    assert!(fixture.root.join("agents/reviewer.md").exists());
+    // A set and a put of config.toml cannot go together.
+    assert!(matches!(
+        fixture
+            .engine
+            .apply_config_changes(
+                revision.clone(),
+                vec![
+                    ConfigChange::Set {
+                        key: vec!["loop_warning".into(), "enabled".into()],
+                        value: serde_json::Value::Null,
+                    },
+                    ConfigChange::Put {
+                        path: path("config.toml"),
+                        text: String::new(),
+                        expected_fingerprint: None,
+                    },
+                ]
+            )
+            .await,
+        Err(EngineError::ConfigChangeRefused(_))
+    ));
+    assert_eq!(fixture.engine.configuration().revision, revision);
+}
+
+#[tokio::test]
+async fn persisting_an_mcp_server_writes_and_applies_the_configuration() {
+    let fixture = reloadable();
+    let definition = cookie_agent_protocol::McpServerDefinition {
+        command: Some("cookie-test-missing-docs-mcp".into()),
+        args: Vec::new(),
+        env: Default::default(),
+        cwd: None,
+        url: None,
+        headers: Default::default(),
+        oauth: None,
+        enabled: false,
+        timeout_ms: None,
+    };
+    fixture
+        .engine
+        .add_mcp_server("docs".into(), definition)
+        .await
+        .expect("add");
+    let before = fixture.engine.configuration().revision.clone();
+    let persisted = fixture
+        .engine
+        .persist_mcp_server(
+            "docs".into(),
+            cookie_agent_protocol::McpConfigTarget::UserFile,
+        )
+        .await
+        .expect("persist")
+        .expect("listed");
+    assert_eq!(
+        persisted.source,
+        cookie_agent_protocol::McpConfigSource::UserFile
+    );
+    assert_ne!(fixture.engine.configuration().revision, before);
+    assert!(
+        fixture
+            .engine
+            .configuration()
+            .user_mcp_servers
+            .contains_key("docs")
+    );
+    assert!(
+        std::fs::read_to_string(fixture.root.join("config.toml"))
+            .unwrap()
+            .contains("[mcp.servers.docs]")
+    );
+
+    // Persisting a removal deletes the table.
+    fixture
+        .engine
+        .remove_mcp_server("docs".into())
+        .await
+        .expect("remove");
+    fixture
+        .engine
+        .persist_mcp_server(
+            "docs".into(),
+            cookie_agent_protocol::McpConfigTarget::UserFile,
+        )
+        .await
+        .expect("persist the removal");
+    assert!(
+        !std::fs::read_to_string(fixture.root.join("config.toml"))
+            .unwrap()
+            .contains("docs")
+    );
+    assert!(
+        !fixture
+            .engine
+            .configuration()
+            .user_mcp_servers
+            .contains_key("docs")
+    );
+}

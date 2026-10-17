@@ -105,6 +105,30 @@ impl RpcFault {
         }
     }
 
+    /// A refused `config.apply`: a conflict, an invalid result, or a change
+    /// that cannot be made; anything else is an ordinary engine fault.
+    pub(crate) fn config_apply(error: EngineError) -> Self {
+        use cookie_agent_protocol::{ConfigApplyError, ConfigApplyErrorCode};
+        let code = match &error {
+            EngineError::ConfigConflict(_) => ConfigApplyErrorCode::Conflict,
+            EngineError::ConfigChangeRefused(_) => ConfigApplyErrorCode::InvalidChange,
+            EngineError::Config(_) => ConfigApplyErrorCode::InvalidConfiguration,
+            _ => return engine_fault(error),
+        };
+        let message = match error {
+            EngineError::ConfigConflict(message) | EngineError::ConfigChangeRefused(message) => {
+                message
+            }
+            EngineError::Config(error) => error.to_string(),
+            _ => unreachable!("matched above"),
+        };
+        Self {
+            code: cookie_agent_protocol::CONFIG_APPLY_ERROR_CODE,
+            message: "configuration not changed",
+            data: typed_error_data(ConfigApplyError { code, message }),
+        }
+    }
+
     pub(crate) fn provider_disconnect(
         request: &ProviderDisconnectParams,
         error: EngineError,
@@ -294,6 +318,8 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::Session(error) => session_debug_code(error),
         EngineError::Event(error) => event_log_debug_code(error),
         EngineError::Config(error) => config_debug_code(error),
+        EngineError::ConfigConflict(_) => "config_conflict",
+        EngineError::ConfigChangeRefused(_) => "config_change_refused",
         EngineError::DelegationEvents(_) => "delegation_events",
         EngineError::GrantJournal(_) => "grant_journal",
         EngineError::ToolOutput(_) => "tool_output_io",
@@ -488,6 +514,35 @@ mod tests {
                 serde_json::from_value(fault.data.expect("typed data")).expect("connect error");
             assert_eq!(data.code, expected);
         }
+    }
+
+    #[test]
+    fn config_apply_faults_say_why_nothing_changed() {
+        use cookie_agent_protocol::{ConfigApplyError, ConfigApplyErrorCode};
+        for (error, expected) in [
+            (
+                EngineError::ConfigConflict("changed".into()),
+                ConfigApplyErrorCode::Conflict,
+            ),
+            (
+                EngineError::ConfigChangeRefused("bad path".into()),
+                ConfigApplyErrorCode::InvalidChange,
+            ),
+            (
+                EngineError::Config(Box::new(cookie_agent_config::ConfigError::UnsafePath)),
+                ConfigApplyErrorCode::InvalidConfiguration,
+            ),
+        ] {
+            let fault: cookie_agent_protocol::ServerFault = RpcFault::config_apply(error).into();
+            assert_eq!(fault.code, cookie_agent_protocol::CONFIG_APPLY_ERROR_CODE);
+            let data: ConfigApplyError =
+                serde_json::from_value(fault.data.expect("typed data")).expect("apply error");
+            assert_eq!(data.code, expected);
+            assert!(!data.message.is_empty());
+        }
+        let other: cookie_agent_protocol::ServerFault =
+            RpcFault::config_apply(EngineError::NoRunnableModel).into();
+        assert_ne!(other.code, cookie_agent_protocol::CONFIG_APPLY_ERROR_CODE);
     }
 
     #[test]

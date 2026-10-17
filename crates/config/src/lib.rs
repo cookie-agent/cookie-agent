@@ -5,7 +5,6 @@ mod agents;
 mod cache;
 mod error;
 mod loader;
-mod mcp_store;
 mod prompt_template;
 mod runtime;
 mod runtime_templates;
@@ -14,6 +13,7 @@ mod skills;
 mod toml_values;
 mod tree;
 mod wildcard;
+mod writer;
 
 pub use agent_document::{AgentDocument, AgentDocumentSource};
 pub use agents::{
@@ -31,7 +31,6 @@ pub use loader::{
     ConfigLayerPaths, LoadedConfiguration, load, load_from_tree, load_from_user_root,
 };
 pub use loader::{LoadedMcpServer, McpServerSource};
-pub use mcp_store::{write_mcp_server, write_server_token};
 pub use prompt_template::{
     DEFAULT_PROMPT_PLACEHOLDER, FOCUS_PLACEHOLDER, InternalPromptValues, render_internal_prompt,
 };
@@ -51,3 +50,4 @@ pub use skills::{
 };
 pub use tree::{CONFIG_FILE, ConfigDocument, ConfigPath, ConfigTree};
 pub use wildcard::simple_wildcard_match;
+pub use writer::{write_server_token, write_tree};

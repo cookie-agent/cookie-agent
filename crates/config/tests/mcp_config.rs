@@ -1,7 +1,8 @@
 use std::fs;
 
 use cookie_agent_config::{
-    ConfigError, McpServerConfig, McpServerSource, load_from_user_root, write_mcp_server,
+    ConfigError, ConfigTree, McpServerConfig, McpServerSource, load_from_tree, load_from_user_root,
+    write_tree,
 };
 
 fn root(config: &str) -> tempfile::TempDir {
@@ -114,7 +115,13 @@ fn write_back_replaces_only_the_named_table_and_round_trips_strictly() {
         enabled: false,
         timeout_ms: Some(5000),
     };
-    write_mcp_server(&path, "demo", &replacement).expect("write MCP table");
+    let original = ConfigTree::read(Some(directory.path())).expect("read the tree");
+    let mut candidate = original.clone();
+    candidate
+        .set_mcp_server("demo", Some(&replacement))
+        .expect("set the MCP table");
+    load_from_tree(&candidate).expect("a valid candidate");
+    write_tree(&original, &candidate).expect("write MCP table");
     let text = fs::read_to_string(&path).expect("written config");
     assert!(text.contains("# keep this comment"));
     assert!(text.contains("max_lines = 42"));
@@ -138,6 +145,10 @@ fn write_back_rejects_an_existing_strict_conflict_without_changing_the_file() {
         enabled: true,
         timeout_ms: None,
     };
-    assert!(write_mcp_server(&path, "demo", &config).is_err());
+    let mut candidate = ConfigTree::read(Some(directory.path())).expect("read the tree");
+    candidate
+        .set_mcp_server("demo", Some(&config))
+        .expect("set the MCP table");
+    assert!(load_from_tree(&candidate).is_err());
     assert_eq!(fs::read_to_string(path).expect("unchanged config"), before);
 }

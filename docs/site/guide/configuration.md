@@ -61,10 +61,15 @@ top-level field and fails strict validation.
 
 ## Changes while the daemon runs
 
-The daemon reads `config.toml` and the agent documents when it starts. After
-editing them by hand, reload them with the `config.reload` protocol method; a
-configuration that fails validation is not applied, the daemon keeps running
-on the one it has, and the reload reports the error. A reload applies:
+The daemon reads `config.toml` and the agent documents when it starts. Clients
+read them with `config.get` and change them with `config.apply`: a set of
+whole-document puts and deletes and single-key `set` edits of `config.toml`,
+checked against the revision and fingerprints the client read, validated
+whole, written, and applied together (see the
+[protocol reference](../reference/protocol.md)). After editing the files by
+hand, reload them with `config.reload`. A configuration that fails validation
+is not applied: the daemon keeps running on the one it has and reports the
+error. Applying a configuration does this:
 
 | Part | When it takes effect |
 |---|---|

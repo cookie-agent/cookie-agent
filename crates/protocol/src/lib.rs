@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 47 with versionless session events.
+//! Exact cookie-agent protocol 48 with versionless session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders, except
 //! the few that keep versionless session event history readable.
@@ -156,7 +156,7 @@ pub use setup_value::*;
 pub use stop::StopSignals;
 
 /// The only protocol version supported by this build.
-pub const PROTOCOL_VERSION: u32 = 47;
+pub const PROTOCOL_VERSION: u32 = 48;
 /// The only coherent runtime snapshot schema supported by this build.
 pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 6;
 
@@ -220,7 +220,7 @@ macro_rules! exact_numeric_wire_type {
     };
 }
 
-exact_numeric_wire_type!(ProtocolVersion, 47, "The exact protocol wire version.");
+exact_numeric_wire_type!(ProtocolVersion, 48, "The exact protocol wire version.");
 exact_numeric_wire_type!(
     RuntimeSnapshotSchemaVersion,
     6,

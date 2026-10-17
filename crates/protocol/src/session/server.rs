@@ -470,6 +470,16 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: crate::PluginsRestartParams,
     ) -> Result<crate::PluginsRestartResult, ServerFault>;
+    /// The configuration documents on disk.
+    async fn get_config(
+        &self,
+        params: crate::ConfigGetParams,
+    ) -> Result<crate::ConfigGetResult, ServerFault>;
+    /// Changes the configuration.
+    async fn apply_config(
+        &self,
+        params: crate::ConfigApplyParams,
+    ) -> Result<crate::ConfigApplyResult, ServerFault>;
     /// Re-reads and applies the configuration.
     async fn reload_config(
         &self,
@@ -780,6 +790,8 @@ async fn dispatch<S: ServerProtocol>(
         crate::PLUGINS_LIST_METHOD => value(server.list_plugins(decode_default(params)?).await?),
         crate::PLUGINS_RESTART_METHOD => value(server.restart_plugin(decode(params)?).await?),
         crate::CONFIG_RELOAD_METHOD => value(server.reload_config(decode_default(params)?).await?),
+        crate::CONFIG_GET_METHOD => value(server.get_config(decode_default(params)?).await?),
+        crate::CONFIG_APPLY_METHOD => value(server.apply_config(decode(params)?).await?),
         crate::RUN_TOOL_BACKGROUND_METHOD => {
             value(server.background_tool(decode(params)?, context).await?)
         }

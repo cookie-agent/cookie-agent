@@ -6,7 +6,9 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use cookie_agent_config::{ConfigTree, LoadedConfiguration, load_from_tree};
+use cookie_agent_config::{
+    ConfigError, ConfigPath, ConfigTree, LoadedConfiguration, load_from_tree, write_tree,
+};
 use cookie_agent_protocol::{ConfigRevision, RuntimeChangeReason};
 
 use crate::{Engine, EngineError};
@@ -28,6 +30,44 @@ impl RestartRequiredPart {
             Self::Runtimes => "runtimes",
         }
     }
+}
+
+/// One change of a [`Engine::apply_config_changes`] set.
+#[derive(Clone, Debug)]
+pub enum ConfigChange {
+    /// Creates (`expected_fingerprint` absent) or replaces a document.
+    Put {
+        path: ConfigPath,
+        text: String,
+        expected_fingerprint: Option<String>,
+    },
+    /// Removes a document.
+    Delete {
+        path: ConfigPath,
+        expected_fingerprint: String,
+    },
+    /// Sets one key of `config.toml`; `null` removes it.
+    Set {
+        key: Vec<String>,
+        value: serde_json::Value,
+    },
+}
+
+/// A document of the configuration on disk.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfigDocumentText {
+    pub path: ConfigPath,
+    pub text: String,
+    pub fingerprint: String,
+}
+
+/// The configuration on disk.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfigDocuments {
+    pub revision: ConfigRevision,
+    pub documents: Vec<ConfigDocumentText>,
+    /// Preset directories without documents.
+    pub empty_presets: Vec<String>,
 }
 
 /// Where the engine's configuration stands.
@@ -89,6 +129,95 @@ impl Engine {
             .ok_or_else(|| {
                 EngineError::Runtime("the daemon has no user configuration directory".into())
             })
+    }
+
+    /// The configuration documents on disk, which may differ from the
+    /// applied ones until a reload.
+    pub async fn configuration_documents(&self) -> Result<ConfigDocuments, EngineError> {
+        let root = self.configuration_root()?;
+        let tree = tokio::task::spawn_blocking(move || ConfigTree::read(Some(&root)))
+            .await
+            .map_err(|error| EngineError::Runtime(error.to_string()))?
+            .map_err(config_error)?;
+        Ok(ConfigDocuments {
+            revision: tree.revision(),
+            documents: tree
+                .documents()
+                .map(|(path, bytes)| ConfigDocumentText {
+                    path: path.clone(),
+                    text: String::from_utf8_lossy(bytes).into_owned(),
+                    fingerprint: ConfigTree::fingerprint(bytes),
+                })
+                .collect(),
+            empty_presets: tree.empty_presets().map(str::to_owned).collect(),
+        })
+    }
+
+    /// Applies `changes` to the configuration on disk as one set: each is
+    /// checked against `expected_revision` and its own fingerprint, the
+    /// result is validated whole, written, and applied. Returns the new
+    /// revision.
+    pub async fn apply_config_changes(
+        &self,
+        expected_revision: ConfigRevision,
+        changes: Vec<ConfigChange>,
+    ) -> Result<ConfigRevision, EngineError> {
+        let edits_config = changes.iter().any(|change| match change {
+            ConfigChange::Put { path, .. } | ConfigChange::Delete { path, .. } => {
+                *path == ConfigPath::config()
+            }
+            ConfigChange::Set { .. } => false,
+        });
+        if edits_config
+            && changes
+                .iter()
+                .any(|change| matches!(change, ConfigChange::Set { .. }))
+        {
+            return Err(EngineError::ConfigChangeRefused(
+                "a set and a put or delete of config.toml cannot go together".into(),
+            ));
+        }
+        self.edit_configuration(move |tree, candidate| {
+            if tree.revision() != expected_revision {
+                return Err(EngineError::ConfigConflict(
+                    "the configuration changed since it was read".into(),
+                ));
+            }
+            for change in changes {
+                apply_change(candidate, change)?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Edits the configuration on disk with `edit`, which gets the tree as
+    /// read and the candidate to change, then validates, writes, and applies
+    /// the candidate. Returns the new revision.
+    pub(crate) async fn edit_configuration(
+        &self,
+        edit: impl FnOnce(&ConfigTree, &mut ConfigTree) -> Result<(), EngineError> + Send + 'static,
+    ) -> Result<ConfigRevision, EngineError> {
+        let _mutation = self.inner.config_mutation.lock().await;
+        let root = self.configuration_root()?;
+        let (revision, candidate) = tokio::task::spawn_blocking(move || {
+            let tree = ConfigTree::read(Some(&root)).map_err(config_error)?;
+            let mut candidate = tree.clone();
+            edit(&tree, &mut candidate)?;
+            let loaded = load_from_tree(&candidate).map_err(config_error)?;
+            write_tree(&tree, &candidate).map_err(|error| match error {
+                ConfigError::ChangedOnDisk(path) => EngineError::ConfigConflict(format!(
+                    "{} changed while it was written",
+                    path.display()
+                )),
+                error => config_error(error),
+            })?;
+            Ok::<_, EngineError>((candidate.revision(), loaded))
+        })
+        .await
+        .map_err(|error| EngineError::Runtime(error.to_string()))??;
+        self.apply_configuration_locked(candidate).await?;
+        Ok(revision)
     }
 
     /// Reads `config.toml` and the agent documents from disk and applies
@@ -197,4 +326,46 @@ fn agent_fingerprints(
             })
         }))
         .collect()
+}
+
+fn config_error(error: ConfigError) -> EngineError {
+    EngineError::Config(Box::new(error))
+}
+
+fn apply_change(candidate: &mut ConfigTree, change: ConfigChange) -> Result<(), EngineError> {
+    let current = |candidate: &ConfigTree, path: &ConfigPath| {
+        candidate.get(path).map(ConfigTree::fingerprint)
+    };
+    match change {
+        ConfigChange::Put {
+            path,
+            text,
+            expected_fingerprint,
+        } => {
+            if current(candidate, &path) != expected_fingerprint {
+                return Err(EngineError::ConfigConflict(match expected_fingerprint {
+                    None => format!("{path} already exists"),
+                    Some(_) => format!("{path} changed since it was read"),
+                }));
+            }
+            candidate
+                .put(path, text.into_bytes())
+                .map_err(|error| EngineError::ConfigChangeRefused(error.to_string()))
+        }
+        ConfigChange::Delete {
+            path,
+            expected_fingerprint,
+        } => {
+            if current(candidate, &path).as_deref() != Some(expected_fingerprint.as_str()) {
+                return Err(EngineError::ConfigConflict(format!(
+                    "{path} changed since it was read"
+                )));
+            }
+            candidate.delete(&path);
+            Ok(())
+        }
+        ConfigChange::Set { key, value } => candidate
+            .set_key_json(&key, &value)
+            .map_err(|error| EngineError::ConfigChangeRefused(error.to_string())),
+    }
 }

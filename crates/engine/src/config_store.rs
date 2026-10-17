@@ -1,8 +1,8 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::collections::BTreeMap;
 
 use cookie_agent_config::{
     LoadedConfiguration, LoadedMcpServer, McpOAuthConfig, McpOAuthSettings, McpServerConfig,
-    McpServerSource, write_mcp_server,
+    McpServerSource,
 };
 use cookie_agent_protocol::{
     McpConfigSource, McpConfigTarget, McpOAuthDefinition, McpOAuthSettingsDefinition,
@@ -15,7 +15,6 @@ use crate::{Engine, EngineError, McpServerState};
 pub(crate) struct ConfigStore {
     user: BTreeMap<String, McpServerConfig>,
     runtime: BTreeMap<String, Option<McpServerConfig>>,
-    user_path: Option<PathBuf>,
 }
 
 impl ConfigStore {
@@ -23,7 +22,6 @@ impl ConfigStore {
         Self {
             user: config.user_mcp_servers.clone(),
             runtime: BTreeMap::new(),
-            user_path: config.config_paths.user.clone(),
         }
     }
 
@@ -121,24 +119,18 @@ impl ConfigStore {
         Ok(())
     }
 
-    fn persist(&mut self, name: &str, target: McpConfigTarget) -> Result<(), EngineError> {
-        let config = self
-            .runtime
-            .get(name)
-            .and_then(Option::as_ref)
-            .cloned()
-            .ok_or_else(|| {
-                EngineError::Mcp(format!("server `{name}` has no runtime entry to persist"))
-            })?;
-        let McpConfigTarget::UserFile = target;
-        let path = self
-            .user_path
-            .as_ref()
-            .ok_or_else(|| EngineError::Mcp("the user configuration file is unavailable".into()))?;
-        write_mcp_server(path, name, &config)
-            .map_err(|error| EngineError::Mcp(error.to_string()))?;
-        self.user.insert(name.to_owned(), config);
-        Ok(())
+    /// The runtime entry of `name`: its configuration, or `None` for a
+    /// removal.
+    fn runtime_entry(&self, name: &str) -> Option<Option<McpServerConfig>> {
+        self.runtime.get(name).cloned()
+    }
+
+    /// Drops the runtime entry of `name` once the user file holds it, if it
+    /// is still `entry`.
+    fn settle(&mut self, name: &str, entry: &Option<McpServerConfig>) {
+        if self.runtime.get(name) == Some(entry) {
+            self.runtime.remove(name);
+        }
     }
 }
 
@@ -344,12 +336,33 @@ impl Engine {
         name: String,
         target: McpConfigTarget,
     ) -> Result<Option<McpServerInfo>, EngineError> {
-        let _mutation = self.inner.mcp_mutation.lock().await;
-        self.inner
+        let McpConfigTarget::UserFile = target;
+        let entry = self
+            .inner
             .config_store
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .persist(&name, target)?;
+            .runtime_entry(&name)
+            .ok_or_else(|| {
+                EngineError::Mcp(format!("server `{name}` has no runtime entry to persist"))
+            })?;
+        // Written like any configuration change, so the applied
+        // configuration follows the file.
+        let (server, written) = (name.clone(), entry.clone());
+        self.edit_configuration(move |_, candidate| {
+            candidate
+                .set_mcp_server(&server, written.as_ref())
+                .map_err(|error| EngineError::Mcp(error.to_string()))
+        })
+        .await?;
+        {
+            let _mutation = self.inner.mcp_mutation.lock().await;
+            self.inner
+                .config_store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .settle(&name, &entry);
+        }
         Ok(self
             .list_mcp_servers()
             .into_iter()
@@ -486,12 +499,11 @@ mod tests {
     use std::fs;
 
     use cookie_agent_config::{McpServerSource, load_from_user_root};
-    use cookie_agent_protocol::McpConfigTarget;
 
     use super::ConfigStore;
 
     #[test]
-    fn runtime_layer_overrides_the_user_file_can_remove_and_writes_back_strictly() {
+    fn runtime_layer_overrides_the_user_file_can_remove_and_survives_a_rebase() {
         let user = tempfile::tempdir().expect("user root");
         fs::write(
             user.path().join("config.toml"),
@@ -511,23 +523,26 @@ mod tests {
             store.effective("demo").expect("runtime server").source,
             McpServerSource::Runtime
         );
-        store
-            .persist("demo", McpConfigTarget::UserFile)
-            .expect("write user layer");
-        let written =
-            fs::read_to_string(user.path().join("config.toml")).expect("written user config");
-        assert!(written.contains("runtime"));
+
+        // A reload that changes the user file under a runtime entry changes
+        // nothing that runs; a new user server starts.
+        let mut user_layer = loaded.user_mcp_servers.clone();
+        user_layer.get_mut("demo").expect("demo").command = Some("edited".into());
+        let mut other = runtime.clone();
+        other.command = Some("other".into());
+        user_layer.insert("other".into(), other.clone());
+        let changes = store.rebase(user_layer.clone());
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].0, "other");
+        assert_eq!(
+            store.effective("demo").expect("runtime server").config,
+            runtime
+        );
+
+        // A runtime removal stays a removal across a rebase.
         store.remove("demo").expect("runtime tombstone");
         assert!(store.effective("demo").is_none());
-        let reloaded =
-            load_from_user_root(Some(user.path())).expect("strictly reloaded user layer");
-        assert_eq!(
-            reloaded.mcp_servers["demo"].source,
-            McpServerSource::UserFile
-        );
-        assert_eq!(
-            reloaded.mcp_servers["demo"].config.command.as_deref(),
-            Some("runtime")
-        );
+        assert!(store.rebase(user_layer).is_empty());
+        assert!(store.effective("demo").is_none());
     }
 }

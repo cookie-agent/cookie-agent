@@ -270,6 +270,124 @@ impl ConfigTree {
         self.documents.remove(path).is_some()
     }
 
+    /// Whether `preset` exists: it has a document or an empty directory.
+    #[must_use]
+    pub fn has_preset(&self, preset: &str) -> bool {
+        self.empty_presets.contains(preset)
+            || self.documents.keys().any(|path| {
+                matches!(path.document(), ConfigDocument::Agent { preset: Some(name), .. } if name == preset)
+            })
+    }
+
+    /// Sets the key `key` of `config.toml` (a path of table and key names)
+    /// to `value`, or removes it when `value` is `None`, editing the text so
+    /// the rest of the file, comments included, stays as it is. Missing
+    /// tables on the way are created; a table value is written as a table
+    /// section where its parent allows one.
+    ///
+    /// # Errors
+    ///
+    /// An empty key, a `config.toml` that is not valid TOML, or a key below
+    /// something that is not a table.
+    pub fn set_key(
+        &mut self,
+        key: &[String],
+        value: Option<toml::Value>,
+    ) -> Result<(), ConfigError> {
+        let path = self.display_path(&ConfigPath::config());
+        let invalid = |detail: &str| ConfigError::Toml(format!("{}: {detail}", path.display()));
+        let (last, parents) = key.split_last().ok_or_else(|| invalid("empty key"))?;
+        let text = std::str::from_utf8(self.get(&ConfigPath::config()).unwrap_or_default())
+            .map_err(|_| invalid("content is not UTF-8"))?;
+        let mut document = text
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| invalid(&error.to_string()))?;
+        let mut table: &mut dyn toml_edit::TableLike = document.as_table_mut();
+        // Within an inline table (or a dotted key) only values fit.
+        let mut values_only = false;
+        for (depth, name) in parents.iter().enumerate() {
+            let entry = table.entry(name).or_insert_with(|| {
+                let mut created = toml_edit::Table::new();
+                created.set_implicit(true);
+                toml_edit::Item::Table(created)
+            });
+            values_only = values_only
+                || entry.is_inline_table()
+                || entry.as_table().is_some_and(toml_edit::Table::is_dotted);
+            table = entry.as_table_like_mut().ok_or_else(|| {
+                invalid(&format!("`{}` is not a table", parents[..=depth].join(".")))
+            })?;
+        }
+        match value {
+            None => {
+                table.remove(last);
+            }
+            Some(value) => {
+                let mut wrapper = toml::Table::new();
+                wrapper.insert("value".to_owned(), value);
+                let encoded =
+                    toml::to_string(&wrapper).map_err(|error| invalid(&error.to_string()))?;
+                let mut encoded = encoded
+                    .parse::<toml_edit::DocumentMut>()
+                    .map_err(|error| invalid(&error.to_string()))?;
+                let item = encoded
+                    .as_table_mut()
+                    .remove("value")
+                    .expect("the wrapper holds the value");
+                let item = if values_only {
+                    item.into_value()
+                        .map(toml_edit::Item::Value)
+                        .unwrap_or_else(|item| item)
+                } else {
+                    item
+                };
+                table.insert(last, item);
+            }
+        }
+        self.put(ConfigPath::config(), document.to_string().into_bytes())
+    }
+
+    /// [`Self::set_key`] with a JSON value: `null` removes the key, and an
+    /// object is a table.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set_key`], and a value TOML cannot hold, such as a `null`
+    /// inside an array or object.
+    pub fn set_key_json(
+        &mut self,
+        key: &[String],
+        value: &serde_json::Value,
+    ) -> Result<(), ConfigError> {
+        let value = (!value.is_null())
+            .then(|| toml::Value::try_from(value))
+            .transpose()
+            .map_err(|error| {
+                ConfigError::Toml(format!("`{}`: not a TOML value: {error}", key.join(".")))
+            })?;
+        self.set_key(key, value)
+    }
+
+    /// Sets `[mcp.servers.<name>]` to `server`, or removes it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set_key`].
+    pub fn set_mcp_server(
+        &mut self,
+        name: &str,
+        server: Option<&crate::McpServerConfig>,
+    ) -> Result<(), ConfigError> {
+        let value = server
+            .map(toml::Value::try_from)
+            .transpose()
+            .map_err(|error| ConfigError::Toml(format!("MCP server `{name}`: {error}")))?;
+        self.set_key(
+            &["mcp".to_owned(), "servers".to_owned(), name.to_owned()],
+            value,
+        )
+    }
+
     /// The SHA-256 fingerprint of a document's bytes, `sha256:<hex>`.
     #[must_use]
     pub fn fingerprint(bytes: &[u8]) -> String {

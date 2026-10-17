@@ -233,8 +233,8 @@ and does not prevent other servers from connecting (see
 [Connection lifecycle](#connection-lifecycle)).
 
 Definitions created or changed through the TUI are runtime-layer entries and
-live only for the current daemon unless explicitly written to a file. A runtime
-entry continues to win after write-back.
+live only for the current daemon unless explicitly written to a file. After a
+write-back the file holds the entry, and it is no longer a runtime entry.
 
 ## Tool names and permissions
 
@@ -300,11 +300,13 @@ tombstones: the named server is absent even when the user file defines it.
 Runtime and user-file entries use the same connection lifecycle. Nothing is
 written automatically.
 
-Explicit MCP write-back replaces only `[mcp.servers.<name>]` in the user
-`config.toml` using a format-preserving TOML document edit. Unrelated
-keys, tables, and comments are retained. The complete candidate is passed
-through the strict configuration loader before an atomic replacement; an
-existing unknown field, type conflict, or malformed table fails without
+Explicit MCP write-back (`mcp.server.persist`) replaces only
+`[mcp.servers.<name>]` in the user `config.toml`, or removes it for a runtime
+removal, using a format-preserving TOML document edit, as a
+[configuration change](configuration.md#changes-while-the-daemon-runs). Unrelated
+keys, tables, and comments are retained. The complete candidate, with the agent documents beside it, is
+passed through the strict configuration loader before an atomic replacement;
+an existing unknown field, type conflict, or malformed table fails without
 changing the file. The replacement syncs the candidate before rename and syncs
 the containing directory afterward. The newly staged replacement is owner-only;
 the existing source path is not validated before replacement. The source file is re-read and
@@ -312,6 +314,5 @@ compared immediately before replacement, and a mismatch fails with a conflict
 instead of overwriting the external edit. A modification landing between that
 comparison and the rename itself cannot be detected — a narrow residual race
 that only matters if another writer edits the file in the same instant; avoid
-concurrent external edits while applying changes. The runtime entry remains the
-effective layer after a successful write, so normal file-layer provenance
-resumes on restart.
+concurrent external edits while applying changes. A successful write applies
+the configuration, and the server's entry comes from the file from then on.

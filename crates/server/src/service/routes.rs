@@ -616,6 +616,52 @@ impl ServerProtocol for Server {
         Ok(cookie_agent_protocol::PluginsRestartResult {})
     }
 
+    async fn get_config(
+        &self,
+        _params: cookie_agent_protocol::ConfigGetParams,
+    ) -> Result<cookie_agent_protocol::ConfigGetResult> {
+        let documents = self
+            .engine
+            .configuration_documents()
+            .await
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::ConfigGetResult {
+            revision: documents.revision,
+            documents: documents
+                .documents
+                .into_iter()
+                .map(|document| cookie_agent_protocol::ConfigDocument {
+                    path: document.path.as_str().to_owned(),
+                    text: document.text,
+                    fingerprint: document.fingerprint,
+                })
+                .collect(),
+            empty_presets: documents.empty_presets,
+            status: crate::config::status_to_wire(self.engine.configuration_status()),
+        })
+    }
+
+    async fn apply_config(
+        &self,
+        params: cookie_agent_protocol::ConfigApplyParams,
+    ) -> Result<cookie_agent_protocol::ConfigApplyResult> {
+        let changes = params
+            .changes
+            .into_iter()
+            .map(crate::config::change_from_wire)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| ServerFault::from(RpcFault::config_apply(error)))?;
+        let revision = self
+            .engine
+            .apply_config_changes(params.expected_revision, changes)
+            .await
+            .map_err(|error| ServerFault::from(RpcFault::config_apply(error)))?;
+        Ok(cookie_agent_protocol::ConfigApplyResult {
+            revision,
+            status: crate::config::status_to_wire(self.engine.configuration_status()),
+        })
+    }
+
     async fn reload_config(
         &self,
         _params: cookie_agent_protocol::ConfigReloadParams,
