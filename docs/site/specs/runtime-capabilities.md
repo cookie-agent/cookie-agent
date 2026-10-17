@@ -1,9 +1,8 @@
 # Persistent Daemon, Dial-in Runtimes, and Runtime Capabilities
 
-Status: **draft for review** (decisions of 2026-10-16 below; section
-[Review](#10-review) lists what still needs a decision). This spec extends
-the [runtimes spec](runtimes.md); where they differ, this one governs once
-it is approved.
+Status: **approved** (decisions of 2026-10-16 below and in
+[Review](#10-review)). This spec extends the [runtimes spec](runtimes.md);
+where they differ, this one governs.
 
 ## 1. Goal and scope
 
@@ -32,9 +31,9 @@ This spec changes three things:
   machines connect to it directly.
 - A persistent runtime dials the daemon and registers itself; the daemon
   does not dial runtimes.
-- One runtime process serves every workspace and capability of its
-  connection concurrently; the daemon never needs a second connection to
-  the same runtime.
+- Every runtime, spawned or dial-in, serves all of its sessions, workspaces,
+  and capabilities concurrently over one connection; the daemon never opens
+  a second connection to the same runtime.
 - A client runtime is not a protocol feature: a client that offers a
   runtime embeds a dial-in runtime in its own process, so the runtime ends
   when the client process does. The client protocol knows nothing of it.
@@ -79,9 +78,10 @@ kind; it reads what capabilities report.
   and runtimes going while no client is attached, as it does today. Plain
   `cookie` is unchanged.
 - **Listening.** `cookie daemon --listen <addr:port>` binds any address;
-  loopback stays the default. Off loopback it serves `wss` with
-  `--tls-cert` and `--tls-key`, so the token never crosses a network in
-  the clear (see [Review](#10-review) item 1).
+  loopback stays the default. `--tls-cert` and `--tls-key` serve `wss`.
+  TLS is supported, not required: without it the token crosses the network
+  in the clear, which the guide says plainly, so a plaintext listener off
+  loopback belongs on a private network such as a VPN.
 - **One durable token.** `--token-file <path>` reads the bearer token from
   a private file, creating one if it is missing, so it survives daemon
   restarts. Without it the daemon mints a per-run token as today. Clients
@@ -200,7 +200,7 @@ Each phase lands as its own commits with every gate green, and is pushed.
    capabilities, client protocol 45, the `/runtime` panel.
 2. **Directory-independent daemon.** `session.create` `cwd`, `local` serving
    any workspace, `cookie attach` sending its directory.
-3. **Listening and dial-in.** `--listen` with TLS, `--token-file`, the
+3. **Listening and dial-in.** `--listen`, optional TLS, `--token-file`, the
    `/runtime` endpoint, `cookie runtime serve --daemon`, reconnect.
 4. **TUI runtime.** `machine_id` and the TUI's embedded runtime when the
    daemon is remote.
@@ -209,21 +209,20 @@ Each phase lands as its own commits with every gate green, and is pushed.
 
 ## 10. Review
 
-Confirmed in review 2026-10-16: the store layout keyed by `cwd_identity`,
-producers as `runtime:<runtime ID>`, `machine_id` for remote detection,
-computer use as mechanism only, and in-flight calls failing with
-`runtime_unavailable` when their runtime's connection drops.
+Confirmed in review 2026-10-16:
 
-Open:
-
-1. **TLS off loopback.** `--listen` on a non-loopback address requires
-   `--tls-cert` and `--tls-key`; a plaintext listener on a private network
-   (a VPN such as Tailscale) would need an explicit `--insecure-listen`.
-2. **One token.** Clients and dial-in runtimes share the daemon's token,
-   instead of per-runtime paired secrets: anyone holding it is already fully
-   trusted as a client, but a runtime cannot be revoked alone.
-3. **Runtime-chosen IDs.** Dial-in runtimes name themselves and bring
-   their own MCP configuration, so the daemon's configuration has no entry
-   for them.
-4. **Spawned process model.** One process per template serving every
-   workspace concurrently; `{workspace}` goes; `--root` limits workspaces.
+- The store stays keyed by the daemon's directory; sessions are told apart
+  by `cwd_identity`, the client's `cwd`.
+- Producers produce as `runtime:<runtime ID>`.
+- `machine_id` decides whether a TUI offers its machine.
+- Computer use is mechanism only.
+- A call in flight when its runtime's connection drops fails with
+  `runtime_unavailable`.
+- The daemon listens on any address; TLS is supported, not required.
+- Clients and dial-in runtimes share one durable token.
+- Dial-in runtimes choose their own IDs and bring their own MCP
+  configuration.
+- Spawned runtimes stay, as the short-lived way to start a runtime (for
+  example over ssh), but like every runtime one connection serves all their
+  sessions: one process per template, no `{workspace}` placeholder, and
+  `--root` limits the workspaces `coding` opens.
