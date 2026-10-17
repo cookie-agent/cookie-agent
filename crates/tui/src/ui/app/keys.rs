@@ -139,29 +139,39 @@ impl App {
     }
 
     pub(super) fn handle_runtime_key(&mut self, key: KeyEvent) {
-        if let Some(focus) = self.runtime_panel.form.as_ref().map(|form| form.focus) {
+        if let Some(choosing) = self
+            .runtime_panel
+            .form
+            .as_ref()
+            .map(|form| form.chosen.is_none())
+        {
             match key.code {
-                KeyCode::Esc => self.runtime_panel.form = None,
-                KeyCode::Tab | KeyCode::BackTab => self.runtime_panel.move_focus(),
-                KeyCode::Enter => self.submit_runtime_attach(),
-                KeyCode::Up | KeyCode::Left if focus == RuntimeFormFocus::Runtime => {
-                    self.runtime_panel.cycle_runtime(true);
-                }
-                KeyCode::Down | KeyCode::Right if focus == RuntimeFormFocus::Runtime => {
-                    self.runtime_panel.cycle_runtime(false);
-                }
-                KeyCode::Up | KeyCode::Left if focus == RuntimeFormFocus::Capability => {
-                    self.runtime_panel.cycle_capability(true);
-                }
-                KeyCode::Down | KeyCode::Right if focus == RuntimeFormFocus::Capability => {
-                    self.runtime_panel.cycle_capability(false);
-                }
-                _ if focus == RuntimeFormFocus::Workspace => {
+                KeyCode::Esc => self.runtime_panel.back(),
+                KeyCode::Up if choosing => self.runtime_panel.move_choice(true),
+                KeyCode::Down if choosing => self.runtime_panel.move_choice(false),
+                KeyCode::Enter if choosing => match self.runtime_panel.choose() {
+                    Ok(crate::ui::management::AttachStep::Parameters) => {}
+                    Ok(crate::ui::management::AttachStep::Attach(
+                        runtime_id,
+                        capability,
+                        workspace,
+                    )) => self.attach_runtime_choice(runtime_id, capability, workspace),
+                    Err(error) => self.status = error,
+                },
+                KeyCode::Enter => match self.runtime_panel.attach_request() {
+                    Ok((runtime_id, capability, workspace)) => {
+                        self.attach_runtime_choice(runtime_id, capability, workspace);
+                    }
+                    Err(error) => self.status = error,
+                },
+                _ => {
                     if let Some(form) = self.runtime_panel.form.as_mut() {
-                        edit_plain_input(&mut form.workspace, key);
+                        edit_plain_input(form.input_mut(), key);
+                    }
+                    if choosing {
+                        self.runtime_panel.clamp_choice();
                     }
                 }
-                _ => {}
             }
             return;
         }
@@ -267,14 +277,12 @@ impl App {
         });
     }
 
-    fn submit_runtime_attach(&mut self) {
-        let (runtime_id, capability, workspace) = match self.runtime_panel.attach_request() {
-            Ok(request) => request,
-            Err(error) => {
-                self.status = error;
-                return;
-            }
-        };
+    fn attach_runtime_choice(
+        &mut self,
+        runtime_id: cookie_agent_protocol::RuntimeId,
+        capability: Option<cookie_agent_protocol::CapabilityName>,
+        workspace: Option<String>,
+    ) {
         if self.new_session_draft.is_some() {
             self.add_draft_runtime(cookie_agent_protocol::RuntimeAttachRequest {
                 runtime_id,

@@ -454,7 +454,7 @@ a session with none.
 
 ## Runtimes panel
 
-`/runtime` lists the selected session's
+`/runtime` (titled *Attached runtimes*) lists the selected session's
 [runtime attachments](../specs/runtimes.md#5-session-attachments): each
 attachment's name, runtime and capability (`labpc/coding`), workspace, and
 instance status (`starting`, `ready`, `reconnecting`, `failed`, `stopped`, or
@@ -462,12 +462,15 @@ instance status (`starting`, `ready`, `reconnecting`, `failed`, `stopped`, or
 platform, and, for a failed instance, the reason. The panel refreshes on every runtime change and while it
 is open.
 
-Press `a` to attach a runtime's capability: choose a runtime with the arrow
-keys; when it offers several capabilities, Tab to the capability and choose
-one; when the capability takes a workspace, Tab to the workspace path and
-type it; Enter attaches. A runtime that has not connected yet shows no
-capabilities: attaching it connects it and takes its only capability, and
-the form shows why its last connection failed. The path is passed to the runtime as typed and resolved on its
+Press `a` to attach: the panel lists every capability of every runtime
+(`labpc/coding`, `devbox/computer_use`), with its description and whether
+the runtime is connected. Type to filter by runtime, capability, kind, or
+description, choose with the arrow keys, and press Enter. A capability that
+takes no workspace attaches at once; one that takes a workspace asks for its
+path next (Enter attaches, Esc returns to the list). A runtime that has not
+connected yet is one entry: attaching it connects it and takes its only
+capability, its workspace is optional, and the details show why its last
+connection failed. The path is passed to the runtime as typed and resolved on its
 machine (see [Runtimes](runtimes.md)). Press `d` to detach the selected
 attachment, and `r` to retry its instance now, for example after fixing why it
 failed (`runtimes.reconnect`). The daemon refuses both
@@ -476,8 +479,7 @@ session already has; the refusal appears in the status line. Attaching starts
 the instance first and records nothing when it fails to start.
 
 Before a new session's first prompt (at startup, or after `/new`), the panel
-is titled *New session runtimes* and edits the runtimes that session will
-attach, starting from the defaults: `global`, and the `coding` capability at
+edits the runtimes that session will attach, starting from the defaults: `global`, and the `coding` capability at
 the TUI's directory (`local`'s, or this machine's when the daemon is remote).
 Each instance opens as soon as it joins the list, so its status and any
 failure show before the session exists, and an instance the list already

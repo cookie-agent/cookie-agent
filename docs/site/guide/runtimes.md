@@ -25,9 +25,9 @@ command = ["ssh", "-o", "BatchMode=yes", "labpc", "cookie", "runtime", "serve", 
 startup_timeout_ms = 20000
 ```
 
-Start `cookie`, open `/runtime`, press `a`, choose `labpc`, Tab to the
-workspace path, type a path on the remote machine such as `~/cookie-agent`,
-and press Enter. Before the first prompt this chooses the runtimes the new
+Start `cookie`, open `/runtime`, press `a`, type `labpc` and press Enter,
+then type a path on the remote machine such as `~/cookie-agent` and press
+Enter. Before the first prompt this chooses the runtimes the new
 session starts with; in an existing session it attaches `labpc` to it. The
 daemon runs the command once, the remote
 `cookie runtime serve` resolves the path on its own machine and opens its
@@ -48,8 +48,8 @@ A runtime reports its capabilities when it connects. Each has a name, a
 self-declared kind, and whether it takes a workspace. `runtimes.list` and
 the `/runtime` panel show them once the runtime has connected. When a
 runtime offers one capability, attaching it needs no capability name; when
-it offers several, choose one (in `/runtime`, Tab to the capability and use
-the arrows). Each attached capability is its own attachment, with its own
+it offers several, choose one (`/runtime` lists each capability of each
+runtime as its own entry). Each attached capability is its own attachment, with its own
 name and tools.
 
 | Runtime | Capability | Workspace | Offers |

@@ -258,10 +258,10 @@ impl App {
             return;
         }
         if self.modal == Modal::Runtimes {
-            if let Some(form) = &mut self.runtime_panel.form
-                && form.focus == RuntimeFormFocus::Workspace
-            {
-                form.workspace.insert_text(&text.replace(['\r', '\n'], ""));
+            if let Some(form) = &mut self.runtime_panel.form {
+                form.input_mut()
+                    .insert_text(&text.replace(['\r', '\n'], ""));
+                self.runtime_panel.clamp_choice();
             }
             return;
         }

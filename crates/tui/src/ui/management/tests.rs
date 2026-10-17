@@ -745,54 +745,77 @@ fn runtime_rows_match_instances_and_read_legacy_sessions_as_global_and_local() {
 }
 
 #[test]
-fn runtime_attach_chooses_a_capability_and_asks_for_its_workspace() {
+fn runtime_attach_lists_every_capability_and_asks_for_parameters_only_when_needed() {
     let mut panel = super::RuntimePanel::default();
     assert!(panel.begin_attach().is_err(), "nothing to attach yet");
     panel.install(runtime_listing());
     panel.begin_attach().expect("attach step");
-    let (runtime_id, capability, workspace) = panel.attach_request().expect("global");
-    assert_eq!(runtime_id.as_str(), "global");
+    let labels = |panel: &super::RuntimePanel| {
+        panel
+            .choices()
+            .iter()
+            .map(|choice| {
+                choice.capability.as_ref().map_or_else(
+                    || choice.runtime_id.to_string(),
+                    |capability| format!("{}/{}", choice.runtime_id, capability.name),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    // Every capability of every runtime; one that has not connected is one
+    // choice.
     assert_eq!(
-        capability.as_ref().map(|name| name.as_str()),
-        Some("global")
-    );
-    assert_eq!(workspace, None);
-    // Neither a capability choice nor a workspace field for `global`.
-    panel.move_focus();
-    assert_eq!(
-        panel.form.as_ref().map(|form| form.focus),
-        Some(super::RuntimeFormFocus::Runtime)
+        labels(&panel),
+        [
+            "global/global",
+            "labpc",
+            "devbox/coding",
+            "devbox/computer_use"
+        ]
     );
 
-    // A runtime that has not connected yet: its only capability, and an
-    // optional workspace.
-    panel.cycle_runtime(false);
-    let (runtime_id, capability, workspace) = panel.attach_request().expect("labpc");
-    assert_eq!(runtime_id.as_str(), "labpc");
-    assert_eq!((capability, workspace), (None, None));
-    panel.move_focus();
-    assert_eq!(
-        panel.form.as_ref().map(|form| form.focus),
-        Some(super::RuntimeFormFocus::Workspace)
-    );
+    // A capability without a workspace attaches at once.
+    match panel.choose().expect("global") {
+        super::AttachStep::Attach(runtime_id, capability, workspace) => {
+            assert_eq!(runtime_id.as_str(), "global");
+            assert_eq!(
+                capability.as_ref().map(|name| name.as_str()),
+                Some("global")
+            );
+            assert_eq!(workspace, None);
+        }
+        super::AttachStep::Parameters => panic!("global takes no parameters"),
+    }
+
+    // The search filters by runtime, capability, and kind.
+    let form = panel.form.as_mut().expect("form");
+    form.search.set_buffer("DESK".into());
+    panel.clamp_choice();
+    assert_eq!(labels(&panel), ["devbox/computer_use"]);
+    panel
+        .form
+        .as_mut()
+        .expect("form")
+        .search
+        .set_buffer("devbox".into());
+    panel.clamp_choice();
+    assert_eq!(labels(&panel), ["devbox/coding", "devbox/computer_use"]);
+
+    // A capability that takes a workspace asks for it, and requires it.
+    assert!(matches!(
+        panel.choose().expect("devbox coding"),
+        super::AttachStep::Parameters
+    ));
+    let error = panel
+        .attach_request()
+        .expect_err("coding needs a workspace");
+    assert!(error.contains("coding"), "{error}");
     panel
         .form
         .as_mut()
         .expect("form")
         .workspace
         .set_buffer(" ~/api ".into());
-    let (_, _, workspace) = panel.attach_request().expect("labpc with a workspace");
-    assert_eq!(workspace.as_deref(), Some("~/api"));
-
-    // A runtime with several capabilities: the capability is chosen, and
-    // the workspace goes along exactly when it takes one.
-    panel.cycle_runtime(false);
-    panel.form.as_mut().expect("form").focus = super::RuntimeFormFocus::Runtime;
-    panel.move_focus();
-    assert_eq!(
-        panel.form.as_ref().map(|form| form.focus),
-        Some(super::RuntimeFormFocus::Capability)
-    );
     let (runtime_id, capability, workspace) = panel.attach_request().expect("devbox coding");
     assert_eq!(runtime_id.as_str(), "devbox");
     assert_eq!(
@@ -800,23 +823,41 @@ fn runtime_attach_chooses_a_capability_and_asks_for_its_workspace() {
         Some("coding")
     );
     assert_eq!(workspace.as_deref(), Some("~/api"));
+
+    // Esc goes back to the list with the search kept, then closes.
+    panel.back();
+    assert_eq!(labels(&panel).len(), 2);
+    assert!(
+        panel
+            .form
+            .as_ref()
+            .is_some_and(|form| form.chosen.is_none())
+    );
+
+    // A runtime that has not connected: its only capability, and an
+    // optional workspace.
     panel
         .form
         .as_mut()
         .expect("form")
-        .workspace
-        .set_buffer(String::new());
-    let error = panel
-        .attach_request()
-        .expect_err("coding needs a workspace");
-    assert!(error.contains("coding"), "{error}");
-    panel.cycle_capability(false);
-    let (_, capability, workspace) = panel.attach_request().expect("devbox computer use");
+        .search
+        .set_buffer("labpc".into());
+    panel.clamp_choice();
+    assert!(matches!(
+        panel.choose().expect("labpc"),
+        super::AttachStep::Parameters
+    ));
     assert_eq!(
-        capability.as_ref().map(|name| name.as_str()),
-        Some("computer_use")
+        panel.attach_request().expect("labpc without a workspace"),
+        (
+            cookie_agent_protocol::RuntimeId::new("labpc").unwrap(),
+            None,
+            None
+        )
     );
-    assert_eq!(workspace, None);
+    panel.back();
+    panel.back();
+    assert!(panel.form.is_none());
 }
 
 #[test]
@@ -861,7 +902,6 @@ fn runtime_panel_renders_attachments_with_status_and_failure_reason() {
                 frame.area(),
                 &mut panel,
                 &rows,
-                false,
                 &crate::theme::Theme::default(),
             );
         })

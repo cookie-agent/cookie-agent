@@ -392,7 +392,6 @@ impl App {
                     centered(frame.area(), 88, 70),
                     &mut self.runtime_panel,
                     &rows,
-                    self.new_session_draft.is_some(),
                     &self.theme,
                 );
             }

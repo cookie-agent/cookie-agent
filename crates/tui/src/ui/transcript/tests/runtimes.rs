@@ -76,7 +76,7 @@ async fn the_runtime_panel_detaches_and_attaches_and_the_status_line_follows() {
     assert_eq!(names[0], "global");
     assert!(names[1].starts_with("local"), "{names:?}");
     let rendered = rendered_frame(&mut app, 120, 40);
-    assert!(rendered.contains("Session runtimes"), "{rendered}");
+    assert!(rendered.contains("Attached runtimes"), "{rendered}");
     assert!(rendered.contains("ready"), "{rendered}");
     assert!(
         rendered.contains("local · "),
@@ -150,7 +150,7 @@ async fn a_new_session_draft_chooses_its_runtimes_before_the_session_exists() {
     assert_eq!(names.len(), 2, "{names:?}");
     assert_eq!(names[0], "global");
     let rendered = rendered_frame(&mut app, 120, 40);
-    assert!(rendered.contains("New session runtimes"), "{rendered}");
+    assert!(rendered.contains("Attached runtimes"), "{rendered}");
     assert!(rendered.contains("ready"), "{rendered}");
     assert!(
         rendered.contains("local · "),
