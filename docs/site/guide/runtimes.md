@@ -177,7 +177,7 @@ asks for that path.
 
 ```sh
 cookie runtime serve --stdio [--root <dir>]...
-cookie runtime serve --daemon <url> --id <runtime ID> [--token <token>] [--root <dir>]...
+cookie runtime serve --daemon [<url>] [--id <runtime ID>] [--token <token>] [--root <dir>]...
 ```
 
 With `--daemon` it dials in instead (see
@@ -204,19 +204,30 @@ attach it like any other runtime while it is connected.
 ```sh
 # On the daemon's machine: a listener the runtime reaches.
 cookie daemon --listen 0.0.0.0:7419
-
-# On labpc, with the daemon's token copied into its ~/.cookie-agent/config.toml
-# as `token` under [server]: dial in as `labpc` and stay connected.
-cookie runtime serve --daemon ws://laptop:7419/ws --id labpc
 ```
 
-- **Identity.** `--id` is the runtime ID, `[a-z][a-z0-9_]{0,31}`. It must
-  not be `global`, `local`, or a configured `[runtimes.<id>]`, and only one
-  runtime may be connected under an ID at a time.
-- **Token.** The runtime presents the daemon's token: `--token`,
-  `COOKIE_DAEMON_TOKEN`, or `[server] token` in its machine's `config.toml`.
-  The daemon keeps its token in its own `config.toml`, so it survives
-  restarts.
+```toml
+# On labpc, ~/.cookie-agent/config.toml: the daemon to dial in to.
+[server]
+url = "ws://laptop:7419/ws"
+token = "<the daemon's token>"
+```
+
+```sh
+# On labpc: dial in, named after the host, and stay connected.
+cookie runtime serve --daemon
+```
+
+- **Daemon.** `--daemon` takes the daemon's client URL, or, without one,
+  `[server] url` of this machine's `config.toml`, else the local daemon that
+  table describes. The token is `--token`, `COOKIE_DAEMON_TOKEN`, or
+  `[server] token`; flags override the configuration. The daemon keeps its
+  own token in its `config.toml`, so it survives restarts.
+- **Identity.** `--id` is the runtime ID, `[a-z][a-z0-9_]{0,31}`; without
+  it, the host name, sanitized (`host_` in front when it does not start with
+  a letter). It must not be `global`, `local`, or a configured
+  `[runtimes.<id>]`, and only one runtime may be connected under an ID at a
+  time.
 - **Reconnecting.** The runtime reconnects after every drop, waiting
   1 s, 2 s, 4 s, and so on up to 30 s. While it is away, its instances go
   `reconnecting` and then `failed`, and their tools leave the sessions' tool

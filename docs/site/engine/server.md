@@ -8,6 +8,7 @@ Complete `config.toml`:
 host = "127.0.0.1"
 port = 7419
 token = "<43-char base64url>"
+url = "ws://127.0.0.1:7419/ws"
 ```
 
 Omission keeps the defaults. An authored table replaces them completely;
@@ -41,3 +42,4 @@ carrying a browser `Origin` header is refused.
 | `host` | string | `"127.0.0.1"` | Interface the daemon listens on. Must be non-empty and at most 255 characters. The `cookie` binary additionally requires exactly `"127.0.0.1"` at startup; use `--listen` to bind another address. |
 | `port` | integer | `7419` | TCP port for the WebSocket daemon. |
 | `token` | string | *(none)* | The daemon's bearer token, exactly 43 base64url characters. The daemon writes a fresh one here when there is none; clients and dial-in runtimes on this machine use it when given no `--token`. |
+| `url` | string | `ws://<host>:<port>/ws` | The daemon clients and dial-in runtimes on this machine connect to when given no `--url` (or URL after `--daemon`): a `ws://` or `wss://` URL whose path is `/ws`. Set it on a machine whose daemon runs elsewhere. The daemon itself ignores it. |

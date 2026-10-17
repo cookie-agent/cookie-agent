@@ -276,3 +276,10 @@ writes a fresh one there at its first start when there is none and never
 regenerates it; clients and dial-in runtimes read it from their machine's
 configuration when given no `--token`.
 
+**Daemon address** (2026-10-17): `[server] url` names the daemon clients and
+dial-in runtimes connect to, defaulting to the local daemon the same table
+describes. `cookie runtime serve --daemon` takes the URL optionally and
+`--id` defaults to the sanitized host name, so a configured machine dials in
+with `cookie runtime serve --daemon`; `--url`, `--token`, and the URL after
+`--daemon` override the configuration.
+

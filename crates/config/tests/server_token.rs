@@ -67,3 +67,37 @@ fn writing_the_server_token_keeps_the_rest_of_the_file() {
     assert!(fs::read_to_string(&path).unwrap().contains(TOKEN));
     assert!(write_server_token(&path, "short").is_err());
 }
+
+#[test]
+fn the_daemon_url_defaults_to_the_daemon_this_configuration_describes() {
+    let unset = root("[server]\nport = 7420\n");
+    let loaded = load_from_user_root(Some(unset.path())).expect("default url");
+    assert_eq!(loaded.runtime.server.url, None);
+    assert_eq!(loaded.runtime.server.client_url(), "ws://127.0.0.1:7420/ws");
+    let remote = root("[server]\nurl = \"wss://laptop.example:7419/ws\"\n");
+    let loaded = load_from_user_root(Some(remote.path())).expect("remote url");
+    assert_eq!(
+        loaded.runtime.server.client_url(),
+        "wss://laptop.example:7419/ws"
+    );
+}
+
+#[test]
+fn the_daemon_url_names_a_websocket_client_endpoint() {
+    for (url, valid) in [
+        ("ws://127.0.0.1:7419/ws", true),
+        ("wss://laptop.example/ws", true),
+        ("http://laptop.example/ws", false),
+        ("ws://laptop.example/other", false),
+        ("ws://laptop.example/ws?id=x", false),
+        ("ws://user:pass@laptop.example/ws", false),
+        ("not a url", false),
+    ] {
+        let authored = root(&format!("[server]\nurl = \"{url}\"\n"));
+        assert_eq!(
+            load_from_user_root(Some(authored.path())).is_ok(),
+            valid,
+            "url = {url:?}"
+        );
+    }
+}

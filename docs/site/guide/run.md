@@ -60,13 +60,19 @@ Attach from another terminal on the same machine:
 cookie attach
 ```
 
-`attach`, `connect`, `disconnect`, and `mcp` read the token from `config.toml`;
-`--token` (or the `COOKIE_DAEMON_TOKEN` environment variable) overrides it,
-which a client on another machine needs unless its own `config.toml` holds
-the daemon's token. The URL defaults to `ws://127.0.0.1:7419/ws` and may be changed with
-`--url` to any host, `ws://` or `wss://` (TLS), with the exact `/ws` path; a
-daemon on another machine listens with `--listen` (see [Server](../engine/server.md)).
-See [Server](../engine/server.md).
+`attach`, `connect`, `disconnect`, and `mcp` find the daemon in this
+machine's `config.toml`: `[server] url`, else the local daemon the same
+table describes (`ws://127.0.0.1:<port>/ws`), and `[server] token`. Flags
+override either: `--url` (any host, `ws://` or `wss://` with the exact `/ws`
+path) and `--token` (or `COOKIE_DAEMON_TOKEN`), so a local `cookie attach`
+can still reach a daemon elsewhere:
+
+```sh
+cookie attach --url wss://laptop.example:7419/ws --token '<43-char base64url>'
+```
+
+A daemon on another machine listens with `--listen`; see
+[Server](../engine/server.md).
 
 One daemon serves sessions of any directory. The TUI, whether attached or
 running the daemon itself, creates its sessions for the directory it was

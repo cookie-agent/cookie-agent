@@ -758,30 +758,34 @@ async fn a_configured_runtime_hosts_its_template_mcp_servers() {
     fixture.engine.shutdown().await;
 }
 
-/// The real binary dials in over the daemon's WebSocket endpoint with the
-/// daemon's token from its machine's configuration, serves a session's
-/// workspace, and shows as disconnected once it exits.
+/// The real binary dials in to the daemon its machine's configuration names,
+/// with the token it holds, serves a session's workspace, and shows as
+/// disconnected once it exits.
 #[tokio::test]
 async fn a_runtime_dials_in_and_serves_a_session() {
     let fixture = Fixture::new(30_000).await;
     let token = cookie_agent_server::generate_token().expect("token");
-    // The runtime's machine keeps the daemon's token in its configuration.
+    let server = Arc::new(cookie_agent_server::Server::new(fixture.engine.clone()));
+    let listening = server
+        .clone()
+        .serve(0, token.clone())
+        .await
+        .expect("serve the daemon");
+    // The runtime's machine names the daemon and its token in its own
+    // configuration, so `--daemon` needs no URL.
     let remote_config = fixture.remote_home.join(".cookie-agent");
     private_dir(&remote_config);
     fs::write(
         remote_config.join("config.toml"),
-        format!("[server]\ntoken = \"{}\"\n", token.as_str()),
+        format!(
+            "[server]\nurl = \"ws://{}/ws\"\ntoken = \"{}\"\n",
+            listening.address(),
+            token.as_str()
+        ),
     )
     .expect("remote config");
-    let server = Arc::new(cookie_agent_server::Server::new(fixture.engine.clone()));
-    let listening = server
-        .clone()
-        .serve(0, token)
-        .await
-        .expect("serve the daemon");
-    let url = format!("ws://{}/ws", listening.address());
     let mut runtime = tokio::process::Command::new(env!("CARGO_BIN_EXE_cookie"))
-        .args(["runtime", "serve", "--daemon", &url, "--id", "labpc"])
+        .args(["runtime", "serve", "--daemon", "--id", "labpc"])
         .env("HOME", &fixture.remote_home)
         .env_remove("COOKIE_DAEMON_TOKEN")
         .stdin(std::process::Stdio::null())

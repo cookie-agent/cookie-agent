@@ -36,7 +36,6 @@ use cookie_agent_protocol::{SetupFieldDescriptor, SetupFieldType};
 #[cfg(all(test, unix))]
 use std::sync::atomic::{AtomicUsize as TestAtomicUsize, Ordering as TestOrdering};
 
-const DEFAULT_WEBSOCKET_URL: &str = "ws://127.0.0.1:7419/ws";
 const CATALOG_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 enum RunCatalogTransport {
@@ -115,8 +114,10 @@ enum Command {
     },
     /// Attach the TUI to an existing daemon.
     Attach {
-        #[arg(long, default_value = DEFAULT_WEBSOCKET_URL)]
-        url: String,
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long)]
+        url: Option<String>,
         /// The daemon's bearer token; `[server] token` in this machine's
         /// `config.toml` when omitted.
         #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
@@ -126,8 +127,10 @@ enum Command {
     Connect {
         /// Exact runtime provider ID. Omit to choose interactively.
         provider_id: Option<String>,
-        #[arg(long, default_value = DEFAULT_WEBSOCKET_URL)]
-        url: String,
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long)]
+        url: Option<String>,
         /// The daemon's bearer token; `[server] token` in this machine's
         /// `config.toml` when omitted.
         #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
@@ -137,8 +140,10 @@ enum Command {
     Disconnect {
         /// Exact runtime provider ID. Omit to choose interactively.
         provider_id: Option<String>,
-        #[arg(long, default_value = DEFAULT_WEBSOCKET_URL)]
-        url: String,
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long)]
+        url: Option<String>,
         /// The daemon's bearer token; `[server] token` in this machine's
         /// `config.toml` when omitted.
         #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
@@ -154,8 +159,10 @@ enum Command {
     Mcp {
         #[command(subcommand)]
         command: McpCommand,
-        #[arg(long, default_value = DEFAULT_WEBSOCKET_URL)]
-        url: String,
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long)]
+        url: Option<String>,
         /// The daemon's bearer token; `[server] token` in this machine's
         /// `config.toml` when omitted.
         #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
@@ -174,13 +181,15 @@ enum RuntimeCommand {
         /// JSON-RPC message per line, as a template starts it.
         #[arg(long)]
         stdio: bool,
-        /// Dial in to the daemon whose client URL this is (`ws://` or
-        /// `wss://` ending in `/ws`) and stay connected, reconnecting after
-        /// drops.
-        #[arg(long, value_name = "URL", requires = "id")]
-        daemon: Option<String>,
-        /// The runtime ID to dial in as.
-        #[arg(long, value_name = "RUNTIME_ID")]
+        /// Dial in to a daemon and stay connected, reconnecting after drops:
+        /// the daemon at this client URL (`ws://` or `wss://` ending in
+        /// `/ws`), or, without one, `[server] url` in this machine's
+        /// `config.toml`, else the local daemon.
+        #[arg(long, value_name = "URL", num_args = 0..=1)]
+        daemon: Option<Option<String>>,
+        /// The runtime ID to dial in as; this machine's host name when
+        /// omitted.
+        #[arg(long, value_name = "RUNTIME_ID", conflicts_with = "stdio")]
         id: Option<String>,
         /// The daemon's bearer token, for `--daemon`; `[server] token` in
         /// this machine's `config.toml` when omitted.
@@ -396,22 +405,32 @@ async fn main_result() -> anyhow::Result<()> {
             provider_id,
             url,
             token,
-        }) => run_connect(&url, &client_token(token)?, provider_id).await,
+        }) => {
+            let target = daemon_target(url, token)?;
+            run_connect(&target.url, &target.token, provider_id).await
+        }
         Some(Command::Disconnect {
             provider_id,
             url,
             token,
-        }) => run_disconnect(&url, &client_token(token)?, provider_id).await,
+        }) => {
+            let target = daemon_target(url, token)?;
+            run_disconnect(&target.url, &target.token, provider_id).await
+        }
         Some(Command::Mcp {
             command,
             url,
             token,
-        }) => run_mcp(&url, &client_token(token)?, command).await,
+        }) => {
+            let target = daemon_target(url, token)?;
+            run_mcp(&target.url, &target.token, command).await
+        }
         Some(Command::Runtime { command }) => run_runtime(command).await,
         Some(Command::Attach { url, token }) => {
             #[cfg(feature = "tui")]
             cookie_agent_tui::markdown::warm_up_syntax_assets();
-            run_attached_tui(&url, &client_token(token)?).await
+            let target = daemon_target(url, token)?;
+            run_attached_tui(&target.url, &target.token).await
         }
         None => {
             // Syntax highlighting assets load while the runtime composes.
@@ -467,8 +486,9 @@ async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
             Ok(root)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    if !stdio && let (Some(daemon), Some(id)) = (daemon, id) {
-        let token = client_token(token)?;
+    if !stdio && let Some(daemon) = daemon {
+        let DaemonTarget { url: daemon, token } = daemon_target(daemon, token)?;
+        let id = id.unwrap_or_else(|| host_runtime_id("", &host_name()));
         cookie_agent_protocol::RuntimeId::new(id.as_str())
             .map_err(|_| anyhow::anyhow!("invalid runtime ID `{id}`"))?;
         cookie_agent_protocol::runtime_dial_in_url(&daemon, &id)?;
@@ -652,7 +672,6 @@ fn data_dir() -> anyhow::Result<PathBuf> {
 }
 
 /// This machine's host name; empty when it is unavailable.
-#[cfg(feature = "tui")]
 fn host_name() -> String {
     #[cfg(unix)]
     {
@@ -676,11 +695,19 @@ fn host_name() -> String {
 }
 
 /// The ID a TUI offers its machine's runtime under: `client_` and the host
-/// name, lowercased, every character outside `[a-z0-9_]` replaced by `_`,
-/// repeats collapsed, at most 32 bytes.
+/// name, sanitized as [`host_runtime_id`] does.
 #[cfg(feature = "tui")]
 fn client_runtime_id(host: &str) -> String {
-    let mut id = String::from("client");
+    host_runtime_id("client", host)
+}
+
+/// A runtime ID for this machine: `<prefix>_<host>`, or the host name alone
+/// without a prefix, with the host name lowercased, every character outside
+/// `[a-z0-9_]` replaced by `_`, repeats and edges trimmed, at most 32 bytes.
+/// A bare host name that does not start with a letter gets `host_` in front;
+/// no host name at all gives the prefix, or `host`.
+fn host_runtime_id(prefix: &str, host: &str) -> String {
+    let mut name = String::new();
     for character in host.chars() {
         let character = character.to_ascii_lowercase();
         let character = if character.is_ascii_lowercase() || character.is_ascii_digit() {
@@ -688,22 +715,22 @@ fn client_runtime_id(host: &str) -> String {
         } else {
             '_'
         };
-        if id.len() == 32 {
-            break;
-        }
-        if id.len() == "client".len() {
-            id.push('_');
-            if character == '_' {
-                continue;
-            }
-        }
-        if character == '_' && id.ends_with('_') {
+        if character == '_' && (name.is_empty() || name.ends_with('_')) {
             continue;
         }
-        if id.len() < 32 {
-            id.push(character);
-        }
+        name.push(character);
     }
+    let name = name.trim_end_matches('_');
+    let mut id = match (prefix, name) {
+        ("", "") => "host".to_owned(),
+        (prefix, "") => prefix.to_owned(),
+        ("", name) if name.starts_with(|character: char| character.is_ascii_lowercase()) => {
+            name.to_owned()
+        }
+        ("", name) => format!("host_{name}"),
+        (prefix, name) => format!("{prefix}_{name}"),
+    };
+    id.truncate(32);
     id.truncate(id.trim_end_matches('_').len());
     id
 }
@@ -1411,33 +1438,48 @@ fn read_secret_line(prompt: &str) -> anyhow::Result<Zeroizing<String>> {
     Ok(Zeroizing::new(value))
 }
 
-/// The token a client or dial-in runtime presents: `--token` (or
-/// `COOKIE_DAEMON_TOKEN`), else `[server] token` in this machine's
-/// `config.toml`.
-fn client_token(explicit: Option<String>) -> anyhow::Result<Zeroizing<String>> {
-    resolve_client_token(explicit, || {
+/// The daemon a client or dial-in runtime connects to, and the token it
+/// presents.
+struct DaemonTarget {
+    url: String,
+    token: Zeroizing<String>,
+}
+
+/// The daemon to connect to: `--url` and `--token` (or
+/// `COOKIE_DAEMON_TOKEN`), each falling back to this machine's `config.toml`:
+/// `[server] url`, else the local daemon it describes, and `[server] token`.
+fn daemon_target(url: Option<String>, token: Option<String>) -> anyhow::Result<DaemonTarget> {
+    resolve_daemon_target(url, token, || {
         Ok(cookie_agent_config::load()
             .context("load configuration")?
             .runtime
-            .server
-            .token)
+            .server)
     })
 }
 
-fn resolve_client_token(
-    explicit: Option<String>,
-    configured: impl FnOnce() -> anyhow::Result<Option<String>>,
-) -> anyhow::Result<Zeroizing<String>> {
-    let token = match explicit {
-        Some(token) => token,
-        None => configured()?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "no daemon token: pass --token, set COOKIE_DAEMON_TOKEN, or set `token` \
-                 under [server] in config.toml"
-            )
-        })?,
+fn resolve_daemon_target(
+    url: Option<String>,
+    token: Option<String>,
+    configured: impl FnOnce() -> anyhow::Result<cookie_agent_config::ServerConfig>,
+) -> anyhow::Result<DaemonTarget> {
+    let (url, token) = match (url, token) {
+        (Some(url), Some(token)) => (url, token),
+        (url, token) => {
+            let server = configured()?;
+            let token = token.or_else(|| server.token.clone()).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no daemon token: pass --token, set COOKIE_DAEMON_TOKEN, or set `token` \
+                     under [server] in config.toml"
+                )
+            })?;
+            (url.unwrap_or_else(|| server.client_url()), token)
+        }
     };
-    Ok(Zeroizing::new(token))
+    validate_websocket_url(&url)?;
+    Ok(DaemonTarget {
+        url,
+        token: Zeroizing::new(token),
+    })
 }
 
 /// The daemon's token: `[server] token` from its configuration, or a fresh

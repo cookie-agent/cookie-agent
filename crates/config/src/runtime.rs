@@ -390,6 +390,10 @@ pub struct ServerConfig {
     /// one here when there is none.
     #[serde(default)]
     pub token: Option<String>,
+    /// The daemon clients and runtimes on this machine connect to: a `ws://`
+    /// or `wss://` URL ending in `/ws`. The daemon itself ignores it.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -397,8 +401,35 @@ impl Default for ServerConfig {
             host: default_host(),
             port: default_port(),
             token: None,
+            url: None,
         }
     }
+}
+
+impl ServerConfig {
+    /// The daemon clients and runtimes connect to: `url`, or the daemon
+    /// this configuration describes, `ws://<host>:<port>/ws`.
+    #[must_use]
+    pub fn client_url(&self) -> String {
+        self.url
+            .clone()
+            .unwrap_or_else(|| format!("ws://{}:{}/ws", self.host, self.port))
+    }
+}
+
+/// Whether `url` names a daemon's client endpoint: `ws://` or `wss://`, a
+/// host, the path `/ws`, and no credentials, query, or fragment.
+#[must_use]
+pub fn valid_daemon_url(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|url| {
+        matches!(url.scheme(), "ws" | "wss")
+            && url.host().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.path() == "/ws"
+            && url.query().is_none()
+            && url.fragment().is_none()
+    })
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -408,6 +439,7 @@ impl std::fmt::Debug for ServerConfig {
             .field("host", &self.host)
             .field("port", &self.port)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("url", &self.url)
             .finish()
     }
 }
@@ -895,6 +927,14 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
                 .as_deref()
                 .is_some_and(|token| !valid_daemon_token(token)),
             "server.token must be 43 base64url characters",
+        ),
+        (
+            runtime
+                .server
+                .url
+                .as_deref()
+                .is_some_and(|url| !valid_daemon_url(url)),
+            "server.url must be a ws:// or wss:// URL whose path is /ws",
         ),
         (
             runtime.tool_output.max_lines == 0,

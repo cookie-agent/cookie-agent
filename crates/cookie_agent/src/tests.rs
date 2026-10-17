@@ -348,8 +348,23 @@ fn cli_commands_and_removed_flags_are_exact() {
         Some(Command::Runtime {
             command: RuntimeCommand::Serve {
                 stdio: false,
-                daemon: Some("wss://daemon.example.com:7419/ws".into()),
+                daemon: Some(Some("wss://daemon.example.com:7419/ws".into())),
                 id: Some("labpc".into()),
+                token: None,
+                roots: Vec::new(),
+            }
+        })
+    );
+    // `--daemon` alone dials in to the configured daemon as this host.
+    assert_eq!(
+        Cli::try_parse_from(["cookie", "runtime", "serve", "--daemon"])
+            .unwrap()
+            .command,
+        Some(Command::Runtime {
+            command: RuntimeCommand::Serve {
+                stdio: false,
+                daemon: Some(None),
+                id: None,
                 token: None,
                 roots: Vec::new(),
             }
@@ -358,6 +373,7 @@ fn cli_commands_and_removed_flags_are_exact() {
     for arguments in [
         vec!["cookie", "runtime", "serve"],
         vec!["cookie", "runtime", "serve", "--root", "/srv"],
+        vec!["cookie", "runtime", "serve", "--stdio", "--id", "labpc"],
         vec![
             "cookie",
             "runtime",
@@ -367,13 +383,6 @@ fn cli_commands_and_removed_flags_are_exact() {
             "ws://127.0.0.1:7419/ws",
             "--id",
             "labpc",
-        ],
-        vec![
-            "cookie",
-            "runtime",
-            "serve",
-            "--daemon",
-            "ws://127.0.0.1:7419/ws",
         ],
         vec!["cookie", "runtime", "coding", "--stdio"],
         vec![
@@ -399,7 +408,7 @@ fn cli_commands_and_removed_flags_are_exact() {
             command: McpCommand::Auth {
                 server: "remote".into()
             },
-            url: DEFAULT_WEBSOCKET_URL.into(),
+            url: None,
             token: Some(TEST_TOKEN.into()),
         })
     );
@@ -543,22 +552,22 @@ fn cli_commands_and_removed_flags_are_exact() {
 fn attach_connect_and_disconnect_are_cwd_independent() {
     for command in [
         Command::Attach {
-            url: DEFAULT_WEBSOCKET_URL.into(),
+            url: None,
             token: Some(TEST_TOKEN.into()),
         },
         Command::Connect {
             provider_id: None,
-            url: DEFAULT_WEBSOCKET_URL.into(),
+            url: None,
             token: Some(TEST_TOKEN.into()),
         },
         Command::Disconnect {
             provider_id: None,
-            url: DEFAULT_WEBSOCKET_URL.into(),
+            url: None,
             token: Some(TEST_TOKEN.into()),
         },
         Command::Mcp {
             command: McpCommand::List,
-            url: DEFAULT_WEBSOCKET_URL.into(),
+            url: None,
             token: Some(TEST_TOKEN.into()),
         },
         Command::Runtime {
@@ -580,7 +589,7 @@ fn attach_connect_and_disconnect_are_cwd_independent() {
 }
 
 #[test]
-fn websocket_subcommands_take_the_token_from_the_flag_or_the_configuration() {
+fn websocket_subcommands_take_the_daemon_from_flags_or_the_configuration() {
     for arguments in [
         vec!["cookie", "attach"],
         vec!["cookie", "attach", "--token", TEST_TOKEN],
@@ -594,15 +603,40 @@ fn websocket_subcommands_take_the_token_from_the_flag_or_the_configuration() {
             "rejected {arguments:?}"
         );
     }
-    let explicit = resolve_client_token(Some("from-flag".into()), || {
-        panic!("the configuration is not read when a token is given")
+    let server = |url: Option<&str>, token: Option<&str>| cookie_agent_config::ServerConfig {
+        url: url.map(str::to_owned),
+        token: token.map(str::to_owned),
+        ..Default::default()
+    };
+    // Flags win and leave the configuration unread.
+    let explicit = resolve_daemon_target(
+        Some("wss://daemon.example:7419/ws".into()),
+        Some("from-flag".into()),
+        || panic!("the configuration is not read when both are given"),
+    )
+    .unwrap();
+    assert_eq!(explicit.url, "wss://daemon.example:7419/ws");
+    assert_eq!(explicit.token.as_str(), "from-flag");
+    // Each missing one comes from `[server]`: its url, else the local daemon.
+    let local = resolve_daemon_target(None, None, || Ok(server(None, Some(TEST_TOKEN)))).unwrap();
+    assert_eq!(local.url, "ws://127.0.0.1:7419/ws");
+    assert_eq!(local.token.as_str(), TEST_TOKEN);
+    let remote = resolve_daemon_target(None, Some("from-flag".into()), || {
+        Ok(server(Some("ws://laptop:7419/ws"), Some(TEST_TOKEN)))
     })
     .unwrap();
-    assert_eq!(explicit.as_str(), "from-flag");
-    let configured = resolve_client_token(None, || Ok(Some(TEST_TOKEN.into()))).unwrap();
-    assert_eq!(configured.as_str(), TEST_TOKEN);
-    let error = resolve_client_token(None, || Ok(None)).expect_err("no token anywhere");
+    assert_eq!(remote.url, "ws://laptop:7419/ws");
+    assert_eq!(remote.token.as_str(), "from-flag");
+    let error = resolve_daemon_target(None, None, || Ok(server(None, None)))
+        .err()
+        .expect("no token anywhere");
     assert!(error.to_string().contains("[server]"), "{error}");
+    assert!(
+        resolve_daemon_target(Some("ws://laptop/other".into()), Some("x".into()), || {
+            panic!("unread")
+        })
+        .is_err()
+    );
 }
 
 #[test]
@@ -1389,4 +1423,18 @@ fn the_daemon_keeps_a_fresh_token_in_its_config_and_reuses_a_configured_one() {
     let reused = daemon_token(Some(TEST_TOKEN.into()), Some(&path)).unwrap();
     assert_eq!(reused.as_str(), TEST_TOKEN);
     assert!(daemon_token(None, None).is_err());
+}
+
+#[test]
+fn a_dial_in_runtime_defaults_to_its_host_name() {
+    for (host, expected) in [
+        ("labpc", "labpc"),
+        ("LabPC.local", "labpc_local"),
+        ("1box", "host_1box"),
+        ("", "host"),
+    ] {
+        let id = host_runtime_id("", host);
+        assert_eq!(id, expected, "{host}");
+        cookie_agent_protocol::RuntimeId::new(id.as_str()).expect("a valid runtime ID");
+    }
 }
