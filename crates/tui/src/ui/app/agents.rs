@@ -5,6 +5,9 @@ use super::*;
 /// How long the draft must stay unchanged before it is shared.
 const DRAFT_PUBLISH_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 
+/// How the TUI names the choice of no preset: the shared agents only.
+pub(super) const DEFAULT_PRESET: &str = "default";
+
 impl App {
     /// Root-selectable agents: exactly the descriptors with
     /// `runnable_as_root = true`.
@@ -63,7 +66,7 @@ impl App {
     }
 
     pub(super) fn selected_preset_label(&self) -> &str {
-        self.selected_preset.as_deref().unwrap_or("shared")
+        self.selected_preset.as_deref().unwrap_or(DEFAULT_PRESET)
     }
 
     pub(super) fn draft_selection_for_preset(
@@ -872,7 +875,7 @@ impl App {
         let Some(draft) = self.new_session_draft.as_ref().or(self.draft.as_ref()) else {
             return "no draft selection".into();
         };
-        let preset = draft.preset.as_deref().unwrap_or("shared");
+        let preset = draft.preset.as_deref().unwrap_or(DEFAULT_PRESET);
         if self.new_session_draft.is_none() && self.active_run_agent().is_some() {
             format!(
                 "{action}: {} · preset {preset}; applies to the next run — the active run is unchanged",

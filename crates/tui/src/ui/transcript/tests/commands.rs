@@ -510,7 +510,7 @@ async fn preset_picker_updates_root_drafts_and_future_new_sessions() {
     app.run_command(SlashCommand::Preset).await;
     assert_eq!(app.modal, Modal::Presets);
     let rendered = rendered_frame(&mut app, 100, 30);
-    assert!(rendered.contains("None (shared)"));
+    assert!(rendered.contains("default (shared agents)"), "{rendered}");
     assert!(rendered.contains("python"));
     assert!(rendered.contains("rust"));
     app.choose_picker_entry(1).await;

@@ -325,12 +325,12 @@ invalid names, malformed documents in unselected presets, and files over 256
 KiB are hard configuration errors.
 
 No preset is selected by default. In the TUI, run `/preset` and choose either
-`None (shared)` or a discovered preset. The choice updates the active root
+`default (shared agents)`, which selects none, or a discovered preset. The choice updates the active root
 session's draft for its next run and is also used by `/new` when creating future
 root sessions. If the current draft agent is not root-runnable in the new
 effective set, the TUI selects that preset's `primary` or first runnable agent.
 The choice is in memory only: it is not written to configuration and resets to
-shared when the TUI restarts.
+`default` when the TUI restarts.
 
 For headless runs, pass the preset explicitly:
 

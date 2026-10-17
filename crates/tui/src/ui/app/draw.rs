@@ -228,7 +228,8 @@ impl App {
                 }
             }
             Modal::Presets => {
-                let mut entries = vec!["None (shared)".to_owned()];
+                let mut entries =
+                    vec![format!("{} (shared agents)", super::agents::DEFAULT_PRESET)];
                 entries.extend(self.preset_names());
                 self.render_picker(
                     frame,
