@@ -22,6 +22,7 @@ ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 syntect.workspace = true
+tempfile.workspace = true
 toml.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -45,4 +46,3 @@ cookie_agent_models = { version = "=0.3.0", path = "../models" }
 cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api" }
 cookie_agent_server = { version = "=0.3.0", path = "../server" }
 insta.workspace = true
-tempfile.workspace = true

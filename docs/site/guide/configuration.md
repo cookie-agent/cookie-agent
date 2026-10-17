@@ -82,6 +82,39 @@ error. Applying a configuration does this:
 
 Skills are not reloaded.
 
+### Editing from a client
+
+In the TUI, `/config` lists `config.toml`, the shared agents, and each preset
+with its agents. Enter opens the selected document in `$VISUAL` (else
+`$EDITOR`, else `vi`); saving and quitting applies it. A document the daemon
+refuses, because the result does not validate, is not applied: the panel shows
+why and marks the document *not applied*, and Enter reopens your text to fix
+it. `n` creates an agent document (`agents/<id>.md`, or
+`agents/<preset>/<id>.md` with a preset selected) from a template, `d` deletes
+the selected agent after a `y`, and `r` reloads hand edits. The status pane
+shows when the files differ from the applied configuration, why the last
+reload failed, and what needs a restart. The text travels over the protocol,
+so this works against a daemon on another machine.
+
+From a terminal, `cookie config` does the same against the daemon that
+`--url` and `--token` (or `[server]` in this machine's `config.toml`) name:
+
+```sh
+cookie config edit                      # config.toml in $VISUAL or $EDITOR
+cookie config edit agents/reviewer.md   # a new document starts from a template
+cookie config set loop_warning.enabled false
+cookie config set 'providers."custom.x".base_url' https://llm.example/v1
+cookie config unset model_retry
+cookie config remove agents/reviewer.md
+cookie config reload                    # after editing the files by hand
+cookie config status
+```
+
+`set` takes a dotted key with TOML quoting and a TOML value; a value that is
+not TOML, such as a bare URL, is a string. It edits only that key, keeping the
+rest of the file and its comments. `edit` asks to edit again when the daemon
+refuses the result.
+
 ## Strictness and limits
 
 Every authored file is parsed strictly. Unknown keys, leftover `schema` or

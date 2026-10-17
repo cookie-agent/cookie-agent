@@ -191,6 +191,7 @@ intact.
 | `/mcp` | Manage MCP servers; see [MCP servers](mcp.md) |
 | `/runtime` (also `runtimes`) | Attach and detach the selected session's runtimes, or choose a new session's before its first prompt; see [Runtimes panel](#runtimes-panel) |
 | `/background` (also `bg`) | List and stop the selected session's background calls; see [Background calls](#background-calls) |
+| `/config` | Edit the daemon's `config.toml` and agent documents in your editor, create and delete agents, and reload hand edits; see [config.toml](configuration.md#changes-while-the-daemon-runs) |
 | `/plugins` (also `plugin`) | Show each plugin's status, tools, hooks, and last failure, and restart one with `r`; see [Plugins](plugins.md#status-and-restarts) |
 | `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](agents.md#permissions) |
 | `/sessions` (also `resume`, `load`, `continue`) | Choose a session |

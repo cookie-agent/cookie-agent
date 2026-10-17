@@ -586,6 +586,13 @@ impl App {
                 }
             }
             RpcUpdate::PluginsRefreshed { result } => self.install_plugins(result),
+            RpcUpdate::ConfigLoaded { result } => self.install_config(result),
+            RpcUpdate::ConfigApplied {
+                path,
+                edit,
+                outcome,
+            } => self.install_config_apply(path, edit, outcome),
+            RpcUpdate::ConfigReloaded { status } => self.install_config_reload(status),
             RpcUpdate::RuntimesRefreshed { result } => {
                 self.runtime_panel.refresh_in_flight = false;
                 match result {

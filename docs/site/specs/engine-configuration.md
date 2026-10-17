@@ -1,7 +1,7 @@
 # Live Engine Configuration
 
-Status: **draft** (2026-10-17); open questions decided, see
-[Review](#9-review).
+Status: **implemented** (2026-10-17; decisions in [Review](#9-review), see
+[Implementation notes](#10-implementation-notes)).
 
 ## 1. Goal and scope
 
@@ -236,3 +236,36 @@ Decided 2026-10-17:
 3. **`runtimes` and `plugins`:** restart required for now; live in a
    follow-up.
 4. **TUI editing:** `$VISUAL`/`$EDITOR`.
+
+## 10. Implementation notes
+
+Landed in four commits: the provider fixes (client protocol 46), reloading
+(47: `config.reload`, `config_revision`), reading and writing (48:
+`config.get`, `config.apply`), and the clients. Where it differs from the
+sections above:
+
+- **What a run keeps.** A run keeps what it captures at admission: its agent
+  and delegated children's registry, result limits, retry policy, and
+  delegation depth. Other settings (approval timeout, loop warning,
+  compaction, delegation concurrency, messaging) apply from their next use,
+  also inside a run in progress, rather than the run holding a whole
+  configuration generation.
+- **Revisions.** `config_revision` is part of `runtime_revision`, so a
+  settings-only change publishes a new runtime revision.
+- **`config.reload`** answers `{status}`; a configuration that fails
+  validation is reported in `status.error` rather than as an RPC error.
+  `config.get` also lists `empty_presets`.
+- **Errors.** A refused `config.apply` is JSON-RPC error `-32040` with data
+  `{code: conflict | invalid_configuration | invalid_change, message}`.
+- **A refused TUI edit** is not reopened at once: the panel shows why, marks
+  the document *not applied*, and Enter reopens the rejected text.
+  `cookie config edit` asks whether to edit again.
+- **`cookie config remove <path>`** was added for parity with the TUI's
+  delete.
+- **Writer.** `write_tree` writes the changed documents in path order and
+  restores the earlier ones when a later write fails; the old temporary
+  validation directory is gone, so `write_server_token` and every write
+  validate in memory with the agent documents.
+- **Persisting MCP servers** drops the runtime-layer entry once the file holds
+  it, so the server's source becomes the user file.
+

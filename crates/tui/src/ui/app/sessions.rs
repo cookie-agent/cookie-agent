@@ -495,6 +495,7 @@ impl App {
             | Modal::ConnectError
             | Modal::DisconnectConfirm
             | Modal::RevertConfirm
+            | Modal::Config
             | Modal::None => 0,
         }
     }

@@ -39,6 +39,7 @@ pub(crate) enum SlashCommand {
     Runtime,
     Background,
     Plugins,
+    Config,
     Permissions,
     Usage,
     Sessions,
@@ -157,6 +158,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &["plugin"],
         description: "show plugin status and restart a plugin",
         action: PaletteAction::Run(SlashCommand::Plugins),
+        writes_session: false,
+    },
+    CommandSpec {
+        name: "config",
+        aliases: &[],
+        description: "edit the daemon's config.toml and agent documents",
+        action: PaletteAction::Run(SlashCommand::Config),
         writes_session: false,
     },
     CommandSpec {

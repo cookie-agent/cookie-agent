@@ -140,7 +140,13 @@ pub(crate) fn in_process_server() -> (tempfile::TempDir, Arc<Server>) {
 }
 
 fn in_process_server_with_skills(with_skills: bool) -> (tempfile::TempDir, Arc<Server>) {
-    build_in_process_server(with_skills, None)
+    build_in_process_server(with_skills, None, false)
+}
+
+/// An in-process server whose configuration lives in `.cookie-agent/` of
+/// the returned directory, so `config.get` and `config.apply` work.
+pub(crate) fn in_process_server_with_configuration() -> (tempfile::TempDir, Arc<Server>) {
+    build_in_process_server(false, None, true)
 }
 
 /// The `events.subscribe` requests one connection sent, in order, as
@@ -243,12 +249,13 @@ pub(crate) fn connect_counting(server: &Arc<Server>) -> (crate::Client, Subscrib
 /// `endpoint`, with first-turn title generation off so the only model call a
 /// run makes is its reply.
 pub(crate) fn in_process_streaming_server(endpoint: &str) -> (tempfile::TempDir, Arc<Server>) {
-    build_in_process_server(false, Some(endpoint))
+    build_in_process_server(false, Some(endpoint), false)
 }
 
 fn build_in_process_server(
     with_skills: bool,
     streaming_endpoint: Option<&str>,
+    configuration_root: bool,
 ) -> (tempfile::TempDir, Arc<Server>) {
     let directory = tempfile::tempdir().expect("temporary data directory");
     #[cfg(unix)]
@@ -345,7 +352,13 @@ fn build_in_process_server(
         user_mcp_servers: BTreeMap::new(),
         plugins: Default::default(),
         runtimes: Default::default(),
-        config_paths: cookie_agent_config::ConfigLayerPaths::default(),
+        config_paths: cookie_agent_config::ConfigLayerPaths {
+            user: configuration_root.then(|| {
+                let root = directory.path().join(".cookie-agent");
+                fs::create_dir_all(&root).expect("configuration root");
+                root.join("config.toml")
+            }),
+        },
         revision: cookie_agent_protocol::ConfigRevision::new(format!("sha256:{}", "0".repeat(64)))
             .unwrap(),
         skills,

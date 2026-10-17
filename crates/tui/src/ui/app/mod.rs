@@ -4,6 +4,7 @@ mod agents;
 mod approvals;
 mod background;
 mod composer;
+mod config_panel;
 mod draw;
 mod emoji_backend;
 mod keys;
@@ -96,7 +97,10 @@ use crate::{
     theme::{DecisionTone, Theme},
 };
 
-use super::events::{RenderScheduler, TerminalRestore, install_terminal_panic_hook};
+use super::events::{
+    RenderScheduler, TerminalRestore, install_terminal_panic_hook, resume_terminal,
+    suspend_terminal,
+};
 use super::input::{self, InputState};
 use super::management::{
     AuthListener, McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm,
@@ -147,6 +151,8 @@ pub(super) enum Modal {
     /// The selected session's background calls.
     Background,
     Plugins,
+    /// `/config`: the daemon's configuration documents.
+    Config,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -717,6 +723,9 @@ pub struct App {
     goal_detail: goal::GoalDetailState,
     background_panel: background::BackgroundPanelState,
     plugin_panel: plugins::PluginPanelState,
+    pub(super) config_panel: config_panel::ConfigPanelState,
+    /// A configuration document the event loop opens in the editor next.
+    pub(super) pending_editor: Option<config_panel::EditorRequest>,
     pub(super) goal_focus: Option<GoalBarAction>,
     pub(super) picker_state: ListState,
     pub(super) session_search: SearchPickerState,
@@ -921,6 +930,18 @@ pub(in crate::ui) enum RpcUpdate {
     },
     RuntimesRefreshed {
         result: Result<cookie_agent_protocol::RuntimesListResult, String>,
+    },
+    ConfigLoaded {
+        result: Result<cookie_agent_protocol::ConfigGetResult, String>,
+    },
+    /// `config.apply` answered for `path`; `edit` is the edit it carried.
+    ConfigApplied {
+        path: String,
+        edit: Option<config_panel::EditorRequest>,
+        outcome: config_panel::ConfigApplyOutcome,
+    },
+    ConfigReloaded {
+        status: cookie_agent_protocol::ConfigStatus,
     },
     PluginsRefreshed {
         result: Result<Vec<cookie_agent_protocol::PluginInfo>, String>,
@@ -1277,6 +1298,8 @@ impl App {
             goal_detail: goal::GoalDetailState::default(),
             background_panel: background::BackgroundPanelState::default(),
             plugin_panel: plugins::PluginPanelState::default(),
+            config_panel: config_panel::ConfigPanelState::default(),
+            pending_editor: None,
             goal_focus: None,
             picker_state: ListState::default().with_selected(Some(0)),
             session_search: SearchPickerState::default(),
@@ -1762,6 +1785,20 @@ async fn event_loop(
         if let Some(reconnected) = app.deliveries.take() {
             deliveries = reconnected;
         }
+        // `/config` edits a document in an external editor: the terminal and
+        // its input belong to the editor until it exits.
+        if let Some(request) = app.pending_editor.take() {
+            drop(events);
+            suspend_terminal();
+            let edited = edit_blocking(&request);
+            let resumed = resume_terminal().context("resume the terminal");
+            events = EventStream::new();
+            if let Err(error) = resumed.and_then(|()| terminal.clear().context("redraw")) {
+                return (Err(error), app.session_errors.clone());
+            }
+            app.finish_config_edit(request, edited);
+            render.mark_immediate();
+        }
         if render.should_draw(Instant::now()) {
             drawn_wall_clock_view = app.wall_clock_view();
             if let Err(error) = terminal
@@ -1877,6 +1914,17 @@ async fn event_loop(
                 }
             },
         }
+    }
+}
+
+/// Runs the editor, letting the runtime's other work go on meanwhile when it
+/// can.
+fn edit_blocking(request: &config_panel::EditorRequest) -> Result<String, String> {
+    match tokio::runtime::Handle::try_current().map(|handle| handle.runtime_flavor()) {
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => {
+            tokio::task::block_in_place(|| config_panel::run_editor(request))
+        }
+        _ => config_panel::run_editor(request),
     }
 }
 

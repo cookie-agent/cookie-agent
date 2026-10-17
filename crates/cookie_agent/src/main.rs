@@ -155,6 +155,25 @@ enum Command {
         #[command(subcommand)]
         command: RuntimeCommand,
     },
+    /// Read and change a daemon's configuration: `config.toml` and the
+    /// agent documents.
+    Config {
+        #[command(subcommand)]
+        command: config_command::ConfigCommand,
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long, global = true)]
+        url: Option<String>,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
+        #[arg(
+            long,
+            global = true,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true
+        )]
+        token: Option<String>,
+    },
     /// List MCP servers or start remote-server OAuth.
     Mcp {
         #[command(subcommand)]
@@ -425,6 +444,14 @@ async fn main_result() -> anyhow::Result<()> {
             run_mcp(&target.url, &target.token, command).await
         }
         Some(Command::Runtime { command }) => run_runtime(command).await,
+        Some(Command::Config {
+            command,
+            url,
+            token,
+        }) => {
+            let target = daemon_target(url, token)?;
+            config_command::run_config(&target.url, &target.token, command).await
+        }
         Some(Command::Attach { url, token }) => {
             #[cfg(feature = "tui")]
             cookie_agent_tui::markdown::warm_up_syntax_assets();
@@ -451,6 +478,7 @@ fn local_workspace(
                 | Command::Connect { .. }
                 | Command::Disconnect { .. }
                 | Command::Mcp { .. }
+                | Command::Config { .. }
                 | Command::Runtime { .. },
         )
     ) {
@@ -1646,6 +1674,8 @@ fn stop_on_signal(stop: CancellationToken) -> anyhow::Result<()> {
     });
     Ok(())
 }
+
+mod config_command;
 
 #[cfg(test)]
 #[path = "../../../test-support/config_harness.rs"]

@@ -8,7 +8,7 @@ configuration reference.
 |---|---|
 | [Runtimes](runtimes.md) | Implemented; daemon as gateway with global and coding runtimes, attachments, the runtime protocol, remote runtimes from `[runtimes.<id>]` templates, and template MCP servers; the manual labpc check is pending the author |
 | [Persistent daemon, dial-in runtimes, and runtime capabilities](runtime-capabilities.md) | Implemented; capability attachments, dial-in runtimes (the TUI embeds one when remote), listening daemon with TLS, directory-independent daemon; client protocol 45, runtime protocol 5 |
-| [Live engine configuration](engine-configuration.md) | Draft; reading and changing `config.toml` and agent documents over the client protocol, applied without a restart where possible, plus provider-connect fixes |
+| [Live engine configuration](engine-configuration.md) | Implemented; `config.get`/`config.apply`/`config.reload` (client protocol 48), live reload of settings, agents, providers, headers, and MCP servers, TUI `/config` and `cookie config`, plus provider-connect fixes |
 | [Plugins: tools, hooks, events, and producers](plugins-v1.md) | Implemented; plugin tools over the runtime tool messages, plugin protocol 1 on the runtime stack, `plugins.list`/`plugins.restart`, client protocol 44 |
 | [External producers](external-producers.md) | Implemented; named producers for plugins and runtimes under one `external { source, name }` owner |
 | [Agent messaging](agent-messaging.md) | Implemented; governing contract for `send_message` agent-to-agent messaging |

@@ -926,7 +926,8 @@ impl App {
             | Modal::Usage
             | Modal::GoalDetail
             | Modal::Background
-            | Modal::Plugins => {}
+            | Modal::Plugins
+            | Modal::Config => {}
             Modal::None => {}
         }
     }

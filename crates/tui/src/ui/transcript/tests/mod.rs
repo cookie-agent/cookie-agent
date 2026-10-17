@@ -5,6 +5,7 @@ mod assistant;
 mod attempts;
 mod chrome;
 mod commands;
+mod config_panel;
 mod diagnostics;
 mod diffs;
 mod drafts;

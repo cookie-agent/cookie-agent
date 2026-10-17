@@ -21,10 +21,11 @@ has six top-level subcommands plus a default mode:
 | `disconnect [provider_id] --token` | Interactive durable managed-provider disconnection (TTY only) |
 | `mcp --token list` | List the MCP servers of every runtime with their state and hosting runtime |
 | `mcp --token auth <server>` | Start OAuth authorization for a remote MCP server |
+| `config edit [path]`, `config set <key> <value>`, `config unset <key>`, `config remove <path>`, `config reload`, `config status` | Read and change the daemon's `config.toml` and agent documents; see [config.toml](guide/configuration.md#changes-while-the-daemon-runs) |
 
 The daemon authenticates every WebSocket with a bearer token kept in
 `[server] token` of `config.toml`, which it writes at its first start when
-there is none. `attach`, `connect`, `disconnect`, and `mcp` take the token
+there is none. `attach`, `connect`, `disconnect`, `mcp`, and `config` take the token
 from `--token`, `COOKIE_DAEMON_TOKEN`, or the same configuration, and accept
 `ws`/`wss` URLs whose path is exactly `/ws`. They use the same shared protocol client as
 the TUI, so the CLI keeps working even when built without the `tui` feature.

@@ -190,6 +190,7 @@ impl App {
             Modal::GoalDetail => self.render_goal_detail(frame),
             Modal::Background => self.render_background_panel(frame),
             Modal::Plugins => self.render_plugin_panel(frame),
+            Modal::Config => self.render_config_panel(frame),
             Modal::Sessions => {
                 self.render_session_search(frame, centered(frame.area(), 72, 60));
             }

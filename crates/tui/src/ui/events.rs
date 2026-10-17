@@ -8,9 +8,12 @@ use std::{
 
 use crossterm::{
     cursor::Show,
-    event::{DisableBracketedPaste, DisableMouseCapture, PopKeyboardEnhancementFlags},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
-    terminal::{LeaveAlternateScreen, disable_raw_mode},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 
 #[derive(Debug)]
@@ -193,6 +196,33 @@ fn cleanup_terminal_then<R>(after_cleanup: impl FnOnce() -> R) -> R {
 
 fn cleanup_terminal() {
     cleanup_terminal_then(|| ());
+}
+
+/// Hands the terminal back, as an external editor needs it; see
+/// [`resume_terminal`].
+pub(super) fn suspend_terminal() {
+    cleanup_terminal();
+}
+
+/// Takes the terminal again after [`suspend_terminal`], in the modes the TUI
+/// runs in.
+pub(super) fn resume_terminal() -> io::Result<()> {
+    let mut stdout = io::stdout();
+    let mut restore = std::mem::ManuallyDrop::new(TerminalRestore);
+    enable_raw_mode()?;
+    restore.raw_mode_enabled();
+    execute!(stdout, EnterAlternateScreen)?;
+    restore.alternate_screen_entered();
+    execute!(stdout, EnableMouseCapture)?;
+    restore.mouse_capture_enabled();
+    execute!(stdout, EnableBracketedPaste)?;
+    restore.bracketed_paste_enabled();
+    execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )?;
+    restore.keyboard_enhancement_enabled();
+    Ok(())
 }
 
 pub(super) fn install_terminal_panic_hook() {
