@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use cookie_agent_protocol::{PermissionAction, PersistedToolResult as ToolResult};
+use cookie_agent_protocol::PersistedToolResult as ToolResult;
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, SessionToolContext, ToolCall,
     ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use cookie_agent_runtime_api::WorkspaceContext;
 
-use crate::{fs_cap, parse_args, prepared_operation, prepared_path_resources, schema};
+use crate::{fs_cap, parse_args, schema};
 
 #[derive(Clone, Debug)]
 pub struct EditTool {
@@ -107,21 +107,6 @@ impl EditTool {
         args: EditArgs,
         target: fs_cap::PreparedExisting,
     ) -> Result<PreparedTool, ToolError> {
-        let (resources, policy_labels) = prepared_path_resources(
-            PermissionAction::WRITE,
-            "file",
-            &target.display_path,
-            &self.workspace,
-            &target.binding_bytes(),
-        )?;
-        let context = crate::workspace_context_bytes(&self.workspace);
-        let operation = prepared_operation(
-            "edit",
-            &args,
-            vec![(PermissionAction::WRITE, "edit")],
-            resources,
-            &context,
-        )?;
         let normalized_arguments = serde_json::json!({
             "filePath": target.display_path,
             "oldString": args.old_string,
@@ -129,13 +114,11 @@ impl EditTool {
             "replaceAll": args.replace_all,
         });
         let serialization_key = PreparedSerializationKey::new(target.serialization_key());
-        PreparedTool::new(
-            operation,
+        PreparedTool::declared(
             normalized_arguments,
             Some(serialization_key),
             Box::new(EditExecutor { target, args }),
-        )?
-        .with_policy_labels(policy_labels)
+        )
     }
 }
 
@@ -493,6 +476,7 @@ mod tests {
                 )
                 .await
                 .expect("prepare symlink edit");
+            let prepared = crate::identified(&tool, "edit", &workspace, prepared);
             assert_eq!(prepared.operation().resources().len(), 1);
             assert_eq!(prepared.policy_labels(), [Some(requested.to_owned())]);
             assert_eq!(
@@ -602,6 +586,8 @@ mod tests {
         };
         let left = prepare("left").await.expect("left");
         let right = prepare("right").await.expect("right");
+        let left = crate::identified(&tool, "edit", root.path(), left);
+        let right = crate::identified(&tool, "edit", root.path(), right);
         assert_ne!(
             left.operation().resources()[0].binding_digest,
             right.operation().resources()[0].binding_digest
@@ -652,6 +638,9 @@ mod tests {
         let first = prepared.next().expect("first").expect("first edit");
         let second = prepared.next().expect("second").expect("second edit");
         assert!(prepared.next().is_none());
+        let tool = EditTool::new(&crate::test_workspace(root.path()));
+        let first = crate::identified(&tool, "edit", root.path(), first);
+        let second = crate::identified(&tool, "edit", root.path(), second);
         assert_ne!(
             OperationFingerprint::from_prepared_operation(first.operation()),
             OperationFingerprint::from_prepared_operation(second.operation())

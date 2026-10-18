@@ -24,10 +24,11 @@ pub enum AgentMode {
 /// no rule names is denied.
 ///
 /// The constants are the actions of the tools cookie agent ships. The daemon
-/// gives two groups of them meaning: [`Self::is_path`] actions take file
-/// paths as resources, and [`Self::is_base_layer`] actions belong to the
-/// daemon's own tools. Every other action is opaque: its resources match
-/// rules as plain wildcard patterns.
+/// gives three groups of them meaning: [`Self::is_path`] actions take file
+/// paths as resources, [`Self::is_command`] takes shell commands, and
+/// [`Self::is_base_layer`] actions belong to the daemon's own tools. Every
+/// other action is opaque: its resources match rules as plain wildcard
+/// patterns.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PermissionAction(Cow<'static, str>);
 
@@ -78,6 +79,14 @@ impl PermissionAction {
     #[must_use]
     pub fn is_path(&self) -> bool {
         *self == Self::READ || *self == Self::WRITE
+    }
+
+    /// Whether resources are shell commands, approved by command prefix and
+    /// run against the shell and working directory the runtime resolves at
+    /// preparation.
+    #[must_use]
+    pub fn is_command(&self) -> bool {
+        *self == Self::BASH
     }
 
     /// Whether the action belongs to the daemon's base-layer tools, which no

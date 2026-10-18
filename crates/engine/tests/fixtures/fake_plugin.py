@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import sys
@@ -50,10 +49,6 @@ prepared = {}
 next_prepared = 1
 
 
-def digest(value):
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
 def declarations():
     return json.loads(os.environ.get("FIXTURE_TOOLS", "[]"))
 
@@ -66,43 +61,33 @@ def prepare(call):
         return {
             "status": "failed",
             "error": {"kind": "failed", "message": "unknown fixture tool"},
-            "presentation": {"title": call["name"], "primary_argument": None},
+            "presentation": {"title": call["name"]},
         }
     permission = declaration.get("permission")
-    action = permission or call["name"]
     arguments = call["arguments"]
     resource = None
     primary = os.environ.get("FIXTURE_TOOL_RESOURCE_PARAM")
     if primary and isinstance(arguments, dict) and isinstance(arguments.get(primary), str):
         resource = arguments[primary]
-    label = resource or call["name"]
     prepared_id = next_prepared
     next_prepared += 1
     prepared[prepared_id] = {"call": call}
-    return {
+    # The daemon builds the call's approval identity from its permission,
+    # resource, and normalized arguments.
+    result = {
         "status": "prepared",
         "prepared_id": prepared_id,
-        "operation": {
-            "normalized_arguments_digest": digest(json.dumps(arguments, sort_keys=True)),
-            "capabilities": [{"action": action, "operation": call["name"] + ":call"}],
-            "resources": [{
-                "capability": action,
-                "canonical": "plugin-tool:" + digest(label),
-                "binding_digest": {"digest": digest("fixture\0" + label)},
-                "binding_lifetime": "process_local",
-                "boundary": {"type": "exact"},
-                "source": "primary_operation",
-            }],
-            "execution_context_digest": digest("plugin:fixture"),
-            "capability_lifetime": "process_local",
-        },
-        "policy_labels": [resource],
         "normalized_arguments": arguments,
-        "permission": permission,
-        "permission_resource": resource if permission else None,
-        "presentation": {"title": call["name"], "primary_argument": resource},
-        "serialization_key": None,
+        "presentation": {"title": call["name"]},
     }
+    if permission:
+        result["permission"] = permission
+        if resource is not None:
+            result["permission_resource"] = resource
+    if resource is not None:
+        result["presentation"]["primary_argument"] = resource
+    result.update(json.loads(os.environ.get("FIXTURE_PREPARED_EXTRA", "{}")))
+    return result
 
 
 def protocol_version(params):

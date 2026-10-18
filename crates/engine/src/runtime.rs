@@ -460,6 +460,9 @@ struct ToolInterceptionContext {
     /// The session attachment that offers the tool; `None` for the base
     /// layer.
     attachment: Option<cookie_agent_protocol::AttachmentName>,
+    /// The tool as the daemon resolved it, which a declared call's approval
+    /// identity binds.
+    tool: cookie_agent_protocol::ToolIdentity,
     provider: Arc<dyn ToolProvider>,
     spec: ToolSpec,
     preparation: ToolPreparationContext,

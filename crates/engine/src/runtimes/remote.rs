@@ -31,9 +31,9 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::{McpServerConfig, SkillDiscovery, SkillRegistry};
 use cookie_agent_protocol::{
-    CapabilityName, ProducerDiscardParams, ProducerRegisterParams, ProducerSendParams,
-    ProducerSourceStatus, ProducerUnregisterParams, RecoveryCompleteParams, RecoveryOutcome,
-    RuntimeCapabilityInfo, SessionId, ToolCallId, ToolCallPresentation, errors,
+    CapabilityName, PreparedPresentation, ProducerDiscardParams, ProducerRegisterParams,
+    ProducerSendParams, ProducerSourceStatus, ProducerUnregisterParams, RecoveryCompleteParams,
+    RecoveryOutcome, RuntimeCapabilityInfo, SessionId, ToolCallId, errors,
 };
 use cookie_agent_runtime_api::{
     DetachPoint, DiagnosticTail, PreparedDeclaration, PreparedExecutor, PreparedSerializationKey,
@@ -568,7 +568,7 @@ struct ClientInner {
     /// point reach the host.
     executions: Mutex<HashMap<u64, ExecutionHost>>,
     /// Presentations of calls that failed to prepare, by call.
-    presentations: Mutex<VecDeque<(ToolCallId, ToolCallPresentation)>>,
+    presentations: Mutex<VecDeque<(ToolCallId, PreparedPresentation)>>,
     /// The MCP servers the runtime hosts.
     mcp: Mutex<HostedMcp>,
     mcp_hub: Option<Arc<McpHub>>,
@@ -1489,7 +1489,7 @@ impl ClientInner {
         }
     }
 
-    fn remember_presentation(&self, call: ToolCallId, presentation: ToolCallPresentation) {
+    fn remember_presentation(&self, call: ToolCallId, presentation: PreparedPresentation) {
         let mut presentations = lock(&self.presentations);
         if presentations.len() == MAX_PENDING_PRESENTATIONS {
             presentations.pop_front();
@@ -1497,7 +1497,7 @@ impl ClientInner {
         presentations.push_back((call, presentation));
     }
 
-    fn take_presentation(&self, call: ToolCallId) -> Option<ToolCallPresentation> {
+    fn take_presentation(&self, call: ToolCallId) -> Option<PreparedPresentation> {
         let mut presentations = lock(&self.presentations);
         let index = presentations.iter().position(|(id, _)| *id == call)?;
         presentations
@@ -1664,6 +1664,8 @@ impl RemoteToolProvider {
 }
 
 impl RemoteToolProvider {
+    /// The call the runtime prepared, which the daemon identifies from what
+    /// it declares.
     fn prepared_tool(&self, call: PreparedCall) -> Result<PreparedTool, ToolError> {
         let serialization_key = call
             .serialization_key
@@ -1679,20 +1681,16 @@ impl RemoteToolProvider {
             prepared_id: call.prepared_id,
             executed: false,
         });
-        Ok(PreparedTool::new(
-            call.operation,
-            call.normalized_arguments,
-            serialization_key,
-            executor,
-        )?
-        .with_reported_policy_labels(call.policy_labels)?
-        .with_declaration(PreparedDeclaration {
-            permission_name: call
-                .permission
-                .map(|permission| permission.as_str().to_owned()),
-            permission_resource: call.permission_resource,
-            presentation: call.presentation,
-        }))
+        Ok(
+            PreparedTool::declared(call.normalized_arguments, serialization_key, executor)?
+                .with_declaration(PreparedDeclaration {
+                    permission_name: call
+                        .permission
+                        .map(|permission| permission.as_str().to_owned()),
+                    permission_resource: call.permission_resource,
+                    presentation: call.presentation,
+                }),
+        )
     }
 }
 
@@ -1760,7 +1758,7 @@ impl ToolProvider for RemoteToolProvider {
         ))
     }
 
-    fn presentation(&self, call: &ToolCall) -> ToolCallPresentation {
+    fn presentation(&self, call: &ToolCall) -> PreparedPresentation {
         self.client
             .inner
             .take_presentation(call.id)

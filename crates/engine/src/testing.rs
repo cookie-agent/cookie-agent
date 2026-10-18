@@ -48,3 +48,45 @@ pub async fn capturing_progress_sink(
         OutputCapture::new(router, SessionId::new_v7(), declaration, 2_000, 16 * 1024).await?;
     Ok(capture.progress_sink(sender, output))
 }
+
+/// `prepared`, a call of tool `name` that `provider` prepared under
+/// `origin`, identified as the daemon identifies a call of that runtime's
+/// tool: its approval identity built from the permission and resource the
+/// provider reports for it.
+pub fn identify(
+    provider: &dyn crate::ToolProvider,
+    name: &str,
+    origin: &crate::ToolOrigin,
+    prepared: crate::PreparedTool,
+) -> Result<crate::PreparedTool, ToolError> {
+    let source = origin.runtime().map(|runtime| {
+        cookie_agent_protocol::Open::Known(cookie_agent_protocol::ToolSource::Runtime {
+            runtime_id: cookie_agent_protocol::RuntimeId::new(runtime.id())
+                .expect("a test runtime has a valid ID"),
+            attachment: cookie_agent_protocol::AttachmentName::new(runtime.attachment_name())
+                .expect("a test runtime has a valid attachment name"),
+            capability: runtime.capability().clone(),
+        })
+    });
+    let tool = cookie_agent_protocol::ToolIdentity {
+        name: name.to_owned(),
+        published_name: name.to_owned(),
+        source,
+    };
+    let permission_name = match prepared.declaration() {
+        Some(declaration) => declaration.permission_name.clone(),
+        None => provider
+            .get_permission_resource(name, prepared.normalized_arguments())?
+            .0
+            .map(str::to_owned),
+    };
+    crate::runtime::tool_execution::apply_permission_resource(
+        provider,
+        name,
+        permission_name.as_deref(),
+        &tool,
+        origin,
+        prepared,
+    )
+    .map(|(prepared, _)| prepared)
+}

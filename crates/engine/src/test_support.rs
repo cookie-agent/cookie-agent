@@ -207,10 +207,10 @@ pub(crate) fn internal_agent_definitions()
 /// `presentation` as `tool_call_started` stores it for base-layer tool
 /// `presentation.title`.
 pub(crate) fn base_presentation(
-    presentation: cookie_agent_protocol::ToolCallPresentation,
+    presentation: cookie_agent_protocol::PreparedPresentation,
 ) -> cookie_agent_protocol::ToolPresentation {
     let name = presentation.title.to_string();
-    cookie_agent_protocol::ToolPresentation::from_call(
+    cookie_agent_protocol::ToolPresentation::new(
         presentation,
         cookie_agent_protocol::ToolIdentity {
             name: name.clone(),

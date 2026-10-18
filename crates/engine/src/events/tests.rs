@@ -7,10 +7,10 @@ use cookie_agent_protocol::{
     InternalAgentBackend, InternalAgentFailure, InternalAgentInvocationId, InternalAgentKind,
     InternalAgentRunId, InvocationId, ModelCallId, ModelErrorKind, ModelErrorStage,
     ModelErrorSummary, ModelFinishReason, ModelKey, ModelRevision, OutputStream, PermissionAction,
-    PermissionEffect, PersistedAssistantPart, PersistedModelTurn, ProviderStateRevision,
-    RecipeRegistryRevision, RunId, RunSelection, RuntimeRevision, SafeCode, SafeDisplayText,
-    SafeErrorMessage, SafeInternalAgentCall, SafeToolError, SessionId, SessionOrigin,
-    SessionStatus, SessionTitle, Sha256Digest, StoredEvent, ToolCallId, ToolCallPresentation,
+    PermissionEffect, PersistedAssistantPart, PersistedModelTurn, PreparedPresentation,
+    ProviderStateRevision, RecipeRegistryRevision, RunId, RunSelection, RuntimeRevision, SafeCode,
+    SafeDisplayText, SafeErrorMessage, SafeInternalAgentCall, SafeToolError, SessionId,
+    SessionOrigin, SessionStatus, SessionTitle, Sha256Digest, StoredEvent, ToolCallId,
     ToolCallStart, ToolCallTermination, ToolTerminationOutcome, Usage, VariantId,
 };
 use serde_json::Value;
@@ -3060,10 +3060,10 @@ fn skipped_tool_termination_taints_terminal_state_but_no_skip_rejects_elision() 
                 output: Default::default(),
                 tool_call_id,
                 owner: owner.clone(),
-                presentation: crate::test_support::base_presentation(ToolCallPresentation {
-                    title: SafeDisplayText::new("Read").expect("title"),
-                    primary_argument: None,
-                }),
+                presentation: crate::test_support::base_presentation(PreparedPresentation::new(
+                    SafeDisplayText::new("Read").expect("title"),
+                    None,
+                )),
                 operation_fingerprint: serde_json::from_value(serde_json::json!({
                     "digest": Sha256Digest::of_bytes(b"operation")
                 }))
@@ -3828,10 +3828,10 @@ fn tool_call_records() -> (Vec<StoredEvent>, StoredEvent, StoredEvent) {
                 output: Default::default(),
                 tool_call_id,
                 owner: owner.clone(),
-                presentation: crate::test_support::base_presentation(ToolCallPresentation {
-                    title: SafeDisplayText::new("Read").expect("title"),
-                    primary_argument: None,
-                }),
+                presentation: crate::test_support::base_presentation(PreparedPresentation::new(
+                    SafeDisplayText::new("Read").expect("title"),
+                    None,
+                )),
                 operation_fingerprint: serde_json::from_value(serde_json::json!({
                     "digest": Sha256Digest::of_bytes(b"operation")
                 }))

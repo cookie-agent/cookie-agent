@@ -209,7 +209,7 @@ the same client it uses for a runtime:
 
 | Message | Direction | Purpose |
 |---|---|---|
-| `tool/prepare` | daemon → plugin | Prepare one turn's calls: the plugin reports each call's approval identity, normalized arguments, permission and resource, and presentation. |
+| `tool/prepare` | daemon → plugin | Prepare one turn's calls: the plugin reports each call's normalized arguments, permission and resource, and presentation. The daemon builds the call's approval identity from them. |
 | `tool/revalidate` | daemon → plugin | Check a prepared call is still valid before it runs. |
 | `tool/execute` | daemon → plugin | Run a prepared call; the result is its output and persisted result, whose `display` is a list of display blocks. |
 | `tool/release` | daemon → plugin | Forget a prepared call that will not run. |
@@ -224,9 +224,11 @@ types are in the protocol crate's `runtime_protocol` module. A declaration
 has a `name`, `description`, and JSON Schema `parameters`, and optionally a
 free-form `permission` action (a tool may need none), `collision`,
 `concurrency`, `result_truncation`, an `output` of one or up to 8 named
-streams, and `background` support. The SDK fills in `tool/prepare`; a
-plugin written without it must compute each call's approval identity as a
-runtime does.
+streams, and `background` support. The SDK fills in `tool/prepare`. A plugin
+written without it reports no approval identity: the daemon builds it from
+the call's permission, resource, and normalized arguments and from the
+plugin's name and the tool's, as it does for a runtime's call (see
+[Approval identity](../reference/runtime-protocol.md#approval-identity)).
 
 **Names.** Plugin tools join the `global` runtime, but each plugin composes
 as its own source, prefixed with the plugin's name. A tool keeps its name

@@ -837,14 +837,6 @@ pub struct AssistantToolCallRef {
     pub provider_item_id: Option<ProviderItemId>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub struct ToolCallPresentation {
-    pub title: SafeDisplayText,
-    #[serde(deserialize_with = "deserialize_required_option")]
-    #[schemars(with = "crate::NullableSchema<BoundedDisplayText>", required)]
-    pub primary_argument: Option<BoundedDisplayText>,
-}
-
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct ToolCallStart {
     pub tool_call_id: ToolCallId,

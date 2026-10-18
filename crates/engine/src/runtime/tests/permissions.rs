@@ -687,6 +687,12 @@ async fn permission_labels_come_from_prepared_permission_resource() {
         &provider,
         "read",
         Some("read"),
+        &cookie_agent_protocol::ToolIdentity {
+            name: "read".into(),
+            published_name: "read".into(),
+            source: None,
+        },
+        &crate::ToolOrigin::Base,
         prepared,
     )
     .expect("overwrite")
@@ -723,6 +729,12 @@ async fn permission_labels_come_from_prepared_permission_resource() {
         &provider,
         "read",
         Some("read"),
+        &cookie_agent_protocol::ToolIdentity {
+            name: "read".into(),
+            published_name: "read".into(),
+            source: None,
+        },
+        &crate::ToolOrigin::Base,
         prepared,
     )
     .expect("preserve labels")

@@ -10,31 +10,28 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, BoundedDisplayText, EventPattern,
-    ExtensionAgentBeforeStartParams, ExtensionAgentBeforeStartResult, ExtensionAllowBlockResult,
-    ExtensionBusEventParams, ExtensionEmitParams, ExtensionEmitResultParams, ExtensionEmitStatus,
-    ExtensionEventParams, ExtensionHookOnError, ExtensionInitializeParams,
-    ExtensionInitializeResult, ExtensionIntercept, ExtensionInterceptionHook,
-    ExtensionMessageEndParams, ExtensionMessageEndResult, ExtensionModelBeforeRequestParams,
-    ExtensionModelBeforeRequestResult, ExtensionModelBeforeSelectParams,
-    ExtensionPluginCapabilities, ExtensionSessionBeforeCompactParams,
-    ExtensionSessionBeforeCompactResult, ExtensionSessionBeforeForkParams,
-    ExtensionSessionBeforeRevertParams, ExtensionSessionBeforeRevertResult,
-    ExtensionToolAfterResultParams, ExtensionToolAfterResultResult, ExtensionToolBeforeCallParams,
-    ExtensionToolBeforeCallResult, ExtensionUserBeforeInputParams, ExtensionUserBeforeInputResult,
-    FEATURE_PRODUCER_MESSAGING, PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD,
-    PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD, PLUGIN_INITIALIZE_METHOD,
-    PLUGIN_PRODUCER_DISCARD_METHOD, PLUGIN_PRODUCER_REGISTER_METHOD, PLUGIN_PRODUCER_SEND_METHOD,
-    PLUGIN_PRODUCER_UNREGISTER_METHOD, PLUGIN_PROTOCOL_VERSION, PLUGIN_RECOVERY_COMPLETE_METHOD,
-    PLUGIN_RECOVERY_START_METHOD, PLUGIN_SHUTDOWN_METHOD, PermissionAction, PersistedToolResult,
-    PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
-    PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity,
-    ProducerDeliveryMode, ProducerDiscardParams, ProducerDiscardResult, ProducerId,
-    ProducerIdempotencyKey, ProducerMessageId, ProducerName, ProducerRegisterParams,
-    ProducerRegisterResult, ProducerSendParams, ProducerSendResult, ProducerUnregisterParams,
-    ProducerUnregisterResult, RecoveryCompleteParams, RecoveryCompleteResult, RecoveryOutcome,
-    RunId, SafeDisplayText, SafeErrorMessage, SemVer, SessionId, Sha256Digest, ToolCallId,
-    ToolCallPresentation, ToolCompletionOutput, ToolOutputChunk, Transport, errors,
+    BoundedDisplayText, EventPattern, ExtensionAgentBeforeStartParams,
+    ExtensionAgentBeforeStartResult, ExtensionAllowBlockResult, ExtensionBusEventParams,
+    ExtensionEmitParams, ExtensionEmitResultParams, ExtensionEmitStatus, ExtensionEventParams,
+    ExtensionHookOnError, ExtensionInitializeParams, ExtensionInitializeResult, ExtensionIntercept,
+    ExtensionInterceptionHook, ExtensionMessageEndParams, ExtensionMessageEndResult,
+    ExtensionModelBeforeRequestParams, ExtensionModelBeforeRequestResult,
+    ExtensionModelBeforeSelectParams, ExtensionPluginCapabilities,
+    ExtensionSessionBeforeCompactParams, ExtensionSessionBeforeCompactResult,
+    ExtensionSessionBeforeForkParams, ExtensionSessionBeforeRevertParams,
+    ExtensionSessionBeforeRevertResult, ExtensionToolAfterResultParams,
+    ExtensionToolAfterResultResult, ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult,
+    ExtensionUserBeforeInputParams, ExtensionUserBeforeInputResult, FEATURE_PRODUCER_MESSAGING,
+    PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD,
+    PLUGIN_INITIALIZE_METHOD, PLUGIN_PRODUCER_DISCARD_METHOD, PLUGIN_PRODUCER_REGISTER_METHOD,
+    PLUGIN_PRODUCER_SEND_METHOD, PLUGIN_PRODUCER_UNREGISTER_METHOD, PLUGIN_PROTOCOL_VERSION,
+    PLUGIN_RECOVERY_COMPLETE_METHOD, PLUGIN_RECOVERY_START_METHOD, PLUGIN_SHUTDOWN_METHOD,
+    PersistedToolResult, PreparedPresentation, ProducerDeliveryMode, ProducerDiscardParams,
+    ProducerDiscardResult, ProducerId, ProducerIdempotencyKey, ProducerMessageId, ProducerName,
+    ProducerRegisterParams, ProducerRegisterResult, ProducerSendParams, ProducerSendResult,
+    ProducerUnregisterParams, ProducerUnregisterResult, RecoveryCompleteParams,
+    RecoveryCompleteResult, RecoveryOutcome, RunId, SafeDisplayText, SafeErrorMessage, SemVer,
+    SessionId, ToolCallId, ToolCompletionOutput, ToolOutputChunk, Transport, errors,
     peer::{Incoming, IncomingNotification, IncomingRequest, LineTransport, Peer, RpcError},
     runtime_protocol::{
         DetachableParams, ExecuteOutcome, ExecuteParams, ExecuteResult, Outcome, PrepareOutcome,
@@ -1210,15 +1207,9 @@ impl Server {
             .resource
             .as_ref()
             .and_then(|resource| resource(&call.arguments));
-        let operation = match operation_identity(
-            &self.name,
-            &tool.declaration,
-            &call.arguments,
-            resource.as_deref(),
-        ) {
-            Ok(operation) => operation,
-            Err(message) => return failed(message, resource.as_deref()),
-        };
+        if call.arguments.is_null() {
+            return failed("tool arguments must not be null".into(), None);
+        }
         let prepared_id = self.next_prepared.fetch_add(1, Ordering::Relaxed);
         let permission = tool.declaration.permission.clone();
         let presentation = presentation(&call.name, resource.as_deref());
@@ -1232,8 +1223,6 @@ impl Server {
         );
         PrepareOutcome::Prepared(PreparedCall {
             prepared_id,
-            operation,
-            policy_labels: vec![resource.clone()],
             normalized_arguments: call.arguments,
             permission_resource: permission.as_ref().and(resource),
             permission,
@@ -1455,63 +1444,19 @@ impl UnknownMessage {
     }
 }
 
-/// The approval identity of a call: its arguments, the tool's permission
-/// action (or one named after the tool when it needs none), and its
-/// permission resource, or the tool's name when it has none.
-fn operation_identity(
-    plugin: &str,
-    declaration: &ToolDecl,
-    arguments: &Value,
-    resource: Option<&str>,
-) -> Result<PreparedOperationIdentity, String> {
-    let action = declaration
-        .permission
-        .clone()
-        .or_else(|| PermissionAction::new(declaration.name.as_str()).ok())
-        .unwrap_or_else(|| PermissionAction::new("plugin_tool").expect("static action is valid"));
-    let operation = PreparedCapabilityOperation::new(format!("{}:call", declaration.name))
-        .map_err(|error| error.to_string())?;
-    let label = resource.unwrap_or(declaration.name.as_str());
-    let mut binding = Vec::from(plugin.as_bytes());
-    binding.push(0);
-    binding.extend_from_slice(label.as_bytes());
-    let arguments = serde_json::to_vec(arguments).map_err(|error| error.to_string())?;
-    PreparedOperationIdentity::new(
-        Sha256Digest::of_bytes(&arguments),
-        vec![ApprovalCapability {
-            action: action.clone(),
-            operation,
-        }],
-        vec![PreparedApprovalResource {
-            capability: action,
-            canonical: PreparedResourceIdentity::new(format!(
-                "plugin-tool:{}",
-                Sha256Digest::of_bytes(&binding).as_str()
-            ))
-            .map_err(|error| error.to_string())?,
-            binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(&binding),
-            binding_lifetime: PreparedBindingLifetime::ProcessLocal,
-            boundary: ApprovalBoundary::Exact,
-            source: ApprovalResourceSource::PrimaryOperation,
-        }],
-        Sha256Digest::of_bytes(format!("plugin:{plugin}").as_bytes()),
-    )
-    .map_err(|error| error.to_string())
-}
-
 fn safe_title(name: &str) -> SafeDisplayText {
     SafeDisplayText::new(name.replace(char::is_control, " "))
         .unwrap_or_else(|_| SafeDisplayText::new("tool").expect("static title is valid"))
 }
 
-fn presentation(name: &str, primary: Option<&str>) -> ToolCallPresentation {
-    ToolCallPresentation {
-        title: safe_title(name),
-        primary_argument: primary
+fn presentation(name: &str, primary: Option<&str>) -> PreparedPresentation {
+    PreparedPresentation::new(
+        safe_title(name),
+        primary
             .map(|primary| truncate(primary.trim(), BoundedDisplayText::MAX_BYTES))
             .filter(|primary| !primary.is_empty())
             .and_then(|primary| BoundedDisplayText::new(primary).ok()),
-    }
+    )
 }
 
 fn truncate(text: &str, max: usize) -> String {

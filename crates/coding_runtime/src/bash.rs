@@ -18,7 +18,6 @@ use std::os::unix::fs::MetadataExt;
 
 use async_trait::async_trait;
 use cookie_agent_protocol::PersistedToolResult as ToolResult;
-use cookie_agent_protocol::{ApprovalResourceSource, PermissionAction, PreparedBindingLifetime};
 use cookie_agent_protocol::{OutputStream, SafeDisplayText, ToolCallId};
 use cookie_agent_runtime_api::ToolProgress;
 use cookie_agent_runtime_api::{
@@ -40,7 +39,7 @@ use tokio_util::sync::CancellationToken;
 
 use cookie_agent_runtime_api::WorkspaceContext;
 
-use crate::{fs_cap, parse_args, prepared_operation, prepared_resource, schema};
+use crate::{fs_cap, parse_args, schema};
 
 #[derive(Debug)]
 pub struct BashTool {
@@ -407,11 +406,11 @@ impl ToolProvider for BashTool {
             return Err(ToolError::execution("command must not be empty"));
         }
         let cwd_path = self.workspace.clone();
-        let (executable_path, executable, cwd) = crate::blocking(move || {
+        let (executable, cwd) = crate::blocking(move || {
             let executable_path = resolve_executable("bash")?;
             let executable = fs_cap::prepare_existing(Path::new("/"), &executable_path)?;
             let cwd = fs_cap::prepare_existing(Path::new("/"), &cwd_path)?;
-            Ok((executable_path, executable, cwd))
+            Ok((executable, cwd))
         })
         .await?;
         if executable.directory || executable.mode & 0o111 == 0 {
@@ -424,34 +423,13 @@ impl ToolProvider for BashTool {
                 "bash cwd is not a directory",
             ));
         }
-        let mut executable_binding = executable.binding_bytes();
-        executable_binding.extend_from_slice(executable_path.as_os_str().as_encoded_bytes());
-        let command = args.command.clone();
-        let mut binding = command.as_bytes().to_vec();
-        binding.extend_from_slice(&executable_binding);
-        let resources = vec![prepared_resource(
-            PermissionAction::BASH,
-            "command",
-            command.as_bytes(),
-            &binding,
-            PreparedBindingLifetime::ProcessLocal,
-            ApprovalResourceSource::PrimaryOperation,
-        )?];
-        let policy_labels = vec![command.clone()];
-        let mut context = cwd.binding_bytes();
-        context.extend_from_slice(&executable_binding);
-        let operation = prepared_operation(
-            "bash",
-            &args,
-            vec![(PermissionAction::BASH, "execute")],
-            resources,
-            &context,
-        )?;
+        // The command's timeout is part of what is approved: the same command
+        // with another timeout is another operation.
         let normalized_arguments = serde_json::json!({
-            "command": command,
+            "command": args.command,
+            "timeout": args.timeout,
         });
-        PreparedTool::new(
-            operation,
+        PreparedTool::declared(
             normalized_arguments,
             None,
             Box::new(BashExecutor {
@@ -460,8 +438,7 @@ impl ToolProvider for BashTool {
                 cwd,
                 executable,
             }),
-        )?
-        .with_policy_labels(policy_labels)
+        )
     }
 }
 

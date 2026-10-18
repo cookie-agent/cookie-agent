@@ -334,10 +334,24 @@ async fn streamed_output_crosses_the_protocol() {
         Some("echo got:hello; echo diagnostics >&2")
     );
     assert_eq!(declaration.presentation.title.as_str(), "bash");
+    // The daemon builds the approval identity from what the runtime declared.
+    assert!(prepared.is_declared());
+    let identified = crate::testing::identify(
+        provider.as_ref(),
+        "bash",
+        &ToolOrigin::Runtime(Arc::new(started_info(&started))),
+        prepared,
+    )
+    .unwrap();
     assert_eq!(
-        prepared.policy_labels(),
+        identified.policy_labels(),
         std::slice::from_ref(&declaration.permission_resource)
     );
+    assert_eq!(
+        identified.operation().resources()[0].capability,
+        cookie_agent_protocol::PermissionAction::BASH
+    );
+    let prepared = identified;
     // The sync metadata methods defer to preparation.
     assert!(
         provider

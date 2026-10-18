@@ -371,6 +371,7 @@ async fn windows_short_workspace_spelling_roundtrips_prepared_resources() {
         )
         .await
         .expect("prepare through short cwd");
+    let prepared = crate::identified(&tool, "read", &long, prepared);
     assert_eq!(prepared.operation().resources().len(), 1);
     assert_eq!(prepared.policy_labels(), [Some("value.txt".into())]);
     super::assert_workspace_rule_allows(&prepared, &long, PermissionAction::READ, "value.txt");

@@ -324,16 +324,48 @@ kind not listed is not accepted: a tool reports that it cannot attach the
 file. A plugin's prepare carries no `instance`. The runtime prepares a turn's calls together, so calls on one
 target chain. The result has one entry per call, tagged by `status`:
 
-- `prepared`: `prepared_id`; `operation`, the prepared operation identity;
-  `policy_labels`, one per operation resource; `normalized_arguments`;
-  `permission`, the permission action; `permission_resource`, the resource of
-  the normalized arguments; `presentation`, the call's title and display
-  argument; and `serialization_key`, lowercase hex, when calls sharing it must
-  run one at a time.
+- `prepared`: `prepared_id`; `normalized_arguments`, the arguments as the
+  call will run them (not `null`); `permission`, the permission action, which
+  must be the one the tool declares, absent for a tool that needs none;
+  `permission_resource`, the resource of the normalized arguments, absent for
+  a call checked under the action alone; `presentation`, how clients show the
+  call (see below); and `serialization_key`, lowercase hex, when calls sharing
+  it must run one at a time.
 - `failed`: `error` and the `presentation` to show for the failed call.
+
+`presentation` is `{ title, hint?, primary_argument?, arguments?, preview? }`:
+the title, an optional `hint` label for icons and grouping (such as `shell` or
+`file_edit`; see the [compatibility spec](../specs/compatibility-v1.md#122-presentation-v2)),
+the argument clients show next to it, and display blocks for the arguments
+and for what the call will do. The daemon adds the tool's identity and fits
+the blocks to the display budget.
 
 The runtime keeps a prepared call under its `prepared_id` until it is executed
 or released. Concurrency is declared per tool, not per call.
+
+#### Approval identity
+
+The daemon builds each prepared call's approval identity; a runtime never
+states one, and a member it sends for one is ignored. The identity binds what
+the runtime declared to the tool the daemon knows the call goes to, the
+runtime attachment, plugin, or MCP server and the name it knows the tool by,
+so no runtime can state another tool's identity:
+
+- the normalized arguments' digest, over their JSON with object members in
+  key order;
+- one capability: the permission action (`tool` for a tool that needs none)
+  with operation `<tool name>:call`;
+- one resource of that action, `<action>:<SHA-256 of the resource>`
+  (`<action>:unscoped` without one), bound to the tool's identity. A `bash`
+  resource approves by command prefix and every other resource exactly. A
+  `bash` command's and a path action's (`read`, `write`) binding lasts only
+  for the daemon's process, since the runtime resolves it against its own
+  machine at preparation; every other binding survives a restart, so a call
+  of such a tool may be approved for its whole session tree;
+- the execution context: the tool's identity and the instance's workspace.
+
+Two calls are the same operation, for tree grants and the doom-loop guard,
+exactly when these agree.
 
 ### `tool/revalidate`, `tool/release`
 

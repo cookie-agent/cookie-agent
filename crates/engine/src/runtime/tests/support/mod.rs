@@ -1806,11 +1806,11 @@ pub(crate) fn append_named_compaction_tool_history(
                     tool_call_id,
                     owner: owner.clone(),
                     presentation: crate::test_support::base_presentation(
-                        cookie_agent_protocol::ToolCallPresentation {
-                            title: cookie_agent_protocol::SafeDisplayText::new("Historical output")
+                        cookie_agent_protocol::PreparedPresentation::new(
+                            cookie_agent_protocol::SafeDisplayText::new("Historical output")
                                 .unwrap(),
-                            primary_argument: None,
-                        },
+                            None,
+                        ),
                     ),
                     operation_fingerprint: serde_json::from_value(serde_json::json!({
                         "digest": Sha256Digest::of_bytes(b"compaction-history-tool")

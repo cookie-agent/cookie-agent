@@ -1,9 +1,7 @@
 use std::{sync::OnceLock, time::Duration};
 
 use async_trait::async_trait;
-use cookie_agent_protocol::{
-    ApprovalResourceSource, PermissionAction, PersistedToolResult, PreparedBindingLifetime,
-};
+use cookie_agent_protocol::PersistedToolResult;
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolCollision, ToolError,
     ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
@@ -11,7 +9,7 @@ use cookie_agent_runtime_api::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{parse_args, prepared_operation, prepared_resource, safe_title, schema, tool_error};
+use crate::{parse_args, safe_title, schema, tool_error};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_CAP: usize = 16 * 1024 * 1024;
@@ -136,25 +134,8 @@ impl ToolProvider for WebfetchTool {
         Self::get_permission_name(&call.name)?;
         let args: WebfetchArgs = parse_args(&call.name, call.arguments)?;
         args.validate()?;
-        let resource = prepared_resource(
-            PermissionAction::WEBFETCH,
-            "url",
-            args.url.as_bytes(),
-            args.url.as_bytes(),
-            PreparedBindingLifetime::RestartStable,
-            ApprovalResourceSource::PrimaryOperation,
-        )?;
-        let operation = prepared_operation(
-            "webfetch",
-            &args,
-            vec![(PermissionAction::WEBFETCH, "get")],
-            vec![resource],
-            b"webfetch:v1",
-        )?;
         let normalized = serde_json::to_value(&args).map_err(tool_error)?;
-        let label = args.url.clone();
-        PreparedTool::new(operation, normalized, None, Box::new(args))?
-            .with_policy_labels(vec![label])
+        PreparedTool::declared(normalized, None, Box::new(args))
     }
 }
 
@@ -555,12 +536,18 @@ mod tests {
     #[tokio::test]
     async fn one_initial_url_resource_includes_query_and_defaults_to_deny() {
         use cookie_agent_protocol::{
-            AgentDocumentSource, AgentId, AgentMode, AgentSnapshot, PermissionRule, Sha256Digest,
-            WildcardPattern,
+            AgentDocumentSource, AgentId, AgentMode, AgentSnapshot, PermissionAction,
+            PermissionRule, Sha256Digest, WildcardPattern,
         };
         let server = HttpFixture::start();
         let url = format!("{}/html?token=given", server.url());
         let prepared = prepare(serde_json::json!({"url":url})).await.unwrap();
+        let prepared = crate::identified(
+            &WebfetchTool::coding(),
+            "webfetch",
+            std::path::Path::new("/tmp"),
+            prepared,
+        );
         assert_eq!(prepared.operation().resources().len(), 1);
         assert_eq!(prepared.policy_labels(), [Some(url.clone())]);
         assert_eq!(

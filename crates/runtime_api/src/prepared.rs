@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    DisplayBlock, Open, PersistedToolResult as ToolResult, PreparedOperationIdentity, Sha256Digest,
-    ToolCallPresentation,
+    DisplayBlock, Open, PersistedToolResult as ToolResult, PreparedOperationIdentity,
+    PreparedPresentation, Sha256Digest,
 };
 
 use crate::{ToolError, ToolExecutionContext};
@@ -122,7 +122,7 @@ pub type PreparedExecutorCell = Arc<tokio::sync::Mutex<Option<Box<dyn PreparedEx
 /// What a provider that cannot answer the sync [`crate::ToolProvider`]
 /// metadata methods, such as a runtime behind the runtime protocol, reports
 /// about one prepared call.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PreparedDeclaration {
     /// The permission name the call is checked under; `None` when the tool
     /// needs no permission.
@@ -130,11 +130,21 @@ pub struct PreparedDeclaration {
     /// The permission resource of the call's normalized arguments.
     pub permission_resource: Option<String>,
     /// How clients show the call.
-    pub presentation: ToolCallPresentation,
+    pub presentation: PreparedPresentation,
 }
 
+/// A prepared call: its approval identity, normalized arguments, and
+/// executor.
+///
+/// A provider the host owns states the call's approval identity itself
+/// ([`Self::new`]). Every other provider, such as a runtime's tools or a
+/// plugin's, only declares the call ([`Self::declared`]): the host builds its
+/// identity from the tool's permission and resource and from the tool it
+/// knows the call goes to, and sets it with [`Self::identify`] before
+/// anything reads it.
 pub struct PreparedTool {
-    operation: PreparedOperationIdentity,
+    /// `None` until the host identifies a declared call.
+    operation: Option<PreparedOperationIdentity>,
     policy_labels: Vec<Option<String>>,
     normalized_arguments: serde_json::Value,
     serialization_key: Option<PreparedSerializationKey>,
@@ -165,13 +175,70 @@ impl PreparedTool {
             .map(|resource| Some(resource.canonical.as_str().to_owned()))
             .collect();
         Ok(Self {
-            operation,
+            operation: Some(operation),
             policy_labels,
             normalized_arguments,
             serialization_key,
             executor: Arc::new(tokio::sync::Mutex::new(Some(executor))),
             declaration: None,
         })
+    }
+
+    /// A call whose approval identity the host builds: the provider states
+    /// only its normalized arguments, and its permission resource as
+    /// [`crate::ToolProvider::get_permission_resource`] or a
+    /// [`PreparedDeclaration`] reports it.
+    pub fn declared(
+        normalized_arguments: serde_json::Value,
+        serialization_key: Option<PreparedSerializationKey>,
+        executor: Box<dyn PreparedExecutor>,
+    ) -> Result<Self, ToolError> {
+        if normalized_arguments.is_null() {
+            return Err(ToolError::execution(
+                "prepared normalized arguments must not be null",
+            ));
+        }
+        Ok(Self {
+            operation: None,
+            policy_labels: Vec::new(),
+            normalized_arguments,
+            serialization_key,
+            executor: Arc::new(tokio::sync::Mutex::new(Some(executor))),
+            declaration: None,
+        })
+    }
+
+    /// Whether the host has yet to build the call's identity.
+    #[must_use]
+    pub const fn is_declared(&self) -> bool {
+        self.operation.is_none()
+    }
+
+    /// Sets the identity the host built for a declared call: one resource,
+    /// whose policy label is `resource` (`None` for the loose marker).
+    pub fn identify(
+        mut self,
+        operation: PreparedOperationIdentity,
+        resource: Option<String>,
+    ) -> Result<Self, ToolError> {
+        if self.operation.is_some() {
+            return Err(ToolError::execution(
+                "a prepared call that states its identity is not identified again",
+            ));
+        }
+        if operation.resources().len() != 1 {
+            return Err(ToolError::execution(
+                "a declared call's identity has exactly one resource",
+            ));
+        }
+        if resource.as_ref().is_some_and(String::is_empty) {
+            return Err(ToolError::execution(
+                "permission resource must not be empty",
+            ));
+        }
+        self.operation = Some(operation);
+        self.policy_labels = vec![resource];
+        Ok(self)
     }
 
     /// Attaches the permission and presentation the provider reported while
@@ -188,53 +255,31 @@ impl PreparedTool {
         self.declaration.as_ref()
     }
 
-    /// Restores policy labels a provider set while preparing, as another
-    /// process reported them: a label is either the resource's canonical
-    /// identity, a label matching its digest, or absent (the loose marker).
-    pub fn with_reported_policy_labels(
-        mut self,
-        labels: Vec<Option<String>>,
-    ) -> Result<Self, ToolError> {
-        if labels.len() != self.operation.resources().len() {
-            return Err(ToolError::execution(
-                "prepared policy labels must cover every resource",
-            ));
-        }
-        for (resource, label) in self.operation.resources().iter().zip(&labels) {
-            let Some(label) = label else { continue };
-            if label.is_empty() {
-                return Err(ToolError::execution(
-                    "permission resource must not be empty",
-                ));
-            }
-            let canonical = resource.canonical.as_str();
-            let expected = Sha256Digest::of_bytes(label.as_bytes());
-            if label != canonical
-                && canonical
-                    .rsplit_once(':')
-                    .is_none_or(|(_, digest)| digest != expected.as_str())
-            {
-                return Err(ToolError::execution(
-                    "prepared policy label does not match its immutable resource identity",
-                ));
-            }
-        }
-        self.policy_labels = labels;
-        Ok(self)
-    }
-
+    /// The call's approval identity.
+    ///
+    /// # Panics
+    ///
+    /// For a declared call the host has not identified yet.
     #[must_use]
     pub const fn operation(&self) -> &PreparedOperationIdentity {
-        &self.operation
+        match &self.operation {
+            Some(operation) => operation,
+            None => panic!("the host identifies a declared call before reading its identity"),
+        }
     }
 
     pub fn with_policy_labels(mut self, labels: Vec<String>) -> Result<Self, ToolError> {
-        if labels.is_empty() || labels.len() != self.operation.resources().len() {
+        let Some(operation) = &self.operation else {
+            return Err(ToolError::execution(
+                "a declared call's policy label is its permission resource",
+            ));
+        };
+        if labels.is_empty() || labels.len() != operation.resources().len() {
             return Err(ToolError::execution(
                 "prepared policy labels must cover every resource",
             ));
         }
-        for (resource, label) in self.operation.resources().iter().zip(&labels) {
+        for (resource, label) in operation.resources().iter().zip(&labels) {
             let expected = Sha256Digest::of_bytes(label.as_bytes());
             if resource
                 .canonical

@@ -1,5 +1,5 @@
 use cookie_agent_protocol::{
-    AdaptorId, AgentId, ExtensionToolBeforeCallAction, ExtensionToolOrigin,
+    AdaptorId, AgentId, ExtensionToolBeforeCallAction, ExtensionToolOrigin, PermissionAction,
     runtime_protocol::{ToolTurn, ToolTurnModel},
 };
 use serde::de::DeserializeOwned;
@@ -342,14 +342,21 @@ async fn a_tool_is_declared_prepared_and_executed_over_the_runtime_protocol() {
     let echo = prepared(&outcomes[0]);
     assert_eq!(echo.permission, None);
     assert_eq!(echo.permission_resource, None);
-    assert_eq!(echo.operation.capabilities()[0].action.as_str(), "echo");
+    assert_eq!(echo.presentation.title.as_str(), "echo");
     let guarded = prepared(&outcomes[1]);
     assert_eq!(
         guarded.permission.as_ref().map(PermissionAction::as_str),
         Some("issue_read")
     );
     assert_eq!(guarded.permission_resource.as_deref(), Some("42"));
-    assert_eq!(guarded.policy_labels, [Some("42".to_owned())]);
+    assert_eq!(
+        guarded
+            .presentation
+            .primary_argument
+            .as_ref()
+            .map(|argument| argument.as_str()),
+        Some("42")
+    );
     assert!(matches!(
         &outcomes[2],
         PrepareOutcome::Failed { error, .. } if error.message.contains("unknown tool")

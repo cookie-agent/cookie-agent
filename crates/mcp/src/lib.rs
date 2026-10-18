@@ -35,10 +35,7 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::LoadedMcpServer;
 use cookie_agent_protocol::{
-    ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, DisplayDelta, PermissionAction,
-    PersistedToolResult as ToolResult, PreparedApprovalResource, PreparedBindingLifetime,
-    PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
-    PreparedResourceIdentity, SafeDisplayText, Sha256Digest, ToolAttachment, ToolCallId,
+    DisplayDelta, PersistedToolResult as ToolResult, SafeDisplayText, ToolAttachment, ToolCallId,
     ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole,
 };
 use cookie_agent_runtime_api::{
@@ -1724,7 +1721,7 @@ impl ToolProvider for McpRegistry {
 
     async fn prepare(
         &self,
-        ctx: ToolPreparationContext,
+        _ctx: ToolPreparationContext,
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError> {
         let (server, raw_name) = self.resolve_tool(&call.name)?;
@@ -1734,34 +1731,7 @@ impl ToolProvider for McpRegistry {
             .cloned()
             .ok_or_else(|| ToolError::execution("MCP tool arguments must be an object"))?;
         let normalized = Value::Object(arguments.clone());
-        let argument_bytes = serde_json::to_vec(&normalized)
-            .map_err(|error| ToolError::execution(error.to_string()))?;
-        let label = call.name.clone();
-        let resource = PreparedApprovalResource {
-            capability: PermissionAction::MCP,
-            canonical: PreparedResourceIdentity::new(format!(
-                "mcp-tool:{}",
-                Sha256Digest::of_bytes(label.as_bytes())
-            ))
-            .map_err(|error| ToolError::execution(error.to_string()))?,
-            binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(label.as_bytes()),
-            binding_lifetime: PreparedBindingLifetime::RestartStable,
-            boundary: ApprovalBoundary::Exact,
-            source: ApprovalResourceSource::PrimaryOperation,
-        };
-        let operation = PreparedOperationIdentity::new(
-            Sha256Digest::of_bytes(&argument_bytes),
-            vec![ApprovalCapability {
-                action: PermissionAction::MCP,
-                operation: PreparedCapabilityOperation::new(format!("{}:call", call.name))
-                    .map_err(|error| ToolError::execution(error.to_string()))?,
-            }],
-            vec![resource],
-            Sha256Digest::of_bytes(&ctx.context_bytes()),
-        )
-        .map_err(|error| ToolError::execution(error.to_string()))?;
-        PreparedTool::new(
-            operation,
+        PreparedTool::declared(
             normalized,
             None,
             Box::new(McpExecutor {

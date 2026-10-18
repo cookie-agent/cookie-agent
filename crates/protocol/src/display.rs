@@ -840,6 +840,22 @@ pub fn fit_result_display(blocks: Vec<Open<DisplayBlock>>) -> Vec<Open<DisplayBl
         .collect()
 }
 
+/// Removes the blocks of a kind this build does not know from `blocks` and
+/// returns their tags. A peer sends only the kinds its receiver's version
+/// includes, so the daemon drops such a block from a plugin or runtime with
+/// a diagnostic (`docs/site/specs/compatibility-v1.md` section 12.4).
+pub fn take_unknown_blocks(blocks: &mut Vec<Open<DisplayBlock>>) -> Vec<String> {
+    let mut unknown = Vec::new();
+    blocks.retain(|block| match block {
+        Open::Known(_) => true,
+        Open::Unknown { tag, .. } => {
+            unknown.push(tag.clone());
+            false
+        }
+    });
+    unknown
+}
+
 /// Checks a display block list as a writer must before storing or sending
 /// it: every known block is valid and the list fits [`DISPLAY_BUDGET_BYTES`].
 /// Blocks of a kind this build does not know are passed on as they are.
@@ -1410,6 +1426,33 @@ pub struct PreparedPresentation {
     pub preview: Vec<Open<DisplayBlock>>,
 }
 
+impl PreparedPresentation {
+    /// A presentation of a title and a primary argument, with no hint,
+    /// arguments, or preview.
+    #[must_use]
+    pub const fn new(title: SafeDisplayText, primary_argument: Option<BoundedDisplayText>) -> Self {
+        Self {
+            title,
+            hint: None,
+            primary_argument,
+            arguments: Vec::new(),
+            preview: Vec::new(),
+        }
+    }
+
+    /// Fits its arguments and preview as the daemon fits a result's display
+    /// ([`fit_result_display`]), each list within the display budget, and
+    /// returns the tags of the blocks it dropped for being of a kind this
+    /// build does not know.
+    pub fn fit(&mut self) -> Vec<String> {
+        let mut unknown = take_unknown_blocks(&mut self.arguments);
+        unknown.extend(take_unknown_blocks(&mut self.preview));
+        self.arguments = fit_result_display(std::mem::take(&mut self.arguments));
+        self.preview = fit_result_display(std::mem::take(&mut self.preview));
+        unknown
+    }
+}
+
 /// How clients show a tool call: the prepared presentation and the tool the
 /// daemon resolved.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
@@ -1447,20 +1490,6 @@ impl ToolPresentation {
             primary_argument,
             arguments,
             preview,
-        }
-    }
-
-    /// The presentation of a title and display argument, as prepare reports
-    /// them today: no hint, arguments, or preview.
-    #[must_use]
-    pub fn from_call(presentation: crate::ToolCallPresentation, tool: ToolIdentity) -> Self {
-        Self {
-            title: presentation.title,
-            hint: None,
-            tool,
-            primary_argument: presentation.primary_argument,
-            arguments: Vec::new(),
-            preview: Vec::new(),
         }
     }
 

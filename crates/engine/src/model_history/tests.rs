@@ -8,11 +8,11 @@ use cookie_agent_protocol::{
     ModelFinishReason, ModelKey, ModelSelection, NativeContextScope, NativeReplayArtifact,
     OperationFingerprint, PermissionAction, PersistedAssistantPart, PersistedModelTurn,
     PersistedToolResult, PreparedApprovalResource, PreparedBindingLifetime,
-    PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
-    PreparedResourceIdentity, ProducerDeliveryMode, ProducerIdempotencyKey, ProducerMessageId,
-    ProducerOwner, ProviderId, ReplayDisposition, ResolvedModelRef, RunId, SafeCode,
-    SafeDisplayText, SessionId, SessionStatus, Sha256Digest, StoredEvent, SummaryByteLimit,
-    ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolEmittedContent,
+    PreparedCapabilityOperation, PreparedOperationIdentity, PreparedPresentation,
+    PreparedResourceDigest, PreparedResourceIdentity, ProducerDeliveryMode, ProducerIdempotencyKey,
+    ProducerMessageId, ProducerOwner, ProviderId, ReplayDisposition, ResolvedModelRef, RunId,
+    SafeCode, SafeDisplayText, SessionId, SessionStatus, Sha256Digest, StoredEvent,
+    SummaryByteLimit, ToolCallId, ToolCallStart, ToolCallTermination, ToolEmittedContent,
     ToolEmittedMessage, ToolEmittedMessageRole, ToolTerminationOutcome, Usage,
 };
 use oven_sdk::{
@@ -2294,10 +2294,10 @@ fn tail_candidates_stop_at_pending_tool_group_until_late_termination() {
                 output: Default::default(),
                 tool_call_id,
                 owner: owner.clone(),
-                presentation: crate::test_support::base_presentation(ToolCallPresentation {
-                    title: SafeDisplayText::new("pending").unwrap(),
-                    primary_argument: None,
-                }),
+                presentation: crate::test_support::base_presentation(PreparedPresentation::new(
+                    SafeDisplayText::new("pending").unwrap(),
+                    None,
+                )),
                 operation_fingerprint: OperationFingerprint::from_prepared_operation(&operation()),
             },
         },
@@ -2448,12 +2448,12 @@ fn assembled_tool_transcript_snapshot_is_stable() {
                     output: Default::default(),
                     tool_call_id: call,
                     owner: owner.clone(),
-                    presentation: crate::test_support::base_presentation(ToolCallPresentation {
-                        title: SafeDisplayText::new("Read README.md").expect("title"),
-                        primary_argument: Some(
-                            BoundedDisplayText::new("README.md").expect("argument"),
+                    presentation: crate::test_support::base_presentation(
+                        PreparedPresentation::new(
+                            SafeDisplayText::new("Read README.md").expect("title"),
+                            Some(BoundedDisplayText::new("README.md").expect("argument")),
                         ),
-                    }),
+                    ),
                     operation_fingerprint: OperationFingerprint::from_prepared_operation(
                         &operation(),
                     ),

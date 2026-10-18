@@ -788,20 +788,19 @@ pub(crate) fn presentation(
     title: &str,
     primary: Option<&str>,
 ) -> cookie_agent_protocol::ToolPresentation {
-    base_presentation(cookie_agent_protocol::ToolCallPresentation {
-        title: SafeDisplayText::new(title).expect("presentation title"),
-        primary_argument: primary
-            .map(|argument| BoundedDisplayText::new(argument).expect("primary argument")),
-    })
+    base_presentation(cookie_agent_protocol::PreparedPresentation::new(
+        SafeDisplayText::new(title).expect("presentation title"),
+        primary.map(|argument| BoundedDisplayText::new(argument).expect("primary argument")),
+    ))
 }
 
 /// `presentation` as `tool_call_started` stores it for base-layer tool
 /// `presentation.title`.
 pub(crate) fn base_presentation(
-    presentation: cookie_agent_protocol::ToolCallPresentation,
+    presentation: cookie_agent_protocol::PreparedPresentation,
 ) -> cookie_agent_protocol::ToolPresentation {
     let name = presentation.title.to_string();
-    cookie_agent_protocol::ToolPresentation::from_call(
+    cookie_agent_protocol::ToolPresentation::new(
         presentation,
         cookie_agent_protocol::ToolIdentity {
             name: name.clone(),

@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    AgentId, BoundedDisplayText, SafeDisplayText, SessionId, ToolCallId, ToolCallPresentation,
+    AgentId, BoundedDisplayText, PreparedPresentation, SafeDisplayText, SessionId, ToolCallId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -150,7 +150,7 @@ pub trait ToolProvider: Send + Sync {
     /// How clients show `call`. The host uses a prepared call's
     /// [`crate::PreparedDeclaration`] when it has one, and asks here
     /// otherwise, including for a call that failed to prepare.
-    fn presentation(&self, call: &ToolCall) -> ToolCallPresentation {
+    fn presentation(&self, call: &ToolCall) -> PreparedPresentation {
         match self.get_display_argument(&call.name, &call.arguments) {
             Ok(display) => tool_presentation(&call.name, &display),
             Err(_) => tool_title_only(&call.name),
@@ -189,21 +189,18 @@ pub enum ProvidedToolSource {
 
 /// A call's presentation with only its tool name as the title.
 #[must_use]
-pub fn tool_title_only(name: &str) -> ToolCallPresentation {
-    ToolCallPresentation {
-        title: safe_display(name),
-        primary_argument: None,
-    }
+pub fn tool_title_only(name: &str) -> PreparedPresentation {
+    PreparedPresentation::new(safe_display(name), None)
 }
 
 /// A call's presentation: the tool name as the title and `primary` as its
 /// byte-bounded display argument.
 #[must_use]
-pub fn tool_presentation(name: &str, primary: &str) -> ToolCallPresentation {
+pub fn tool_presentation(name: &str, primary: &str) -> PreparedPresentation {
     let argument = truncate_utf8(primary.trim(), BoundedDisplayText::MAX_BYTES);
-    ToolCallPresentation {
-        title: safe_display(name),
-        primary_argument: Some(
+    PreparedPresentation::new(
+        safe_display(name),
+        Some(
             BoundedDisplayText::new(if argument.is_empty() {
                 "unavailable".into()
             } else {
@@ -211,7 +208,7 @@ pub fn tool_presentation(name: &str, primary: &str) -> ToolCallPresentation {
             })
             .expect("byte-bounded display argument"),
         ),
-    }
+    )
 }
 
 fn safe_display(value: &str) -> SafeDisplayText {

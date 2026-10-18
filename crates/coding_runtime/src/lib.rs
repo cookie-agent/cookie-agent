@@ -9,12 +9,9 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cookie_agent_protocol::{
-    ApprovalResourceSource, PermissionAction, PreparedApprovalResource, PreparedBindingLifetime,
-};
-pub(crate) use cookie_agent_runtime_api::authoring::{
-    parse_args, prepared_operation, prepared_resource, safe_title, schema,
-};
+#[cfg(test)]
+use cookie_agent_protocol::PermissionAction;
+pub(crate) use cookie_agent_runtime_api::authoring::{parse_args, safe_title, schema};
 use cookie_agent_runtime_api::{
     PreparedTool, RuntimeOptions, SessionToolContext, ToolCall, ToolError, ToolPreparationContext,
     ToolProvider, ToolSpec, WorkspaceContext,
@@ -44,6 +41,19 @@ pub(crate) fn test_coding_origin(path: impl AsRef<Path>) -> cookie_agent_runtime
             test_workspace(path),
         ),
     ))
+}
+
+/// `prepared`, a call of `provider`'s tool `name` in a coding runtime at
+/// `workspace`, with the approval identity the daemon gives it.
+#[cfg(test)]
+pub(crate) fn identified(
+    provider: &dyn ToolProvider,
+    name: &str,
+    workspace: &Path,
+    prepared: PreparedTool,
+) -> PreparedTool {
+    cookie_agent_engine::testing::identify(provider, name, &test_coding_origin(workspace), prepared)
+        .expect("the daemon identifies the call")
 }
 
 #[cfg(test)]
@@ -130,39 +140,6 @@ pub(crate) async fn blocking<T: Send + 'static>(
 
 pub(crate) fn tool_error(error: impl std::fmt::Display) -> ToolError {
     ToolError::execution(error.to_string())
-}
-
-/// Execution-context bytes of a coding tool: its workspace root, which is
-/// already canonical. Matches [`cookie_agent_runtime_api::ToolOrigin::context_bytes`]
-/// for the runtime that owns the tool.
-pub(crate) fn workspace_context_bytes(workspace: &Path) -> Vec<u8> {
-    workspace.as_os_str().as_encoded_bytes().to_vec()
-}
-
-pub(crate) fn prepared_path_resources(
-    action: PermissionAction,
-    logical_kind: &str,
-    requested_path: &Path,
-    workspace: &Path,
-    binding_bytes: &[u8],
-) -> Result<(Vec<PreparedApprovalResource>, Vec<String>), ToolError> {
-    #[cfg(not(windows))]
-    let workspace = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_owned());
-    #[cfg(windows)]
-    let workspace = workspace.to_owned();
-    // Authorization names the lexical request, never its resolved destination.
-    let label = permission_path_label(&normalized_path(requested_path), &workspace);
-    let resource = prepared_resource(
-        action,
-        logical_kind,
-        label.as_bytes(),
-        binding_bytes,
-        PreparedBindingLifetime::ProcessLocal,
-        ApprovalResourceSource::PrimaryOperation,
-    )?;
-    Ok((vec![resource], vec![label]))
 }
 
 fn normalized_path(path: &Path) -> String {

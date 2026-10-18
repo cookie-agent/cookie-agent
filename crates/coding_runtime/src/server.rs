@@ -859,8 +859,6 @@ impl Server {
                 let prepared_id = self.next_prepared.fetch_add(1, Ordering::Relaxed);
                 let declaration = PreparedCall {
                     prepared_id,
-                    operation: prepared.operation().clone(),
-                    policy_labels: prepared.policy_labels().to_vec(),
                     normalized_arguments: prepared.normalized_arguments().clone(),
                     permission,
                     permission_resource,

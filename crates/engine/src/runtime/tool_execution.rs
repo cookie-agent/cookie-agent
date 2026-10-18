@@ -277,7 +277,7 @@ impl Engine {
     ) -> PreparedToolCall {
         // A call that fails before it prepares shows the name the model
         // called, and the tool's source when its publication names it.
-        let mut fallback_presentation = ToolPresentation::from_call(
+        let mut fallback_presentation = ToolPresentation::new(
             cookie_agent_runtime_api::tool_title_only(&call.name),
             tool_identity(
                 &call.name,
@@ -508,6 +508,8 @@ impl Engine {
                     provider.as_ref(),
                     &call.name,
                     permission_name.as_deref(),
+                    &tool,
+                    &context.origin,
                     prepared,
                 ) {
                     Ok((prepared, resource)) => (Ok(prepared), resource),
@@ -518,7 +520,7 @@ impl Engine {
         };
         // A provider that reports its metadata at preparation (a runtime
         // behind the runtime protocol) also reports how the call is shown.
-        let presentation = ToolPresentation::from_call(
+        let presentation = ToolPresentation::new(
             match &prepared {
                 Ok(prepared) => prepared
                     .declaration()
@@ -526,7 +528,7 @@ impl Engine {
                 Err(_) => None,
             }
             .unwrap_or_else(|| provider.presentation(&call)),
-            tool,
+            tool.clone(),
         );
         PreparedToolCall {
             intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
@@ -536,6 +538,7 @@ impl Engine {
             prepared,
             interception: Some(ToolInterceptionContext {
                 attachment,
+                tool,
                 provider,
                 spec: tool_spec,
                 preparation: context,
@@ -697,6 +700,8 @@ impl Engine {
                                 interception.provider.as_ref(),
                                 &modified_call.name,
                                 interception.permission_name.as_deref(),
+                                &interception.tool,
+                                &interception.preparation.origin,
                                 prepared,
                             )
                         })
@@ -1295,11 +1300,15 @@ fn fallback_permission_name(tool_name: &str) -> Option<&'static str> {
 
 /// Applies the permission resource of a prepared call's normalized
 /// arguments, and returns it. A provider that reported its metadata at
-/// preparation is not asked again.
+/// preparation is not asked again. A call its provider only declared gets
+/// the approval identity the daemon builds for `tool`, prepared under
+/// `origin`.
 pub(crate) fn apply_permission_resource(
     provider: &dyn ToolProvider,
     name: &str,
     expected_permission_name: Option<&str>,
+    tool: &ToolIdentity,
+    origin: &crate::ToolOrigin,
     prepared: PreparedTool,
 ) -> Result<(PreparedTool, Option<String>), ToolError> {
     let (permission_name, resource) = match prepared.declaration() {
@@ -1327,7 +1336,23 @@ pub(crate) fn apply_permission_resource(
             "tool permission metadata changed between discovery and preparation",
         ));
     }
-    let Some(permission_name) = permission_name else {
+    let action = permission_name
+        .map(|permission_name| {
+            PermissionPipeline::action_for_permission_name(permission_name)
+                .map_err(|error| ToolError::execution(error.to_string()))
+        })
+        .transpose()?;
+    if prepared.is_declared() {
+        let operation = crate::permissions::identity::declared_operation(
+            tool,
+            &origin.context_bytes(),
+            action.as_ref(),
+            resource.as_deref(),
+            prepared.normalized_arguments(),
+        )?;
+        return Ok((prepared.identify(operation, resource.clone())?, resource));
+    }
+    let Some(action) = action else {
         // A tool that needs no permission evaluates no rule, so the prepared
         // capability is not checked against an action.
         return match resource {
@@ -1338,8 +1363,6 @@ pub(crate) fn apply_permission_resource(
             None => Ok((prepared, None)),
         };
     };
-    let action = PermissionPipeline::action_for_permission_name(permission_name)
-        .map_err(|error| ToolError::execution(error.to_string()))?;
     if prepared
         .operation()
         .resources()

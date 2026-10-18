@@ -146,6 +146,7 @@ async fn home_path_subprocess_helper() {
                 .prepare(context(&workspace), request)
                 .await
                 .unwrap();
+            let prepared = crate::identified(provider.as_ref(), name, &workspace, prepared);
             assert_eq!(
                 prepared.normalized_arguments()["filePath"],
                 workspace.join("value").to_str().unwrap()
@@ -187,6 +188,7 @@ async fn home_path_subprocess_helper() {
             .prepare(context(&workspace), request)
             .await
             .unwrap();
+        let prepared = crate::identified(provider.as_ref(), name, &workspace, prepared);
         assert_eq!(prepared.policy_labels(), [Some(expected)]);
         assert_permission(&prepared, &workspace, "value", PermissionEffect::Deny);
 
@@ -240,6 +242,7 @@ async fn home_path_subprocess_helper() {
             .prepare(context(&workspace), call(name, "~/workspace/link"))
             .await
             .unwrap();
+        let prepared = crate::identified(provider.as_ref(), name, &workspace, prepared);
         assert_eq!(prepared.policy_labels(), [Some("link".into())]);
         assert_permission(&prepared, &workspace, "value", PermissionEffect::Deny);
         crate::assert_workspace_rule_allows(

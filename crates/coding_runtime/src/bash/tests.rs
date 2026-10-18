@@ -53,8 +53,11 @@ fn display_argument_is_a_one_line_command_that_keeps_and_segments() {
     ));
 }
 
+/// A bash call prepared for `command`, identified as the daemon identifies
+/// it.
 async fn prepare(root: &Path, command: &str) -> cookie_agent_runtime_api::PreparedTool {
-    BashTool::new(&crate::test_workspace(root))
+    let tool = BashTool::new(&crate::test_workspace(root));
+    let prepared = tool
         .prepare(
             ToolPreparationContext {
                 session: SessionId::new_v7(),
@@ -69,7 +72,8 @@ async fn prepare(root: &Path, command: &str) -> cookie_agent_runtime_api::Prepar
             },
         )
         .await
-        .expect("prepare")
+        .expect("prepare");
+    crate::identified(&tool, "bash", root, prepared)
 }
 
 fn policy(rules: Vec<PermissionRule>) -> AgentSnapshot {
@@ -112,7 +116,7 @@ async fn whole_command_label_is_one_resource() {
     );
     assert_eq!(
         prepared.normalized_arguments(),
-        &serde_json::json!({"command":"echo one; echo one"})
+        &serde_json::json!({"command":"echo one; echo one","timeout":120_000})
     );
 }
 
@@ -155,7 +159,7 @@ async fn compound_command_is_one_whole_command_resource() {
     );
     assert_eq!(
         prepared.normalized_arguments(),
-        &serde_json::json!({"command":"git status && rm -rf x"})
+        &serde_json::json!({"command":"git status && rm -rf x","timeout":120_000})
     );
 }
 

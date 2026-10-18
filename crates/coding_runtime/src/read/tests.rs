@@ -313,8 +313,10 @@ fn context(root: &Path) -> ToolPreparationContext {
     context_with_turn(root, crate::test_turn_context())
 }
 
+/// A read of `path` prepared and identified as the daemon identifies it.
 async fn prepared(root: &Path, path: &str) -> cookie_agent_runtime_api::PreparedTool {
-    ReadTool::new(&crate::test_workspace(root))
+    let tool = ReadTool::new(&crate::test_workspace(root));
+    let prepared = tool
         .prepare(
             context(root),
             ToolCall {
@@ -324,7 +326,8 @@ async fn prepared(root: &Path, path: &str) -> cookie_agent_runtime_api::Prepared
             },
         )
         .await
-        .expect("prepare read")
+        .expect("prepare read");
+    crate::identified(&tool, "read", root, prepared)
 }
 
 async fn execute_media(
@@ -594,6 +597,12 @@ async fn outside_workspace_read_has_one_absolute_labeled_resource() {
         )
         .await
         .expect("prepare external read");
+    let prepared = crate::identified(
+        &ReadTool::new(&crate::test_workspace(workspace.path())),
+        "read",
+        workspace.path(),
+        prepared,
+    );
     let expected_label = external
         .path()
         .canonicalize()
@@ -712,6 +721,7 @@ async fn symlink_routes_keep_lexical_read_permissions_and_arguments() {
             )
             .await
             .expect("prepare symlink read");
+        let prepared = crate::identified(&tool, "read", &workspace, prepared);
         let expected_path = workspace.join(requested);
         assert_eq!(prepared.operation().resources().len(), 1);
         assert_eq!(prepared.policy_labels(), [Some(requested.to_owned())]);

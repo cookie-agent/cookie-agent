@@ -1082,5 +1082,7 @@ fn effective_permission_view(
         .collect()
 }
 
+pub(crate) mod identity;
+
 #[cfg(test)]
 mod tests;

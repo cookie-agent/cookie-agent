@@ -68,6 +68,14 @@ impl<T> Open<T> {
     }
 
     #[must_use]
+    pub const fn known_mut(&mut self) -> Option<&mut T> {
+        match self {
+            Self::Known(value) => Some(value),
+            Self::Unknown { .. } => None,
+        }
+    }
+
+    #[must_use]
     pub fn into_known(self) -> Option<T> {
         match self {
             Self::Known(value) => Some(value),

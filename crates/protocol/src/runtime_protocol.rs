@@ -19,8 +19,8 @@
 
 use crate::{
     AdaptorId, AgentId, AgentMdEntry, AgentMdSkipped, MediaKindLabel, ModelKey, PermissionAction,
-    PersistedToolResult, PreparedOperationIdentity, RunId, RuntimeKind, SessionId, SkillSource,
-    ToolCallId, ToolCallPresentation, ToolCompletionOutput, ToolOutputChunk, ToolOutputDeclaration,
+    PersistedToolResult, PreparedPresentation, RunId, RuntimeKind, SessionId, SkillSource,
+    ToolCallId, ToolCompletionOutput, ToolOutputChunk, ToolOutputDeclaration,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -470,29 +470,34 @@ pub enum PrepareOutcome {
     Failed {
         error: WireToolError,
         /// How clients show the call that failed to prepare.
-        presentation: ToolCallPresentation,
+        presentation: PreparedPresentation,
     },
 }
 
 /// A prepared call. The runtime keeps its executor under `prepared_id`
 /// until it is executed or released.
+///
+/// The daemon builds the call's approval identity from `permission`,
+/// `permission_resource`, and `normalized_arguments` together with the tool
+/// it knows the call goes to; a runtime never states it.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct PreparedCall {
     pub prepared_id: u64,
-    pub operation: PreparedOperationIdentity,
-    /// The policy labels the tool set, one per operation resource.
-    pub policy_labels: Vec<Option<String>>,
+    /// The arguments as the call will run them, such as a path made
+    /// relative to the workspace or defaults filled in. Not `null`.
     pub normalized_arguments: Value,
     /// The permission action the call is checked under; absent for a tool
-    /// that needs no permission.
+    /// that needs no permission. It must be the one the tool declares.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<PermissionAction>,
-    /// The permission resource of the normalized arguments.
-    #[serde(default)]
+    /// The permission resource of the normalized arguments, such as a path,
+    /// a command, or a URL; absent for a call checked under the action alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_resource: Option<String>,
-    pub presentation: ToolCallPresentation,
+    /// How clients show the call.
+    pub presentation: PreparedPresentation,
     /// Calls with one key run one at a time; lowercase hex.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serialization_key: Option<String>,
 }
 

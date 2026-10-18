@@ -5,7 +5,7 @@ use std::{
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    PermissionAction, PersistedToolResult as ToolResult, ToolEmittedContent, ToolEmittedMessage,
+    PersistedToolResult as ToolResult, ToolEmittedContent, ToolEmittedMessage,
     ToolEmittedMessageRole,
 };
 use cookie_agent_runtime_api::{
@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use cookie_agent_runtime_api::WorkspaceContext;
 
-use crate::{fs_cap, parse_args, prepared_operation, prepared_path_resources, schema};
+use crate::{fs_cap, parse_args, schema};
 
 const DEFAULT_LIMIT: usize = 2_000;
 /// Longest line returned in full; the rest of a longer line is replaced by a
@@ -164,32 +164,12 @@ impl ToolProvider for ReadTool {
         crate::blocking(move || {
             let target =
                 fs_cap::prepare_existing(&workspace, std::path::Path::new(&args.file_path))?;
-            let (resources, policy_labels) = prepared_path_resources(
-                PermissionAction::READ,
-                if target.directory {
-                    "directory"
-                } else {
-                    "file"
-                },
-                &target.display_path,
-                &workspace,
-                &target.binding_bytes(),
-            )?;
-            let context = crate::workspace_context_bytes(&workspace);
-            let operation = prepared_operation(
-                "read",
-                &args,
-                vec![(PermissionAction::READ, "read")],
-                resources,
-                &context,
-            )?;
             let normalized_arguments = serde_json::json!({
                 "filePath": target.display_path,
                 "offset": offset,
                 "limit": limit,
             });
-            PreparedTool::new(
-                operation,
+            PreparedTool::declared(
                 normalized_arguments,
                 None,
                 Box::new(ReadExecutor {
@@ -197,8 +177,7 @@ impl ToolProvider for ReadTool {
                     offset,
                     limit,
                 }),
-            )?
-            .with_policy_labels(policy_labels)
+            )
         })
         .await
     }

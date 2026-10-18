@@ -37,7 +37,7 @@ use cookie_agent_protocol::{
     ExtensionBusEventParams, ExtensionEmitParams, ExtensionEmitResultParams, ExtensionEmitStatus,
     ExtensionHookOnError, ExtensionInterceptionHook, ExtensionPluginCapabilities,
     PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD,
-    PluginInfo, PluginState, ProducerSourceState, ProducerSourceStatus, ToolCallPresentation,
+    PluginInfo, PluginState, PreparedPresentation, ProducerSourceState, ProducerSourceStatus,
 };
 use cookie_agent_runtime_api::{
     PreparedTool, PromptSection, RuntimeConnector as _, SessionToolContext, ToolCall, ToolError,
@@ -1297,7 +1297,7 @@ impl ToolProvider for PluginToolProvider {
         self.current()?.get_display_argument(name, arguments)
     }
 
-    fn presentation(&self, call: &ToolCall) -> ToolCallPresentation {
+    fn presentation(&self, call: &ToolCall) -> PreparedPresentation {
         match self.current() {
             Ok(provider) => provider.presentation(call),
             Err(_) => cookie_agent_runtime_api::tool_title_only(&call.name),
