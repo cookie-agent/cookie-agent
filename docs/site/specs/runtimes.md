@@ -195,7 +195,9 @@ change and is read as attached to `global` and `local`.
 - Delegated children inherit the parent's attachments. `delegate_subagent`
   accepts an optional `runtimes` list of the parent's attachment names that
   narrows the child's set. The child's log records its own `RuntimeAttached`
-  events so the child is self-describing.
+  events so the child is self-describing. *Changed 2026-10-17:* the
+  `runtimes` argument is gone; every delegated child inherits the root
+  session's attachments.
 - Reopening a session in a daemon that does not have its instances running
   (after a restart, or a session created by another daemon) connects them
   when the session is opened, with the same rules as creation.

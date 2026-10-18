@@ -38,10 +38,6 @@ struct DelegateArgs {
     resume_session_id: Option<String>,
     #[serde(default)]
     inherit_context: bool,
-    /// Names of the caller's runtime attachments the subagent gets; all of
-    /// them when omitted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    runtimes: Option<Vec<cookie_agent_protocol::AttachmentName>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -95,12 +91,7 @@ impl DelegateToolProvider {
                         "type":"string",
                         "description":"Optional. Handle or UUID of an existing subagent of yours to resume, e.g. \"explore_1a2b3c4d\". Only subagents you delegated are valid."
                     },
-                    "inherit_context":{"type":"boolean","default":false},
-                    "runtimes":{
-                        "type":"array",
-                        "items":{"type":"string"},
-                        "description":"Optional. The runtimes the subagent may use, by name (see <runtimes>): a subset of yours; all of yours when omitted. Not allowed with resume_session_id."
-                    }
+                    "inherit_context":{"type":"boolean","default":false}
                 },
                 "required":["description","prompt","agent_type"]
             }),
@@ -272,16 +263,6 @@ impl ToolProvider for DelegateToolProvider {
                 if !self.targets(ctx.session)?.contains(&args.agent_type) {
                     return Err(ToolError::execution("delegate target is not allowed"));
                 }
-                if let Some(runtimes) = &args.runtimes {
-                    if args.resume_session_id.is_some() {
-                        return Err(ToolError::execution(
-                            "a resumed subagent keeps its runtimes; runtimes cannot be set with resume_session_id",
-                        ));
-                    }
-                    self.engine
-                        .validate_delegated_runtimes(ctx.session, runtimes)
-                        .map_err(|error| ToolError::execution(error.to_string()))?;
-                }
                 let parts =
                     Self::operation(&ctx, "delegate_subagent", &args, "spawn", &args.agent_type)?;
                 let normalized = serde_json::to_value(&args)
@@ -376,7 +357,6 @@ impl PreparedExecutor for DelegateExecutor {
                             background,
                             resume_session_id: args.resume_session_id,
                             inherit_context: args.inherit_context,
-                            runtimes: args.runtimes,
                         })
                         .await
                         .map_err(|error| ToolError::execution(error.to_string()))?;

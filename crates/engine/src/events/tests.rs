@@ -1945,7 +1945,6 @@ fn current_delegation_records() -> Vec<StoredEvent> {
         child_session_id,
         RunId(Uuid::from_u128(302)),
         DelegateRequestPayload {
-            runtimes: None,
             description: "Golden child".into(),
             prompt: "Inspect the current event format".into(),
             title: SessionTitle::new("Golden child").expect("title"),
@@ -1963,7 +1962,6 @@ fn current_delegation_records() -> Vec<StoredEvent> {
         child_session_id,
         RunId(Uuid::from_u128(304)),
         DelegateRequestPayload {
-            runtimes: None,
             description: "Golden resumed child".into(),
             prompt: "Resume using the current event format".into(),
             title: SessionTitle::new("Golden child").expect("title"),

@@ -565,8 +565,6 @@ pub(crate) struct TestDelegateArgs {
     pub(crate) resume_session_id: Option<String>,
     #[serde(default)]
     pub(crate) inherit_context: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) runtimes: Option<Vec<cookie_agent_protocol::AttachmentName>>,
 }
 
 pub(crate) struct TestDelegateExecutor {
@@ -756,7 +754,6 @@ impl PreparedExecutor for TestDelegateExecutor {
             };
             let handle = engine
                 .delegate_invoke(DelegateInvocation {
-                    runtimes: args.runtimes,
                     parent_session_id: context.session,
                     parent_run_id: context.run,
                     parent_tool_call_id: call_id,
