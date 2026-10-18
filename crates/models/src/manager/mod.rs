@@ -218,31 +218,6 @@ impl ResolvedExecutableModel {
         request
     }
 
-    /// Serializes the prepared provider request at the engine interception boundary.
-    pub fn provider_request_payload(
-        &self,
-        request: &Request,
-    ) -> Result<Value, Box<oven_sdk::ModelError>> {
-        serde_json::to_value(request)
-            .map_err(|error| Box::new(oven_sdk::ModelError::invalid_request(error.to_string())))
-    }
-
-    /// Rebuilds and validates a plugin-replaced request payload before provider execution.
-    pub fn request_from_provider_payload(
-        &self,
-        payload: Value,
-    ) -> Result<Request, Box<oven_sdk::ModelError>> {
-        if !payload.is_object() {
-            return Err(Box::new(oven_sdk::ModelError::invalid_request(
-                "replacement provider payload must be a JSON object",
-            )));
-        }
-        let request: Request = serde_json::from_value(payload)
-            .map_err(|error| Box::new(oven_sdk::ModelError::invalid_request(error.to_string())))?;
-        self.model.validate_request(&request).map_err(Box::new)?;
-        Ok(request)
-    }
-
     fn prepare_request_inner(
         &self,
         request: Request,

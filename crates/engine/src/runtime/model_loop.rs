@@ -1799,55 +1799,6 @@ impl Engine {
                     }
                 }
                 request = model.apply_prompt_cache_strategy(request, cache_strategy.as_ref());
-                let mut provider_payload = None;
-                for plugin in self.inner.plugins.interception_plugins(
-                    cookie_agent_protocol::ExtensionInterceptionHook::ProviderBeforeRequest,
-                ) {
-                    let payload = match &provider_payload {
-                        Some(payload) => Clone::clone(payload),
-                        None => {
-                            let payload = model
-                                .provider_request_payload(&request)
-                                .map_err(EngineError::Model)?;
-                            provider_payload.insert(payload).clone()
-                        }
-                    };
-                    let result = self.inner.plugins.intercept_named::<_, cookie_agent_protocol::ExtensionProviderBeforeRequestResult>(
-                        &plugin,
-                        cookie_agent_protocol::PLUGIN_INTERCEPT_PROVIDER_BEFORE_REQUEST_METHOD,
-                        &cookie_agent_protocol::ExtensionProviderBeforeRequestParams {
-                            session_id: session,
-                            context_id: context_id.clone(),
-                            attempt_id,
-                            payload,
-                        },
-                        Some(session), Some(&context_id),
-                    ).await;
-                    match result {
-                        Ok(result) if result.action == cookie_agent_protocol::ExtensionProviderBeforeRequestAction::Replace => {
-                            let candidate = result
-                                .payload
-                                .ok_or_else(|| {
-                                    Box::new(ModelError::invalid_request("replace requires payload"))
-                                })
-                                .and_then(|payload| model.request_from_provider_payload(payload));
-                            match candidate {
-                                Ok(candidate) => {
-                                    request = candidate;
-                                    provider_payload = None;
-                                }
-                                Err(error) => self.record_plugin_diagnostic(
-                                    session,
-                                    plugin,
-                                    PluginDiagnosticKind::InvalidModification,
-                                    error.to_string(),
-                                ),
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(error) => self.record_interception_error(session, plugin, error),
-                    }
-                }
                 request.header_context = self.model_header_context(session)?;
                 // Re-applied after interception in case a plugin added media; a no-op otherwise.
                 crate::media::elide_excess_media(&mut request.history, &turn_context.capabilities)
@@ -1884,26 +1835,6 @@ impl Engine {
                             request,
                             response,
                         } = response;
-                        if let Some(status) = response.http_status {
-                            for plugin in self.inner.plugins.interception_plugins(
-                                cookie_agent_protocol::ExtensionInterceptionHook::ProviderAfterResponse,
-                            ) {
-                                let result = self.inner.plugins.intercept_named::<_, cookie_agent_protocol::ExtensionProviderAfterResponseResult>(
-                                    &plugin,
-                                    cookie_agent_protocol::PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD,
-                                    &cookie_agent_protocol::ExtensionProviderAfterResponseParams {
-                                        session_id: session,
-                                        context_id: context_id.clone(),
-                                        attempt_id,
-                                        status,
-                                    },
-                                    Some(session), Some(&context_id),
-                                ).await;
-                                if let Err(error) = result {
-                                    self.record_interception_error(session, plugin, error);
-                                }
-                            }
-                        }
                         let resolved_model = wire_model(binding);
                         let decisions = replay_decisions_with_preflight(
                             &request.replay.decisions,

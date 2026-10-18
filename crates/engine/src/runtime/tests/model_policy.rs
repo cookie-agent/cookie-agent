@@ -1,4 +1,4 @@
-use std::{fs, sync::Arc};
+use std::sync::Arc;
 
 use cookie_agent_protocol::{
     ClientRunId, EventPayload, InternalAgentKind, RunSelection, RunStartParams, SessionId,
@@ -610,10 +610,7 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
             None,
             "anthropic-compatible",
         );
-    let marker = tempfile::tempdir().unwrap();
-    let provider_file = marker.path().join("provider.jsonl");
     let model_capabilities = r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":["model_before_request"]}"#;
-    let provider_capabilities = r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":["provider_after_response"]}"#;
     let replacement = serde_json::json!({
         "action": "replace",
         "messages": [
@@ -669,19 +666,6 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
                         (
                             "FIXTURE_MODEL_BEFORE_REQUEST_RESULT",
                             r#"{"action":"keep","params_adjustments":{"max_tokens":19}}"#.into(),
-                        ),
-                    ],
-                ),
-            ),
-            (
-                "provider".into(),
-                interception_plugin(
-                    "provider",
-                    &[
-                        ("FIXTURE_CAPABILITIES", provider_capabilities.into()),
-                        (
-                            "FIXTURE_INTERCEPT_FILE",
-                            provider_file.display().to_string(),
                         ),
                     ],
                 ),
@@ -744,13 +728,6 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
         },
     )
     .await;
-    let provider_calls = fs::read_to_string(provider_file).unwrap();
-    let after = provider_calls
-        .lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .find(|call| call["method"] == "plugin/intercept/provider_after_response")
-        .expect("provider response observation");
-    assert_eq!(after["params"]["status"], 200);
     fixture.engine.shutdown().await;
 }
 

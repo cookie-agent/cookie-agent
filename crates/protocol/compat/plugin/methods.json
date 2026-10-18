@@ -76,22 +76,6 @@
     {
       "direction": "from_daemon",
       "kind": "request",
-      "method": "plugin/intercept/provider_after_response",
-      "params": "ExtensionProviderAfterResponseParams",
-      "params_role": "information",
-      "result": "ExtensionProviderAfterResponseResult"
-    },
-    {
-      "direction": "from_daemon",
-      "kind": "request",
-      "method": "plugin/intercept/provider_before_request",
-      "params": "ExtensionProviderBeforeRequestParams",
-      "params_role": "information",
-      "result": "ExtensionProviderBeforeRequestResult"
-    },
-    {
-      "direction": "from_daemon",
-      "kind": "request",
       "method": "plugin/intercept/session_before_compact",
       "params": "ExtensionSessionBeforeCompactParams",
       "params_role": "information",

@@ -17,8 +17,6 @@ use cookie_agent_protocol::{
     ExtensionInterceptionHook, ExtensionMessageEndParams, ExtensionMessageEndResult,
     ExtensionModelBeforeRequestParams, ExtensionModelBeforeRequestResult,
     ExtensionModelBeforeSelectParams, ExtensionPluginCapabilities,
-    ExtensionProviderAfterResponseParams, ExtensionProviderAfterResponseResult,
-    ExtensionProviderBeforeRequestParams, ExtensionProviderBeforeRequestResult,
     ExtensionSessionBeforeCompactParams, ExtensionSessionBeforeCompactResult,
     ExtensionSessionBeforeForkParams, ExtensionSessionBeforeRevertParams,
     ExtensionSessionBeforeRevertResult, ExtensionToolAfterResultParams,
@@ -27,12 +25,11 @@ use cookie_agent_protocol::{
     PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD,
     PLUGIN_INITIALIZE_METHOD, PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
     PLUGIN_INTERCEPT_MESSAGE_END_METHOD, PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD,
-    PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD, PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD,
-    PLUGIN_INTERCEPT_PROVIDER_BEFORE_REQUEST_METHOD,
-    PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD, PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD,
-    PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD, PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
-    PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD, PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD,
-    PLUGIN_PRODUCER_DISCARD_METHOD, PLUGIN_PRODUCER_REGISTER_METHOD, PLUGIN_PRODUCER_SEND_METHOD,
+    PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD, PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD,
+    PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD, PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD,
+    PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD, PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
+    PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD, PLUGIN_PRODUCER_DISCARD_METHOD,
+    PLUGIN_PRODUCER_REGISTER_METHOD, PLUGIN_PRODUCER_SEND_METHOD,
     PLUGIN_PRODUCER_UNREGISTER_METHOD, PLUGIN_PROTOCOL_VERSION, PLUGIN_RECOVERY_COMPLETE_METHOD,
     PLUGIN_RECOVERY_START_METHOD, PLUGIN_SHUTDOWN_METHOD, PermissionAction, PersistedToolResult,
     PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
@@ -1569,12 +1566,6 @@ interception_hooks! {
     /// Registers the `model_before_request` interception hook.
     model_before_request: ModelBeforeRequest, PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD,
         ExtensionModelBeforeRequestParams => ExtensionModelBeforeRequestResult;
-    /// Registers the `provider_before_request` interception hook.
-    provider_before_request: ProviderBeforeRequest, PLUGIN_INTERCEPT_PROVIDER_BEFORE_REQUEST_METHOD,
-        ExtensionProviderBeforeRequestParams => ExtensionProviderBeforeRequestResult;
-    /// Registers the observe-only `provider_after_response` interception hook.
-    provider_after_response: ProviderAfterResponse, PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD,
-        ExtensionProviderAfterResponseParams => ExtensionProviderAfterResponseResult;
     /// Registers the `message_end` interception hook.
     message_end: MessageEnd, PLUGIN_INTERCEPT_MESSAGE_END_METHOD,
         ExtensionMessageEndParams => ExtensionMessageEndResult;

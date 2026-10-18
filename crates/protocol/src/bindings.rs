@@ -385,8 +385,6 @@ fn plugin_methods() -> Vec<MethodSpec> {
         request!(PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD, FromDaemon, ExtensionSessionBeforeCompactParams => ExtensionSessionBeforeCompactResult),
         request!(PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD, FromDaemon, ExtensionUserBeforeInputParams => ExtensionUserBeforeInputResult),
         request!(PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD, FromDaemon, ExtensionModelBeforeRequestParams => ExtensionModelBeforeRequestResult),
-        request!(PLUGIN_INTERCEPT_PROVIDER_BEFORE_REQUEST_METHOD, FromDaemon, ExtensionProviderBeforeRequestParams => ExtensionProviderBeforeRequestResult),
-        request!(PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD, FromDaemon, ExtensionProviderAfterResponseParams => ExtensionProviderAfterResponseResult),
         request!(PLUGIN_INTERCEPT_MESSAGE_END_METHOD, FromDaemon, ExtensionMessageEndParams => ExtensionMessageEndResult),
         request!(PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD, FromDaemon, ExtensionModelBeforeSelectParams => ExtensionAllowBlockResult),
         request!(PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD, FromDaemon, ExtensionSessionBeforeForkParams => ExtensionAllowBlockResult),

@@ -23,10 +23,6 @@ pub const PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD: &str =
 pub const PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD: &str = "plugin/intercept/user_before_input";
 pub const PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD: &str =
     "plugin/intercept/model_before_request";
-pub const PLUGIN_INTERCEPT_PROVIDER_BEFORE_REQUEST_METHOD: &str =
-    "plugin/intercept/provider_before_request";
-pub const PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD: &str =
-    "plugin/intercept/provider_after_response";
 pub const PLUGIN_INTERCEPT_MESSAGE_END_METHOD: &str = "plugin/intercept/message_end";
 pub const PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD: &str =
     "plugin/intercept/model_before_select";
@@ -51,8 +47,6 @@ crate::open_enum! {
         SessionBeforeCompact,
         UserBeforeInput,
         ModelBeforeRequest,
-        ProviderBeforeRequest,
-        ProviderAfterResponse,
         MessageEnd,
         ModelBeforeSelect,
         SessionBeforeFork,
@@ -368,39 +362,6 @@ pub struct ExtensionModelBeforeRequestResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params_adjustments: Option<ExtensionModelParamsAdjustments>,
 }
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-pub struct ExtensionProviderBeforeRequestParams {
-    pub session_id: crate::SessionId,
-    pub context_id: String,
-    pub attempt_id: crate::AttemptId,
-    pub payload: Value,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExtensionProviderBeforeRequestAction {
-    Keep,
-    Replace,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-pub struct ExtensionProviderBeforeRequestResult {
-    pub action: ExtensionProviderBeforeRequestAction,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<Value>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub struct ExtensionProviderAfterResponseParams {
-    pub session_id: crate::SessionId,
-    pub context_id: String,
-    pub attempt_id: crate::AttemptId,
-    pub status: u16,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub struct ExtensionProviderAfterResponseResult {}
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct ExtensionMessageEndParams {

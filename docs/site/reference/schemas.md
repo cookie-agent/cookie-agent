@@ -11,7 +11,7 @@ emit only their current version and reject unsupported versions.
 | Runtime configuration | unversioned | unversioned current shape |
 | Agent document | unversioned | unversioned current shape |
 | Client protocol | 49 | 49 |
-| Plugin protocol | 0.3.0 | 0.3.x |
+| Plugin protocol | 0.4.0 | 0.4.x |
 | Runtime protocol | 0.7.0 | 0.7.x |
 | Events and session JSONL | versionless | versionless |
 | Session metadata | unversioned | unversioned current shape |

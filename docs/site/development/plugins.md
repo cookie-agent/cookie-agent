@@ -94,7 +94,7 @@ and sends `plugin/initialize` within `startup_timeout_ms`:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"plugin/initialize","params":{
-  "protocol_version":"0.3.0","engine_version":"0.3.0",
+  "protocol_version":"0.4.0","engine_version":"0.3.0",
   "features":["producer_messaging"],"interception_timeout_ms":2000}}
 ```
 
@@ -107,13 +107,13 @@ version, its features, its capabilities, and its tools:
 
 ```json
 {"jsonrpc":"2.0","id":1,"result":{
-  "protocol_version":"0.3.0","name":"issues","version":"1.2.0","features":[],
+  "protocol_version":"0.4.0","name":"issues","version":"1.2.0","features":[],
   "capabilities":{"producer_messaging":false,"subscribe_events":false,
     "subscribe_bus":false,"publish_bus":false,"intercept":["tool_before_call"]},
   "tools":{"tools":[],"prompt_sections":[]}}}
 ```
 
-The protocol version is a semver string, currently `0.3.0`
+The protocol version is a semver string, currently `0.4.0`
 (`PLUGIN_PROTOCOL_VERSION`, which the SDK re-exports). Each end reads the
 other's `protocol_version` from the raw JSON before anything else, and refuses
 an incompatible one with `unsupported_protocol` naming both versions: the
@@ -250,8 +250,6 @@ sent another. Each hook is a request `plugin/intercept/<hook>`:
 | `session_before_compact` | before compaction | add or replace its instructions, or cancel it |
 | `user_before_input` | before root user input or steering is committed | allow, transform it, or handle it without a run |
 | `model_before_request` | before each user-facing model attempt | replace the messages, adjust inference parameters |
-| `provider_before_request` | before the normalized request is sent | replace it |
-| `provider_after_response` | after the response status arrives | observe the status |
 | `message_end` | after an assistant message is assembled | replace its content |
 | `model_before_select` | before a run's model selection changes, or a fallback | block it |
 | `session_before_fork` | before a fork | block it |

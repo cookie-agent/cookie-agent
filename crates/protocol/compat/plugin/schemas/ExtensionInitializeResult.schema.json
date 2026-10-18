@@ -11,8 +11,6 @@
             "session_before_compact",
             "user_before_input",
             "model_before_request",
-            "provider_before_request",
-            "provider_after_response",
             "message_end",
             "model_before_select",
             "session_before_fork",
