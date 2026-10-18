@@ -442,18 +442,18 @@ The input-lane events otherwise stay as they are: `user_input_admitted`,
 `message_injected`, and `session_model_selected`. So does every other event
 not listed above.
 
-**To verify while implementing, before merging:**
+**Checked against the code (2026-10-18):**
 
-- `delegate_queued` is keyed by child `session_id` and has no
-  `invocation_id`. Confirm each queued record maps to exactly one invocation.
-- `delegate_child_terminated` carries no invocation. Confirm which session it
-  is written to and whether it folds into `delegation_finished` or stays.
-- `producer_diagnostic` of kind `recovery_failed` holds goal continuation.
-  If any projection derives state from it, it stays a typed state event
-  instead of becoming a `diagnostic`.
-
-If a check fails, that row is left as is, and the spec is updated before the
-code.
+- `delegate_queued` is written on the parent, in the parent run, when the
+  invocation is at hand, so `delegation_progressed { stage: queued }` carries
+  its `invocation_id`. Tree loading pairs queued children with their parent
+  run through the invocation's `delegation_progressed { stage: started }`.
+- `delegate_child_terminated` is written runless to the *child* session and
+  sets the child's own status. It is not a parent-side delegation record, so
+  it stays as is.
+- `producer_diagnostic` is read only by the validator and the TUI. The goal
+  hold lives in memory, not in a projection, so the event merges into
+  `diagnostic`.
 
 ### 8.3 Internal types out of history
 
