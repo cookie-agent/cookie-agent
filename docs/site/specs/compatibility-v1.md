@@ -293,7 +293,7 @@ The existing numeric codes move into `data.code`. Examples:
 | `-32030`, `-32031` | `tree_usage_*` |
 | `-32040` | `config_apply_refused` |
 | The provider-connect codes | Unchanged string codes |
-| The runtime protocol's `-32010`/`-32011`/`-32012` | `version_mismatch`, `already_initialized`, `not_initialized` |
+| The runtime protocol's `-32010`/`-32011`/`-32012` | `unsupported_protocol` (`-32002`), `already_initialized` or `initialize_rejected`, `not_initialized` |
 
 The several meanings `-32602` carries today (stale revert, fork idempotency,
 rename, goal, producer, and plugin rejections) become `-32000` with their own
@@ -1580,3 +1580,127 @@ Deviations and choices made while implementing, by phase.
   session not converted and a summary, and exits nonzero when a session could
   not be converted (`session::upgrade_sessions`, which also reports the logs
   left as they are because no conversion exists).
+
+### Phase E
+
+Step 1: handshakes, tolerance, and errors on the plugin and runtime
+protocols.
+
+- **Compatibility before the freeze.** `SemVer::is_compatible_with` requires
+  equal majors and, while the major is 0, equal minors too (semver's `0.x`
+  convention): every pre-freeze minor may break the wire. The patch never
+  matters. `negotiate_version` reads the peer's version from the raw JSON
+  first; another major or 0.x minor, or an integer from a build before semver
+  versions, is refused with `unsupported_protocol` naming both versions, and
+  a hello without a readable version with `invalid_params`
+  (`data.field = protocol_version`). `PLUGIN_PROTOCOL_VERSION` is `0.3.0` and
+  `RUNTIME_PROTOCOL_VERSION` `0.7.0`; `ExtensionProtocolVersion`,
+  `EXTENSION_PROTOCOL_VERSION`, `ExtensionEngineCapabilities`, the `u32`
+  runtime constant, and `extension_initialize_request` are gone.
+- **Handshake shapes.** `plugin/initialize` params are
+  `{ protocol_version, engine_version, features, interception_timeout_ms }`
+  (the daemon sends `producer_messaging` when configured); the result is
+  `{ protocol_version, name, version, features, capabilities, tools }`.
+  `runtime/initialize` params are
+  `{ protocol_version, engine_version, features, runtime_id, settings }` and
+  the result `{ protocol_version, features, platform, capabilities,
+  producer_messaging }`. The runtime result keeps `producer_messaging` as a
+  member, as 9.1 says it keeps its members, though by 3.2 it would be a
+  feature. The daemon sends runtimes no features: it always accepts their
+  producer messages, so none depends on configuration. No plugin or runtime
+  feature is defined, so every feature in a result is reported (a plugin's
+  in its status reason, a runtime's in the daemon's log) and ignored. The
+  SDK exposes the daemon as `PluginContext::daemon()` (`DaemonInfo`: version,
+  `engine_version`, features, interception timeout) and refuses requests
+  before `plugin/initialize` with `not_initialized` (a second one with
+  `already_initialized`), so handlers never run without it. The fake plugin
+  echoes the daemon's version unless a test sets one.
+- **Version-gated values.** No value needs a newer daemon yet, so there is
+  no `since` table; the first minor that adds a value a daemon must gate
+  (such as a collision mode) adds it.
+- **Messages classified.**
+
+  | Message | Params | Result |
+  |---|---|---|
+  | `plugin/initialize`, `runtime/initialize`, `capability/open`, `runtime/context`, `runtime/shutdown`, `mcp/reconnect` | information | information |
+  | `plugin/intercept/*` | information | information |
+  | `tool/prepare`, `tool/revalidate`, `tool/execute` | information | information |
+  | `tool/release`, `tool/cancel`, `plugin/event`, `plugin/bus_event`, `plugin/emit_result`, `plugin/shutdown`, `producer/recovery/start` | information | – |
+  | `runtime/tools_changed`, `capability/tools_changed`, `mcp/changed` (declarations to the daemon) | information | – |
+  | `tool/progress`, `producer/register`, `producer/send`, `producer/unregister`, `producer/discard`, `producer/recovery/complete` | command | information |
+  | `tool/detachable`, `plugin/emit` | command | – |
+
+  `methods.json` states each method's `params_role`; the three declarations
+  are `to_daemon` with role `information`, and the checker reads the role
+  instead of deriving it from the direction. Command types keep
+  `deny_unknown_fields` as well as being decoded with
+  `strict::decode_command` (`IncomingRequest::command`), so their schemas
+  stay closed. Information types shared with other surfaces lost it too:
+  `ToolOutputChunk`, `ToolCompletionOutput`, `ToolCallPresentation`,
+  `AgentMdSkipped`, `MediaCapability`, `ModelCapabilities` (whose `media` map
+  drops a kind it does not know, so its schema is no longer closed), and
+  `ModelSelection`; the client surface's schemas changed with them, without a
+  client version bump. Afterwards `check-compat.py` reports no information
+  type with `additionalProperties: false` on the plugin and runtime surfaces
+  (62 and 44 before).
+- **Unknown variants in commands.** The strict walker refuses a string that
+  fits none of a closed set of `const`/`enum` branches, or an object whose tag
+  (a member every branch fixes with a `const`) names none of them, as
+  `unknown_variant` with the path of the value or its tag (`mode`,
+  `outcome.status`); `admits` also checks `const` and `enum`, and a branch that
+  is itself a choice (an optional tagged enum) is walked as one, so unknown
+  members inside it are found too. A known tag with a missing member stays
+  `invalid_params`. Open enums are refused in commands like closed ones. The
+  client server answers `unknown_variant` the same way.
+- **Open enums and fallbacks.** Where the fallback is a value, that variant
+  carries `#[serde(other)]` (moved last, as serde requires) and the schema
+  `x-open`: `ToolCollision` → `prefix`, `ToolConcurrency` → `exclusive`,
+  `ToolResultTruncationPolicy` → `bounded`, `ToolErrorKind` → `failed`, the
+  runtime's `McpServerState` → `disconnected`, `ExtensionEmitStatus` →
+  `dropped`. `ExtensionInterceptionHook` and `ExtensionModelSelectSource`
+  gain `Unknown` (`open_enum!`); the daemon drops unknown hooks from a
+  plugin's capabilities with a note naming each. Hook params carry
+  `Open<ExtensionToolOrigin>`, and `plugin/event` carries
+  `Open<EventPayload>` (`EventPayload` is now `OpenTagged`). Closed by design:
+  hook result actions (an unknown one is a malformed answer, which fails
+  open until E2's `on_error`), `ExtensionMessageRole` (session history stores
+  it in `message_injected`), the prepare and execute outcome `status`, the
+  output and output-declaration `kind`, `SkillSource`, and the modalities of
+  `ModelCapabilities`, which E3 replaces with `ToolTurnModel`.
+- **Diagnostics.** A notification the daemon cannot read, a command
+  notification it refuses (`tool/detachable`, `plugin/emit`), and the
+  runtime-only `capability/tools_changed` and `mcp/changed` from a plugin (or
+  a plugin's `runtime/tools_changed` from a runtime) are reported and
+  ignored: for a plugin as its status reason, for a runtime in the daemon's
+  log. 9.2 lists `tool/release` and `tool/cancel` under the daemon, but the
+  daemon only sends them; the receivers report unreadable ones on standard
+  error instead (the SDK, and the coding runtime), whose tail the daemon
+  shows for a spawned peer. The SDK also reports an unreadable
+  `plugin/emit_result`, and a notification before `plugin/initialize`.
+- **SDK.** `on_unknown(UnknownMessage { method, params })` receives
+  notifications the SDK does not know, and events or bus events it cannot
+  read; without it the first are ignored silently and the others reported.
+  `emit_bus` waits for its result at most `interception_timeout_ms`, which
+  the initialize params now carry. Results name only the event, so an emit
+  that timed out keeps its place in its name's queue for one more timeout:
+  its late result is discarded there instead of answering the next emit of
+  that name, and after that it counts as lost. A blank `ToolFailure` message
+  is sent as "plugin tool `<name>` failed without saying why".
+- **Errors.** The peer's `RpcError` displays its message and, in
+  parentheses, its `detail`, and offers `data_code`, `detail`, and
+  `data_member`; `runtime_protocol::error_code` is gone. The registry drops
+  `version_mismatch` (replaced by `unsupported_protocol`; section 6's table
+  now says so) and adds
+  `capability_open_failed`, since `capability/open`'s failures were sent as
+  `-32011` but are not about initialize. `-32011` splits into
+  `already_initialized` and `initialize_rejected`, `-32012` is
+  `not_initialized`, and `-32013` to `-32016` are `unknown_handle`,
+  `context_failed` (`data.path`), `reply_too_large`, and `producer_rejected`,
+  each with the specific reason as `detail`. A params error is
+  `invalid_params` with serde's message as `detail` (and `field` where the
+  receiver knows it). The daemon names the peer in every error it surfaces:
+  `runtime `<id>`: …` or `plugin `<name>`: …`; a plugin connection's errors
+  used to name it as a runtime.
+- **Checker.** The mutation test's const and closed-enum cases moved to
+  `ExtensionToolOrigin`'s tag and `ExtensionToolBeforeCallAction`, since the
+  version became a string and `ExtensionEmitStatus` is open.
