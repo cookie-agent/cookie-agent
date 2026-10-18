@@ -597,7 +597,10 @@ async fn user_input_transform_audit_uses_the_final_chain_value() {
     let cases = [
         (
             "noop",
-            vec![("only", r#"{"action":"transform","new_text":"original"}"#)],
+            vec![(
+                "only",
+                r#"{"action":"transform","content":[{"type":"text","text":"original"}]}"#,
+            )],
             "original",
             None,
         ),
@@ -606,16 +609,22 @@ async fn user_input_transform_audit_uses_the_final_chain_value() {
             vec![
                 (
                     "first",
-                    r#"{"action":"transform","new_text":"intermediate"}"#,
+                    r#"{"action":"transform","content":[{"type":"text","text":"intermediate"}]}"#,
                 ),
-                ("second", r#"{"action":"transform","new_text":"original"}"#),
+                (
+                    "second",
+                    r#"{"action":"transform","content":[{"type":"text","text":"original"}]}"#,
+                ),
             ],
             "original",
             None,
         ),
         (
             "changed",
-            vec![("only", r#"{"action":"transform","new_text":"transformed"}"#)],
+            vec![(
+                "only",
+                r#"{"action":"transform","content":[{"type":"text","text":"transformed"}]}"#,
+            )],
             "transformed",
             Some(("original", "transformed")),
         ),

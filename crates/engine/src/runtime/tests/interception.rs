@@ -203,7 +203,7 @@ async fn agent_before_start_hooks_see_earlier_addenda() {
                 "first",
                 "agent_before_start",
                 "FIXTURE_AGENT_BEFORE_RESULT",
-                r#"{"append_to_system_prompt":"First plugin addendum."}"#,
+                r#"{"append_to_system_prompt":"First plugin addendum.","inject_message":{"role":"user","content":"First plugin note."}}"#,
                 None,
             ),
             chained_plugin(
@@ -225,6 +225,20 @@ async fn agent_before_start_hooks_see_earlier_addenda() {
         .expect("system prompt seen by the second hook");
     assert!(seen.contains("First plugin addendum."));
     assert!(!seen.contains("Second plugin addendum."));
+    // The context is the run's input and what earlier plugins added, and
+    // nothing else.
+    let mut context = second["prompt_context"].clone();
+    context
+        .as_object_mut()
+        .expect("prompt context")
+        .remove("system_prompt");
+    assert_eq!(
+        context,
+        serde_json::json!({
+            "input": [{"type": "text", "text": "run the chain"}],
+            "injected_messages": [{"role": "user", "content": "First plugin note."}],
+        })
+    );
     let projection = fixture.engine.inner.store.get(session_id).expect("run");
     let prompt = &projection
         .runs
@@ -300,5 +314,178 @@ async fn session_before_compact_hooks_see_earlier_additions() {
         serde_json::json!(["first compaction note"])
     );
     assert_eq!(second["instructions"], "first focus\nfirst compaction note");
+    fixture.engine.shutdown().await;
+}
+
+fn diagnostics(fixture: &Fixture, session_id: SessionId) -> Vec<(String, String)> {
+    events(fixture, session_id)
+        .into_iter()
+        .filter_map(|payload| match payload {
+            EventPayload::Diagnostic { kind, message, .. } => {
+                Some((kind.as_str().to_owned(), message))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn events(fixture: &Fixture, session_id: SessionId) -> Vec<EventPayload> {
+    fixture
+        .engine
+        .inner
+        .store
+        .get(session_id)
+        .expect("projection")
+        .log
+        .events()
+        .into_iter()
+        .map(|event| event.payload)
+        .collect()
+}
+
+fn committed_text(fixture: &Fixture, session_id: SessionId) -> String {
+    events(fixture, session_id)
+        .into_iter()
+        .find_map(|payload| match payload {
+            EventPayload::ModelTurnCommitted { turn, .. } => Some(
+                turn.content
+                    .iter()
+                    .filter_map(|part| match part {
+                        cookie_agent_protocol::PersistedAssistantPart::Text { text, .. } => {
+                            Some(text.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .expect("committed turn")
+}
+
+/// A plugin that hands back exactly what `model_before_request` and
+/// `message_end` sent it changes nothing: the views convert back to the
+/// request and the message they came from.
+#[tokio::test]
+async fn unchanged_replacements_convert_back_to_what_the_hooks_saw() {
+    let (endpoint, captured) = scripted_model_server().await;
+    let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let markers = tempfile::tempdir().expect("hook markers");
+    let request_file = markers.path().join("request.jsonl");
+    let plugin = |name: &str, hook: &str, record: Option<&Path>| {
+        let mut env = vec![
+            ("FIXTURE_CAPABILITIES", intercepting(hook)),
+            ("FIXTURE_ECHO_REPLACEMENT", "1".to_owned()),
+        ];
+        if let Some(record) = record {
+            env.push(("FIXTURE_INTERCEPT_FILE", record.display().to_string()));
+        }
+        (name.to_owned(), interception_plugin(name, &env))
+    };
+    reopen_with_interception_plugins(
+        &mut fixture,
+        vec![
+            plugin("request", "model_before_request", Some(&request_file)),
+            plugin("message", "message_end", None),
+        ],
+    )
+    .await;
+    let session_id = start(&fixture, selection, "echoed-replacements").await;
+    wait_for_session_not_running(&fixture.engine, session_id).await;
+
+    let seen = recorded_params(&request_file);
+    let messages = seen["messages"].as_array().expect("messages");
+    assert_eq!(messages[0]["role"], "system");
+    assert_eq!(
+        messages.last().expect("user message"),
+        &serde_json::json!({"role": "user", "content": [{"type": "text", "text": "run the chain"}]})
+    );
+    assert_eq!(seen["model"]["provider_id"], "custom.test");
+    assert_eq!(seen["model"]["model_id"], "group/model");
+    assert!(seen["model"]["adapter"].is_string());
+    let request = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("captured request");
+    assert!(request.contains("run the chain"));
+    assert_eq!(
+        committed_text(&fixture, session_id),
+        "scripted root complete"
+    );
+    // Shutting down appends every pending diagnostic; a refused replacement
+    // would have left one.
+    fixture.engine.shutdown().await;
+    assert_eq!(diagnostics(&fixture, session_id), []);
+}
+
+#[tokio::test]
+async fn a_message_end_replacement_rewrites_the_committed_message() {
+    let (endpoint, _captured) = scripted_model_server().await;
+    let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    reopen_with_interception_plugins(
+        &mut fixture,
+        vec![chained_plugin(
+            "redactor",
+            "message_end",
+            "FIXTURE_MESSAGE_END_RESULT",
+            r#"{"action":"replace","content":[{"type":"text","text":"redacted"}]}"#,
+            None,
+        )],
+    )
+    .await;
+    let session_id = start(&fixture, selection, "message-end-rewrite").await;
+    wait_for_session_not_running(&fixture.engine, session_id).await;
+    assert_eq!(committed_text(&fixture, session_id), "redacted");
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_user_input_transform_cannot_add_a_file() {
+    let (endpoint, captured) = scripted_model_server().await;
+    let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let transform = serde_json::json!({
+        "action": "transform",
+        "content": [
+            {"type": "text", "text": "run the chain with this"},
+            {"type": "file", "artifact": {
+                "sha256": "0".repeat(64), "byte_length": 3, "media_type": "image/png"}},
+        ],
+    });
+    reopen_with_interception_plugins(
+        &mut fixture,
+        vec![chained_plugin(
+            "smuggler",
+            "user_before_input",
+            "FIXTURE_USER_BEFORE_INPUT_RESULT",
+            &transform.to_string(),
+            None,
+        )],
+    )
+    .await;
+    let session_id = start(&fixture, selection, "smuggled-file").await;
+    wait_for_session_not_running(&fixture.engine, session_id).await;
+    let request = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("captured request");
+    assert!(!request.contains("with this"), "the transform was applied");
+    assert!(events(&fixture, session_id).iter().any(|payload| matches!(
+        payload,
+        EventPayload::UserInputSubmitted { content } if content == "run the chain"
+    )));
+    await_projection(
+        &fixture.engine,
+        session_id,
+        "refused transform diagnostic",
+        |projection| {
+            projection.log.events().iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    EventPayload::Diagnostic { kind, message, .. }
+                        if *kind == cookie_agent_protocol::PluginDiagnosticKind::InvalidModification
+                            && message.contains("may not add files")
+                )
+            })
+        },
+    )
+    .await;
     fixture.engine.shutdown().await;
 }

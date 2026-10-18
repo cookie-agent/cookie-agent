@@ -441,12 +441,12 @@ impl Engine {
                         session_id: params.session_id,
                         context_id: context_id.clone(),
                         agent_path: run_policy.agent.agent.to_string(),
-                        prompt_context: serde_json::json!({
-                            "session_id": params.session_id,
-                            "input": params.input,
-                            "system_prompt": run_policy.agent.composed_prompt,
-                            "injected_messages": injected_messages,
-                        }),
+                        prompt_context: cookie_agent_protocol::ExtensionPromptContext {
+                            input: (!producer_start)
+                                .then(|| cookie_agent_protocol::UserContent::text(&params.input)),
+                            system_prompt: run_policy.agent.composed_prompt.clone(),
+                            injected_messages: injected_messages.clone(),
+                        },
                     },
                     Some(params.session_id),
                     Some(&context_id),
@@ -823,7 +823,7 @@ impl Engine {
         }
         self.inner.plugins.await_eager_ready().await;
         let original_input = input.clone();
-        let mut current = input;
+        let mut current = cookie_agent_protocol::UserContent::from(input);
         let context_id = crate::plugin::plugin_context_id();
         for hooked in self
             .inner
@@ -840,7 +840,7 @@ impl Engine {
                     &ExtensionUserBeforeInputParams {
                         session_id,
                         context_id: context_id.clone(),
-                        text: current.clone(),
+                        content: current.clone(),
                     },
                     Some(session_id),
                     Some(&context_id),
@@ -848,13 +848,19 @@ impl Engine {
                 .await;
             match result {
                 Ok(result) if result.action == ExtensionUserBeforeInputAction::Transform => {
-                    match result.new_text.filter(|text| !text.trim().is_empty()) {
-                        Some(text) => current = text,
-                        None => self.record_plugin_diagnostic(
+                    let transformed = result
+                        .content
+                        .ok_or_else(|| "plugin transformed user input without content".to_owned())
+                        .and_then(|content| {
+                            crate::plugin::hook_views::transformed_input(&current, content)
+                        });
+                    match transformed {
+                        Ok(content) => current = content,
+                        Err(message) => self.record_plugin_diagnostic(
                             session_id,
                             plugin,
                             PluginDiagnosticKind::InvalidModification,
-                            "plugin transformed user input to empty text".into(),
+                            message,
                         ),
                     }
                 }
@@ -878,6 +884,10 @@ impl Engine {
                 }
             }
         }
+        // Input is text until clients send content (phase F of the
+        // compatibility spec); a transform cannot add files, so neither can
+        // its result here.
+        let current = current.as_plain_text().into_owned();
         let audit_original = (current != original_input).then_some(original_input);
         Ok(UserInputInterception::Accepted {
             input: current,
@@ -1777,14 +1787,11 @@ impl Engine {
                     .interception_plugins(ExtensionInterceptionHook::ModelBeforeRequest)
                 {
                     let plugin = hooked.name.clone();
-                    let messages = match &extension_view {
-                        Some(messages) => Clone::clone(messages),
-                        None => {
-                            let messages =
-                                extension_messages(&request.history).map_err(EngineError::Model)?;
-                            extension_view.insert(messages).clone()
-                        }
-                    };
+                    let messages = extension_view
+                        .get_or_insert_with(|| {
+                            crate::plugin::hook_views::history_view(&request.history)
+                        })
+                        .clone();
                     let result = self.inner.plugins.intercept_named::<_, cookie_agent_protocol::ExtensionModelBeforeRequestResult>(
                         &plugin,
                         cookie_agent_protocol::PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD,
@@ -1793,7 +1800,7 @@ impl Engine {
                             context_id: context_id.clone(),
                             attempt_id,
                             messages,
-                            model: wire_model(binding),
+                            model: cookie_agent_protocol::HookModel::of(&wire_model(binding)),
                             params: extension_model_params(&request),
                         },
                         Some(session),
@@ -1816,7 +1823,13 @@ impl Engine {
                                             ))
                                         })?;
                                         candidate.history =
-                                            history_from_extension_messages(messages)?;
+                                            crate::plugin::hook_views::history_from_view(
+                                                &candidate.history,
+                                                messages,
+                                            )
+                                            .map_err(|error| {
+                                                Box::new(ModelError::invalid_request(error))
+                                            })?;
                                     }
                                 }
                                 if let Some(adjustments) = result.params_adjustments {
@@ -2068,17 +2081,24 @@ impl Engine {
                                     session_id: session,
                                     context_id: context_id.clone(),
                                     attempt_id,
-                                    content: turn.content.clone(),
+                                    content: crate::plugin::hook_views::assistant_view(&turn.content),
                                 },
                                 Some(session), Some(&context_id),
                             ).await;
                             match result {
                                 Ok(result) if result.action == cookie_agent_protocol::ExtensionMessageEndAction::Replace => {
                                     if let Some(content) = result.content {
-                                        let mut candidate = turn.clone();
-                                        candidate.content = content;
-                                        match candidate.validate_for(&wire_model(binding)) {
-                                            Ok(()) => turn = candidate,
+                                        let candidate = crate::plugin::hook_views::assistant_from_view(&turn.content, content)
+                                            .and_then(|content| {
+                                                let mut candidate = turn.clone();
+                                                candidate.content = content;
+                                                candidate
+                                                    .validate_for(&wire_model(binding))
+                                                    .map(|()| candidate)
+                                                    .map_err(|error| error.to_string())
+                                            });
+                                        match candidate {
+                                            Ok(candidate) => turn = candidate,
                                             Err(error) => self.record_plugin_diagnostic(session, plugin, PluginDiagnosticKind::InvalidModification, format!("invalid message replacement: {error}")),
                                         }
                                     }
@@ -2678,65 +2698,6 @@ fn request_fingerprint(request: &ModelRequest) -> Result<Sha256Digest, EngineErr
             hex
         });
     Ok(Sha256Digest::new(hex).expect("SHA-256 hex digest is well-formed"))
-}
-
-fn extension_messages(
-    history: &[oven_sdk::HistoryTurn],
-) -> Result<Vec<cookie_agent_protocol::ExtensionModelMessage>, Box<ModelError>> {
-    history
-        .iter()
-        .map(|turn| {
-            let (role, content) = match turn {
-                oven_sdk::HistoryTurn::System(message) => (
-                    cookie_agent_protocol::ExtensionMessageRole::System,
-                    serde_json::to_value(message),
-                ),
-                oven_sdk::HistoryTurn::User(message) => (
-                    cookie_agent_protocol::ExtensionMessageRole::User,
-                    serde_json::to_value(message),
-                ),
-                oven_sdk::HistoryTurn::Assistant(message) => (
-                    cookie_agent_protocol::ExtensionMessageRole::Assistant,
-                    serde_json::to_value(message),
-                ),
-                oven_sdk::HistoryTurn::Tool(message) => (
-                    cookie_agent_protocol::ExtensionMessageRole::Tool,
-                    serde_json::to_value(message),
-                ),
-            };
-            Ok(cookie_agent_protocol::ExtensionModelMessage {
-                role,
-                content: content
-                    .map_err(|error| Box::new(ModelError::invalid_request(error.to_string())))?,
-            })
-        })
-        .collect()
-}
-
-fn history_from_extension_messages(
-    messages: Vec<cookie_agent_protocol::ExtensionModelMessage>,
-) -> Result<Vec<oven_sdk::HistoryTurn>, Box<ModelError>> {
-    if messages.is_empty() {
-        return Err(Box::new(ModelError::invalid_request(
-            "replacement message list must not be empty",
-        )));
-    }
-    messages
-        .into_iter()
-        .map(|message| {
-            let kind = match message.role {
-                cookie_agent_protocol::ExtensionMessageRole::System => "system",
-                cookie_agent_protocol::ExtensionMessageRole::User => "user",
-                cookie_agent_protocol::ExtensionMessageRole::Assistant => "assistant",
-                cookie_agent_protocol::ExtensionMessageRole::Tool => "tool",
-            };
-            serde_json::from_value(serde_json::json!({
-                "type": kind,
-                "value": message.content,
-            }))
-            .map_err(|error| Box::new(ModelError::invalid_request(error.to_string())))
-        })
-        .collect()
 }
 
 fn extension_model_params(

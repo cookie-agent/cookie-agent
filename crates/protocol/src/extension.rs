@@ -350,7 +350,25 @@ pub struct ExtensionAgentBeforeStartParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
     pub agent_path: String,
-    pub prompt_context: Value,
+    pub prompt_context: ExtensionPromptContext,
+}
+
+/// What a run starts from, as `agent_before_start` sees it. Each plugin
+/// sees what the plugins before it made of it.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ExtensionPromptContext {
+    /// The input that starts the run, after `user_before_input`; `null` for
+    /// a run a producer's message starts, which has no user input.
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<crate::UserContent>", required)]
+    pub input: Option<crate::UserContent>,
+    /// The agent's composed system prompt: its own prompt with the
+    /// runtimes', tools', and skills' sections, and the changes earlier
+    /// plugins made.
+    pub system_prompt: String,
+    /// The messages earlier plugins injected, in order. They follow the
+    /// system prompt in the run's history.
+    pub injected_messages: Vec<ExtensionInjectedMessage>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -407,7 +425,9 @@ pub struct ExtensionSessionBeforeCompactResult {
 pub struct ExtensionUserBeforeInputParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
-    pub text: String,
+    /// The input, as the plugins before this one left it. File parts carry
+    /// metadata only.
+    pub content: crate::UserContent,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -421,16 +441,77 @@ pub enum ExtensionUserBeforeInputAction {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct ExtensionUserBeforeInputResult {
     pub action: ExtensionUserBeforeInputAction,
+    /// With `transform`, the input to use instead. It may change or remove
+    /// parts, but each file part must be one of the input's, unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub new_text: Option<String>,
+    pub content: Option<crate::UserContent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-pub struct ExtensionModelMessage {
+/// One message of a model request, as `model_before_request` sees it.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct HookHistoryMessage {
     pub role: ExtensionMessageRole,
-    pub content: Value,
+    pub content: Vec<crate::Open<HookContentPart>>,
+}
+
+/// One part of a [`HookHistoryMessage`]. A view leaves out what only the
+/// daemon or the provider reads, such as reasoning, provider metadata, and
+/// replay state. Open: a part of a type the plugin does not know reads as
+/// [`crate::Open::Unknown`]; the daemon refuses one in a replacement.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HookContentPart {
+    Text {
+        text: String,
+    },
+    /// A file, as metadata only: the daemon never sends its bytes, and a
+    /// replacement may name only files the request holds.
+    File {
+        artifact: crate::ArtifactRef,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: Value,
+    },
+    /// A tool's result as text; the files it carries follow it as `file`
+    /// parts of the same message.
+    ToolResult {
+        tool_call_id: String,
+        content: String,
+        is_error: bool,
+    },
+}
+
+crate::open_enum!(tagged HookContentPart, tag = "type", {
+    Text => "text",
+    File => "file",
+    ToolCall => "tool_call",
+    ToolResult => "tool_result",
+});
+
+/// The model a request goes to.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct HookModel {
+    pub provider_id: crate::ProviderId,
+    pub model_id: crate::ProviderModelId,
+    /// The adapter family the model is reached through, such as
+    /// `anthropic` or `openai-chat`.
+    pub adapter: crate::AdaptorId,
+}
+
+impl HookModel {
+    /// The model `resolved` names.
+    #[must_use]
+    pub fn of(resolved: &crate::ResolvedModelRef) -> Self {
+        Self {
+            provider_id: resolved.provider_id.clone(),
+            model_id: resolved.model_id.clone(),
+            adapter: resolved.adapter_id.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
@@ -448,8 +529,8 @@ pub struct ExtensionModelBeforeRequestParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
     pub attempt_id: crate::AttemptId,
-    pub messages: Vec<ExtensionModelMessage>,
-    pub model: crate::ResolvedModelRef,
+    pub messages: Vec<HookHistoryMessage>,
+    pub model: HookModel,
     pub params: ExtensionModelParamsAdjustments,
 }
 
@@ -463,8 +544,11 @@ pub enum ExtensionModelBeforeRequestAction {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct ExtensionModelBeforeRequestResult {
     pub action: ExtensionModelBeforeRequestAction,
+    /// With `replace`, the request's messages. A message returned exactly
+    /// as sent keeps what the view leaves out; any other is built from its
+    /// parts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub messages: Option<Vec<ExtensionModelMessage>>,
+    pub messages: Option<Vec<HookHistoryMessage>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params_adjustments: Option<ExtensionModelParamsAdjustments>,
 }
@@ -474,8 +558,41 @@ pub struct ExtensionMessageEndParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
     pub attempt_id: crate::AttemptId,
-    pub content: Vec<crate::PersistedAssistantPart>,
+    pub content: Vec<crate::Open<HookAssistantPart>>,
 }
+
+/// One part of an assistant message, as `message_end` sees it. The view
+/// leaves out sources, provider-run tool results, approvals, extensions, and
+/// metadata. Open: a part of a type the plugin does not know reads as
+/// [`crate::Open::Unknown`]; the daemon refuses one in a replacement.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HookAssistantPart {
+    Text {
+        text: String,
+    },
+    /// Visible reasoning, as text.
+    Reasoning {
+        text: String,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: Value,
+    },
+    /// A file, as metadata only; a replacement may name only the message's
+    /// own files.
+    File {
+        artifact: crate::ArtifactRef,
+    },
+}
+
+crate::open_enum!(tagged HookAssistantPart, tag = "type", {
+    Text => "text",
+    Reasoning => "reasoning",
+    ToolCall => "tool_call",
+    File => "file",
+});
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -487,8 +604,11 @@ pub enum ExtensionMessageEndAction {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct ExtensionMessageEndResult {
     pub action: ExtensionMessageEndAction,
+    /// With `replace`, the message's content. A part returned exactly as
+    /// sent keeps its metadata, and the parts the view leaves out keep their
+    /// place after it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content: Option<Vec<crate::PersistedAssistantPart>>,
+    pub content: Option<Vec<crate::Open<HookAssistantPart>>>,
 }
 
 crate::open_enum! {

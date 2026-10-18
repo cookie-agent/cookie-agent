@@ -295,6 +295,56 @@ A refused request fails with the error `plugin_hook_failed`, whose data names
 the `plugin` and the `hook` and whose `detail` says what went wrong. A failed
 run's error says the same.
 
+### What hooks see
+
+Hook params never carry the daemon's internal or provider types. Three hooks
+see views of them:
+
+- **`model_before_request`** gets `messages`, a list of
+  `{ "role": "system" | "user" | "assistant" | "tool", "content": [part] }`,
+  and `model`, `{ provider_id, model_id, adapter }`. A part is
+  `{"type":"text","text":…}`,
+  `{"type":"file","artifact":{sha256,byte_length,media_type,filename?}}`,
+  `{"type":"tool_call","id":…,"name":…,"arguments":{…}}`, or
+  `{"type":"tool_result","tool_call_id":…,"content":"…","is_error":false}`.
+  A tool result's content is its text (JSON values as JSON text), and the
+  files it carries follow it as `file` parts. The view leaves out reasoning,
+  provider metadata, replay state, and extension parts. With
+  `{"action":"replace","messages":[…]}`, a message returned exactly as it was
+  sent keeps all of that; any other message is built from its parts alone (an
+  assistant message so built has no reasoning or replay state). A `file` part
+  must name a file of the request, by its `sha256`; a replacement cannot add
+  files. A system message holds only text, a user message text and files, and
+  a tool message results and the files after them.
+- **`message_end`** gets `content`, the assistant message's parts: `text`,
+  `reasoning` (`{"type":"reasoning","text":…}`), `tool_call`, and `file`
+  (metadata only), the same shapes as above. With
+  `{"action":"replace","content":[…]}`, a part returned exactly as sent keeps
+  its metadata; others are built from their fields. Parts the view leaves out
+  (sources, provider-run tool results, approvals, extensions) stay after the
+  part they followed, or end the message when that part is gone. A `file`
+  must be one of the message's own.
+- **`user_before_input`** gets `content`, the input as user content, as the
+  [input-lane events](../reference/events.md) store it: a nonempty list of
+  `text` parts and `file` parts, whose `artifact` is metadata only. With `{"action":"transform","content":[…]}`, a
+  plugin may change, reorder, or remove parts, but every file part must be
+  one of the input's, unchanged, and the result must not be blank.
+
+Parts are open: a part of a type the SDK does not know reads as
+`Open::Unknown`, and the daemon refuses a replacement that holds one. A
+replacement the daemon refuses is skipped with an `invalid_modification`
+diagnostic, as before.
+
+`agent_before_start` gets `prompt_context`:
+
+| Member | Meaning |
+|---|---|
+| `input` | The user content that starts the run, after `user_before_input`; `null` when a producer's message starts it. |
+| `system_prompt` | The agent's composed system prompt: its own prompt with the runtimes', tools', and skills' sections, and what earlier plugins changed. |
+| `injected_messages` | The messages earlier plugins injected (`{ role, content }`), in order. |
+
+Each plugin sees what the plugins before it made of the prompt.
+
 `tool_before_call` and `tool_after_result` carry the call's `origin`:
 `{"kind":"base"}` for a daemon base tool, or
 `{"kind":"runtime","attachment":"local","runtime_id":"local"}` for a

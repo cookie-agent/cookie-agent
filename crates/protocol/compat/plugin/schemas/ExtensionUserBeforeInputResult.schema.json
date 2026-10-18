@@ -1,5 +1,43 @@
 {
   "$defs": {
+    "ArtifactRef": {
+      "description": "A content-addressed artifact in a session tree's store: a user upload, a\ntool attachment, or the full content of a truncated display block.",
+      "properties": {
+        "byte_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "filename": {
+          "description": "The name the file was attached under, without a directory.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_type": {
+          "description": "The media type sniffed from the content, such as `image/png`.",
+          "maxLength": 255,
+          "minLength": 3,
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Lowercase hex SHA-256 of the bytes.",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "byte_length",
+        "media_type"
+      ],
+      "type": "object"
+    },
     "ExtensionUserBeforeInputAction": {
       "enum": [
         "allow",
@@ -7,6 +45,52 @@
         "handled"
       ],
       "type": "string"
+    },
+    "UserContent": {
+      "description": "A user's input: a nonempty list of parts.",
+      "items": {
+        "$ref": "#/$defs/UserContentPart"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "UserContentPart": {
+      "description": "One part of a user's input.",
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "artifact": {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            "type": {
+              "const": "file",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "artifact"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -14,11 +98,16 @@
     "action": {
       "$ref": "#/$defs/ExtensionUserBeforeInputAction"
     },
-    "new_text": {
-      "type": [
-        "string",
-        "null"
-      ]
+    "content": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UserContent"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "With `transform`, the input to use instead. It may change or remove\nparts, but each file part must be one of the input's, unchanged."
     },
     "reason": {
       "type": [

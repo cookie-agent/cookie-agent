@@ -308,13 +308,22 @@ for line in sys.stdin:
         result = defaults[method]
         if failing:
             result = json.loads(os.environ.get(result_env, json.dumps(result)))
+        # Hands back what the hook was sent, as an unchanged replacement.
+        if failing and os.environ.get("FIXTURE_ECHO_REPLACEMENT") == "1":
+            if method == "plugin/intercept/model_before_request":
+                result = {"action": "replace", "messages": params.get("messages")}
+            elif method == "plugin/intercept/message_end":
+                result = {"action": "replace", "content": params.get("content")}
         if method == "plugin/intercept/user_before_input":
             transform_from = os.environ.get("FIXTURE_USER_TRANSFORM_FROM")
             if transform_from is not None:
-                if message.get("params", {}).get("text") == transform_from:
+                if message.get("params", {}).get("content") == [{"type": "text", "text": transform_from}]:
                     result = {
                         "action": "transform",
-                        "new_text": os.environ.get("FIXTURE_USER_TRANSFORM_TO", ""),
+                        "content": [{
+                            "type": "text",
+                            "text": os.environ.get("FIXTURE_USER_TRANSFORM_TO", ""),
+                        }],
                     }
                 else:
                     result = {"action": "allow"}

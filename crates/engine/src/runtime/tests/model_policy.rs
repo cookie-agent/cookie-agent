@@ -614,20 +614,8 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
     let replacement = serde_json::json!({
         "action": "replace",
         "messages": [
-            {
-                "role": "system",
-                "content": {
-                    "content": [{"type":"text","value":{"text":"Replacement system","metadata":null}}],
-                    "provider_options": {}
-                }
-            },
-            {
-                "role": "user",
-                "content": {
-                    "content": [{"type":"text","value":{"text":"Replacement user","metadata":null}}],
-                    "provider_options": {}
-                }
-            }
+            {"role": "system", "content": [{"type": "text", "text": "Replacement system"}]},
+            {"role": "user", "content": [{"type": "text", "text": "Replacement user"}]}
         ]
     })
     .to_string();

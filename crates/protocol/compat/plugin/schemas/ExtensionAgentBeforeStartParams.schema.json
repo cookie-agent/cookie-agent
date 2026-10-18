@@ -1,4 +1,148 @@
 {
+  "$defs": {
+    "ArtifactRef": {
+      "description": "A content-addressed artifact in a session tree's store: a user upload, a\ntool attachment, or the full content of a truncated display block.",
+      "properties": {
+        "byte_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "filename": {
+          "description": "The name the file was attached under, without a directory.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_type": {
+          "description": "The media type sniffed from the content, such as `image/png`.",
+          "maxLength": 255,
+          "minLength": 3,
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Lowercase hex SHA-256 of the bytes.",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "byte_length",
+        "media_type"
+      ],
+      "type": "object"
+    },
+    "ExtensionInjectedMessage": {
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/ExtensionMessageRole"
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "type": "object"
+    },
+    "ExtensionMessageRole": {
+      "description": "The role of a model message. Closed by design: a role is a part of the\nmodel's history every reader must place, so a new one is a breaking\nchange. Session history stores it too (`message_injected`).",
+      "enum": [
+        "system",
+        "user",
+        "assistant",
+        "tool"
+      ],
+      "type": "string"
+    },
+    "ExtensionPromptContext": {
+      "description": "What a run starts from, as `agent_before_start` sees it. Each plugin\nsees what the plugins before it made of it.",
+      "properties": {
+        "injected_messages": {
+          "description": "The messages earlier plugins injected, in order. They follow the\nsystem prompt in the run's history.",
+          "items": {
+            "$ref": "#/$defs/ExtensionInjectedMessage"
+          },
+          "type": "array"
+        },
+        "input": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UserContent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The input that starts the run, after `user_before_input`; `null` for\na run a producer's message starts, which has no user input."
+        },
+        "system_prompt": {
+          "description": "The agent's composed system prompt: its own prompt with the\nruntimes', tools', and skills' sections, and the changes earlier\nplugins made.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input",
+        "system_prompt",
+        "injected_messages"
+      ],
+      "type": "object"
+    },
+    "UserContent": {
+      "description": "A user's input: a nonempty list of parts.",
+      "items": {
+        "$ref": "#/$defs/UserContentPart"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "UserContentPart": {
+      "description": "One part of a user's input.",
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "artifact": {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            "type": {
+              "const": "file",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "artifact"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "agent_path": {
@@ -7,7 +151,9 @@
     "context_id": {
       "type": "string"
     },
-    "prompt_context": true,
+    "prompt_context": {
+      "$ref": "#/$defs/ExtensionPromptContext"
+    },
     "session_id": {
       "format": "uuid",
       "type": "string"

@@ -1,13 +1,40 @@
 {
   "$defs": {
-    "ArtifactReference": {
+    "ArtifactRef": {
+      "description": "A content-addressed artifact in a session tree's store: a user upload, a\ntool attachment, or the full content of a truncated display block.",
       "properties": {
-        "uri": {
+        "byte_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "filename": {
+          "description": "The name the file was attached under, without a directory.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_type": {
+          "description": "The media type sniffed from the content, such as `image/png`.",
+          "maxLength": 255,
+          "minLength": 3,
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Lowercase hex SHA-256 of the bytes.",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
           "type": "string"
         }
       },
       "required": [
-        "uri"
+        "sha256",
+        "byte_length",
+        "media_type"
       ],
       "type": "object"
     },
@@ -18,17 +45,11 @@
       ],
       "type": "string"
     },
-    "PersistedAssistantPart": {
+    "HookAssistantPart": {
+      "description": "One part of an assistant message, as `message_end` sees it. The view\nleaves out sources, provider-run tool results, approvals, extensions, and\nmetadata. Open: a part of a type the plugin does not know reads as\n[`crate::Open::Unknown`]; the daemon refuses one in a replacement.",
       "oneOf": [
         {
           "properties": {
-            "metadata": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
-            },
             "text": {
               "type": "string"
             },
@@ -39,20 +60,13 @@
           },
           "required": [
             "type",
-            "text",
-            "metadata"
+            "text"
           ],
           "type": "object"
         },
         {
+          "description": "Visible reasoning, as text.",
           "properties": {
-            "metadata": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
-            },
             "text": {
               "type": "string"
             },
@@ -63,50 +77,18 @@
           },
           "required": [
             "type",
-            "text",
-            "metadata"
+            "text"
           ],
           "type": "object"
         },
         {
           "properties": {
+            "arguments": true,
             "id": {
-              "description": "Bounded semantic model tool-call identity.",
-              "maxLength": 512,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
               "type": "string"
-            },
-            "input": true,
-            "metadata": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
             },
             "name": {
-              "description": "Stable lowercase machine-readable code.",
-              "maxLength": 128,
-              "minLength": 1,
-              "pattern": "^[a-z0-9][a-z0-9._-]*$",
               "type": "string"
-            },
-            "provider_item_id": {
-              "description": "Bounded provider item identity.",
-              "maxLength": 512,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "raw_input": {
-              "type": [
-                "string",
-                "null"
-              ]
             },
             "type": {
               "const": "tool_call",
@@ -116,54 +98,16 @@
           "required": [
             "type",
             "id",
-            "provider_item_id",
             "name",
-            "input",
-            "raw_input",
-            "metadata"
+            "arguments"
           ],
           "type": "object"
         },
         {
+          "description": "A file, as metadata only; a replacement may name only the message's\nown files.",
           "properties": {
-            "content": {
-              "$ref": "#/$defs/PersistedToolContent"
-            },
-            "is_error": {
-              "type": "boolean"
-            },
-            "metadata": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
-            },
-            "tool_call_id": {
-              "description": "Bounded semantic model tool-call identity.",
-              "maxLength": 512,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": "string"
-            },
-            "type": {
-              "const": "tool_result",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "tool_call_id",
-            "content",
-            "is_error",
-            "metadata"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "file": {
-              "$ref": "#/$defs/PersistedFilePart"
+            "artifact": {
+              "$ref": "#/$defs/ArtifactRef"
             },
             "type": {
               "const": "file",
@@ -172,362 +116,12 @@
           },
           "required": [
             "type",
-            "file"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "excerpt": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "id": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "media_type": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "metadata": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
-            },
-            "title": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "source",
-              "type": "string"
-            },
-            "url": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "type",
-            "id",
-            "url",
-            "title",
-            "media_type",
-            "excerpt",
-            "metadata"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "message": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "metadata": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
-            },
-            "tool_call_id": {
-              "description": "Bounded semantic model tool-call identity.",
-              "maxLength": 512,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": "string"
-            },
-            "type": {
-              "const": "tool_approval",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "tool_call_id",
-            "message",
-            "metadata"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "data": true,
-            "kind": {
-              "description": "Stable lowercase machine-readable code.",
-              "maxLength": 128,
-              "minLength": 1,
-              "pattern": "^[a-z0-9][a-z0-9._-]*$",
-              "type": "string"
-            },
-            "metadata": {
-              "additionalProperties": true,
-              "type": [
-                "object",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "custom",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "kind",
-            "data",
-            "metadata"
+            "artifact"
           ],
           "type": "object"
         }
-      ]
-    },
-    "PersistedContentValue": {
-      "oneOf": [
-        {
-          "properties": {
-            "text": {
-              "type": "string"
-            },
-            "type": {
-              "const": "text",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "text"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "file": {
-              "$ref": "#/$defs/PersistedFilePart"
-            },
-            "type": {
-              "const": "file",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "file"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "json",
-              "type": "string"
-            },
-            "value": true
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "PersistedFilePart": {
-      "properties": {
-        "filename": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "media_type": {
-          "maxLength": 255,
-          "minLength": 3,
-          "pattern": "^[^/\\s]+/[^/\\s]+$",
-          "type": "string"
-        },
-        "metadata": {
-          "additionalProperties": true,
-          "type": [
-            "object",
-            "null"
-          ]
-        },
-        "source": {
-          "$ref": "#/$defs/PersistedFileSource"
-        }
-      },
-      "required": [
-        "media_type",
-        "filename",
-        "source",
-        "metadata"
       ],
-      "type": "object"
-    },
-    "PersistedFileSource": {
-      "oneOf": [
-        {
-          "properties": {
-            "byte_length": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "reference": {
-              "$ref": "#/$defs/ArtifactReference"
-            },
-            "sha256": {
-              "maxLength": 64,
-              "minLength": 64,
-              "pattern": "^[0-9a-f]{64}$",
-              "type": "string"
-            },
-            "type": {
-              "const": "artifact",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "byte_length",
-            "sha256",
-            "reference"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "url",
-              "type": "string"
-            },
-            "url": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "url"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "id": {
-              "description": "Control-free bounded presentation text.",
-              "maxLength": 1024,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": "string"
-            },
-            "provider_id": {
-              "maxLength": 128,
-              "minLength": 1,
-              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
-              "type": "string"
-            },
-            "type": {
-              "const": "provider_reference",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "provider_id",
-            "id"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "PersistedToolContent": {
-      "oneOf": [
-        {
-          "properties": {
-            "text": {
-              "type": "string"
-            },
-            "type": {
-              "const": "text",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "text"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "json",
-              "type": "string"
-            },
-            "value": true
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "mixed",
-              "type": "string"
-            },
-            "values": {
-              "items": {
-                "$ref": "#/$defs/PersistedContentValue"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "type",
-            "values"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "reason": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "denied",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "reason"
-          ],
-          "type": "object"
-        }
-      ]
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -536,8 +130,9 @@
       "$ref": "#/$defs/ExtensionMessageEndAction"
     },
     "content": {
+      "description": "With `replace`, the message's content. A part returned exactly as\nsent keeps its metadata, and the parts the view leaves out keep their\nplace after it.",
       "items": {
-        "$ref": "#/$defs/PersistedAssistantPart"
+        "$ref": "#/$defs/HookAssistantPart"
       },
       "type": [
         "array",

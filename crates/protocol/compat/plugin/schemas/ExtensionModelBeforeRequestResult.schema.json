@@ -1,5 +1,43 @@
 {
   "$defs": {
+    "ArtifactRef": {
+      "description": "A content-addressed artifact in a session tree's store: a user upload, a\ntool attachment, or the full content of a truncated display block.",
+      "properties": {
+        "byte_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "filename": {
+          "description": "The name the file was attached under, without a directory.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_type": {
+          "description": "The media type sniffed from the content, such as `image/png`.",
+          "maxLength": 255,
+          "minLength": 3,
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Lowercase hex SHA-256 of the bytes.",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "byte_length",
+        "media_type"
+      ],
+      "type": "object"
+    },
     "ExtensionMessageRole": {
       "description": "The role of a model message. Closed by design: a role is a part of the\nmodel's history every reader must place, so a new one is a breaking\nchange. Session history stores it too (`message_injected`).",
       "enum": [
@@ -16,19 +54,6 @@
         "replace"
       ],
       "type": "string"
-    },
-    "ExtensionModelMessage": {
-      "properties": {
-        "content": true,
-        "role": {
-          "$ref": "#/$defs/ExtensionMessageRole"
-        }
-      },
-      "required": [
-        "role",
-        "content"
-      ],
-      "type": "object"
     },
     "ExtensionModelParamsAdjustments": {
       "properties": {
@@ -56,6 +81,111 @@
         }
       },
       "type": "object"
+    },
+    "HookContentPart": {
+      "description": "One part of a [`HookHistoryMessage`]. A view leaves out what only the\ndaemon or the provider reads, such as reasoning, provider metadata, and\nreplay state. Open: a part of a type the plugin does not know reads as\n[`crate::Open::Unknown`]; the daemon refuses one in a replacement.",
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A file, as metadata only: the daemon never sends its bytes, and a\nreplacement may name only files the request holds.",
+          "properties": {
+            "artifact": {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            "type": {
+              "const": "file",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "artifact"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "arguments": true,
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "arguments"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A tool's result as text; the files it carries follow it as `file`\nparts of the same message.",
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "is_error": {
+              "type": "boolean"
+            },
+            "tool_call_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tool_call_id",
+            "content",
+            "is_error"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
+    },
+    "HookHistoryMessage": {
+      "description": "One message of a model request, as `model_before_request` sees it.",
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/$defs/HookContentPart"
+          },
+          "type": "array"
+        },
+        "role": {
+          "$ref": "#/$defs/ExtensionMessageRole"
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -64,8 +194,9 @@
       "$ref": "#/$defs/ExtensionModelBeforeRequestAction"
     },
     "messages": {
+      "description": "With `replace`, the request's messages. A message returned exactly\nas sent keeps what the view leaves out; any other is built from its\nparts.",
       "items": {
-        "$ref": "#/$defs/ExtensionModelMessage"
+        "$ref": "#/$defs/HookHistoryMessage"
       },
       "type": [
         "array",

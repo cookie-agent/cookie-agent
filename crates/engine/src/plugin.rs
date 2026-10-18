@@ -56,6 +56,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::runtimes::{ClientExtension, ProcessConnector, RuntimeClient};
 
+pub(crate) mod hook_views;
+
 pub(crate) const MAX_PLUGIN_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_PLUGIN_EVENT_NAME_CHARS: usize = 128;
 pub(crate) const MAX_PLUGIN_EVENT_TOTAL_BYTES: usize = 272 * 1024;
