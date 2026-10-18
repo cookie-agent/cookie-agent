@@ -549,3 +549,54 @@ fn ac9_protocol_version_and_schema_baselines_are_present() {
         );
     }
 }
+
+/// Mail from a parent tells the child to answer in its final answer, which
+/// reaches the parent as the turn's report; mail the other way names
+/// `send_message`, the only way back to the parent.
+#[tokio::test]
+async fn the_reply_hint_follows_the_direction_of_the_mail() {
+    let (fixture, selection) = super::support::custom_fixture();
+    let parent = fixture
+        .engine
+        .create_session(selection)
+        .expect("parent")
+        .session_id;
+    let child = tree_recipient(&fixture.engine, parent);
+    let body_of = |session: SessionId| {
+        fixture
+            .engine
+            .inner
+            .store
+            .get(session)
+            .unwrap()
+            .log
+            .events()
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::ProducerMessageAccepted { body, .. } => Some(body.clone()),
+                _ => None,
+            })
+            .expect("accepted mail")
+    };
+
+    fixture
+        .engine
+        .send_agent_message(invocation(parent, child))
+        .await
+        .expect("parent to child");
+    let to_child = body_of(child);
+    assert!(
+        to_child.contains("[reply in your final answer: it reaches"),
+        "{to_child}"
+    );
+    assert!(!to_child.contains("send_message"), "{to_child}");
+
+    fixture
+        .engine
+        .send_agent_message(invocation(child, parent))
+        .await
+        .expect("child to parent");
+    let to_parent = body_of(parent);
+    assert!(!to_parent.contains("final answer"), "{to_parent}");
+    fixture.engine.shutdown().await;
+}

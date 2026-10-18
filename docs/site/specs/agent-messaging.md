@@ -47,7 +47,11 @@ them, and an agent cannot enumerate the tree to find targets on its own.
 
 Every inbound message envelope carries the sender's handle when one exists,
 so a recipient can reply directly with `send_message`. Older sessions without
-a handle use the full sender UUID in the reply hint.
+a handle use the full sender UUID in the reply hint. Mail from a parent to its
+own child is the exception: every turn a child finishes already reaches its
+parent as a `<subagent_report>` (or as the foreground delegation's result), so
+the child answers in its final answer, and a `send_message` reply would arrive
+twice.
 
 ### Message Envelope
 
@@ -63,8 +67,20 @@ Message written by the sending agent
 </agent_message>
 ```
 
-The `from` attribute identifies the sender in both variants. The reply hint
-appears only when the recipient's `send_message` tool is exposed. The original
+Mail from the recipient's parent carries this hint instead, whether or not
+the recipient can send messages:
+
+```xml
+<agent_message from="main">
+Also check the tests
+
+[reply in your final answer: it reaches `main` when this turn ends]
+</agent_message>
+```
+
+The `from` attribute identifies the sender in every variant. The
+`send_message` hint appears only when the recipient's `send_message` tool is
+exposed. The original
 body is preserved as written; the engine adds only the envelope and optional
 hint. The recipient is implicit — the envelope only ever
 appears in the session it was delivered to. Message IDs, sender UUIDs, agent

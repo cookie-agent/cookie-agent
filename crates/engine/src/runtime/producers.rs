@@ -1447,7 +1447,7 @@ impl Engine {
             sender,
             sender_agent_type,
             body,
-            true,
+            super::messaging_api::ReplyHint::SendMessage,
             hop,
         )
     }
@@ -1464,7 +1464,7 @@ impl Engine {
         sender: SessionId,
         _sender_agent_type: &str,
         body: String,
-        include_reply_hint: bool,
+        reply: super::messaging_api::ReplyHint,
         hop: u32,
     ) -> Result<ProducerMessageId, EngineError> {
         self.require_registration(session, producer_id, authority)?;
@@ -1477,7 +1477,7 @@ impl Engine {
                 sender,
                 sender_short_id.as_deref(),
                 &body,
-                include_reply_hint,
+                reply,
             );
             if existing.mode != mode
                 || existing.description != description
@@ -1505,7 +1505,7 @@ impl Engine {
             sender,
             sender_short_id.as_deref(),
             &body,
-            include_reply_hint,
+            reply,
         );
         self.append_direct(
             session,

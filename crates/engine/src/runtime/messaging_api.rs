@@ -107,25 +107,41 @@ fn map_unknown_session(error: EngineError) -> EngineError {
     }
 }
 
+/// How an agent message tells its recipient to answer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ReplyHint {
+    /// No hint: the recipient cannot send messages.
+    None,
+    /// Answer with `send_message` to the sender.
+    SendMessage,
+    /// The sender is the recipient's parent, which gets every turn the
+    /// recipient finishes as its report: the final answer is the reply, and
+    /// a `send_message` reply would arrive twice.
+    FinalAnswer,
+}
+
 /// Renders the durable agent-mail envelope, materialized as a user turn at
 /// the recipient's claim point. The body stays readable to the model; the
-/// sender handle is enough to reply when `send_message` is visible.
+/// hint says how to answer the sender.
 pub(super) fn render_agent_message_envelope(
     sender_session_id: SessionId,
     sender_short_id: Option<&str>,
     body: &str,
-    include_reply_hint: bool,
+    reply: ReplyHint,
 ) -> String {
     let sender_label = sender_short_id
         .map(str::to_owned)
         .unwrap_or_else(|| sender_session_id.to_string());
-    let reply_hint = include_reply_hint
-        .then(|| format!("\n\n[use `send_message(to=\"{sender_label}\", ...)` to reply]"));
-    format!(
-        "<agent_message from=\"{sender_label}\">\n{}{}\n</agent_message>",
-        body,
-        reply_hint.unwrap_or_default(),
-    )
+    let reply_hint = match reply {
+        ReplyHint::None => String::new(),
+        ReplyHint::SendMessage => {
+            format!("\n\n[use `send_message(to=\"{sender_label}\", ...)` to reply]")
+        }
+        ReplyHint::FinalAnswer => format!(
+            "\n\n[reply in your final answer: it reaches `{sender_label}` when this turn ends]"
+        ),
+    };
+    format!("<agent_message from=\"{sender_label}\">\n{body}{reply_hint}\n</agent_message>")
 }
 
 /// Relationship label for one send: the recipient's relationship to the
@@ -318,7 +334,15 @@ impl Engine {
             invocation.recipient_session_id,
         )?;
         let recipient_state = self.agent_recipient_state(invocation.recipient_session_id)?;
-        let include_reply_hint = self.send_message_tool_visible(invocation.recipient_session_id)?;
+        let reply = if self.parent_of(invocation.recipient_session_id)
+            == Some(invocation.sender_session_id)
+        {
+            ReplyHint::FinalAnswer
+        } else if self.send_message_tool_visible(invocation.recipient_session_id)? {
+            ReplyHint::SendMessage
+        } else {
+            ReplyHint::None
+        };
         let sender = self.messaging_projection(invocation.sender_session_id)?;
         let sender_agent_type = sender.creation_agent.agent.to_string();
         let mut hop = self
@@ -363,7 +387,7 @@ impl Engine {
                     invocation.sender_session_id,
                     &sender_agent_type,
                     invocation.body,
-                    include_reply_hint,
+                    reply,
                     hop,
                 )
             })
@@ -378,16 +402,17 @@ impl Engine {
 
     /// Whether one of the two sessions is the other's direct parent.
     fn parent_and_child(&self, a: SessionId, b: SessionId) -> bool {
-        let parent_of = |session: SessionId| match self.inner.store.get(session) {
-            Ok(projection) => match projection.meta.origin {
-                SessionOrigin::Delegated {
-                    parent_session_id, ..
-                } => Some(parent_session_id),
-                _ => None,
-            },
-            Err(_) => None,
-        };
-        parent_of(a) == Some(b) || parent_of(b) == Some(a)
+        self.parent_of(a) == Some(b) || self.parent_of(b) == Some(a)
+    }
+
+    /// The session `session` was delegated from, if any.
+    fn parent_of(&self, session: SessionId) -> Option<SessionId> {
+        match self.inner.store.get(session).ok()?.meta.origin {
+            SessionOrigin::Delegated {
+                parent_session_id, ..
+            } => Some(parent_session_id),
+            SessionOrigin::Root => None,
+        }
     }
 
     async fn find_or_register_agent_producer(
@@ -413,7 +438,7 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::render_agent_message_envelope;
+    use super::{ReplyHint, render_agent_message_envelope};
     use cookie_agent_protocol::SessionId;
 
     #[test]
@@ -423,7 +448,7 @@ mod tests {
             sender,
             Some("explore_1a2b3c4d"),
             "Message written by the sending agent",
-            true,
+            ReplyHint::SendMessage,
         );
         assert_eq!(
             with_hint,
@@ -434,11 +459,23 @@ mod tests {
             sender,
             Some("explore_1a2b3c4d"),
             "Message written by the sending agent",
-            false,
+            ReplyHint::None,
         );
         assert_eq!(
             without_hint,
             "<agent_message from=\"explore_1a2b3c4d\">\nMessage written by the sending agent\n</agent_message>"
+        );
+
+        // From a parent: the child's final answer is the reply.
+        let from_parent = render_agent_message_envelope(
+            sender,
+            Some("main"),
+            "Also check the tests",
+            ReplyHint::FinalAnswer,
+        );
+        assert_eq!(
+            from_parent,
+            "<agent_message from=\"main\">\nAlso check the tests\n\n[reply in your final answer: it reaches `main` when this turn ends]\n</agent_message>"
         );
     }
 }
