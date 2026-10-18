@@ -1549,3 +1549,33 @@ Deviations and choices made while implementing, by phase.
   process owns the session; a listing, an index entry's check, and a child's
   adoption all go through it. A missing `metadata` still means a directory
   being published and is skipped. `subagents/index.json` rebuilds as before.
+- **Conversion.** `crates/engine/src/events/convert/mod.rs` holds the
+  registry (`CONVERTERS`, empty in this build) and the chain: each step is a
+  `fn(Vec<Value>) -> Result<Vec<Value>, String>` over a log's JSON lines, and
+  the chain stamps `history_format` on `session_created` after each step. A
+  line that is not JSON is left out of a converted log (its backup keeps it),
+  as is a torn final record. The test-only step `v0_to_v1.rs` (format 0 is
+  format 1 with a diagnostic's `message` stored as `text`; a line carrying
+  `convert_fails` makes it fail) lives in a test-only table, so no constant
+  needed overriding. A read-only open converts in memory, and such a log is
+  never taken over by an owned open. `SessionStore::hold_tree` converts the
+  tree on disk right after taking its lock (`session::convert::convert_tree`):
+  each log of an older format is converted to `events.jsonl.convert.tmp` and
+  its `metadata` folded from it to `metadata.convert.tmp`, both synced; any
+  failure removes them all and fails the take, leaving the tree unlocked.
+  Then each original gets a second name, `events.jsonl.v<N>.bak` (a hard
+  link, or a synced copy where links fail), so `events.jsonl` names a complete
+  log at every moment, and the staged files are renamed into place.
+  `subagents/index.json` is removed rather than converted: it caches client
+  summaries, not history, and the next tree load rebuilds it. An owned open of
+  a log still in an older format fails as corrupt instead of converting one
+  log alone. `EventLogError::UnsupportedHistoryFormat` is gone: a lower
+  format without a converter (none exists) fails as the unsupported-era
+  corrupt-log error, like a missing one.
+- **`cookie sessions upgrade [--all]`** is a new `sessions` command group. It
+  converts every tree of the current directory's work dir, or of every work
+  dir, taking each tree's lock as an owned open would (a tree another process
+  holds is skipped and reported), prints one line per tree converted or
+  session not converted and a summary, and exits nonzero when a session could
+  not be converted (`session::upgrade_sessions`, which also reports the logs
+  left as they are because no conversion exists).

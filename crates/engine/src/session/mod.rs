@@ -1,6 +1,7 @@
 //! Session directories, projections, and rebuildable metadata caches.
 
 mod cache;
+mod convert;
 mod fold;
 mod in_flight;
 mod tree_load;
@@ -10,6 +11,7 @@ pub(crate) use cache::meta_path;
 #[cfg(windows)]
 pub(crate) use cache::replace_windows_path_with_retry;
 use cache::*;
+pub use convert::{TreeConversion, TreeUpgrade, upgrade_sessions};
 pub(crate) use fold::projection;
 use fold::refold;
 pub(crate) use fold::restart_stable_grant;
@@ -1367,6 +1369,17 @@ impl SessionStore {
                 return Err(SessionError::SessionLocked(id));
             }
         };
+        // The tree is this process's now: a log an older build wrote is
+        // converted before anything opens it for writing. A failure leaves
+        // the tree as it was, and unlocked.
+        let conversion = convert::convert_tree(root, &root_dir)?;
+        if !conversion.converted.is_empty() {
+            eprintln!(
+                "session tree {root}: converted {} log(s) to history format {}",
+                conversion.converted.len(),
+                cookie_agent_protocol::HISTORY_FORMAT
+            );
+        }
         let authority = WriteAuthority::new();
         Ok((authority.capability(), Some((lock, authority))))
     }

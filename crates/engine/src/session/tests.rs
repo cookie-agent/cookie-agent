@@ -4494,3 +4494,284 @@ fn an_unreadable_metadata_cache_is_rebuilt_from_the_log() {
     );
     assert_eq!(children[0].title, child_meta.title);
 }
+
+/// Rewrites a log as the test-only history format 0 holds it: format 0 on
+/// `session_created`, and each diagnostic's `message` as `text`. Returns the
+/// bytes written.
+fn rewrite_as_format_zero(path: &Path) -> Vec<u8> {
+    let lines = fs::read_to_string(path)
+        .expect("read log")
+        .lines()
+        .map(|line| {
+            let mut value = serde_json::from_str::<serde_json::Value>(line).expect("line");
+            if value["payload"]["type"] == "session_created" {
+                value["payload"]["history_format"] = serde_json::json!(0);
+            }
+            if value["payload"]["type"] == "diagnostic" {
+                let payload = value["payload"].as_object_mut().expect("payload");
+                let message = payload.remove("message").expect("message");
+                payload.insert("text".into(), message);
+            }
+            serde_json::to_string(&value).expect("line") + "\n"
+        })
+        .collect::<String>()
+        .into_bytes();
+    fs::write(path, &lines).expect("write format 0");
+    lines
+}
+
+/// A published root and child, each with a diagnostic, rewritten as
+/// history format 0.
+struct FormatZeroTree {
+    _temporary: tempfile::TempDir,
+    data: std::path::PathBuf,
+    cwd: std::path::PathBuf,
+    root: SessionId,
+    child: SessionId,
+    root_dir: std::path::PathBuf,
+    child_dir: std::path::PathBuf,
+    /// The bytes of the root's and the child's format-0 logs.
+    originals: [Vec<u8>; 2],
+}
+
+fn format_zero_tree() -> FormatZeroTree {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let owner = SessionStore::open(&data, &cwd).expect("owner store");
+    let root = persist_test_session(&owner);
+    let child = persist_test_session_with_origin(&owner, delegated_origin(root, root, 1));
+    for session in [root, child] {
+        owner
+            .append(
+                session,
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::Diagnostic {
+                    source: cookie_agent_protocol::DiagnosticSource::engine("test").unwrap(),
+                    kind: cookie_agent_protocol::DiagnosticKind::new("converted").unwrap(),
+                    message: format!("note of {session}"),
+                    count: None,
+                    detail: None,
+                },
+            )
+            .expect("diagnostic");
+    }
+    let root_dir = owner.session_dir(root);
+    let child_dir = root_dir.join(SUBAGENTS_DIR).join(child.to_string());
+    drop(owner);
+    let originals = [
+        rewrite_as_format_zero(&root_dir.join(EVENTS_FILE)),
+        rewrite_as_format_zero(&child_dir.join(EVENTS_FILE)),
+    ];
+    FormatZeroTree {
+        _temporary: temporary,
+        data,
+        cwd,
+        root,
+        child,
+        root_dir,
+        child_dir,
+        originals,
+    }
+}
+
+/// The message of the one diagnostic in `log`.
+fn diagnostic_message(log: &crate::events::EventLog) -> String {
+    log.event_snapshot()
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::Diagnostic { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .expect("diagnostic")
+}
+
+fn staged_files(dir: &Path) -> Vec<String> {
+    fs::read_dir(dir)
+        .expect("read session dir")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains("convert") || name.ends_with(".bak"))
+        .collect()
+}
+
+#[test]
+fn a_read_only_open_converts_an_older_history_format_in_memory() {
+    let tree = format_zero_tree();
+    let log = crate::events::EventLog::open_read_only(tree.root_dir.join(EVENTS_FILE), tree.root)
+        .expect("a format-0 log opens read-only");
+    assert_eq!(diagnostic_message(&log), format!("note of {}", tree.root));
+    assert!(matches!(
+        &log.event_snapshot()[0].payload,
+        EventPayload::SessionCreated {
+            history_format: cookie_agent_protocol::HISTORY_FORMAT,
+            ..
+        }
+    ));
+    assert_eq!(
+        fs::read(tree.root_dir.join(EVENTS_FILE)).expect("log"),
+        tree.originals[0],
+        "nothing is written"
+    );
+    assert!(staged_files(&tree.root_dir).is_empty());
+    // Its writer has to convert the file first.
+    let authority = crate::ownership::WriteAuthority::new();
+    assert!(
+        crate::events::EventLog::open_owned(
+            tree.root_dir.join(EVENTS_FILE),
+            tree.root,
+            authority.capability()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn taking_a_tree_converts_every_log_in_it_and_keeps_the_originals() {
+    let tree = format_zero_tree();
+    let store = SessionStore::open(&tree.data, &tree.cwd).expect("store");
+    let projection = store.open_for_write(tree.root).expect("adopt the root");
+    assert_eq!(
+        diagnostic_message(&projection.log),
+        format!("note of {}", tree.root)
+    );
+    for (dir, session, original) in [
+        (&tree.root_dir, tree.root, &tree.originals[0]),
+        (&tree.child_dir, tree.child, &tree.originals[1]),
+    ] {
+        assert_eq!(
+            fs::read(dir.join(format!("{EVENTS_FILE}.v0.bak"))).expect("backup"),
+            *original,
+            "the original is kept"
+        );
+        let diagnostic = fs::read_to_string(dir.join(EVENTS_FILE))
+            .expect("converted log")
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("line"))
+            .find(|line| line["payload"]["type"] == "diagnostic")
+            .expect("converted diagnostic");
+        assert_eq!(
+            diagnostic["payload"]["message"],
+            serde_json::json!(format!("note of {session}"))
+        );
+        assert!(diagnostic["payload"].get("text").is_none());
+        let meta: cookie_agent_protocol::SessionMeta =
+            serde_json::from_slice(&fs::read(meta_path(dir)).expect("metadata")).expect("decodes");
+        assert_eq!(meta.session_id, session);
+        assert!(
+            staged_files(dir)
+                .iter()
+                .all(|name| name == &format!("{EVENTS_FILE}.v0.bak")),
+            "{:?}",
+            staged_files(dir)
+        );
+    }
+    let child = store.get(tree.child).expect("the converted child");
+    assert_eq!(
+        diagnostic_message(&child.log),
+        format!("note of {}", tree.child)
+    );
+}
+
+#[test]
+fn a_failed_conversion_leaves_every_original_untouched() {
+    let tree = format_zero_tree();
+    // The child's log tells the test converter to fail, after the root's
+    // log was already converted beside it.
+    let mut lines = String::from_utf8(tree.originals[1].clone()).expect("child log");
+    lines.push_str(&format!(
+        "{}\n",
+        serde_json::json!({"convert_fails": true, "seq": 99, "session_id": tree.child,
+            "run_id": null, "timestamp": jiff::Timestamp::now(),
+            "payload": {"type": "session_title_committed"}})
+    ));
+    fs::write(tree.child_dir.join(EVENTS_FILE), &lines).expect("write failing child");
+    let index = tree.root_dir.join(SUBAGENTS_DIR).join(SUBAGENT_INDEX_FILE);
+    let index_before = fs::read(&index).ok();
+
+    let error = super::convert::convert_tree(tree.root, &tree.root_dir)
+        .expect_err("the child's conversion fails");
+    assert!(error.to_string().contains("told to fail"), "{error}");
+    assert_eq!(
+        fs::read(tree.root_dir.join(EVENTS_FILE)).expect("root log"),
+        tree.originals[0]
+    );
+    assert_eq!(
+        fs::read(tree.child_dir.join(EVENTS_FILE)).expect("child log"),
+        lines.into_bytes()
+    );
+    assert!(
+        staged_files(&tree.root_dir).is_empty(),
+        "{:?}",
+        staged_files(&tree.root_dir)
+    );
+    assert!(staged_files(&tree.child_dir).is_empty());
+    assert_eq!(fs::read(&index).ok(), index_before);
+}
+
+#[test]
+fn upgrading_sessions_converts_each_tree_up_front_once() {
+    let tree = format_zero_tree();
+    let upgrades = super::upgrade_sessions(&tree.data, Some(&tree.cwd)).expect("upgrade");
+    assert_eq!(upgrades.len(), 1);
+    let (_, root, super::TreeUpgrade::Converted(conversion)) = &upgrades[0] else {
+        panic!("{upgrades:?}");
+    };
+    assert_eq!(*root, tree.root);
+    let mut converted = conversion.converted.clone();
+    converted.sort_by_key(|(id, _)| id.to_string());
+    let mut expected = vec![(tree.root, 0), (tree.child, 0)];
+    expected.sort_by_key(|(id, _)| id.to_string());
+    assert_eq!(converted, expected);
+
+    let again = super::upgrade_sessions(&tree.data, None).expect("upgrade again");
+    assert!(
+        matches!(again.as_slice(), [(_, _, super::TreeUpgrade::Current)]),
+        "{again:?}"
+    );
+
+    // A tree another process holds is left to it.
+    let held = SessionStore::open(&tree.data, &tree.cwd).expect("store");
+    held.open_for_write(tree.root).expect("hold the tree");
+    let in_use = super::upgrade_sessions(&tree.data, None).expect("upgrade while held");
+    assert!(
+        matches!(in_use.as_slice(), [(_, _, super::TreeUpgrade::InUse)]),
+        "{in_use:?}"
+    );
+}
+
+#[test]
+fn upgrading_reports_a_log_written_before_history_formats() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let owner = SessionStore::open(&data, &cwd).expect("owner store");
+    let root = persist_test_session(&owner);
+    let log = owner.session_dir(root).join(EVENTS_FILE);
+    drop(owner);
+    let mut lines = fs::read_to_string(&log)
+        .expect("log")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("line"))
+        .collect::<Vec<_>>();
+    lines[0]["payload"]
+        .as_object_mut()
+        .expect("payload")
+        .remove("history_format");
+    let before = lines
+        .iter()
+        .map(|line| serde_json::to_string(line).expect("line") + "\n")
+        .collect::<String>();
+    fs::write(&log, &before).expect("write a pre-format log");
+
+    let upgrades = super::upgrade_sessions(&data, Some(&cwd)).expect("upgrade");
+    let [(_, _, super::TreeUpgrade::Converted(conversion))] = upgrades.as_slice() else {
+        panic!("{upgrades:?}");
+    };
+    assert!(conversion.converted.is_empty());
+    assert_eq!(conversion.left, vec![(root, None)]);
+    assert_eq!(fs::read_to_string(&log).expect("log"), before);
+}

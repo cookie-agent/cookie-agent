@@ -431,9 +431,6 @@ fn event_log_debug_code(error: &cookie_agent_engine::events::EventLogError) -> &
         cookie_agent_engine::events::EventLogError::RequiresNewerEngine { .. } => {
             "event_log_requires_newer_engine"
         }
-        cookie_agent_engine::events::EventLogError::UnsupportedHistoryFormat { .. } => {
-            "event_log_unsupported_history_format"
-        }
         cookie_agent_engine::events::EventLogError::SequenceBroken { .. } => {
             "event_log_sequence_broken"
         }

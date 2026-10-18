@@ -296,7 +296,24 @@ fn cli_commands_and_removed_flags_are_exact() {
             tls_key: Some("key.pem".into()),
         })
     );
+    assert_eq!(
+        Cli::try_parse_from(["cookie", "sessions", "upgrade"])
+            .unwrap()
+            .command,
+        Some(Command::Sessions {
+            command: SessionsCommand::Upgrade { all: false },
+        })
+    );
+    assert_eq!(
+        Cli::try_parse_from(["cookie", "sessions", "upgrade", "--all"])
+            .unwrap()
+            .command,
+        Some(Command::Sessions {
+            command: SessionsCommand::Upgrade { all: true },
+        })
+    );
     for arguments in [
+        vec!["cookie", "sessions"],
         vec![
             "cookie",
             "daemon",

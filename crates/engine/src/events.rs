@@ -62,10 +62,6 @@ pub enum EventLogError {
         event: Option<String>,
         history_format: Option<u32>,
     },
-    /// The log's history format is older than this build's and no
-    /// conversion from it exists.
-    #[error("{} has history format {history_format}, which this build cannot convert", path.display())]
-    UnsupportedHistoryFormat { path: PathBuf, history_format: u32 },
     /// The log's sequence stops increasing at the record `seq`: that record
     /// and everything after it is not read, and the session can only be
     /// viewed.
@@ -101,6 +97,9 @@ pub struct EventLog {
     /// A read-only open found a torn final record and left it in the file;
     /// an owned open cuts it.
     torn_tail_ignored: bool,
+    /// A read-only open converted the log from an older history format in
+    /// memory; the file still holds the old one.
+    converted: bool,
     /// Why the log is render-only, when it is: it can be read and followed,
     /// but nothing appends to it.
     render_only: Option<RenderOnly>,
@@ -562,6 +561,7 @@ impl EventLog {
             persisted: AtomicBool::new(persisted),
             read_only: false,
             torn_tail_ignored: false,
+            converted: false,
             render_only: None,
             write_capability: Some(capability),
             #[cfg(test)]
@@ -653,6 +653,14 @@ impl EventLog {
                 TornTail::Truncate
             },
         )?;
+        if loaded.converted && !read_only {
+            // An owned open comes after its tree was converted on disk under
+            // the tree's lock (`SessionStore::hold_tree`).
+            return corrupt(
+                &path,
+                "an older history format is converted when its session tree is taken",
+            );
+        }
         let records = loaded.records.into_iter().map(Arc::new).collect::<Vec<_>>();
         if !matches!(
             records.first().map(|record| &record.payload),
@@ -683,6 +691,7 @@ impl EventLog {
             persisted: AtomicBool::new(true),
             read_only,
             torn_tail_ignored: loaded.torn_tail,
+            converted: loaded.converted,
             render_only: loaded.render_only,
             write_capability,
             #[cfg(test)]
@@ -747,6 +756,7 @@ impl EventLog {
             persisted: AtomicBool::new(false),
             read_only: false,
             torn_tail_ignored: false,
+            converted: false,
             render_only: None,
             write_capability: Some(capability),
             #[cfg(test)]
@@ -759,10 +769,12 @@ impl EventLog {
 
     /// An owned log over the records this read-only log parsed, without
     /// reading the file again. `None` when the parse ignored a torn final
-    /// record, which an owned open has to cut from the file. The caller
+    /// record, which an owned open has to cut from the file, or converted an
+    /// older history format in memory, which the tree's owner converts on
+    /// disk. The caller
     /// proves the file is unchanged since the parse.
     pub(crate) fn owned_from_read_only(&self, capability: WriteCapability) -> Option<Arc<Self>> {
-        if !self.read_only || self.torn_tail_ignored {
+        if !self.read_only || self.torn_tail_ignored || self.converted {
             return None;
         }
         let storage = self.storage().clone();
@@ -783,6 +795,7 @@ impl EventLog {
             persisted: AtomicBool::new(true),
             read_only: false,
             torn_tail_ignored: false,
+            converted: false,
             render_only: self.render_only.clone(),
             write_capability: Some(capability),
             #[cfg(test)]
@@ -3120,14 +3133,16 @@ struct LoadedEvents {
     lines: LineIndex,
     /// The file ended in a partial record, cut or ignored per [`TornTail`].
     torn_tail: bool,
+    /// The log was converted from an older history format in memory.
+    converted: bool,
     diagnostics: Vec<EventLoadDiagnostic>,
     validation_taint: ValidationTaint,
     next_seq: u64,
 }
 
 /// Checks the history format `session_created` declares. A log without one
-/// predates history formats; a newer one needs a newer build; an older one
-/// needs a conversion this build does not have.
+/// predates history formats; a newer one needs a newer build. An older one
+/// was converted before it got here, unless no conversion from it exists.
 fn check_history_format(path: &Path, creation: Option<&Value>) -> Result<(), EventLogError> {
     let Some(format) = creation
         .and_then(|creation| creation.get("history_format"))
@@ -3146,10 +3161,35 @@ fn check_history_format(path: &Path, creation: Option<&Value>) -> Result<(), Eve
             event: None,
             history_format: Some(format),
         }),
-        std::cmp::Ordering::Less => Err(EventLogError::UnsupportedHistoryFormat {
-            path: path.to_owned(),
-            history_format: format,
-        }),
+        std::cmp::Ordering::Less => corrupt_value(
+            path,
+            format!(
+                "SessionCreated is unsupported or corrupt: history format {format} has no \
+                 conversion to {}",
+                cookie_agent_protocol::HISTORY_FORMAT
+            ),
+        ),
+    }
+}
+
+/// The bytes of `bytes`'s log in this build's history format: converted when
+/// its first line declares an older format a conversion exists from, else
+/// as they are, for the loader to judge.
+fn in_current_format(path: &Path, bytes: Vec<u8>) -> Result<(Vec<u8>, bool), EventLogError> {
+    let first = bytes
+        .split(|byte| *byte == b'\n')
+        .find(|line| !line.is_empty())
+        .and_then(|line| serde_json::from_slice::<Value>(line).ok());
+    match first.as_ref().and_then(convert::history_format) {
+        Some(format) if convert::convertible(format) => {
+            let converted =
+                convert::convert_bytes(format, &bytes).map_err(|error| EventLogError::Corrupt {
+                    path: path.to_owned(),
+                    message: error.to_string(),
+                })?;
+            Ok((converted, true))
+        }
+        _ => Ok((bytes, false)),
     }
 }
 
@@ -3217,6 +3257,7 @@ fn load_event_jsonl_in_place(
     #[cfg(test)]
     EVENT_LOG_PARSES.with(|parses| parses.set(parses.get() + 1));
     let (bytes, torn) = read_complete_jsonl(path, torn_tail)?;
+    let (bytes, converted) = in_current_format(path, bytes)?;
     let mut lines = LineIndex {
         starts: Vec::new(),
         len: bytes.len() as u64,
@@ -3476,6 +3517,7 @@ fn load_event_jsonl_in_place(
         },
         lines,
         torn_tail: torn,
+        converted,
         diagnostics,
         validation_taint,
         next_seq: observed_tip.saturating_add(1).max(1),
@@ -4176,6 +4218,8 @@ fn serialized_len(event: &StoredEvent) -> usize {
     serde_json::to_writer(&mut counter, event).expect("a stored event serializes");
     counter.0
 }
+
+pub(crate) mod convert;
 
 #[cfg(test)]
 mod tests;

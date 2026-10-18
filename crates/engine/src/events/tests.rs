@@ -2573,14 +2573,11 @@ fn the_history_format_of_a_log_decides_whether_it_opens() {
                 ),
                 "{error:?}"
             ),
+            // An older format converts, on disk only under its tree's
+            // lock: an owned open of the file alone refuses it.
             _ => assert!(
-                matches!(
-                    error,
-                    EventLogError::UnsupportedHistoryFormat {
-                        history_format: 0,
-                        ..
-                    }
-                ),
+                matches!(&error, EventLogError::Corrupt { message, .. }
+                    if message.contains("converted when its session tree is taken")),
                 "{error:?}"
             ),
         }
