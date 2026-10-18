@@ -1704,3 +1704,108 @@ protocols.
 - **Checker.** The mutation test's const and closed-enum cases moved to
   `ExtensionToolOrigin`'s tag and `ExtensionToolBeforeCallAction`, since the
   version became a string and `ExtensionEmitStatus` is open.
+
+Step 2: hooks and plugin event delivery (9.3).
+
+- **Provider hooks.** `provider_before_request`, `provider_after_response`,
+  their params and results, the SDK's builder methods, and the model
+  manager's `provider_request_payload` and `request_from_provider_payload`
+  (used only by them) are gone. `PLUGIN_PROTOCOL_VERSION` is `0.4.0`.
+- **Hook names.** `capabilities.intercept` is a list of
+  `{ hook, on_error }`, `hook` a snake-case `HookName` (at most 64 bytes, the
+  `diagnostic.kind` grammar) and `on_error` `allow` (when absent) or
+  `block`. `ExtensionInterceptionHook` is no longer a wire type: it is the
+  daemon's and the SDK's list of the hooks this build dispatches (`ALL`,
+  `name`, `method`, `from_name`, `from_method`). The daemon drops, before
+  decoding the initialize result, an entry it cannot read, one naming a hook
+  it does not dispatch, and one repeating a hook (the first wins), each with
+  a note in the plugin's status. `on_error` is open, and a value this build
+  does not know reads as `block`, the stricter one. `PluginInfo.hooks` is the
+  list of hook names, so the client protocol is 50 (`0.50.0`); the status
+  does not show `on_error`.
+- **What `block` blocks.** A failure is a timeout, a plugin that is not
+  connected or exits, an error answer, or an answer that does not decode (an
+  unknown `action` included). An answer that decodes but cannot be applied
+  (an invalid replacement, an added file) is not a failure: it is skipped
+  with an `invalid_modification` diagnostic whatever `on_error` says, as
+  before, and the hooks that already refused such answers (`tool_before_call`
+  argument changes) still do. A blocking failure stops later plugins, like a
+  block. Per hook: `tool_before_call` fails the call before it runs
+  ("Tool call blocked: …"); `tool_after_result` fails the call after it ran
+  and withholds its output ("Tool result withheld: …"); `agent_before_start`,
+  `user_before_input`, and a run's `model_before_select` refuse the request
+  before anything of the run is recorded; a fallback's `model_before_select`
+  ends the run without falling back, with the failure as the run's error;
+  `model_before_request` and `message_end` record `attempt_abandoned` without
+  a `model_error`, release the attempt's producer claim, and fail the run
+  (no retry and no fallback: the failure is not the model's);
+  `session_before_compact` refuses `session.compact`, and an automatic
+  compaction treats it like a plugin's cancel (the request goes on
+  uncompacted); `session_before_fork` and `session_before_revert` refuse the
+  operation. A refusal is `EngineError::PluginHookFailed(PluginHookFailure
+  { plugin, hook, reason })`, which the server answers with the registry's
+  `plugin_hook_failed` (`plugin`, `hook`, and the failure as `detail`). The
+  message names no field, because the client protocol's faults still carry
+  a static message until phase F. The diagnostic keeps its failure kind
+  (`interception_timeout`, `interception_crash`, `interception_rejected`)
+  and its message leads with the outcome ("the `<hook>` hook failed, so the
+  operation was blocked (on_error = block): it timed out"), since a long
+  reason is cut at 200 characters. The SDK's `on_hook_error(hook, on_error)`
+  sets the policy; the build fails when it names a hook without a handler.
+- **Hook views.** `crates/engine/src/plugin/hook_views.rs` holds every
+  conversion. `model_before_request` sends `HookHistoryMessage { role,
+  content: [Open<HookContentPart>] }` and `model: HookModel { provider_id,
+  model_id, adapter }` (`adapter` the `AdaptorId` label, as tool turn
+  contexts carry it, not the oven adapter of `PersistedModelBinding`). A
+  file's `ArtifactRef` is computed from the bytes the request holds (its
+  SHA-256 and length); a URL or provider-reference file, reasoning, system
+  and user extension parts, sources, and approvals are left out of the view,
+  and a provider-run tool result in an assistant message shows as a
+  `tool_result`. A tool result's text joins its text and JSON values with
+  newlines, and its files follow it as `file` parts, which a rebuilt tool
+  message attaches to the result before them. A replacement message equal
+  to the view of an original turn is that turn, unchanged (the first unused
+  match, so a plugin may drop or reorder messages without losing replay
+  state); any other is rebuilt from its parts, a rebuilt assistant turn with
+  empty usage, no replay, and `tool_calls` or `stop` as its finish reason,
+  and a `file` part must name a file of the request by digest. `message_end`
+  sends `[Open<HookAssistantPart>]`: `text`, `reasoning`, `tool_call`, and
+  `file` (artifact-backed files only). A replacement part equal to an
+  original part's view is that part with its metadata (`provider_item_id`,
+  `raw_input`, signatures), and the parts the view leaves out follow the
+  visible part they followed, or end the message when that part was not
+  returned. Unknown parts are refused in both.
+- **User input.** `user_before_input` sends `content: UserContent` and a
+  transform answers `content` (was `new_text`). Every file part of the
+  answer must equal one of the input's (`ArtifactRef` equality: a renamed
+  file is another file), the answer must not be blank, and an unknown part
+  is refused. The engine's input is still text until phase F: it wraps the
+  text as one part and takes the result's `as_plain_text`.
+- **Prompt context.** `ExtensionPromptContext { input, system_prompt,
+  injected_messages }` replaces the `json!` object, whose `session_id`
+  repeated the params' own. `input` is `null` for a run a producer's message
+  starts (it has no user input).
+- **Event patterns.** `capabilities.subscribe_events` and
+  `PluginInfo.subscribe_events` are lists of `EventPattern` (a type, a
+  prefix ending in `*`, or `*`; empty for none). The daemon skips a pattern
+  it cannot read with a note, as it does intercept entries. A payload is
+  serialized once when any connected plugin subscribes to anything, and its
+  type is read back from that JSON for matching; the serialized payload is
+  what `plugin/event` carries, so a plugin that subscribes narrowly costs one
+  serialization per event, as a subscriber always did. **Live-only events**
+  (`text_delta`, `reasoning_delta`, `internal_agent_text_delta`,
+  `tool_call_progress`, `native_compaction_started`/`_finished`) were
+  delivered before and still are: patterns select them by type like stored
+  events, so `*` includes them and `run_*` does not. Their `seq` is the
+  sequence of the durable event they follow. The SDK's `on_event` subscribes
+  to `*` unless `event_patterns([...])` narrows it.
+- **Tests.** `fake_plugin.py` gained `FIXTURE_FAIL_WHEN` (a call fails
+  only when its params have the given members, so a fallback's
+  `model_before_select` can fail while the run's own succeeds) and
+  `FIXTURE_ECHO_REPLACEMENT` (answers `model_before_request` and
+  `message_end` with what they were sent). `runtime/tests/hook_failures.rs`
+  runs every hook with each failure under `block` and `allow`.
+- **Left for later.** The SDK has no helper that builds a transform's or a
+  replacement's content; the reference plugin (E3) can show one. The client
+  protocol's static fault messages (`ServerFault.message`) keep the
+  registry's messages free of fields until phase F.
