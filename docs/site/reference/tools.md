@@ -279,9 +279,12 @@ A result's `display` is a list of display blocks; empty means nothing to show,
 and a result a tool completes with `ToolCompletion::single` and no display shows
 its output as one `text` block. Every built-in tool's display is one `text` block
 today. Final `display` replaces live display; the daemon sanitizes its blocks,
-drops kinds it does not know, and fits the list to its own 64 KiB serialized
+drops kinds it does not know (with a `diagnostic` naming the plugin or
+runtime that sent them), and fits the list to its own 64 KiB serialized
 budget, cutting a block to whole lines and counting the rest in its
-`omitted_lines`. Control characters are sanitized while newlines and tabs remain
+`omitted_lines`. A prepared call's presentation (its title, hint, primary
+argument, and display blocks of its arguments and preview) is fitted the same
+way. Control characters are sanitized while newlines and tabs remain
 usable in display text. Display is never included in model history.
 
 Executors return `ToolCompletion`: `Single`/`Named` supplies terminal output once,

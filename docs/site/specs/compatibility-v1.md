@@ -1809,3 +1809,123 @@ Step 2: hooks and plugin event delivery (9.3).
   replacement's content; the reference plugin (E3) can show one. The client
   protocol's static fault messages (`ServerFault.message`) keep the
   registry's messages free of fields until phase F.
+
+Step 3: tool messages, the SDK, schemas, and the reference plugin (9.4 to
+9.6). `PLUGIN_PROTOCOL_VERSION` is `0.5.0` and `RUNTIME_PROTOCOL_VERSION`
+`0.8.0`.
+
+- **Turn model.** `tool/prepare` and `tool/execute` carry `turn: ToolTurn {
+  agent, model: ToolTurnModel { model, adapter, input_media } }`. The coding
+  runtime's `read` and MCP results choose between attaching a file to the
+  result and a follow-up user message, and gate it on byte limits and media
+  types, so `input_media` is not section 5's `[MediaKindLabel]` but
+  `[ToolInputMedia { kind, mime_types, max_bytes, delivery }]`: 11.2's entry
+  without the image and count limits (the daemon validates an image when it
+  retains it, and a call returns one file at a time), plus `delivery`, an open
+  `tool_result` | `user_message` (a delivery a tool does not know is not
+  used). The daemon computes it from the binding's adapter family and the
+  model's capabilities (`runtime_api::media::tool_input_media`); the limits are
+  the lower of the two. A kind the family cannot deliver is left out, so such
+  an attachment now fails as one the model does not accept rather than as
+  undeliverable through the family. `AdapterFamily` is no longer a wire type:
+  it lives in `runtime_api::media`, without serde and without `Unknown`.
+  `TurnAgentContext` has the wire's shape (`input_media` replaces
+  `adapter_family` and `capabilities`), so a coding runtime in another process
+  sees what an in-process one does; the model loop keeps the capabilities it
+  elides media by.
+- **Prepared calls.** `PreparedCall` is `{ prepared_id, normalized_arguments,
+  permission?, permission_resource?, presentation, serialization_key? }`:
+  `operation` and `policy_labels` are gone (the labels were always the
+  resource), and `presentation` and the failed outcome's are
+  `PreparedPresentation`. `ToolCallPresentation` and
+  `ToolPresentation::from_call` are gone; `PreparedPresentation::new(title,
+  primary_argument)` replaces them, and `ToolProvider::presentation` returns
+  one. The daemon fits a peer's presentation like a result's display
+  (`PreparedPresentation::fit`, each list within the budget).
+- **Approval identity.** The daemon builds it
+  (`engine::permissions::identity::declared_operation`) for every call its
+  provider only declares (`PreparedTool::declared`): runtime tools, the coding
+  runtime's own included, plugin tools, and MCP tools, in runtimes and in the
+  global runtime. The daemon's base tools still state theirs
+  (`PreparedTool::new`), since the daemon owns them. `apply_permission_resource`
+  sets it, from the tool's resolved `ToolIdentity` and its origin, for a call
+  and for a `tool_before_call` modification alike. The recipe: the digest of
+  the normalized arguments' canonical JSON; one capability, the permission
+  action (`tool` for a tool that needs none) with operation `<source's tool
+  name>:call` (lowercased, other characters as `_`); one resource,
+  `<action>:<SHA-256 of the resource>` (`<action>:unscoped` without one),
+  bound to the tool's identity (its resolved source and source name, never
+  what the peer reports) and the resource; and an execution context of the
+  tool's identity and the origin's context bytes. A peer's `operation` member
+  is ignored as information, so no peer can state another tool's identity
+  (`identity_tests.rs`; the plugin tool test sends a forged one). The approval
+  semantics of the built-in tools are kept with one rule the daemon now applies
+  by action: a command's (`PermissionAction::is_command`, `bash`) and a path
+  action's binding is process-local, a command approves by command prefix, and
+  every other binding is restart-stable and exact, so `read`, `write`, `edit`,
+  and `bash` are still never granted for a tree and `webfetch` and MCP tools
+  still may be. What differs: fingerprints changed bytes (grants recorded by
+  earlier builds no longer match); the binding no longer covers a file's or the
+  shell's identity, which revalidation still checks before a call runs, so a
+  repeated call on a path whose file was replaced counts as the same operation;
+  `bash`'s normalized arguments gained `timeout`, so its identity still tells
+  timeouts apart; `webfetch`'s context is now its instance, not every runtime's
+  `webfetch`, which narrows its tree grants; a plugin's tool of any other
+  action is now restart-stable and so may be granted for a tree (the SDK and
+  the fixture used process-local bindings); and the approval reviewer's prior
+  decisions read `<tool>:call` where they read `bash:execute` or `read:read`.
+- **Execute results.** `ExecuteOutcome::Completed(ToolResult)` flattens the
+  result under `status: completed`: `output`, and optional `title`, `display`,
+  `metadata`, `attachments`, `additional_messages`, and `failed`. The daemon
+  builds the stored result (`ToolResultExt::into_completion`): a result
+  without a title is titled with the tool's source name, and a `single` output
+  without display shows its text, as `ToolCompletion::single` does. The coding
+  runtime sends `ToolResultExt::of(completion)`. `background` and
+  `retained_output` stay the daemon's.
+- **Unknown display blocks** are dropped with a `diagnostic` whose source is
+  `plugin:<name>` or `runtime:<id>` (an MCP tool of a runtime names the
+  runtime; anything else `engine:tools`), kind `unknown_display_block`
+  (`PeerDiagnosticKind`), and `detail { tool, part, kinds }`: from a
+  presentation, from a result (taken from the executor's completion before
+  capture, so detached calls are covered), and from progress, once per call
+  and part. `tool/progress` is a command, which E1's strict check refuses an
+  unknown tag in; the daemon instead removes a `replace`'s unknown blocks
+  before the check (`runtime_protocol::take_unknown_progress_blocks`), since a
+  display block is only shown. There is no `since` table: every kind exists in
+  `0.x`, a peer's newer kind is dropped as unknown, and phase F downgrades per
+  client.
+- **SDK.** `ToolOutput` is a `#[non_exhaustive]` builder (`success`, `error`,
+  `text`, `title`, `display`, `displays`, `metadata`, `attachment`, `failed`,
+  read back with `output_text` and `is_failed`, as the builder methods take
+  the field names). An attachment's bytes travel in `media` (the SDK depends on
+  `base64`). `prepare_presentation(tool, f)` takes a `PrepareCall { name,
+  arguments, resource }` and returns a `Presentation` builder (title, hint,
+  primary argument, arguments, preview); the default is the tool's name and
+  its resource, and the build fails for a tool not registered.
+  `ToolContext::progress_display(message, DisplayDelta)` sends a display
+  delta. The hook helpers E2 left out are `transform_input`,
+  `rewrite_input_text`, `replace_messages`, `rewrite_history_text`,
+  `replace_message_content`, and `rewrite_message_text`; the `rewrite_*`
+  ones change text parts, keep every other part as sent (a message whose text
+  is unchanged is returned whole, so it keeps what the view leaves out), and
+  leave out parts the SDK does not know, which the daemon would refuse.
+- **Schemas.** Every plugin and runtime method was already in the generated
+  set; the new types are reached from their roots. `scripts/build-docs.sh`
+  copies `crates/protocol/compat/{plugin,runtime}` to `docs/site/schemas/`
+  (ignored by git), and `reference/schemas.md` links them.
+- **Reference plugin.** `examples/plugins/python/` holds `cookie_plugin.py`, a
+  single-threaded helper (it keeps what arrives while a handler waits for an
+  answer), `reference_plugin.py`, and `check_reference_plugin.py`, which plays
+  the daemon through a scripted conversation and validates every message both
+  ways against the published schemas with a standard-library validator (types,
+  properties, `required`, `additionalProperties`, `$ref`, `oneOf`, `anyOf`,
+  `allOf`, `enum`, `const`, item and length bounds, numeric bounds, patterns
+  with `\p{Cc}` and `\p{Cf}`, and `x-open`). CI runs it; the engine test
+  `the_reference_plugin_runs_against_the_daemon` runs the plugin through a
+  model turn, its hook, its events, and a run its producer's message wakes.
+  `fake_plugin.py` stays a separate, environment-driven fixture: it lost its
+  digest recipe and gained `FIXTURE_PREPARED_EXTRA`,
+  `FIXTURE_TOOL_DISPLAY_BLOCKS`, and `FIXTURE_TOOL_PROGRESS`.
+- **Left for later.** Built-in tools report no hint and only their text block
+  (phase G). Phase H can record the plugin corpus from
+  `check_reference_plugin.py`'s conversation.
