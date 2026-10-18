@@ -610,7 +610,7 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
             None,
             "anthropic-compatible",
         );
-    let model_capabilities = r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":["model_before_request"]}"#;
+    let model_capabilities = r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[{"hook":"model_before_request"}]}"#;
     let replacement = serde_json::json!({
         "action": "replace",
         "messages": [

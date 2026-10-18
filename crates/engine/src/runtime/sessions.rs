@@ -525,9 +525,10 @@ impl Engine {
                 _ => None,
             });
         let mut instructions_override = None;
-        for plugin in self.inner.plugins.interception_plugins(
+        for hooked in self.inner.plugins.interception_plugins(
             cookie_agent_protocol::ExtensionInterceptionHook::SessionBeforeRevert,
         ) {
+            let plugin = hooked.name.clone();
             let result = self
                 .inner
                 .plugins
@@ -580,7 +581,16 @@ impl Engine {
                     }
                 }
                 Ok(_) => {}
-                Err(error) => self.record_interception_error(session_id, plugin, error),
+                Err(error) => {
+                    if let Some(failure) = self.hook_failed(
+                        session_id,
+                        &hooked,
+                        cookie_agent_protocol::ExtensionInterceptionHook::SessionBeforeRevert,
+                        error,
+                    ) {
+                        return Err(EngineError::PluginHookFailed(failure));
+                    }
+                }
             }
         }
         let session = session_id;
@@ -755,9 +765,10 @@ impl Engine {
             };
         }
         let context_id = crate::plugin::plugin_context_id();
-        for plugin in self.inner.plugins.interception_plugins(
+        for hooked in self.inner.plugins.interception_plugins(
             cookie_agent_protocol::ExtensionInterceptionHook::SessionBeforeFork,
         ) {
+            let plugin = hooked.name.clone();
             let result = self
                 .inner
                 .plugins
@@ -789,7 +800,16 @@ impl Engine {
                     return Err(EngineError::SessionOperationBlocked(reason));
                 }
                 Ok(_) => {}
-                Err(error) => self.record_interception_error(session_id, plugin, error),
+                Err(error) => {
+                    if let Some(failure) = self.hook_failed(
+                        session_id,
+                        &hooked,
+                        cookie_agent_protocol::ExtensionInterceptionHook::SessionBeforeFork,
+                        error,
+                    ) {
+                        return Err(EngineError::PluginHookFailed(failure));
+                    }
+                }
             }
         }
         // A fork into a new tree takes the artifacts its history references

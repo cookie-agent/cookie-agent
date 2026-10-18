@@ -410,7 +410,7 @@ async fn cancellation_after_successful_finalization_is_reconciled_at_terminal_co
                 serde_json::json!({
                     "producer_messaging":false,
                     "subscribe_events":false,"subscribe_bus":false,"publish_bus":false,
-                    "intercept":["tool_after_result"]
+                    "intercept":[{"hook":"tool_after_result"}]
                 })
                 .to_string(),
             ),

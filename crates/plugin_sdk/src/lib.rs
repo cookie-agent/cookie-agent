@@ -14,9 +14,9 @@ mod server;
 pub use cookie_agent_protocol::{
     ExtensionAgentBeforeStartParams, ExtensionAgentBeforeStartResult, ExtensionAllowBlockAction,
     ExtensionAllowBlockResult, ExtensionBusEventParams, ExtensionEmitStatus, ExtensionEventParams,
-    ExtensionInjectedMessage, ExtensionInterceptionHook, ExtensionMessageEndAction,
-    ExtensionMessageEndParams, ExtensionMessageEndResult, ExtensionMessageRole,
-    ExtensionModelBeforeRequestAction, ExtensionModelBeforeRequestParams,
+    ExtensionHookOnError, ExtensionInjectedMessage, ExtensionIntercept, ExtensionInterceptionHook,
+    ExtensionMessageEndAction, ExtensionMessageEndParams, ExtensionMessageEndResult,
+    ExtensionMessageRole, ExtensionModelBeforeRequestAction, ExtensionModelBeforeRequestParams,
     ExtensionModelBeforeRequestResult, ExtensionModelBeforeSelectParams, ExtensionModelMessage,
     ExtensionModelParamsAdjustments, ExtensionSessionBeforeCompactParams,
     ExtensionSessionBeforeCompactResult, ExtensionSessionBeforeForkParams,

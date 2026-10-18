@@ -275,6 +275,20 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
             data: built.data,
         };
     }
+    if let EngineError::PluginHookFailed(failure) = &error {
+        let code = &cookie_agent_protocol::errors::PLUGIN_HOOK_FAILED;
+        let built = code
+            .error()
+            .field("plugin", &failure.plugin)
+            .field("hook", failure.hook.name())
+            .detail(failure.to_string())
+            .build();
+        return RpcFault {
+            code: built.code,
+            message: code.message,
+            data: built.data,
+        };
+    }
     match error {
         EngineError::NoRunnableModel => RpcFault {
             code: -32020,
@@ -372,6 +386,7 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::ModelSelectionBlocked(_) => "model_selection_blocked",
         EngineError::SessionOperationBlocked(_) => "session_operation_blocked",
         EngineError::CompactionCancelled(_) => "compaction_cancelled",
+        EngineError::PluginHookFailed(_) => "plugin_hook_failed",
         EngineError::ApprovalNotPending { .. } => "approval_not_pending",
         EngineError::ApprovalConflict => "approval_conflict",
         EngineError::ApprovalResponse(_) => "approval_response",
@@ -534,6 +549,34 @@ mod tests {
                 history_format
             );
         }
+    }
+
+    #[test]
+    fn a_failed_blocking_hook_is_the_registry_plugin_hook_failure() {
+        let fault: cookie_agent_protocol::ServerFault = engine_fault(
+            EngineError::PluginHookFailed(cookie_agent_engine::PluginHookFailure {
+                plugin: "policy".into(),
+                hook: cookie_agent_protocol::ExtensionInterceptionHook::SessionBeforeFork,
+                reason: "timed out".into(),
+            }),
+        )
+        .into();
+        assert_eq!(fault.code, cookie_agent_protocol::errors::APPLICATION_ERROR);
+        assert_eq!(
+            fault.message,
+            cookie_agent_protocol::errors::PLUGIN_HOOK_FAILED.message
+        );
+        let data = fault.data.expect("registry data");
+        assert_eq!(data["code"], "plugin_hook_failed");
+        assert_eq!(data["plugin"], "policy");
+        assert_eq!(data["hook"], "session_before_fork");
+        assert!(data["hint"].as_str().is_some_and(|hint| !hint.is_empty()));
+        assert!(
+            data["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("`session_before_fork` hook timed out")),
+            "{data}"
+        );
     }
 
     #[test]

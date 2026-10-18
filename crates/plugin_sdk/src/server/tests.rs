@@ -218,6 +218,10 @@ fn capabilities_follow_the_registered_handlers() {
         })
         .tool_after_result(|_context, _params| async { crate::replace("new") })
         .tool_before_call(|_context, _params| async { allow() })
+        .on_hook_error(
+            ExtensionInterceptionHook::ToolBeforeCall,
+            ExtensionHookOnError::Block,
+        )
         .on_event(|_context, _event| async {})
         .enable_bus_publishing();
     let capabilities = builder.capabilities();
@@ -225,13 +229,14 @@ fn capabilities_follow_the_registered_handlers() {
     assert!(!capabilities.subscribe_bus);
     assert!(capabilities.publish_bus);
     assert!(!capabilities.producer_messaging);
-    // Advertised in the hook table's order, whatever the registration order.
+    // Advertised in the hook table's order, whatever the registration order,
+    // each with its failure policy.
     assert_eq!(
-        capabilities.intercept,
-        [
-            ExtensionInterceptionHook::ToolBeforeCall,
-            ExtensionInterceptionHook::ToolAfterResult,
-        ]
+        serde_json::to_value(&capabilities.intercept).expect("intercept JSON"),
+        json!([
+            {"hook": "tool_before_call", "on_error": "block"},
+            {"hook": "tool_after_result", "on_error": "allow"},
+        ])
     );
 }
 
@@ -272,6 +277,14 @@ fn building_rejects_invalid_registrations() {
         error(PluginServer::builder("echo", "1").tool(declaration("has space"), handler))
             .to_string()
             .contains("ASCII letters")
+    );
+    assert!(
+        error(PluginServer::builder("guard", "1").on_hook_error(
+            ExtensionInterceptionHook::ToolBeforeCall,
+            ExtensionHookOnError::Block,
+        ))
+        .to_string()
+        .contains("`tool_before_call`, which has no handler")
     );
     let mut background = declaration("echo");
     background.background_default = true;
@@ -436,14 +449,20 @@ async fn hooks_answer_their_registered_method_only() {
     };
     let result: ExtensionToolBeforeCallResult = engine
         .peer
-        .request(PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD, &params)
+        .request(
+            cookie_agent_protocol::PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
+            &params,
+        )
         .await
         .expect("hook result");
     assert_eq!(result.action, ExtensionToolBeforeCallAction::Allow);
 
     let unregistered = engine
         .peer
-        .request::<_, Value>(PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD, &json!({}))
+        .request::<_, Value>(
+            cookie_agent_protocol::PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
+            &json!({}),
+        )
         .await
         .expect_err("an unregistered hook");
     assert!(matches!(
@@ -456,7 +475,7 @@ async fn hooks_answer_their_registered_method_only() {
     let malformed = engine
         .peer
         .request::<_, Value>(
-            PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
+            cookie_agent_protocol::PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
             &json!({"tool": 1}),
         )
         .await
@@ -798,7 +817,7 @@ async fn hooks_events_and_notifications_from_a_newer_daemon_reach_the_plugin() {
     let result: ExtensionToolBeforeCallResult = engine
         .peer
         .request(
-            PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
+            cookie_agent_protocol::PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
             &json!({
                 "session_id": session_id, "context_id": "c", "tool": "read",
                 "origin": {"kind": "mcp", "server": "docs"},

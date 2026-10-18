@@ -1,11 +1,11 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 49 is current-only. A client must call `handshake` before any other
+Protocol 50 is current-only. A client must call `handshake` before any other
 method:
 
 ```json
-{ "protocol_version": 49, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+{ "protocol_version": 50, "client": { "kind": "tui", "instance_id": "<uuid>" } }
 ```
 
 `client.kind` names the client program: a lowercase letter followed by up to 15
@@ -116,12 +116,15 @@ text-only user content. A tool result's `display` is a list of display
 blocks, and `tool_call_progress.display` a display delta;
 `tool_call_started.presentation` names the tool and its source, and
 approval requests name their `tool_call_id`; a backgrounded result carries a
-typed `background` state instead of `metadata.background`. Older clients are
-rejected.
+typed `background` state instead of `metadata.background`. Protocol 50
+changed `PluginInfo.hooks` to the names of the hooks a plugin intercepts
+(snake-case strings such as `tool_before_call`) and added the
+`plugin_hook_failed` error, with which a request a plugin's failed hook
+blocked is refused. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 49.
+members of protocol 50.
 
 ## Error diagnostics
 
@@ -340,7 +343,8 @@ order its hooks run. A `PluginInfo` is `{ name, state, reason?, tools,
 hooks, subscribe_events, subscribe_bus, publish_bus, producer_messaging,
 dropped_events, stderr? }`: its `state` (`disabled`, `starting`,
 `connected`, `reconnecting`, `failed`, or `stopped`), why it failed or last
-disconnected, the tools and hooks it declares, what it streams and
+disconnected, the tools it declares and the names of the hooks it
+intercepts, what it streams and
 publishes, whether its producer messaging is open, how many notifications it
 dropped for falling behind, and the tail of its standard error.
 

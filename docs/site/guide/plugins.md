@@ -97,7 +97,11 @@ standard error. Press `r` to restart the selected plugin.
 | `stopped` | Stopped with the daemon. |
 
 A failing plugin never stops the daemon or other plugins. While a plugin is
-not connected, its tools are not published and its hooks are skipped. A
+not connected, its tools are not published and its hooks are skipped, unless
+the plugin declared that a hook blocks when it fails: a policy plugin may,
+so that what it guards (a tool call, an input, a fork) is refused while it is
+down instead of going on unchecked. A refusal names the plugin; restart it
+from `/plugins`. A
 plugin's standard error is kept as a short tail (the last 32 lines, at most
 4 KiB) rather than shown on the terminal.
 

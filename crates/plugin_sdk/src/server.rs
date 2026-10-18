@@ -13,23 +13,18 @@ use cookie_agent_protocol::{
     ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, BoundedDisplayText,
     ExtensionAgentBeforeStartParams, ExtensionAgentBeforeStartResult, ExtensionAllowBlockResult,
     ExtensionBusEventParams, ExtensionEmitParams, ExtensionEmitResultParams, ExtensionEmitStatus,
-    ExtensionEventParams, ExtensionInitializeParams, ExtensionInitializeResult,
-    ExtensionInterceptionHook, ExtensionMessageEndParams, ExtensionMessageEndResult,
-    ExtensionModelBeforeRequestParams, ExtensionModelBeforeRequestResult,
-    ExtensionModelBeforeSelectParams, ExtensionPluginCapabilities,
-    ExtensionSessionBeforeCompactParams, ExtensionSessionBeforeCompactResult,
-    ExtensionSessionBeforeForkParams, ExtensionSessionBeforeRevertParams,
-    ExtensionSessionBeforeRevertResult, ExtensionToolAfterResultParams,
-    ExtensionToolAfterResultResult, ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult,
-    ExtensionUserBeforeInputParams, ExtensionUserBeforeInputResult, FEATURE_PRODUCER_MESSAGING,
-    PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD,
-    PLUGIN_INITIALIZE_METHOD, PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
-    PLUGIN_INTERCEPT_MESSAGE_END_METHOD, PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD,
-    PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD, PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD,
-    PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD, PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD,
-    PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD, PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
-    PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD, PLUGIN_PRODUCER_DISCARD_METHOD,
-    PLUGIN_PRODUCER_REGISTER_METHOD, PLUGIN_PRODUCER_SEND_METHOD,
+    ExtensionEventParams, ExtensionHookOnError, ExtensionInitializeParams,
+    ExtensionInitializeResult, ExtensionIntercept, ExtensionInterceptionHook,
+    ExtensionMessageEndParams, ExtensionMessageEndResult, ExtensionModelBeforeRequestParams,
+    ExtensionModelBeforeRequestResult, ExtensionModelBeforeSelectParams,
+    ExtensionPluginCapabilities, ExtensionSessionBeforeCompactParams,
+    ExtensionSessionBeforeCompactResult, ExtensionSessionBeforeForkParams,
+    ExtensionSessionBeforeRevertParams, ExtensionSessionBeforeRevertResult,
+    ExtensionToolAfterResultParams, ExtensionToolAfterResultResult, ExtensionToolBeforeCallParams,
+    ExtensionToolBeforeCallResult, ExtensionUserBeforeInputParams, ExtensionUserBeforeInputResult,
+    FEATURE_PRODUCER_MESSAGING, PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD,
+    PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD, PLUGIN_INITIALIZE_METHOD,
+    PLUGIN_PRODUCER_DISCARD_METHOD, PLUGIN_PRODUCER_REGISTER_METHOD, PLUGIN_PRODUCER_SEND_METHOD,
     PLUGIN_PRODUCER_UNREGISTER_METHOD, PLUGIN_PROTOCOL_VERSION, PLUGIN_RECOVERY_COMPLETE_METHOD,
     PLUGIN_RECOVERY_START_METHOD, PLUGIN_SHUTDOWN_METHOD, PermissionAction, PersistedToolResult,
     PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
@@ -89,6 +84,7 @@ struct RegisteredTool {
 struct Handlers {
     tools: Vec<RegisteredTool>,
     intercepts: HashMap<ExtensionInterceptionHook, InterceptHandler>,
+    on_error: HashMap<ExtensionInterceptionHook, ExtensionHookOnError>,
     event: Option<EventHandler>,
     bus: Option<BusHandler>,
     unknown: Option<UnknownHandler>,
@@ -104,10 +100,14 @@ impl Handlers {
             subscribe_events: self.event.is_some(),
             subscribe_bus: self.bus.is_some(),
             publish_bus: self.publish_bus,
-            intercept: INTERCEPTION_HOOKS
+            intercept: ExtensionInterceptionHook::ALL
                 .iter()
                 .copied()
                 .filter(|hook| self.intercepts.contains_key(hook))
+                .map(|hook| ExtensionIntercept {
+                    hook: hook.hook_name(),
+                    on_error: self.on_error.get(&hook).copied().unwrap_or_default(),
+                })
                 .collect(),
         }
     }
@@ -338,6 +338,23 @@ impl PluginServerBuilder {
         self
     }
 
+    /// Sets what the daemon does when a call of `hook` fails: the plugin
+    /// times out, is not connected, or answers with an error or a malformed
+    /// result. With [`ExtensionHookOnError::Block`] the operation the hook
+    /// guards is blocked or refused, so a policy the hook enforces holds
+    /// while the plugin is unavailable; the default,
+    /// [`ExtensionHookOnError::Allow`], lets it go on. The hook must be
+    /// registered by the time the server is built.
+    #[must_use]
+    pub fn on_hook_error(
+        mut self,
+        hook: ExtensionInterceptionHook,
+        on_error: ExtensionHookOnError,
+    ) -> Self {
+        self.handlers.on_error.insert(hook, on_error);
+        self
+    }
+
     /// Registers a session-event notification handler.
     #[must_use]
     pub fn on_event<F, Fut>(mut self, handler: F) -> Self
@@ -413,6 +430,16 @@ impl PluginServerBuilder {
     pub fn build(self) -> Result<PluginServer, PluginError> {
         if let Some(error) = self.error {
             return Err(error);
+        }
+        if let Some(hook) = self
+            .handlers
+            .on_error
+            .keys()
+            .find(|hook| !self.handlers.intercepts.contains_key(hook))
+        {
+            return Err(PluginError::Protocol(format!(
+                "on_hook_error names `{hook}`, which has no handler"
+            )));
         }
         if !self.handlers.producers && self.handlers.recovery.is_some() {
             return Err(PluginError::Protocol(
@@ -1069,7 +1096,7 @@ impl Server {
                     .err()
                     .unwrap_or_else(|| internal("the execution was not admitted"))),
             },
-            other => match interception_hook(other) {
+            other => match ExtensionInterceptionHook::from_method(other) {
                 Some(hook) => self.intercept(hook, &request).await,
                 None => Err(errors::UNKNOWN_METHOD.error().field("method", other).into()),
             },
@@ -1500,23 +1527,12 @@ trait InterceptParams: serde::de::DeserializeOwned + Send + 'static {
     fn context_id(&self) -> &str;
 }
 
-/// Declares every interception hook once: its builder method, wire method, params, and result.
-/// Rows are in capability-advertisement order.
+/// Declares every interception hook once: its builder method, params, and result.
 macro_rules! interception_hooks {
     ($(
         $(#[doc = $doc:literal])+
-        $builder:ident: $hook:ident, $method:ident, $params:ty => $result:ty;
+        $builder:ident: $hook:ident, $params:ty => $result:ty;
     )+) => {
-        const INTERCEPTION_HOOKS: &[ExtensionInterceptionHook] =
-            &[$(ExtensionInterceptionHook::$hook),+];
-
-        fn interception_hook(method: &str) -> Option<ExtensionInterceptionHook> {
-            match method {
-                $($method => Some(ExtensionInterceptionHook::$hook),)+
-                _ => None,
-            }
-        }
-
         $(impl InterceptParams for $params {
             const HOOK: ExtensionInterceptionHook = ExtensionInterceptionHook::$hook;
             type Result = $result;
@@ -1549,34 +1565,34 @@ macro_rules! interception_hooks {
 
 interception_hooks! {
     /// Registers the `tool_before_call` interception hook.
-    tool_before_call: ToolBeforeCall, PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
+    tool_before_call: ToolBeforeCall,
         ExtensionToolBeforeCallParams => ExtensionToolBeforeCallResult;
     /// Registers the `tool_after_result` interception hook.
-    tool_after_result: ToolAfterResult, PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
+    tool_after_result: ToolAfterResult,
         ExtensionToolAfterResultParams => ExtensionToolAfterResultResult;
     /// Registers the `agent_before_start` interception hook.
-    agent_before_start: AgentBeforeStart, PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
+    agent_before_start: AgentBeforeStart,
         ExtensionAgentBeforeStartParams => ExtensionAgentBeforeStartResult;
     /// Registers the `session_before_compact` interception hook.
-    session_before_compact: SessionBeforeCompact, PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD,
+    session_before_compact: SessionBeforeCompact,
         ExtensionSessionBeforeCompactParams => ExtensionSessionBeforeCompactResult;
     /// Registers the `user_before_input` interception hook.
-    user_before_input: UserBeforeInput, PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD,
+    user_before_input: UserBeforeInput,
         ExtensionUserBeforeInputParams => ExtensionUserBeforeInputResult;
     /// Registers the `model_before_request` interception hook.
-    model_before_request: ModelBeforeRequest, PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD,
+    model_before_request: ModelBeforeRequest,
         ExtensionModelBeforeRequestParams => ExtensionModelBeforeRequestResult;
     /// Registers the `message_end` interception hook.
-    message_end: MessageEnd, PLUGIN_INTERCEPT_MESSAGE_END_METHOD,
+    message_end: MessageEnd,
         ExtensionMessageEndParams => ExtensionMessageEndResult;
     /// Registers the `model_before_select` interception hook.
-    model_before_select: ModelBeforeSelect, PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD,
+    model_before_select: ModelBeforeSelect,
         ExtensionModelBeforeSelectParams => ExtensionAllowBlockResult;
     /// Registers the `session_before_fork` interception hook.
-    session_before_fork: SessionBeforeFork, PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD,
+    session_before_fork: SessionBeforeFork,
         ExtensionSessionBeforeForkParams => ExtensionAllowBlockResult;
     /// Registers the `session_before_revert` interception hook.
-    session_before_revert: SessionBeforeRevert, PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD,
+    session_before_revert: SessionBeforeRevert,
         ExtensionSessionBeforeRevertParams => ExtensionSessionBeforeRevertResult;
 }
 

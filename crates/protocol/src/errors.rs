@@ -393,6 +393,17 @@ error_codes! {
         hint: Some("See the details for why."),
         description: "A plugin hook or request refused the operation.",
     }
+    PLUGIN_HOOK_FAILED {
+        code: "plugin_hook_failed",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("plugin", "The plugin."),
+            required("hook", "The hook that failed, such as `user_before_input`."),
+        ],
+        message: "A plugin could not check this request, and it refuses what it cannot check.",
+        hint: Some("Check the plugin's status in /plugins, restart or fix it, and try again."),
+        description: "A hook of a plugin that blocks on failure timed out, was not connected, or answered with an error or a malformed result.",
+    }
     CONFIG_APPLY_REFUSED {
         code: "config_apply_refused",
         rpc: APPLICATION_ERROR,

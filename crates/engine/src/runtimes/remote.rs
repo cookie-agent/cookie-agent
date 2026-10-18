@@ -381,25 +381,49 @@ pub(crate) struct PluginHandshake {
     pub(crate) notes: Vec<String>,
 }
 
-/// The hooks a plugin's initialize reply intercepts that this build does not
-/// know, as the plugin named them.
-fn unknown_hooks(reply: &serde_json::Value) -> Vec<String> {
-    reply
-        .pointer("/capabilities/intercept")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|hook| {
-            serde_json::from_value::<cookie_agent_protocol::ExtensionInterceptionHook>(
-                (*hook).clone(),
-            )
-            .is_ok_and(|hook| hook == cookie_agent_protocol::ExtensionInterceptionHook::Unknown)
-        })
-        .map(|hook| match hook {
-            serde_json::Value::String(name) => name.clone(),
-            other => other.to_string(),
-        })
-        .collect()
+/// Drops the entries of a plugin's initialize reply's `capabilities.intercept`
+/// this build cannot use, before the reply is decoded: one it cannot read,
+/// one naming a hook it does not dispatch, and one repeating a hook. Returns
+/// a note for each (`docs/site/specs/compatibility-v1.md` section 9.1).
+fn take_unusable_intercepts(reply: &mut serde_json::Value) -> Vec<String> {
+    let Some(entries) = reply
+        .pointer_mut("/capabilities/intercept")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Vec::new();
+    };
+    let mut notes = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    entries.retain(|entry| {
+        let intercept = match serde_json::from_value::<cookie_agent_protocol::ExtensionIntercept>(
+            entry.clone(),
+        ) {
+            Ok(intercept) => intercept,
+            Err(error) => {
+                notes.push(format!(
+                    "the plugin declares an intercept entry this daemon cannot read ({error}); \
+                         it is skipped"
+                ));
+                return false;
+            }
+        };
+        let hook = intercept.hook.as_str();
+        if cookie_agent_protocol::ExtensionInterceptionHook::from_name(hook).is_none() {
+            notes.push(format!(
+                "the plugin intercepts hook `{hook}`, which this daemon does not know; \
+                 it is skipped"
+            ));
+            return false;
+        }
+        if !seen.insert(hook.to_owned()) {
+            notes.push(format!(
+                "the plugin intercepts hook `{hook}` more than once; only its first entry is used"
+            ));
+            return false;
+        }
+        true
+    });
+    notes
 }
 
 /// Reads a handshake reply: the peer's version first, from the raw JSON
@@ -761,14 +785,11 @@ impl RuntimeClient {
             )
             .await
             .map_err(|error| failed(&error))?;
-        let unknown_hooks = unknown_hooks(&reply);
-        let mut result: cookie_agent_protocol::ExtensionInitializeResult =
+        let mut reply = reply;
+        let intercept_notes = take_unusable_intercepts(&mut reply);
+        let result: cookie_agent_protocol::ExtensionInitializeResult =
             read_handshake(cookie_agent_protocol::PLUGIN_PROTOCOL_VERSION, reply)
                 .map_err(|reason| failed(&reason))?;
-        result
-            .capabilities
-            .intercept
-            .retain(|hook| *hook != cookie_agent_protocol::ExtensionInterceptionHook::Unknown);
         // No plugin feature is defined yet.
         let notes = result
             .features
@@ -779,12 +800,7 @@ impl RuntimeClient {
                      it is ignored"
                 )
             })
-            .chain(unknown_hooks.into_iter().map(|hook| {
-                format!(
-                    "the plugin intercepts hook `{hook}`, which this daemon does not know; \
-                     it is skipped"
-                )
-            }))
+            .chain(intercept_notes)
             .collect();
         if result.name != name {
             return Err(format!(

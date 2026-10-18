@@ -254,16 +254,23 @@ for line in sys.stdin:
                     "method": method,
                     "params": message.get("params", {}),
                 }, separators=(",", ":")) + "\n")
-        time.sleep(int(os.environ.get("FIXTURE_INTERCEPT_DELAY_MS", "0")) / 1000)
+        # The delay, crash, error, and configured result apply only to hook
+        # calls whose params have these members, when set; other calls get
+        # the hook's default answer.
+        fail_when = json.loads(os.environ.get("FIXTURE_FAIL_WHEN", "null"))
+        params = message.get("params", {})
+        failing = fail_when is None or all(params.get(key) == value for key, value in fail_when.items())
+        if failing:
+            time.sleep(int(os.environ.get("FIXTURE_INTERCEPT_DELAY_MS", "0")) / 1000)
         release_file = os.environ.get("FIXTURE_INTERCEPT_RELEASE_FILE")
         gate_tool = os.environ.get("FIXTURE_INTERCEPT_GATE_TOOL")
         if release_file and (not gate_tool or message.get("params", {}).get("tool") == gate_tool):
             while not os.path.exists(release_file):
                 time.sleep(0.01)
-        if os.environ.get("FIXTURE_CRASH_DURING_INTERCEPT") == "1":
+        if failing and os.environ.get("FIXTURE_CRASH_DURING_INTERCEPT") == "1":
             os._exit(19)
         intercept_error = os.environ.get("FIXTURE_INTERCEPT_ERROR")
-        if intercept_error:
+        if failing and intercept_error:
             send({
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -298,7 +305,9 @@ for line in sys.stdin:
             "plugin/intercept/session_before_fork": {"action": "allow"},
             "plugin/intercept/session_before_revert": {"action": "allow"},
         }
-        result = json.loads(os.environ.get(result_env, json.dumps(defaults[method])))
+        result = defaults[method]
+        if failing:
+            result = json.loads(os.environ.get(result_env, json.dumps(result)))
         if method == "plugin/intercept/user_before_input":
             transform_from = os.environ.get("FIXTURE_USER_TRANSFORM_FROM")
             if transform_from is not None:

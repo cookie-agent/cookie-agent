@@ -28,7 +28,7 @@
       "$ref": "#/$defs/ClientIdentity"
     },
     "protocol_version": {
-      "const": 49,
+      "const": 50,
       "type": "integer"
     }
   },

@@ -418,7 +418,7 @@ async fn shutdown_during_pending_initialize_is_bounded() {
 }
 
 #[tokio::test]
-async fn an_unknown_hook_is_skipped_with_a_diagnostic_and_the_plugin_starts() {
+async fn unusable_intercept_entries_are_skipped_with_a_diagnostic_and_the_plugin_starts() {
     let config = plugin_table(
         "fixture",
         &[
@@ -426,7 +426,12 @@ async fn an_unknown_hook_is_skipped_with_a_diagnostic_and_the_plugin_starts() {
             (
                 "FIXTURE_CAPABILITIES",
                 r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,
-                    "publish_bus":false,"intercept":["tool_before_call","tool_teleport"],
+                    "publish_bus":false,"intercept":[
+                        {"hook":"tool_before_call","on_error":"block","since":"0.9.0"},
+                        {"hook":"tool_teleport"},
+                        "message_end",
+                        {"hook":"tool_before_call"}
+                    ],
                     "subscribe_dreams":true}"#
                     .into(),
             ),
@@ -437,16 +442,24 @@ async fn an_unknown_hook_is_skipped_with_a_diagnostic_and_the_plugin_starts() {
     wait_for_state(&harness.engine, "fixture", PluginState::Connected).await;
     let connected = status(&harness.engine, "fixture");
     assert_eq!(
-        connected.hooks,
-        [cookie_agent_protocol::ExtensionInterceptionHook::ToolBeforeCall]
-    );
-    assert!(
         connected
-            .reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("hook `tool_teleport`")),
-        "{connected:?}"
+            .hooks
+            .iter()
+            .map(cookie_agent_protocol::HookName::as_str)
+            .collect::<Vec<_>>(),
+        ["tool_before_call"]
     );
+    let reason = connected.reason.as_deref().unwrap_or_default();
+    for expected in [
+        "hook `tool_teleport`, which this daemon does not know",
+        "an intercept entry this daemon cannot read",
+        "hook `tool_before_call` more than once",
+    ] {
+        assert!(
+            reason.contains(expected),
+            "{expected:?} missing: {connected:?}"
+        );
+    }
     harness.engine.shutdown().await;
 }
 

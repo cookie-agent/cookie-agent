@@ -10,7 +10,7 @@ emit only their current version and reject unsupported versions.
 |---|---:|---:|
 | Runtime configuration | unversioned | unversioned current shape |
 | Agent document | unversioned | unversioned current shape |
-| Client protocol | 49 | 49 |
+| Client protocol | 50 | 50 |
 | Plugin protocol | 0.4.0 | 0.4.x |
 | Runtime protocol | 0.7.0 | 0.7.x |
 | Events and session JSONL | versionless | versionless |
@@ -27,7 +27,7 @@ plugin and runtime handshakes send `PLUGIN_PROTOCOL_VERSION` and
 `RUNTIME_PROTOCOL_VERSION` and accept a peer of the same major and, before
 `1.0.0`, the same minor. Until the client handshake switches, its exact
 number above stays on the wire; the semver constant `CLIENT_PROTOCOL_VERSION`
-(`0.49.0`) is what its baseline records. The versions stay `0.x` until the
+(`0.50.0`) is what its baseline records. The versions stay `0.x` until the
 protocols freeze at `1.0.0`.
 
 Agent snapshots embedded in events are read in their current shape only

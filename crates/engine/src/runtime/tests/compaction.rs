@@ -1168,7 +1168,7 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
 async fn compact_cancellation_reason_reaches_the_engine_result() {
     let (endpoint, captured) = scripted_model_server().await;
     let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    let capabilities = r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":["session_before_compact"]}"#;
+    let capabilities = r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[{"hook":"session_before_compact"}]}"#;
     reopen_with_interception_plugins(
         &mut fixture,
         vec![(

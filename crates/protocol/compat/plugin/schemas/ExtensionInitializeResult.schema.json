@@ -1,31 +1,48 @@
 {
   "$defs": {
-    "ExtensionInterceptionHook": {
-      "description": "A hook a plugin intercepts. Open: the daemon skips a hook it does not\nknow, with a diagnostic, and the plugin still starts.",
+    "ExtensionHookOnError": {
+      "description": "What the daemon does when a call of a hook fails: the plugin times out,\nis not connected or exits, answers with an error, or answers with a\nresult that does not decode (an unknown action included).\n\nOpen: a policy this build does not know reads as `block`, the stricter\none.",
       "oneOf": [
         {
-          "enum": [
-            "tool_before_call",
-            "tool_after_result",
-            "agent_before_start",
-            "session_before_compact",
-            "user_before_input",
-            "model_before_request",
-            "message_end",
-            "model_before_select",
-            "session_before_fork",
-            "session_before_revert"
-          ],
+          "const": "allow",
+          "description": "The operation goes on as if the plugin had not intercepted it.",
+          "type": "string"
+        },
+        {
+          "const": "block",
+          "description": "The operation is blocked or refused.",
           "type": "string"
         }
       ],
       "x-open": true
     },
+    "ExtensionIntercept": {
+      "description": "One hook a plugin intercepts.",
+      "properties": {
+        "hook": {
+          "description": "The name of a hook, as a snake-case label.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        "on_error": {
+          "$ref": "#/$defs/ExtensionHookOnError",
+          "default": "allow",
+          "description": "`allow` when absent."
+        }
+      },
+      "required": [
+        "hook"
+      ],
+      "type": "object"
+    },
     "ExtensionPluginCapabilities": {
       "properties": {
         "intercept": {
+          "description": "The hooks the plugin intercepts, each at most once. The daemon skips\nan entry it cannot read, whose hook it does not know, or that repeats\na hook, with a diagnostic.",
           "items": {
-            "$ref": "#/$defs/ExtensionInterceptionHook"
+            "$ref": "#/$defs/ExtensionIntercept"
           },
           "type": "array"
         },

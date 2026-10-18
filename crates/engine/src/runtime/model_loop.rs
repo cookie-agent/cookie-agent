@@ -7,11 +7,11 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    ApprovalDecisionSource, ExtensionAgentBeforeStartParams, ExtensionToolAfterResultAction,
-    ExtensionToolAfterResultParams, ExtensionUserBeforeInputAction, ExtensionUserBeforeInputParams,
-    InternalAgentKind, InvocationId, OperationFingerprint, PersistedAssistantPart,
-    PluginDiagnosticKind, RunId, RunStartParams, RunStartResult, SessionId, SessionOrigin,
-    SessionStatus, Sha256Digest, StreamedOutputKind, ToolCallId, ToolCallStart,
+    ApprovalDecisionSource, ExtensionAgentBeforeStartParams, ExtensionInterceptionHook,
+    ExtensionToolAfterResultAction, ExtensionToolAfterResultParams, ExtensionUserBeforeInputAction,
+    ExtensionUserBeforeInputParams, InternalAgentKind, InvocationId, OperationFingerprint,
+    PersistedAssistantPart, PluginDiagnosticKind, RunId, RunStartParams, RunStartResult, SessionId,
+    SessionOrigin, SessionStatus, Sha256Digest, StreamedOutputKind, ToolCallId, ToolCallStart,
 };
 use futures_util::StreamExt;
 use oven_sdk::{ModelError, Request as ModelRequest, ToolDefinition};
@@ -345,9 +345,12 @@ impl Engine {
         });
         if from_model.as_ref() != Some(&params.selection.model) {
             let context_id = crate::plugin::plugin_context_id();
-            for plugin in self.inner.plugins.interception_plugins(
-                cookie_agent_protocol::ExtensionInterceptionHook::ModelBeforeSelect,
-            ) {
+            for hooked in self
+                .inner
+                .plugins
+                .interception_plugins(ExtensionInterceptionHook::ModelBeforeSelect)
+            {
+                let plugin = hooked.name.clone();
                 let result = self
                     .inner
                     .plugins
@@ -386,7 +389,16 @@ impl Engine {
                         return Err(EngineError::ModelSelectionBlocked(reason));
                     }
                     Ok(_) => {}
-                    Err(error) => self.record_interception_error(params.session_id, plugin, error),
+                    Err(error) => {
+                        if let Some(failure) = self.hook_failed(
+                            params.session_id,
+                            &hooked,
+                            ExtensionInterceptionHook::ModelBeforeSelect,
+                            error,
+                        ) {
+                            return Err(EngineError::PluginHookFailed(failure));
+                        }
+                    }
                 }
             }
         }
@@ -413,9 +425,12 @@ impl Engine {
         )?;
         let context_id = crate::plugin::plugin_context_id();
         let mut injected_messages = Vec::new();
-        for plugin in self.inner.plugins.interception_plugins(
-            cookie_agent_protocol::ExtensionInterceptionHook::AgentBeforeStart,
-        ) {
+        for hooked in self
+            .inner
+            .plugins
+            .interception_plugins(ExtensionInterceptionHook::AgentBeforeStart)
+        {
+            let plugin = hooked.name.clone();
             let result = self
                 .inner
                 .plugins
@@ -493,12 +508,14 @@ impl Engine {
                     }
                 }
                 Err(error) => {
-                    self.record_plugin_diagnostic(
+                    if let Some(failure) = self.hook_failed(
                         params.session_id,
-                        plugin,
-                        error.kind(),
-                        error.to_string(),
-                    );
+                        &hooked,
+                        ExtensionInterceptionHook::AgentBeforeStart,
+                        error,
+                    ) {
+                        return Err(EngineError::PluginHookFailed(failure));
+                    }
                 }
             }
         }
@@ -808,11 +825,12 @@ impl Engine {
         let original_input = input.clone();
         let mut current = input;
         let context_id = crate::plugin::plugin_context_id();
-        for plugin in self
+        for hooked in self
             .inner
             .plugins
-            .interception_plugins(cookie_agent_protocol::ExtensionInterceptionHook::UserBeforeInput)
+            .interception_plugins(ExtensionInterceptionHook::UserBeforeInput)
         {
+            let plugin = hooked.name.clone();
             let result = self
                 .inner
                 .plugins
@@ -848,7 +866,16 @@ impl Engine {
                     });
                 }
                 Ok(_) => {}
-                Err(error) => self.record_interception_error(session_id, plugin, error),
+                Err(error) => {
+                    if let Some(failure) = self.hook_failed(
+                        session_id,
+                        &hooked,
+                        ExtensionInterceptionHook::UserBeforeInput,
+                        error,
+                    ) {
+                        return Err(EngineError::PluginHookFailed(failure));
+                    }
+                }
             }
         }
         let audit_original = (current != original_input).then_some(original_input);
@@ -1490,9 +1517,10 @@ impl Engine {
             }
         };
         let cancelled = active.cancellation.is_cancelled();
-        let after_result_plugins = self.inner.plugins.interception_plugins(
-            cookie_agent_protocol::ExtensionInterceptionHook::ToolAfterResult,
-        );
+        let after_result_plugins = self
+            .inner
+            .plugins
+            .interception_plugins(ExtensionInterceptionHook::ToolAfterResult);
         let (mut result_content, is_error) = if after_result_plugins.is_empty() {
             (String::new(), false)
         } else {
@@ -1502,7 +1530,8 @@ impl Engine {
             }
         };
         let context_id = crate::plugin::plugin_context_id();
-        for plugin in after_result_plugins {
+        for hooked in after_result_plugins {
+            let plugin = hooked.name.clone();
             let intercepted = self
                 .inner
                 .plugins
@@ -1545,12 +1574,21 @@ impl Engine {
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    self.record_plugin_diagnostic(
+                    if let Some(failure) = self.hook_failed(
                         active.session,
-                        plugin,
-                        error.kind(),
-                        error.to_string(),
-                    );
+                        &hooked,
+                        ExtensionInterceptionHook::ToolAfterResult,
+                        error,
+                    ) {
+                        // The tool ran, but its result reaches the model only
+                        // through a hook that could not check it.
+                        result = Err(ToolFailure {
+                            partial_output: None,
+                            code: ToolCallFailureCode::ExecutionFailed,
+                            message: format!("Tool result withheld: {failure}."),
+                        });
+                        break;
+                    }
                 }
             }
         }
@@ -1669,7 +1707,11 @@ impl Engine {
                     .await
                 {
                     Ok(events) => events,
-                    Err(EngineError::CompactionCancelled(_)) => uncompacted_events,
+                    // A plugin refused this compaction: the request goes on
+                    // uncompacted, as when the plugin cancels it.
+                    Err(EngineError::CompactionCancelled(_) | EngineError::PluginHookFailed(_)) => {
+                        uncompacted_events
+                    }
                     Err(error) => return Err(error),
                 };
                 // The checkpoint must precede the attempt that consumes the
@@ -1728,9 +1770,13 @@ impl Engine {
                 let context_id = crate::plugin::plugin_context_id();
                 // Serialized once and refreshed only after a plugin replaces the request.
                 let mut extension_view = None;
-                for plugin in self.inner.plugins.interception_plugins(
-                    cookie_agent_protocol::ExtensionInterceptionHook::ModelBeforeRequest,
-                ) {
+                let mut hook_failure = None;
+                for hooked in self
+                    .inner
+                    .plugins
+                    .interception_plugins(ExtensionInterceptionHook::ModelBeforeRequest)
+                {
+                    let plugin = hooked.name.clone();
                     let messages = match &extension_view {
                         Some(messages) => Clone::clone(messages),
                         None => {
@@ -1795,8 +1841,29 @@ impl Engine {
                                 ),
                             }
                         }
-                        Err(error) => self.record_interception_error(session, plugin, error),
+                        Err(error) => {
+                            hook_failure = self.hook_failed(
+                                session,
+                                &hooked,
+                                ExtensionInterceptionHook::ModelBeforeRequest,
+                                error,
+                            );
+                            if hook_failure.is_some() {
+                                break;
+                            }
+                        }
                     }
+                }
+                if let Some(failure) = hook_failure {
+                    return Err(self
+                        .abandon_attempt_for_hook(
+                            session,
+                            run,
+                            attempt_id,
+                            &mut request_claim,
+                            failure,
+                        )
+                        .await);
                 }
                 request = model.apply_prompt_cache_strategy(request, cache_strategy.as_ref());
                 request.header_context = self.model_header_context(session)?;
@@ -1987,9 +2054,13 @@ impl Engine {
                                 _ => None,
                             })
                             .collect::<HashMap<_, _>>();
-                        for plugin in self.inner.plugins.interception_plugins(
-                            cookie_agent_protocol::ExtensionInterceptionHook::MessageEnd,
-                        ) {
+                        let mut hook_failure = None;
+                        for hooked in self
+                            .inner
+                            .plugins
+                            .interception_plugins(ExtensionInterceptionHook::MessageEnd)
+                        {
+                            let plugin = hooked.name.clone();
                             let result = self.inner.plugins.intercept_named::<_, cookie_agent_protocol::ExtensionMessageEndResult>(
                                 &plugin,
                                 cookie_agent_protocol::PLUGIN_INTERCEPT_MESSAGE_END_METHOD,
@@ -2013,8 +2084,29 @@ impl Engine {
                                     }
                                 }
                                 Ok(_) => {}
-                                Err(error) => self.record_interception_error(session, plugin, error),
+                                Err(error) => {
+                                    hook_failure = self.hook_failed(
+                                        session,
+                                        &hooked,
+                                        ExtensionInterceptionHook::MessageEnd,
+                                        error,
+                                    );
+                                    if hook_failure.is_some() {
+                                        break;
+                                    }
+                                }
                             }
+                        }
+                        if let Some(failure) = hook_failure {
+                            return Err(self
+                                .abandon_attempt_for_hook(
+                                    session,
+                                    run,
+                                    attempt_id,
+                                    &mut request_claim,
+                                    failure,
+                                )
+                                .await);
                         }
                         // Only flag calls whose final persisted name is still the
                         // normalization output; a plugin that rewrites the name
@@ -2144,7 +2236,11 @@ impl Engine {
                             })
                             .await
                         {
-                            Ok(_) | Err(EngineError::CompactionCancelled(_)) => {}
+                            Ok(_)
+                            | Err(
+                                EngineError::CompactionCancelled(_)
+                                | EngineError::PluginHookFailed(_),
+                            ) => {}
                             Err(error) => return Err(error),
                         }
                         recovery_claim.release().await?;
@@ -2290,9 +2386,12 @@ impl Engine {
             };
             let context_id = crate::plugin::plugin_context_id();
             let mut selection_blocked = false;
-            for plugin in self.inner.plugins.interception_plugins(
-                cookie_agent_protocol::ExtensionInterceptionHook::ModelBeforeSelect,
-            ) {
+            for hooked in self
+                .inner
+                .plugins
+                .interception_plugins(ExtensionInterceptionHook::ModelBeforeSelect)
+            {
+                let plugin = hooked.name.clone();
                 let result = self
                     .inner
                     .plugins
@@ -2328,7 +2427,16 @@ impl Engine {
                         break;
                     }
                     Ok(_) => {}
-                    Err(error) => self.record_interception_error(session, plugin, error),
+                    Err(error) => {
+                        if let Some(failure) = self.hook_failed(
+                            session,
+                            &hooked,
+                            ExtensionInterceptionHook::ModelBeforeSelect,
+                            error,
+                        ) {
+                            return Err(EngineError::PluginHookFailed(failure));
+                        }
+                    }
                 }
             }
             if selection_blocked {
@@ -2359,13 +2467,66 @@ impl Engine {
         Err(last_error.into())
     }
 
-    pub(super) fn record_interception_error(
+    /// Records a failed call of `hook` to `plugin`. Returns the failure
+    /// when the plugin blocks on the hook's failure (`on_error = block`), so
+    /// that the caller blocks or refuses the operation the hook guards;
+    /// otherwise the operation goes on.
+    pub(super) fn hook_failed(
         &self,
         session: SessionId,
-        plugin: String,
+        plugin: &crate::plugin::HookPlugin,
+        hook: ExtensionInterceptionHook,
         error: crate::plugin::InterceptError,
-    ) {
-        self.record_plugin_diagnostic(session, plugin, error.kind(), error.to_string());
+    ) -> Option<crate::PluginHookFailure> {
+        let blocks = plugin.on_error == cookie_agent_protocol::ExtensionHookOnError::Block;
+        // The outcome leads, since a long reason is cut.
+        let outcome = if blocks {
+            "so the operation was blocked (on_error = block)"
+        } else {
+            "and the operation went on (on_error = allow)"
+        };
+        self.record_plugin_diagnostic(
+            session,
+            plugin.name.clone(),
+            error.kind(),
+            format!("the {hook} hook failed, {outcome}: it {}", error.reason()),
+        );
+        blocks.then(|| crate::PluginHookFailure {
+            plugin: plugin.name.clone(),
+            hook,
+            reason: error.reason(),
+        })
+    }
+
+    /// Ends an attempt that a plugin's failed hook blocked: the attempt is
+    /// abandoned without a model error, its claim is released, and the run
+    /// fails with the hook's failure.
+    async fn abandon_attempt_for_hook(
+        &self,
+        session: SessionId,
+        run: RunId,
+        attempt_id: cookie_agent_protocol::AttemptId,
+        request_claim: &mut super::producer_claims::ClaimedPrompt,
+        failure: crate::PluginHookFailure,
+    ) -> EngineError {
+        if let Err(error) = self
+            .append(
+                session,
+                Some(run),
+                event_origin("engine:model-loop"),
+                Event::AttemptAbandoned {
+                    attempt_id,
+                    model_error: None,
+                },
+            )
+            .await
+        {
+            return error;
+        }
+        if let Err(error) = request_claim.release().await {
+            return error;
+        }
+        EngineError::PluginHookFailed(failure)
     }
 
     async fn sleep_before_model_retry(&self, delay: std::time::Duration) {

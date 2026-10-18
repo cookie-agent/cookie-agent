@@ -2,10 +2,10 @@ use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 
 use cookie_agent_config::PluginConfig;
 use cookie_agent_protocol::{
-    EventPayload, ExtensionBusEventParams, ExtensionEmitStatus, ExtensionInterceptionHook,
-    ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult, ExtensionToolOrigin,
-    PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD, PluginDiagnosticKind, PluginState, SessionId,
-    StoredEvent,
+    EventPayload, ExtensionBusEventParams, ExtensionEmitStatus, ExtensionHookOnError,
+    ExtensionInterceptionHook, ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult,
+    ExtensionToolOrigin, PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD, PluginDiagnosticKind,
+    PluginState, SessionId, StoredEvent,
 };
 use cookie_agent_runtime_api::reconnect::ReconnectPolicy;
 use indexmap::IndexMap;
@@ -34,7 +34,10 @@ fn capabilities(subscribe_events: bool, subscribe_bus: bool, intercept: &[&str])
         "subscribe_events": subscribe_events,
         "subscribe_bus": subscribe_bus,
         "publish_bus": false,
-        "intercept": intercept,
+        "intercept": intercept
+            .iter()
+            .map(|hook| serde_json::json!({"hook": hook}))
+            .collect::<Vec<_>>(),
     })
     .to_string()
 }
@@ -427,8 +430,13 @@ async fn hook_failures_fail_open_with_their_diagnostic_kind() {
         wait_for(&registry, plugin, PluginState::Connected).await;
     }
     assert_eq!(
-        registry.interception_plugins(ExtensionInterceptionHook::ToolBeforeCall),
+        registry
+            .interception_plugins(ExtensionInterceptionHook::ToolBeforeCall)
+            .into_iter()
+            .map(|plugin| (plugin.name, plugin.on_error))
+            .collect::<Vec<_>>(),
         ["rejecting", "malformed", "slow", "crashing"]
+            .map(|name| (name.to_owned(), ExtensionHookOnError::Allow))
     );
     let session_id = SessionId::new_v7();
 

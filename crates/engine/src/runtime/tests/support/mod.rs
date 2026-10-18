@@ -1600,7 +1600,7 @@ pub(crate) fn interception_plugin(name: &str, extra_env: &[(&str, String)]) -> P
         ("FIXTURE_TOOLS".into(), "[]".into()),
         (
             "FIXTURE_CAPABILITIES".into(),
-            r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":["tool_before_call"]}"#.into(),
+            r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[{"hook":"tool_before_call"}]}"#.into(),
         ),
     ]);
     env.extend(

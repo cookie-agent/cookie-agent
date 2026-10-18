@@ -338,20 +338,35 @@ string_wire_impl!(
     64,
     "^[a-z][a-z0-9_]*$",
     "What a diagnostic reports, as a snake-case label.",
-    |value: &str| {
-        validate_bounded(value, DiagnosticKind::MAX_BYTES)?;
-        let mut bytes = value.bytes();
-        if bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
-            && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-        {
-            Ok(())
-        } else {
-            Err(WireStringError::Invalid(
-                "must be a lowercase snake-case label",
-            ))
-        }
-    }
+    |value: &str| validate_snake_label(value, DiagnosticKind::MAX_BYTES)
 );
+
+/// The name of a hook a plugin intercepts, such as `tool_before_call`: a
+/// snake-case label. A plugin may name a hook this build does not know; the
+/// daemon skips it with a diagnostic.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct HookName(String);
+string_wire_impl!(
+    HookName,
+    64,
+    "^[a-z][a-z0-9_]*$",
+    "The name of a hook, as a snake-case label.",
+    |value: &str| validate_snake_label(value, HookName::MAX_BYTES)
+);
+
+fn validate_snake_label(value: &str, maximum: usize) -> Result<(), WireStringError> {
+    validate_bounded(value, maximum)?;
+    let mut bytes = value.bytes();
+    if bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
+        && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        Ok(())
+    } else {
+        Err(WireStringError::Invalid(
+            "must be a lowercase snake-case label",
+        ))
+    }
+}
 
 #[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SafeDisplayText(String);

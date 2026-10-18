@@ -35,9 +35,9 @@ use async_trait::async_trait;
 use cookie_agent_config::PluginConfig;
 use cookie_agent_protocol::{
     ExtensionBusEventParams, ExtensionEmitParams, ExtensionEmitResultParams, ExtensionEmitStatus,
-    ExtensionInterceptionHook, ExtensionPluginCapabilities, PLUGIN_BUS_EVENT_METHOD,
-    PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD, PluginInfo, PluginState,
-    ProducerSourceState, ProducerSourceStatus, ToolCallPresentation,
+    ExtensionHookOnError, ExtensionInterceptionHook, ExtensionPluginCapabilities,
+    PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD,
+    PluginInfo, PluginState, ProducerSourceState, ProducerSourceStatus, ToolCallPresentation,
 };
 use cookie_agent_runtime_api::{
     PreparedTool, PromptSection, RuntimeConnector as _, SessionToolContext, ToolCall, ToolError,
@@ -78,7 +78,8 @@ struct PublishQuota {
 }
 
 /// Why a hook produced no result. Each failure is recorded as a plugin
-/// diagnostic of its [`Self::kind`], and the hook fails open.
+/// diagnostic of its [`Self::kind`]; the plugin's `on_error` for the hook
+/// decides whether the operation goes on.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum InterceptError {
     /// No answer within the plugin's `interception_timeout_ms`.
@@ -101,6 +102,36 @@ impl InterceptError {
             Self::Rejected(_) | Self::Malformed(_) => PluginDiagnosticKind::InterceptionRejected,
         }
     }
+
+    /// What went wrong, as the end of a sentence about the hook: "the hook
+    /// timed out".
+    pub(crate) fn reason(&self) -> String {
+        match self {
+            Self::Timeout => "timed out".into(),
+            Self::Disconnected => "could not run because the plugin is not connected".into(),
+            Self::Rejected(message) => format!("answered with an error: {message}"),
+            Self::Malformed(message) => format!("answered with a malformed result: {message}"),
+        }
+    }
+}
+
+/// A plugin that intercepts a hook, and what its failure means.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HookPlugin {
+    pub(crate) name: String,
+    pub(crate) on_error: ExtensionHookOnError,
+}
+
+/// A hook call that failed for a plugin whose `on_error` for the hook is
+/// `block`: the operation the hook guards is blocked or refused.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error(
+    "plugin `{plugin}` could not check this: its `{hook}` hook {reason}, and the plugin blocks what it cannot check"
+)]
+pub struct PluginHookFailure {
+    pub plugin: String,
+    pub hook: ExtensionInterceptionHook,
+    pub reason: String,
 }
 
 impl std::fmt::Display for InterceptError {
@@ -678,16 +709,23 @@ impl PluginRegistry {
     }
 
     /// The connected plugins that intercept `hook`, in hook order.
-    pub(crate) fn interception_plugins(&self, hook: ExtensionInterceptionHook) -> Vec<String> {
+    pub(crate) fn interception_plugins(&self, hook: ExtensionInterceptionHook) -> Vec<HookPlugin> {
         self.inner
             .plugins
             .values()
-            .filter(|runtime| {
-                lock(&runtime.connection)
-                    .as_ref()
-                    .is_some_and(|connected| connected.capabilities.intercept.contains(&hook))
+            .filter_map(|runtime| {
+                let on_error = lock(&runtime.connection)
+                    .as_ref()?
+                    .capabilities
+                    .intercept
+                    .iter()
+                    .find(|intercept| intercept.hook.as_str() == hook.name())?
+                    .on_error;
+                Some(HookPlugin {
+                    name: runtime.name.clone(),
+                    on_error,
+                })
             })
-            .map(|runtime| runtime.name.clone())
             .collect()
     }
 
@@ -812,8 +850,13 @@ impl PluginRuntime {
                 .into_iter()
                 .map(|spec| spec.name)
                 .collect(),
-            hooks: capabilities
-                .map_or_else(Vec::new, |capabilities| capabilities.intercept.clone()),
+            hooks: capabilities.map_or_else(Vec::new, |capabilities| {
+                capabilities
+                    .intercept
+                    .iter()
+                    .map(|intercept| intercept.hook.clone())
+                    .collect()
+            }),
             subscribe_events: capabilities
                 .is_some_and(|capabilities| capabilities.subscribe_events),
             subscribe_bus: capabilities.is_some_and(|capabilities| capabilities.subscribe_bus),

@@ -74,7 +74,9 @@ tool's name and parameter schema when the server is built.
 - **Hooks.** One builder method per hook, named after it, such as
   `tool_before_call`; helpers like `allow()`, `block(reason)`, `modify`,
   `replace`, `append_system_prompt`, `inject_message`, and
-  `cancel_compaction` build results.
+  `cancel_compaction` build results. `on_hook_error(hook,
+  ExtensionHookOnError::Block)` makes a failure of that hook block its
+  operation (see [Hooks](#hooks)).
 - **Events.** `on_event` and `on_bus_event` receive streamed notifications.
   A handler may publish one bus event with `context.emit_bus(...)` after
   `enable_bus_publishing()`. `on_unknown` receives notifications the SDK does
@@ -109,7 +111,8 @@ version, its features, its capabilities, and its tools:
 {"jsonrpc":"2.0","id":1,"result":{
   "protocol_version":"0.4.0","name":"issues","version":"1.2.0","features":[],
   "capabilities":{"producer_messaging":false,"subscribe_events":false,
-    "subscribe_bus":false,"publish_bus":false,"intercept":["tool_before_call"]},
+    "subscribe_bus":false,"publish_bus":false,
+    "intercept":[{"hook":"tool_before_call","on_error":"block"}]},
   "tools":{"tools":[],"prompt_sections":[]}}}
 ```
 
@@ -155,15 +158,18 @@ The plugin protocol follows the runtime protocol's
 - **Not from a plugin.** The daemon ignores the runtime-only
   `capability/tools_changed` and `mcp/changed` from a plugin, with a note in
   its status.
-- **Open enums.** Besides the runtime protocol's: a hook in
-  `capabilities.intercept` the daemon does not know is skipped, with a note
-  in the plugin's status, and the plugin still starts; a feature it does not
+- **Open enums.** Besides the runtime protocol's: an entry of
+  `capabilities.intercept` naming a hook the daemon does not know, one it
+  cannot read, and one repeating a hook are skipped, each with a note in the
+  plugin's status, and the plugin still starts; an `on_error` it does not
+  know reads as `block`; a feature it does not
   know is ignored the same way; an unknown `bus` status of
   `plugin/emit_result` reads as `dropped`; a hook's tool `origin` of an
   unknown `kind`, and an event of an unknown type, read as `Open::Unknown`;
   an unknown `model_before_select` `source` reads as `Unknown`. A hook
   result's `action` and a message `role` are closed: an unknown one makes
-  the answer malformed, and the hook fails open.
+  the answer malformed, which is a failure of the hook (see
+  [Hooks](#hooks)).
 - **Errors** follow the runtime protocol's [scheme](../reference/runtime-protocol.md#errors):
   a standard code, or `-32000` with `data.code`, and a message a user can
   understand. When a plugin fails to start or a call to it fails, the daemon
@@ -239,8 +245,10 @@ permission runs without approval.
 
 ## Hooks
 
-A plugin lists the hooks it handles in `capabilities.intercept`; it is never
-sent another. Each hook is a request `plugin/intercept/<hook>`:
+A plugin lists the hooks it handles in `capabilities.intercept`, each as
+`{ "hook": "<name>", "on_error": "allow" | "block" }` (`allow` when
+`on_error` is absent); it is never sent another. Each hook is a request
+`plugin/intercept/<hook>`:
 
 | Hook | Runs | May |
 |---|---|---|
@@ -257,13 +265,35 @@ sent another. Each hook is a request `plugin/intercept/<hook>`:
 
 Hooks run in the order the configuration lists the plugins, each within its
 `interception_timeout_ms`. A modification is validated before the next
-plugin sees it, and an invalid one is skipped with a diagnostic. A hook that
-times out, whose plugin is not connected or exits, or that answers with an
-error or a malformed result **fails open**: the operation goes on, later
-plugins still run, and the session records a `diagnostic` of source
-`plugin:<name>` (`interception_timeout`, `interception_crash`, or
-`interception_rejected`).
-A block stops later hooks.
+plugin sees it, and an invalid one is skipped with a diagnostic. A block
+stops later hooks.
+
+A hook call **fails** when it times out, when its plugin is not connected or
+exits, or when the plugin answers with an error or with a result that does
+not decode (an unknown `action` included). The session records a
+`diagnostic` of source `plugin:<name>` and kind `interception_timeout`,
+`interception_crash`, or `interception_rejected`, and the entry's `on_error`
+decides what happens next:
+
+- **`allow`** (the default): the hook fails open. The operation goes on as
+  if the plugin had not intercepted it, and later plugins still run.
+- **`block`**: the operation is blocked as if the plugin had blocked it, and
+  later plugins do not run. Declare it for a hook that enforces a policy, so
+  that the policy holds while the plugin is down.
+
+| Hook | With `block`, a failure |
+|---|---|
+| `tool_before_call` | fails the call before it runs; the model reads "Tool call blocked: plugin `<name>` could not check this: …" |
+| `tool_after_result` | fails the call after it ran, withholding its result; the model reads "Tool result withheld: …" |
+| `agent_before_start`, `user_before_input`, `model_before_select` (a run's model) | refuses `run.start`, `run.steer`, or `session.submit_input` |
+| `model_before_select` (a fallback) | ends the run without falling back |
+| `model_before_request`, `message_end` | abandons the model attempt, without a model error, and fails the run |
+| `session_before_compact` | refuses `session.compact`; an automatic compaction is skipped, as when the plugin cancels it |
+| `session_before_fork`, `session_before_revert` | refuses the fork or revert |
+
+A refused request fails with the error `plugin_hook_failed`, whose data names
+the `plugin` and the `hook` and whose `detail` says what went wrong. A failed
+run's error says the same.
 
 `tool_before_call` and `tool_after_result` carry the call's `origin`:
 `{"kind":"base"}` for a daemon base tool, or

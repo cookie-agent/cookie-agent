@@ -188,12 +188,7 @@ fn plugin_detail(plugin: &PluginInfo) -> String {
     let hooks = plugin
         .hooks
         .iter()
-        .map(|hook| {
-            serde_json::to_value(hook)
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .unwrap_or_default()
-        })
+        .map(|hook| hook.as_str().to_owned())
         .collect::<Vec<_>>();
     text.push_str(&format!("\nhooks: {}", list(&hooks)));
     let mut streams = Vec::new();
@@ -248,7 +243,7 @@ mod tests {
         let mut failed = plugin(PluginState::Failed);
         failed.reason = Some("exited with status 1".into());
         failed.tools = vec!["read_issue".into(), "close_issue".into()];
-        failed.hooks = vec![cookie_agent_protocol::ExtensionInterceptionHook::ToolBeforeCall];
+        failed.hooks = vec![cookie_agent_protocol::HookName::new("tool_before_call").unwrap()];
         failed.subscribe_events = true;
         failed.dropped_events = 3;
         failed.stderr = Some("token missing".into());

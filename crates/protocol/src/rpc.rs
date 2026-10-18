@@ -679,7 +679,7 @@ pub struct PluginInfo {
     /// The names its tools are declared under.
     pub tools: Vec<String>,
     /// The hooks it intercepts, in no particular order.
-    pub hooks: Vec<ExtensionInterceptionHook>,
+    pub hooks: Vec<crate::HookName>,
     pub subscribe_events: bool,
     pub subscribe_bus: bool,
     pub publish_bus: bool,

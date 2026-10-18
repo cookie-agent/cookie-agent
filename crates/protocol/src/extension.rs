@@ -35,23 +35,126 @@ pub const PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD: &str =
 /// lets it produce messages (`producer_messaging = true`).
 pub const FEATURE_PRODUCER_MESSAGING: &str = "producer_messaging";
 
-crate::open_enum! {
-    /// A hook a plugin intercepts. Open: the daemon skips a hook it does not
-    /// know, with a diagnostic, and the plugin still starts.
-    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-    #[serde(rename_all = "snake_case")]
-    pub enum ExtensionInterceptionHook {
-        ToolBeforeCall,
-        ToolAfterResult,
-        AgentBeforeStart,
-        SessionBeforeCompact,
-        UserBeforeInput,
-        ModelBeforeRequest,
-        MessageEnd,
-        ModelBeforeSelect,
-        SessionBeforeFork,
-        SessionBeforeRevert,
+/// A hook this build dispatches. Hooks travel as [`crate::HookName`]s: a
+/// plugin may name one this build does not know, which the daemon skips with
+/// a diagnostic.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ExtensionInterceptionHook {
+    ToolBeforeCall,
+    ToolAfterResult,
+    AgentBeforeStart,
+    SessionBeforeCompact,
+    UserBeforeInput,
+    ModelBeforeRequest,
+    MessageEnd,
+    ModelBeforeSelect,
+    SessionBeforeFork,
+    SessionBeforeRevert,
+}
+
+impl ExtensionInterceptionHook {
+    /// Every hook this build dispatches.
+    pub const ALL: &'static [Self] = &[
+        Self::ToolBeforeCall,
+        Self::ToolAfterResult,
+        Self::AgentBeforeStart,
+        Self::SessionBeforeCompact,
+        Self::UserBeforeInput,
+        Self::ModelBeforeRequest,
+        Self::MessageEnd,
+        Self::ModelBeforeSelect,
+        Self::SessionBeforeFork,
+        Self::SessionBeforeRevert,
+    ];
+
+    /// The hook's name, as `capabilities.intercept` and plugin status carry
+    /// it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ToolBeforeCall => "tool_before_call",
+            Self::ToolAfterResult => "tool_after_result",
+            Self::AgentBeforeStart => "agent_before_start",
+            Self::SessionBeforeCompact => "session_before_compact",
+            Self::UserBeforeInput => "user_before_input",
+            Self::ModelBeforeRequest => "model_before_request",
+            Self::MessageEnd => "message_end",
+            Self::ModelBeforeSelect => "model_before_select",
+            Self::SessionBeforeFork => "session_before_fork",
+            Self::SessionBeforeRevert => "session_before_revert",
+        }
     }
+
+    /// The request the daemon calls the hook with.
+    #[must_use]
+    pub const fn method(self) -> &'static str {
+        match self {
+            Self::ToolBeforeCall => PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
+            Self::ToolAfterResult => PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
+            Self::AgentBeforeStart => PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
+            Self::SessionBeforeCompact => PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD,
+            Self::UserBeforeInput => PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD,
+            Self::ModelBeforeRequest => PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD,
+            Self::MessageEnd => PLUGIN_INTERCEPT_MESSAGE_END_METHOD,
+            Self::ModelBeforeSelect => PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD,
+            Self::SessionBeforeFork => PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD,
+            Self::SessionBeforeRevert => PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD,
+        }
+    }
+
+    /// The hook named `name`, if this build dispatches it.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|hook| hook.name() == name)
+    }
+
+    /// The hook called with request `method`, if this build dispatches it.
+    #[must_use]
+    pub fn from_method(method: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|hook| hook.method() == method)
+    }
+
+    /// The hook's name as it travels.
+    #[must_use]
+    pub fn hook_name(self) -> crate::HookName {
+        crate::HookName::new(self.name()).expect("hook names are labels")
+    }
+}
+
+impl std::fmt::Display for ExtensionInterceptionHook {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.name())
+    }
+}
+
+/// What the daemon does when a call of a hook fails: the plugin times out,
+/// is not connected or exits, answers with an error, or answers with a
+/// result that does not decode (an unknown action included).
+///
+/// Open: a policy this build does not know reads as `block`, the stricter
+/// one.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum ExtensionHookOnError {
+    /// The operation goes on as if the plugin had not intercepted it.
+    #[default]
+    Allow,
+    /// The operation is blocked or refused.
+    #[serde(other)]
+    Block,
+}
+
+/// One hook a plugin intercepts.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ExtensionIntercept {
+    pub hook: crate::HookName,
+    /// `allow` when absent.
+    #[serde(default)]
+    pub on_error: ExtensionHookOnError,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -61,7 +164,10 @@ pub struct ExtensionPluginCapabilities {
     pub subscribe_events: bool,
     pub subscribe_bus: bool,
     pub publish_bus: bool,
-    pub intercept: Vec<ExtensionInterceptionHook>,
+    /// The hooks the plugin intercepts, each at most once. The daemon skips
+    /// an entry it cannot read, whose hook it does not know, or that repeats
+    /// a hook, with a diagnostic.
+    pub intercept: Vec<ExtensionIntercept>,
 }
 
 /// `plugin/initialize` params: the daemon's version and what its

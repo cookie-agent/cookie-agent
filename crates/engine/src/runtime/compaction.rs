@@ -383,9 +383,10 @@ impl Engine {
         let mut compaction_focus = input.focus.map(str::to_owned);
         let mut additions = Vec::new();
         let context_id = crate::plugin::plugin_context_id();
-        for plugin in self.inner.plugins.interception_plugins(
+        for hooked in self.inner.plugins.interception_plugins(
             cookie_agent_protocol::ExtensionInterceptionHook::SessionBeforeCompact,
         ) {
+            let plugin = hooked.name.clone();
             let result = self
                 .inner
                 .plugins
@@ -450,12 +451,14 @@ impl Engine {
                     }
                 }
                 Err(error) => {
-                    self.record_plugin_diagnostic(
+                    if let Some(failure) = self.hook_failed(
                         input.session,
-                        plugin,
-                        error.kind(),
-                        error.to_string(),
-                    );
+                        &hooked,
+                        cookie_agent_protocol::ExtensionInterceptionHook::SessionBeforeCompact,
+                        error,
+                    ) {
+                        return Err(EngineError::PluginHookFailed(failure));
+                    }
                 }
             }
         }

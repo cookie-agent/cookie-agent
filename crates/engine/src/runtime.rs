@@ -213,6 +213,10 @@ pub enum EngineError {
     SessionOperationBlocked(String),
     #[error("compaction cancelled by plugin: {0}")]
     CompactionCancelled(String),
+    /// A hook failed for a plugin that blocks on its failure, so the
+    /// operation it guards was refused.
+    #[error("{0}")]
+    PluginHookFailed(crate::PluginHookFailure),
     #[error("approval `{approval_id}` is not pending for session {session_id}")]
     ApprovalNotPending {
         session_id: SessionId,

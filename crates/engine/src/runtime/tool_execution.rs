@@ -600,9 +600,10 @@ impl Engine {
             let policy_labels = prepared.policy_labels().to_vec();
             if let Some(interception) = interception {
                 let context_id = crate::plugin::plugin_context_id();
-                for plugin in engine.inner.plugins.interception_plugins(
+                for hooked in engine.inner.plugins.interception_plugins(
                     cookie_agent_protocol::ExtensionInterceptionHook::ToolBeforeCall,
                 ) {
+                    let plugin = hooked.name.clone();
                     let result = engine
                         .inner
                         .plugins
@@ -625,12 +626,18 @@ impl Engine {
                     let result = match result {
                         Ok(result) => result,
                         Err(error) => {
-                            engine.record_plugin_diagnostic(
+                            if let Some(failure) = engine.hook_failed(
                                 active.session,
-                                plugin,
-                                error.kind(),
-                                error.to_string(),
-                            );
+                                &hooked,
+                                cookie_agent_protocol::ExtensionInterceptionHook::ToolBeforeCall,
+                                error,
+                            ) {
+                                return Err(ToolFailure {
+                                    partial_output: None,
+                                    code: ToolCallFailureCode::ExecutionFailed,
+                                    message: format!("Tool call blocked: {failure}."),
+                                });
+                            }
                             continue;
                         }
                     };
