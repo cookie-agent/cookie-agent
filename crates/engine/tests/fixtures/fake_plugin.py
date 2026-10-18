@@ -182,27 +182,24 @@ for line in sys.stdin:
         output = json.loads(os.environ.get(
             "FIXTURE_TOOL_OUTPUT", json.dumps({"kind": "single", "text": content})
         ))
+        display = json.loads(os.environ.get("FIXTURE_TOOL_DISPLAY_BLOCKS", "null"))
+        if display is None:
+            display = [{
+                "type": "text",
+                "text": os.environ.get("FIXTURE_TOOL_DISPLAY", content[:60000]),
+            }]
+        outcome = {
+            "status": "completed",
+            "output": output,
+            "title": call.get("name", "tool"),
+            "display": display,
+        }
+        if os.environ.get("FIXTURE_TOOL_ERROR") == "1":
+            outcome["failed"] = True
         send({
             "jsonrpc": "2.0",
             "id": request_id,
-            "result": {
-                "outcome": {
-                    "status": "completed",
-                    "output": output,
-                    "result": {
-                        "title": call.get("name", "tool"),
-                        "output": "",
-                        "display": [{
-                            "type": "text",
-                            "text": os.environ.get("FIXTURE_TOOL_DISPLAY", content[:60000]),
-                        }],
-                        "metadata": None,
-                        "attachments": [],
-                    },
-                    "failed": os.environ.get("FIXTURE_TOOL_ERROR") == "1",
-                },
-                "media": [],
-            },
+            "result": {"outcome": outcome, "media": []},
         })
     elif method in ("tool/release", "tool/cancel"):
         pass

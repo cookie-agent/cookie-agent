@@ -18,9 +18,10 @@
 //! themselves.
 
 use crate::{
-    AdaptorId, AgentId, AgentMdEntry, AgentMdSkipped, MediaKindLabel, ModelKey, PermissionAction,
-    PersistedToolResult, PreparedPresentation, RunId, RuntimeKind, SessionId, SkillSource,
-    ToolCallId, ToolCompletionOutput, ToolOutputChunk, ToolOutputDeclaration,
+    AdaptorId, AgentId, AgentMdEntry, AgentMdSkipped, DisplayBlock, MediaKindLabel, ModelKey, Open,
+    PermissionAction, PreparedPresentation, RunId, RuntimeKind, SafeDisplayText, SessionId,
+    SkillSource, ToolAttachment, ToolCallId, ToolCompletionOutput, ToolEmittedMessage,
+    ToolOutputChunk, ToolOutputDeclaration,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -538,16 +539,56 @@ pub struct ExecuteResult {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
-#[allow(clippy::large_enum_variant)]
 pub enum ExecuteOutcome {
-    Completed {
-        output: ToolCompletionOutput,
-        result: PersistedToolResult,
-        failed: bool,
-    },
-    Failed {
-        error: WireToolError,
-    },
+    Completed(ToolResult),
+    Failed { error: WireToolError },
+}
+
+/// A call's terminal result as a runtime or plugin returns it. The daemon
+/// builds the result a session stores from it: it captures the output, fits
+/// the display, and records the background state and retained output
+/// itself.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct ToolResult {
+    /// The output the model reads: the whole text, or `streamed` when the
+    /// call's progress already sent it.
+    pub output: ToolCompletionOutput,
+    /// The result's title; the tool's name when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<SafeDisplayText>,
+    /// What clients show. A `single` output with no display shows its text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub display: Vec<Open<DisplayBlock>>,
+    /// Structured data the model reads with the output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+    /// Files the result carries; their bytes travel in the reply's `media`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub attachments: Vec<ToolAttachment>,
+    /// Messages the result adds to the model's history after it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 4))]
+    pub additional_messages: Vec<ToolEmittedMessage>,
+    /// The call failed: the model reads the output as the failure.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub failed: bool,
+}
+
+impl ToolResult {
+    /// The result's files: its attachments, then those of its added
+    /// messages.
+    pub fn all_attachments(&self) -> impl Iterator<Item = &ToolAttachment> {
+        self.attachments.iter().chain(
+            self.additional_messages
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .filter_map(|part| match part {
+                    crate::ToolEmittedContent::Text(_) => None,
+                    crate::ToolEmittedContent::File(attachment) => Some(attachment),
+                }),
+        )
+    }
 }
 
 /// Attachment bytes, content-addressed.

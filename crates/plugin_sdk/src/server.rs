@@ -26,17 +26,17 @@ use cookie_agent_protocol::{
     PLUGIN_INITIALIZE_METHOD, PLUGIN_PRODUCER_DISCARD_METHOD, PLUGIN_PRODUCER_REGISTER_METHOD,
     PLUGIN_PRODUCER_SEND_METHOD, PLUGIN_PRODUCER_UNREGISTER_METHOD, PLUGIN_PROTOCOL_VERSION,
     PLUGIN_RECOVERY_COMPLETE_METHOD, PLUGIN_RECOVERY_START_METHOD, PLUGIN_SHUTDOWN_METHOD,
-    PersistedToolResult, PreparedPresentation, ProducerDeliveryMode, ProducerDiscardParams,
-    ProducerDiscardResult, ProducerId, ProducerIdempotencyKey, ProducerMessageId, ProducerName,
-    ProducerRegisterParams, ProducerRegisterResult, ProducerSendParams, ProducerSendResult,
-    ProducerUnregisterParams, ProducerUnregisterResult, RecoveryCompleteParams,
-    RecoveryCompleteResult, RecoveryOutcome, RunId, SafeDisplayText, SafeErrorMessage, SemVer,
-    SessionId, ToolCallId, ToolCompletionOutput, ToolOutputChunk, Transport, errors,
+    PreparedPresentation, ProducerDeliveryMode, ProducerDiscardParams, ProducerDiscardResult,
+    ProducerId, ProducerIdempotencyKey, ProducerMessageId, ProducerName, ProducerRegisterParams,
+    ProducerRegisterResult, ProducerSendParams, ProducerSendResult, ProducerUnregisterParams,
+    ProducerUnregisterResult, RecoveryCompleteParams, RecoveryCompleteResult, RecoveryOutcome,
+    RunId, SafeDisplayText, SafeErrorMessage, SemVer, SessionId, ToolCallId, ToolCompletionOutput,
+    ToolOutputChunk, Transport, errors,
     peer::{Incoming, IncomingNotification, IncomingRequest, LineTransport, Peer, RpcError},
     runtime_protocol::{
         DetachableParams, ExecuteOutcome, ExecuteParams, ExecuteResult, Outcome, PrepareOutcome,
         PrepareParams, PrepareResult, PreparedCall, PreparedRef, RuntimeTools, ToolErrorKind,
-        ToolProgressParams, WireProgress, WireToolCall, WireToolError, method,
+        ToolProgressParams, ToolResult, WireProgress, WireToolCall, WireToolError, method,
     },
 };
 use serde::Serialize;
@@ -1256,22 +1256,16 @@ impl Server {
         let handler = Arc::clone(&prepared.tool.handler);
         match tokio::spawn(handler(context, prepared.arguments)).await {
             Ok(Ok(output)) => ExecuteResult {
-                outcome: ExecuteOutcome::Completed {
-                    result: PersistedToolResult {
-                        title: safe_title(&prepared.tool.declaration.name),
-                        output: String::new(),
-                        display: cookie_agent_protocol::fit_result_display(
-                            cookie_agent_protocol::text_display(output.text.clone()),
-                        ),
-                        background: None,
-                        retained_output: None,
-                        metadata: Value::Null,
-                        attachments: Vec::new(),
-                        additional_messages: Vec::new(),
-                    },
+                outcome: ExecuteOutcome::Completed(ToolResult {
                     output: ToolCompletionOutput::Single { text: output.text },
+                    title: Some(safe_title(&prepared.tool.declaration.name)),
+                    // The daemon shows the text when there is no display.
+                    display: Vec::new(),
+                    metadata: None,
+                    attachments: Vec::new(),
+                    additional_messages: Vec::new(),
                     failed: output.failed,
-                },
+                }),
                 media: Vec::new(),
             },
             Ok(Err(failure)) if failure.message.trim().is_empty() => failed(format!(

@@ -49,14 +49,6 @@
       ],
       "type": "object"
     },
-    "BackgroundActor": {
-      "description": "Who moved a call to the background.",
-      "enum": [
-        "model",
-        "user"
-      ],
-      "type": "string"
-    },
     "DiffAsOf": {
       "description": "Whether a diff shows what a call will do (`prepare`) or what it did\n(`execute`); the two differ when the file changed in between.",
       "enum": [
@@ -604,26 +596,15 @@
     "ExecuteOutcome": {
       "oneOf": [
         {
+          "$ref": "#/$defs/ToolResult",
           "properties": {
-            "failed": {
-              "type": "boolean"
-            },
-            "output": {
-              "$ref": "#/$defs/ToolCompletionOutput"
-            },
-            "result": {
-              "$ref": "#/$defs/PersistedToolResult"
-            },
             "status": {
               "const": "completed",
               "type": "string"
             }
           },
           "required": [
-            "status",
-            "output",
-            "result",
-            "failed"
+            "status"
           ],
           "type": "object"
         },
@@ -675,175 +656,6 @@
       "required": [
         "key",
         "value"
-      ],
-      "type": "object"
-    },
-    "PersistedToolResult": {
-      "description": "A tool result as sessions store it and clients receive it. `display` is\nwhat clients show, a list of display blocks sharing one 64 KiB budget;\nempty means nothing to show. When it is a single `text` block whose text\noccurs verbatim in `output`, which is the common case (a single-output\ntool shows its output, a shell its only stream), it is written as the byte\nrange `display_span` into `output` instead of a second copy.",
-      "properties": {
-        "additional_messages": {
-          "description": "Emitted model-history messages. Their files share the 256-file limit with attachments.",
-          "items": {
-            "$ref": "#/$defs/ToolEmittedMessage"
-          },
-          "maxItems": 4,
-          "type": "array"
-        },
-        "attachments": {
-          "description": "Direct result files. Together with files in additional_messages, at most 256 are allowed.",
-          "items": {
-            "$ref": "#/$defs/ToolAttachment"
-          },
-          "maxItems": 256,
-          "type": "array"
-        },
-        "background": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ToolBackground"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Present on the result a call committed when it moved to the\nbackground; the daemon alone sets it."
-        },
-        "display": {
-          "items": {
-            "$ref": "#/$defs/DisplayBlock"
-          },
-          "type": "array"
-        },
-        "display_span": {
-          "description": "Byte range [start, end) of `output` that is the text of the display's only block, a `text` block. Present instead of `display` when that text occurs verbatim in `output`.",
-          "items": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "maxItems": 2,
-          "minItems": 2,
-          "type": "array"
-        },
-        "metadata": true,
-        "output": {
-          "type": "string"
-        },
-        "retained_output": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RetainedToolOutput"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "title": {
-          "description": "Control-free bounded presentation text.",
-          "maxLength": 1024,
-          "minLength": 1,
-          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-          "type": "string"
-        }
-      },
-      "required": [
-        "title",
-        "output",
-        "metadata",
-        "attachments"
-      ],
-      "type": "object"
-    },
-    "RetainedToolOutput": {
-      "properties": {
-        "incomplete": {
-          "type": "boolean"
-        },
-        "reference": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ArtifactReference"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The one stream's artifact, or the named-stream manifest. Absent when\nevery stream fit inline."
-        },
-        "streams": {
-          "items": {
-            "$ref": "#/$defs/RetainedToolStream"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "streams",
-        "incomplete"
-      ],
-      "type": "object"
-    },
-    "RetainedToolStream": {
-      "properties": {
-        "byte_length": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "dropped_bytes": {
-          "description": "Bytes past the capture limit that the artifact does not hold: it keeps\nthe stream's head up to the limit and its last stretch, with a marker\nline between them.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "line_count": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "name": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "next_offset": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "reference": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ArtifactReference"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The stream's full content. Absent, with `sha256`, when the stream fit\nits preview and the result output already holds all of it."
-        },
-        "sha256": {
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "truncated": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "byte_length",
-        "line_count",
-        "truncated"
       ],
       "type": "object"
     },
@@ -913,48 +725,6 @@
         "reference"
       ],
       "type": "object"
-    },
-    "ToolBackground": {
-      "description": "What became of a call that moved to the background: its work goes on and\nreports its result later.",
-      "properties": {
-        "by": {
-          "$ref": "#/$defs/BackgroundActor",
-          "description": "Who moved the call there."
-        },
-        "job": {
-          "description": "The job the call runs as, present in the `job` state.",
-          "maxLength": 64,
-          "minLength": 1,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "state": {
-          "$ref": "#/$defs/ToolBackgroundState"
-        }
-      },
-      "required": [
-        "state",
-        "by"
-      ],
-      "type": "object"
-    },
-    "ToolBackgroundState": {
-      "description": "How a backgrounded call's work goes on. An unknown state reads as\n`job` without a job: the call is backgrounded and its result arrives\nlater.",
-      "oneOf": [
-        {
-          "const": "job",
-          "description": "It runs as background job `job`, which reports its result once.",
-          "type": "string"
-        },
-        {
-          "const": "self_reporting",
-          "description": "The work reports itself, as a subagent's turns do.",
-          "type": "string"
-        }
-      ],
-      "x-open": true
     },
     "ToolCompletionOutput": {
       "oneOf": [
@@ -1094,6 +864,59 @@
       },
       "required": [
         "text"
+      ],
+      "type": "object"
+    },
+    "ToolResult": {
+      "description": "A call's terminal result as a runtime or plugin returns it. The daemon\nbuilds the result a session stores from it: it captures the output, fits\nthe display, and records the background state and retained output\nitself.",
+      "properties": {
+        "additional_messages": {
+          "description": "Messages the result adds to the model's history after it.",
+          "items": {
+            "$ref": "#/$defs/ToolEmittedMessage"
+          },
+          "maxItems": 4,
+          "type": "array"
+        },
+        "attachments": {
+          "description": "Files the result carries; their bytes travel in the reply's `media`.",
+          "items": {
+            "$ref": "#/$defs/ToolAttachment"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "display": {
+          "description": "What clients show. A `single` output with no display shows its text.",
+          "items": {
+            "$ref": "#/$defs/DisplayBlock"
+          },
+          "type": "array"
+        },
+        "failed": {
+          "description": "The call failed: the model reads the output as the failure.",
+          "type": "boolean"
+        },
+        "metadata": {
+          "description": "Structured data the model reads with the output."
+        },
+        "output": {
+          "$ref": "#/$defs/ToolCompletionOutput",
+          "description": "The output the model reads: the whole text, or `streamed` when the\ncall's progress already sent it."
+        },
+        "title": {
+          "description": "The result's title; the tool's name when absent.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "output"
       ],
       "type": "object"
     },

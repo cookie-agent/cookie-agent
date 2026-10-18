@@ -34,6 +34,7 @@ pub use error::ToolError;
 pub use execution::{
     ArtifactReadPage, DetachPoint, DetachWatch, Detachable, ProgressCapture, ProgressSink,
     ToolArtifacts, ToolExecutionContext, ToolPreparationContext, ToolProgress, TurnAgentContext,
+    UnknownBlockReporter,
 };
 pub use media::AdapterFamily;
 pub use prepared::{

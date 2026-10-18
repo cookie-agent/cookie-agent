@@ -193,11 +193,26 @@ pub trait ProgressCapture: std::fmt::Debug + Send + Sync {
 
 /// A call's progress channel. It enforces the display and output bounds and
 /// hands output chunks to the host's [`ProgressCapture`].
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ProgressSink {
     sender: mpsc::Sender<ToolProgress>,
     capture: Option<Arc<dyn ProgressCapture>>,
     budget: Arc<std::sync::Mutex<ProgressBudget>>,
+    unknown_blocks: Option<UnknownBlockReporter>,
+}
+
+/// Told the tags of the display blocks of kinds this build does not know
+/// that a [`ProgressSink`] dropped from one progress update.
+pub type UnknownBlockReporter = Arc<dyn Fn(Vec<String>) + Send + Sync>;
+
+impl std::fmt::Debug for ProgressSink {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProgressSink")
+            .field("capture", &self.capture)
+            .field("budget", &self.budget)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What a call's progress has used of its display bounds: the bytes of its
@@ -216,6 +231,7 @@ impl ProgressSink {
             sender,
             capture: None,
             budget: Arc::default(),
+            unknown_blocks: None,
         }
     }
 
@@ -229,7 +245,17 @@ impl ProgressSink {
             sender,
             capture: Some(capture),
             budget: Arc::default(),
+            unknown_blocks: None,
         }
+    }
+
+    /// The sink, telling `reporter` of every display block of a kind this
+    /// build does not know that it drops from a replacement, as one from a
+    /// newer plugin or runtime would carry.
+    #[must_use]
+    pub fn with_unknown_block_reporter(mut self, reporter: UnknownBlockReporter) -> Self {
+        self.unknown_blocks = Some(reporter);
+        self
     }
 
     pub async fn send(&self, mut progress: ToolProgress) -> Result<(), ToolError> {
@@ -272,6 +298,15 @@ impl ProgressSink {
                 cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES.saturating_sub(budget.message_bytes);
             progress.message = crate::sanitize_tool_display(&progress.message, remaining);
             budget.message_bytes += progress.message.len();
+            if let Some(cookie_agent_protocol::DisplayDelta::Replace { blocks }) =
+                &mut progress.display
+            {
+                let unknown = cookie_agent_protocol::take_unknown_blocks(blocks);
+                if let Some(reporter) = self.unknown_blocks.as_ref().filter(|_| !unknown.is_empty())
+                {
+                    reporter(unknown);
+                }
+            }
             progress.display = match progress.display.take().map(sanitize_delta) {
                 Some(delta) => budget
                     .display

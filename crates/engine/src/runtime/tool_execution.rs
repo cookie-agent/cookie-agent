@@ -49,7 +49,83 @@ fn publish_tool_progress(engine: &Engine, session: SessionId, run: RunId, progre
     engine.publish_transient(session, run, tool_progress_event(progress));
 }
 
+/// The most display-block kinds one diagnostic names.
+const MAX_REPORTED_BLOCK_KINDS: usize = 8;
+
+/// The source of a diagnostic about what `tool`'s provider sent: its plugin
+/// or runtime, else the engine's tool host.
+fn peer_diagnostic_source(tool: &ToolIdentity) -> cookie_agent_protocol::DiagnosticSource {
+    let source = match tool.source.as_ref().and_then(Open::known) {
+        Some(ToolSource::Plugin { plugin }) => {
+            cookie_agent_protocol::DiagnosticSource::plugin(plugin).ok()
+        }
+        Some(
+            ToolSource::Runtime { runtime_id, .. }
+            | ToolSource::Mcp {
+                runtime_id: Some(runtime_id),
+                ..
+            },
+        ) => cookie_agent_protocol::DiagnosticSource::runtime(runtime_id.as_str()).ok(),
+        _ => None,
+    };
+    source.unwrap_or_else(|| {
+        cookie_agent_protocol::DiagnosticSource::engine("tools")
+            .expect("static diagnostic source is valid")
+    })
+}
+
 impl Engine {
+    /// Records that the daemon dropped display blocks of kinds this build
+    /// does not know, of tags `tags`, from the `part` (`presentation`,
+    /// `progress`, or `result`) of a call of `tool`. A plugin or runtime
+    /// sends only the kinds the daemon's version includes, so such a block
+    /// comes from a peer newer than its handshake says
+    /// (`docs/site/specs/compatibility-v1.md` section 12.4).
+    pub(super) fn report_unknown_display_blocks(
+        &self,
+        session: SessionId,
+        tool: &ToolIdentity,
+        part: &'static str,
+        mut tags: Vec<String>,
+    ) {
+        if tags.is_empty() {
+            return;
+        }
+        let count = tags.len() as u64;
+        tags.sort_unstable();
+        tags.dedup();
+        tags.truncate(MAX_REPORTED_BLOCK_KINDS);
+        let kinds = tags
+            .iter()
+            .map(|tag| cookie_agent_protocol::diagnostics::sanitize(tag, 64))
+            .collect::<Vec<_>>();
+        let message = format!(
+            "dropped {count} display block{} of a kind this daemon does not know from the {part} of tool `{}`: {}",
+            if count == 1 { "" } else { "s" },
+            cookie_agent_protocol::diagnostics::sanitize(&tool.published_name, 64),
+            kinds.join(", ")
+        );
+        let event = Event::Diagnostic {
+            source: peer_diagnostic_source(tool),
+            kind: cookie_agent_protocol::PeerDiagnosticKind::UnknownDisplayBlock.label(),
+            message,
+            count: None,
+            detail: Some(serde_json::json!({
+                "tool": tool.published_name,
+                "part": part,
+                "kinds": kinds,
+            })),
+        };
+        let engine = self.clone();
+        tokio::spawn(async move {
+            let _ = engine
+                .on_actor(session, move |engine| {
+                    engine.append_direct(session, None, super::event_origin("engine:tools"), event)
+                })
+                .await;
+        });
+    }
+
     pub(super) fn decide_tool_permission(
         &self,
         active: &ActiveRun,
@@ -520,16 +596,16 @@ impl Engine {
         };
         // A provider that reports its metadata at preparation (a runtime
         // behind the runtime protocol) also reports how the call is shown.
-        let presentation = ToolPresentation::new(
-            match &prepared {
-                Ok(prepared) => prepared
-                    .declaration()
-                    .map(|declaration| declaration.presentation.clone()),
-                Err(_) => None,
-            }
-            .unwrap_or_else(|| provider.presentation(&call)),
-            tool.clone(),
-        );
+        let mut prepared_presentation = match &prepared {
+            Ok(prepared) => prepared
+                .declaration()
+                .map(|declaration| declaration.presentation.clone()),
+            Err(_) => None,
+        }
+        .unwrap_or_else(|| provider.presentation(&call));
+        let unknown = prepared_presentation.fit();
+        self.report_unknown_display_blocks(session_id, &tool, "presentation", unknown);
+        let presentation = ToolPresentation::new(prepared_presentation, tool.clone());
         PreparedToolCall {
             intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
             call,
@@ -790,27 +866,54 @@ impl Engine {
             // in the foreground, so a detached call outlives the run.
             let tool_cancellation = tokio_util::sync::CancellationToken::new();
             let (detach_point, mut detach_watch) = cookie_agent_runtime_api::DetachPoint::channel();
-            let invoke = std::panic::AssertUnwindSafe(executor.execute(ToolExecutionContext {
-                session: active.session,
-                run,
-                progress: match &capture {
-                    Some(capture)
-                        if result_truncation != crate::ToolResultTruncationPolicy::OptOut =>
-                    {
-                        capture.progress_sink(progress_tx.clone(), hub.clone())
+            // A display block of a kind this build does not know is dropped,
+            // and reported once per call and part.
+            let unknown_reporter = |part: &'static str| {
+                let engine = engine.clone();
+                let session = active.session;
+                let tool = presentation.tool.clone();
+                let reported = std::sync::atomic::AtomicBool::new(false);
+                move |tags: Vec<String>| {
+                    if !reported.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        engine.report_unknown_display_blocks(session, &tool, part, tags);
                     }
-                    _ => ProgressSink::new(progress_tx.clone()),
-                },
-                cancellation: tool_cancellation.clone(),
-                turn_context,
-                artifacts: engine.inner.artifacts.clone(),
-                detach: detach_point,
-                background: background == Some(true),
-                producers: None,
-            }))
+                }
+            };
+            let report_unknown_progress = unknown_reporter("progress");
+            let report_unknown_result = unknown_reporter("result");
+            let invoke = std::panic::AssertUnwindSafe(
+                executor.execute(ToolExecutionContext {
+                    session: active.session,
+                    run,
+                    progress: match &capture {
+                        Some(capture)
+                            if result_truncation != crate::ToolResultTruncationPolicy::OptOut =>
+                        {
+                            capture.progress_sink(progress_tx.clone(), hub.clone())
+                        }
+                        _ => ProgressSink::new(progress_tx.clone()),
+                    }
+                    .with_unknown_block_reporter(Arc::new(report_unknown_progress)),
+                    cancellation: tool_cancellation.clone(),
+                    turn_context,
+                    artifacts: engine.inner.artifacts.clone(),
+                    detach: detach_point,
+                    background: background == Some(true),
+                    producers: None,
+                }),
+            )
             .catch_unwind()
-            .map(|result| {
-                result.unwrap_or_else(|_| Err(ToolError::execution("tool execution panicked")))
+            .map(move |result| {
+                let mut result =
+                    result.unwrap_or_else(|_| Err(ToolError::execution("tool execution panicked")));
+                if let Ok(completion) = &mut result {
+                    let unknown =
+                        cookie_agent_protocol::take_unknown_blocks(&mut completion.result.display);
+                    if !unknown.is_empty() {
+                        report_unknown_result(unknown);
+                    }
+                }
+                result
             });
             let mut invoke: std::pin::Pin<
                 Box<

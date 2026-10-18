@@ -13,7 +13,7 @@ use cookie_agent_runtime_api::{
         ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams, InitializeResult,
         McpChangedParams, McpReconnectParams, McpServerSettings, McpServerState, Outcome,
         PrepareOutcome, PrepareParams, PrepareResult, RuntimeSettings, RuntimeTools,
-        ToolOutputLimits, ToolTurn, WireToolCall, method,
+        ToolOutputLimits, ToolResult, ToolTurn, WireToolCall, method,
     },
     reconnect::ReconnectPolicy,
     rpc::{Incoming, Peer},
@@ -328,7 +328,7 @@ async fn template_servers_publish_their_tools_and_answer_calls_with_media() {
     let echoed = harness
         .call("fixture_echo_text", json!({"text": "hello"}), false)
         .await;
-    let ExecuteOutcome::Completed { output, failed, .. } = echoed.outcome else {
+    let ExecuteOutcome::Completed(ToolResult { output, failed, .. }) = echoed.outcome else {
         panic!("the call completes");
     };
     assert!(!failed);
@@ -341,14 +341,14 @@ async fn template_servers_publish_their_tools_and_answer_calls_with_media() {
     let failing = harness.call("fixture_fail", json!({}), false).await;
     assert!(matches!(
         failing.outcome,
-        ExecuteOutcome::Completed { failed: true, .. }
+        ExecuteOutcome::Completed(ToolResult { failed: true, .. })
     ));
 
     let image = harness.call("fixture_image", json!({}), true).await;
-    let ExecuteOutcome::Completed { result, failed, .. } = image.outcome else {
+    let ExecuteOutcome::Completed(result) = image.outcome else {
         panic!("the image call completes");
     };
-    assert!(!failed);
+    assert!(!result.failed);
     let attachment = result
         .all_attachments()
         .next()
@@ -415,7 +415,7 @@ async fn a_crashed_server_reconnects_and_one_that_cannot_is_dropped_and_reported
         .await;
     assert!(matches!(
         echoed.outcome,
-        ExecuteOutcome::Completed { failed: false, .. }
+        ExecuteOutcome::Completed(ToolResult { failed: false, .. })
     ));
 
     // When every restart fails, its tools leave the list and the daemon is

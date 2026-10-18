@@ -8,7 +8,7 @@ use cookie_agent_runtime_api::{
         AgentMdLimits, CapabilityOpenParams, CapabilityOpenResult, ContextParams, ContextResult,
         Empty, ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams, InitializeResult,
         Outcome, PrepareOutcome, PrepareParams, PrepareResult, PreparedRef, RuntimeSettings,
-        ToolOutputLimits, ToolProgressParams, ToolTurn, WireToolCall, method,
+        ToolOutputLimits, ToolProgressParams, ToolResult, ToolTurn, WireToolCall, method,
     },
     rpc::{Incoming, Peer, RpcError},
 };
@@ -511,7 +511,7 @@ async fn calls_are_prepared_executed_and_released_by_prepared_id() {
         .request(method::TOOL_EXECUTE, &execute(read.prepared_id))
         .await
         .unwrap();
-    let ExecuteOutcome::Completed { output, failed, .. } = result.outcome else {
+    let ExecuteOutcome::Completed(ToolResult { output, failed, .. }) = result.outcome else {
         panic!("read completes");
     };
     assert!(!failed);
@@ -535,7 +535,7 @@ async fn calls_are_prepared_executed_and_released_by_prepared_id() {
         .unwrap();
     assert!(matches!(
         result.outcome,
-        ExecuteOutcome::Completed { failed: false, .. }
+        ExecuteOutcome::Completed(ToolResult { failed: false, .. })
     ));
     let mut streamed = String::new();
     while let Ok(progress) = harness.progress.try_recv() {

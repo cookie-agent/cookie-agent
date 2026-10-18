@@ -5,7 +5,7 @@
 
 pub use cookie_agent_protocol::runtime_protocol::*;
 
-use crate::{PromptSection, ToolError, ToolProgress, ToolSpec, TurnAgentContext};
+use crate::{PromptSection, ToolCompletion, ToolError, ToolProgress, ToolSpec, TurnAgentContext};
 
 /// Conversions between a [`ToolDeclaration`] and the [`ToolSpec`] a provider
 /// publishes.
@@ -101,6 +101,63 @@ impl From<ToolTurn> for TurnAgentContext {
             model: turn.model.model,
             adapter: turn.model.adapter,
             input_media: turn.model.input_media,
+        }
+    }
+}
+
+/// Conversions between a wire [`ToolResult`] and a [`ToolCompletion`].
+pub trait ToolResultExt: Sized {
+    /// The wire result of `completion`, as a runtime returns it. The
+    /// background state and retained output are the daemon's to record and
+    /// are left out.
+    fn of(completion: ToolCompletion) -> Self;
+
+    /// The completion the daemon runs a peer's result as: a result of tool
+    /// `tool` without a title is titled with its name, and a `single` output
+    /// without display shows its text.
+    fn into_completion(self, tool: &str) -> ToolCompletion;
+}
+
+impl ToolResultExt for ToolResult {
+    fn of(completion: ToolCompletion) -> Self {
+        let ToolCompletion {
+            output,
+            result,
+            failed,
+        } = completion;
+        Self {
+            output,
+            title: Some(result.title),
+            display: result.display,
+            metadata: (!result.metadata.is_null()).then_some(result.metadata),
+            attachments: result.attachments,
+            additional_messages: result.additional_messages,
+            failed,
+        }
+    }
+
+    fn into_completion(self, tool: &str) -> ToolCompletion {
+        let display = match (&self.output, self.display.is_empty()) {
+            (cookie_agent_protocol::ToolCompletionOutput::Single { text }, true) => {
+                crate::bounded_tool_display(text)
+            }
+            _ => self.display,
+        };
+        ToolCompletion {
+            output: self.output,
+            result: cookie_agent_protocol::PersistedToolResult {
+                title: self
+                    .title
+                    .unwrap_or_else(|| crate::authoring::safe_title(tool)),
+                output: String::new(),
+                display,
+                background: None,
+                retained_output: None,
+                metadata: self.metadata.unwrap_or(serde_json::Value::Null),
+                attachments: self.attachments,
+                additional_messages: self.additional_messages,
+            },
+            failed: self.failed,
         }
     }
 }

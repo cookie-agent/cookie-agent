@@ -585,18 +585,25 @@ async fn a_plugin_tool_is_prepared_and_executed_like_a_runtime_tool() {
         "operation": forged,
         "policy_labels": ["rm -rf /"],
     });
+    // Its result shows a block of a kind this daemon does not know, as a
+    // newer plugin's would.
+    let display = serde_json::json!([
+        {"type": "hologram", "frames": 3},
+        {"type": "text", "text": "echoed"},
+    ]);
     let toml_string = |value: &str| toml::Value::String(value.to_owned()).to_string();
     let extra_config = format!(
         r#"
 [plugins.issues]
 command = [{}, {}]
-env = {{ FIXTURE_NAME = "issues", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {}, FIXTURE_TOOL_RESOURCE_PARAM = "plugin_arg", FIXTURE_PREPARED_EXTRA = {} }}
+env = {{ FIXTURE_NAME = "issues", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {}, FIXTURE_TOOL_RESOURCE_PARAM = "plugin_arg", FIXTURE_PREPARED_EXTRA = {}, FIXTURE_TOOL_DISPLAY_BLOCKS = {} }}
 "#,
         toml_string(python_command()),
         toml_string(PLUGIN_FIXTURE),
         toml_string(&declaration.to_string()),
         toml_string(&plugin_call.display().to_string()),
         toml_string(&prepared_extra.to_string()),
+        toml_string(&display.to_string()),
     );
     // The plugin declares its own permission action, which a rule names
     // like any other.
@@ -696,6 +703,49 @@ env = {{ FIXTURE_NAME = "issues", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {
         start.operation_fingerprint,
         OperationFingerprint::from_prepared_operation(&expected)
     );
+    // The block of the unknown kind is dropped, with a diagnostic naming the
+    // plugin.
+    let result = termination.result.as_ref().expect("tool result");
+    assert_eq!(
+        serde_json::to_value(&result.display).unwrap(),
+        serde_json::json!([{"type": "text", "text": "echoed"}])
+    );
+    let diagnostic = tokio::time::timeout(test_timeout(3), async {
+        loop {
+            let projection = fixture
+                .engine
+                .inner
+                .store
+                .get(session.session_id)
+                .expect("session projection");
+            let found = projection
+                .log
+                .events()
+                .iter()
+                .find_map(|event| match &event.payload {
+                    EventPayload::Diagnostic {
+                        source,
+                        kind,
+                        message,
+                        ..
+                    } if *kind
+                        == cookie_agent_protocol::PeerDiagnosticKind::UnknownDisplayBlock =>
+                    {
+                        Some((source.to_string(), message.clone()))
+                    }
+                    _ => None,
+                });
+            if let Some(found) = found {
+                break found;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("unknown block diagnostic");
+    assert_eq!(diagnostic.0, "plugin:issues");
+    assert!(diagnostic.1.contains("hologram"), "{}", diagnostic.1);
+    assert!(diagnostic.1.contains("result"), "{}", diagnostic.1);
     let call: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&plugin_call).expect("plugin executed"))
             .expect("call record");

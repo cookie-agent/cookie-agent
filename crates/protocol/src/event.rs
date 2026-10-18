@@ -3402,6 +3402,15 @@ pub enum EngineDiagnosticKind {
     AgentMdTooLarge,
 }
 
+/// The `diagnostic` kinds the daemon records about what a plugin or runtime
+/// sent; the diagnostic's source names the peer.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PeerDiagnosticKind {
+    /// A tool's presentation, result, or progress carried display blocks of
+    /// a kind this build does not know, which it dropped.
+    UnknownDisplayBlock,
+}
+
 macro_rules! diagnostic_kinds {
     ($($name:ident { $($variant:ident => $label:literal),+ $(,)? })+) => {
         $(
@@ -3455,6 +3464,9 @@ diagnostic_kinds! {
     EngineDiagnosticKind {
         AutoCompactionDisabled => "auto_compaction_disabled",
         AgentMdTooLarge => "agent_md_too_large",
+    }
+    PeerDiagnosticKind {
+        UnknownDisplayBlock => "unknown_display_block",
     }
 }
 

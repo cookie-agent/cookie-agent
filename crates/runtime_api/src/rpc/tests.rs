@@ -419,3 +419,69 @@ fn tool_errors_and_declarations_survive_the_wire() {
     assert!(protocol::hex_decode("0g").is_none());
     assert!(protocol::hex_decode("abc").is_none());
 }
+
+/// A peer's result is what the daemon runs: it names the result after the
+/// tool when the peer gave no title, shows a single output with no display,
+/// and leaves the background state and retained output to the daemon.
+#[test]
+fn a_peer_result_becomes_the_completion_the_daemon_stores() {
+    use crate::protocol::{ToolResult, ToolResultExt as _};
+
+    let wire: ToolResult = serde_json::from_value(json!({
+        "output": {"kind": "single", "text": "two lines\nof text"},
+        "future_member": 1,
+    }))
+    .unwrap();
+    let completion = wire.into_completion("lookup");
+    assert_eq!(completion.result.title.as_str(), "lookup");
+    assert!(!completion.failed);
+    assert!(completion.result.metadata.is_null());
+    assert!(completion.result.background.is_none());
+    assert_eq!(
+        serde_json::to_value(&completion.result.display).unwrap(),
+        json!([{"type": "text", "text": "two lines\nof text"}])
+    );
+
+    let wire: ToolResult = serde_json::from_value(json!({
+        "output": {"kind": "streamed"},
+        "title": "Looked up",
+        "display": [{"type": "key_value", "entries": [{"key": "status", "value": "ok"}]}],
+        "metadata": {"hits": 2},
+        "failed": true,
+    }))
+    .unwrap();
+    let completion = wire.clone().into_completion("lookup");
+    assert_eq!(completion.result.title.as_str(), "Looked up");
+    assert!(completion.failed);
+    assert_eq!(completion.result.metadata, json!({"hits": 2}));
+    // And back as the runtime side sends it.
+    assert_eq!(ToolResult::of(completion), wire);
+}
+
+/// A replacement's blocks of a kind this build does not know are dropped
+/// before the live display admits it, and reported.
+#[tokio::test]
+async fn progress_drops_and_reports_display_blocks_of_unknown_kinds() {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+    let reported = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = crate::ProgressSink::new(sender).with_unknown_block_reporter({
+        let reported = std::sync::Arc::clone(&reported);
+        std::sync::Arc::new(move |tags| reported.lock().unwrap().extend(tags))
+    });
+    let progress: protocol::WireProgress = serde_json::from_value(json!({
+        "tool_call_id": cookie_agent_protocol::ToolCallId::new_v7(),
+        "message": "working",
+        "display": {"type": "replace", "blocks": [
+            {"type": "hologram", "frames": 3},
+            {"type": "text", "text": "step 1"},
+        ]},
+    }))
+    .unwrap();
+    sink.send(progress.into()).await.unwrap();
+    assert_eq!(*reported.lock().unwrap(), ["hologram"]);
+    let delivered = receiver.recv().await.unwrap();
+    assert_eq!(
+        serde_json::to_value(delivered.display).unwrap(),
+        json!({"type": "replace", "blocks": [{"type": "text", "text": "step 1"}]})
+    );
+}

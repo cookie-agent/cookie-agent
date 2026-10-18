@@ -48,7 +48,8 @@ use cookie_agent_runtime_api::{
         McpServerSettings, Outcome, OutcomeExt as _, PrepareOutcome, PrepareParams, PrepareResult,
         PreparedCall, PreparedRef, PromptSectionDeclaration, RuntimeSettings, RuntimeSkills,
         RuntimeTools, SkillDeclaration, SkillDiscoveryDeclaration, ToolDeclaration,
-        ToolDeclarationExt as _, ToolProgressParams, WireToolError, method,
+        ToolDeclarationExt as _, ToolProgressParams, ToolResult, ToolResultExt as _, WireToolError,
+        method,
     },
     reconnect::ReconnectPolicy,
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
@@ -951,11 +952,7 @@ impl Server {
             .unwrap_or_else(|_| Err(ToolError::execution("tool execution panicked")));
         announce.abort();
         let outcome = match result {
-            Ok(completion) => ExecuteOutcome::Completed {
-                output: completion.output,
-                result: completion.result,
-                failed: completion.failed,
-            },
+            Ok(completion) => ExecuteOutcome::Completed(ToolResult::of(completion)),
             Err(error) => ExecuteOutcome::Failed {
                 error: WireToolError::from(&error),
             },

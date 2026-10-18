@@ -211,7 +211,7 @@ the same client it uses for a runtime:
 |---|---|---|
 | `tool/prepare` | daemon → plugin | Prepare one turn's calls: the plugin reports each call's normalized arguments, permission and resource, and presentation. The daemon builds the call's approval identity from them. |
 | `tool/revalidate` | daemon → plugin | Check a prepared call is still valid before it runs. |
-| `tool/execute` | daemon → plugin | Run a prepared call; the result is its output and persisted result, whose `display` is a list of display blocks. |
+| `tool/execute` | daemon → plugin | Run a prepared call; the result is its output, optional title, display blocks, metadata, and attachments, and whether it failed. The daemon builds the stored result from it. |
 | `tool/release` | daemon → plugin | Forget a prepared call that will not run. |
 | `tool/cancel` | daemon → plugin | Cancel an executing call. |
 | `tool/progress` | plugin → daemon | Report a running call's status and output, and optionally a `display` delta (`append` or `replace`) of its live display. |

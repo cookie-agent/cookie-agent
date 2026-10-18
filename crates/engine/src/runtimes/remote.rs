@@ -47,7 +47,8 @@ use cookie_agent_runtime_api::{
         ExecuteResult, InitializeParams, InitializeResult, InlineMedia, McpChangedParams,
         McpReconnectParams, McpServerReport, Outcome, OutcomeExt as _, PrepareOutcome,
         PrepareParams, PrepareResult, PreparedCall, PreparedRef, RuntimeSettings, RuntimeSkills,
-        RuntimeTools, ToolDeclarationExt as _, ToolProgressParams, WireToolCall, method,
+        RuntimeTools, ToolDeclarationExt as _, ToolProgressParams, ToolResultExt as _,
+        WireToolCall, method,
     },
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
 };
@@ -1505,9 +1506,11 @@ impl ClientInner {
             .map(|(_, presentation)| presentation)
     }
 
+    /// Runs the call of tool `tool` the runtime prepared as `prepared_id`.
     async fn execute(
         self: &Arc<Self>,
         prepared_id: u64,
+        tool: &str,
         context: ToolExecutionContext,
     ) -> Result<ToolCompletion, ToolError> {
         let ToolExecutionContext {
@@ -1552,15 +1555,7 @@ impl ClientInner {
         drop(guard);
         let reply = reply.map_err(|error| self.unavailable(&error))?;
         let completion = match reply.outcome {
-            ExecuteOutcome::Completed {
-                output,
-                result,
-                failed,
-            } => ToolCompletion {
-                output,
-                result,
-                failed,
-            },
+            ExecuteOutcome::Completed(result) => result.into_completion(tool),
             ExecuteOutcome::Failed { error } => return Err(error.into()),
         };
         retain_media(artifacts.as_ref(), session, reply.media, &completion)?;
@@ -1666,7 +1661,7 @@ impl RemoteToolProvider {
 impl RemoteToolProvider {
     /// The call the runtime prepared, which the daemon identifies from what
     /// it declares.
-    fn prepared_tool(&self, call: PreparedCall) -> Result<PreparedTool, ToolError> {
+    fn prepared_tool(&self, tool: &str, call: PreparedCall) -> Result<PreparedTool, ToolError> {
         let serialization_key = call
             .serialization_key
             .as_deref()
@@ -1679,6 +1674,7 @@ impl RemoteToolProvider {
         let executor = Box::new(RemoteExecutor {
             client: Arc::clone(&self.client.inner),
             prepared_id: call.prepared_id,
+            tool: tool.to_owned(),
             executed: false,
         });
         Ok(
@@ -1833,7 +1829,7 @@ impl ToolProvider for RemoteToolProvider {
             };
             for (call, outcome) in batch.iter().zip(outcomes) {
                 prepared.push(match outcome {
-                    PrepareOutcome::Prepared(declared) => self.prepared_tool(declared),
+                    PrepareOutcome::Prepared(declared) => self.prepared_tool(&call.name, declared),
                     PrepareOutcome::Failed {
                         error,
                         presentation,
@@ -1852,6 +1848,8 @@ impl ToolProvider for RemoteToolProvider {
 struct RemoteExecutor {
     client: Arc<ClientInner>,
     prepared_id: u64,
+    /// The name the runtime knows the call's tool by.
+    tool: String,
     executed: bool,
 }
 
@@ -1891,7 +1889,7 @@ impl PreparedExecutor for RemoteExecutor {
     ) -> Result<ToolCompletion, ToolError> {
         self.executed = true;
         let client = Arc::clone(&self.client);
-        client.execute(self.prepared_id, context).await
+        client.execute(self.prepared_id, &self.tool, context).await
     }
 }
 

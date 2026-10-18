@@ -80,7 +80,7 @@ fallbacks are chosen so that an older reader stays safe:
 | tool error `kind` | prepare, revalidate, and execute results; `mcp/reconnect` | `failed`, a generic tool failure |
 | MCP server `state` | `capability/open` results, `mcp/changed` | `disconnected`: no tools, and no retry as a failure |
 | media `delivery` | `tool/prepare` and `tool/execute` turns | `unknown`: the tool does not attach that kind |
-| display block `type` | execute results | dropped, as the daemon drops a block kind it does not know |
+| display block `type` | prepare presentations, execute results, `tool/progress` replacements | dropped, with a diagnostic (see [Display blocks](#display-blocks)) |
 | media `kind` | `tool/prepare` and `tool/execute` turns | a label: a tool does not attach a kind it does not know |
 
 These are closed by design, since every reader must understand each value: a
@@ -380,11 +380,22 @@ a notification.
 | `session`, `run`, `turn` | As for prepare. |
 | `background` | `true` when the model started the call in the background; omitted otherwise. A tool may use it to word its own results; it detaches the same way either way. |
 
-The result's `outcome` is tagged by `status`: `completed` with the terminal
-`output` (single or streamed), the persisted `result`, and `failed`; or
-`failed` with an `error`. The result's `display` is a list of display blocks;
-the daemon sanitizes it, drops block kinds it does not know, and fits it to
-64 KiB. Next to it:
+The result's `outcome` is tagged by `status`: `failed` with an `error` the
+call could not run past, or `completed` with the call's result:
+
+| Member | Meaning |
+|---|---|
+| `output` | What the model reads, tagged by `kind`: `single` with the whole `text`, `named` with one text per declared stream, or `streamed` when the call's progress already sent it. |
+| `title` | Optional: the result's title, at most 256 bytes; the tool's name when absent. |
+| `display` | Optional: what clients show, a list of display blocks (see [Display blocks](#display-blocks)). A `single` output without one shows its text. |
+| `metadata` | Optional: structured data the model reads with the output. |
+| `attachments` | Optional: files the result carries, each `{ mime_type, filename?, byte_length, sha256, reference }`, at most 256 with the files of `additional_messages`. |
+| `additional_messages` | Optional: at most 4 messages added to the model's history after the result, each `{ role, content }`. |
+| `failed` | Optional, default `false`: the call failed, and the model reads its output as the failure. |
+
+The daemon builds the result a session stores from it: it captures the
+output, previews and retains it, records whether the call moved to the
+background, and fits the display. Next to the outcome:
 
 - `media`: the bytes of every attachment the result references, as `sha256`
   and base64 `data`, at most 25 MiB in all. The runtime gives each retained
@@ -403,6 +414,19 @@ The daemon owns capture, previews, and artifact retention.
 `tool/cancel` cancels the call; it still answers its execute request. The
 runtime registers an execution as the request arrives, so a cancellation sent
 right after execute reaches it.
+
+### Display blocks
+
+A prepared call's `presentation`, an execute result's `display`, and a
+`tool/progress` `replace` carry display blocks, typed units such as `text`,
+`code`, `diff`, or `terminal` that clients render as they choose (see the
+[compatibility spec](../specs/compatibility-v1.md#121-display-blocks)). The
+daemon strips control characters a block may not carry and fits each list to
+64 KiB, cutting whole lines, hunks, or rows. A runtime sends only the kinds
+the daemon's version includes: a block of a kind the daemon does not know is
+dropped, and the session records a `diagnostic` of kind
+`unknown_display_block` whose source names the runtime (`runtime:<id>`) or
+plugin (`plugin:<name>`), once per call for its progress and its result.
 
 ### Background calls
 

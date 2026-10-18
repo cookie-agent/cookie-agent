@@ -184,11 +184,11 @@ fn prepared(outcome: &PrepareOutcome) -> &PreparedCall {
 
 fn completed_text(result: &ExecuteResult) -> (&str, bool) {
     match &result.outcome {
-        ExecuteOutcome::Completed {
+        ExecuteOutcome::Completed(ToolResult {
             output: ToolCompletionOutput::Single { text },
             failed,
             ..
-        } => (text, *failed),
+        }) => (text, *failed),
         other => panic!("expected a single-text completion, got {other:?}"),
     }
 }

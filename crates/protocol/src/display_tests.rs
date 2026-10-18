@@ -721,3 +721,31 @@ fn hints_are_open_labels_that_render_unknown_as_generic() {
         assert!(ToolHint::new(invalid).is_err(), "{invalid:?}");
     }
 }
+
+#[test]
+fn a_peers_presentation_is_fit_and_loses_blocks_of_unknown_kinds() {
+    let mut prepared: PreparedPresentation = serde_json::from_value(json!({
+        "title": "Edit src/main.rs",
+        "arguments": [
+            {"type": "hologram", "frames": 3},
+            {"type": "code", "text": "a\u{7}b", "language": "rust"},
+        ],
+        "preview": [
+            {"type": "text", "text": "x".repeat(DISPLAY_BUDGET_BYTES)},
+            {"type": "sparkle"},
+        ],
+    }))
+    .unwrap();
+    assert_eq!(prepared.fit(), ["hologram", "sparkle"]);
+    assert_eq!(prepared.arguments.len(), 1);
+    // Sanitized as every block the daemon receives.
+    assert_eq!(prepared.arguments[0].known().unwrap().to_text(), "ab");
+    assert!(validate_display(&prepared.preview).is_ok());
+
+    let mut blocks = vec![
+        Open::Known(DisplayBlock::text("kept")),
+        serde_json::from_value(json!({"type": "hologram"})).unwrap(),
+    ];
+    assert_eq!(take_unknown_blocks(&mut blocks), ["hologram"]);
+    assert_eq!(blocks, [Open::Known(DisplayBlock::text("kept"))]);
+}
