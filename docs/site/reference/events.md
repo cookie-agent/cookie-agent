@@ -44,15 +44,18 @@ and the optional `short_id`, the tree-unique model-facing handle.
 
 ## Reading a log
 
-Writers are strict: every appended record passes validation, including a
-`skippable` that agrees with its payload's class. Readers handle each line on
-its own:
+Writers are strict: every appended record passes validation (bounds, required
+fields, grammar, and the cross-event checks below), including a `skippable`
+that agrees with its payload's class. Readers are tolerant, since a newer
+build may have written the log. Each line is read on its own:
 
-- A fully readable record loads normally.
+- A fully readable record loads normally. **Members this build does not know
+  are ignored**, in the envelope (on the first line too) and at any depth of
+  the payload: they are what a newer build added.
 - A known event with an absent or type-mismatched optional field loads with
   that field defaulted and an in-memory degradation diagnostic.
-- A record with a broken required field, corrupt JSON, an unknown envelope
-  member, or a failed validation is skipped with a diagnostic.
+- A record with a broken required field, corrupt JSON, or a failed record
+  check is skipped with a diagnostic.
 - **An event type this build does not know** is skipped silently when its
   record says `skippable`. Without `skippable` it is a state event from a
   newer build: the record is skipped with a diagnostic naming its type, and
@@ -62,15 +65,69 @@ its own:
   other change fail with error code `session_requires_newer_engine`, and
   adopting it repairs nothing.
 - Sequence numbers must increase strictly. Gaps are retained and reported,
-  one bounded diagnostic per contiguous missing range.
+  one bounded diagnostic per contiguous missing range. **A sequence that does
+  not increase ends the readable log at that line**: what follows is not
+  read, a diagnostic names the line, and the session is render-only as
+  above, except that changes fail as a broken sequence. Nothing is cut from
+  the file.
+
+Records that decode are then checked against each other: runs, attempts,
+turns, tool calls, approvals, internal agents, delegations, and admitted
+input must agree with the records they name. **A record that fails such a
+check is quarantined** instead of failing the open: it is left out like a
+skipped record, with a `quarantined: …` diagnostic (the first 64, then one
+that counts the rest), and every record that depends on it is excused the
+same way a dependent of a skipped record is. Appends stay strict: a new
+record must pass every check against what the log holds. A delegation whose
+stored records the delegation store cannot verify becomes unrecoverable on
+its own, and the tree still loads.
+
+Nothing derived is recomputed on read. Stored approval operation
+fingerprints and delegation request fingerprints are trusted, and the size
+caps writers keep to that no schema states (a tool result's output,
+metadata, and display budget, a model turn's serialized size, native replay
+payloads, a diagnostic's detail, a delegation's seeded-context total) bound
+only what is written. Bounds a schema states stay part of the type.
+
+A `metadata` cache that does not decode is rebuilt from `events.jsonl`, so
+the session stays listed; `subagents/index.json` likewise rebuilds from the
+tree.
+
+### What survives a newer build
+
+A loaded log keeps the bytes it was read from. Rewriting a log whole — a
+fork, or a conversion — copies every line it did not fully understand (a
+skipped event, a quarantined record, a degraded one) as it was written, with
+the new session's `session_id` in a fork; a record read in full is written
+as this build serializes it. Artifact liveness (what a revert may delete, and
+what a fork links into its own tree) scans the lines as they were read, so a
+reference inside an unknown event or an unknown member keeps its artifact:
+both an `artifact://sha256/<digest>` anywhere in a string and an
+`ArtifactRef` object (`sha256`, `byte_length`, `media_type`) count.
+
+### History formats
 
 The first record decides whether the log opens at all. Without a readable
 `session_created` the session cannot open: the engine reports an
 unsupported-era or corrupt-log error. A `session_created` without
 `history_format` was written before history formats and is not read. A
 higher `history_format` than this build's fails with
-`session_requires_newer_engine`; a lower one has no conversion yet and fails
-as unsupported.
+`session_requires_newer_engine`. A lower one is **converted** to this
+build's format by the chain of converters it ships, one per format step,
+each a function from the old log's JSON lines to the new one's:
+
+- A read-only open converts in memory and leaves the files alone.
+- Taking a tree for writing converts the whole tree under its lock first:
+  the root's log, every child's, and their `metadata` caches. Each new file
+  is written beside its original and synced; only once every log converted
+  does each original become `events.jsonl.v<N>.bak` (`N` its old format) and
+  the new file take its place, and `subagents/index.json` is rebuilt by the
+  next tree load. A failure leaves every original untouched.
+- [`cookie sessions upgrade`](../guide/sessions.md#history-formats) converts
+  the trees on disk up front.
+
+Backups are kept until you delete them. The format bumps only for a change
+that cannot follow the additive rules below.
 
 CI compares the generated `EventPayload` schema with the committed baseline in
 `crates/protocol/compat/events/` (see [Schemas](schemas.md)). A new optional

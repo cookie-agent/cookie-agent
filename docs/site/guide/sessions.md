@@ -17,13 +17,15 @@ A new empty session exists only in memory. Its directory, metadata cache, and
 event JSONL are created atomically when the first user message is submitted.
 Closing an empty session leaves no persisted session.
 
-Persisted sessions use an append-only, versionless JSONL history. New events are
-stamped with the writing engine version for diagnostics, but opening a session
-does not require an exact version match. The engine loads known records
-best-effort, reports skipped unsupported or corrupt records in session metadata,
-and tolerates the resulting sequence gaps. The derived `metadata` file is only a
-cache: missing, stale, mismatched, or unreadable cache content is rebuilt from
-the event history. Streamed text, reasoning, and tool progress are live-only:
+Persisted sessions use an append-only JSONL history. New events are stamped
+with the writing engine version for diagnostics, but opening a session does not
+require an exact version match. The engine reads what a newer build wrote
+tolerantly: it ignores members it does not know, skips unknown audit events,
+quarantines records that do not agree with the rest of the log, reports what
+it skipped in session metadata, and tolerates the resulting sequence gaps
+([Event Reference](../reference/events.md#reading-a-log)). The derived
+`metadata` file is only a cache: missing, stale, mismatched, or unreadable
+cache content is rebuilt from the event history. Streamed text, reasoning, and tool progress are live-only:
 they reach attached views but are never written to `events.jsonl`, whose
 history holds finished turns and tool results. Reattaching to a session while
 a reply streams shows its finished turns, then the reply from the next live
@@ -66,6 +68,25 @@ is still readable — the TUI shows it as a read-only snapshot with input
 disabled — and becomes writable once the process holding the tree exits.
 Adopting one session of a free tree claims the tree, while each session in it
 still reconciles its own interrupted work the first time it is written.
+
+## History formats
+
+A session log records its history format. A build that reads a newer format
+cannot open the session and asks for a newer cookie. A build that reads an
+older one converts it the first time it takes the session's tree for
+writing, keeping each original log beside the new one as
+`events.jsonl.v<N>.bak`; a read-only view converts in memory only. To convert
+every session up front instead:
+
+```sh
+cookie sessions upgrade        # the sessions of this directory
+cookie sessions upgrade --all  # the sessions of every directory
+```
+
+It reports each tree it converted, each it skipped because another cookie
+process holds it (that process converts it itself), and each session it
+cannot convert, such as one written before history formats, and exits
+nonzero when there was one. The backups stay until you delete them.
 
 ## Titles
 

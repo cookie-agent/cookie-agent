@@ -88,7 +88,7 @@ The TUI's own tests still drive a real `server` through a dev-dependency.
 | `coding_runtime` | The coding runtime: its `read`, `write`, `edit`, `bash`, and `webfetch` tools, working in the runtime's workspace, the global runtime's fallback `webfetch`, and the runtime protocol server (`server::serve`) that answers a daemon with them, the workspace's project skills, and its `AGENTS.md`, plus the in-process connector the daemon's `local` runtime uses and `server::serve_stdio`, which `cookie runtime serve --stdio` runs. The server hosts its template's MCP servers with an `McpRegistry` without OAuth. Depends on `runtime_api`, `mcp`, and `config` (the skill parser), never on the engine. |
 | `server` | The `ServerProtocol` implementation over `Engine`, the axum WebSocket accept path, `Server::connect_in_process`, and the per-run token / ready-line APIs. Server side only. |
 | `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow. Depends only on `protocol` and runs over a `protocol::Client` it is handed. |
-| `cookie_agent` | CLI and composition root wiring every crate together, and `cookie runtime serve --stdio`, which serves a coding runtime to a daemon without reading any configuration. The only binary. |
+| `cookie_agent` | CLI and composition root wiring every crate together, `cookie runtime serve --stdio`, which serves a coding runtime to a daemon without reading any configuration, and `cookie sessions upgrade`, which converts session history to this build's format. The only binary. |
 
 ### Type unification
 
