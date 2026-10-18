@@ -6,7 +6,6 @@ use std::{
 
 use jiff::Timestamp;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
-use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_path_to_error::Segment;
@@ -3725,7 +3724,11 @@ pub struct EventPayloadRead {
 /// The original event log is not rewritten.
 ///
 /// A payload that decodes strictly is read in place; only a payload that
-/// needs repair is copied and re-decoded with path tracking.
+/// needs repair is copied. Each repair locates its leaf first and then decodes
+/// the payload once more, so repairing stays linear in the payload's size:
+/// `serde_path_to_error` names the leaf where it can, and where serde buffered
+/// the value first (inside an internally tagged enum, which every payload is)
+/// the leaf is found by the value serde's error names.
 pub fn deserialize_event_payload_best_effort(value: &Value) -> Result<EventPayloadRead, String> {
     if let Ok(payload) = EventPayload::deserialize(value) {
         return Ok(EventPayloadRead {
@@ -3737,38 +3740,52 @@ pub fn deserialize_event_payload_best_effort(value: &Value) -> Result<EventPaylo
     let mut value = value.clone();
     let mut previous_path = None;
     for _ in 0..=MAX_DEGRADED_FIELDS {
-        match serde_path_to_error::deserialize::<_, EventPayload>(value.clone().into_deserializer())
-        {
+        count_degradation_decode();
+        let error = match serde_path_to_error::deserialize::<_, EventPayload>(&value) {
             Ok(payload) => {
                 return Ok(EventPayloadRead {
                     payload,
                     degraded_fields,
                 });
             }
-            Err(error) => {
-                let path = error.path().to_string();
-                if path != "." && previous_path.as_deref() == Some(path.as_str()) {
-                    return Err(error.to_string());
-                }
-                let degraded = if path == "." {
-                    replace_degradable_leaf(&mut value, &error.to_string())
-                } else if replace_path_with_null(&mut value, error.path()) {
-                    Some(path.clone())
-                } else {
-                    None
-                };
-                let Some(degraded) = degraded else {
-                    return Err(error.to_string());
-                };
-                previous_path = Some(path.clone());
-                degraded_fields.push(degraded);
-            }
+            Err(error) => error,
+        };
+        let path = error.path().to_string();
+        if path != "." && previous_path.as_deref() == Some(path.as_str()) {
+            return Err(error.to_string());
         }
+        let degraded = if path == "." {
+            replace_named_leaf(&mut value, &error.inner().to_string())
+        } else if replace_path_with_null(&mut value, error.path()) {
+            Some(path.clone())
+        } else {
+            None
+        };
+        let Some(degraded) = degraded else {
+            return Err(error.to_string());
+        };
+        previous_path = Some(path);
+        degraded_fields.push(degraded);
     }
     Err(format!(
         "event payload exceeds the {MAX_DEGRADED_FIELDS}-field degradation limit"
     ))
 }
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: payload decodes the best-effort reader ran to degrade.
+    pub(crate) static DEGRADATION_DECODES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+fn count_degradation_decode() {
+    #[cfg(test)]
+    DEGRADATION_DECODES.with(|decodes| decodes.set(decodes.get() + 1));
+}
+
+/// The most candidate leaves one repair tries, each with one decode.
+const MAX_LEAF_CANDIDATES: usize = 16;
 
 #[derive(Clone)]
 enum ValuePathSegment {
@@ -3776,24 +3793,128 @@ enum ValuePathSegment {
     Index(usize),
 }
 
-fn replace_degradable_leaf(value: &mut Value, original_error: &str) -> Option<String> {
-    let mut paths = Vec::new();
-    collect_leaf_paths(value, &mut Vec::new(), &mut paths);
-    for path in paths {
+/// What serde's error names as the value it could not take.
+enum NamedValue {
+    /// `invalid type` or `invalid value`: a leaf equal to this one.
+    Leaf(Value),
+    /// `invalid type` for a sequence or a map: any array or object.
+    Array,
+    Object,
+    /// `invalid length N`: an array of that length.
+    Length(usize),
+    /// `missing field`: an object without it, which takes a null.
+    Missing(String),
+}
+
+impl NamedValue {
+    /// Reads serde's standard messages, which spell the value out with
+    /// [`serde::de::Unexpected`]; a custom message names none.
+    fn parse(message: &str) -> Option<Self> {
+        if let Some(rest) = message.strip_prefix("missing field `") {
+            return rest
+                .split('`')
+                .next()
+                .map(|field| Self::Missing(field.to_owned()));
+        }
+        if let Some(rest) = message.strip_prefix("unknown variant `") {
+            return rest
+                .split('`')
+                .next()
+                .map(|variant| Self::Leaf(Value::String(variant.to_owned())));
+        }
+        if let Some(rest) = message.strip_prefix("invalid length ") {
+            return rest
+                .split(',')
+                .next()
+                .and_then(|length| length.trim().parse().ok())
+                .map(Self::Length);
+        }
+        let unexpected = message
+            .strip_prefix("invalid type: ")
+            .or_else(|| message.strip_prefix("invalid value: "))?;
+        let quoted = |prefix: &str| {
+            unexpected
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.split('`').next())
+        };
+        if let Some(rest) = unexpected.strip_prefix("string ") {
+            // The string as `Debug` spells it; decoding it as JSON covers the
+            // escapes the two share, which is every one serde emits for
+            // stored text.
+            let end = rest.rfind("\", expected").or_else(|| rest.rfind('"'))?;
+            return serde_json::from_str::<String>(&rest[..=end])
+                .ok()
+                .map(|text| Self::Leaf(Value::String(text)));
+        }
+        if let Some(number) = quoted("integer `") {
+            return serde_json::from_str::<serde_json::Number>(number)
+                .ok()
+                .map(|number| Self::Leaf(Value::Number(number)));
+        }
+        if let Some(number) = quoted("floating point `") {
+            return number
+                .parse::<f64>()
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+                .map(|number| Self::Leaf(Value::Number(number)));
+        }
+        if let Some(boolean) = quoted("boolean `") {
+            return boolean
+                .parse()
+                .ok()
+                .map(|boolean| Self::Leaf(Value::Bool(boolean)));
+        }
+        if unexpected.starts_with("sequence") {
+            return Some(Self::Array);
+        }
+        if unexpected.starts_with("map") {
+            return Some(Self::Object);
+        }
+        None
+    }
+
+    fn matches(&self, value: &Value) -> bool {
+        match (self, value) {
+            (Self::Leaf(Value::Number(named)), Value::Number(number)) => {
+                named == number
+                    || named
+                        .as_f64()
+                        .is_some_and(|named| Some(named) == number.as_f64())
+            }
+            (Self::Leaf(named), value) => named == value,
+            (Self::Array, Value::Array(_)) | (Self::Object, Value::Object(_)) => true,
+            (Self::Length(length), Value::Array(items)) => items.len() == *length,
+            (Self::Missing(field), Value::Object(members)) => !members.contains_key(field),
+            _ => false,
+        }
+    }
+}
+
+/// Nulls the leaf serde's `message` names, when nulling it lets the payload
+/// decode further, and returns its path. The candidates are the values equal
+/// to the named one, in document order, at most [`MAX_LEAF_CANDIDATES`] of
+/// them; each costs one decode.
+fn replace_named_leaf(value: &mut Value, message: &str) -> Option<String> {
+    let named = NamedValue::parse(message)?;
+    let mut candidates = Vec::new();
+    collect_named_paths(value, &named, &mut Vec::new(), &mut candidates);
+    for mut path in candidates {
+        if let NamedValue::Missing(field) = &named {
+            path.push(ValuePathSegment::Key(field.clone()));
+        }
         let mut candidate = value.clone();
         if !set_value_path(&mut candidate, &path, Value::Null) {
             continue;
         }
-        match serde_path_to_error::deserialize::<_, EventPayload>(
-            candidate.clone().into_deserializer(),
-        ) {
+        count_degradation_decode();
+        match serde_json::from_value::<EventPayload>(candidate.clone()) {
             Ok(_) => {
                 *value = candidate;
                 return Some(display_value_path(&path));
             }
             Err(error)
-                if error.to_string() != original_error
-                    && !error.inner().to_string().contains("invalid type: null") =>
+                if error.to_string() != message
+                    && !error.to_string().contains("invalid type: null") =>
             {
                 *value = candidate;
                 return Some(display_value_path(&path));
@@ -3801,71 +3922,41 @@ fn replace_degradable_leaf(value: &mut Value, original_error: &str) -> Option<St
             Err(_) => {}
         }
     }
-    let missing = original_error
-        .split("missing field `")
-        .nth(1)
-        .and_then(|suffix| suffix.split('`').next())?;
-    let mut object_paths = Vec::new();
-    collect_object_paths(value, &mut Vec::new(), &mut object_paths);
-    for mut path in object_paths {
-        path.push(ValuePathSegment::Key(missing.to_owned()));
-        let mut candidate = value.clone();
-        if !set_value_path(&mut candidate, &path, Value::Null) {
-            continue;
-        }
-        if serde_json::from_value::<EventPayload>(candidate.clone()).is_ok() {
-            *value = candidate;
-            return Some(display_value_path(&path));
-        }
-    }
     None
 }
 
-fn collect_leaf_paths(
+/// The paths of the values `named` matches, never the payload's tag, at most
+/// [`MAX_LEAF_CANDIDATES`] of them.
+fn collect_named_paths(
     value: &Value,
+    named: &NamedValue,
     current: &mut Vec<ValuePathSegment>,
     paths: &mut Vec<Vec<ValuePathSegment>>,
 ) {
+    if paths.len() >= MAX_LEAF_CANDIDATES {
+        return;
+    }
+    if !current.is_empty() && named.matches(value) {
+        paths.push(current.clone());
+    } else if current.is_empty() && matches!(named, NamedValue::Missing(_)) && named.matches(value)
+    {
+        paths.push(Vec::new());
+    }
     match value {
         Value::Object(object) => {
             for (key, child) in object {
-                if key == "type" || child.is_null() {
+                if current.is_empty() && key == "type" {
                     continue;
                 }
                 current.push(ValuePathSegment::Key(key.clone()));
-                collect_leaf_paths(child, current, paths);
+                collect_named_paths(child, named, current, paths);
                 current.pop();
             }
         }
         Value::Array(array) => {
             for (index, child) in array.iter().enumerate() {
                 current.push(ValuePathSegment::Index(index));
-                collect_leaf_paths(child, current, paths);
-                current.pop();
-            }
-        }
-        _ => paths.push(current.clone()),
-    }
-}
-
-fn collect_object_paths(
-    value: &Value,
-    current: &mut Vec<ValuePathSegment>,
-    paths: &mut Vec<Vec<ValuePathSegment>>,
-) {
-    match value {
-        Value::Object(object) => {
-            paths.push(current.clone());
-            for (key, child) in object {
-                current.push(ValuePathSegment::Key(key.clone()));
-                collect_object_paths(child, current, paths);
-                current.pop();
-            }
-        }
-        Value::Array(array) => {
-            for (index, child) in array.iter().enumerate() {
-                current.push(ValuePathSegment::Index(index));
-                collect_object_paths(child, current, paths);
+                collect_named_paths(child, named, current, paths);
                 current.pop();
             }
         }

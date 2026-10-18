@@ -2265,6 +2265,81 @@ fn aborted_partial_model_turn_round_trips_through_the_wire_form() {
 }
 
 #[test]
+fn degrading_a_large_payload_decodes_it_a_bounded_number_of_times() {
+    // A turn with 4096 parts and 20 000 provider-option leaves, all ahead of
+    // the one bad optional leaf: finding it must not decode the payload once
+    // per leaf.
+    let resolved_model: ResolvedModelRef = serde_json::from_value(json!({
+        "selection": {"model": "openai/gpt-5.6-sol", "variant": null},
+        "provider_id": "openai",
+        "model_id": "gpt-5.6-sol",
+        "adapter_id": "openai-responses",
+        "selection_fingerprint": "a".repeat(64),
+    }))
+    .unwrap();
+    let payload = EventPayload::ModelTurnCommitted {
+        attempt_id: AttemptId::new_v7(),
+        model_turn_seq: 1,
+        resolved_model,
+        input_through_seq: 1,
+        turn: PersistedModelTurn {
+            content: (0..4096)
+                .map(|index| PersistedAssistantPart::Text {
+                    text: format!("part {index}"),
+                    metadata: None,
+                })
+                .collect(),
+            provider_options: (0..20_000)
+                .map(|index| (format!("option-{index}"), json!(index)))
+                .collect(),
+            finish_reason: ModelFinishReason::Stop,
+            usage: Usage {
+                output_tokens: Some(7),
+                ..Usage::default()
+            },
+            response_metadata: BTreeMap::new(),
+            provider_metadata: BTreeMap::new(),
+            native_replay: None,
+        },
+        warnings: vec![],
+    };
+    let mut wire = serde_json::to_value(&payload).unwrap();
+    wire["turn"]["usage"]["input_tokens"] = json!("many");
+    crate::event::DEGRADATION_DECODES.with(|decodes| decodes.set(0));
+    let read = deserialize_event_payload_best_effort(&wire).unwrap();
+    assert_eq!(read.degraded_fields, vec!["turn.usage.input_tokens"]);
+    assert_eq!(read.payload, payload);
+    assert!(
+        crate::event::DEGRADATION_DECODES.with(std::cell::Cell::get) <= 3,
+        "one decode to fail, one per candidate, one to finish"
+    );
+}
+
+#[test]
+fn degrading_finds_the_leaf_serde_names_whatever_its_kind() {
+    for (reason, degraded) in [
+        (json!(42), true),
+        (json!(1.5), true),
+        (json!(true), true),
+        (json!(["a"]), true),
+        (json!({"nested": 1}), true),
+        (json!("fine"), false),
+    ] {
+        let wire =
+            json!({"type": "delegate_child_terminated", "status": "failed", "reason": reason});
+        let read = deserialize_event_payload_best_effort(&wire).unwrap();
+        assert_eq!(read.degraded_fields == ["reason"], degraded, "{wire}");
+    }
+    // A required field stays an error.
+    assert!(
+        deserialize_event_payload_best_effort(
+            &json!({"type": "delegate_child_terminated", "status": 42, "reason": null})
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn bounded_display_text_bounds_bytes_but_permits_controls() {
     assert_eq!(
         BoundedDisplayText::new("line one\nline two\u{1b}")

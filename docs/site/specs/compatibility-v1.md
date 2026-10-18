@@ -1474,3 +1474,13 @@ Deviations and choices made while implementing, by phase.
   (`strict_schema`), since `GoalItem` is also history. `ToolOutputDeclaration`
   in a runtime's or plugin's tool list is information per 9.1 and is not
   checked.
+- **Locating a bad leaf.** `serde_path_to_error` cannot see into an
+  internally tagged enum, whose content serde buffers before decoding it, and
+  every payload is one: it reports `.` for any error inside a payload. The
+  best-effort decoder still asks it first, and otherwise reads the value
+  serde's error names (`invalid type: integer 42`, `unknown variant`,
+  `invalid length`, `missing field`) and tries only the leaves equal to it,
+  at most 16, with one decode each. Degrading is therefore linear in the
+  payload's size. A failure whose message names no value (a type's own
+  validation) is no longer degraded by trial and error: the record is skipped
+  with its diagnostic.
