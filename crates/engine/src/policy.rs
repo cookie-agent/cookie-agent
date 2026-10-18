@@ -539,6 +539,24 @@ pub(crate) fn policy_from_snapshot(
     })
 }
 
+/// The revisions of `runtime`, frozen with the model snapshot
+/// `manifest_revision`.
+pub(crate) fn runtime_revisions(
+    runtime: &PublishedRuntime,
+    manifest_revision: protocol::ModelSnapshotRevision,
+) -> protocol::RuntimeRevisions {
+    let snapshot = &runtime.result.snapshot;
+    protocol::RuntimeRevisions {
+        runtime_revision: snapshot.runtime_revision.clone(),
+        catalog_revision: snapshot.catalog_revision.clone(),
+        provider_state_revision: snapshot.provider_state_revision.clone(),
+        model_revision: snapshot.model_revision.clone(),
+        agent_revision: snapshot.agent_revision.clone(),
+        recipe_registry_revision: snapshot.recipe_registry_revision.clone(),
+        manifest_revision,
+    }
+}
+
 /// The form session history stores `binding` in.
 pub(crate) fn persisted_binding(
     binding: &protocol::FrozenModelBinding,

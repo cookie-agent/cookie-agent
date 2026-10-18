@@ -1823,13 +1823,15 @@ fn delegation_reserved_event_roundtrips_current_request() {
             child_session_id: SessionId::new_v7(),
         },
         child_agent: Box::new(child_agent(binding.clone())),
-        manifest_revision,
-        runtime_revision: revision("runtime"),
-        catalog_revision: revision("catalog"),
-        provider_state_revision: revision("providers"),
-        model_revision: revision("models"),
-        agent_revision: revision("agents"),
-        recipe_registry_revision: revision("recipes"),
+        revisions: Some(RuntimeRevisions {
+            runtime_revision: revision("runtime"),
+            catalog_revision: revision("catalog"),
+            provider_state_revision: revision("providers"),
+            model_revision: revision("models"),
+            agent_revision: revision("agents"),
+            recipe_registry_revision: revision("recipes"),
+            manifest_revision,
+        }),
         cache_strategies: vec![Some(FrozenCacheStrategy::OpenAi {
             prompt_cache_key: Some("delegated-${session_id}".into()),
             prompt_cache_retention: Some(FrozenOpenAiCacheRetention::TwentyFourHours),
@@ -1865,6 +1867,8 @@ fn delegation_reserved_event_roundtrips_current_request() {
     };
     assert!(cache_strategies.is_empty());
 
+    // Recorded revisions are complete; absent, the reservation was frozen
+    // against the latest the log recorded.
     for field in [
         "manifest_revision",
         "runtime_revision",
@@ -1875,9 +1879,17 @@ fn delegation_reserved_event_roundtrips_current_request() {
         "recipe_registry_revision",
     ] {
         let mut missing = encoded.clone();
-        missing.as_object_mut().unwrap().remove(field);
+        missing["revisions"].as_object_mut().unwrap().remove(field);
         assert!(serde_json::from_value::<EventPayload>(missing).is_err());
     }
+    let mut unchanged = encoded.clone();
+    unchanged.as_object_mut().unwrap().remove("revisions");
+    let EventPayload::DelegationReserved { revisions, .. } =
+        serde_json::from_value::<EventPayload>(unchanged).unwrap()
+    else {
+        unreachable!()
+    };
+    assert_eq!(revisions, None);
 }
 
 #[test]

@@ -629,19 +629,25 @@ fn run_started_event(seq: u64, run: RunId, binding: &FrozenModelBinding) -> Stor
         EventPayload::RunStarted {
             client_run_id: cookie_agent_protocol::ClientRunId::new(format!("run-{seq}")).unwrap(),
             selection: crate::test_support::run_selection("test"),
-            runtime_revision: cookie_agent_protocol::RuntimeRevision::new(revision.clone())
+            revisions: Some(cookie_agent_protocol::RuntimeRevisions {
+                runtime_revision: cookie_agent_protocol::RuntimeRevision::new(revision.clone())
+                    .unwrap(),
+                catalog_revision: cookie_agent_protocol::CatalogRevision::new(revision.clone())
+                    .unwrap(),
+                provider_state_revision: cookie_agent_protocol::ProviderStateRevision::new(
+                    revision.clone(),
+                )
                 .unwrap(),
-            catalog_revision: cookie_agent_protocol::CatalogRevision::new(revision.clone())
+                model_revision: cookie_agent_protocol::ModelRevision::new(revision.clone())
+                    .unwrap(),
+                agent_revision: cookie_agent_protocol::AgentRevision::new(revision.clone())
+                    .unwrap(),
+                recipe_registry_revision: cookie_agent_protocol::RecipeRegistryRevision::new(
+                    revision,
+                )
                 .unwrap(),
-            provider_state_revision: cookie_agent_protocol::ProviderStateRevision::new(
-                revision.clone(),
-            )
-            .unwrap(),
-            model_revision: cookie_agent_protocol::ModelRevision::new(revision.clone()).unwrap(),
-            agent_revision: cookie_agent_protocol::AgentRevision::new(revision.clone()).unwrap(),
-            recipe_registry_revision: cookie_agent_protocol::RecipeRegistryRevision::new(revision)
-                .unwrap(),
-            manifest_revision: binding.manifest_revision.clone(),
+                manifest_revision: binding.manifest_revision.clone(),
+            }),
             internal_agents: Vec::new(),
             agent: Box::new(agent),
             input_through_seq: seq,

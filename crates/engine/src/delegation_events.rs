@@ -6,10 +6,9 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    AgentRevision, AgentSnapshot, CatalogRevision, DelegateRequestPayload, DelegationReservation,
-    EventPayload, FrozenCacheStrategy, FrozenModelBinding, InvocationId, ModelRevision,
-    ModelSnapshotRevision, Open, ProviderStateRevision, RecipeRegistryRevision, RunId,
-    RuntimeRevision, SessionId, SessionStatus, Sha256Digest, ToolCallId,
+    AgentSnapshot, DelegateRequestPayload, DelegationReservation, EventPayload,
+    FrozenCacheStrategy, FrozenModelBinding, InvocationId, Open, RevisionFold, RunId,
+    RuntimeRevisions, SessionId, SessionStatus, Sha256Digest, ToolCallId,
 };
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
@@ -38,22 +37,12 @@ pub(crate) fn delegation_request_fingerprint(
     Sha256Digest::new(format!("{:x}", Sha256::digest(payload))).map_err(|_| ())
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DelegationRuntimeRevisions {
-    pub manifest_revision: ModelSnapshotRevision,
-    pub runtime_revision: RuntimeRevision,
-    pub catalog_revision: CatalogRevision,
-    pub provider_state_revision: ProviderStateRevision,
-    pub model_revision: ModelRevision,
-    pub agent_revision: AgentRevision,
-    pub recipe_registry_revision: RecipeRegistryRevision,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct DelegationEntry {
     pub reservation: DelegationReservation,
     pub child_agent: AgentSnapshot,
-    pub revisions: DelegationRuntimeRevisions,
+    /// The revisions the child was frozen against.
+    pub revisions: RuntimeRevisions,
     pub cache_strategies: Vec<Option<FrozenCacheStrategy>>,
     pub request_fingerprint: Sha256Digest,
     pub request: DelegateRequestPayload,
@@ -106,8 +95,9 @@ impl DelegationEventStore {
         })
     }
 
-    /// Folds delegation records harvested from child logs (§4.1.2), returning the
-    /// entries that changed so the engine can rebuild only what moved.
+    /// Folds delegation records harvested from child logs (§4.1.2), each as
+    /// [`harvested`] hands it over, returning the entries that changed so the
+    /// engine can rebuild only what moved.
     pub fn extend_from_payloads(
         &self,
         payloads: &[(
@@ -149,7 +139,7 @@ impl DelegationEventStore {
         parent_run_id: RunId,
         parent_tool_call_id: ToolCallId,
         child_agent: AgentSnapshot,
-        revisions: DelegationRuntimeRevisions,
+        revisions: RuntimeRevisions,
         selected_suffix: Vec<FrozenModelBinding>,
         cache_strategies: Vec<Option<FrozenCacheStrategy>>,
         request_fingerprint: Sha256Digest,
@@ -213,13 +203,8 @@ impl DelegationEventStore {
             EventPayload::DelegationReserved {
                 reservation,
                 child_agent: Box::new(child_agent),
-                manifest_revision: revisions.manifest_revision,
-                runtime_revision: revisions.runtime_revision,
-                catalog_revision: revisions.catalog_revision,
-                provider_state_revision: revisions.provider_state_revision,
-                model_revision: revisions.model_revision,
-                agent_revision: revisions.agent_revision,
-                recipe_registry_revision: revisions.recipe_registry_revision,
+                // The log drops them again when they equal the latest it records.
+                revisions: Some(revisions),
                 cache_strategies,
                 request_fingerprint,
                 request,
@@ -445,7 +430,9 @@ impl DelegationEventStore {
     ) -> Result<(), DelegationEventError> {
         let parent = self.sessions.get(parent_session_id)?;
         let mut rebuilt = DelegationState::default();
+        let mut revisions = RevisionFold::default();
         for envelope in parent.log.event_snapshot().iter() {
+            revisions.observe(&envelope.payload);
             if parent.log.delegation_event_tainted(envelope) {
                 continue;
             }
@@ -453,7 +440,7 @@ impl DelegationEventStore {
                 &mut rebuilt,
                 parent_session_id,
                 envelope.run_id,
-                envelope.payload.clone(),
+                harvested(&envelope.payload, &revisions),
             )?;
         }
 
@@ -492,6 +479,21 @@ fn delegation_invocation_of(payload: &EventPayload) -> Option<cookie_agent_proto
     }
 }
 
+/// A delegation payload as [`apply_event`] consumes it: a reservation that
+/// recorded no revisions of its own gets the ones it was frozen against,
+/// `revisions` having folded the log through it.
+pub(crate) fn harvested(payload: &EventPayload, revisions: &RevisionFold) -> EventPayload {
+    let mut payload = payload.clone();
+    if let EventPayload::DelegationReserved {
+        revisions: recorded @ None,
+        ..
+    } = &mut payload
+    {
+        *recorded = revisions.latest().cloned();
+    }
+    payload
+}
+
 /// The delegation lifecycle payloads [`apply_event`] consumes.
 ///
 /// Lazy tree loads hand child-session payloads over in log order and must offer
@@ -516,26 +518,16 @@ fn apply_event(
         EventPayload::DelegationReserved {
             reservation,
             child_agent,
-            manifest_revision,
-            runtime_revision,
-            catalog_revision,
-            provider_state_revision,
-            model_revision,
-            agent_revision,
-            recipe_registry_revision,
+            revisions,
             cache_strategies,
             request_fingerprint,
             request,
         } => {
             let invocation_id = reservation.invocation_id;
-            let revisions = DelegationRuntimeRevisions {
-                manifest_revision,
-                runtime_revision,
-                catalog_revision,
-                provider_state_revision,
-                model_revision,
-                agent_revision,
-                recipe_registry_revision,
+            // Every reader hands reservations over with their effective
+            // revisions ([`harvested`]).
+            let Some(revisions) = revisions else {
+                return Err(DelegationEventError::Corrupt(invocation_id));
             };
             let fingerprint_valid =
                 delegation_request_fingerprint(&child_agent, &cache_strategies, &request)

@@ -1330,3 +1330,14 @@ Deviations and choices made while implementing, by phase.
   froze the chain with the selection's own variant, so the old exception for
   a head of another variant never applied. Attempt and fallback validation
   compares `resolved_model` with the stored `resolved` of the entries.
+- **Revisions.** The seven revisions are one `RuntimeRevisions` value:
+  `session_created.revisions`, and `run_started.revisions` and
+  `delegation_reserved.revisions` present only when they differ from the
+  latest recorded before them. `RevisionFold` folds them in log order. The
+  event log drops an event's revisions when they equal its fold at append,
+  under the append lock, so writers always pass the full value and the
+  comparison cannot race another append. The session metadata keeps the
+  creation revisions, as before. The only reader of a later event's
+  revisions is the delegation store, which gets each reservation's from the
+  fold of its parent log (the tree-load harvest and parent reconciliation
+  fill them in); nothing reads a run's.

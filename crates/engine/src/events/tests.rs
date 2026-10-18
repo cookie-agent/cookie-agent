@@ -63,15 +63,24 @@ fn stored_event() -> StoredEvent {
             origin: SessionOrigin::Root,
             cwd_identity: CwdIdentity::new("workspace:test").expect("cwd identity"),
             creation_selection: run_selection("test"),
-            manifest_revision: crate::test_support::manifest_of(&agent.fallback_chain[0]),
+            revisions: revisions(crate::test_support::manifest_of(&agent.fallback_chain[0])),
             creation_agent: Box::new(agent),
-            runtime_revision: runtime_revision(),
-            catalog_revision: catalog_revision(),
-            provider_state_revision: provider_revision(),
-            model_revision: model_revision(),
-            agent_revision: agent_revision(),
-            recipe_registry_revision: registry_revision(),
         },
+    }
+}
+
+/// The test runtime's revisions with the model snapshot `manifest_revision`.
+fn revisions(
+    manifest_revision: cookie_agent_protocol::ModelSnapshotRevision,
+) -> cookie_agent_protocol::RuntimeRevisions {
+    cookie_agent_protocol::RuntimeRevisions {
+        runtime_revision: runtime_revision(),
+        catalog_revision: catalog_revision(),
+        provider_state_revision: provider_revision(),
+        model_revision: model_revision(),
+        agent_revision: agent_revision(),
+        recipe_registry_revision: registry_revision(),
+        manifest_revision,
     }
 }
 
@@ -212,13 +221,8 @@ fn attribution_records() -> Vec<StoredEvent> {
                 client_run_id: ClientRunId::new("strict-attribution").expect("client run id"),
                 selection,
                 agent: Box::new(agent),
-                runtime_revision: runtime_revision(),
-                catalog_revision: catalog_revision(),
-                provider_state_revision: provider_revision(),
-                model_revision: model_revision(),
-                agent_revision: agent_revision(),
-                recipe_registry_revision: registry_revision(),
-                manifest_revision: suffix[0].manifest_revision.clone(),
+                // Frozen against the revisions the session was created with.
+                revisions: None,
                 internal_agents: Vec::new(),
                 input_through_seq: 1,
             },
@@ -1641,6 +1645,102 @@ fn event_storage_snapshot_and_indexes_match_full_projection() {
 }
 
 #[test]
+fn later_events_record_runtime_revisions_only_where_they_changed() {
+    let records = attribution_records();
+    let creation = records[0].clone();
+    let EventPayload::SessionCreated {
+        revisions: created, ..
+    } = &creation.payload
+    else {
+        unreachable!("the first record creates the session")
+    };
+    let EventPayload::RunStarted {
+        client_run_id,
+        selection,
+        agent,
+        internal_agents,
+        input_through_seq,
+        ..
+    } = &records[1].payload
+    else {
+        unreachable!("the second record starts a run")
+    };
+    let run_started = |name: &str, revisions: &cookie_agent_protocol::RuntimeRevisions| {
+        EventPayload::RunStarted {
+            client_run_id: ClientRunId::new(format!("{client_run_id}-{name}")).unwrap(),
+            selection: selection.clone(),
+            agent: agent.clone(),
+            revisions: Some(revisions.clone()),
+            internal_agents: internal_agents.clone(),
+            input_through_seq: *input_through_seq,
+        }
+    };
+    let mut reloaded = created.clone();
+    reloaded.runtime_revision =
+        cookie_agent_protocol::RuntimeRevision::new(format!("sha256:{}", "9".repeat(64))).unwrap();
+    let origin = || EventOrigin::new("engine:test").expect("origin");
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    let log = EventLog::create(
+        path.clone(),
+        creation.session_id,
+        origin(),
+        creation.payload.clone(),
+    )
+    .expect("create log");
+    let finish = |run_id| {
+        log.append(
+            Some(run_id),
+            origin(),
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+                final_text: None,
+            }),
+        )
+        .expect("finish run");
+    };
+    for (index, (name, revisions)) in [
+        ("unchanged", created),
+        ("reloaded", &reloaded),
+        ("same-again", &reloaded),
+        ("back", created),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let run_id = RunId(Uuid::from_u128(300 + index as u128));
+        log.append(Some(run_id), origin(), run_started(name, revisions))
+            .expect("start run");
+        finish(run_id);
+    }
+
+    let reopened = EventLog::open_read_only(path, creation.session_id).expect("reopen");
+    let mut fold = cookie_agent_protocol::RevisionFold::default();
+    let recorded = reopened
+        .event_snapshot()
+        .iter()
+        .filter_map(|event| {
+            let own = match &event.payload {
+                EventPayload::RunStarted { revisions, .. } => revisions.clone(),
+                _ => {
+                    fold.observe(&event.payload);
+                    return None;
+                }
+            };
+            Some((own, fold.observe(&event.payload).cloned()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        recorded,
+        vec![
+            (None, Some(created.clone())),
+            (Some(reloaded.clone()), Some(reloaded.clone())),
+            (None, Some(reloaded.clone())),
+            (Some(created.clone()), Some(created.clone())),
+        ]
+    );
+}
+
+#[test]
 fn truncation_cuts_the_file_and_later_appends_reuse_its_sequences() {
     let records = attribution_records();
     let creation = records[0].clone();
@@ -1781,15 +1881,7 @@ fn current_delegation_records() -> Vec<StoredEvent> {
             EventPayload::DelegationReserved {
                 reservation,
                 child_agent: Box::new(child_agent.clone()),
-                manifest_revision: crate::test_support::manifest_of(
-                    &child_agent.selected_suffix()[0],
-                ),
-                runtime_revision: runtime_revision(),
-                catalog_revision: catalog_revision(),
-                provider_state_revision: provider_revision(),
-                model_revision: model_revision(),
-                agent_revision: agent_revision(),
-                recipe_registry_revision: registry_revision(),
+                revisions: None,
                 cache_strategies,
                 request_fingerprint,
                 request,
@@ -3055,13 +3147,9 @@ fn event_log_rejects_cross_run_approval_lifecycle() {
             EventPayload::RunStarted {
                 client_run_id: ClientRunId::new(format!("run-{seq}")).expect("client run id"),
                 selection: run_selection("test"),
-                runtime_revision: runtime_revision(),
-                catalog_revision: catalog_revision(),
-                provider_state_revision: provider_revision(),
-                model_revision: model_revision(),
-                agent_revision: agent_revision(),
-                recipe_registry_revision: registry_revision(),
-                manifest_revision: crate::test_support::manifest_of(&agent.fallback_chain[0]),
+                revisions: Some(revisions(crate::test_support::manifest_of(
+                    &agent.fallback_chain[0],
+                ))),
                 internal_agents: Vec::new(),
                 agent: Box::new(agent),
                 input_through_seq: 1,

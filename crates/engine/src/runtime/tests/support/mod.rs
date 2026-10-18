@@ -790,13 +790,7 @@ pub(crate) fn create_buffered_delegated_child(engine: &Engine, parent: SessionId
         cwd_identity,
         creation_selection,
         creation_agent,
-        runtime_revision,
-        catalog_revision,
-        provider_state_revision,
-        model_revision,
-        agent_revision,
-        recipe_registry_revision,
-        manifest_revision,
+        revisions,
     } = parent_projection
         .log
         .event_snapshot()
@@ -828,13 +822,7 @@ pub(crate) fn create_buffered_delegated_child(engine: &Engine, parent: SessionId
                 cwd_identity,
                 creation_selection,
                 creation_agent,
-                runtime_revision,
-                catalog_revision,
-                provider_state_revision,
-                model_revision,
-                agent_revision,
-                recipe_registry_revision,
-                manifest_revision,
+                revisions,
             },
         )
         .expect("create delegated child");

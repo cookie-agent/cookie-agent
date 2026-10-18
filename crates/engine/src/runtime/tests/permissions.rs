@@ -444,20 +444,23 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
     let child = create_buffered_delegated_child(&fixture.engine, root.session_id);
 
     // A durable log needs a started run and a first user message (§2.1).
-    let publish =
-        |engine: &Engine, id, run: cookie_agent_protocol::RunId, selection: &RunSelection| {
-            let projection = engine.inner.store.get(id).expect("projection");
-            engine
-                .inner
-                .store
-                .append(
-                    id,
-                    Some(run),
-                    origin.clone(),
-                    EventPayload::RunStarted {
-                        client_run_id: ClientRunId::new("grant-setup-run").expect("client run ID"),
-                        selection: selection.clone(),
-                        agent: Box::new(projection.creation_agent.as_ref().clone()),
+    let publish = |engine: &Engine,
+                   id,
+                   run: cookie_agent_protocol::RunId,
+                   selection: &RunSelection| {
+        let projection = engine.inner.store.get(id).expect("projection");
+        engine
+            .inner
+            .store
+            .append(
+                id,
+                Some(run),
+                origin.clone(),
+                EventPayload::RunStarted {
+                    client_run_id: ClientRunId::new("grant-setup-run").expect("client run ID"),
+                    selection: selection.clone(),
+                    agent: Box::new(projection.creation_agent.as_ref().clone()),
+                    revisions: Some(cookie_agent_protocol::RuntimeRevisions {
                         runtime_revision: projection.meta.runtime_revision.clone(),
                         catalog_revision: projection.meta.catalog_revision.clone(),
                         provider_state_revision: projection.meta.provider_state_revision.clone(),
@@ -465,25 +468,26 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
                         agent_revision: projection.meta.agent_revision.clone(),
                         recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
                         manifest_revision: projection.meta.manifest_revision.clone(),
-                        internal_agents: Vec::new(),
-                        input_through_seq: 1,
-                    },
-                )
-                .expect("start the run");
-            engine
-                .inner
-                .store
-                .append(
-                    id,
-                    Some(run),
-                    origin.clone(),
-                    EventPayload::UserInputSubmitted {
-                        input: "persist the log".into(),
-                    },
-                )
-                .expect("publish the session");
-            run
-        };
+                    }),
+                    internal_agents: Vec::new(),
+                    input_through_seq: 1,
+                },
+            )
+            .expect("start the run");
+        engine
+            .inner
+            .store
+            .append(
+                id,
+                Some(run),
+                origin.clone(),
+                EventPayload::UserInputSubmitted {
+                    input: "persist the log".into(),
+                },
+            )
+            .expect("publish the session");
+        run
+    };
     let _root_run = publish(
         &fixture.engine,
         root.session_id,

@@ -15,7 +15,7 @@ use super::{
     delegation::{DelegationRecord, cancelled_delegate_result_with_reason},
     helpers::{invocation_id, session_depth},
 };
-use crate::{delegation_events, policy::FrozenRunPolicy};
+use crate::policy::FrozenRunPolicy;
 
 impl Engine {
     pub(crate) fn spawn_admission_task<F>(&self, runtime: &tokio::runtime::Handle, task: F) -> bool
@@ -159,20 +159,14 @@ impl Engine {
         let delegation_events = self.inner.delegation_events.clone();
         let reserved_agent = child_policy.agent.clone();
         let reserved_suffix = child_policy.selected_suffix.clone();
-        let snapshot = &child_runtime.result.snapshot;
-        let reserved_revisions = delegation_events::DelegationRuntimeRevisions {
-            manifest_revision: reserved_suffix
+        let reserved_revisions = crate::policy::runtime_revisions(
+            &child_runtime,
+            reserved_suffix
                 .first()
                 .ok_or(EngineError::NoRunnableModel)?
                 .manifest_revision
                 .clone(),
-            runtime_revision: snapshot.runtime_revision.clone(),
-            catalog_revision: snapshot.catalog_revision.clone(),
-            provider_state_revision: snapshot.provider_state_revision.clone(),
-            model_revision: snapshot.model_revision.clone(),
-            agent_revision: snapshot.agent_revision.clone(),
-            recipe_registry_revision: snapshot.recipe_registry_revision.clone(),
-        };
+        );
         let entry = self
             .spawn_admission_blocking(move || {
                 delegation_events.reserve(
@@ -284,21 +278,10 @@ impl Engine {
             cwd_identity: parent.meta.cwd_identity.clone(),
             creation_selection: selection,
             creation_agent: Box::new(child_policy.agent.clone()),
-            runtime_revision: child_runtime.result.snapshot.runtime_revision.clone(),
-            catalog_revision: child_runtime.result.snapshot.catalog_revision.clone(),
-            provider_state_revision: child_runtime
-                .result
-                .snapshot
-                .provider_state_revision
-                .clone(),
-            model_revision: child_runtime.result.snapshot.model_revision.clone(),
-            agent_revision: child_runtime.result.snapshot.agent_revision.clone(),
-            recipe_registry_revision: child_runtime
-                .result
-                .snapshot
-                .recipe_registry_revision
-                .clone(),
-            manifest_revision: child_policy.selected_suffix[0].manifest_revision.clone(),
+            revisions: crate::policy::runtime_revisions(
+                &child_runtime,
+                child_policy.selected_suffix[0].manifest_revision.clone(),
+            ),
         };
         // The child inherits the root session's attachments and records them
         // itself so its log is self-describing.

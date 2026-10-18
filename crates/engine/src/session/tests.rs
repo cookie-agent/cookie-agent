@@ -136,13 +136,15 @@ fn persist_test_session_with_origin(store: &SessionStore, origin: SessionOrigin)
                 cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
                 creation_selection: selection.clone(),
                 creation_agent: Box::new(agent.clone()),
-                runtime_revision: runtime_revision.clone(),
-                catalog_revision: catalog_revision.clone(),
-                provider_state_revision: provider_state_revision.clone(),
-                model_revision: model_revision.clone(),
-                agent_revision: agent_revision.clone(),
-                recipe_registry_revision: recipe_registry_revision.clone(),
-                manifest_revision: binding.manifest_revision.clone(),
+                revisions: cookie_agent_protocol::RuntimeRevisions {
+                    runtime_revision: runtime_revision.clone(),
+                    catalog_revision: catalog_revision.clone(),
+                    provider_state_revision: provider_state_revision.clone(),
+                    model_revision: model_revision.clone(),
+                    agent_revision: agent_revision.clone(),
+                    recipe_registry_revision: recipe_registry_revision.clone(),
+                    manifest_revision: binding.manifest_revision.clone(),
+                },
             },
         )
         .unwrap();
@@ -156,13 +158,15 @@ fn persist_test_session_with_origin(store: &SessionStore, origin: SessionOrigin)
                 client_run_id: ClientRunId::new("private-session-test").unwrap(),
                 selection,
                 agent: Box::new(agent),
-                runtime_revision,
-                catalog_revision,
-                provider_state_revision,
-                model_revision,
-                agent_revision,
-                recipe_registry_revision,
-                manifest_revision: binding.manifest_revision.clone(),
+                revisions: Some(cookie_agent_protocol::RuntimeRevisions {
+                    runtime_revision,
+                    catalog_revision,
+                    provider_state_revision,
+                    model_revision,
+                    agent_revision,
+                    recipe_registry_revision,
+                    manifest_revision: binding.manifest_revision.clone(),
+                }),
                 internal_agents: Vec::new(),
                 input_through_seq: 1,
             },
@@ -198,13 +202,15 @@ fn create_buffered_test_session(store: &SessionStore) -> SessionId {
                 cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
                 creation_selection: selection,
                 creation_agent: Box::new(agent),
-                runtime_revision: RuntimeRevision::new(revision('1')).unwrap(),
-                catalog_revision: CatalogRevision::new(revision('2')).unwrap(),
-                provider_state_revision: ProviderStateRevision::new(revision('3')).unwrap(),
-                model_revision: ModelRevision::new(revision('4')).unwrap(),
-                agent_revision: AgentRevision::new(revision('5')).unwrap(),
-                recipe_registry_revision: RecipeRegistryRevision::new(revision('6')).unwrap(),
-                manifest_revision: binding.manifest_revision,
+                revisions: cookie_agent_protocol::RuntimeRevisions {
+                    runtime_revision: RuntimeRevision::new(revision('1')).unwrap(),
+                    catalog_revision: CatalogRevision::new(revision('2')).unwrap(),
+                    provider_state_revision: ProviderStateRevision::new(revision('3')).unwrap(),
+                    model_revision: ModelRevision::new(revision('4')).unwrap(),
+                    agent_revision: AgentRevision::new(revision('5')).unwrap(),
+                    recipe_registry_revision: RecipeRegistryRevision::new(revision('6')).unwrap(),
+                    manifest_revision: binding.manifest_revision,
+                },
             },
         )
         .expect("create buffered session");
@@ -2066,29 +2072,31 @@ fn create_buffered_child(store: &SessionStore, root: SessionId) -> SessionId {
                     "test",
                     AgentMode::Primary,
                 )),
-                runtime_revision: RuntimeRevision::new(format!("sha256:{}", "1".repeat(64)))
+                revisions: cookie_agent_protocol::RuntimeRevisions {
+                    runtime_revision: RuntimeRevision::new(format!("sha256:{}", "1".repeat(64)))
+                        .expect("static revision is valid"),
+                    catalog_revision: CatalogRevision::new(format!("sha256:{}", "2".repeat(64)))
+                        .expect("static revision is valid"),
+                    provider_state_revision: ProviderStateRevision::new(format!(
+                        "sha256:{}",
+                        "3".repeat(64)
+                    ))
                     .expect("static revision is valid"),
-                catalog_revision: CatalogRevision::new(format!("sha256:{}", "2".repeat(64)))
+                    model_revision: ModelRevision::new(format!("sha256:{}", "4".repeat(64)))
+                        .expect("static revision is valid"),
+                    agent_revision: AgentRevision::new(format!("sha256:{}", "5".repeat(64)))
+                        .expect("static revision is valid"),
+                    recipe_registry_revision: RecipeRegistryRevision::new(format!(
+                        "sha256:{}",
+                        "6".repeat(64)
+                    ))
                     .expect("static revision is valid"),
-                provider_state_revision: ProviderStateRevision::new(format!(
-                    "sha256:{}",
-                    "3".repeat(64)
-                ))
-                .expect("static revision is valid"),
-                model_revision: ModelRevision::new(format!("sha256:{}", "4".repeat(64)))
+                    manifest_revision: cookie_agent_protocol::ModelSnapshotRevision::new(format!(
+                        "sha256:{}",
+                        "7".repeat(64)
+                    ))
                     .expect("static revision is valid"),
-                agent_revision: AgentRevision::new(format!("sha256:{}", "5".repeat(64)))
-                    .expect("static revision is valid"),
-                recipe_registry_revision: RecipeRegistryRevision::new(format!(
-                    "sha256:{}",
-                    "6".repeat(64)
-                ))
-                .expect("static revision is valid"),
-                manifest_revision: cookie_agent_protocol::ModelSnapshotRevision::new(format!(
-                    "sha256:{}",
-                    "7".repeat(64)
-                ))
-                .expect("static revision is valid"),
+                },
             },
         )
         .expect("create a buffered child");
@@ -2836,13 +2844,15 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
             cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
             creation_selection: selection.clone(),
             creation_agent: Box::new(agent.clone()),
-            runtime_revision: runtime_revision.clone(),
-            catalog_revision: catalog_revision.clone(),
-            provider_state_revision: provider_state_revision.clone(),
-            model_revision: model_revision.clone(),
-            agent_revision: agent_revision.clone(),
-            recipe_registry_revision: recipe_registry_revision.clone(),
-            manifest_revision: binding.manifest_revision.clone(),
+            revisions: cookie_agent_protocol::RuntimeRevisions {
+                runtime_revision: runtime_revision.clone(),
+                catalog_revision: catalog_revision.clone(),
+                provider_state_revision: provider_state_revision.clone(),
+                model_revision: model_revision.clone(),
+                agent_revision: agent_revision.clone(),
+                recipe_registry_revision: recipe_registry_revision.clone(),
+                manifest_revision: binding.manifest_revision.clone(),
+            },
         },
     )
     .unwrap();
@@ -2853,13 +2863,15 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
             client_run_id: ClientRunId::new("usage-replay").unwrap(),
             selection,
             agent: Box::new(agent.clone()),
-            runtime_revision,
-            catalog_revision,
-            provider_state_revision,
-            model_revision,
-            agent_revision,
-            recipe_registry_revision,
-            manifest_revision: binding.manifest_revision.clone(),
+            revisions: Some(cookie_agent_protocol::RuntimeRevisions {
+                runtime_revision,
+                catalog_revision,
+                provider_state_revision,
+                model_revision,
+                agent_revision,
+                recipe_registry_revision,
+                manifest_revision: binding.manifest_revision.clone(),
+            }),
             internal_agents: Vec::new(),
             input_through_seq: 1,
         },
@@ -3080,13 +3092,15 @@ fn internal_usage_is_once_per_fallback_phase_and_all_kinds_survive_reopen() {
             cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
             creation_selection: selection.clone(),
             creation_agent: Box::new(owner.clone()),
-            runtime_revision: runtime_revision.clone(),
-            catalog_revision: catalog_revision.clone(),
-            provider_state_revision: provider_state_revision.clone(),
-            model_revision: model_revision.clone(),
-            agent_revision: agent_revision.clone(),
-            recipe_registry_revision: recipe_registry_revision.clone(),
-            manifest_revision: binding.manifest_revision.clone(),
+            revisions: cookie_agent_protocol::RuntimeRevisions {
+                runtime_revision: runtime_revision.clone(),
+                catalog_revision: catalog_revision.clone(),
+                provider_state_revision: provider_state_revision.clone(),
+                model_revision: model_revision.clone(),
+                agent_revision: agent_revision.clone(),
+                recipe_registry_revision: recipe_registry_revision.clone(),
+                manifest_revision: binding.manifest_revision.clone(),
+            },
         },
     )
     .unwrap();
@@ -3097,13 +3111,15 @@ fn internal_usage_is_once_per_fallback_phase_and_all_kinds_survive_reopen() {
             client_run_id: ClientRunId::new("internal-usage-replay").unwrap(),
             selection,
             agent: Box::new(owner),
-            runtime_revision,
-            catalog_revision,
-            provider_state_revision,
-            model_revision,
-            agent_revision,
-            recipe_registry_revision,
-            manifest_revision: binding.manifest_revision.clone(),
+            revisions: Some(cookie_agent_protocol::RuntimeRevisions {
+                runtime_revision,
+                catalog_revision,
+                provider_state_revision,
+                model_revision,
+                agent_revision,
+                recipe_registry_revision,
+                manifest_revision: binding.manifest_revision.clone(),
+            }),
             internal_agents: Vec::new(),
             input_through_seq: 1,
         },
@@ -3761,13 +3777,15 @@ fn usage_rollup_after_a_usage_less_commit(
             cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
             creation_selection: selection.clone(),
             creation_agent: Box::new(agent.clone()),
-            runtime_revision: runtime_revision.clone(),
-            catalog_revision: catalog_revision.clone(),
-            provider_state_revision: provider_state_revision.clone(),
-            model_revision: model_revision.clone(),
-            agent_revision: agent_revision.clone(),
-            recipe_registry_revision: recipe_registry_revision.clone(),
-            manifest_revision: binding.manifest_revision.clone(),
+            revisions: cookie_agent_protocol::RuntimeRevisions {
+                runtime_revision: runtime_revision.clone(),
+                catalog_revision: catalog_revision.clone(),
+                provider_state_revision: provider_state_revision.clone(),
+                model_revision: model_revision.clone(),
+                agent_revision: agent_revision.clone(),
+                recipe_registry_revision: recipe_registry_revision.clone(),
+                manifest_revision: binding.manifest_revision.clone(),
+            },
         },
     )
     .unwrap();
@@ -3778,13 +3796,15 @@ fn usage_rollup_after_a_usage_less_commit(
             client_run_id: ClientRunId::new("aborted-usage-rollup").unwrap(),
             selection,
             agent: Box::new(agent.clone()),
-            runtime_revision,
-            catalog_revision,
-            provider_state_revision,
-            model_revision,
-            agent_revision,
-            recipe_registry_revision,
-            manifest_revision: binding.manifest_revision.clone(),
+            revisions: Some(cookie_agent_protocol::RuntimeRevisions {
+                runtime_revision,
+                catalog_revision,
+                provider_state_revision,
+                model_revision,
+                agent_revision,
+                recipe_registry_revision,
+                manifest_revision: binding.manifest_revision.clone(),
+            }),
             internal_agents: Vec::new(),
             input_through_seq: 1,
         },

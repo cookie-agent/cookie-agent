@@ -65,13 +65,15 @@ async fn adopting_a_session_reconciles_its_dead_run_before_resume() {
                 client_run_id: ClientRunId::new("dead-owner-run").expect("client run ID"),
                 selection,
                 agent: Box::new(projection.creation_agent.as_ref().clone()),
-                runtime_revision: projection.meta.runtime_revision.clone(),
-                catalog_revision: projection.meta.catalog_revision.clone(),
-                provider_state_revision: projection.meta.provider_state_revision.clone(),
-                model_revision: projection.meta.model_revision.clone(),
-                agent_revision: projection.meta.agent_revision.clone(),
-                recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
-                manifest_revision: projection.meta.manifest_revision.clone(),
+                revisions: Some(cookie_agent_protocol::RuntimeRevisions {
+                    runtime_revision: projection.meta.runtime_revision.clone(),
+                    catalog_revision: projection.meta.catalog_revision.clone(),
+                    provider_state_revision: projection.meta.provider_state_revision.clone(),
+                    model_revision: projection.meta.model_revision.clone(),
+                    agent_revision: projection.meta.agent_revision.clone(),
+                    recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
+                    manifest_revision: projection.meta.manifest_revision.clone(),
+                }),
                 internal_agents: Vec::new(),
                 input_through_seq: 1,
             },
@@ -277,14 +279,14 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
         .expect("parent projection");
     let agent = parent.creation_agent.as_ref().clone();
     let runtime = fixture.engine.current_runtime();
-    let revisions = crate::delegation_events::DelegationRuntimeRevisions {
-        manifest_revision: crate::test_support::manifest_of(&agent.fallback_chain[0]),
+    let revisions = cookie_agent_protocol::RuntimeRevisions {
         runtime_revision: runtime.result.snapshot.runtime_revision.clone(),
         catalog_revision: runtime.result.snapshot.catalog_revision.clone(),
         provider_state_revision: runtime.result.snapshot.provider_state_revision.clone(),
         model_revision: runtime.result.snapshot.model_revision.clone(),
         agent_revision: runtime.result.snapshot.agent_revision.clone(),
         recipe_registry_revision: runtime.result.snapshot.recipe_registry_revision.clone(),
+        manifest_revision: crate::test_support::manifest_of(&agent.fallback_chain[0]),
     };
     let request = cookie_agent_protocol::DelegateRequestPayload {
         description: "Scripted delegation".into(),
@@ -324,7 +326,7 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
             run.run_id,
             ToolCallId::new_v7(),
             agent.clone(),
-            revisions,
+            revisions.clone(),
             crate::policy::decode_bindings(&agent.fallback_chain).expect("bindings"),
             cache_strategies.clone(),
             fingerprint,
@@ -369,6 +371,25 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
             .expect("reopened reservation")
             .cache_strategies,
         cache_strategies
+    );
+    // The reservation was frozen against the session's own revisions, so it
+    // recorded none and reads them from the log.
+    assert!(
+        fs::read_to_string(&event_path)
+            .expect("parent events")
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event JSON"))
+            .any(|value| value["payload"]["type"] == "delegation_reserved"
+                && value["payload"].get("revisions").is_none())
+    );
+    assert_eq!(
+        reopened
+            .inner
+            .delegation_events
+            .get(invocation_id)
+            .expect("reopened reservation")
+            .revisions,
+        revisions
     );
     reopened.shutdown().await;
 
@@ -437,14 +458,14 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
         .expect("parent projection");
     let agent = parent.creation_agent.as_ref().clone();
     let runtime = fixture.engine.current_runtime();
-    let revisions = crate::delegation_events::DelegationRuntimeRevisions {
-        manifest_revision: crate::test_support::manifest_of(&agent.fallback_chain[0]),
+    let revisions = cookie_agent_protocol::RuntimeRevisions {
         runtime_revision: runtime.result.snapshot.runtime_revision.clone(),
         catalog_revision: runtime.result.snapshot.catalog_revision.clone(),
         provider_state_revision: runtime.result.snapshot.provider_state_revision.clone(),
         model_revision: runtime.result.snapshot.model_revision.clone(),
         agent_revision: runtime.result.snapshot.agent_revision.clone(),
         recipe_registry_revision: runtime.result.snapshot.recipe_registry_revision.clone(),
+        manifest_revision: crate::test_support::manifest_of(&agent.fallback_chain[0]),
     };
     let first_id = InvocationId::new_v7();
     let second_id = InvocationId::new_v7();
@@ -791,13 +812,15 @@ async fn an_unreadable_frozen_binding_fails_only_what_runs_it_again() {
                 client_run_id: ClientRunId::new("unreadable-binding").expect("client run ID"),
                 selection,
                 agent: Box::new(agent),
-                runtime_revision: projection.meta.runtime_revision.clone(),
-                catalog_revision: projection.meta.catalog_revision.clone(),
-                provider_state_revision: projection.meta.provider_state_revision.clone(),
-                model_revision: projection.meta.model_revision.clone(),
-                agent_revision: projection.meta.agent_revision.clone(),
-                recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
-                manifest_revision: projection.meta.manifest_revision.clone(),
+                revisions: Some(cookie_agent_protocol::RuntimeRevisions {
+                    runtime_revision: projection.meta.runtime_revision.clone(),
+                    catalog_revision: projection.meta.catalog_revision.clone(),
+                    provider_state_revision: projection.meta.provider_state_revision.clone(),
+                    model_revision: projection.meta.model_revision.clone(),
+                    agent_revision: projection.meta.agent_revision.clone(),
+                    recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
+                    manifest_revision: projection.meta.manifest_revision.clone(),
+                }),
                 internal_agents: Vec::new(),
                 input_through_seq: 1,
             },

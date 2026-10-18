@@ -106,70 +106,46 @@ fn projection_fold_with(
 ) -> Result<SessionProjection, SessionError> {
     let events = log.event_snapshot();
     let physical_tip = log.last_event().expect("creation checked by EventLog");
-    let (
-        origin,
-        short_id,
-        cwd_identity,
-        creation_selection,
-        creation_agent,
-        runtime_revision,
-        catalog_revision,
-        provider_state_revision,
-        model_revision,
-        agent_revision,
-        recipe_registry_revision,
-        manifest_revision,
-    ) = match &events
-        .first()
-        .expect("creation checked by EventLog")
-        .payload
-    {
-        EventPayload::SessionCreated {
-            history_format: _,
-            origin,
-            short_id,
-            cwd_identity,
-            creation_selection,
-            creation_agent,
-            runtime_revision,
-            catalog_revision,
-            provider_state_revision,
-            model_revision,
-            agent_revision,
-            recipe_registry_revision,
-            manifest_revision,
-        } => (
-            origin.clone(),
-            short_id.clone(),
-            cwd_identity.clone(),
-            creation_selection.clone(),
-            previous.map_or_else(
-                || Arc::new(creation_agent.as_ref().clone()),
-                |previous| previous.creation_agent.clone(),
+    let (origin, short_id, cwd_identity, creation_selection, creation_agent, revisions) =
+        match &events
+            .first()
+            .expect("creation checked by EventLog")
+            .payload
+        {
+            EventPayload::SessionCreated {
+                history_format: _,
+                origin,
+                short_id,
+                cwd_identity,
+                creation_selection,
+                creation_agent,
+                revisions,
+            } => (
+                origin.clone(),
+                short_id.clone(),
+                cwd_identity.clone(),
+                creation_selection.clone(),
+                previous.map_or_else(
+                    || Arc::new(creation_agent.as_ref().clone()),
+                    |previous| previous.creation_agent.clone(),
+                ),
+                revisions.clone(),
             ),
-            runtime_revision.clone(),
-            catalog_revision.clone(),
-            provider_state_revision.clone(),
-            model_revision.clone(),
-            agent_revision.clone(),
-            recipe_registry_revision.clone(),
-            manifest_revision.clone(),
-        ),
-        _ => unreachable!(),
-    };
+            _ => unreachable!(),
+        };
     let meta = SessionMeta {
         session_id: events[0].session_id,
         origin,
         short_id,
         cwd_identity,
         creation_selection,
-        runtime_revision,
-        catalog_revision,
-        provider_state_revision,
-        model_revision,
-        agent_revision,
-        recipe_registry_revision,
-        manifest_revision,
+        runtime_revision: revisions.runtime_revision,
+        catalog_revision: revisions.catalog_revision,
+        provider_state_revision: revisions.provider_state_revision,
+        model_revision: revisions.model_revision,
+        agent_revision: revisions.agent_revision,
+        recipe_registry_revision: revisions.recipe_registry_revision,
+        manifest_revision: revisions.manifest_revision,
         title: None,
         title_updated_seq: 0,
         last_event_seq: log.physical_tip_seq(),

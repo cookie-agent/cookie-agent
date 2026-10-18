@@ -2119,6 +2119,67 @@ pub const HISTORY_FORMAT: u32 = 1;
 /// The most bytes of a diagnostic's serialized `detail`.
 pub const MAX_DIAGNOSTIC_DETAIL_BYTES: usize = 16 * 1024;
 
+/// The revisions of the runtime a session, run, or delegation was frozen
+/// against.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RuntimeRevisions {
+    pub runtime_revision: RuntimeRevision,
+    pub catalog_revision: CatalogRevision,
+    pub provider_state_revision: ProviderStateRevision,
+    pub model_revision: ModelRevision,
+    pub agent_revision: AgentRevision,
+    pub recipe_registry_revision: RecipeRegistryRevision,
+    pub manifest_revision: ModelSnapshotRevision,
+}
+
+/// The latest runtime revisions a log records, folded in log order.
+///
+/// `session_created` records them, and a later `run_started` or
+/// `delegation_reserved` records them again only when they changed, so an
+/// event without its own revisions was frozen against the latest before it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RevisionFold {
+    latest: Option<RuntimeRevisions>,
+}
+
+impl RevisionFold {
+    /// Folds one event and returns the revisions it was frozen against, for
+    /// the events that record them.
+    pub fn observe(&mut self, payload: &EventPayload) -> Option<&RuntimeRevisions> {
+        match payload {
+            EventPayload::SessionCreated { revisions, .. } => {
+                self.latest = Some(revisions.clone());
+            }
+            EventPayload::RunStarted { revisions, .. }
+            | EventPayload::DelegationReserved { revisions, .. } => {
+                if let Some(revisions) = revisions {
+                    self.latest = Some(revisions.clone());
+                }
+            }
+            _ => return None,
+        }
+        self.latest.as_ref()
+    }
+
+    /// The latest revisions folded so far.
+    #[must_use]
+    pub const fn latest(&self) -> Option<&RuntimeRevisions> {
+        self.latest.as_ref()
+    }
+
+    /// Drops `payload`'s own revisions when they equal the latest folded,
+    /// which is how a writer records them only where they changed.
+    pub fn elide_unchanged(&self, payload: &mut EventPayload) {
+        if let EventPayload::RunStarted { revisions, .. }
+        | EventPayload::DelegationReserved { revisions, .. } = payload
+            && revisions.is_some()
+            && revisions.as_ref() == self.latest.as_ref()
+        {
+            *revisions = None;
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
@@ -2135,13 +2196,8 @@ pub enum EventPayload {
         cwd_identity: CwdIdentity,
         creation_selection: RunSelection,
         creation_agent: Box<AgentSnapshot>,
-        runtime_revision: RuntimeRevision,
-        catalog_revision: CatalogRevision,
-        provider_state_revision: ProviderStateRevision,
-        model_revision: ModelRevision,
-        agent_revision: AgentRevision,
-        recipe_registry_revision: RecipeRegistryRevision,
-        manifest_revision: ModelSnapshotRevision,
+        /// The revisions the session was created against.
+        revisions: RuntimeRevisions,
     },
     SessionPermissionOverlaySet {
         overlay: SessionPermissionOverlay,
@@ -2272,13 +2328,10 @@ pub enum EventPayload {
         client_run_id: ClientRunId,
         selection: RunSelection,
         agent: Box<AgentSnapshot>,
-        runtime_revision: RuntimeRevision,
-        catalog_revision: CatalogRevision,
-        provider_state_revision: ProviderStateRevision,
-        model_revision: ModelRevision,
-        agent_revision: AgentRevision,
-        recipe_registry_revision: RecipeRegistryRevision,
-        manifest_revision: ModelSnapshotRevision,
+        /// The revisions the run was frozen against, present only when they
+        /// differ from the latest the log recorded ([`RevisionFold`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revisions: Option<RuntimeRevisions>,
         #[serde(default)]
         #[schemars(length(max = 3))]
         internal_agents: Vec<FrozenInternalAgentDefinition>,
@@ -2470,13 +2523,10 @@ pub enum EventPayload {
     DelegationReserved {
         reservation: DelegationReservation,
         child_agent: Box<AgentSnapshot>,
-        manifest_revision: ModelSnapshotRevision,
-        runtime_revision: RuntimeRevision,
-        catalog_revision: CatalogRevision,
-        provider_state_revision: ProviderStateRevision,
-        model_revision: ModelRevision,
-        agent_revision: AgentRevision,
-        recipe_registry_revision: RecipeRegistryRevision,
+        /// The revisions the child was frozen against, present only when
+        /// they differ from the latest the log recorded ([`RevisionFold`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revisions: Option<RuntimeRevisions>,
         /// One cache strategy per entry of the child's selected suffix.
         #[serde(default)]
         #[schemars(length(max = 256))]

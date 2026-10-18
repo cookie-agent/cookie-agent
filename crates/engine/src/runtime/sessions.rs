@@ -155,13 +155,10 @@ impl Engine {
             cwd_identity: cwd_identity.clone(),
             creation_selection: selection.clone(),
             creation_agent: Box::new(policy.agent.clone()),
-            runtime_revision: runtime.result.snapshot.runtime_revision.clone(),
-            catalog_revision: runtime.result.snapshot.catalog_revision.clone(),
-            provider_state_revision: runtime.result.snapshot.provider_state_revision.clone(),
-            model_revision: runtime.result.snapshot.model_revision.clone(),
-            agent_revision: runtime.result.snapshot.agent_revision.clone(),
-            recipe_registry_revision: runtime.result.snapshot.recipe_registry_revision.clone(),
-            manifest_revision: runtime.current_manifest.revision.clone(),
+            revisions: crate::policy::runtime_revisions(
+                &runtime,
+                runtime.current_manifest.revision.clone(),
+            ),
         };
         self.inner.store.create_with_initial(
             id,

@@ -3512,6 +3512,63 @@
       ],
       "type": "object"
     },
+    "RuntimeRevisions": {
+      "description": "The revisions of the runtime a session, run, or delegation was frozen\nagainst.",
+      "properties": {
+        "agent_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "catalog_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "manifest_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "model_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "provider_state_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "recipe_registry_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "runtime_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runtime_revision",
+        "catalog_revision",
+        "provider_state_revision",
+        "model_revision",
+        "agent_revision",
+        "recipe_registry_revision",
+        "manifest_revision"
+      ],
+      "type": "object"
+    },
     "SafeInternalAgentCall": {
       "additionalProperties": false,
       "properties": {
@@ -4210,18 +4267,6 @@
   "oneOf": [
     {
       "properties": {
-        "agent_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "catalog_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
         "creation_agent": {
           "$ref": "#/$defs/AgentSnapshot"
         },
@@ -4241,38 +4286,12 @@
           "minimum": 0,
           "type": "integer"
         },
-        "manifest_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "model_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
         "origin": {
           "$ref": "#/$defs/SessionOrigin"
         },
-        "provider_state_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "recipe_registry_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "runtime_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
+        "revisions": {
+          "$ref": "#/$defs/RuntimeRevisions",
+          "description": "The revisions the session was created against."
         },
         "short_id": {
           "description": "Short, tree-unique model-facing handle (`<agent_type>_<8 hex>`).\nOptional and additive: sessions created before handles existed carry\nno value and resolve by full UUID only.",
@@ -4293,13 +4312,7 @@
         "cwd_identity",
         "creation_selection",
         "creation_agent",
-        "runtime_revision",
-        "catalog_revision",
-        "provider_state_revision",
-        "model_revision",
-        "agent_revision",
-        "recipe_registry_revision",
-        "manifest_revision"
+        "revisions"
       ],
       "type": "object"
     },
@@ -4819,18 +4832,6 @@
         "agent": {
           "$ref": "#/$defs/AgentSnapshot"
         },
-        "agent_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "catalog_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
         "client_run_id": {
           "description": "Bounded run idempotency key.",
           "maxLength": 256,
@@ -4851,35 +4852,16 @@
           "maxItems": 3,
           "type": "array"
         },
-        "manifest_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "model_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "provider_state_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "recipe_registry_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "runtime_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
+        "revisions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeRevisions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The revisions the run was frozen against, present only when they\ndiffer from the latest the log recorded ([`RevisionFold`])."
         },
         "selection": {
           "$ref": "#/$defs/RunSelection"
@@ -4894,13 +4876,6 @@
         "client_run_id",
         "selection",
         "agent",
-        "runtime_revision",
-        "catalog_revision",
-        "provider_state_revision",
-        "model_revision",
-        "agent_revision",
-        "recipe_registry_revision",
-        "manifest_revision",
         "input_through_seq"
       ],
       "type": "object"
@@ -5724,12 +5699,6 @@
     },
     {
       "properties": {
-        "agent_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
         "cache_strategies": {
           "default": [],
           "description": "One cache strategy per entry of the child's selected suffix.",
@@ -5746,38 +5715,8 @@
           "maxItems": 256,
           "type": "array"
         },
-        "catalog_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
         "child_agent": {
           "$ref": "#/$defs/AgentSnapshot"
-        },
-        "manifest_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "model_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "provider_state_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "recipe_registry_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
         },
         "request": {
           "$ref": "#/$defs/DelegateRequestPayload"
@@ -5791,11 +5730,16 @@
         "reservation": {
           "$ref": "#/$defs/DelegationReservation"
         },
-        "runtime_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
+        "revisions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeRevisions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The revisions the child was frozen against, present only when\nthey differ from the latest the log recorded ([`RevisionFold`])."
         },
         "type": {
           "const": "delegation_reserved",
@@ -5806,13 +5750,6 @@
         "type",
         "reservation",
         "child_agent",
-        "manifest_revision",
-        "runtime_revision",
-        "catalog_revision",
-        "provider_state_revision",
-        "model_revision",
-        "agent_revision",
-        "recipe_registry_revision",
         "request_fingerprint",
         "request"
       ],

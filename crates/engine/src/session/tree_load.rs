@@ -326,7 +326,9 @@ impl TreeFold {
         projection: &SessionProjection,
         events: &[Arc<cookie_agent_protocol::StoredEvent>],
     ) {
+        let mut revisions = cookie_agent_protocol::RevisionFold::default();
         for envelope in events {
+            revisions.observe(&envelope.payload);
             match &envelope.payload {
                 EventPayload::TreeApprovalGrantCommitted { grant } => {
                     // The visible-grant rebuild needs every grant; only
@@ -343,7 +345,7 @@ impl TreeFold {
                         self.products.delegations.push((
                             projection.meta.session_id,
                             envelope.run_id,
-                            payload.clone(),
+                            crate::delegation_events::harvested(payload, &revisions),
                         ));
                     }
                 }

@@ -344,8 +344,9 @@ after restart.
 The `delegation_*` records are durable control events on the parent session,
 in the parent run. `delegation_reserved` contains the complete current delegate
 request, the child agent snapshot (whose selected suffix is the child's
-models), one cache strategy per entry of that suffix, runtime revisions, the
-request fingerprint, and optional typed staged-skill provenance. The child
+models), one cache strategy per entry of that suffix, its runtime revisions
+when they changed (see [Runs and internal agents](#runs-and-internal-agents)),
+the request fingerprint, and optional typed staged-skill provenance. The child
 records its attachments, the root session's, with `runtime_attached` events at
 creation. `delegation_progressed { invocation_id, stage }` records how far the
 delegation got; `stage` is `started { child_session_id }` (the child session
@@ -388,6 +389,15 @@ that entry (its exact selection, variant included, equals the run
 selection's), and its fallbacks are the entries after it. `session_created`
 and `delegation_reserved` carry snapshots of the same shape, and the snapshot
 has no schema version.
+
+`session_created` records the seven revisions of the runtime the session was
+created against as `revisions` (`runtime_revision`, `catalog_revision`,
+`provider_state_revision`, `model_revision`, `agent_revision`,
+`recipe_registry_revision`, and `manifest_revision`). `run_started` and
+`delegation_reserved` carry `revisions` only when the run or the delegated
+child was frozen against different ones than the latest the log recorded
+before it; without the field, an event was frozen against those latest
+revisions. Readers fold them in log order.
 
 Each chain entry, like a model fallback of a frozen internal agent, is a
 stored model binding `{ selection, provider_id, provider_model_id, adapter,

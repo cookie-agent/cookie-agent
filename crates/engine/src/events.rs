@@ -142,10 +142,13 @@ struct EventIndex {
     run_attempts: HashMap<RunId, u32>,
     /// Tool names of the latest visible `ModelToolsPublished` record.
     last_model_tools: Option<Vec<String>>,
+    /// The latest runtime revisions the log records.
+    revisions: cookie_agent_protocol::RevisionFold,
 }
 
 impl EventIndex {
     fn observe(&mut self, event: &StoredEvent) {
+        self.revisions.observe(&event.payload);
         match &event.payload {
             EventPayload::RunStarted { selection, .. } => {
                 if let Some(run) = event.run_id {
@@ -734,6 +737,10 @@ impl EventLog {
             .events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Revisions are recorded again only where they changed; holding the
+        // events lock keeps the comparison and the append together.
+        let mut payload = payload;
+        events.index.revisions.elide_unchanged(&mut payload);
         let event = StoredEvent {
             engine_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
             origin: Some(origin),

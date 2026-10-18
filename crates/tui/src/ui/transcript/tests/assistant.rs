@@ -278,13 +278,7 @@ async fn replayed_footer_cost_matches_engine_session_usage() {
     let EventPayload::SessionCreated {
         history_format: cookie_agent_protocol::HISTORY_FORMAT,
         creation_agent,
-        runtime_revision,
-        catalog_revision,
-        provider_state_revision,
-        model_revision,
-        agent_revision,
-        recipe_registry_revision,
-        manifest_revision,
+        revisions,
         ..
     } = &created.payload
     else {
@@ -298,13 +292,7 @@ async fn replayed_footer_cost_matches_engine_session_usage() {
             client_run_id: cookie_agent_protocol::ClientRunId::new("cost-invariant").unwrap(),
             selection,
             agent: creation_agent.clone(),
-            runtime_revision: runtime_revision.clone(),
-            catalog_revision: catalog_revision.clone(),
-            provider_state_revision: provider_state_revision.clone(),
-            model_revision: model_revision.clone(),
-            agent_revision: agent_revision.clone(),
-            recipe_registry_revision: recipe_registry_revision.clone(),
-            manifest_revision: manifest_revision.clone(),
+            revisions: Some(revisions.clone()),
             internal_agents: Vec::new(),
             input_through_seq: 1,
         },

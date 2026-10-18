@@ -509,23 +509,11 @@ impl Engine {
             client_run_id: params.client_run_id.clone(),
             selection: params.selection.clone(),
             agent: Box::new(run_policy.agent.clone()),
-            runtime_revision: run_policy.runtime.result.snapshot.runtime_revision.clone(),
-            catalog_revision: run_policy.runtime.result.snapshot.catalog_revision.clone(),
-            provider_state_revision: run_policy
-                .runtime
-                .result
-                .snapshot
-                .provider_state_revision
-                .clone(),
-            model_revision: run_policy.runtime.result.snapshot.model_revision.clone(),
-            agent_revision: run_policy.runtime.result.snapshot.agent_revision.clone(),
-            recipe_registry_revision: run_policy
-                .runtime
-                .result
-                .snapshot
-                .recipe_registry_revision
-                .clone(),
-            manifest_revision: run_policy.selected_suffix[0].manifest_revision.clone(),
+            // The log drops them again when they equal the latest it records.
+            revisions: Some(policy::runtime_revisions(
+                &run_policy.runtime,
+                run_policy.selected_suffix[0].manifest_revision.clone(),
+            )),
             internal_agents: run_policy.internal_agents.clone(),
             input_through_seq,
         };
