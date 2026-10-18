@@ -1051,6 +1051,7 @@ impl Engine {
         policy: &FrozenRunPolicy,
     ) -> Result<PublishedToolSet, EngineError> {
         let composition = self.compose_for_policy(session, policy)?;
+        let notes = self.runtime_tool_notes(session);
         let mut output = Vec::with_capacity(composition.tools.len());
         let mut published = std::collections::HashMap::with_capacity(composition.tools.len());
         for ComposedTool { name, source, spec } in composition.tools {
@@ -1062,11 +1063,12 @@ impl Engine {
             let schema = JsonSchema::new(parameters).map_err(|error| {
                 EngineError::ToolFailed(format!("tool `{name}` has invalid JSON Schema: {error}"))
             })?;
-            output.push(ToolDefinition::new(
-                name.clone(),
-                spec.description.clone(),
-                schema,
-            ));
+            let description = match source.attachment.as_ref().and_then(|name| notes.get(name)) {
+                Some(note) if spec.description.is_empty() => note.clone(),
+                Some(note) => format!("{}\n\n{note}", spec.description),
+                None => spec.description.clone(),
+            };
+            output.push(ToolDefinition::new(name.clone(), description, schema));
             published.insert(name, PublishedTool { source, spec });
         }
         output.sort_by(|left, right| left.name.cmp(&right.name));

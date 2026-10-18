@@ -404,7 +404,6 @@ impl Engine {
         } else {
             Vec::new()
         };
-        self.compose_runtimes_section(&mut run_policy, params.session_id);
         self.compose_tool_prompt_sections(&mut run_policy, params.session_id)?;
         self.compose_skill_listing(
             params.session_id,

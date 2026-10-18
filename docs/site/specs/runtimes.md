@@ -323,7 +323,11 @@ for its context (`runtime/context`):
 
 - **Workspace block.** `<working_directory>` is replaced by one `<runtimes>`
   block listing each attachment's name, kind, workspace, platform, and whether
-  its tools are prefixed. It is frozen like today's block.
+  its tools are prefixed. It is frozen like today's block. *Superseded
+  2026-10-17:* the block is gone; when a session attaches more than one
+  runtime besides `global`, each of their tools' descriptions names its
+  runtime, workspace, and platform instead (see
+  [System prompt](../reference/system-prompt.md#runtimes-in-tool-descriptions)).
 - **AGENTS.md.** The admission request carries the run's preset. Each coding
   runtime applies today's lookup to its own workspace: the preset's
   `.cookie-agent/agents/<preset>/AGENTS.md`, else

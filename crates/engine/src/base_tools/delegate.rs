@@ -99,7 +99,7 @@ impl DelegateToolProvider {
                     "runtimes":{
                         "type":"array",
                         "items":{"type":"string"},
-                        "description":"Optional. Names of your runtimes (see <runtimes>) the subagent may use; all of them when omitted. Not allowed with resume_session_id."
+                        "description":"Optional. Names of your runtimes the subagent may use, as your tools' descriptions name them; all of them when omitted. Not allowed with resume_session_id."
                     }
                 },
                 "required":["description","prompt","agent_type"]

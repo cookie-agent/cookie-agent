@@ -76,7 +76,7 @@ mod prompt_blocks;
 mod recovery;
 mod residency;
 mod runs;
-mod runtimes_section;
+mod runtime_notes;
 mod sessions;
 mod skills;
 mod submit;

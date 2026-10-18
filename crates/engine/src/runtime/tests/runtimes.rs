@@ -292,6 +292,19 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
         .register_runtime_template(labpc.clone())
         .expect("register labpc");
     assert_eq!(published_names(&fixture, session, &policy), ["write"]);
+    let description = |name: &str| {
+        fixture
+            .engine
+            .published_tool_definitions(session, &policy)
+            .expect("composed tools")
+            .definitions
+            .into_iter()
+            .find(|definition| definition.name == name)
+            .expect("published tool")
+            .description
+    };
+    // One runtime besides `global`: its tools say nothing about it.
+    assert!(!description("write").contains("Runs in runtime"));
 
     let api = workspace_dir(root, "api");
     let attached = fixture
@@ -311,6 +324,20 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
     let mut expected = vec![format!("{local_name}_write"), "labpc_api_write".to_owned()];
     expected.sort();
     assert_eq!(published_names(&fixture, session, &policy), expected);
+    // Several: each runtime's tools say where they run.
+    let labpc_description = description("labpc_api_write");
+    assert!(
+        labpc_description.ends_with(&format!(
+            "\n\nRuns in runtime `labpc_api` on {}, in the workspace `{}`; relative paths resolve against it.",
+            std::env::consts::OS,
+            attached.workspace.as_deref().expect("labpc workspace")
+        )),
+        "{labpc_description}"
+    );
+    assert!(
+        description(&format!("{local_name}_write"))
+            .contains(&format!("Runs in runtime `{local_name}`")),
+    );
 
     // A prefixed call runs on its own runtime under the name it knows.
     let published = fixture
