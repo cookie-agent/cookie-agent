@@ -488,7 +488,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "uniqueItems": true
         }
       },
-      "additionalProperties": false,
       "required": [
         "mime_types",
         "max_bytes",
@@ -525,6 +524,7 @@ expression: schema_for!(RuntimeSnapshotResult)
           "uniqueItems": true
         },
         "media": {
+          "description": "Per media kind. A reader drops a kind it does not know.",
           "type": "object",
           "properties": {
             "audio": {
@@ -540,7 +540,9 @@ expression: schema_for!(RuntimeSnapshotResult)
               "$ref": "#/$defs/MediaCapability"
             }
           },
-          "additionalProperties": false
+          "additionalProperties": {
+            "$ref": "#/$defs/MediaCapability"
+          }
         },
         "native_replay": {
           "$ref": "#/$defs/ReplayCapability"
@@ -580,7 +582,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "type": "boolean"
         }
       },
-      "additionalProperties": false,
       "required": [
         "input",
         "output",

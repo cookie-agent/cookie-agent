@@ -3557,9 +3557,11 @@
           ],
           "type": "object"
         }
-      ]
+      ],
+      "x-open": true
     },
     "ExtensionMessageRole": {
+      "description": "The role of a model message. Closed by design: a role is a part of the\nmodel's history every reader must place, so a new one is a breaking\nchange. Session history stores it too (`message_injected`).",
       "enum": [
         "system",
         "user",
@@ -6958,13 +6960,13 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "context_id": {
       "type": "string"
     },
     "event": {
-      "$ref": "#/$defs/EventPayload"
+      "$ref": "#/$defs/EventPayload",
+      "description": "The stored event's payload; an event type the plugin does not know\nreads as [`crate::Open::Unknown`]."
     },
     "seq": {
       "format": "uint64",

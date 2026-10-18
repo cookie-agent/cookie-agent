@@ -1,7 +1,6 @@
 {
   "$defs": {
     "CapabilityDeclaration": {
-      "additionalProperties": false,
       "description": "One capability a runtime offers.",
       "properties": {
         "description": {
@@ -34,7 +33,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "capabilities": {
       "description": "What the runtime offers; sessions attach each one separately.",

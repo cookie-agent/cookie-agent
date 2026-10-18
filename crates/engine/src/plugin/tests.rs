@@ -143,7 +143,7 @@ fn tool_before_call(session_id: SessionId) -> ExtensionToolBeforeCallParams {
         session_id,
         context_id: "caller-context".into(),
         tool: "example".into(),
-        origin: ExtensionToolOrigin::Base,
+        origin: ExtensionToolOrigin::Base.into(),
         arguments: serde_json::json!({"step": "original"}),
         permission_name: Some("read".into()),
         resource: None,
@@ -665,7 +665,7 @@ fn borrowed_params_decode_as_the_protocol_params() {
             session_id,
             context_id: "context-1".into(),
             seq: 7,
-            event: event.payload.clone(),
+            event: event.payload.clone().into(),
             timestamp: event.timestamp,
         }
     );

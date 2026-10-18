@@ -1,7 +1,6 @@
 {
   "$defs": {
     "McpFailureReport": {
-      "additionalProperties": false,
       "description": "An MCP server that failed to connect, or dropped and did not reconnect.",
       "properties": {
         "reason": {
@@ -18,7 +17,6 @@
       "type": "object"
     },
     "McpServerReport": {
-      "additionalProperties": false,
       "description": "The status of one MCP server a runtime hosts.",
       "properties": {
         "message": {
@@ -51,14 +49,15 @@
       "type": "object"
     },
     "McpServerState": {
+      "description": "Open: a state this build does not know reads as `disconnected`, which\noffers no tools and is not retried as a failure.",
       "oneOf": [
         {
           "enum": [
             "disabled",
-            "disconnected",
             "connecting",
             "connected",
-            "failed"
+            "failed",
+            "disconnected"
           ],
           "type": "string"
         },
@@ -67,11 +66,11 @@
           "description": "The connection dropped and is being re-established: its tools stay\ndeclared and calls fail with `runtime_unavailable`.",
           "type": "string"
         }
-      ]
+      ],
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "failures": {
       "default": [],

@@ -87,12 +87,24 @@ impl Surface {
 }
 
 /// Which way a message goes, seen from the daemon. Params sent to the
-/// daemon are commands; params it sends, and every result, are information.
+/// daemon are commands, except declarations ([`Role`]); params it sends, and
+/// every result, are information.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     ToDaemon,
     FromDaemon,
+}
+
+/// What a message's params are to their receiver
+/// (`docs/site/specs/compatibility-v1.md` section 2): a command asks it to
+/// act and refuses what it does not know; information, such as a peer's
+/// declaration of its tools, ignores it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    Command,
+    Information,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -126,6 +138,8 @@ pub struct MethodSpec {
     pub direction: Direction,
     pub kind: MessageKind,
     pub params: RootType,
+    /// What the params are to their receiver.
+    pub params_role: Role,
     /// The result of a request; `None` for a notification.
     pub result: Option<RootType>,
 }
@@ -139,6 +153,13 @@ macro_rules! root {
     };
 }
 
+const fn params_role(direction: Direction) -> Role {
+    match direction {
+        Direction::ToDaemon => Role::Command,
+        Direction::FromDaemon => Role::Information,
+    }
+}
+
 macro_rules! request {
     ($method:expr, $direction:ident, $params:ident => $result:ident) => {
         MethodSpec {
@@ -146,6 +167,7 @@ macro_rules! request {
             direction: Direction::$direction,
             kind: MessageKind::Request,
             params: root!($params),
+            params_role: params_role(Direction::$direction),
             result: Some(root!($result)),
         }
     };
@@ -158,6 +180,22 @@ macro_rules! notification {
             direction: Direction::$direction,
             kind: MessageKind::Notification,
             params: root!($params),
+            params_role: params_role(Direction::$direction),
+            result: None,
+        }
+    };
+}
+
+/// A notification a peer sends the daemon that declares what it has, such as
+/// its tools: information, though it goes to the daemon.
+macro_rules! declaration {
+    ($method:expr, $params:ident) => {
+        MethodSpec {
+            method: $method,
+            direction: Direction::ToDaemon,
+            kind: MessageKind::Notification,
+            params: root!($params),
+            params_role: Role::Information,
             result: None,
         }
     };
@@ -340,7 +378,7 @@ fn plugin_methods() -> Vec<MethodSpec> {
             FromDaemon,
             ExtensionEmitResultParams
         ),
-        notification!(runtime_method::TOOLS_CHANGED, ToDaemon, RuntimeTools),
+        declaration!(runtime_method::TOOLS_CHANGED, RuntimeTools),
         request!(PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD, FromDaemon, ExtensionToolBeforeCallParams => ExtensionToolBeforeCallResult),
         request!(PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD, FromDaemon, ExtensionToolAfterResultParams => ExtensionToolAfterResultResult),
         request!(PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD, FromDaemon, ExtensionAgentBeforeStartParams => ExtensionAgentBeforeStartResult),
@@ -360,14 +398,13 @@ fn runtime_methods() -> Vec<MethodSpec> {
     vec![
         request!(runtime_method::INITIALIZE, FromDaemon, InitializeParams => InitializeResult),
         request!(runtime_method::CAPABILITY_OPEN, FromDaemon, CapabilityOpenParams => CapabilityOpenResult),
-        notification!(
+        declaration!(
             runtime_method::CAPABILITY_TOOLS_CHANGED,
-            ToDaemon,
             CapabilityToolsChangedParams
         ),
         request!(runtime_method::CONTEXT, FromDaemon, ContextParams => ContextResult),
         request!(runtime_method::SHUTDOWN, FromDaemon, Empty => Empty),
-        notification!(runtime_method::MCP_CHANGED, ToDaemon, McpChangedParams),
+        declaration!(runtime_method::MCP_CHANGED, McpChangedParams),
         request!(runtime_method::MCP_RECONNECT, FromDaemon, McpReconnectParams => Outcome),
     ]
 }
@@ -396,6 +433,7 @@ pub fn methods_document(surface: Surface) -> Value {
                 "direction": method.direction,
                 "kind": method.kind,
                 "params": method.params.name,
+                "params_role": method.params_role,
                 "result": method.result.map(|result| result.name),
             })
         })

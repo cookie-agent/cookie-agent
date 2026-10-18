@@ -81,72 +81,19 @@
     "PrepareOutcome": {
       "oneOf": [
         {
-          "additionalProperties": false,
-          "description": "A prepared call. The runtime keeps its executor under `prepared_id`\nuntil it is executed or released.",
+          "$ref": "#/$defs/PreparedCall",
           "properties": {
-            "normalized_arguments": true,
-            "operation": {
-              "$ref": "#/$defs/PreparedOperationIdentity"
-            },
-            "permission": {
-              "description": "The permission action the call is checked under; absent for a tool\nthat needs no permission.",
-              "pattern": "^[a-z][a-z0-9_]{0,31}$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "permission_resource": {
-              "default": null,
-              "description": "The permission resource of the normalized arguments.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "policy_labels": {
-              "description": "The policy labels the tool set, one per operation resource.",
-              "items": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "type": "array"
-            },
-            "prepared_id": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "presentation": {
-              "$ref": "#/$defs/ToolCallPresentation"
-            },
-            "serialization_key": {
-              "default": null,
-              "description": "Calls with one key run one at a time; lowercase hex.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "status": {
               "const": "prepared",
               "type": "string"
             }
           },
           "required": [
-            "status",
-            "prepared_id",
-            "operation",
-            "policy_labels",
-            "normalized_arguments",
-            "presentation"
+            "status"
           ],
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "error": {
               "$ref": "#/$defs/WireToolError"
@@ -212,6 +159,65 @@
       ],
       "type": "string"
     },
+    "PreparedCall": {
+      "description": "A prepared call. The runtime keeps its executor under `prepared_id`\nuntil it is executed or released.",
+      "properties": {
+        "normalized_arguments": true,
+        "operation": {
+          "$ref": "#/$defs/PreparedOperationIdentity"
+        },
+        "permission": {
+          "description": "The permission action the call is checked under; absent for a tool\nthat needs no permission.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permission_resource": {
+          "default": null,
+          "description": "The permission resource of the normalized arguments.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "policy_labels": {
+          "description": "The policy labels the tool set, one per operation resource.",
+          "items": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": "array"
+        },
+        "prepared_id": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "presentation": {
+          "$ref": "#/$defs/ToolCallPresentation"
+        },
+        "serialization_key": {
+          "default": null,
+          "description": "Calls with one key run one at a time; lowercase hex.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "prepared_id",
+        "operation",
+        "policy_labels",
+        "normalized_arguments",
+        "presentation"
+      ],
+      "type": "object"
+    },
     "PreparedCapabilityLifetime": {
       "enum": [
         "process_local"
@@ -276,7 +282,6 @@
       "type": "object"
     },
     "ToolCallPresentation": {
-      "additionalProperties": false,
       "properties": {
         "primary_argument": {
           "description": "Bounded presentation text; byte-capped only, clients sanitize control characters.",
@@ -303,9 +308,9 @@
       "type": "object"
     },
     "ToolErrorKind": {
+      "description": "Open: a kind this build does not know reads as `failed`, a generic tool\nfailure.",
       "enum": [
         "progress_sink_closed",
-        "failed",
         "operation_changed",
         "unsupported_security",
         "unsupported_platform",
@@ -316,12 +321,13 @@
         "timeout",
         "transport_error",
         "unsupported_content_type",
-        "runtime_unavailable"
+        "runtime_unavailable",
+        "failed"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "WireToolError": {
-      "additionalProperties": false,
       "description": "A runtime API `ToolError` on the wire.",
       "properties": {
         "kind": {
@@ -339,7 +345,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "results": {
       "description": "One outcome per call, in order.",

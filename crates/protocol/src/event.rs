@@ -838,7 +838,6 @@ pub struct AssistantToolCallRef {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ToolCallPresentation {
     pub title: SafeDisplayText,
     #[serde(deserialize_with = "deserialize_required_option")]
@@ -1891,7 +1890,6 @@ impl AgentMdEntry {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct AgentMdSkipped {
     pub path: SafeDisplayText,
     pub byte_length: u64,
@@ -2754,6 +2752,10 @@ pub enum EventPayload {
         input_through_seq: u64,
     },
 }
+
+// Plugins receive events as `Open<EventPayload>`: an event type a plugin
+// does not know reaches it as `Unknown`.
+crate::open_enum!(tagged EventPayload, tag = "type");
 impl EventPayload {
     /// A `run_finished` with `outcome`.
     #[must_use]

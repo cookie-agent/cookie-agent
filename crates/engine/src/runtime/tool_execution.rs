@@ -613,7 +613,7 @@ impl Engine {
                                 session_id: active.session,
                                 context_id: context_id.clone(),
                                 tool: call.name.clone(),
-                                origin: interception.hook_origin(),
+                                origin: interception.hook_origin().into(),
                                 arguments: call.arguments.clone(),
                                 permission_name: interception.permission_name.clone(),
                                 resource: interception.permission_resource.clone(),

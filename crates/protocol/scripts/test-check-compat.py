@@ -111,20 +111,20 @@ def set_bound(surface, root, field, keyword, value):
     return mutate
 
 
-def emit_status(surfaces):
-    return definition(surfaces, "plugin", "ExtensionEmitResultParams", "ExtensionEmitStatus")
+def hook_action(surfaces):
+    return definition(surfaces, "plugin", "ExtensionToolBeforeCallResult", "ExtensionToolBeforeCallAction")
 
 
-def open_emit_status(surfaces):
-    emit_status(surfaces)["x-open"] = True
+def open_hook_action(surfaces):
+    hook_action(surfaces)["x-open"] = True
 
 
-def add_emit_status(surfaces):
-    emit_status(surfaces)["enum"].append("queued")
+def add_hook_action(surfaces):
+    hook_action(surfaces)["enum"].append("ask")
 
 
-def remove_emit_status(surfaces):
-    emit_status(surfaces)["enum"].remove("dropped")
+def remove_hook_action(surfaces):
+    hook_action(surfaces)["enum"].remove("block")
 
 
 def change_const(surfaces):
@@ -219,10 +219,10 @@ CASES = [
     ("command bound tightened", "plugin", set_bound("plugin", "ExtensionEmitParams", "name", "maxLength", 64), MINOR, None),
     ("information bound loosened", "plugin", set_bound("plugin", "ExtensionEventParams", "seq", "minimum", 0), MAJOR, None),
     ("command bound loosened", "plugin", set_bound("plugin", "ExtensionEmitParams", "name", "maxLength", 256), MINOR, None),
-    ("value added to an open enum", "plugin", add_emit_status, MINOR, open_emit_status),
-    ("value added to a closed enum", "plugin", add_emit_status, MAJOR, None),
-    ("value removed from an open enum", "plugin", remove_emit_status, MAJOR, open_emit_status),
-    ("value removed from a closed enum", "plugin", remove_emit_status, MAJOR, None),
+    ("value added to an open enum", "plugin", add_hook_action, MINOR, open_hook_action),
+    ("value added to a closed enum", "plugin", add_hook_action, MAJOR, None),
+    ("value removed from an open enum", "plugin", remove_hook_action, MAJOR, open_hook_action),
+    ("value removed from a closed enum", "plugin", remove_hook_action, MAJOR, None),
     ("variant added to an open tagged enum", "events", add_event, MINOR, open_events),
     ("variant added to a closed tagged enum", "events", add_event, MAJOR, None),
     ("variant removed", "events", remove_event, MAJOR, None),

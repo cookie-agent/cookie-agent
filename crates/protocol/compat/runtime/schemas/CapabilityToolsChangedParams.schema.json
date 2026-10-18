@@ -1,7 +1,6 @@
 {
   "$defs": {
     "PromptSectionDeclaration": {
-      "additionalProperties": false,
       "properties": {
         "body": {
           "type": "string"
@@ -17,7 +16,6 @@
       "type": "object"
     },
     "RuntimeTools": {
-      "additionalProperties": false,
       "description": "A runtime's tools and their prompt sections.",
       "properties": {
         "prompt_sections": {
@@ -40,13 +38,8 @@
       "type": "object"
     },
     "ToolCollision": {
-      "description": "How a tool behaves when another source offers the same name.",
+      "description": "How a tool behaves when another source offers the same name.\n\nOpen: a mode this build does not know reads as `prefix`.",
       "oneOf": [
-        {
-          "const": "prefix",
-          "description": "Takes the bare name unless another source's tool already does; then\nit is published as `<source>_<name>`.",
-          "type": "string"
-        },
         {
           "const": "fallback",
           "description": "Hidden whenever a non-fallback tool with the same name is published.",
@@ -56,19 +49,25 @@
           "const": "override",
           "description": "Takes the bare name, and the tool it collides with is published under\nits own source's prefix (or hidden, if it is `fallback`). Two\n`override` tools with one name are both prefixed.",
           "type": "string"
+        },
+        {
+          "const": "prefix",
+          "description": "Takes the bare name unless another source's tool already does; then\nit is published as `<source>_<name>`.",
+          "type": "string"
         }
-      ]
+      ],
+      "x-open": true
     },
     "ToolConcurrency": {
-      "description": "Declares whether calls to a tool may overlap with sibling calls from one model turn.",
+      "description": "Declares whether calls to a tool may overlap with sibling calls from one model turn.\n\nOpen: a value this build does not know reads as `exclusive`, the most\nconservative.",
       "enum": [
-        "exclusive",
-        "parallel"
+        "parallel",
+        "exclusive"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ToolDeclaration": {
-      "additionalProperties": false,
       "description": "A tool as a runtime declares it.",
       "properties": {
         "background": {
@@ -160,15 +159,16 @@
       ]
     },
     "ToolResultTruncationPolicy": {
+      "description": "Open: a policy this build does not know reads as `bounded`, so the\ndaemon still bounds the result.",
       "enum": [
-        "bounded",
-        "opt_out"
+        "opt_out",
+        "bounded"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "instance": {
       "type": "string"

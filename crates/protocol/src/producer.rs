@@ -122,7 +122,6 @@ pub struct ProducerRegisterParams {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProducerRegisterResult {
     pub producer_id: ProducerId,
 }
@@ -158,7 +157,6 @@ where
 /// Returned only after durable ProducerMessageAccepted append. Retries return
 /// this same receipt, including after consumption, with no second acceptance.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProducerSendResult {
     pub message_id: crate::ProducerMessageId,
 }
@@ -172,7 +170,6 @@ pub struct ProducerUnregisterParams {
 
 /// Unregister does not remove accepted messages; zero-send unregister is valid.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProducerUnregisterResult {}
 
 /// Discard an owned message only while it remains waiting. Authority is the live
@@ -194,7 +191,6 @@ pub struct ProducerDiscardParams {
 
 /// Already-discarded owned messages succeed; consumed or currently claimed messages reject.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProducerDiscardResult {}
 
 /// `producer/recovery/start`: the daemon to a producer source (a plugin or a
@@ -202,7 +198,6 @@ pub struct ProducerDiscardResult {}
 /// own storage or services and report completion on the same connection. No
 /// response, recovery deadline, replay, or eager session adoption is implied.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RecoveryStartParams {}
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -222,7 +217,6 @@ pub struct RecoveryCompleteParams {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RecoveryCompleteResult {}
 
 #[cfg(test)]

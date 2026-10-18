@@ -492,10 +492,10 @@ fn producer_identity_and_send_contracts_are_strict() {
             "{name}"
         );
     }
-    strict::<ProducerRegisterResult>(json!({"producer_id":producer_id}));
+    tolerant::<ProducerRegisterResult>(json!({"producer_id":producer_id}));
     strict::<ProducerUnregisterParams>(json!({"session_id":session_id,"producer_id":producer_id}));
-    strict::<ProducerUnregisterResult>(json!({}));
-    strict::<ProducerSendResult>(json!({"message_id":ProducerMessageId::new_v7()}));
+    tolerant::<ProducerUnregisterResult>(json!({}));
+    tolerant::<ProducerSendResult>(json!({"message_id":ProducerMessageId::new_v7()}));
     for mode in [ProducerDeliveryMode::Steer, ProducerDeliveryMode::Queue] {
         let send = ProducerSendParams {
             session_id,
@@ -735,7 +735,7 @@ fn reminder_metadata_is_not_send_identity_and_is_best_effort_on_read() {
 
 #[test]
 fn recovery_handshake_has_only_explicit_completion_outcomes() {
-    strict::<RecoveryStartParams>(json!({}));
+    tolerant::<RecoveryStartParams>(json!({}));
     let notification = serde_json::to_value(extension_recovery_start_notification()).unwrap();
     assert_eq!(
         notification,
@@ -750,7 +750,7 @@ fn recovery_handshake_has_only_explicit_completion_outcomes() {
     assert!(has("RecoveryStartParams.schema.json"));
     assert!(!has("ExtensionRecoveryParams.schema.json"));
     assert!(!has("ExtensionRecoveryResult.schema.json"));
-    strict::<RecoveryCompleteResult>(json!({}));
+    tolerant::<RecoveryCompleteResult>(json!({}));
     for outcome in [
         json!({"status":"ready"}),
         json!({"status":"failed","message":"external state unavailable"}),
@@ -793,7 +793,7 @@ fn recovery_handshake_has_only_explicit_completion_outcomes() {
     );
     assert_eq!(wire["features"], json!(["producer_messaging"]));
     round_trip(params);
-    strict::<ExtensionPluginCapabilities>(
+    tolerant::<ExtensionPluginCapabilities>(
         json!({"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[]}),
     );
 }

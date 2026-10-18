@@ -1,6 +1,5 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "description": "`producer/recovery/start`: the daemon to a producer source (a plugin or a\nruntime), never a deadlineful pending request. Restore from the source's\nown storage or services and report completion on the same connection. No\nresponse, recovery deadline, replay, or eager session adoption is implied.",
   "title": "RecoveryStartParams",
   "type": "object"

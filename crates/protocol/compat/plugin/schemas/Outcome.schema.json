@@ -1,9 +1,9 @@
 {
   "$defs": {
     "ToolErrorKind": {
+      "description": "Open: a kind this build does not know reads as `failed`, a generic tool\nfailure.",
       "enum": [
         "progress_sink_closed",
-        "failed",
         "operation_changed",
         "unsupported_security",
         "unsupported_platform",
@@ -14,12 +14,13 @@
         "timeout",
         "transport_error",
         "unsupported_content_type",
-        "runtime_unavailable"
+        "runtime_unavailable",
+        "failed"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "WireToolError": {
-      "additionalProperties": false,
       "description": "A runtime API `ToolError` on the wire.",
       "properties": {
         "kind": {
@@ -37,7 +38,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "description": "The outcome of a host service or a check: absent error means success.",
   "properties": {
     "error": {

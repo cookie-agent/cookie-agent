@@ -43,9 +43,10 @@ protocols both deliver; its `version` records the client version). Each holds:
 
 - `version`: the surface's version when the baseline was taken;
 - `methods.json`: every method and notification with its direction (`to_daemon`
-  or `from_daemon`), its kind (`request` or `notification`), and the names of
-  its params and result schema roots, plus `information`: roots that flow as
-  information without a method of their own, such as error data;
+  or `from_daemon`), its kind (`request` or `notification`), the names of its
+  params and result schema roots, and `params_role` (`command` or
+  `information`), plus `information`: roots that flow as information without a
+  method of their own, such as error data;
 - `schemas/<Root>.schema.json`: the JSON Schema of every root.
 
 `cargo run -p cookie_agent_protocol --example generate -- --output <directory>`
@@ -56,8 +57,10 @@ writes the same layout from the current code; the method registry it reads is
 temporary directory and compares it with the baselines using
 `crates/protocol/scripts/check-compat.py`, then runs the checker's mutation
 test, `test-check-compat.py`. The checker gives each type a role from
-`methods.json`: params sent to the daemon are commands, while params the daemon
-sends and every result are information. It walks nested definitions and
+`methods.json`: params sent to the daemon are commands, except a peer's
+declarations of what it has (`runtime/tools_changed`,
+`capability/tools_changed`, `mcp/changed`), while params the daemon sends and
+every result are information. It walks nested definitions and
 computes the version bump each change requires under the rules of section 7.1
 of the specification; open enums are marked `"x-open": true`.
 

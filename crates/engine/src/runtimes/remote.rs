@@ -31,7 +31,8 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::{McpServerConfig, SkillDiscovery, SkillRegistry};
 use cookie_agent_protocol::{
-    CapabilityName, ProducerSourceStatus, RecoveryCompleteParams, RecoveryOutcome,
+    CapabilityName, ProducerDiscardParams, ProducerRegisterParams, ProducerSendParams,
+    ProducerSourceStatus, ProducerUnregisterParams, RecoveryCompleteParams, RecoveryOutcome,
     RuntimeCapabilityInfo, SessionId, ToolCallId, ToolCallPresentation, errors,
 };
 use cookie_agent_runtime_api::{
@@ -328,6 +329,9 @@ pub(crate) trait ClientExtension: Send + Sync {
     /// A notification the runtime protocol does not define, such as
     /// `plugin/emit`.
     fn notification(&self, client: RuntimeClient, notification: IncomingNotification);
+
+    /// Something the daemon could not do with a message the plugin sent.
+    fn diagnostic(&self, message: String);
 }
 
 /// Distinguishes every runtime connection of this process from every other,
@@ -375,6 +379,27 @@ pub(crate) struct PluginHandshake {
     pub(crate) result: cookie_agent_protocol::ExtensionInitializeResult,
     /// What the daemon ignored in the plugin's reply, one entry each.
     pub(crate) notes: Vec<String>,
+}
+
+/// The hooks a plugin's initialize reply intercepts that this build does not
+/// know, as the plugin named them.
+fn unknown_hooks(reply: &serde_json::Value) -> Vec<String> {
+    reply
+        .pointer("/capabilities/intercept")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|hook| {
+            serde_json::from_value::<cookie_agent_protocol::ExtensionInterceptionHook>(
+                (*hook).clone(),
+            )
+            .is_ok_and(|hook| hook == cookie_agent_protocol::ExtensionInterceptionHook::Unknown)
+        })
+        .map(|hook| match hook {
+            serde_json::Value::String(name) => name.clone(),
+            other => other.to_string(),
+        })
+        .collect()
 }
 
 /// Reads a handshake reply: the peer's version first, from the raw JSON
@@ -736,9 +761,14 @@ impl RuntimeClient {
             )
             .await
             .map_err(|error| failed(&error))?;
-        let result: cookie_agent_protocol::ExtensionInitializeResult =
+        let unknown_hooks = unknown_hooks(&reply);
+        let mut result: cookie_agent_protocol::ExtensionInitializeResult =
             read_handshake(cookie_agent_protocol::PLUGIN_PROTOCOL_VERSION, reply)
                 .map_err(|reason| failed(&reason))?;
+        result
+            .capabilities
+            .intercept
+            .retain(|hook| *hook != cookie_agent_protocol::ExtensionInterceptionHook::Unknown);
         // No plugin feature is defined yet.
         let notes = result
             .features
@@ -749,6 +779,12 @@ impl RuntimeClient {
                      it is ignored"
                 )
             })
+            .chain(unknown_hooks.into_iter().map(|hook| {
+                format!(
+                    "the plugin intercepts hook `{hook}`, which this daemon does not know; \
+                     it is skipped"
+                )
+            }))
             .collect();
         if result.name != name {
             return Err(format!(
@@ -1184,6 +1220,16 @@ async fn handle_incoming(
 }
 
 impl ClientInner {
+    /// Reports something the daemon could not do with a message the peer
+    /// sent: a plugin's reason shows it; a runtime's goes to the daemon's
+    /// log.
+    fn diagnostic(&self, message: String) {
+        match self.extension.get() {
+            Some(extension) => extension.diagnostic(message),
+            None => eprintln!("cookie-agent: {}: {message}", self.peer_name()),
+        }
+    }
+
     /// How errors name the peer: `runtime `<id>`` or `plugin `<name>``.
     fn peer_name(&self) -> String {
         if self.extension.get().is_some() {
@@ -1245,28 +1291,41 @@ impl ClientInner {
     }
 
     /// Handles a notification the runtime protocol defines; returns whether
-    /// it was one.
+    /// it was one. Declarations are information and read tolerantly;
+    /// `tool/detachable` is a command and read strictly. What cannot be read,
+    /// or comes from the wrong kind of peer, is reported and ignored.
     fn handle_notification(&self, notification: &IncomingNotification) -> bool {
+        let plugin = self.extension.get().is_some();
+        let ignored = |reason: &dyn std::fmt::Display| {
+            self.diagnostic(format!("ignored `{}`: {reason}", notification.method));
+        };
         match notification.method.as_str() {
             // A plugin's implicit instance.
-            method::TOOLS_CHANGED => {
-                if let Ok(tools) = notification.params::<RuntimeTools>() {
+            method::TOOLS_CHANGED if plugin => match notification.params::<RuntimeTools>() {
+                Ok(tools) => {
                     lock(&self.tools).insert(None, Arc::new(tools.into()));
                 }
+                Err(error) => ignored(&error),
+            },
+            method::TOOLS_CHANGED => ignored(
+                &"only a plugin sends it; a runtime reports an instance's tools with \
+                  `capability/tools_changed`",
+            ),
+            method::CAPABILITY_TOOLS_CHANGED | method::MCP_CHANGED if plugin => {
+                ignored(&"only a runtime sends it");
             }
-            method::CAPABILITY_TOOLS_CHANGED => {
-                if let Ok(CapabilityToolsChangedParams { instance, tools }) = notification.params()
-                {
+            method::CAPABILITY_TOOLS_CHANGED => match notification.params() {
+                Ok(CapabilityToolsChangedParams { instance, tools }) => {
                     lock(&self.tools).insert(Some(instance), Arc::new(tools.into()));
                 }
-            }
-            method::MCP_CHANGED => {
-                if let Ok(McpChangedParams {
+                Err(error) => ignored(&error),
+            },
+            method::MCP_CHANGED => match notification.params() {
+                Ok(McpChangedParams {
                     instance,
                     servers,
                     failures,
-                }) = notification.params()
-                {
+                }) => {
                     lock(&self.mcp)
                         .instances
                         .entry(instance.clone())
@@ -1279,22 +1338,24 @@ impl ClientInner {
                         }
                     }
                 }
-            }
-            method::TOOL_DETACHABLE => {
-                if let Ok(DetachableParams {
+                Err(error) => ignored(&error),
+            },
+            method::TOOL_DETACHABLE => match notification.command::<DetachableParams>() {
+                Ok(DetachableParams {
                     prepared_id,
                     note,
                     reports_itself,
-                }) = notification.params()
-                    && let Some(host) = lock(&self.executions).get(&prepared_id)
-                {
-                    host.detach
-                        .reached_with(cookie_agent_runtime_api::Detachable {
-                            note,
-                            reports_itself,
-                        });
+                }) => {
+                    if let Some(host) = lock(&self.executions).get(&prepared_id) {
+                        host.detach
+                            .reached_with(cookie_agent_runtime_api::Detachable {
+                                note,
+                                reports_itself,
+                            });
+                    }
                 }
-            }
+                Err(error) => ignored(&error),
+            },
             _ => return false,
         }
         true
@@ -1314,6 +1375,14 @@ impl ClientInner {
             .get()
             .cloned()
             .ok_or_else(|| RpcError::from(errors::NOT_INITIALIZED.error()))?;
+        // Commands: refused with the path of what their schema does not list.
+        match request.method.as_str() {
+            method::PRODUCER_REGISTER => drop(request.command::<ProducerRegisterParams>()?),
+            method::PRODUCER_SEND => drop(request.command::<ProducerSendParams>()?),
+            method::PRODUCER_UNREGISTER => drop(request.command::<ProducerUnregisterParams>()?),
+            method::PRODUCER_DISCARD => drop(request.command::<ProducerDiscardParams>()?),
+            _ => {}
+        }
         (host.call)(RuntimeProducerCall {
             source,
             epoch: self.epoch,
@@ -1327,7 +1396,7 @@ impl ClientInner {
     /// Records the runtime's recovery outcome. A repeat of the same outcome
     /// is accepted; a different one is not.
     fn complete_producer_recovery(&self, request: &IncomingRequest) -> Result<(), RpcError> {
-        let RecoveryCompleteParams { outcome } = request.params()?;
+        let RecoveryCompleteParams { outcome } = request.command()?;
         let host = {
             let mut state = lock(&self.producers);
             let Some(host) = state.host.clone() else {
@@ -1357,7 +1426,7 @@ impl ClientInner {
         let ToolProgressParams {
             prepared_id,
             progress,
-        } = request.params()?;
+        } = request.command()?;
         let sink = lock(&self.executions)
             .get(&prepared_id)
             .map(|host| host.progress.clone());

@@ -87,14 +87,13 @@ impl ToolOutputDeclaration {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ToolOutputChunk {
     pub stream: Option<String>,
     pub text: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolCompletionOutput {
     Single { text: String },
     Named { streams: Vec<ToolOutputChunk> },

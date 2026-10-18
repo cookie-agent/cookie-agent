@@ -1,6 +1,5 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "description": "`plugin/initialize` params: the daemon's version and what its\nconfiguration enables for this plugin.",
   "properties": {
     "engine_version": {

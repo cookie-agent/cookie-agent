@@ -1139,6 +1139,8 @@ struct PluginExtension {
 }
 
 impl ClientExtension for PluginExtension {
+    /// `plugin/emit` is a command, read strictly; other notifications the
+    /// daemon does not know are ignored.
     fn notification(&self, client: RuntimeClient, notification: IncomingNotification) {
         if notification.method != PLUGIN_EMIT_METHOD {
             return;
@@ -1146,16 +1148,20 @@ impl ClientExtension for PluginExtension {
         let Some(plugin) = self.plugin.upgrade() else {
             return;
         };
-        match notification.params::<ExtensionEmitParams>() {
+        match notification.command::<ExtensionEmitParams>() {
             Ok(params) => {
                 tokio::spawn(plugin.emit(client, params));
             }
-            Err(error) => {
-                if let Some(registry) = plugin.registry() {
-                    PluginRegistry { inner: registry }
-                        .note_offender_diagnostic(&plugin.name, format!("malformed emit: {error}"));
-                }
-            }
+            Err(error) => self.diagnostic(format!("malformed emit: {error}")),
+        }
+    }
+
+    fn diagnostic(&self, message: String) {
+        let Some(plugin) = self.plugin.upgrade() else {
+            return;
+        };
+        if let Some(registry) = plugin.registry() {
+            PluginRegistry { inner: registry }.note_offender_diagnostic(&plugin.name, message);
         }
     }
 }

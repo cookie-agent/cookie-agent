@@ -48,11 +48,48 @@ protocol over either:
   an execute reply carrying the largest attachment as base64 next to a full
   tool result. A sender refuses to send a larger message; a receiver that gets
   one closes the connection.
-- **Strict.** Every message and every params or result object rejects unknown
-  fields, except the types session history also stores, such as a tool
-  result, which ignore them. A frame that is not a valid request,
-  notification, or reply closes the connection. A request whose params do not
-  match its method is answered with `-32602`, and the connection stays up.
+- **Information and commands.** Every message is information except the
+  ones a runtime sends that ask the daemon to act: `tool/progress`,
+  `tool/detachable`, and the `producer/*` requests. Information ignores
+  members its reader does not know, at any depth, and reads an enum value it
+  does not know as that enum's fallback (see [Open enums](#open-enums)), so
+  either end may be newer. A command is checked against its schema before
+  it is decoded: a member, or an enum value or tag, the schema does not list
+  is refused with `-32602`, `data.code` `unknown_field` or `unknown_variant`,
+  and `data.field` set to its JSON path, such as `progress.display.type`. A
+  sender gates new fields of a command on the receiver's version.
+- **Unreadable messages.** A frame that is not JSON, or not a request,
+  notification, or reply, closes the connection. A request whose params do
+  not match its method is answered with `-32602` (`invalid_params`, with
+  serde's message as `detail`), and the connection stays up. A notification
+  that cannot be read cannot be answered: the receiver reports it (the daemon
+  in its log, a runtime on its standard error) and ignores it. The daemon
+  also reports and ignores `runtime/tools_changed` from a runtime: only a
+  plugin sends it.
+
+### Open enums
+
+An enum value a reader does not know reads as the fallback below. The
+fallbacks are chosen so that an older reader stays safe:
+
+| Value | Where | An unknown value reads as |
+|---|---|---|
+| `collision` | tool declarations | `prefix` |
+| `concurrency` | tool declarations | `exclusive`, the most conservative |
+| `result_truncation` | tool declarations | `bounded`: the daemon still bounds the result |
+| tool error `kind` | prepare, revalidate, and execute results; `mcp/reconnect` | `failed`, a generic tool failure |
+| MCP server `state` | `capability/open` results, `mcp/changed` | `disconnected`: no tools, and no retry as a failure |
+| `adapter_family` | `tool/prepare` and `tool/execute` turns | `unknown`, which delivers no media |
+| display block `type` | execute results | dropped, as the daemon drops a block kind it does not know |
+| media kind | the model capabilities' `media` in the turn context | left out of the map |
+
+These are closed by design, since every reader must understand each value: a
+prepare result's and an execute outcome's `status`, an output's and an
+output declaration's `kind`, a skill's `source`, and the model capabilities'
+modalities in the turn context. The commands `producer/send`'s `mode` and
+`producer/recovery/complete`'s outcome are closed as every command is. The
+plugin protocol adds its own (see
+[Plugin development](../development/plugins.md#compatibility)).
 
 ## Version
 
@@ -400,6 +437,7 @@ protocol crate's registry (`cookie_agent_protocol::errors`):
 |---|---|---|
 | `-32601` | `method_not_found` | Unknown method; `data.method` names it. |
 | `-32602` | `invalid_params` | Params do not match the method; `detail` says why. |
+| `-32602` | `unknown_field`, `unknown_variant` | A command carried a member, or an enum value or tag, its receiver does not know; `data.field` is its JSON path (see [Framing](#framing)). |
 | `-32603` | `internal_error` | The receiver failed in a way it cannot describe further. |
 | `-32002` | `unsupported_protocol` | The peer speaks an incompatible version; `data.supported_version` and `data.peer_version` name both (see [Version](#version)). |
 | `-32000` | `already_initialized` | A second `runtime/initialize`. |

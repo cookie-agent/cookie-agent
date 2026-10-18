@@ -1,7 +1,6 @@
 {
   "$defs": {
     "AgentMdLimits": {
-      "additionalProperties": false,
       "properties": {
         "max_bytes": {
           "description": "Files larger than this are skipped. At most\nthe `AGENTS.md` event bound.",
@@ -16,7 +15,6 @@
       "type": "object"
     },
     "McpServerSettings": {
-      "additionalProperties": false,
       "description": "One MCP server of a runtime template.",
       "properties": {
         "config": {
@@ -33,7 +31,6 @@
       "type": "object"
     },
     "RuntimeSettings": {
-      "additionalProperties": false,
       "description": "What the daemon's configuration says about the runtime's work. A runtime\nrejects settings it does not support.",
       "properties": {
         "agent_md": {
@@ -60,7 +57,6 @@
       "type": "object"
     },
     "ToolOutputLimits": {
-      "additionalProperties": false,
       "properties": {
         "head_lines": {
           "format": "uint64",
@@ -93,7 +89,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "engine_version": {
       "description": "The daemon's own version, for logs and diagnostics.",

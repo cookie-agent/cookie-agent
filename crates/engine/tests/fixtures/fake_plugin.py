@@ -121,6 +121,13 @@ for line in sys.stdin:
     message = json.loads(line)
     method = message.get("method")
     request_id = message.get("id")
+    if method is None:
+        # A reply to a request the fixture sent.
+        reply_file = os.environ.get("FIXTURE_REPLY_FILE")
+        if reply_file:
+            with open(reply_file, "a", encoding="utf-8") as output:
+                output.write(json.dumps(message, separators=(",", ":")) + "\n")
+        continue
     if method == "plugin/initialize":
         time.sleep(int(os.environ.get("FIXTURE_DELAY_MS", "0")) / 1000)
         if os.environ.get("FIXTURE_MALFORMED") == "1":
@@ -142,6 +149,10 @@ for line in sys.stdin:
                 "tools": {"tools": declarations(), "prompt_sections": []},
             },
         })
+        # Frames to send once connected, such as messages a newer or a
+        # misbehaving plugin would send.
+        for frame in json.loads(os.environ.get("FIXTURE_AFTER_INITIALIZE", "[]")):
+            send(frame)
         if os.environ.get("FIXTURE_CRASH_AFTER_INITIALIZE") == "1":
             time.sleep(0.05)
             os._exit(17)
@@ -174,7 +185,11 @@ for line in sys.stdin:
             send({
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "error": {"code": -32000, "message": "fixture tool RPC error"},
+                "error": {
+                    "code": -32000,
+                    "message": "fixture tool RPC error",
+                    "data": {"code": "fixture_failure"},
+                },
             })
             continue
         arguments = call.get("arguments", {})
@@ -252,7 +267,11 @@ for line in sys.stdin:
             send({
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "error": {"code": -32000, "message": intercept_error},
+                "error": {
+                    "code": -32000,
+                    "message": intercept_error,
+                    "data": {"code": "fixture_failure"},
+                },
             })
             continue
         result_env = {
@@ -305,5 +324,9 @@ for line in sys.stdin:
         send({
             "jsonrpc": "2.0",
             "id": request_id,
-            "error": {"code": -32601, "message": "unsupported fixture method"},
+            "error": {
+                "code": -32601,
+                "message": "The other side does not know the method " + method + ".",
+                "data": {"code": "method_not_found", "method": method},
+            },
         })

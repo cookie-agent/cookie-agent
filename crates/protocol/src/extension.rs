@@ -39,25 +39,28 @@ pub const PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD: &str =
 /// lets it produce messages (`producer_messaging = true`).
 pub const FEATURE_PRODUCER_MESSAGING: &str = "producer_messaging";
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExtensionInterceptionHook {
-    ToolBeforeCall,
-    ToolAfterResult,
-    AgentBeforeStart,
-    SessionBeforeCompact,
-    UserBeforeInput,
-    ModelBeforeRequest,
-    ProviderBeforeRequest,
-    ProviderAfterResponse,
-    MessageEnd,
-    ModelBeforeSelect,
-    SessionBeforeFork,
-    SessionBeforeRevert,
+crate::open_enum! {
+    /// A hook a plugin intercepts. Open: the daemon skips a hook it does not
+    /// know, with a diagnostic, and the plugin still starts.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ExtensionInterceptionHook {
+        ToolBeforeCall,
+        ToolAfterResult,
+        AgentBeforeStart,
+        SessionBeforeCompact,
+        UserBeforeInput,
+        ModelBeforeRequest,
+        ProviderBeforeRequest,
+        ProviderAfterResponse,
+        MessageEnd,
+        ModelBeforeSelect,
+        SessionBeforeFork,
+        SessionBeforeRevert,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionPluginCapabilities {
     // Explicit opt-in, off by default in plugin configuration and SDK builders.
     pub producer_messaging: bool,
@@ -70,7 +73,6 @@ pub struct ExtensionPluginCapabilities {
 /// `plugin/initialize` params: the daemon's version and what its
 /// configuration enables for this plugin.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionInitializeParams {
     /// The daemon's [`crate::PLUGIN_PROTOCOL_VERSION`].
     pub protocol_version: crate::SemVer,
@@ -86,7 +88,6 @@ pub struct ExtensionInitializeParams {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionInitializeResult {
     /// The plugin's [`crate::PLUGIN_PROTOCOL_VERSION`].
     pub protocol_version: crate::SemVer,
@@ -105,22 +106,21 @@ pub struct ExtensionInitializeResult {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionShutdownParams {}
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionEventParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
     #[schemars(range(min = 1))]
     pub seq: u64,
-    pub event: crate::EventPayload,
+    /// The stored event's payload; an event type the plugin does not know
+    /// reads as [`crate::Open::Unknown`].
+    pub event: crate::Open<crate::EventPayload>,
     pub timestamp: jiff::Timestamp,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionBusEventParams {
     pub session_id: crate::SessionId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -142,16 +142,19 @@ pub struct ExtensionEmitParams {
     pub payload: Value,
 }
 
+/// Open: a status this build does not know reads as `dropped`: the event
+/// was not published as far as the plugin can tell.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ExtensionEmitStatus {
     Published,
-    Dropped,
     Rejected,
+    #[serde(other)]
+    Dropped,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionEmitResultParams {
     pub name: String,
     pub bus: ExtensionEmitStatus,
@@ -159,9 +162,11 @@ pub struct ExtensionEmitResultParams {
     pub reason: Option<String>,
 }
 
-/// Where a tool a hook sees comes from.
+/// Where a tool a hook sees comes from. Hook params carry it as
+/// [`crate::Open`]: an origin of a kind the plugin does not know is another
+/// source it cannot name.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExtensionToolOrigin {
     /// The daemon's base layer.
     Base,
@@ -173,13 +178,14 @@ pub enum ExtensionToolOrigin {
     },
 }
 
+crate::open_enum!(tagged ExtensionToolOrigin, tag = "kind");
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionToolBeforeCallParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
     pub tool: String,
-    pub origin: ExtensionToolOrigin,
+    pub origin: crate::Open<ExtensionToolOrigin>,
     pub arguments: Value,
     /// `null` for a tool that needs no permission.
     #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -198,7 +204,6 @@ pub enum ExtensionToolBeforeCallAction {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionToolBeforeCallResult {
     pub action: ExtensionToolBeforeCallAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -210,15 +215,17 @@ pub struct ExtensionToolBeforeCallResult {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionToolAfterResultParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
     pub tool: String,
     /// `null` for a call that names no published tool.
     #[serde(deserialize_with = "crate::deserialize_required_option")]
-    #[schemars(with = "crate::NullableSchema<ExtensionToolOrigin>", required)]
-    pub origin: Option<ExtensionToolOrigin>,
+    #[schemars(
+        with = "crate::NullableSchema<crate::Open<ExtensionToolOrigin>>",
+        required
+    )]
+    pub origin: Option<crate::Open<ExtensionToolOrigin>>,
     pub arguments: Value,
     pub result_content: String,
     pub is_error: bool,
@@ -232,7 +239,6 @@ pub enum ExtensionToolAfterResultAction {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionToolAfterResultResult {
     pub action: ExtensionToolAfterResultAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -240,7 +246,6 @@ pub struct ExtensionToolAfterResultResult {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionAgentBeforeStartParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
@@ -249,7 +254,6 @@ pub struct ExtensionAgentBeforeStartParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionAgentBeforeStartResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub append_to_system_prompt: Option<String>,
@@ -259,6 +263,9 @@ pub struct ExtensionAgentBeforeStartResult {
     pub inject_message: Option<ExtensionInjectedMessage>,
 }
 
+/// The role of a model message. Closed by design: a role is a part of the
+/// model's history every reader must place, so a new one is a breaking
+/// change. Session history stores it too (`message_injected`).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionMessageRole {
@@ -269,14 +276,12 @@ pub enum ExtensionMessageRole {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionInjectedMessage {
     pub role: ExtensionMessageRole,
     pub content: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionSessionBeforeCompactParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
@@ -287,7 +292,6 @@ pub struct ExtensionSessionBeforeCompactParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionSessionBeforeCompactResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addendum: Option<String>,
@@ -300,7 +304,6 @@ pub struct ExtensionSessionBeforeCompactResult {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionUserBeforeInputParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
@@ -316,7 +319,6 @@ pub enum ExtensionUserBeforeInputAction {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionUserBeforeInputResult {
     pub action: ExtensionUserBeforeInputAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -326,14 +328,12 @@ pub struct ExtensionUserBeforeInputResult {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionModelMessage {
     pub role: ExtensionMessageRole,
     pub content: Value,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionModelParamsAdjustments {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u64>,
@@ -344,7 +344,6 @@ pub struct ExtensionModelParamsAdjustments {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionModelBeforeRequestParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
@@ -362,7 +361,6 @@ pub enum ExtensionModelBeforeRequestAction {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionModelBeforeRequestResult {
     pub action: ExtensionModelBeforeRequestAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -372,7 +370,6 @@ pub struct ExtensionModelBeforeRequestResult {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionProviderBeforeRequestParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
@@ -388,7 +385,6 @@ pub enum ExtensionProviderBeforeRequestAction {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionProviderBeforeRequestResult {
     pub action: ExtensionProviderBeforeRequestAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -396,7 +392,6 @@ pub struct ExtensionProviderBeforeRequestResult {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionProviderAfterResponseParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
@@ -405,11 +400,9 @@ pub struct ExtensionProviderAfterResponseParams {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionProviderAfterResponseResult {}
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionMessageEndParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
@@ -425,24 +418,25 @@ pub enum ExtensionMessageEndAction {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionMessageEndResult {
     pub action: ExtensionMessageEndAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<Vec<crate::PersistedAssistantPart>>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExtensionModelSelectSource {
-    User,
-    Config,
-    /// The engine moves to the next model of the fallback chain.
-    Fallback,
+crate::open_enum! {
+    /// Open: a source from a newer daemon reads as `Unknown`.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ExtensionModelSelectSource {
+        User,
+        Config,
+        /// The engine moves to the next model of the fallback chain.
+        Fallback,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionModelBeforeSelectParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
@@ -460,7 +454,6 @@ pub enum ExtensionAllowBlockAction {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionAllowBlockResult {
     pub action: ExtensionAllowBlockAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -468,7 +461,6 @@ pub struct ExtensionAllowBlockResult {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionSessionBeforeForkParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
@@ -478,7 +470,6 @@ pub struct ExtensionSessionBeforeForkParams {
 pub type ExtensionSessionBeforeForkResult = ExtensionAllowBlockResult;
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionSessionBeforeRevertParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
@@ -496,7 +487,6 @@ pub enum ExtensionSessionBeforeRevertAction {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ExtensionSessionBeforeRevertResult {
     pub action: ExtensionSessionBeforeRevertAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -561,11 +551,12 @@ mod tests {
         assert!(
             serde_json::from_value::<crate::ProducerDiscardResult>(serde_json::json!({})).is_ok()
         );
+        // A result is information: a member from a newer daemon is ignored.
         assert!(
             serde_json::from_value::<crate::ProducerDiscardResult>(
                 serde_json::json!({"message_id": params.message_id})
             )
-            .is_err()
+            .is_ok()
         );
     }
 }

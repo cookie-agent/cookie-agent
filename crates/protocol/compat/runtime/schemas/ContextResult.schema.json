@@ -26,7 +26,6 @@
       "type": "object"
     },
     "AgentMdSkipped": {
-      "additionalProperties": false,
       "properties": {
         "byte_length": {
           "format": "uint64",
@@ -49,7 +48,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "agent_md": {
       "items": {

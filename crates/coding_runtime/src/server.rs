@@ -396,19 +396,29 @@ impl Server {
     }
 
     fn handle_notification(&self, notification: &IncomingNotification) {
+        // Reported on standard error, whose tail the daemon keeps for a
+        // runtime it spawned; standard output carries only protocol messages.
+        let ignored = |error: RpcError| {
+            eprintln!(
+                "cookie-agent runtime: ignored `{}`: {error}",
+                notification.method
+            );
+        };
         match notification.method.as_str() {
-            method::TOOL_RELEASE => {
-                if let Ok(PreparedRef { prepared_id }) = notification.params() {
+            method::TOOL_RELEASE => match notification.params() {
+                Ok(PreparedRef { prepared_id }) => {
                     lock(&self.prepared).remove(&prepared_id);
                 }
-            }
-            method::TOOL_CANCEL => {
-                if let Ok(PreparedRef { prepared_id }) = notification.params()
-                    && let Some(execution) = lock(&self.executions).get(&prepared_id)
-                {
-                    execution.cancel.cancel();
+                Err(error) => ignored(error),
+            },
+            method::TOOL_CANCEL => match notification.params() {
+                Ok(PreparedRef { prepared_id }) => {
+                    if let Some(execution) = lock(&self.executions).get(&prepared_id) {
+                        execution.cancel.cancel();
+                    }
                 }
-            }
+                Err(error) => ignored(error),
+            },
             method::PRODUCER_RECOVERY_START if self.options.producer_messaging => {
                 let peer = self.peer.clone();
                 tokio::spawn(async move {

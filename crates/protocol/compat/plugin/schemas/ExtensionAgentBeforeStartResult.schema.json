@@ -1,7 +1,6 @@
 {
   "$defs": {
     "ExtensionInjectedMessage": {
-      "additionalProperties": false,
       "properties": {
         "content": {
           "type": "string"
@@ -17,6 +16,7 @@
       "type": "object"
     },
     "ExtensionMessageRole": {
+      "description": "The role of a model message. Closed by design: a role is a part of the\nmodel's history every reader must place, so a new one is a breaking\nchange. Session history stores it too (`message_injected`).",
       "enum": [
         "system",
         "user",
@@ -27,7 +27,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "append_to_system_prompt": {
       "type": [

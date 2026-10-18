@@ -6,6 +6,7 @@
       "kind": "notification",
       "method": "plugin/bus_event",
       "params": "ExtensionBusEventParams",
+      "params_role": "information",
       "result": null
     },
     {
@@ -13,6 +14,7 @@
       "kind": "notification",
       "method": "plugin/emit",
       "params": "ExtensionEmitParams",
+      "params_role": "command",
       "result": null
     },
     {
@@ -20,6 +22,7 @@
       "kind": "notification",
       "method": "plugin/emit_result",
       "params": "ExtensionEmitResultParams",
+      "params_role": "information",
       "result": null
     },
     {
@@ -27,6 +30,7 @@
       "kind": "notification",
       "method": "plugin/event",
       "params": "ExtensionEventParams",
+      "params_role": "information",
       "result": null
     },
     {
@@ -34,6 +38,7 @@
       "kind": "request",
       "method": "plugin/initialize",
       "params": "ExtensionInitializeParams",
+      "params_role": "information",
       "result": "ExtensionInitializeResult"
     },
     {
@@ -41,6 +46,7 @@
       "kind": "request",
       "method": "plugin/intercept/agent_before_start",
       "params": "ExtensionAgentBeforeStartParams",
+      "params_role": "information",
       "result": "ExtensionAgentBeforeStartResult"
     },
     {
@@ -48,6 +54,7 @@
       "kind": "request",
       "method": "plugin/intercept/message_end",
       "params": "ExtensionMessageEndParams",
+      "params_role": "information",
       "result": "ExtensionMessageEndResult"
     },
     {
@@ -55,6 +62,7 @@
       "kind": "request",
       "method": "plugin/intercept/model_before_request",
       "params": "ExtensionModelBeforeRequestParams",
+      "params_role": "information",
       "result": "ExtensionModelBeforeRequestResult"
     },
     {
@@ -62,6 +70,7 @@
       "kind": "request",
       "method": "plugin/intercept/model_before_select",
       "params": "ExtensionModelBeforeSelectParams",
+      "params_role": "information",
       "result": "ExtensionAllowBlockResult"
     },
     {
@@ -69,6 +78,7 @@
       "kind": "request",
       "method": "plugin/intercept/provider_after_response",
       "params": "ExtensionProviderAfterResponseParams",
+      "params_role": "information",
       "result": "ExtensionProviderAfterResponseResult"
     },
     {
@@ -76,6 +86,7 @@
       "kind": "request",
       "method": "plugin/intercept/provider_before_request",
       "params": "ExtensionProviderBeforeRequestParams",
+      "params_role": "information",
       "result": "ExtensionProviderBeforeRequestResult"
     },
     {
@@ -83,6 +94,7 @@
       "kind": "request",
       "method": "plugin/intercept/session_before_compact",
       "params": "ExtensionSessionBeforeCompactParams",
+      "params_role": "information",
       "result": "ExtensionSessionBeforeCompactResult"
     },
     {
@@ -90,6 +102,7 @@
       "kind": "request",
       "method": "plugin/intercept/session_before_fork",
       "params": "ExtensionSessionBeforeForkParams",
+      "params_role": "information",
       "result": "ExtensionAllowBlockResult"
     },
     {
@@ -97,6 +110,7 @@
       "kind": "request",
       "method": "plugin/intercept/session_before_revert",
       "params": "ExtensionSessionBeforeRevertParams",
+      "params_role": "information",
       "result": "ExtensionSessionBeforeRevertResult"
     },
     {
@@ -104,6 +118,7 @@
       "kind": "request",
       "method": "plugin/intercept/tool_after_result",
       "params": "ExtensionToolAfterResultParams",
+      "params_role": "information",
       "result": "ExtensionToolAfterResultResult"
     },
     {
@@ -111,6 +126,7 @@
       "kind": "request",
       "method": "plugin/intercept/tool_before_call",
       "params": "ExtensionToolBeforeCallParams",
+      "params_role": "information",
       "result": "ExtensionToolBeforeCallResult"
     },
     {
@@ -118,6 +134,7 @@
       "kind": "request",
       "method": "plugin/intercept/user_before_input",
       "params": "ExtensionUserBeforeInputParams",
+      "params_role": "information",
       "result": "ExtensionUserBeforeInputResult"
     },
     {
@@ -125,6 +142,7 @@
       "kind": "notification",
       "method": "plugin/shutdown",
       "params": "ExtensionShutdownParams",
+      "params_role": "information",
       "result": null
     },
     {
@@ -132,6 +150,7 @@
       "kind": "request",
       "method": "producer/discard",
       "params": "ProducerDiscardParams",
+      "params_role": "command",
       "result": "ProducerDiscardResult"
     },
     {
@@ -139,6 +158,7 @@
       "kind": "request",
       "method": "producer/recovery/complete",
       "params": "RecoveryCompleteParams",
+      "params_role": "command",
       "result": "RecoveryCompleteResult"
     },
     {
@@ -146,6 +166,7 @@
       "kind": "notification",
       "method": "producer/recovery/start",
       "params": "RecoveryStartParams",
+      "params_role": "information",
       "result": null
     },
     {
@@ -153,6 +174,7 @@
       "kind": "request",
       "method": "producer/register",
       "params": "ProducerRegisterParams",
+      "params_role": "command",
       "result": "ProducerRegisterResult"
     },
     {
@@ -160,6 +182,7 @@
       "kind": "request",
       "method": "producer/send",
       "params": "ProducerSendParams",
+      "params_role": "command",
       "result": "ProducerSendResult"
     },
     {
@@ -167,6 +190,7 @@
       "kind": "request",
       "method": "producer/unregister",
       "params": "ProducerUnregisterParams",
+      "params_role": "command",
       "result": "ProducerUnregisterResult"
     },
     {
@@ -174,6 +198,7 @@
       "kind": "notification",
       "method": "runtime/tools_changed",
       "params": "RuntimeTools",
+      "params_role": "information",
       "result": null
     },
     {
@@ -181,6 +206,7 @@
       "kind": "notification",
       "method": "tool/cancel",
       "params": "PreparedRef",
+      "params_role": "information",
       "result": null
     },
     {
@@ -188,6 +214,7 @@
       "kind": "notification",
       "method": "tool/detachable",
       "params": "DetachableParams",
+      "params_role": "command",
       "result": null
     },
     {
@@ -195,6 +222,7 @@
       "kind": "request",
       "method": "tool/execute",
       "params": "ExecuteParams",
+      "params_role": "information",
       "result": "ExecuteResult"
     },
     {
@@ -202,6 +230,7 @@
       "kind": "request",
       "method": "tool/prepare",
       "params": "PrepareParams",
+      "params_role": "information",
       "result": "PrepareResult"
     },
     {
@@ -209,6 +238,7 @@
       "kind": "request",
       "method": "tool/progress",
       "params": "ToolProgressParams",
+      "params_role": "command",
       "result": "Outcome"
     },
     {
@@ -216,6 +246,7 @@
       "kind": "notification",
       "method": "tool/release",
       "params": "PreparedRef",
+      "params_role": "information",
       "result": null
     },
     {
@@ -223,6 +254,7 @@
       "kind": "request",
       "method": "tool/revalidate",
       "params": "PreparedRef",
+      "params_role": "information",
       "result": "Outcome"
     }
   ],

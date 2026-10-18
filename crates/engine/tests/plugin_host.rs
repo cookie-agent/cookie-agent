@@ -416,3 +416,141 @@ async fn shutdown_during_pending_initialize_is_bounded() {
     #[cfg(not(target_os = "linux"))]
     let _ = pid;
 }
+
+#[tokio::test]
+async fn an_unknown_hook_is_skipped_with_a_diagnostic_and_the_plugin_starts() {
+    let config = plugin_table(
+        "fixture",
+        &[
+            ("FIXTURE_NAME", "fixture".into()),
+            (
+                "FIXTURE_CAPABILITIES",
+                r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,
+                    "publish_bus":false,"intercept":["tool_before_call","tool_teleport"],
+                    "subscribe_dreams":true}"#
+                    .into(),
+            ),
+        ],
+        "",
+    );
+    let harness = open_engine(&config);
+    wait_for_state(&harness.engine, "fixture", PluginState::Connected).await;
+    let connected = status(&harness.engine, "fixture");
+    assert_eq!(
+        connected.hooks,
+        [cookie_agent_protocol::ExtensionInterceptionHook::ToolBeforeCall]
+    );
+    assert!(
+        connected
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("hook `tool_teleport`")),
+        "{connected:?}"
+    );
+    harness.engine.shutdown().await;
+}
+
+/// What a plugin sends that the daemon cannot take is reported, and the
+/// plugin stays connected: a runtime-only declaration, and commands with a
+/// member the daemon does not know.
+#[tokio::test]
+async fn messages_a_plugin_may_not_send_are_reported_and_ignored() {
+    let session = cookie_agent_protocol::SessionId::new_v7();
+    let tools_changed = serde_json::json!({"jsonrpc": "2.0", "method": "capability/tools_changed",
+        "params": {"instance": "i", "tools": {"tools": []}}});
+    let mcp_changed = serde_json::json!({"jsonrpc": "2.0", "method": "mcp/changed",
+        "params": {"instance": "i", "servers": []}});
+    let emit = serde_json::json!({"jsonrpc": "2.0", "method": "plugin/emit", "params": {
+        "session_id": session, "context_id": "c", "name": "n", "payload": {}, "priority": 1}});
+    for (frame, expected) in [
+        (
+            tools_changed,
+            "ignored `capability/tools_changed`: only a runtime sends it",
+        ),
+        (
+            mcp_changed,
+            "ignored `mcp/changed`: only a runtime sends it",
+        ),
+        (
+            emit,
+            "malformed emit: The request has a member the receiver does not know: priority.",
+        ),
+    ] {
+        let config = plugin_table(
+            "fixture",
+            &[
+                ("FIXTURE_NAME", "fixture".into()),
+                (
+                    "FIXTURE_AFTER_INITIALIZE",
+                    serde_json::json!([frame]).to_string(),
+                ),
+            ],
+            "",
+        );
+        let harness = open_engine(&config);
+        let reported = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let current = status(&harness.engine, "fixture");
+                if current.state == PluginState::Connected
+                    && current.reason.as_deref() == Some(expected)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            reported.is_ok(),
+            "{expected}: {:?}",
+            status(&harness.engine, "fixture")
+        );
+        harness.engine.shutdown().await;
+    }
+}
+
+/// A command request with a member the daemon does not know is refused
+/// with `-32602` and the member's JSON path.
+#[tokio::test]
+async fn a_command_with_an_unknown_member_is_refused_with_its_path() {
+    let directory = tempfile::tempdir().expect("reply directory");
+    let replies = directory.path().join("replies.jsonl");
+    let progress = serde_json::json!({"jsonrpc": "2.0", "id": 900, "method": "tool/progress",
+        "params": {"prepared_id": 1, "progress": {
+            "tool_call_id": cookie_agent_protocol::ToolCallId::new_v7(),
+            "message": "working", "eta_ms": 5}}});
+    let config = plugin_table(
+        "fixture",
+        &[
+            ("FIXTURE_NAME", "fixture".into()),
+            (
+                "FIXTURE_AFTER_INITIALIZE",
+                serde_json::json!([progress]).to_string(),
+            ),
+            ("FIXTURE_REPLY_FILE", replies.display().to_string()),
+        ],
+        "",
+    );
+    let harness = open_engine(&config);
+    let reply: serde_json::Value = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Ok(text) = fs::read_to_string(&replies)
+                && let Some(line) = text.lines().next()
+            {
+                break serde_json::from_str(line).expect("reply JSON");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the daemon answers");
+    assert_eq!(reply["id"], 900);
+    assert_eq!(reply["error"]["code"], -32602);
+    assert_eq!(reply["error"]["data"]["code"], "unknown_field");
+    assert_eq!(reply["error"]["data"]["field"], "progress.eta_ms");
+    assert_eq!(
+        status(&harness.engine, "fixture").state,
+        PluginState::Connected
+    );
+    harness.engine.shutdown().await;
+}

@@ -685,7 +685,6 @@
       "x-open": true
     },
     "ToolOutputChunk": {
-      "additionalProperties": false,
       "properties": {
         "stream": {
           "type": [

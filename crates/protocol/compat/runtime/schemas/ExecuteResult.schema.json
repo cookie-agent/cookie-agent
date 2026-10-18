@@ -604,7 +604,6 @@
     "ExecuteOutcome": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "failed": {
               "type": "boolean"
@@ -629,7 +628,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "error": {
               "$ref": "#/$defs/WireToolError"
@@ -648,7 +646,6 @@
       ]
     },
     "InlineMedia": {
-      "additionalProperties": false,
       "description": "Attachment bytes, content-addressed.",
       "properties": {
         "data": {
@@ -962,7 +959,6 @@
     "ToolCompletionOutput": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "kind": {
               "const": "single",
@@ -979,7 +975,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "kind": {
               "const": "named",
@@ -999,7 +994,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "kind": {
               "const": "streamed",
@@ -1067,9 +1061,9 @@
       "type": "string"
     },
     "ToolErrorKind": {
+      "description": "Open: a kind this build does not know reads as `failed`, a generic tool\nfailure.",
       "enum": [
         "progress_sink_closed",
-        "failed",
         "operation_changed",
         "unsupported_security",
         "unsupported_platform",
@@ -1080,12 +1074,13 @@
         "timeout",
         "transport_error",
         "unsupported_content_type",
-        "runtime_unavailable"
+        "runtime_unavailable",
+        "failed"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ToolOutputChunk": {
-      "additionalProperties": false,
       "properties": {
         "stream": {
           "type": [
@@ -1103,7 +1098,6 @@
       "type": "object"
     },
     "WireToolError": {
-      "additionalProperties": false,
       "description": "A runtime API `ToolError` on the wire.",
       "properties": {
         "kind": {
@@ -1121,7 +1115,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "media": {
       "default": [],

@@ -36,7 +36,7 @@ pub use cookie_agent_protocol::{
 pub use error::{PluginError, ToolFailure};
 pub use server::{
     DaemonInfo, PluginContext, PluginServer, PluginServerBuilder, ProducerHandle, RecoveryFailure,
-    RecoveryResult, ToolContext,
+    RecoveryResult, ToolContext, UnknownMessage,
 };
 
 /// A tool declaration sent to the engine during initialization: the runtime

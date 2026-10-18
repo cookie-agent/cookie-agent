@@ -77,7 +77,8 @@ tool's name and parameter schema when the server is built.
   `cancel_compaction` build results.
 - **Events.** `on_event` and `on_bus_event` receive streamed notifications.
   A handler may publish one bus event with `context.emit_bus(...)` after
-  `enable_bus_publishing()`.
+  `enable_bus_publishing()`. `on_unknown` receives notifications the SDK does
+  not know or cannot read (see [Compatibility](#compatibility)).
 - **Producers.** `enable_producers()` and, optionally, `on_recovery(...)`.
   See [Producers](#producers).
 
@@ -127,12 +128,56 @@ daemon to handlers as `PluginContext::daemon()`: its protocol version,
 
 Request IDs may be integers or strings (the daemon sends integers). Every
 frame is at most 48 MiB, and a frame that is not a JSON-RPC request,
-notification, or reply ends the connection. Standard output carries only
+notification, or reply ends the connection. See [Compatibility](#compatibility)
+for what each end does with what it does not know. Standard output carries only
 protocol messages; standard error is kept as a bounded tail (the last 32
 lines, at most 4 KiB) that clients see in plugin status.
 
 At shutdown the daemon sends the `plugin/shutdown` notification, waits
 `shutdown_grace_ms`, and kills the process group.
+
+## Compatibility
+
+The plugin protocol follows the runtime protocol's
+[rules](../reference/runtime-protocol.md#framing):
+
+- **Information is read tolerantly.** Everything the daemon sends a plugin
+  (initialize params, hook params, events, bus events, `plugin/emit_result`,
+  and the `tool/*` requests), and what a plugin answers or declares
+  (initialize and hook results, tool declarations, `runtime/tools_changed`),
+  ignores members its reader does not know.
+- **Commands are strict.** `plugin/emit`, `tool/progress`, `tool/detachable`,
+  and the `producer/*` requests are refused when they carry a member or an
+  enum value the daemon does not know: a request with `-32602`,
+  `unknown_field` or `unknown_variant`, and the member's JSON path in
+  `data.field`; a notification with a note in the plugin's status. Gate new
+  fields on the daemon's version (`PluginContext::daemon()`).
+- **Not from a plugin.** The daemon ignores the runtime-only
+  `capability/tools_changed` and `mcp/changed` from a plugin, with a note in
+  its status.
+- **Open enums.** Besides the runtime protocol's: a hook in
+  `capabilities.intercept` the daemon does not know is skipped, with a note
+  in the plugin's status, and the plugin still starts; a feature it does not
+  know is ignored the same way; an unknown `bus` status of
+  `plugin/emit_result` reads as `dropped`; a hook's tool `origin` of an
+  unknown `kind`, and an event of an unknown type, read as `Open::Unknown`;
+  an unknown `model_before_select` `source` reads as `Unknown`. A hook
+  result's `action` and a message `role` are closed: an unknown one makes
+  the answer malformed, and the hook fails open.
+- **Errors** follow the runtime protocol's [scheme](../reference/runtime-protocol.md#errors):
+  a standard code, or `-32000` with `data.code`, and a message a user can
+  understand. When a plugin fails to start or a call to it fails, the daemon
+  shows the plugin's message and names the plugin.
+
+The SDK does its part: a hook whose params carry members it does not know
+still runs; an event of a type it does not know reaches `on_event` as
+`Open::Unknown`; a notification it does not know, or an event or bus event
+it cannot read, goes to `on_unknown` when the plugin registers it, and is
+otherwise ignored (one it cannot read with a line on standard error, which
+the daemon shows as the plugin's `stderr`). `emit_bus` waits for its
+`plugin/emit_result` at most the daemon's `interception_timeout_ms` and then
+resolves as `dropped`. A `ToolFailure` with a blank message is sent as one
+saying the tool failed without saying why.
 
 ## Lifecycle
 
@@ -225,7 +270,8 @@ A block stops later hooks.
 `tool_before_call` and `tool_after_result` carry the call's `origin`:
 `{"kind":"base"}` for a daemon base tool, or
 `{"kind":"runtime","attachment":"local","runtime_id":"local"}` for a
-runtime's or plugin's tool. `permission_name` is `null` for a tool that
+runtime's or plugin's tool. The SDK reads it as `Open<ExtensionToolOrigin>`,
+so an origin of a kind it does not know reaches the hook as `Unknown`. `permission_name` is `null` for a tool that
 needs no permission. A hook cannot change a call's permission or resource,
 never sees calls policy denied, and never grants permission.
 
@@ -237,7 +283,9 @@ run for delegated sessions.
 
 With `subscribe_events`, a plugin receives `plugin/event` notifications:
 `{ session_id, context_id, seq, event, timestamp }`, where `event` is the
-stored `EventPayload` ([events](../reference/events.md)). Durable events
+stored `EventPayload` ([events](../reference/events.md)), which the SDK reads
+as `Open<EventPayload>`: an event type it does not know arrives as
+`Unknown`. Durable events
 arrive after they are appended, in sequence order per session. Live-only
 output (tool progress, text and reasoning deltas, native compaction) arrives
 as it happens and carries the `seq` of the durable event it follows. There
@@ -262,7 +310,8 @@ may be used once. A notification's context expires five seconds after it is
 written to the plugin, a hook's when the hook is answered, and every hook
 call gets its own. The daemon answers with a `plugin/emit_result`
 notification: `{ name, bus, reason }`, with `bus` `published`, `dropped`, or
-`rejected`.
+`rejected`. The SDK's `emit_bus` waits for it at most the plugin's
+`interception_timeout_ms` and then resolves as `dropped`.
 
 A published event goes to the other plugins subscribed to the bus and to
 clients subscribed to the session (`events.plugin`); it is not stored and

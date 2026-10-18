@@ -1,6 +1,7 @@
 {
   "$defs": {
     "ExtensionModelSelectSource": {
+      "description": "Open: a source from a newer daemon reads as `Unknown`.",
       "oneOf": [
         {
           "enum": [
@@ -14,10 +15,10 @@
           "description": "The engine moves to the next model of the fallback chain.",
           "type": "string"
         }
-      ]
+      ],
+      "x-open": true
     },
     "ModelSelection": {
-      "additionalProperties": false,
       "description": "One exact base or named-variant model selection.",
       "properties": {
         "model": {
@@ -43,7 +44,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "context_id": {
       "type": "string"

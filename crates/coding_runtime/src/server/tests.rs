@@ -214,21 +214,36 @@ async fn requests_before_initialize_and_unsupported_settings_are_refused() {
         .expect_err("no such instance");
     assert_eq!(remote_code(error).0, "unknown_handle");
 
-    // Unknown params fields are invalid params.
-    let error = harness
+    // Params a newer daemon sends are information: unknown members, at any
+    // depth, and unknown features are ignored.
+    let harness = start(ServeOptions::default());
+    let mut settings = serde_json::to_value(settings()).unwrap();
+    settings["plugins"] = json!([]);
+    settings["tool_output"]["max_columns"] = json!(120);
+    let initialized: InitializeResult = harness
         .daemon
-        .request::<_, InitializeResult>(
+        .request(
             method::INITIALIZE,
             &json!({
                 "protocol_version": RUNTIME_PROTOCOL_VERSION,
                 "engine_version": "test",
+                "features": ["time_travel"],
                 "runtime_id": "labpc",
-                "settings": settings(),
-                "plugins": [],
+                "settings": settings,
+                "trace": {"id": 7},
             }),
         )
         .await
-        .expect_err("unknown field");
+        .expect("unknown members are ignored");
+    assert_eq!(initialized.protocol_version, RUNTIME_PROTOCOL_VERSION);
+    let error = harness
+        .daemon
+        .request::<_, InitializeResult>(
+            method::INITIALIZE,
+            &json!({"protocol_version": RUNTIME_PROTOCOL_VERSION, "runtime_id": 7}),
+        )
+        .await
+        .expect_err("a malformed request");
     assert_eq!(remote_code(error).0, "invalid_params");
 }
 

@@ -1,10 +1,9 @@
 {
   "$defs": {
     "ExtensionToolOrigin": {
-      "description": "Where a tool a hook sees comes from.",
+      "description": "Where a tool a hook sees comes from. Hook params carry it as\n[`crate::Open`]: an origin of a kind the plugin does not know is another\nsource it cannot name.",
       "oneOf": [
         {
-          "additionalProperties": false,
           "description": "The daemon's base layer.",
           "properties": {
             "kind": {
@@ -18,7 +17,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "description": "A runtime the session is attached to.",
           "properties": {
             "attachment": {
@@ -40,11 +38,11 @@
           ],
           "type": "object"
         }
-      ]
+      ],
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "arguments": true,
     "context_id": {

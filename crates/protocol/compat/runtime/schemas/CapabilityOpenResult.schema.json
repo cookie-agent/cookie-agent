@@ -1,7 +1,6 @@
 {
   "$defs": {
     "McpServerReport": {
-      "additionalProperties": false,
       "description": "The status of one MCP server a runtime hosts.",
       "properties": {
         "message": {
@@ -34,14 +33,15 @@
       "type": "object"
     },
     "McpServerState": {
+      "description": "Open: a state this build does not know reads as `disconnected`, which\noffers no tools and is not retried as a failure.",
       "oneOf": [
         {
           "enum": [
             "disabled",
-            "disconnected",
             "connecting",
             "connected",
-            "failed"
+            "failed",
+            "disconnected"
           ],
           "type": "string"
         },
@@ -50,10 +50,10 @@
           "description": "The connection dropped and is being re-established: its tools stay\ndeclared and calls fail with `runtime_unavailable`.",
           "type": "string"
         }
-      ]
+      ],
+      "x-open": true
     },
     "PromptSectionDeclaration": {
-      "additionalProperties": false,
       "properties": {
         "body": {
           "type": "string"
@@ -69,7 +69,6 @@
       "type": "object"
     },
     "RuntimeSkills": {
-      "additionalProperties": false,
       "description": "Skills a runtime contributes, read once at initialize.",
       "properties": {
         "discoveries": {
@@ -94,7 +93,6 @@
       "type": "object"
     },
     "RuntimeTools": {
-      "additionalProperties": false,
       "description": "A runtime's tools and their prompt sections.",
       "properties": {
         "prompt_sections": {
@@ -117,7 +115,6 @@
       "type": "object"
     },
     "SkillDeclaration": {
-      "additionalProperties": false,
       "description": "One skill: its `SKILL.md` text and where it lives on the runtime's\nmachine.",
       "properties": {
         "base_dir": {
@@ -153,7 +150,6 @@
       "type": "object"
     },
     "SkillDiscoveryDeclaration": {
-      "additionalProperties": false,
       "properties": {
         "name": {
           "type": "string"
@@ -184,13 +180,8 @@
       "type": "string"
     },
     "ToolCollision": {
-      "description": "How a tool behaves when another source offers the same name.",
+      "description": "How a tool behaves when another source offers the same name.\n\nOpen: a mode this build does not know reads as `prefix`.",
       "oneOf": [
-        {
-          "const": "prefix",
-          "description": "Takes the bare name unless another source's tool already does; then\nit is published as `<source>_<name>`.",
-          "type": "string"
-        },
         {
           "const": "fallback",
           "description": "Hidden whenever a non-fallback tool with the same name is published.",
@@ -200,19 +191,25 @@
           "const": "override",
           "description": "Takes the bare name, and the tool it collides with is published under\nits own source's prefix (or hidden, if it is `fallback`). Two\n`override` tools with one name are both prefixed.",
           "type": "string"
+        },
+        {
+          "const": "prefix",
+          "description": "Takes the bare name unless another source's tool already does; then\nit is published as `<source>_<name>`.",
+          "type": "string"
         }
-      ]
+      ],
+      "x-open": true
     },
     "ToolConcurrency": {
-      "description": "Declares whether calls to a tool may overlap with sibling calls from one model turn.",
+      "description": "Declares whether calls to a tool may overlap with sibling calls from one model turn.\n\nOpen: a value this build does not know reads as `exclusive`, the most\nconservative.",
       "enum": [
-        "exclusive",
-        "parallel"
+        "parallel",
+        "exclusive"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ToolDeclaration": {
-      "additionalProperties": false,
       "description": "A tool as a runtime declares it.",
       "properties": {
         "background": {
@@ -304,15 +301,16 @@
       ]
     },
     "ToolResultTruncationPolicy": {
+      "description": "Open: a policy this build does not know reads as `bounded`, so the\ndaemon still bounds the result.",
       "enum": [
-        "bounded",
-        "opt_out"
+        "opt_out",
+        "bounded"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "attachment_name": {
       "description": "The name sessions attach the instance under.",

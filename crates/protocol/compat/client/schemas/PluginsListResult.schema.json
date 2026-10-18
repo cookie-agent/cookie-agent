@@ -1,21 +1,27 @@
 {
   "$defs": {
     "ExtensionInterceptionHook": {
-      "enum": [
-        "tool_before_call",
-        "tool_after_result",
-        "agent_before_start",
-        "session_before_compact",
-        "user_before_input",
-        "model_before_request",
-        "provider_before_request",
-        "provider_after_response",
-        "message_end",
-        "model_before_select",
-        "session_before_fork",
-        "session_before_revert"
+      "description": "A hook a plugin intercepts. Open: the daemon skips a hook it does not\nknow, with a diagnostic, and the plugin still starts.",
+      "oneOf": [
+        {
+          "enum": [
+            "tool_before_call",
+            "tool_after_result",
+            "agent_before_start",
+            "session_before_compact",
+            "user_before_input",
+            "model_before_request",
+            "provider_before_request",
+            "provider_after_response",
+            "message_end",
+            "model_before_select",
+            "session_before_fork",
+            "session_before_revert"
+          ],
+          "type": "string"
+        }
       ],
-      "type": "string"
+      "x-open": true
     },
     "PluginInfo": {
       "additionalProperties": false,

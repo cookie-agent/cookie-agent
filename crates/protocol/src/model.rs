@@ -193,7 +193,6 @@ impl JsonSchema for MimeType {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct MediaCapability {
     #[schemars(length(min = 1))]
     pub mime_types: BTreeSet<MimeType>,
@@ -204,7 +203,6 @@ pub struct MediaCapability {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ModelCapabilities {
     #[schemars(length(min = 1))]
     pub input: BTreeSet<Modality>,
@@ -223,7 +221,53 @@ pub struct ModelCapabilities {
     pub seed: bool,
     pub native_replay: ReplayCapability,
     pub cancellation: CancellationCapability,
+    /// Per media kind. A reader drops a kind it does not know.
+    #[schemars(schema_with = "media_capabilities_schema")]
     pub media: BTreeMap<MediaKind, MediaCapability>,
+}
+
+/// The media map's schema: the kinds this build knows, and room for others.
+fn media_capabilities_schema(generator: &mut SchemaGenerator) -> Schema {
+    let capability = generator.subschema_for::<MediaCapability>();
+    let known = [
+        MediaKind::Image,
+        MediaKind::Audio,
+        MediaKind::Pdf,
+        MediaKind::Video,
+    ]
+    .into_iter()
+    .map(|kind| {
+        let name = serde_json::to_value(kind)
+            .ok()
+            .and_then(|name| name.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        (name, capability.clone().to_value())
+    })
+    .collect::<serde_json::Map<_, _>>();
+    json_schema!({
+        "type": "object",
+        "properties": known,
+        "additionalProperties": capability,
+    })
+}
+
+/// The media map, without the kinds this build does not know.
+fn known_media<'de, D>(deserializer: D) -> Result<BTreeMap<MediaKind, MediaCapability>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let media = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    let mut known = BTreeMap::new();
+    for (kind, capability) in media {
+        let Ok(kind) = serde_json::from_value::<MediaKind>(serde_json::Value::String(kind)) else {
+            continue;
+        };
+        known.insert(
+            kind,
+            serde_json::from_value(capability).map_err(serde::de::Error::custom)?,
+        );
+    }
+    Ok(known)
 }
 
 impl ModelCapabilities {
@@ -285,7 +329,6 @@ impl<'de> Deserialize<'de> for ModelCapabilities {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             input: BTreeSet<Modality>,
             output: BTreeSet<Modality>,
@@ -300,6 +343,7 @@ impl<'de> Deserialize<'de> for ModelCapabilities {
             seed: bool,
             native_replay: ReplayCapability,
             cancellation: CancellationCapability,
+            #[serde(deserialize_with = "known_media")]
             media: BTreeMap<MediaKind, MediaCapability>,
         }
         let wire = Wire::deserialize(deserializer)?;

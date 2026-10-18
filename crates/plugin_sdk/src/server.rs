@@ -78,6 +78,7 @@ type EventHandler =
     Arc<dyn Fn(PluginContext, ExtensionEventParams) -> HandlerFuture<()> + Send + Sync>;
 type BusHandler =
     Arc<dyn Fn(PluginContext, ExtensionBusEventParams) -> HandlerFuture<()> + Send + Sync>;
+type UnknownHandler = Arc<dyn Fn(PluginContext, UnknownMessage) -> HandlerFuture<()> + Send + Sync>;
 type RecoveryHandler = Arc<dyn Fn(PluginContext) -> HandlerFuture<RecoveryResult> + Send + Sync>;
 
 #[derive(Clone)]
@@ -93,6 +94,7 @@ struct Handlers {
     intercepts: HashMap<ExtensionInterceptionHook, InterceptHandler>,
     event: Option<EventHandler>,
     bus: Option<BusHandler>,
+    unknown: Option<UnknownHandler>,
     recovery: Option<RecoveryHandler>,
     publish_bus: bool,
     producers: bool,
@@ -210,6 +212,7 @@ impl PluginServer {
                 daemon: OnceLock::new(),
                 grants: Mutex::new(HashMap::new()),
                 pending_emits: Mutex::new(HashMap::new()),
+                next_emit: AtomicU64::new(1),
                 publish_bus: AtomicBool::new(false),
                 producers: AtomicBool::new(false),
             }),
@@ -364,6 +367,22 @@ impl PluginServerBuilder {
         self
     }
 
+    /// Registers a handler for notifications the SDK does not know, such as
+    /// one a newer daemon sends, and for events and bus events it cannot
+    /// read. Without it, the first are ignored and the others reported on
+    /// standard error.
+    #[must_use]
+    pub fn on_unknown<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(PluginContext, UnknownMessage) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.handlers.unknown = Some(Arc::new(move |context, message| {
+            Box::pin(handler(context, message))
+        }));
+        self
+    }
+
     /// Enables producer messaging. Producer capability opt-in is off by default.
     #[must_use]
     pub fn enable_producers(mut self) -> Self {
@@ -491,7 +510,9 @@ impl PluginContext {
     ///
     /// The server must be configured with
     /// [`PluginServerBuilder::enable_bus_publishing`]. Notification grants expire locally after
-    /// four seconds, one second before the engine's authoritative deadline.
+    /// four seconds, one second before the engine's authoritative deadline. The daemon's answer
+    /// is awaited for at most its interception timeout ([`DaemonInfo::interception_timeout`]);
+    /// past that, the event resolves as [`ExtensionEmitStatus::Dropped`].
     pub async fn emit_bus(
         &self,
         session_id: SessionId,
@@ -503,11 +524,12 @@ impl PluginContext {
         }
         let name = name.into();
         let context_id = self.consume(session_id)?;
-        let (reply, receive) = oneshot::channel();
+        let (reply, mut receive) = oneshot::channel();
+        let id = self.state.next_emit.fetch_add(1, Ordering::Relaxed);
         lock(&self.state.pending_emits)
             .entry(name.clone())
             .or_default()
-            .push_back(reply);
+            .push_back(PendingEmit::Waiting { id, reply });
         self.state
             .peer
             .notify(
@@ -515,14 +537,17 @@ impl PluginContext {
                 &ExtensionEmitParams {
                     session_id,
                     context_id,
-                    name,
+                    name: name.clone(),
                     payload,
                 },
             )
             .await
             .map_err(|_| PluginError::TransportClosed)?;
-        let result = receive.await.map_err(|_| PluginError::TransportClosed)?;
-        Ok(result.bus)
+        let timeout = self.daemon().interception_timeout();
+        match tokio::time::timeout(timeout, &mut receive).await {
+            Ok(result) => Ok(result.map_err(|_| PluginError::TransportClosed)?.bus),
+            Err(_) => Ok(self.state.give_up_emit(&name, id, timeout, &mut receive)),
+        }
     }
 
     /// Registers a long-lived producer for one session under the name
@@ -865,17 +890,89 @@ impl ProducerHandle {
 
 type EmitReply = oneshot::Sender<ExtensionEmitResultParams>;
 
+/// An emit waiting for its `plugin/emit_result`. Results carry only the
+/// event's name, so emits of one name are answered in order; one whose wait
+/// timed out keeps its place until its late result arrives, or until it is
+/// taken as lost.
+enum PendingEmit {
+    Waiting { id: u64, reply: EmitReply },
+    TimedOut { lost_at: Instant },
+}
+
 struct ContextState {
     peer: Peer,
     /// The daemon, as `plugin/initialize` described it.
     daemon: OnceLock<DaemonInfo>,
     grants: Mutex<HashMap<String, Grant>>,
-    pending_emits: Mutex<HashMap<String, VecDeque<EmitReply>>>,
+    pending_emits: Mutex<HashMap<String, VecDeque<PendingEmit>>>,
+    next_emit: AtomicU64,
     /// The plugin declared bus publishing.
     publish_bus: AtomicBool,
     /// Producer messaging is open: the plugin declared it and the engine
     /// accepts it.
     producers: AtomicBool,
+}
+
+impl ContextState {
+    /// Delivers a `plugin/emit_result` to the oldest emit of its name.
+    fn answer_emit(&self, result: ExtensionEmitResultParams) {
+        let now = Instant::now();
+        let mut pending = lock(&self.pending_emits);
+        let name = result.name.clone();
+        let Some(queue) = pending.get_mut(&name) else {
+            return;
+        };
+        let mut result = Some(result);
+        while let Some(front) = queue.pop_front() {
+            match front {
+                PendingEmit::Waiting { reply, .. } => {
+                    if let Some(result) = result.take() {
+                        let _ = reply.send(result);
+                    }
+                    break;
+                }
+                // Its result never came; this one is the next emit's.
+                PendingEmit::TimedOut { lost_at } if lost_at <= now => {}
+                // The late result of an emit that stopped waiting.
+                PendingEmit::TimedOut { .. } => break,
+            }
+        }
+        if queue.is_empty() {
+            pending.remove(&name);
+        }
+    }
+
+    /// Stops waiting for emit `id` of `name` after `timeout`: it resolves as
+    /// `dropped`, unless its result arrived meanwhile. Its place is kept for
+    /// its late result for as long again.
+    fn give_up_emit(
+        &self,
+        name: &str,
+        id: u64,
+        timeout: Duration,
+        receive: &mut oneshot::Receiver<ExtensionEmitResultParams>,
+    ) -> ExtensionEmitStatus {
+        let mut pending = lock(&self.pending_emits);
+        let waiting = pending.get_mut(name).and_then(|queue| {
+            queue.iter_mut().find(
+                |emit| matches!(emit, PendingEmit::Waiting { id: waiting, .. } if *waiting == id),
+            )
+        });
+        match waiting {
+            Some(emit) => {
+                *emit = PendingEmit::TimedOut {
+                    lost_at: Instant::now() + timeout,
+                };
+                ExtensionEmitStatus::Dropped
+            }
+            None => {
+                drop(pending);
+                receive
+                    .try_recv()
+                    .map_or(ExtensionEmitStatus::Dropped, |result| result.bus)
+            }
+        }
+    }
 }
 
 struct Grant {
@@ -1170,11 +1267,14 @@ impl Server {
         }
         match notification.method.as_str() {
             PLUGIN_EVENT_METHOD => {
-                let (Some(handler), Ok(params)) = (
-                    self.handlers.event.clone(),
-                    notification.params::<ExtensionEventParams>(),
-                ) else {
+                let Some(handler) = self.handlers.event.clone() else {
                     return;
+                };
+                // An event of a type this SDK does not know decodes as
+                // `Open::Unknown` and reaches the handler like any other.
+                let params = match notification.params::<ExtensionEventParams>() {
+                    Ok(params) => params,
+                    Err(error) => return self.unknown(notification, &error),
                 };
                 let context = self.context().with_grant(
                     params.session_id,
@@ -1184,11 +1284,12 @@ impl Server {
                 tokio::spawn(handler(context, params));
             }
             PLUGIN_BUS_EVENT_METHOD => {
-                let (Some(handler), Ok(params)) = (
-                    self.handlers.bus.clone(),
-                    notification.params::<ExtensionBusEventParams>(),
-                ) else {
+                let Some(handler) = self.handlers.bus.clone() else {
                     return;
+                };
+                let params = match notification.params::<ExtensionBusEventParams>() {
+                    Ok(params) => params,
+                    Err(error) => return self.unknown(notification, &error),
                 };
                 let context = match &params.context_id {
                     Some(context_id) => self.context().with_grant(
@@ -1200,16 +1301,10 @@ impl Server {
                 };
                 tokio::spawn(handler(context, params));
             }
-            PLUGIN_EMIT_RESULT_METHOD => {
-                if let Ok(result) = notification.params::<ExtensionEmitResultParams>() {
-                    let reply = lock(&self.context.pending_emits)
-                        .get_mut(&result.name)
-                        .and_then(VecDeque::pop_front);
-                    if let Some(reply) = reply {
-                        let _ = reply.send(result);
-                    }
-                }
-            }
+            PLUGIN_EMIT_RESULT_METHOD => match notification.params::<ExtensionEmitResultParams>() {
+                Ok(result) => self.context.answer_emit(result),
+                Err(error) => ignored(notification, &error),
+            },
             PLUGIN_RECOVERY_START_METHOD => {
                 if !self.context.producers.load(Ordering::Acquire) {
                     return;
@@ -1235,21 +1330,65 @@ impl Server {
                         .await;
                 });
             }
-            method::TOOL_RELEASE => {
-                if let Ok(PreparedRef { prepared_id }) = notification.params() {
+            method::TOOL_RELEASE => match notification.params() {
+                Ok(PreparedRef { prepared_id }) => {
                     lock(&self.prepared).remove(&prepared_id);
                 }
-            }
-            method::TOOL_CANCEL => {
-                if let Ok(PreparedRef { prepared_id }) = notification.params()
-                    && let Some(cancel) = lock(&self.executions).get(&prepared_id)
-                {
-                    cancel.cancel();
+                Err(error) => ignored(notification, &error),
+            },
+            method::TOOL_CANCEL => match notification.params() {
+                Ok(PreparedRef { prepared_id }) => {
+                    if let Some(cancel) = lock(&self.executions).get(&prepared_id) {
+                        cancel.cancel();
+                    }
+                }
+                Err(error) => ignored(notification, &error),
+            },
+            PLUGIN_SHUTDOWN_METHOD => self.stop.cancel(),
+            // A notification this SDK does not know goes to `on_unknown`,
+            // or is ignored.
+            _ => {
+                if let Some(handler) = self.handlers.unknown.clone() {
+                    tokio::spawn(handler(self.context(), UnknownMessage::of(notification)));
                 }
             }
-            PLUGIN_SHUTDOWN_METHOD => self.stop.cancel(),
-            // Notifications this plugin does not know are ignored.
-            _ => {}
+        }
+    }
+
+    /// A notification the SDK knows but cannot read: it goes to
+    /// `on_unknown` when the plugin registered it, and is reported otherwise.
+    fn unknown(&self, notification: &IncomingNotification, error: &RpcError) {
+        match self.handlers.unknown.clone() {
+            Some(handler) => {
+                tokio::spawn(handler(self.context(), UnknownMessage::of(notification)));
+            }
+            None => ignored(notification, error),
+        }
+    }
+}
+
+/// Reports a notification the SDK could not read.
+fn ignored(notification: &IncomingNotification, error: &RpcError) {
+    diagnostic(&format!("ignored `{}`: {error}", notification.method));
+}
+
+/// A notification from the daemon that the SDK does not know, or knows but
+/// cannot read, such as one a newer daemon sends; see
+/// [`PluginServerBuilder::on_unknown`].
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct UnknownMessage {
+    /// The notification's method.
+    pub method: String,
+    /// Its params as they arrived; `null` when it had none.
+    pub params: Value,
+}
+
+impl UnknownMessage {
+    fn of(notification: &IncomingNotification) -> Self {
+        Self {
+            method: notification.method.clone(),
+            params: notification.params().unwrap_or(Value::Null),
         }
     }
 }

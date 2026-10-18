@@ -1682,6 +1682,7 @@
       "x-open": true
     },
     "ExtensionMessageRole": {
+      "description": "The role of a model message. Closed by design: a role is a part of the\nmodel's history every reader must place, so a new one is a breaking\nchange. Session history stores it too (`message_injected`).",
       "enum": [
         "system",
         "user",

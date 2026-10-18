@@ -8,9 +8,11 @@ Compares a generated compatibility set (`cargo run -p cookie_agent_protocol
 
 Each surface directory holds `version`, `methods.json`, and
 `schemas/<Root>.schema.json`. A type's role comes from `methods.json`:
-params sent to the daemon are commands; params the daemon sends, results,
-and the listed information roots are information. A type reached in both
-roles is checked under both, so the stricter rule wins.
+each method's `params_role` (by default, params sent to the daemon are
+commands and params the daemon sends are information; a peer's declaration,
+such as its tool list, is information though it goes to the daemon), and
+results and the listed information roots are information. A type reached in
+both roles is checked under both, so the stricter rule wins.
 
 Pre-freeze mode: while a surface's version major is 0 (in the baseline and
 the generated set), the baseline must
@@ -105,7 +107,8 @@ def roles(methods):
     """The roles of each root a surface's methods.json names."""
     found = {}
     for method in methods.get("methods", []):
-        params_role = COMMAND if method["direction"] == "to_daemon" else INFORMATION
+        default = COMMAND if method["direction"] == "to_daemon" else INFORMATION
+        params_role = method.get("params_role", default)
         found.setdefault(method["params"], set()).add(params_role)
         if method.get("result"):
             found.setdefault(method["result"], set()).add(INFORMATION)

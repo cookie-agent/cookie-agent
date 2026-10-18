@@ -1,16 +1,17 @@
 {
   "$defs": {
     "ExtensionEmitStatus": {
+      "description": "Open: a status this build does not know reads as `dropped`: the event\nwas not published as far as the plugin can tell.",
       "enum": [
         "published",
-        "dropped",
-        "rejected"
+        "rejected",
+        "dropped"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "bus": {
       "$ref": "#/$defs/ExtensionEmitStatus"

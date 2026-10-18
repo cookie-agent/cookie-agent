@@ -68,12 +68,13 @@ fn serve(
 
 impl Engine {
     async fn connect(server: PluginServer, producer_messaging: bool) -> Self {
+        Self::connect_with(server, initialize_params(producer_messaging)).await
+    }
+
+    async fn connect_with(server: PluginServer, params: ExtensionInitializeParams) -> Self {
         let (peer, incoming, server) = serve(server);
         let initialized = peer
-            .request(
-                PLUGIN_INITIALIZE_METHOD,
-                &initialize_params(producer_messaging),
-            )
+            .request(PLUGIN_INITIALIZE_METHOD, &params)
             .await
             .expect("initialize");
         Self {
@@ -417,7 +418,7 @@ async fn hooks_answer_their_registered_method_only() {
     let server = PluginServer::builder("guard", "0.1.0")
         .tool_before_call(
             |_context, params: ExtensionToolBeforeCallParams| async move {
-                assert_eq!(params.origin, ExtensionToolOrigin::Base);
+                assert_eq!(params.origin.known(), Some(&ExtensionToolOrigin::Base));
                 allow()
             },
         )
@@ -428,7 +429,7 @@ async fn hooks_answer_their_registered_method_only() {
         session_id: SessionId::new_v7(),
         context_id: "hook-context".into(),
         tool: "read".into(),
-        origin: ExtensionToolOrigin::Base,
+        origin: ExtensionToolOrigin::Base.into(),
         arguments: json!({}),
         permission_name: None,
         resource: None,
@@ -507,7 +508,8 @@ async fn an_event_handler_emits_once_with_the_delivered_context() {
                     message: "event".into(),
                     count: None,
                     detail: None,
-                },
+                }
+                .into(),
                 timestamp: jiff::Timestamp::now(),
             },
         )
@@ -754,5 +756,173 @@ async fn handlers_see_the_daemon_the_handshake_described() {
     assert!(daemon.has_feature(FEATURE_PRODUCER_MESSAGING));
     assert_eq!(daemon.features(), ["producer_messaging"]);
     assert_eq!(daemon.interception_timeout(), Duration::from_millis(2_000));
+    engine.shutdown().await;
+}
+
+/// What a newer daemon sends still reaches the plugin: hook params and
+/// events with members and types this SDK does not know, and notifications
+/// it cannot read, which go to `on_unknown`.
+#[tokio::test]
+async fn hooks_events_and_notifications_from_a_newer_daemon_reach_the_plugin() {
+    let (seen, mut observed) = mpsc::unbounded_channel();
+    let (hook_seen, event_seen, unknown_seen) = (seen.clone(), seen.clone(), seen);
+    let server = PluginServer::builder("observer", "0.1.0")
+        .tool_before_call(move |_context, params: ExtensionToolBeforeCallParams| {
+            let seen = hook_seen.clone();
+            async move {
+                let _ = seen.send(format!("hook {} {}", params.tool, params.origin.tag()));
+                allow()
+            }
+        })
+        .on_event(move |_context, event| {
+            let seen = event_seen.clone();
+            async move {
+                let _ = seen.send(format!(
+                    "event {} unknown={}",
+                    event.event.tag(),
+                    event.event.is_unknown()
+                ));
+            }
+        })
+        .on_bus_event(|_context, _event| async {})
+        .on_unknown(move |_context, message| {
+            let seen = unknown_seen.clone();
+            async move {
+                let _ = seen.send(format!("unknown {}", message.method));
+            }
+        })
+        .build()
+        .expect("server");
+    let engine = Engine::connect(server, false).await;
+    let session_id = SessionId::new_v7();
+    let result: ExtensionToolBeforeCallResult = engine
+        .peer
+        .request(
+            PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
+            &json!({
+                "session_id": session_id, "context_id": "c", "tool": "read",
+                "origin": {"kind": "mcp", "server": "docs"},
+                "arguments": {}, "permission_name": null, "resource": null,
+                "turn": {"agent": "build"}
+            }),
+        )
+        .await
+        .expect("the hook runs");
+    assert_eq!(result.action, ExtensionToolBeforeCallAction::Allow);
+    let mut next = async || {
+        tokio::time::timeout(WAIT, observed.recv())
+            .await
+            .expect("observed in time")
+            .expect("observation")
+    };
+    assert_eq!(next().await, "hook read mcp");
+    for (method, params) in [
+        (
+            PLUGIN_EVENT_METHOD,
+            json!({"session_id": session_id, "context_id": "e", "seq": 3,
+                "event": {"type": "weather_changed", "sky": "clear"},
+                "timestamp": jiff::Timestamp::now(), "public": true}),
+        ),
+        // A bus event without its name cannot be read.
+        (
+            PLUGIN_BUS_EVENT_METHOD,
+            json!({"session_id": session_id, "plugin": "other", "payload": {}}),
+        ),
+        ("plugin/weather", json!({"sky": "clear"})),
+    ] {
+        engine
+            .peer
+            .notify(method, &params)
+            .await
+            .expect("notification");
+    }
+    let mut seen = vec![next().await, next().await, next().await];
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            "event weather_changed unknown=true",
+            "unknown plugin/bus_event",
+            "unknown plugin/weather",
+        ]
+    );
+    engine.shutdown().await;
+}
+
+/// An emit the daemon does not answer within the interception timeout
+/// resolves as dropped, and its late answer is not taken for the next one's.
+#[tokio::test]
+async fn an_unanswered_emit_resolves_dropped_after_the_interception_timeout() {
+    let (outcomes, mut emitted) = mpsc::unbounded_channel();
+    let server = PluginServer::builder("relay", "0.1.0")
+        .enable_bus_publishing()
+        .on_event(move |context, event| {
+            let outcomes = outcomes.clone();
+            async move {
+                let status = context
+                    .emit_bus(event.session_id, "relayed", json!({"seq": event.seq}))
+                    .await;
+                let _ = outcomes.send((event.seq, status.expect("emit")));
+            }
+        })
+        .build()
+        .expect("server");
+    let mut params = initialize_params(false);
+    params.interception_timeout_ms = 50;
+    let mut engine = Engine::connect_with(server, params).await;
+    let session_id = SessionId::new_v7();
+    let event = |seq: u64| ExtensionEventParams {
+        session_id,
+        context_id: format!("event-{seq}"),
+        seq,
+        event: cookie_agent_protocol::EventPayload::Diagnostic {
+            source: cookie_agent_protocol::DiagnosticSource::plugin("engine").expect("source"),
+            kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked.label(),
+            message: "event".into(),
+            count: None,
+            detail: None,
+        }
+        .into(),
+        timestamp: jiff::Timestamp::now(),
+    };
+    let result = |bus: ExtensionEmitStatus| ExtensionEmitResultParams {
+        name: "relayed".into(),
+        bus,
+        reason: None,
+    };
+    engine
+        .peer
+        .notify(PLUGIN_EVENT_METHOD, &event(1))
+        .await
+        .expect("event");
+    engine.next_notification(PLUGIN_EMIT_METHOD).await;
+    let first = tokio::time::timeout(WAIT, emitted.recv())
+        .await
+        .expect("the first emit resolves")
+        .expect("outcome");
+    assert_eq!(first, (1, ExtensionEmitStatus::Dropped));
+
+    engine
+        .peer
+        .notify(PLUGIN_EVENT_METHOD, &event(2))
+        .await
+        .expect("event");
+    engine.next_notification(PLUGIN_EMIT_METHOD).await;
+    // The first emit's late answer, then the second's.
+    for bus in [
+        ExtensionEmitStatus::Published,
+        ExtensionEmitStatus::Rejected,
+    ] {
+        engine
+            .peer
+            .notify(PLUGIN_EMIT_RESULT_METHOD, &result(bus))
+            .await
+            .expect("emit result");
+    }
+    let second = tokio::time::timeout(WAIT, emitted.recv())
+        .await
+        .expect("the second emit resolves")
+        .expect("outcome");
+    assert_eq!(second, (2, ExtensionEmitStatus::Rejected));
     engine.shutdown().await;
 }

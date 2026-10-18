@@ -457,7 +457,6 @@
       "type": "string"
     },
     "MediaCapability": {
-      "additionalProperties": false,
       "properties": {
         "max_bytes": {
           "format": "uint64",
@@ -499,7 +498,6 @@
       "type": "string"
     },
     "ModelCapabilities": {
-      "additionalProperties": false,
       "properties": {
         "cancellation": {
           "$ref": "#/$defs/CancellationCapability"
@@ -518,7 +516,10 @@
           "uniqueItems": true
         },
         "media": {
-          "additionalProperties": false,
+          "additionalProperties": {
+            "$ref": "#/$defs/MediaCapability"
+          },
+          "description": "Per media kind. A reader drops a kind it does not know.",
           "properties": {
             "audio": {
               "$ref": "#/$defs/MediaCapability"

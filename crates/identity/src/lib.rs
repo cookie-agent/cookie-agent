@@ -666,7 +666,6 @@ impl JsonSchema for ModelKey {
 #[derive(
     Clone, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
-#[serde(deny_unknown_fields)]
 pub struct ModelSelection {
     pub model: ModelKey,
     pub variant: Option<VariantId>,

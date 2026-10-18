@@ -1513,7 +1513,7 @@ impl Engine {
                         session_id: active.session,
                         context_id: context_id.clone(),
                         tool: tool.to_string(),
-                        origin: hook_origin.clone(),
+                        origin: hook_origin.clone().map(Into::into),
                         arguments: arguments.clone(),
                         result_content: result_content.clone(),
                         is_error,

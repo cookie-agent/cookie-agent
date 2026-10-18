@@ -84,10 +84,48 @@ async fn requests_and_notifications_round_trip_both_ways() {
 }
 
 #[tokio::test]
-async fn unknown_params_fields_are_invalid_params() {
+async fn commands_refuse_what_they_do_not_know_and_information_ignores_it() {
     let (peer, mut incoming, mut raw) = peer_and_raw();
+    let tool_call_id = cookie_agent_protocol::ToolCallId::new_v7();
+    for (id, method, params, code, field) in [
+        (
+            7,
+            "tool/progress",
+            json!({"prepared_id": 1, "progress": {"tool_call_id": tool_call_id, "message": "m", "extra": 1}}),
+            "unknown_field",
+            "progress.extra",
+        ),
+        (
+            8,
+            "tool/progress",
+            json!({"prepared_id": 1, "progress": {"tool_call_id": tool_call_id, "message": "m",
+                "display": {"type": "rewind", "index": 0}}}),
+            "unknown_variant",
+            "progress.display.type",
+        ),
+    ] {
+        raw.send(MessageFrame::Text(
+            json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string(),
+        ))
+        .await
+        .unwrap();
+        let Some(Incoming::Request(request)) = incoming.recv().await else {
+            panic!("request expected");
+        };
+        let error = request
+            .command::<protocol::ToolProgressParams>()
+            .expect_err("refused");
+        assert_eq!(error.data_code(), Some(code));
+        request.fail(error).await.unwrap();
+        let reply: serde_json::Value = serde_json::from_str(&recv_text(&mut raw).await).unwrap();
+        assert_eq!(reply["id"], id);
+        assert_eq!(reply["error"]["code"], errors::INVALID_PARAMS);
+        assert_eq!(reply["error"]["data"]["code"], code);
+        assert_eq!(reply["error"]["data"]["field"], field, "{reply}");
+    }
+    // The same request read as information ignores the member.
     raw.send(MessageFrame::Text(
-        r#"{"jsonrpc":"2.0","id":7,"method":"runtime/context","params":{"preset":null,"extra":1}}"#
+        r#"{"jsonrpc":"2.0","id":9,"method":"runtime/context","params":{"instance":"i","preset":null,"extra":1}}"#
             .into(),
     ))
     .await
@@ -95,23 +133,21 @@ async fn unknown_params_fields_are_invalid_params() {
     let Some(Incoming::Request(request)) = incoming.recv().await else {
         panic!("request expected");
     };
+    let context: protocol::ContextParams = request.params().expect("information");
+    assert_eq!(context.instance, "i");
+    // Malformed params are `invalid_params`, with serde's message as detail.
     let error = request
-        .params::<protocol::ContextParams>()
-        .expect_err("unknown field");
+        .params::<protocol::PreparedRef>()
+        .expect_err("malformed");
     let RpcError::Remote { code, .. } = &error else {
         panic!("remote error expected");
     };
     assert_eq!(*code, errors::INVALID_PARAMS);
     assert_eq!(error.data_code(), Some("invalid_params"));
-    request.fail(error).await.unwrap();
-    let reply: serde_json::Value = serde_json::from_str(&recv_text(&mut raw).await).unwrap();
-    assert_eq!(reply["id"], 7);
-    assert_eq!(reply["error"]["code"], errors::INVALID_PARAMS);
     assert!(
-        reply["error"]["data"]["detail"]
-            .as_str()
-            .is_some_and(|detail| detail.contains("extra")),
-        "{reply}"
+        error
+            .detail()
+            .is_some_and(|detail| detail.contains("prepared_id"))
     );
     assert!(!peer.is_closed());
 }
@@ -271,31 +307,27 @@ async fn line_transport_frames_lines_and_bounds_them() {
 }
 
 #[test]
-fn wire_types_reject_unknown_fields_including_inside_tagged_variants() {
+fn information_ignores_unknown_members_and_reads_open_enum_fallbacks() {
     let prepared = json!({"results": [{
         "status": "failed",
-        "error": {"kind": "failed", "message": "no"},
-        "presentation": {"title": "bash", "primary_argument": null},
+        "error": {"kind": "quota_exceeded", "message": "no", "retry_after": 3},
+        "presentation": {"title": "bash", "primary_argument": null, "icon": "x"},
         "extra": 1
-    }]});
-    assert!(serde_json::from_value::<PrepareResult>(prepared).is_err());
-    let failed = json!({"results": [{
-        "status": "failed",
-        "error": {"kind": "failed", "message": "no"},
-        "presentation": {"title": "bash", "primary_argument": null}
-    }]});
-    let result: PrepareResult = serde_json::from_value(failed).unwrap();
-    assert!(matches!(result.results[0], PrepareOutcome::Failed { .. }));
+    }], "batch": 1});
+    let result: PrepareResult = serde_json::from_value(prepared).unwrap();
+    let PrepareOutcome::Failed { error, .. } = &result.results[0] else {
+        panic!("failed outcome expected");
+    };
+    // An unknown error kind reads as a generic failure.
+    assert!(
+        matches!(ToolError::from(error.clone()), ToolError::Failed(message) if message == "no")
+    );
 
     let execute = json!({
         "outcome": {"status": "failed", "error": {"kind": "runtime_unavailable", "message": "gone"}},
         "media": [],
         "launched_jobs": [],
         "surprise": true
-    });
-    assert!(serde_json::from_value::<ExecuteResult>(execute).is_err());
-    let execute = json!({
-        "outcome": {"status": "failed", "error": {"kind": "runtime_unavailable", "message": "gone"}}
     });
     let result: ExecuteResult = serde_json::from_value(execute).unwrap();
     let ExecuteOutcome::Failed { error } = result.outcome else {
@@ -312,8 +344,32 @@ fn wire_types_reject_unknown_fields_including_inside_tagged_variants() {
         "mcp_servers": [],
         "plugins": []
     });
-    assert!(serde_json::from_value::<RuntimeSettings>(settings).is_err());
-    assert!(serde_json::from_value::<Outcome>(json!({"error": null, "x": 1})).is_err());
+    assert!(serde_json::from_value::<RuntimeSettings>(settings).is_ok());
+    assert!(serde_json::from_value::<Outcome>(json!({"error": null, "x": 1})).is_ok());
+
+    // Unknown declaration values read as their documented fallbacks.
+    let declaration: ToolDeclaration = serde_json::from_value(json!({
+        "name": "t", "description": "d", "parameters": {"type": "object"},
+        "collision": "shadow", "concurrency": "batched", "result_truncation": "summarize",
+        "icons": ["x"]
+    }))
+    .unwrap();
+    assert_eq!(declaration.collision, ToolCollision::Prefix);
+    assert_eq!(declaration.concurrency, crate::ToolConcurrency::Exclusive);
+    assert_eq!(
+        declaration.result_truncation,
+        crate::ToolResultTruncationPolicy::Bounded
+    );
+    let report: protocol::McpServerReport =
+        serde_json::from_value(json!({"name": "docs", "state": "needs_auth", "scopes": []}))
+            .unwrap();
+    assert_eq!(report.state, protocol::McpServerState::Disconnected);
+
+    // Command types still deny unknown members themselves.
+    assert!(
+        serde_json::from_value::<protocol::DetachableParams>(json!({"prepared_id": 1, "x": 1}))
+            .is_err()
+    );
 }
 
 #[test]

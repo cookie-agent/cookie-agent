@@ -193,17 +193,47 @@ fn parse_params<T: DeserializeOwned>(params: Option<&RawValue>) -> Result<T, Rpc
         .map_err(|error| errors::BAD_PARAMS.error().detail(error.to_string()).into())
 }
 
+/// The params of a command: refused with `-32602` and the registry's
+/// `unknown_field` or `unknown_variant` data, naming the JSON path, when they
+/// carry what `T`'s schema does not list ([`crate::strict`]).
+fn parse_command<T>(params: Option<&RawValue>) -> Result<T, RpcError>
+where
+    T: DeserializeOwned + schemars::JsonSchema + 'static,
+{
+    let value: Value = parse_params(params)?;
+    crate::strict::decode_command(value).map_err(|error| error.to_rpc_error().into())
+}
+
 impl IncomingNotification {
-    /// The params as `T`, rejecting unknown fields as `T` does.
+    /// The params as information: `T`, which ignores members it does not
+    /// know unless it is a command type.
     pub fn params<T: DeserializeOwned>(&self) -> Result<T, RpcError> {
         parse_params(self.params.as_deref())
+    }
+
+    /// The params as a command (see [`IncomingRequest::command`]).
+    pub fn command<T>(&self) -> Result<T, RpcError>
+    where
+        T: DeserializeOwned + schemars::JsonSchema + 'static,
+    {
+        parse_command(self.params.as_deref())
     }
 }
 
 impl IncomingRequest {
-    /// The params as `T`, rejecting unknown fields as `T` does.
+    /// The params as information: `T`, which ignores members it does not
+    /// know unless it is a command type.
     pub fn params<T: DeserializeOwned>(&self) -> Result<T, RpcError> {
         parse_params(self.params.as_deref())
+    }
+
+    /// The params as a command: anything `T`'s schema does not list is
+    /// refused with its JSON path.
+    pub fn command<T>(&self) -> Result<T, RpcError>
+    where
+        T: DeserializeOwned + schemars::JsonSchema + 'static,
+    {
+        parse_command(self.params.as_deref())
     }
 
     /// Answers with `result`. A result too large for one frame is answered
