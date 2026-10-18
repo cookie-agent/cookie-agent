@@ -832,7 +832,10 @@ pub(in crate::ui) enum RpcUpdate {
         session_id: SessionId,
         calls: Vec<cookie_agent_protocol::BackgroundCall>,
     },
+    /// A failure: shown in the status line and recorded among the errors
+    /// printed when the TUI exits.
     Status(String),
+    /// An outcome that is not a failure: shown in the status line only.
     Notice(String),
     RunStartFinished {
         session_id: SessionId,

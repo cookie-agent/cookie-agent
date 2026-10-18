@@ -51,9 +51,9 @@ impl App {
                 .await
             {
                 Ok(result) if result.accepted => {
-                    RpcUpdate::Status("the call moves to the background once it can".into())
+                    RpcUpdate::Notice("the call moves to the background once it can".into())
                 }
-                Ok(_) => RpcUpdate::Status("this call cannot move to the background".into()),
+                Ok(_) => RpcUpdate::Notice("this call cannot move to the background".into()),
                 Err(error) => RpcUpdate::Status(error.to_string()),
             };
             let _ = updates.send(update);
@@ -240,7 +240,7 @@ impl App {
         self.status = format!("stopping {}…", call.job);
         self.spawn_rpc(async move {
             let update = match client.stop_background(session_id, call.job.clone()).await {
-                Ok(_) => RpcUpdate::Status(format!("stopped {}", call.job)),
+                Ok(_) => RpcUpdate::Notice(format!("stopped {}", call.job)),
                 Err(error) => RpcUpdate::Status(error.to_string()),
             };
             let _ = updates.send(update);

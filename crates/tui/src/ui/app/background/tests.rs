@@ -164,10 +164,14 @@ async fn the_panel_stops_the_selected_call_as_the_user() {
         .await
         .expect("stop answer")
         .expect("update");
-    let RpcUpdate::Status(status) = update else {
-        panic!("a status update");
+    // A stop that worked is no error: it is not reported when the TUI exits.
+    let RpcUpdate::Notice(status) = &update else {
+        panic!("a notice, not an error");
     };
     assert_eq!(status, "stopped job_2");
+    app.handle_rpc_update(update);
+    assert_eq!(app.status, "stopped job_2");
+    assert!(app.session_errors.format().is_none());
     let requests = recorded.lock().unwrap().clone();
     let stop = requests
         .iter()
