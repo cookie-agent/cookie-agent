@@ -30,7 +30,7 @@ fn tree_session(
             EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionCreated {
                 history_format: cookie_agent_protocol::HISTORY_FORMAT,
-                short_id: None,
+                short_id: "test_00000000".into(),
                 origin: SessionOrigin::Delegated {
                     root_session_id: root,
                     parent_session_id: parent,
@@ -371,7 +371,7 @@ async fn agent_message_hop_is_inherited_by_the_send_path() {
                     recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
                     manifest_revision: projection.meta.manifest_revision.clone(),
                 }),
-                internal_agents: Vec::new(),
+                internal_agents: crate::test_support::internal_agent_definitions(),
                 input_through_seq: 2,
             },
         )

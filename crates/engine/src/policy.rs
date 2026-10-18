@@ -570,27 +570,29 @@ pub(crate) fn persisted_binding(
 pub(crate) fn decode_bindings(
     bindings: &[protocol::PersistedModelBinding],
 ) -> Result<Vec<protocol::FrozenModelBinding>, EngineError> {
-    bindings
-        .iter()
-        .map(|binding| {
-            binding
-                .decode()
-                .map_err(|_| EngineError::UnreadableModelBinding(binding.selection.model.clone()))
-        })
-        .collect()
+    bindings.iter().map(decode_binding).collect()
 }
 
+/// The complete binding of a stored entry, when this build can run it: it
+/// decodes and speaks an adapter this build has.
+pub(crate) fn decode_binding(
+    binding: &protocol::PersistedModelBinding,
+) -> Result<protocol::FrozenModelBinding, EngineError> {
+    binding
+        .decode()
+        .ok()
+        .filter(|decoded| {
+            cookie_agent_models::adapters::wire_adapter_for_protocol(
+                decoded.descriptor.adapter_id.as_str(),
+            )
+            .is_some()
+        })
+        .ok_or_else(|| EngineError::UnreadableModelBinding(binding.selection.model.clone()))
+}
+
+/// The model reference attempts made with `binding` record.
 pub(crate) fn wire_resolved(binding: &protocol::FrozenModelBinding) -> protocol::ResolvedModelRef {
-    // Versionless history may have an older descriptor spelling. New executable
-    // bindings validate the selected descriptor before reaching request dispatch.
-    let selected = binding.descriptor.adapter_id.as_str();
-    let adapter_id = wire_adapter(
-        if cookie_agent_models::adapters::wire_adapter_for_protocol(selected).is_some() {
-            selected
-        } else {
-            binding.protocol_recipe.as_str()
-        },
-    );
+    let adapter_id = wire_adapter(binding.descriptor.adapter_id.as_str());
     protocol::ResolvedModelRef {
         selection: binding.selection.clone(),
         provider_id: binding.selection.model.provider_id(),

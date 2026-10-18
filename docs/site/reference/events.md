@@ -213,10 +213,10 @@ are the sole authoritative message body/mode storage, including deferred queue
 sends while a run is active. Registration records are never session events.
 `GoalControl { goal_id }` owns engine-authored pause/cancel steering, not goal
 continuation reminders. These accepted messages survive goal-controller teardown
-and reminder invalidation. Accepted agent-owned messages may carry optional
-`agent_hop` metadata for the messaging loop guard. It is absent on non-agent
-producers and legacy agent mail, is not rendered in the agent-visible envelope,
-and does not participate in idempotency comparison.
+and reminder invalidation. Accepted agent-owned messages carry `agent_hop`
+metadata for the messaging loop guard. It is present exactly on agent-owned
+messages, is not rendered in the agent-visible envelope, and does not
+participate in idempotency comparison.
 `Tool { tool_call_id }` owns the single `<background_result>` of that tool
 call once it ran in the background. Its accepted message carries the call's
 captured output as `retained_output`, the same shape a tool result uses, and the body
@@ -235,8 +235,8 @@ input; acceptance, claims, discarded startup messages, and lifecycle-control
 notifications alone do not switch subsequent reminders to `continuation`.
 
 Producer descriptions are compact, human-facing text; the full `body` remains
-model-facing. Legacy history without a description defaults to empty, allowing
-clients to fall back to a truncated body.
+model-facing. An absent description is empty, and clients then fall back to a
+truncated body.
 
 `producer_message_admitted` links the accepted body to a run without duplicating
 user-input storage or changing existing input events. Its physical sequence is
@@ -271,12 +271,9 @@ delivery/readiness and the queue strip, and replay must not restore it as pendin
 Goal reminder invalidation still checks its identity; it does not authorize
 discarding another owner's real message.
 
-Projection requires a supplied `producer_owner` to exactly match the accepted
-owner; a supplied `reminder` must also match. Historical reminder-only discards
-remain readable: when owner is absent, a matching reminder identity is required.
-An absent owner is not generic discard authority, and a wrong supplied owner
-cannot fall back to legacy reminder matching. Both forms reject consumed or
-claimed messages. Claimed messages are hidden from the waiting strip until
+Projection requires the discard's `producer_owner` to exactly match the
+accepted owner; a supplied `reminder` must also match. A discard of a consumed
+or claimed message is rejected. Claimed messages are hidden from the waiting strip until
 release makes them eligible again; in-flight input cannot be retracted.
 
 Missing/corrupt optional reminder metadata follows the existing best-effort
@@ -476,12 +473,10 @@ Oven's normalized usage fields: inclusive input/output totals plus optional
 uncached input, cache-read input, cache-write input, text output, and reasoning
 output counts. A reported reasoning count of zero on a turn that streamed
 reasoning text is recorded as unknown, together with the text output count
-derived from it. The optional `estimated_cost_pico_usd` stamps the engine-selected
-price for that request: a number is priced, present `null` is unpriced, and an
-absent field identifies an older event.
-Usage rollups preserve stamped prices exactly and apply the current pricing
-configuration or catalog only to legacy records where the field is absent. A
-present `null` stamp is durably unpriced and is never recomputed.
+derived from it. The required `estimated_cost_pico_usd` stamps the
+engine-selected price for that request: a number is priced, and `null` is
+unpriced. `internal_agent_usage_recorded` stamps its price the same way.
+Usage rollups preserve stamped prices exactly and never price a record again.
 Event-log validation requires its run, agent, model, and turn to
 match and rejects duplicate records for one turn. Session, agent, and global
 usage projections rebuild from these events after restart, revert, and fork.
@@ -502,7 +497,7 @@ the system prompt.
 `tool_call_started` records the single/named output declaration, including
 arbitrary named streams, and `background: true` when the call's tool supports
 the background, so a client may offer to move the running call there
-(`run.tool_background`); the field is absent otherwise and in older logs.
+(`run.tool_background`); the field is absent otherwise.
 `tool_call_progress` is live-only. It contains a control-free status `message`
 and optional UI-only `display`. Display deltas append; terminal `result.display`
 replaces them.
@@ -597,19 +592,19 @@ context comes first, followed by pinned `AGENTS.md`, loaded skills, the summary,
 and the recent messages. See [Compaction](../guide/compaction.md) for selection
 and fit rules.
 
-The additive retention fields are optional in saved events:
+The retention fields:
 
-| Field within `commit` | Type | Legacy absent value | Meaning |
-|---|---|---|---|
-| `boundaries.recent_from_seq` | optional `u64` | `None` | Inclusive starting sequence of the retained original-message suffix. No value means no retained suffix. |
-| `budgets.keep_recent_tokens` | `u64` | `0` | Effective recent-history token budget for this checkpoint, not the raw configured request or a count of retained tokens. |
+| Field within `commit` | Type | Meaning |
+|---|---|---|
+| `boundaries.recent_from_seq` | `u64` or `null` | Inclusive starting sequence of the retained original-message suffix. `null` means no retained suffix. |
+| `budgets.keep_recent_tokens` | `u64` | Effective recent-history token budget for this checkpoint, not the raw configured request or a count of retained tokens. |
 
 The effective budget is at most `min(configured keep_recent_tokens,
 input_budget / 4)` and is further limited by actual post-checkpoint available
 space. Complete tool-call/result groups can leave the retained suffix smaller
 than that budget; an oversized newest indivisible group yields no tail rather
-than exceeding the budget. An absent legacy retention boundary does not cause
-the reader to infer a suffix from current configuration.
+than exceeding the budget. A reader never infers a suffix from current
+configuration.
 
 Native compacted windows retain their existing replay behavior, with no
 independently appended recent-message suffix. Neither checkpoint path rereads

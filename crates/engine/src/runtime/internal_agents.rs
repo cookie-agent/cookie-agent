@@ -614,9 +614,7 @@ fn frozen_internal_policy_from_definition(
             .filter_map(|fallback| match fallback {
                 FrozenInternalAgentFallback::ParentModel => parent_binding.cloned().map(Ok),
                 FrozenInternalAgentFallback::Model { binding } => {
-                    Some(binding.decode().map_err(|_| {
-                        EngineError::UnreadableModelBinding(binding.selection.model.clone())
-                    }))
+                    Some(policy::decode_binding(binding))
                 }
             })
             .collect::<Result<Vec<_>, _>>()?

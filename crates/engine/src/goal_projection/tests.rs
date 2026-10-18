@@ -232,7 +232,7 @@ fn interrupted_admission_is_replaced_but_committed_admission_is_final() {
 }
 
 #[test]
-fn legacy_goal_discard_matches_the_accepted_reminder() {
+fn goal_discard_matches_the_accepted_reminder() {
     let goal_id = GoalId::new_v7();
     let reminder = GoalReminderIdentity {
         goal_id,
@@ -263,7 +263,7 @@ fn legacy_goal_discard_matches_the_accepted_reminder() {
             EventPayload::ProducerMessageDiscarded {
                 message_id,
                 reminder: Some(reminder),
-                producer_owner: None,
+                producer_owner: ProducerOwner::Goal { goal_id },
             },
         ),
     ];
@@ -288,10 +288,10 @@ fn real_discard_requires_the_accepted_owner_and_is_idempotent() {
             EventPayload::ProducerMessageDiscarded {
                 message_id,
                 reminder: None,
-                producer_owner: Some(ProducerOwner::external(
+                producer_owner: ProducerOwner::external(
                     cookie_agent_protocol::ProducerSource::plugin("other").unwrap(),
                     cookie_agent_protocol::ProducerName::default_name(),
-                )),
+                ),
             },
         ),
         event(
@@ -300,7 +300,9 @@ fn real_discard_requires_the_accepted_owner_and_is_idempotent() {
             EventPayload::ProducerMessageDiscarded {
                 message_id,
                 reminder: None,
-                producer_owner: None,
+                producer_owner: ProducerOwner::Goal {
+                    goal_id: GoalId::new_v7(),
+                },
             },
         ),
         event(
@@ -309,7 +311,7 @@ fn real_discard_requires_the_accepted_owner_and_is_idempotent() {
             EventPayload::ProducerMessageDiscarded {
                 message_id,
                 reminder: None,
-                producer_owner: Some(owner.clone()),
+                producer_owner: owner.clone(),
             },
         ),
         event(
@@ -318,7 +320,7 @@ fn real_discard_requires_the_accepted_owner_and_is_idempotent() {
             EventPayload::ProducerMessageDiscarded {
                 message_id,
                 reminder: None,
-                producer_owner: Some(owner),
+                producer_owner: owner,
             },
         ),
     ];
@@ -362,7 +364,7 @@ fn claim_blocks_discard_until_matching_release() {
             EventPayload::ProducerMessageDiscarded {
                 message_id,
                 reminder: None,
-                producer_owner: Some(owner.clone()),
+                producer_owner: owner.clone(),
             },
         ),
         event(
@@ -376,7 +378,7 @@ fn claim_blocks_discard_until_matching_release() {
             EventPayload::ProducerMessageDiscarded {
                 message_id,
                 reminder: None,
-                producer_owner: Some(owner),
+                producer_owner: owner,
             },
         ),
     ];
@@ -455,7 +457,7 @@ fn discard_before_commit_coverage_is_not_resurrected() {
             EventPayload::ProducerMessageDiscarded {
                 message_id,
                 reminder: None,
-                producer_owner: Some(owner),
+                producer_owner: owner,
             },
         ),
         committed(4, run, 3),
@@ -467,7 +469,7 @@ fn discard_before_commit_coverage_is_not_resurrected() {
 }
 
 #[test]
-fn legacy_discard_after_covered_admission_is_consumed_and_cleared() {
+fn discard_after_covered_admission_is_consumed_and_cleared() {
     let goal_id = GoalId::new_v7();
     let reminder = GoalReminderIdentity {
         goal_id,
@@ -496,7 +498,7 @@ fn legacy_discard_after_covered_admission_is_consumed_and_cleared() {
             EventPayload::ProducerMessageDiscarded {
                 message_id,
                 reminder: Some(reminder),
-                producer_owner: None,
+                producer_owner: ProducerOwner::Goal { goal_id },
             },
         ),
         committed(4, run, 2),
@@ -623,15 +625,15 @@ fn agent_hop_increments_only_for_the_run_that_observed_agent_mail() {
     let observed = RunId::new_v7();
     let unrelated = RunId::new_v7();
     let deep = ProducerMessageId::new_v7();
-    let legacy = ProducerMessageId::new_v7();
+    let head = ProducerMessageId::new_v7();
     let unobserved = ProducerMessageId::new_v7();
     let tool_result = ProducerMessageId::new_v7();
     let projection = GoalProducerProjection::from_events(&[
         accepted_hop(1, deep, &agent, "deep", "chain mail", Some(2)),
         admitted(2, observed, deep),
-        // Mail accepted before hop counting existed inherits from depth 0.
-        accepted_hop(3, legacy, &other_agent, "legacy", "older mail", None),
-        admitted(4, unrelated, legacy),
+        // Mail at the head of a chain passes on depth 1.
+        accepted_hop(3, head, &other_agent, "head", "first mail", Some(0)),
+        admitted(4, unrelated, head),
         // A third agent's deep chain is not this session's observation.
         accepted_hop(5, unobserved, &agent, "unseen", "never observed", Some(9)),
         // Non-agent producers cannot join an agent chain, hop metadata or not.
@@ -654,6 +656,17 @@ fn agent_hop_increments_only_for_the_run_that_observed_agent_mail() {
     // A run that observed nothing sends at the head of a chain.
     assert_eq!(projection.inherited_agent_hop(RunId::new_v7()), 0);
     assert!(projection.invalid.is_empty());
+
+    // Agent mail always carries its hop.
+    let hopless = GoalProducerProjection::from_events(&[accepted_hop(
+        1,
+        ProducerMessageId::new_v7(),
+        &agent,
+        "hopless",
+        "mail",
+        None,
+    )]);
+    assert_eq!(hopless.invalid.len(), 1);
 }
 
 #[test]
@@ -804,7 +817,7 @@ fn discarded_event(seq: u64, message_id: ProducerMessageId, owner: &ProducerOwne
         EventPayload::ProducerMessageDiscarded {
             message_id,
             reminder: None,
-            producer_owner: Some(owner.clone()),
+            producer_owner: owner.clone(),
         },
     )
 }

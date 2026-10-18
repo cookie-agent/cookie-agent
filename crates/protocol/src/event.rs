@@ -773,7 +773,6 @@ pub struct ToolCallPresentation {
 #[serde(deny_unknown_fields)]
 pub struct ToolCallStart {
     pub tool_call_id: ToolCallId,
-    #[serde(default)]
     pub output: crate::ToolOutputDeclaration,
     pub owner: AssistantToolCallRef,
     pub presentation: ToolCallPresentation,
@@ -1645,7 +1644,10 @@ pub struct ContextCheckpointBoundaries {
     pub source_from_seq: u64,
     #[schemars(range(min = 1))]
     pub source_through_seq: u64,
-    #[serde(default)]
+    /// Where the kept recent tail starts; `null` when the checkpoint keeps
+    /// none apart.
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<u64>", required)]
     pub recent_from_seq: Option<u64>,
     pub input_through_seq: u64,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -1705,7 +1707,6 @@ pub struct ContextCheckpointBudgets {
     #[schemars(range(min = 1))]
     pub input_tokens_before: u64,
     pub input_tokens_after: u64,
-    #[serde(default)]
     pub keep_recent_tokens: u64,
     pub max_summary_bytes: SummaryByteLimit,
 }
@@ -2189,10 +2190,7 @@ pub enum EventPayload {
         history_format: u32,
         origin: SessionOrigin,
         /// Short, tree-unique model-facing handle (`<agent_type>_<8 hex>`).
-        /// Optional and additive: sessions created before handles existed carry
-        /// no value and resolve by full UUID only.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        short_id: Option<String>,
+        short_id: String,
         cwd_identity: CwdIdentity,
         creation_selection: RunSelection,
         creation_agent: Box<AgentSnapshot>,
@@ -2283,8 +2281,8 @@ pub enum EventPayload {
         /// Internal `send_message` guard metadata: position of this message in
         /// its agent-mail chain (`0` for mail sent by a run that has seen no
         /// agent mail). Never rendered into the agent-visible envelope and
-        /// never compared for idempotency. Absent on non-Agent producers and on
-        /// mail accepted before hop counting existed.
+        /// never compared for idempotency. Present exactly on Agent producers'
+        /// messages.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_hop: Option<u32>,
         /// Engine-retained output the body points the agent at (a background
@@ -2315,14 +2313,12 @@ pub enum EventPayload {
         message_id: ProducerMessageId,
         run_id: RunId,
     },
-    /// Pending messages may be discarded by stable owner identity. Historical
-    /// goal reminder discards omitted producer_owner and remain readable.
+    /// Pending messages are discarded by stable owner identity.
     ProducerMessageDiscarded {
         message_id: ProducerMessageId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reminder: Option<GoalReminderIdentity>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        producer_owner: Option<ProducerOwner>,
+        producer_owner: ProducerOwner,
     },
     RunStarted {
         client_run_id: ClientRunId,
@@ -2332,8 +2328,8 @@ pub enum EventPayload {
         /// differ from the latest the log recorded ([`RevisionFold`]).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         revisions: Option<RuntimeRevisions>,
-        #[serde(default)]
-        #[schemars(length(max = 3))]
+        /// One definition per internal agent kind, in kind order.
+        #[schemars(length(min = 3, max = 3))]
         internal_agents: Vec<FrozenInternalAgentDefinition>,
         input_through_seq: u64,
     },
@@ -2481,7 +2477,9 @@ pub enum EventPayload {
         agent_id: AgentId,
         resolved_model: ResolvedModelRef,
         usage: Usage,
-        #[serde(default)]
+        /// The price stamped at write time; `null` is unpriced.
+        #[serde(deserialize_with = "deserialize_required_option")]
+        #[schemars(with = "crate::NullableSchema<u64>", required)]
         estimated_cost_pico_usd: Option<u64>,
     },
     ModelFallback {
@@ -2528,8 +2526,7 @@ pub enum EventPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         revisions: Option<RuntimeRevisions>,
         /// One cache strategy per entry of the child's selected suffix.
-        #[serde(default)]
-        #[schemars(length(max = 256))]
+        #[schemars(length(min = 1, max = 256))]
         cache_strategies: Vec<Option<FrozenCacheStrategy>>,
         request_fingerprint: Sha256Digest,
         request: DelegateRequestPayload,
@@ -2589,7 +2586,9 @@ pub enum EventPayload {
         agent_id: AgentId,
         resolved_model: ResolvedModelRef,
         usage: Usage,
-        #[serde(default)]
+        /// The price stamped at write time; `null` is unpriced.
+        #[serde(deserialize_with = "deserialize_required_option")]
+        #[schemars(with = "crate::NullableSchema<u64>", required)]
         estimated_cost_pico_usd: Option<u64>,
     },
     InternalAgentFinished {
@@ -2892,13 +2891,6 @@ impl EventPayload {
             Self::ProducerMessagesReleased { claim_seq } if *claim_seq == 0 => {
                 return Err(EventSchemaError::InvalidProducerMessage);
             }
-            Self::ProducerMessageDiscarded {
-                reminder,
-                producer_owner,
-                ..
-            } if reminder.is_none() && producer_owner.is_none() => {
-                return Err(EventSchemaError::InvalidProducerMessage);
-            }
             Self::SessionCreated {
                 history_format,
                 creation_selection,
@@ -2972,7 +2964,7 @@ impl EventPayload {
                     .map_err(|_| EventSchemaError::InvalidSelectedSuffix)?;
                 // One definition per kind. The agent each kind runs as is
                 // stored as written, not checked against this build's.
-                if !matches!(internal_agents.len(), 0 | 3)
+                if internal_agents.len() != 3
                     || internal_agents
                         .windows(2)
                         .any(|pair| pair[0].kind >= pair[1].kind)
@@ -3099,8 +3091,7 @@ impl EventPayload {
                 child_agent
                     .validate()
                     .map_err(|_| EventSchemaError::InvalidDelegationLifecycle)?;
-                if (!cache_strategies.is_empty()
-                    && cache_strategies.len() != child_agent.selected_suffix().len())
+                if cache_strategies.len() != child_agent.selected_suffix().len()
                     || cache_strategies
                         .iter()
                         .flatten()

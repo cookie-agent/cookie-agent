@@ -239,31 +239,8 @@ pub(super) fn reduce_event_from(
             {
                 return;
             }
-            let summary = (!description.as_str().trim().is_empty())
-                .then(|| description.as_str().to_owned())
-                .or_else(|| {
-                    let ProducerOwner::Goal { goal_id } = &producer_owner else {
-                        return None;
-                    };
-                    let reminder = reminder.as_ref()?;
-                    let goal = state
-                        .goal
-                        .as_ref()
-                        .filter(|goal| goal.goal_id == *goal_id)
-                        .or_else(|| {
-                            state.transcript.iter().find_map(|item| match item {
-                                TranscriptItem::Goal { goal, .. } if goal.goal_id == *goal_id => {
-                                    Some(goal)
-                                }
-                                _ => None,
-                            })
-                        })?;
-                    let label = match reminder.kind {
-                        cookie_agent_protocol::GoalReminderKind::Started => "GoalStarted",
-                        cookie_agent_protocol::GoalReminderKind::Continuation => "GoalContinue",
-                    };
-                    Some(format!("{label}: {}", goal.objective))
-                });
+            let summary =
+                (!description.as_str().trim().is_empty()).then(|| description.as_str().to_owned());
             let transcript_index = state.transcript.len();
             push_item(state, timestamp, |id| TranscriptItem::ProducerMessage {
                 id,
@@ -424,9 +401,7 @@ pub(super) fn reduce_event_from(
                 .producer_messages
                 .get(&message_id)
                 .is_some_and(|message| {
-                    let identity_matches = producer_owner
-                        .as_ref()
-                        .is_some_and(|owner| owner == &message.producer_owner)
+                    let identity_matches = producer_owner == message.producer_owner
                         && match &message.producer_owner {
                             ProducerOwner::Goal { .. } => {
                                 reminder.as_ref().is_some_and(|identity| {
@@ -437,13 +412,7 @@ pub(super) fn reduce_event_from(
                                 .as_ref()
                                 .is_none_or(|identity| message.reminder.as_ref() == Some(identity)),
                         };
-                    let legacy_matches = producer_owner.is_none()
-                        && reminder
-                            .as_ref()
-                            .is_some_and(|identity| message.reminder.as_ref() == Some(identity));
-                    (identity_matches || legacy_matches)
-                        && message.consumed_run.is_none()
-                        && message.claims.is_empty()
+                    identity_matches && message.consumed_run.is_none() && message.claims.is_empty()
                 });
             if valid {
                 let message = state

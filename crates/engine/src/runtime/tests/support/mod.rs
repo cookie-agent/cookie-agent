@@ -810,7 +810,7 @@ pub(crate) fn create_buffered_delegated_child(engine: &Engine, parent: SessionId
             cookie_agent_protocol::EventOrigin::new("engine:test").expect("event origin"),
             EventPayload::SessionCreated {
                 history_format: cookie_agent_protocol::HISTORY_FORMAT,
-                short_id: None,
+                short_id: "test_00000000".into(),
                 origin: cookie_agent_protocol::SessionOrigin::Delegated {
                     root_session_id: parent,
                     parent_session_id: parent,

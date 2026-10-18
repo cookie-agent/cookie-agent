@@ -1351,3 +1351,24 @@ Deviations and choices made while implementing, by phase.
   on the write path. With nothing recomputed there is no fingerprint
   mismatch left to make a delegation unrecoverable; the reservation's other
   checks still fail the tree load until phase D quarantines records.
+- **Remaining legacy readers removed.** `producer_message_discarded` always
+  names its `producer_owner` (the reminder-only match is gone from the
+  projection and the TUI); `agent_hop` is present exactly on Agent-owned
+  mail (no "pre-hop" depth 0); `estimated_cost_pico_usd` on both usage
+  events is required and nullable (the re-pricing path was already gone, so
+  only the absent-means-unpriced default goes); checkpoint
+  `recent_from_seq` is required and nullable and `keep_recent_tokens`
+  required; `session_created.short_id` is required (every writer sets it;
+  the session metadata keeps its optional field, a client type left to
+  phase F); `run_started.internal_agents` holds exactly the three
+  definitions, so a historical policy always uses its frozen internal agents
+  and the live-registry branch for runs without them goes;
+  `delegation_reserved.cache_strategies` is required with one entry per
+  suffix entry; `tool_call_started.output` is required; `wire_resolved` no
+  longer falls back to the protocol recipe for an old descriptor spelling;
+  and the TUI no longer derives a goal message's summary from its reminder
+  when the description is empty (goal writers always describe it). Comments
+  describing revert markers and attach-event defaults, already removed in
+  C1, went with them. The per-child owner-lock sweep stays: it cleans up
+  files, not history. `PersistedToolResult.display`'s default is left to
+  C3.

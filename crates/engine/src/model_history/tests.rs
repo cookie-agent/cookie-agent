@@ -648,7 +648,7 @@ fn run_started_event(seq: u64, run: RunId, binding: &FrozenModelBinding) -> Stor
                 .unwrap(),
                 manifest_revision: binding.manifest_revision.clone(),
             }),
-            internal_agents: Vec::new(),
+            internal_agents: crate::test_support::internal_agent_definitions(),
             agent: Box::new(agent),
             input_through_seq: seq,
         },
@@ -792,7 +792,7 @@ fn discarded_producer_body_is_absent_from_history() {
         EventPayload::ProducerMessageDiscarded {
             message_id,
             reminder: None,
-            producer_owner: Some(owner),
+            producer_owner: owner,
         },
     );
     discarded.run_id = None;

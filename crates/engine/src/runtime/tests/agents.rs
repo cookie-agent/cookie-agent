@@ -655,37 +655,6 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     assert_eq!(shared_run.agent.description, "Primary test agent");
     assert_eq!(preset_run.selection.preset.as_deref(), Some("python"));
     assert_eq!(preset_run.agent.description, "Python preset primary");
-    let mut legacy_events = parent_projection.log.events();
-    for event in &mut legacy_events {
-        if event.run_id == Some(preset_run.id)
-            && let EventPayload::RunStarted {
-                internal_agents, ..
-            } = &mut event.payload
-        {
-            internal_agents.clear();
-        }
-    }
-    let legacy_policy = fixture
-        .engine
-        .historical_title_policy(
-            &legacy_events
-                .into_iter()
-                .map(std::sync::Arc::new)
-                .collect::<Vec<_>>(),
-            preset_run.id,
-        )
-        .expect("legacy preset policy");
-    let current_runtime = fixture.engine.current_runtime();
-    assert!(legacy_policy.internal_agents.is_empty());
-    assert!(!legacy_policy.historical_delegation);
-    assert!(Arc::ptr_eq(
-        &legacy_policy.registry,
-        current_runtime
-            .agent_presets
-            .get("python")
-            .expect("live python preset registry")
-    ));
-
     let child_projection = fixture
         .engine
         .inner

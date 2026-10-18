@@ -275,18 +275,18 @@ async fn producer_started_tool_loop_promotes_steers_without_composer_restore_and
 }
 
 #[tokio::test]
-async fn goal_reminder_kind_drives_queue_and_transcript_without_body_heuristics() {
+async fn goal_reminders_show_their_description_in_queue_and_transcript() {
     use cookie_agent_protocol::{GoalReminderIdentity, GoalReminderKind};
 
     for (kind, label, body) in [
         (
             GoalReminderKind::Started,
-            "GoalStarted: finish the parser",
+            "Goal started: finish the parser",
             "Continue the root goal.",
         ),
         (
             GoalReminderKind::Continuation,
-            "GoalContinue: finish the parser",
+            "Goal reminder: finish the parser",
             "Goal started. Pursue the new root objective below.",
         ),
     ] {
@@ -300,20 +300,24 @@ async fn goal_reminder_kind_drives_queue_and_transcript_without_body_heuristics(
             items: Vec::new(),
             revision: 1,
         });
+        let mut accepted = producer_accepted(
+            session,
+            1,
+            message_id,
+            ProducerOwner::Goal { goal_id },
+            ProducerDeliveryMode::Steer,
+            body,
+            Some(GoalReminderIdentity {
+                goal_id,
+                revision: 1,
+                kind,
+            }),
+        );
+        if let EventPayload::ProducerMessageAccepted { description, .. } = &mut accepted.payload {
+            *description = cookie_agent_protocol::SafeDisplayText::new(label).unwrap();
+        }
         let events = [
-            producer_accepted(
-                session,
-                1,
-                message_id,
-                ProducerOwner::Goal { goal_id },
-                ProducerDeliveryMode::Steer,
-                body,
-                Some(GoalReminderIdentity {
-                    goal_id,
-                    revision: 1,
-                    kind,
-                }),
-            ),
+            accepted,
             event(
                 session,
                 2,
@@ -643,7 +647,7 @@ async fn producer_claims_hide_waiting_rows_and_release_restores_acceptance_order
         9,
         EventPayload::ProducerMessageDiscarded {
             message_id: plugin_id,
-            producer_owner: Some(plugin),
+            producer_owner: plugin,
             reminder: None,
         }
     )));
@@ -683,7 +687,7 @@ async fn producer_claims_hide_waiting_rows_and_release_restores_acceptance_order
         13,
         EventPayload::ProducerMessageDiscarded {
             message_id: control_id,
-            producer_owner: Some(control),
+            producer_owner: control,
             reminder: None,
         }
     )));
@@ -758,10 +762,10 @@ async fn consumed_and_discarded_producers_leave_the_queue_and_producer_only_stri
         5,
         EventPayload::ProducerMessageDiscarded {
             message_id: discarded,
-            producer_owner: Some(ProducerOwner::external(
+            producer_owner: ProducerOwner::external(
                 cookie_agent_protocol::ProducerSource::plugin("queue-test").unwrap(),
                 cookie_agent_protocol::ProducerName::default_name()
-            )),
+            ),
             reminder: None,
         }
     )));

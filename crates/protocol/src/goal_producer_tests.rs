@@ -298,7 +298,7 @@ fn durable_goal_and_message_events_round_trip_with_correct_run_scope() {
         EventPayload::ProducerMessageDiscarded {
             message_id,
             reminder: Some(reminder),
-            producer_owner: None,
+            producer_owner: ProducerOwner::Goal { goal_id },
         },
     ] {
         let event = stored(payload, None);
@@ -340,38 +340,19 @@ fn producer_claim_and_discard_writer_validation_is_strict() {
     let real_discard = EventPayload::ProducerMessageDiscarded {
         message_id,
         reminder: None,
-        producer_owner: Some(owner.clone()),
+        producer_owner: owner.clone(),
     };
     let wire = serde_json::to_value(&real_discard).unwrap();
     assert!(wire.get("reminder").is_none());
     assert!(stored(real_discard, None).validate().is_ok());
 
-    let goal_id = GoalId::new_v7();
-    let legacy = json!({
+    // A discard always names its owner.
+    let ownerless = json!({
         "type": "producer_message_discarded",
         "message_id": message_id,
-        "reminder": {"goal_id": goal_id, "revision": 4, "kind": "continuation"}
+        "reminder": {"goal_id": GoalId::new_v7(), "revision": 4, "kind": "continuation"}
     });
-    assert!(matches!(
-        serde_json::from_value::<EventPayload>(legacy).unwrap(),
-        EventPayload::ProducerMessageDiscarded {
-            reminder: Some(_),
-            producer_owner: None,
-            ..
-        }
-    ));
-    assert_eq!(
-        stored(
-            EventPayload::ProducerMessageDiscarded {
-                message_id,
-                reminder: None,
-                producer_owner: None,
-            },
-            None,
-        )
-        .validate(),
-        Err(EventSchemaError::InvalidProducerMessage)
-    );
+    assert!(serde_json::from_value::<EventPayload>(ownerless).is_err());
 
     let run_id = RunId::new_v7();
     for payload in [

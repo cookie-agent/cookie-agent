@@ -16,7 +16,7 @@ where
 }
 
 #[test]
-fn usage_event_cost_round_trips_and_remains_optional() {
+fn usage_event_cost_round_trips_and_is_required_but_nullable() {
     let resolved_model: ResolvedModelRef = serde_json::from_value(json!({
         "selection": {"model": "openai/gpt-5.6-sol", "variant": null},
         "provider_id": "openai",
@@ -39,18 +39,12 @@ fn usage_event_cost_round_trips_and_remains_optional() {
         payload
     );
 
-    let mut legacy = serde_json::to_value(payload).unwrap();
-    legacy
+    let mut unstamped = serde_json::to_value(payload).unwrap();
+    unstamped
         .as_object_mut()
         .unwrap()
         .remove("estimated_cost_pico_usd");
-    assert!(matches!(
-        serde_json::from_value::<EventPayload>(legacy).unwrap(),
-        EventPayload::ModelUsageRecorded {
-            estimated_cost_pico_usd: None,
-            ..
-        }
-    ));
+    assert!(serde_json::from_value::<EventPayload>(unstamped).is_err());
 
     let unpriced = EventPayload::ModelUsageRecorded {
         model_turn_seq: 1,
@@ -1307,7 +1301,7 @@ fn checkpoint_validation_allows_predictive_trigger_and_requires_shrink() {
 }
 
 #[test]
-fn checkpoint_recent_tail_defaults_for_old_events_and_stays_within_source() {
+fn checkpoint_recent_tail_is_required_and_stays_within_source() {
     let checkpoint = InternalSummaryCheckpoint::new(
         "summary".into(),
         InternalAgentInvocationId::new_v7(),
@@ -1334,18 +1328,22 @@ fn checkpoint_recent_tail_defaults_for_old_events_and_stays_within_source() {
         },
     };
 
-    let mut old = serde_json::to_value(&commit).unwrap();
-    old["boundaries"]
+    let mut without_tail = serde_json::to_value(&commit).unwrap();
+    without_tail["boundaries"]
         .as_object_mut()
         .unwrap()
         .remove("recent_from_seq");
-    old["budgets"]
+    assert!(serde_json::from_value::<ContextCheckpointCommit>(without_tail).is_err());
+    let mut without_budget = serde_json::to_value(&commit).unwrap();
+    without_budget["budgets"]
         .as_object_mut()
         .unwrap()
         .remove("keep_recent_tokens");
-    let decoded: ContextCheckpointCommit = serde_json::from_value(old).unwrap();
+    assert!(serde_json::from_value::<ContextCheckpointCommit>(without_budget).is_err());
+    let mut no_tail = serde_json::to_value(&commit).unwrap();
+    no_tail["boundaries"]["recent_from_seq"] = json!(null);
+    let decoded: ContextCheckpointCommit = serde_json::from_value(no_tail).unwrap();
     assert_eq!(decoded.boundaries.recent_from_seq, None);
-    assert_eq!(decoded.budgets.keep_recent_tokens, 0);
 
     for recent_from_seq in [Some(2), Some(4), None] {
         let mut candidate = commit.clone();
@@ -1867,15 +1865,12 @@ fn delegation_reserved_event_roundtrips_current_request() {
         serde_json::from_value::<EventPayload>(encoded.clone()).unwrap(),
         event
     );
-    let mut legacy = encoded.clone();
-    legacy.as_object_mut().unwrap().remove("cache_strategies");
-    let EventPayload::DelegationReserved {
-        cache_strategies, ..
-    } = serde_json::from_value::<EventPayload>(legacy).unwrap()
-    else {
-        panic!("delegation reservation");
-    };
-    assert!(cache_strategies.is_empty());
+    let mut without_strategies = encoded.clone();
+    without_strategies
+        .as_object_mut()
+        .unwrap()
+        .remove("cache_strategies");
+    assert!(serde_json::from_value::<EventPayload>(without_strategies).is_err());
 
     // Recorded revisions are complete; absent, the reservation was frozen
     // against the latest the log recorded.

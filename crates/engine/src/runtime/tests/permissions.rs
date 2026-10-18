@@ -469,7 +469,7 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
                         recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
                         manifest_revision: projection.meta.manifest_revision.clone(),
                     }),
-                    internal_agents: Vec::new(),
+                    internal_agents: crate::test_support::internal_agent_definitions(),
                     input_through_seq: 1,
                 },
             )

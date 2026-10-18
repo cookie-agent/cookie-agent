@@ -1725,7 +1725,7 @@ async fn resume_sweep_finalizes_interrupted_run_approvals_and_preserves_live_one
                 recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
                 manifest_revision: projection.meta.manifest_revision.clone(),
             }),
-            internal_agents: Vec::new(),
+            internal_agents: crate::test_support::internal_agent_definitions(),
             input_through_seq: 1,
         };
     let dead_run = cookie_agent_protocol::RunId::new_v7();

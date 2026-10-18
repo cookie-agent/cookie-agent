@@ -1734,8 +1734,8 @@ impl SessionStore {
             );
         let envelope = log.append_owned(&capability, run, origin, event)?;
         // The event is folded into the resident projection in place; only a
-        // legacy revert marker, or a usage record that cannot be taken back
-        // exactly, refolds the whole log. The resident is updated before the
+        // usage record that cannot be taken back exactly refolds the whole
+        // log. The resident is updated before the
         // cache write — on a cache write failure the resident stays
         // consistent with the log while the on-disk discovery cache lags.
         //
@@ -3533,7 +3533,7 @@ mod windows_tests {
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::SessionCreated {
                     history_format: cookie_agent_protocol::HISTORY_FORMAT,
-                    short_id: None,
+                    short_id: "test_00000000".into(),
                     origin: SessionOrigin::Root,
                     cwd_identity: CwdIdentity::new("workspace:test").unwrap(),
                     creation_selection: selection.clone(),
@@ -3569,7 +3569,7 @@ mod windows_tests {
                         recipe_registry_revision,
                         manifest_revision: binding.manifest_revision.clone(),
                     }),
-                    internal_agents: Vec::new(),
+                    internal_agents: crate::test_support::internal_agent_definitions(),
                     input_through_seq: 1,
                 },
             )

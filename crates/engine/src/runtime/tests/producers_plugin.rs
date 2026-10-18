@@ -445,7 +445,7 @@ async fn a_plugin_runs_named_producers_each_with_its_own_keys() {
     assert!(events.iter().any(|event| matches!(
         &event.payload,
         EventPayload::ProducerMessageDiscarded {
-            producer_owner: Some(discarded),
+            producer_owner: discarded,
             ..
         } if *discarded == owner("alpha")
     )));

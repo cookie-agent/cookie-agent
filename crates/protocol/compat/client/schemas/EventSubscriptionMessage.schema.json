@@ -754,7 +754,7 @@
           ]
         },
         "recent_from_seq": {
-          "default": null,
+          "description": "Where the kept recent tail starts; `null` when the checkpoint keeps\nnone apart.",
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -776,6 +776,7 @@
       "required": [
         "source_from_seq",
         "source_through_seq",
+        "recent_from_seq",
         "input_through_seq",
         "prior_checkpoint_seq"
       ],
@@ -800,7 +801,6 @@
           "type": "integer"
         },
         "keep_recent_tokens": {
-          "default": 0,
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -821,6 +821,7 @@
         "trigger_tokens",
         "input_tokens_before",
         "input_tokens_after",
+        "keep_recent_tokens",
         "max_summary_bytes"
       ],
       "type": "object"
@@ -1088,11 +1089,8 @@
               "description": "The revisions the session was created against."
             },
             "short_id": {
-              "description": "Short, tree-unique model-facing handle (`<agent_type>_<8 hex>`).\nOptional and additive: sessions created before handles existed carry\nno value and resolve by full UUID only.",
-              "type": [
-                "string",
-                "null"
-              ]
+              "description": "Short, tree-unique model-facing handle (`<agent_type>_<8 hex>`).",
+              "type": "string"
             },
             "type": {
               "const": "session_created",
@@ -1103,6 +1101,7 @@
             "type",
             "history_format",
             "origin",
+            "short_id",
             "cwd_identity",
             "creation_selection",
             "creation_agent",
@@ -1430,7 +1429,7 @@
           "description": "Sole durable message body and per-send delivery mode. Acceptance is valid\nduring an active run without creating a runless UserInputAdmitted.",
           "properties": {
             "agent_hop": {
-              "description": "Internal `send_message` guard metadata: position of this message in\nits agent-mail chain (`0` for mail sent by a run that has seen no\nagent mail). Never rendered into the agent-visible envelope and\nnever compared for idempotency. Absent on non-Agent producers and on\nmail accepted before hop counting existed.",
+              "description": "Internal `send_message` guard metadata: position of this message in\nits agent-mail chain (`0` for mail sent by a run that has seen no\nagent mail). Never rendered into the agent-visible envelope and\nnever compared for idempotency. Present exactly on Agent producers'\nmessages.",
               "format": "uint32",
               "minimum": 0,
               "type": [
@@ -1584,21 +1583,14 @@
           "type": "object"
         },
         {
-          "description": "Pending messages may be discarded by stable owner identity. Historical\ngoal reminder discards omitted producer_owner and remain readable.",
+          "description": "Pending messages are discarded by stable owner identity.",
           "properties": {
             "message_id": {
               "format": "uuid",
               "type": "string"
             },
             "producer_owner": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ProducerOwner"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/$defs/ProducerOwner"
             },
             "reminder": {
               "anyOf": [
@@ -1617,7 +1609,8 @@
           },
           "required": [
             "type",
-            "message_id"
+            "message_id",
+            "producer_owner"
           ],
           "type": "object"
         },
@@ -1639,11 +1632,12 @@
               "type": "integer"
             },
             "internal_agents": {
-              "default": [],
+              "description": "One definition per internal agent kind, in kind order.",
               "items": {
                 "$ref": "#/$defs/FrozenInternalAgentDefinition"
               },
               "maxItems": 3,
+              "minItems": 3,
               "type": "array"
             },
             "revisions": {
@@ -1670,6 +1664,7 @@
             "client_run_id",
             "selection",
             "agent",
+            "internal_agents",
             "input_through_seq"
           ],
           "type": "object"
@@ -2248,7 +2243,7 @@
               "type": "string"
             },
             "estimated_cost_pico_usd": {
-              "default": null,
+              "description": "The price stamped at write time; `null` is unpriced.",
               "format": "uint64",
               "minimum": 0,
               "type": [
@@ -2277,7 +2272,8 @@
             "model_turn_seq",
             "agent_id",
             "resolved_model",
-            "usage"
+            "usage",
+            "estimated_cost_pico_usd"
           ],
           "type": "object"
         },
@@ -2333,10 +2329,7 @@
               "$ref": "#/$defs/OperationFingerprint"
             },
             "output": {
-              "$ref": "#/$defs/ToolOutputDeclaration",
-              "default": {
-                "kind": "single"
-              }
+              "$ref": "#/$defs/ToolOutputDeclaration"
             },
             "owner": {
               "$ref": "#/$defs/AssistantToolCallRef"
@@ -2356,6 +2349,7 @@
           "required": [
             "type",
             "tool_call_id",
+            "output",
             "owner",
             "presentation",
             "operation_fingerprint"
@@ -2494,7 +2488,6 @@
         {
           "properties": {
             "cache_strategies": {
-              "default": [],
               "description": "One cache strategy per entry of the child's selected suffix.",
               "items": {
                 "anyOf": [
@@ -2507,6 +2500,7 @@
                 ]
               },
               "maxItems": 256,
+              "minItems": 1,
               "type": "array"
             },
             "child_agent": {
@@ -2544,6 +2538,7 @@
             "type",
             "reservation",
             "child_agent",
+            "cache_strategies",
             "request_fingerprint",
             "request"
           ],
@@ -2776,7 +2771,7 @@
               "type": "string"
             },
             "estimated_cost_pico_usd": {
-              "default": null,
+              "description": "The price stamped at write time; `null` is unpriced.",
               "format": "uint64",
               "minimum": 0,
               "type": [
@@ -2808,7 +2803,8 @@
             "kind",
             "agent_id",
             "resolved_model",
-            "usage"
+            "usage",
+            "estimated_cost_pico_usd"
           ],
           "type": "object"
         },

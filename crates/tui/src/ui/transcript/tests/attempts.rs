@@ -928,7 +928,10 @@ fn goal_activation_precedes_triggered_streaming_and_preserves_existing_output() 
             session,
             0,
             EventPayload::ProducerMessageAccepted {
-                description: Default::default(),
+                description: cookie_agent_protocol::SafeDisplayText::new(
+                    "Goal started: finish the parser",
+                )
+                .unwrap(),
                 message_id: reminder_id,
                 producer_owner: ProducerOwner::Goal { goal_id },
                 mode: ProducerDeliveryMode::Steer,
@@ -1063,8 +1066,8 @@ fn goal_activation_precedes_triggered_streaming_and_preserves_existing_output() 
                 assert_eq!(rendered.matches("/goal finish  the parser").count(), 1);
                 assert!(rendered.contains("-- Action"));
                 if stored.seq >= input {
-                    let started = rendered.find("GoalStarted:").unwrap();
-                    assert_eq!(rendered.matches("GoalStarted:").count(), 1);
+                    let started = rendered.find("Goal started:").unwrap();
+                    assert_eq!(rendered.matches("Goal started:").count(), 1);
                     assert!(action < started);
                     for text in ["new response", "next response"] {
                         if let Some(response) = rendered.find(text) {
@@ -1073,7 +1076,7 @@ fn goal_activation_precedes_triggered_streaming_and_preserves_existing_output() 
                     }
                 } else {
                     assert!(
-                        !rendered.contains("GoalStarted:"),
+                        !rendered.contains("Goal started:"),
                         "start remains in the pending queue before claim"
                     );
                 }
@@ -1086,7 +1089,7 @@ fn goal_activation_precedes_triggered_streaming_and_preserves_existing_output() 
         let state = &live.sessions[&session];
         let assistants = assistant_projection(state);
         let rendered = snapshot_lines(&caches[1].layout.lines.to_vec());
-        assert_eq!(rendered.matches("GoalStarted:").count(), 1);
+        assert_eq!(rendered.matches("Goal started:").count(), 1);
         assert!(!rendered.contains("Continue"));
         assert_eq!(assistants.len(), if existing_run { 2 } else { 1 });
         assert!(

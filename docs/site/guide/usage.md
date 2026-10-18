@@ -49,12 +49,11 @@ model-tier-dependent cached-input discounts. The selected catalog model's
 authoritative inputs to Cookie agent's estimate; do not assume a fixed cached
 discount.
 
-New usage events stamp the request price selected when the request completes.
+Usage events stamp the request price selected when the request completes.
 Footers and rollups preserve those stamps, so later pricing changes do not
-rewrite already stamped costs. An explicit unpriced stamp also remains
-unpriced after configuration or catalog changes. Legacy events without the
-field remain unpriced; current configuration does not retroactively price them.
-A mixed rollup containing such a record has no complete estimated-cost total.
+rewrite already stamped costs. An unpriced stamp also remains unpriced after
+configuration or catalog changes, and a rollup containing such a record has
+no complete estimated-cost total.
 
 To evaluate prompt caching, compare equivalent workloads before and after
 changing `[providers.<id>.cache]`. Track `cache_hit_rate` after the first turn and

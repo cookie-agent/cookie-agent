@@ -151,7 +151,7 @@ impl Engine {
         let creation = Event::SessionCreated {
             history_format: cookie_agent_protocol::HISTORY_FORMAT,
             origin: SessionOrigin::Root,
-            short_id: Some(short_id),
+            short_id,
             cwd_identity: cwd_identity.clone(),
             creation_selection: selection.clone(),
             creation_agent: Box::new(policy.agent.clone()),

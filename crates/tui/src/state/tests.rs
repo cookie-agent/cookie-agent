@@ -808,7 +808,7 @@ fn accepted_message(
 
 fn discarded_message(
     message_id: ProducerMessageId,
-    producer_owner: Option<ProducerOwner>,
+    producer_owner: ProducerOwner,
     reminder: Option<GoalReminderIdentity>,
 ) -> EventPayload {
     EventPayload::ProducerMessageDiscarded {
@@ -1401,7 +1401,7 @@ fn invalid_producer_admissions_do_not_mark_initial_input() {
         &mut state,
         &mut seq,
         None,
-        discarded_message(discarded, Some(owner.clone()), None),
+        discarded_message(discarded, owner.clone(), None),
     );
     apply(
         &mut state,
@@ -1544,7 +1544,7 @@ fn goal_control_messages_survive_terminal_and_reminder_discard() {
                     revision: 1,
                     kind: cookie_agent_protocol::GoalReminderKind::Continuation,
                 }),
-                producer_owner: None,
+                producer_owner: ProducerOwner::Goal { goal_id },
             },
         ),
     ];
@@ -1597,7 +1597,9 @@ fn goal_reminder_discard_updates_one_row_without_entering_composer_lanes() {
                     revision: 6,
                     ..reminder
                 }),
-                producer_owner: None,
+                producer_owner: ProducerOwner::Goal {
+                    goal_id: reminder.goal_id,
+                },
             },
         ),
         (
@@ -1605,7 +1607,9 @@ fn goal_reminder_discard_updates_one_row_without_entering_composer_lanes() {
             EventPayload::ProducerMessageDiscarded {
                 message_id,
                 reminder: Some(reminder),
-                producer_owner: None,
+                producer_owner: ProducerOwner::Goal {
+                    goal_id: reminder.goal_id,
+                },
             },
         ),
     ] {
@@ -1673,7 +1677,9 @@ fn discard_inside_committed_input_window_stays_discarded_and_reverts() {
             EventPayload::ProducerMessageDiscarded {
                 message_id,
                 reminder: Some(reminder),
-                producer_owner: None,
+                producer_owner: ProducerOwner::Goal {
+                    goal_id: reminder.goal_id,
+                },
             },
         ),
         stored_event(session_id, Some(run_id), 4, committed_turn(3)),
@@ -1737,7 +1743,7 @@ fn discard_after_committed_input_window_is_consumed_and_cleared() {
                 session_id,
                 None,
                 3,
-                discarded_message(message_id, None, Some(reminder)),
+                discarded_message(message_id, ProducerOwner::Goal { goal_id }, Some(reminder)),
             ),
             stored_event(session_id, Some(run_id), 4, committed_turn(2)),
         ],
@@ -1974,17 +1980,13 @@ fn claimed_message_rejects_discard_until_explicit_release() {
                 message_ids: vec![message_id],
             },
         ),
-        (
-            4,
-            None,
-            discarded_message(message_id, Some(owner.clone()), None),
-        ),
+        (4, None, discarded_message(message_id, owner.clone(), None)),
         (
             5,
             Some(run_id),
             EventPayload::ProducerMessagesReleased { claim_seq: 3 },
         ),
-        (6, None, discarded_message(message_id, Some(owner), None)),
+        (6, None, discarded_message(message_id, owner, None)),
     ] {
         reduce_event(
             &mut state,
@@ -2009,7 +2011,7 @@ fn claimed_message_rejects_discard_until_explicit_release() {
 }
 
 #[test]
-fn generic_and_legacy_discards_require_exact_durable_identity() {
+fn generic_and_goal_discards_require_exact_durable_identity() {
     let session_id = SessionId::new_v7();
     let goal_id = GoalId::new_v7();
     let reminder = GoalReminderIdentity {
@@ -2052,18 +2054,23 @@ fn generic_and_legacy_discards_require_exact_durable_identity() {
             None,
             seq + 1,
             jiff::Timestamp::new(seq as i64 + 1, 0).expect("timestamp"),
-            discarded_message(message_id, Some(owner), accepted_reminder),
+            discarded_message(message_id, owner, accepted_reminder),
         );
     }
 
-    let legacy_id = ProducerMessageId::new_v7();
+    let goal_message_id = ProducerMessageId::new_v7();
     reduce_event(
         &mut state,
         session_id,
         None,
         9,
         jiff::Timestamp::new(9, 0).expect("timestamp"),
-        accepted_message(legacy_id, goal.clone(), "legacy-goal", Some(reminder)),
+        accepted_message(
+            goal_message_id,
+            goal.clone(),
+            "goal-reminder",
+            Some(reminder),
+        ),
     );
     reduce_event(
         &mut state,
@@ -2071,9 +2078,9 @@ fn generic_and_legacy_discards_require_exact_durable_identity() {
         None,
         10,
         jiff::Timestamp::new(10, 0).expect("timestamp"),
-        discarded_message(legacy_id, None, Some(reminder)),
+        discarded_message(goal_message_id, goal.clone(), Some(reminder)),
     );
-    message_ids.push(legacy_id);
+    message_ids.push(goal_message_id);
 
     let invalid_goal = ProducerMessageId::new_v7();
     let invalid_control = ProducerMessageId::new_v7();
@@ -2167,7 +2174,7 @@ fn release_does_not_resurrect_consumed_or_discarded_messages() {
             Some(run_id),
             EventPayload::ProducerMessagesReleased { claim_seq: 8 },
         ),
-        (10, None, discarded_message(discarded, Some(owner), None)),
+        (10, None, discarded_message(discarded, owner, None)),
         (
             11,
             Some(run_id),

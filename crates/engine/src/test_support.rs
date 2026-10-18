@@ -174,3 +174,32 @@ pub(crate) fn manifest_of(
         .expect("test binding decodes")
         .manifest_revision
 }
+
+/// Frozen definitions of the three internal agents, each running on the
+/// parent's model.
+pub(crate) fn internal_agent_definitions()
+-> Vec<cookie_agent_protocol::FrozenInternalAgentDefinition> {
+    use cookie_agent_protocol::InternalAgentKind;
+    [
+        (InternalAgentKind::Approval, "approval"),
+        (InternalAgentKind::ContextCompaction, "compaction"),
+        (InternalAgentKind::SessionTitle, "title"),
+    ]
+    .into_iter()
+    .map(
+        |(kind, id)| cookie_agent_protocol::FrozenInternalAgentDefinition {
+            kind,
+            agent: AgentId::new(id).expect("agent ID"),
+            description: format!("Test {id} agent"),
+            document_source: AgentDocumentSource::BuiltIn,
+            document_fingerprint: Sha256Digest::of_bytes(format!("{id} document").as_bytes()),
+            composed_prompt: format!("You are the {id} test agent.\n"),
+            prompt_fingerprint: Sha256Digest::of_bytes(format!("{id} prompt").as_bytes()),
+            enabled: true,
+            max_output_tokens: 0,
+            timeout_ms: 0,
+            fallbacks: vec![cookie_agent_protocol::FrozenInternalAgentFallback::ParentModel],
+        },
+    )
+    .collect()
+}

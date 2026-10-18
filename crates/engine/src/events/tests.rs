@@ -59,7 +59,7 @@ fn stored_event() -> StoredEvent {
         timestamp: jiff::Timestamp::new(1, 0).expect("timestamp"),
         payload: EventPayload::SessionCreated {
             history_format: cookie_agent_protocol::HISTORY_FORMAT,
-            short_id: None,
+            short_id: "test_00000000".into(),
             origin: SessionOrigin::Root,
             cwd_identity: CwdIdentity::new("workspace:test").expect("cwd identity"),
             creation_selection: run_selection("test"),
@@ -223,7 +223,7 @@ fn attribution_records() -> Vec<StoredEvent> {
                 agent: Box::new(agent),
                 // Frozen against the revisions the session was created with.
                 revisions: None,
-                internal_agents: Vec::new(),
+                internal_agents: crate::test_support::internal_agent_definitions(),
                 input_through_seq: 1,
             },
         ),
@@ -3237,7 +3237,7 @@ fn event_log_rejects_cross_run_approval_lifecycle() {
                 revisions: Some(revisions(crate::test_support::manifest_of(
                     &agent.fallback_chain[0],
                 ))),
-                internal_agents: Vec::new(),
+                internal_agents: crate::test_support::internal_agent_definitions(),
                 agent: Box::new(agent),
                 input_through_seq: 1,
             },

@@ -337,7 +337,7 @@ pub enum TranscriptItem {
         producer_owner: ProducerOwner,
         mode: ProducerDeliveryMode,
         body: String,
-        /// Backend description or legacy goal summary, frozen at acceptance.
+        /// The producer's description, frozen at acceptance.
         summary: Option<String>,
         reminder: Option<GoalReminderIdentity>,
         status: ProducerMessageStatus,
@@ -652,8 +652,8 @@ pub struct SessionState {
     /// last offered.
     pub model_tools: Option<std::sync::Arc<[String]>>,
     pub model_selection: cookie_agent_protocol::SessionModelState,
-    /// The session's runtime attachments, folded from its events. A log with
-    /// no attach or detach event is attached to `global` and `local`.
+    /// The session's runtime attachments, folded from its attach and detach
+    /// events.
     pub runtime_attachments: cookie_agent_protocol::RuntimeAttachmentFold,
     pub goal: Option<GoalState>,
     pub transcript: Vec<TranscriptItem>,

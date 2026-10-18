@@ -1745,7 +1745,7 @@ impl Engine {
                     Event::ProducerMessageDiscarded {
                         message_id: message.message_id,
                         reminder: Some(identity),
-                        producer_owner: Some(message.producer_owner.clone()),
+                        producer_owner: message.producer_owner.clone(),
                     },
                 )?;
             }
@@ -1846,7 +1846,7 @@ impl Engine {
                 Event::ProducerMessageDiscarded {
                     message_id,
                     reminder: message.reminder,
-                    producer_owner: Some(message.producer_owner.clone()),
+                    producer_owner: message.producer_owner.clone(),
                 },
             )?;
         }

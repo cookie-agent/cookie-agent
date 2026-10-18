@@ -20,9 +20,8 @@ pub(crate) struct ProducerMessageRecord {
     pub description: SafeDisplayText,
     pub body: String,
     pub reminder: Option<GoalReminderIdentity>,
-    /// `send_message` hop depth stamped by the guard. `None` means the message
-    /// carries no hop metadata: either a non-Agent producer or mail accepted
-    /// before hop counting existed, which inheritance treats as hop `0`.
+    /// `send_message` hop depth stamped by the guard; present exactly on an
+    /// Agent producer's message.
     pub agent_hop: Option<u32>,
     pub accepted_seq: u64,
     pub admission: Option<(RunId, u64)>,
@@ -91,7 +90,7 @@ impl GoalProducerProjection {
                             claim.run_id == run && claim.message_ids.contains(&message.message_id)
                         }))
             })
-            .map(|message| message.agent_hop.unwrap_or(0))
+            .filter_map(|message| message.agent_hop)
             .max()
             .map_or(0, |deepest| deepest.saturating_add(1))
     }
@@ -379,20 +378,11 @@ impl GoalProducerProjection {
                         continue;
                     };
                     let message = &projection.messages[index];
-                    let identity_matches = producer_owner
-                        .as_ref()
-                        .is_some_and(|owner| owner == &message.producer_owner)
+                    let identity_matches = producer_owner == &message.producer_owner
                         && reminder
                             .as_ref()
                             .is_none_or(|identity| message.reminder.as_ref() == Some(identity));
-                    let legacy_matches = producer_owner.is_none()
-                        && reminder
-                            .as_ref()
-                            .is_some_and(|identity| message.reminder.as_ref() == Some(identity));
-                    if (!identity_matches && !legacy_matches)
-                        || message.consumed
-                        || !message.claims.is_empty()
-                    {
+                    if !identity_matches || message.consumed || !message.claims.is_empty() {
                         projection.reject(event.seq, "invalid producer message discard");
                         continue;
                     }
@@ -444,7 +434,7 @@ fn valid_reminder_owner(owner: &ProducerOwner, reminder: Option<&GoalReminderIde
 /// that stamps it onto plugin, goal, or delegation mail is quarantined so it
 /// cannot inflate an agent chain it never joined.
 const fn valid_hop_owner(owner: &ProducerOwner, agent_hop: Option<u32>) -> bool {
-    agent_hop.is_none() || matches!(owner, ProducerOwner::Agent { .. })
+    agent_hop.is_some() == matches!(owner, ProducerOwner::Agent { .. })
 }
 
 #[cfg(test)]

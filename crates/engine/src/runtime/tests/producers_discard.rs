@@ -284,7 +284,7 @@ async fn queued_message_can_be_discarded_after_unregister_by_its_stable_owner() 
                 EventPayload::ProducerMessageDiscarded {
                     message_id: discarded,
                     reminder: None,
-                    producer_owner: Some(discard_owner),
+                    producer_owner: discard_owner,
                 } if *discarded == message_id && discard_owner == &owner.owner
             )
         })
@@ -887,7 +887,7 @@ async fn installed_plugin_callback_discards_after_unregister_and_repeats_success
                 EventPayload::ProducerMessageDiscarded {
                     message_id: discarded,
                     reminder: None,
-                    producer_owner: Some(owner),
+                    producer_owner: owner,
                 } if *discarded == message_id && owner == &plugin_owner
             )
         })

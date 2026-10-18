@@ -74,7 +74,7 @@ async fn adopting_a_session_reconciles_its_dead_run_before_resume() {
                     recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
                     manifest_revision: projection.meta.manifest_revision.clone(),
                 }),
-                internal_agents: Vec::new(),
+                internal_agents: crate::test_support::internal_agent_definitions(),
                 input_through_seq: 1,
             },
         )
@@ -822,7 +822,7 @@ async fn an_unreadable_frozen_binding_fails_only_what_runs_it_again() {
                     recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
                     manifest_revision: projection.meta.manifest_revision.clone(),
                 }),
-                internal_agents: Vec::new(),
+                internal_agents: crate::test_support::internal_agent_definitions(),
                 input_through_seq: 1,
             },
         )

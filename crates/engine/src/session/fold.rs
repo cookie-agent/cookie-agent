@@ -122,7 +122,7 @@ fn projection_fold_with(
                 revisions,
             } => (
                 origin.clone(),
-                short_id.clone(),
+                Some(short_id.clone()),
                 cwd_identity.clone(),
                 creation_selection.clone(),
                 previous.map_or_else(
@@ -260,10 +260,9 @@ impl SessionProjection {
     /// a `ModelUsageRecorded` for the turn follows, an append does not, so an
     /// append counts the turn at its commit and takes it back out when the
     /// usage record arrives. When that cannot be undone exactly (another
-    /// observation for the model followed, or the rollup overflowed), or the
-    /// event is a legacy revert marker that hides earlier events, the step
-    /// reports [`Observed::NeedsRefold`] before changing anything, so readers
-    /// never see a half-applied projection.
+    /// observation for the model followed, or the rollup overflowed), the
+    /// step reports [`Observed::NeedsRefold`] before changing anything, so
+    /// readers never see a half-applied projection.
     pub(super) fn observe(&mut self, envelope: &StoredEvent, step: FoldStep<'_>) -> Observed {
         let status_before = self.status;
         let mut durable_meta = false;

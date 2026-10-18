@@ -111,8 +111,8 @@ Rules:
 - Do not mention this checkpoint or the summarization.
 - Do not continue the task, ask questions, or call tools. Return the checkpoint text only."#;
 pub(super) const TOOL_OUTPUT_ELISION_MIN_BYTES: usize = 8 * 1024;
-// Frozen policies normally provide this value. Keep substantial headroom when replaying an
-// unavailable or legacy policy whose output limit is zero.
+// Frozen policies normally provide this value. Keep substantial headroom when a policy's
+// output limit is zero.
 pub(super) const DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS: u64 = 20_000;
 const MAX_AUTO_COMPACTION_FAILURES: u8 = 3;
 // Video is frame-sampled and can cost tens of thousands of tokens independent of file bytes.

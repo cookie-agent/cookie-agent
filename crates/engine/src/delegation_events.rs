@@ -539,8 +539,7 @@ fn apply_event(
                     .is_some_and(|id| id != reservation.child_session_id)
                 || !valid_request(&request)
                 || child_agent.validate().is_err()
-                || (!cache_strategies.is_empty()
-                    && cache_strategies.len() != child_agent.selected_suffix().len())
+                || cache_strategies.len() != child_agent.selected_suffix().len()
             {
                 return Err(DelegationEventError::Corrupt(invocation_id));
             }
