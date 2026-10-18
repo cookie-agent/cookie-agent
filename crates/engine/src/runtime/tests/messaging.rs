@@ -29,6 +29,7 @@ fn tree_session(
             recipient,
             EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionCreated {
+                history_format: cookie_agent_protocol::HISTORY_FORMAT,
                 short_id: None,
                 origin: SessionOrigin::Delegated {
                     root_session_id: root,

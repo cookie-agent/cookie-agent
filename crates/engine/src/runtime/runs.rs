@@ -18,6 +18,7 @@ impl Engine {
         origin: EventOrigin,
     ) -> Result<RunStartResult, EngineError> {
         let session = params.session_id;
+        self.ensure_appendable(session)?;
         self.request(session, |reply| SessionCommand::Start {
             params,
             origin,

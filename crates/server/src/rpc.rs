@@ -240,7 +240,41 @@ fn typed_error_data(error: impl Serialize) -> Option<Value> {
     serde_json::to_value(error).ok()
 }
 
+/// The newer-build part of `error`, when a newer build wrote the session:
+/// the unknown state event that makes it render-only, or the newer history
+/// format that keeps it from opening.
+fn newer_engine_required(error: &EngineError) -> Option<(Option<&str>, Option<u32>)> {
+    let event_error = match error {
+        EngineError::Event(error) | EngineError::Session(SessionError::Event(error)) => error,
+        _ => return None,
+    };
+    match event_error {
+        cookie_agent_engine::events::EventLogError::RequiresNewerEngine {
+            event,
+            history_format,
+            ..
+        } => Some((event.as_deref(), *history_format)),
+        _ => None,
+    }
+}
+
 pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
+    if let Some((event, history_format)) = newer_engine_required(&error) {
+        let code = &cookie_agent_protocol::errors::SESSION_REQUIRES_NEWER_ENGINE;
+        let mut builder = code.error();
+        if let Some(event) = event {
+            builder = builder.field("event", event);
+        }
+        if let Some(history_format) = history_format {
+            builder = builder.field("history_format", history_format);
+        }
+        let built = builder.build();
+        return RpcFault {
+            code: built.code,
+            message: code.message,
+            data: built.data,
+        };
+    }
     match error {
         EngineError::NoRunnableModel => RpcFault {
             code: -32020,
@@ -393,6 +427,12 @@ fn event_log_debug_code(error: &cookie_agent_engine::events::EventLogError) -> &
         }
         cookie_agent_engine::events::EventLogError::Corrupt { .. } => "event_log_corrupt",
         cookie_agent_engine::events::EventLogError::ReadOnly(_) => "event_log_read_only",
+        cookie_agent_engine::events::EventLogError::RequiresNewerEngine { .. } => {
+            "event_log_requires_newer_engine"
+        }
+        cookie_agent_engine::events::EventLogError::UnsupportedHistoryFormat { .. } => {
+            "event_log_unsupported_history_format"
+        }
     }
 }
 
@@ -451,6 +491,49 @@ mod tests {
     use cookie_agent_protocol::{InvocationId, SessionId};
 
     use super::*;
+
+    #[test]
+    fn a_session_a_newer_build_wrote_refuses_with_its_registry_code() {
+        for (error, event, history_format) in [
+            (
+                EngineError::Event(
+                    cookie_agent_engine::events::EventLogError::RequiresNewerEngine {
+                        path: "events.jsonl".into(),
+                        event: Some("future_state".into()),
+                        history_format: None,
+                    },
+                ),
+                json!("future_state"),
+                Value::Null,
+            ),
+            (
+                EngineError::Session(SessionError::Event(
+                    cookie_agent_engine::events::EventLogError::RequiresNewerEngine {
+                        path: "events.jsonl".into(),
+                        event: None,
+                        history_format: Some(2),
+                    },
+                )),
+                Value::Null,
+                json!(2),
+            ),
+        ] {
+            let fault: cookie_agent_protocol::ServerFault = run_start_fault(error).into();
+            assert_eq!(fault.code, cookie_agent_protocol::errors::APPLICATION_ERROR);
+            assert_eq!(
+                fault.message,
+                cookie_agent_protocol::errors::SESSION_REQUIRES_NEWER_ENGINE.message
+            );
+            let data = fault.data.expect("registry data");
+            assert_eq!(data["code"], "session_requires_newer_engine");
+            assert_eq!(data["hint"], "Update cookie to continue this session.");
+            assert_eq!(data.get("event").cloned().unwrap_or(Value::Null), event);
+            assert_eq!(
+                data.get("history_format").cloned().unwrap_or(Value::Null),
+                history_format
+            );
+        }
+    }
 
     #[test]
     fn a_start_on_a_running_session_is_a_typed_conflict() {

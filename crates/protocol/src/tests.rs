@@ -2165,3 +2165,93 @@ fn kind_labels_accept_lowercase_names_up_to_sixteen_bytes() {
         json!("browser")
     );
 }
+
+#[test]
+fn every_event_type_is_a_known_tag() {
+    let schema = serde_json::to_value(schemars::schema_for!(EventPayload)).unwrap();
+    let variants = schema["oneOf"].as_array().expect("tagged variants");
+    assert!(!variants.is_empty());
+    for variant in variants {
+        let tag = variant["properties"]["type"]["const"]
+            .as_str()
+            .unwrap_or_else(|| panic!("variant without a const tag: {variant}"));
+        assert!(EventPayload::is_known_tag(tag), "{tag}");
+    }
+    assert!(!EventPayload::is_known_tag("future_event"));
+}
+
+#[test]
+fn audit_events_and_only_they_carry_skippable() {
+    let event = |payload| StoredEvent {
+        engine_version: None,
+        origin: None,
+        session_id: SessionId::new_v7(),
+        run_id: Some(RunId::new_v7()),
+        seq: 2,
+        timestamp: jiff::Timestamp::now(),
+        payload,
+    };
+    let audit = event(EventPayload::ModelRequestPrepared {
+        attempt_id: AttemptId::new_v7(),
+        prompt_fingerprint: Sha256Digest::of_bytes(b"prompt"),
+    });
+    let state = event(EventPayload::UserInputSubmitted {
+        input: "hello".into(),
+    });
+    let audit_wire = serde_json::to_value(&audit).unwrap();
+    assert_eq!(audit_wire["skippable"], json!(true));
+    assert_eq!(
+        serde_json::from_value::<StoredEvent>(audit_wire.clone()).unwrap(),
+        audit
+    );
+    let state_wire = serde_json::to_value(&state).unwrap();
+    assert!(state_wire.get("skippable").is_none());
+    assert_eq!(
+        serde_json::from_value::<StoredEvent>(state_wire.clone()).unwrap(),
+        state
+    );
+    assert_eq!(
+        StoredEvent::decode_strict(&serde_json::to_vec(&audit_wire).unwrap()),
+        Some(audit)
+    );
+
+    // An envelope whose `skippable` contradicts its payload's class is not
+    // read as that event.
+    let mut wrong = audit_wire;
+    wrong.as_object_mut().unwrap().remove("skippable");
+    assert!(serde_json::from_value::<StoredEvent>(wrong.clone()).is_err());
+    assert_eq!(
+        StoredEvent::decode_strict(&serde_json::to_vec(&wrong).unwrap()),
+        None
+    );
+    let mut wrong = state_wire;
+    wrong["skippable"] = json!(true);
+    assert!(serde_json::from_value::<StoredEvent>(wrong).is_err());
+
+    // Only the doom-loop step of an approval is audit.
+    let step = |step| EventPayload::approval_step(ApprovalId::new_v7(), step);
+    assert!(
+        step(ApprovalStep::DoomLoop {
+            operation_fingerprint: OperationFingerprint::from_prepared_operation(
+                &PreparedOperationIdentity::new(
+                    Sha256Digest::of_bytes(b"arguments"),
+                    vec![ApprovalCapability {
+                        action: PermissionAction::READ,
+                        operation: PreparedCapabilityOperation::new("read:file").unwrap(),
+                    }],
+                    vec![test_resource(b"x")],
+                    Sha256Digest::of_bytes(b"context"),
+                )
+                .unwrap(),
+            ),
+            repetitions: 4,
+        })
+        .is_audit()
+    );
+    assert!(
+        !step(ApprovalStep::Escalated {
+            reason_code: ApprovalReasonCode::Escalated
+        })
+        .is_audit()
+    );
+}

@@ -49,6 +49,23 @@ pub enum EventLogError {
     Corrupt { path: PathBuf, message: String },
     #[error("event log {0} is read-only")]
     ReadOnly(PathBuf),
+    /// A newer build wrote this log: it holds the state event `event` this
+    /// build does not know, so the session is render-only, or it has the
+    /// newer `history_format`, so it does not open.
+    #[error("{} was written by a newer cookie: {}", path.display(), match (event, history_format) {
+        (Some(event), _) => format!("unknown event `{event}`"),
+        (None, Some(format)) => format!("history format {format}"),
+        (None, None) => "newer history".to_owned(),
+    })]
+    RequiresNewerEngine {
+        path: PathBuf,
+        event: Option<String>,
+        history_format: Option<u32>,
+    },
+    /// The log's history format is older than this build's and no
+    /// conversion from it exists.
+    #[error("{} has history format {history_format}, which this build cannot convert", path.display())]
+    UnsupportedHistoryFormat { path: PathBuf, history_format: u32 },
 }
 
 #[derive(Debug)]
@@ -67,6 +84,9 @@ pub struct EventLog {
     /// A read-only open found a torn final record and left it in the file;
     /// an owned open cuts it.
     torn_tail_ignored: bool,
+    /// The first state event of an unknown type the load met. Such a log is
+    /// render-only: it can be read and followed, but nothing appends to it.
+    unknown_state_event: Option<String>,
     write_capability: Option<WriteCapability>,
     #[cfg(test)]
     _test_authority: Option<WriteAuthority>,
@@ -446,6 +466,7 @@ impl EventLog {
             persisted: AtomicBool::new(persisted),
             read_only: false,
             torn_tail_ignored: false,
+            unknown_state_event: None,
             write_capability: Some(capability),
             #[cfg(test)]
             _test_authority,
@@ -557,6 +578,7 @@ impl EventLog {
             persisted: AtomicBool::new(true),
             read_only,
             torn_tail_ignored: loaded.torn_tail,
+            unknown_state_event: loaded.unknown_state_event,
             write_capability,
             #[cfg(test)]
             _test_authority,
@@ -598,6 +620,7 @@ impl EventLog {
             persisted: AtomicBool::new(false),
             read_only: false,
             torn_tail_ignored: false,
+            unknown_state_event: None,
             write_capability: Some(capability),
             #[cfg(test)]
             _test_authority: None,
@@ -633,6 +656,7 @@ impl EventLog {
             persisted: AtomicBool::new(true),
             read_only: false,
             torn_tail_ignored: false,
+            unknown_state_event: self.unknown_state_event.clone(),
             write_capability: Some(capability),
             #[cfg(test)]
             _test_authority: None,
@@ -693,6 +717,7 @@ impl EventLog {
         if self.read_only {
             return Err(EventLogError::ReadOnly(self.path.clone()));
         }
+        self.ensure_appendable()?;
         let _append = self
             .append
             .lock()
@@ -780,6 +805,26 @@ impl EventLog {
         events.push(event.clone());
         self.next_seq.store(event.seq + 1, Ordering::Release);
         Ok(event)
+    }
+
+    /// The first state event of a type this build does not know, if the log
+    /// holds one: the session is render-only.
+    #[must_use]
+    pub fn unknown_state_event(&self) -> Option<&str> {
+        self.unknown_state_event.as_deref()
+    }
+
+    /// Refuses to change a render-only log: a newer build wrote a state
+    /// event this one cannot continue from.
+    pub fn ensure_appendable(&self) -> Result<(), EventLogError> {
+        match &self.unknown_state_event {
+            Some(event) => Err(EventLogError::RequiresNewerEngine {
+                path: self.path.clone(),
+                event: Some(event.clone()),
+                history_format: None,
+            }),
+            None => Ok(()),
+        }
     }
 
     /// Owned copies of the events. Deep-copies every payload; hot paths use
@@ -1010,6 +1055,7 @@ impl EventLog {
         {
             return Err(EventLogError::ReadOnly(self.path.clone()));
         }
+        self.ensure_appendable()?;
         let _append = self
             .append
             .lock()
@@ -2788,12 +2834,43 @@ fn validate_record_incremental(
 
 struct LoadedEvents {
     records: Vec<StoredEvent>,
+    /// The first state event of an unknown type (see
+    /// [`EventLog::unknown_state_event`]).
+    unknown_state_event: Option<String>,
     lines: LineIndex,
     /// The file ended in a partial record, cut or ignored per [`TornTail`].
     torn_tail: bool,
     diagnostics: Vec<EventLoadDiagnostic>,
     validation_taint: ValidationTaint,
     next_seq: u64,
+}
+
+/// Checks the history format `session_created` declares. A log without one
+/// predates history formats; a newer one needs a newer build; an older one
+/// needs a conversion this build does not have.
+fn check_history_format(path: &Path, creation: Option<&Value>) -> Result<(), EventLogError> {
+    let Some(format) = creation
+        .and_then(|creation| creation.get("history_format"))
+        .and_then(Value::as_u64)
+    else {
+        return corrupt_value(
+            path,
+            "SessionCreated is unsupported or corrupt: the log has no history format",
+        );
+    };
+    let format = u32::try_from(format).unwrap_or(u32::MAX);
+    match format.cmp(&cookie_agent_protocol::HISTORY_FORMAT) {
+        std::cmp::Ordering::Equal => Ok(()),
+        std::cmp::Ordering::Greater => Err(EventLogError::RequiresNewerEngine {
+            path: path.to_owned(),
+            event: None,
+            history_format: Some(format),
+        }),
+        std::cmp::Ordering::Less => Err(EventLogError::UnsupportedHistoryFormat {
+            path: path.to_owned(),
+            history_format: format,
+        }),
+    }
 }
 
 /// Checks that a record's sequence advances the log and records any gap
@@ -2857,6 +2934,7 @@ fn load_event_jsonl_in_place(
     let mut diagnostics = Vec::new();
     let mut validation_taint = ValidationTaint::default();
     let mut last_observed_seq = 0_u64;
+    let mut unknown_state_event = None;
     for (index, line) in bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
@@ -2937,6 +3015,7 @@ fn load_event_jsonl_in_place(
                     key.as_str(),
                     "engine_version"
                         | "origin"
+                        | "skippable"
                         | "session_id"
                         | "run_id"
                         | "seq"
@@ -2971,6 +3050,38 @@ fn load_event_jsonl_in_place(
                     })?;
             } else {
                 validation_taint.mark_broad(seq, seq);
+            }
+            continue;
+        }
+        if index == 0 {
+            check_history_format(path, object.get("payload"))?;
+        }
+        if let Some(tag) = object
+            .get("payload")
+            .and_then(|payload| payload.get("type"))
+            .and_then(Value::as_str)
+            .filter(|tag| index > 0 && !EventPayload::is_known_tag(tag))
+        {
+            // An event from a newer build: an audit event is skipped without
+            // a trace, a state event leaves the session render-only.
+            if object.get("skippable") != Some(&Value::Bool(true)) {
+                diagnostics.push(EventLoadDiagnostic {
+                    seq,
+                    reason: format!(
+                        "event `{tag}` is unknown to this build; the session can only be viewed"
+                    ),
+                    engine_version,
+                    skipped: true,
+                });
+                unknown_state_event.get_or_insert_with(|| tag.to_owned());
+                if let Some(payload) = object.get("payload") {
+                    validation_taint
+                        .mark_record(seq, envelope_run_id, payload)
+                        .map_err(|message| EventLogError::Corrupt {
+                            path: path.to_owned(),
+                            message: message.into(),
+                        })?;
+                }
             }
             continue;
         }
@@ -3030,6 +3141,10 @@ fn load_event_jsonl_in_place(
         // The envelope is decoded without its payload, which is already typed:
         // no line is re-serialized or decoded a second time.
         let event = match StoredEventEnvelope::deserialize(&value) {
+            Ok(envelope) if !payload.skippable_matches(envelope.skippable()) => Err((
+                cookie_agent_protocol::EventSchemaError::SkippableMismatch.to_string(),
+                payload,
+            )),
             Ok(envelope) => {
                 let event = envelope.with_payload(payload);
                 match event.validate() {
@@ -3084,6 +3199,7 @@ fn load_event_jsonl_in_place(
     );
     Ok(LoadedEvents {
         records,
+        unknown_state_event,
         lines,
         torn_tail: torn,
         diagnostics,

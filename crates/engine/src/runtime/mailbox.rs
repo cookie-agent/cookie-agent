@@ -1008,6 +1008,18 @@ impl Engine {
         Ok(())
     }
 
+    /// Refuses to change `session` when a newer build wrote a state event
+    /// this one does not know: such a session can only be viewed. Every
+    /// append checks the same in the event log; this answers before a
+    /// request starts any work.
+    pub(crate) fn ensure_appendable(&self, session: SessionId) -> Result<(), EngineError> {
+        self.inner
+            .store
+            .log(session)?
+            .ensure_appendable()
+            .map_err(EngineError::Event)
+    }
+
     pub(crate) fn ensure_session_owned(&self, session: SessionId) -> Result<(), EngineError> {
         self.ensure_not_shutting_down()?;
         let adoption_lock = self.inner.store.adoption_lock(session);
@@ -1032,8 +1044,15 @@ impl Engine {
             }
             return Err(error);
         }
+        // Nothing is repaired in a render-only session: it takes no appends.
+        let render_only = write_open == crate::session::WriteOpen::Adopting
+            && self
+                .inner
+                .store
+                .log(session)
+                .is_ok_and(|log| log.unknown_state_event().is_some());
         if write_open == crate::session::WriteOpen::Adopting {
-            if let Err(error) = self.reconcile_session(session) {
+            if !render_only && let Err(error) = self.reconcile_session(session) {
                 self.inner.store.rollback_adoption(session);
                 return Err(error);
             }

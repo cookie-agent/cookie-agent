@@ -278,6 +278,7 @@ impl Engine {
             super::handles::generate_handle(agent.as_str(), &existing, super::handles::random_hex)?
         };
         let creation = Event::SessionCreated {
+            history_format: cookie_agent_protocol::HISTORY_FORMAT,
             origin,
             short_id: Some(short_id),
             cwd_identity: parent.meta.cwd_identity.clone(),

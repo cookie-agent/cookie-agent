@@ -26,6 +26,7 @@ impl Engine {
         origin: EventOrigin,
     ) -> Result<SessionSubmitInputResult, EngineError> {
         let session = params.session_id;
+        self.ensure_appendable(session)?;
         self.ensure_session_owned(session)?;
         for attempt in 0..SUBMIT_ATTEMPTS {
             if attempt > 0 {

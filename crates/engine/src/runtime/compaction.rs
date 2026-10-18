@@ -151,6 +151,7 @@ impl Engine {
         focus: Option<&str>,
         origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<SessionCompactResult, EngineError> {
+        self.ensure_appendable(session)?;
         let focus = focus.map(str::to_owned);
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.on_actor(session, move |engine| {

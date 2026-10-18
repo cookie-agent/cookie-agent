@@ -125,6 +125,7 @@ fn projection_fold_with(
         .payload
     {
         EventPayload::SessionCreated {
+            history_format: _,
             origin,
             short_id,
             cwd_identity,

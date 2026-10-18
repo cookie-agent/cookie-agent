@@ -397,7 +397,9 @@ fn expanded_new_blocks_cap_rendering_and_keep_full_state() {
     let control_input = "\u{1b}".repeat(MAX_SYSTEM_PROMPT_BODY_BYTES);
     let created = session_created(SessionId::new_v7(), 1);
     let EventPayload::SessionCreated {
-        mut creation_agent, ..
+        history_format: cookie_agent_protocol::HISTORY_FORMAT,
+        mut creation_agent,
+        ..
     } = created.payload
     else {
         unreachable!()

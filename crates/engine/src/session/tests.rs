@@ -130,6 +130,7 @@ fn persist_test_session_with_origin(store: &SessionStore, origin: SessionOrigin)
             session_id,
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionCreated {
+                history_format: cookie_agent_protocol::HISTORY_FORMAT,
                 short_id: None,
                 origin,
                 cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
@@ -192,6 +193,7 @@ fn create_buffered_test_session(store: &SessionStore) -> SessionId {
             session_id,
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionCreated {
+                history_format: cookie_agent_protocol::HISTORY_FORMAT,
                 short_id: None,
                 origin: SessionOrigin::Root,
                 cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
@@ -2055,6 +2057,7 @@ fn create_buffered_child(store: &SessionStore, root: SessionId) -> SessionId {
             session_id,
             test_origin(),
             EventPayload::SessionCreated {
+                history_format: cookie_agent_protocol::HISTORY_FORMAT,
                 short_id: None,
                 origin: delegated_origin(root, root, 1),
                 cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test")
@@ -2832,6 +2835,7 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
         session_id,
         cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
         EventPayload::SessionCreated {
+            history_format: cookie_agent_protocol::HISTORY_FORMAT,
             short_id: None,
             origin: SessionOrigin::Root,
             cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
@@ -3076,6 +3080,7 @@ fn internal_usage_is_once_per_fallback_phase_and_all_kinds_survive_reopen() {
         session_id,
         cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
         EventPayload::SessionCreated {
+            history_format: cookie_agent_protocol::HISTORY_FORMAT,
             short_id: None,
             origin: SessionOrigin::Root,
             cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
@@ -3761,6 +3766,7 @@ fn usage_rollup_after_a_usage_less_commit(
         session_id,
         cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
         EventPayload::SessionCreated {
+            history_format: cookie_agent_protocol::HISTORY_FORMAT,
             short_id: None,
             origin: SessionOrigin::Root,
             cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),

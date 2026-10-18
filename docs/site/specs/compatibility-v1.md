@@ -1273,3 +1273,24 @@ Deviations and choices made while implementing, by phase.
   text the TUI used to compose, and the source of a plugin's notice is
   `plugin:<name>`. The Rust kind catalogs (`PluginDiagnosticKind`,
   `ProducerDiagnosticKind`, `EngineDiagnosticKind`) stay as writer helpers.
+- **`skippable` is derived.** `StoredEvent` has no `skippable` field: it is
+  serialized from the payload's class and checked against it when read, so a
+  value built in memory cannot disagree with its payload. A step of
+  `approval_step` this build does not know accepts either value. The
+  classes: `diagnostic`, `skill_invocation_noted`, `user_input_transformed`,
+  `model_request_prepared`, `model_tools_published`, `model_output_started`,
+  `model_replay_evaluated`, and the `doom_loop` approval step are audit;
+  everything else is state (live-only events are never stored).
+- **Render-only.** The event log refuses every append and truncation of a
+  render-only log (`EventLogError::RequiresNewerEngine`), which covers
+  automatic compaction, titles, and recovery; `run.start`,
+  `session.submit_input`, revert, fork, and compaction also check before they
+  start work. Adoption skips the restart repairs. A fork is refused because
+  it would drop the records this build cannot read. The server answers with
+  the registry's `session_requires_newer_engine` (`-32000`), naming the
+  `event` or the `history_format`.
+- **History format.** A `session_created` without `history_format` fails as
+  the existing unsupported-era corrupt-log error; a higher one with
+  `session_requires_newer_engine`; a lower one with
+  `EventLogError::UnsupportedHistoryFormat`, which phase D replaces with
+  conversion.

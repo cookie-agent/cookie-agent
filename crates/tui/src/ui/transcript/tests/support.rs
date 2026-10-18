@@ -531,6 +531,7 @@ pub(crate) fn session_created_from_bindings(
         seq,
         timestamp: Timestamp::now(),
         payload: EventPayload::SessionCreated {
+            history_format: cookie_agent_protocol::HISTORY_FORMAT,
             short_id: None,
             origin: SessionOrigin::Root,
             cwd_identity: cookie_agent_protocol::CwdIdentity::new("/workspace").expect("cwd"),

@@ -1584,3 +1584,105 @@ async fn a_tail_owner_holds_one_live_tail_per_session() {
     assert_eq!(drain(&mut other_owner), everything);
     assert_eq!(drain(&mut unowned), everything);
 }
+
+/// A log holding a state event of a type this build does not know opens for
+/// viewing, and every request that would append to it is refused before it
+/// starts.
+#[tokio::test]
+async fn a_session_with_an_unknown_state_event_is_render_only() {
+    let (fixture, selection) = custom_fixture();
+    let session_id = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session")
+        .session_id;
+    fixture
+        .engine
+        .inner
+        .store
+        .persist_buffered_session(session_id)
+        .expect("persist the session");
+    let log = fixture.engine.inner.store.log(session_id).expect("log");
+    let path = log.path().to_owned();
+    let tip = log.event_snapshot().last().expect("tip").clone();
+    drop(log);
+    fixture.engine.shutdown().await;
+    let mut future = serde_json::to_value(&*tip).expect("tip JSON");
+    future["seq"] = serde_json::json!(tip.seq + 1);
+    future["payload"] = serde_json::json!({"type": "future_state", "value": 1});
+    let mut contents = fs::read_to_string(&path).expect("read log");
+    contents.push_str(&serde_json::to_string(&future).expect("future line"));
+    contents.push('\n');
+    fs::write(&path, contents).expect("write log");
+
+    let engine = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+    let render_only = |error: EngineError| {
+        assert!(
+            matches!(
+                &error,
+                EngineError::Event(crate::events::EventLogError::RequiresNewerEngine {
+                    event: Some(event),
+                    ..
+                }) if event == "future_state"
+            ),
+            "{error:?}"
+        );
+    };
+    // It is adopted without the repairs a restart would append.
+    engine
+        .ensure_session_owned(session_id)
+        .expect("a render-only session can be owned");
+    let (snapshot, _live) = engine
+        .subscribe(session_id, None)
+        .await
+        .expect("a render-only session can be followed");
+    assert_eq!(snapshot.events.len(), tip.seq as usize);
+    render_only(
+        engine
+            .start_run(
+                RunStartParams {
+                    reset_fallback: false,
+                    session_id,
+                    client_run_id: ClientRunId::new("render-only").unwrap(),
+                    selection,
+                    input: "hello".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .expect_err("no run starts"),
+    );
+    render_only(
+        engine
+            .revert_session(
+                session_id,
+                1,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+                None,
+            )
+            .await
+            .expect_err("no revert"),
+    );
+    render_only(
+        engine
+            .fork_session(
+                session_id,
+                1,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+                None,
+            )
+            .await
+            .expect_err("no fork"),
+    );
+    render_only(
+        engine
+            .compact_session(
+                session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .expect_err("no compaction"),
+    );
+    engine.shutdown().await;
+}

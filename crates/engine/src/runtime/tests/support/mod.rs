@@ -784,6 +784,7 @@ compaction = "openai-responses-compact"
 pub(crate) fn create_buffered_delegated_child(engine: &Engine, parent: SessionId) -> SessionId {
     let parent_projection = engine.inner.store.get(parent).expect("parent projection");
     let EventPayload::SessionCreated {
+        history_format: cookie_agent_protocol::HISTORY_FORMAT,
         origin: _,
         short_id: _,
         cwd_identity,
@@ -814,6 +815,7 @@ pub(crate) fn create_buffered_delegated_child(engine: &Engine, parent: SessionId
             child,
             cookie_agent_protocol::EventOrigin::new("engine:test").expect("event origin"),
             EventPayload::SessionCreated {
+                history_format: cookie_agent_protocol::HISTORY_FORMAT,
                 short_id: None,
                 origin: cookie_agent_protocol::SessionOrigin::Delegated {
                     root_session_id: parent,

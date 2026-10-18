@@ -58,6 +58,7 @@ fn stored_event() -> StoredEvent {
         seq: 1,
         timestamp: jiff::Timestamp::new(1, 0).expect("timestamp"),
         payload: EventPayload::SessionCreated {
+            history_format: cookie_agent_protocol::HISTORY_FORMAT,
             short_id: None,
             origin: SessionOrigin::Root,
             cwd_identity: CwdIdentity::new("workspace:test").expect("cwd identity"),
@@ -2156,7 +2157,9 @@ fn event_log_rejects_malformed_creation_identity_and_sequence() {
         {
             let mut record = stored_event();
             let EventPayload::SessionCreated {
-                creation_selection, ..
+                history_format: cookie_agent_protocol::HISTORY_FORMAT,
+                creation_selection,
+                ..
             } = &mut record.payload
             else {
                 unreachable!()
@@ -2212,7 +2215,9 @@ fn event_log_best_effort_reader_applies_all_three_tiers() {
         },
     ))
     .expect("unknown event");
+    // An audit event from a newer build: skipped without a trace.
     unknown_tag["payload"]["type"] = serde_json::json!("future_event");
+    unknown_tag["skippable"] = serde_json::json!(true);
     values.push(unknown_tag);
 
     let mut broken_required = serde_json::to_value(event(
@@ -2280,7 +2285,7 @@ fn event_log_best_effort_reader_applies_all_three_tiers() {
             .filter(|diagnostic| diagnostic.skipped)
             .map(|diagnostic| diagnostic.seq)
             .collect::<Vec<_>>(),
-        vec![3, 4, 6]
+        vec![4, 6]
     );
     let events = log.events();
     let EventPayload::SessionCreated { creation_agent, .. } = &events[0].payload else {
@@ -2311,30 +2316,27 @@ fn event_log_best_effort_reader_applies_all_three_tiers() {
     );
 }
 
-#[test]
-fn protocol_thirteen_project_context_event_is_skipped_without_harming_neighbors() {
+fn future_event(session: SessionId, seq: u64, tag: &str, skippable: bool) -> Value {
+    let mut record = serde_json::json!({
+        "engine_version": "9.0.0",
+        "origin": "engine:future",
+        "session_id": session,
+        "run_id": null,
+        "seq": seq,
+        "timestamp": jiff::Timestamp::new(seq as i64, 0).unwrap(),
+        "payload": {"type": tag, "detail": {"new": true}}
+    });
+    if skippable {
+        record["skippable"] = Value::Bool(true);
+    }
+    record
+}
+
+fn log_around_future_event(skippable: bool) -> (tempfile::TempDir, std::path::PathBuf, SessionId) {
     let directory = tempdir().expect("temporary directory");
     let path = directory.path().join("events.jsonl");
     let creation = stored_event();
     let session = creation.session_id;
-    let old_run = RunId(Uuid::from_u128(13));
-    let old_record = serde_json::json!({
-        "engine_version": "0.2.0",
-        "origin": "engine:project-context",
-        "session_id": session,
-        "run_id": old_run,
-        "seq": 2,
-        "timestamp": jiff::Timestamp::new(2, 0).unwrap(),
-        "payload": {
-            "type": "project_context_loaded",
-            "entries": [{
-                "source": "AGENTS.md",
-                "content": "legacy context",
-                "truncated": false,
-                "original_bytes": 14
-            }]
-        }
-    });
     let later = event(
         session,
         None,
@@ -2347,12 +2349,17 @@ fn protocol_thirteen_project_context_event_is_skipped_without_harming_neighbors(
         &path,
         &[
             serde_json::to_value(creation).unwrap(),
-            old_record,
+            future_event(session, 2, "future_event", skippable),
             serde_json::to_value(later).unwrap(),
         ],
     );
+    (directory, path, session)
+}
 
-    let log = EventLog::open(path, session).expect("open around protocol 13 event");
+#[test]
+fn an_unknown_audit_event_is_skipped_without_a_trace() {
+    let (_directory, path, session) = log_around_future_event(true);
+    let log = EventLog::open(path, session).expect("open around an unknown audit event");
     assert_eq!(
         log.event_snapshot()
             .iter()
@@ -2360,9 +2367,107 @@ fn protocol_thirteen_project_context_event_is_skipped_without_harming_neighbors(
             .collect::<Vec<_>>(),
         [1, 3]
     );
+    assert!(log.diagnostics().is_empty(), "{:?}", log.diagnostics());
+    assert_eq!(log.unknown_state_event(), None);
+    let appended = log
+        .append(
+            None,
+            EventOrigin::new("engine:test").expect("origin"),
+            EventPayload::UserInputQueueVoided {},
+        )
+        .expect("an appendable log");
+    assert_eq!(appended.seq, 4);
+}
+
+#[test]
+fn an_unknown_state_event_leaves_the_log_render_only() {
+    let (_directory, path, session) = log_around_future_event(false);
+    let log = EventLog::open(path, session).expect("open around an unknown state event");
+    assert_eq!(
+        log.event_snapshot()
+            .iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>(),
+        [1, 3]
+    );
+    assert_eq!(log.unknown_state_event(), Some("future_event"));
     assert!(log.diagnostics().iter().any(|diagnostic| {
-        diagnostic.seq == 2 && diagnostic.skipped && !diagnostic.reason.is_empty()
+        diagnostic.seq == 2 && diagnostic.skipped && diagnostic.reason.contains("`future_event`")
     }));
+    for error in [
+        log.append(
+            None,
+            EventOrigin::new("engine:test").expect("origin"),
+            EventPayload::UserInputQueueVoided {},
+        )
+        .expect_err("a render-only log takes no append"),
+        log.ensure_appendable().expect_err("render-only"),
+    ] {
+        assert!(
+            matches!(
+                &error,
+                EventLogError::RequiresNewerEngine {
+                    event: Some(event),
+                    history_format: None,
+                    ..
+                } if event == "future_event"
+            ),
+            "{error:?}"
+        );
+    }
+}
+
+#[test]
+fn the_history_format_of_a_log_decides_whether_it_opens() {
+    for (format, expected) in [
+        (None, "unsupported"),
+        (Some(cookie_agent_protocol::HISTORY_FORMAT + 1), "newer"),
+        (Some(0), "older"),
+    ] {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        let mut creation = serde_json::to_value(stored_event()).unwrap();
+        match format {
+            Some(format) => creation["payload"]["history_format"] = Value::from(format),
+            None => {
+                creation["payload"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("history_format");
+            }
+        }
+        write_event_values(&path, &[creation]);
+        let error = EventLog::open(path, stored_event().session_id)
+            .expect_err("a log of another history format does not open");
+        match expected {
+            "unsupported" => assert!(
+                matches!(&error, EventLogError::Corrupt { message, .. }
+                    if message.contains("SessionCreated is unsupported")),
+                "{error:?}"
+            ),
+            "newer" => assert!(
+                matches!(
+                    error,
+                    EventLogError::RequiresNewerEngine {
+                        event: None,
+                        history_format: Some(2),
+                        ..
+                    }
+                ),
+                "{error:?}"
+            ),
+            _ => assert!(
+                matches!(
+                    error,
+                    EventLogError::UnsupportedHistoryFormat {
+                        history_format: 0,
+                        ..
+                    }
+                ),
+                "{error:?}"
+            ),
+        }
+    }
 }
 
 #[test]

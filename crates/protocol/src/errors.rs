@@ -21,8 +21,9 @@
 //! ```
 //!
 //! Clients branch only on `data.code`, show `message`, then `hint` when
-//! present, and `detail` on request. Nothing sends these errors yet; the
-//! daemon, the SDK, and the runtimes switch to them in later phases.
+//! present, and `detail` on request. The daemon sends
+//! `session_requires_newer_engine`; the rest of the daemon, the SDK, and the
+//! runtimes switch to these errors in later phases.
 
 use serde::Serialize;
 use serde_json::{Map, Value};

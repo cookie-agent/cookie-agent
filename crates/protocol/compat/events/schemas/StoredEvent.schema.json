@@ -1162,6 +1162,12 @@
               "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
               "type": "string"
             },
+            "history_format": {
+              "description": "The session log's [`HISTORY_FORMAT`].",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
             "manifest_revision": {
               "maxLength": 71,
               "minLength": 71,
@@ -1209,6 +1215,7 @@
           },
           "required": [
             "type",
+            "history_format",
             "origin",
             "cwd_identity",
             "creation_selection",
@@ -7181,6 +7188,7 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "One record of a session log.\n\nThe envelope's `skippable` is not a field: it is derived from the\npayload's class ([`EventPayload::is_audit`]), written only when true, and\nchecked against the payload when read.",
   "properties": {
     "engine_version": {
       "type": [
@@ -7214,6 +7222,10 @@
     "session_id": {
       "format": "uuid",
       "type": "string"
+    },
+    "skippable": {
+      "description": "Present and true exactly on audit events: a reader that does not know the payload's type may skip the record.",
+      "type": "boolean"
     },
     "timestamp": {
       "format": "date-time",

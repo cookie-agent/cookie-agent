@@ -149,6 +149,7 @@ impl Engine {
             super::handles::random_hex,
         )?;
         let creation = Event::SessionCreated {
+            history_format: cookie_agent_protocol::HISTORY_FORMAT,
             origin: SessionOrigin::Root,
             short_id: Some(short_id),
             cwd_identity: cwd_identity.clone(),
@@ -509,6 +510,7 @@ impl Engine {
         _origin: EventOrigin,
         expected_last_seq: Option<u64>,
     ) -> Result<SessionRevertResult, EngineError> {
+        self.ensure_appendable(session_id)?;
         let context_id = crate::plugin::plugin_context_id();
         let mut instructions = self
             .inner
@@ -738,6 +740,8 @@ impl Engine {
         origin: EventOrigin,
         client_fork_id: Option<cookie_agent_protocol::ClientForkId>,
     ) -> Result<SessionForkResult, EngineError> {
+        // A fork would drop the events this build cannot read.
+        self.ensure_appendable(session_id)?;
         if let Some(client_fork_id) = &client_fork_id
             && let Some(&(forked_through, forked)) = self
                 .inner

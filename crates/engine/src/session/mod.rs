@@ -3532,6 +3532,7 @@ mod windows_tests {
                 session_id,
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::SessionCreated {
+                    history_format: cookie_agent_protocol::HISTORY_FORMAT,
                     short_id: None,
                     origin: SessionOrigin::Root,
                     cwd_identity: CwdIdentity::new("workspace:test").unwrap(),

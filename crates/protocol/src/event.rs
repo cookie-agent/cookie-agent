@@ -2130,6 +2130,11 @@ impl ApprovalFinalization {
     }
 }
 
+/// The history format this build writes and reads: the major version of the
+/// session log layout, stamped on `session_created`. It bumps only for a
+/// change that cannot follow the additive rules of session history.
+pub const HISTORY_FORMAT: u32 = 1;
+
 /// The most bytes of a diagnostic's serialized `detail`.
 pub const MAX_DIAGNOSTIC_DETAIL_BYTES: usize = 16 * 1024;
 
@@ -2138,6 +2143,8 @@ pub const MAX_DIAGNOSTIC_DETAIL_BYTES: usize = 16 * 1024;
 #[allow(clippy::large_enum_variant)]
 pub enum EventPayload {
     SessionCreated {
+        /// The session log's [`HISTORY_FORMAT`].
+        history_format: u32,
         origin: SessionOrigin,
         /// Short, tree-unique model-facing handle (`<agent_type>_<8 hex>`).
         /// Optional and additive: sessions created before handles existed carry
@@ -2667,6 +2674,110 @@ impl EventPayload {
         }
     }
 
+    /// Whether `tag` is the `type` of an event this build knows.
+    #[must_use]
+    pub fn is_known_tag(tag: &str) -> bool {
+        static TAGS: std::sync::OnceLock<std::collections::BTreeSet<String>> =
+            std::sync::OnceLock::new();
+        TAGS.get_or_init(|| crate::schema_tags::<Self>("type"))
+            .contains(tag)
+    }
+
+    /// Whether this payload is an audit event rather than a state event.
+    ///
+    /// A state event is one the projection, model history, delegation
+    /// recovery, goals, producers, approvals, or usage read; an audit event is
+    /// everything else, which a reader that does not know its tag can skip
+    /// without changing any of them. Writers stamp `skippable` on the
+    /// envelope of every audit event. Live-only stream output is never
+    /// stored and counts as audit.
+    #[must_use]
+    pub fn is_audit(&self) -> bool {
+        match self {
+            Self::Diagnostic { .. }
+            | Self::SkillInvocationNoted { .. }
+            | Self::UserInputTransformed { .. }
+            | Self::ModelRequestPrepared { .. }
+            | Self::ModelToolsPublished { .. }
+            | Self::ModelOutputStarted { .. }
+            | Self::ModelReplayEvaluated { .. }
+            | Self::TextDelta { .. }
+            | Self::ReasoningDelta { .. }
+            | Self::InternalAgentTextDelta { .. }
+            | Self::NativeCompactionStarted { .. }
+            | Self::NativeCompactionFinished { .. }
+            | Self::ToolCallProgress { .. } => true,
+            // The approval projection ignores the doom-loop step; an unknown
+            // step reads as a state step, the safe side for its writer's
+            // `skippable`.
+            Self::ApprovalStep { step, .. } => {
+                matches!(step, Open::Known(ApprovalStep::DoomLoop { .. }))
+            }
+            Self::SessionCreated { .. }
+            | Self::SessionPermissionOverlaySet { .. }
+            | Self::RuntimeAttached { .. }
+            | Self::RuntimeDetached { .. }
+            | Self::SkillLoaded { .. }
+            | Self::AgentMdLoaded { .. }
+            | Self::GoalActivated { .. }
+            | Self::GoalChecklistRevised { .. }
+            | Self::GoalLifecycleChanged { .. }
+            | Self::ProducerMessageAccepted { .. }
+            | Self::ProducerMessageAdmitted { .. }
+            | Self::ProducerMessagesClaimed { .. }
+            | Self::ProducerMessagesReleased { .. }
+            | Self::ProducerMessageConsumed { .. }
+            | Self::ProducerMessageDiscarded { .. }
+            | Self::RunStarted { .. }
+            | Self::MessageInjected { .. }
+            | Self::UserInputAdmitted { .. }
+            | Self::UserInputSubmitted { .. }
+            | Self::UserInputRecalled { .. }
+            | Self::UserInputApplied { .. }
+            | Self::UserInputQueued { .. }
+            | Self::UserInputQueueRecalled { .. }
+            | Self::UserInputQueueVoided {}
+            | Self::SessionModelSelected { .. }
+            | Self::DelegatedContextSeeded { .. }
+            | Self::RunFinished { .. }
+            | Self::ModelAttemptStarted { .. }
+            | Self::AttemptAbandoned { .. }
+            | Self::ModelTurnCommitted { .. }
+            | Self::ModelUsageRecorded { .. }
+            | Self::ModelFallback { .. }
+            | Self::ToolCallStarted { .. }
+            | Self::ToolCallTerminated { .. }
+            | Self::ToolOutputElided { .. }
+            | Self::ToolCallLinked { .. }
+            | Self::DelegationReserved { .. }
+            | Self::DelegationProgressed { .. }
+            | Self::DelegationFinished { .. }
+            | Self::DelegateChildTerminated { .. }
+            | Self::ApprovalRequested { .. }
+            | Self::ApprovalFinalized { .. }
+            | Self::TreeApprovalGrantCommitted { .. }
+            | Self::InternalAgentStarted { .. }
+            | Self::InternalAgentUsageRecorded { .. }
+            | Self::InternalAgentFinished { .. }
+            | Self::InternalAgentFallback { .. }
+            | Self::ContextCheckpointCommitted { .. }
+            | Self::SessionTitleCommitted { .. } => false,
+        }
+    }
+
+    /// Whether `skippable` on an envelope agrees with this payload's class.
+    /// A step this build does not know may be either.
+    #[must_use]
+    pub fn skippable_matches(&self, skippable: bool) -> bool {
+        matches!(
+            self,
+            Self::ApprovalStep {
+                step: Open::Unknown { .. },
+                ..
+            }
+        ) || skippable == self.is_audit()
+    }
+
     /// Whether this payload is live-only stream output: delivered to
     /// subscribers as a [`TransientEvent`] and never appended to a session
     /// log. The committed model turn and the tool termination are the durable
@@ -2761,10 +2872,14 @@ impl EventPayload {
                 return Err(EventSchemaError::InvalidProducerMessage);
             }
             Self::SessionCreated {
+                history_format,
                 creation_selection,
                 creation_agent,
                 ..
             } => {
+                if *history_format != HISTORY_FORMAT {
+                    return Err(EventSchemaError::UnsupportedHistoryFormat);
+                }
                 creation_agent
                     .validate_selection(creation_selection)
                     .map_err(|_| EventSchemaError::SelectionAgentMismatch)?;
@@ -3203,8 +3318,14 @@ pub fn diagnostic_subject(source: &DiagnosticSource, kind: &DiagnosticKind) -> O
         .map(|runtime_id| format!("runtime {runtime_id}"))
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
+/// One record of a session log.
+///
+/// The envelope's `skippable` is not a field: it is derived from the
+/// payload's class ([`EventPayload::is_audit`]), written only when true, and
+/// checked against the payload when read.
+#[derive(Clone, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
+#[schemars(transform = stored_event_schema)]
 pub struct StoredEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_version: Option<String>,
@@ -3219,7 +3340,59 @@ pub struct StoredEvent {
     pub timestamp: Timestamp,
     pub payload: EventPayload,
 }
+fn stored_event_schema(schema: &mut Schema) {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.insert(
+            "skippable".into(),
+            serde_json::json!({
+                "description": "Present and true exactly on audit events: a reader that does not know the payload's type may skip the record.",
+                "type": "boolean",
+            }),
+        );
+    }
+}
+
+impl Serialize for StoredEvent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            engine_version: Option<&'a String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            origin: Option<&'a EventOrigin>,
+            session_id: SessionId,
+            run_id: Option<RunId>,
+            seq: u64,
+            timestamp: Timestamp,
+            #[serde(skip_serializing_if = "std::ops::Not::not")]
+            skippable: bool,
+            payload: &'a EventPayload,
+        }
+        Wire {
+            engine_version: self.engine_version.as_ref(),
+            origin: self.origin.as_ref(),
+            session_id: self.session_id,
+            run_id: self.run_id,
+            seq: self.seq,
+            timestamp: self.timestamp,
+            skippable: self.payload.is_audit(),
+            payload: &self.payload,
+        }
+        .serialize(serializer)
+    }
+}
+
 impl StoredEvent {
+    /// Whether the envelope carries `"skippable": true`: exactly the audit
+    /// events.
+    #[must_use]
+    pub fn skippable(&self) -> bool {
+        self.payload.is_audit()
+    }
+
     pub fn validate(&self) -> Result<(), EventSchemaError> {
         if let Some(origin) = &self.origin {
             EventOrigin::new(origin.as_str())?;
@@ -3301,6 +3474,8 @@ impl StoredEvent {
             engine_version: Option<String>,
             #[serde(default)]
             origin: Option<EventOrigin>,
+            #[serde(default)]
+            skippable: bool,
             session_id: SessionId,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             run_id: Option<RunId>,
@@ -3309,6 +3484,9 @@ impl StoredEvent {
             payload: EventPayload,
         }
         let strict = serde_json::from_slice::<Strict>(line).ok()?;
+        if !strict.payload.skippable_matches(strict.skippable) {
+            return None;
+        }
         let event = Self {
             engine_version: strict.engine_version,
             origin: strict.origin,
@@ -3332,6 +3510,8 @@ pub struct StoredEventEnvelope {
     engine_version: Option<String>,
     #[serde(default)]
     origin: Option<EventOrigin>,
+    #[serde(default)]
+    skippable: bool,
     session_id: SessionId,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     run_id: Option<RunId>,
@@ -3340,8 +3520,15 @@ pub struct StoredEventEnvelope {
 }
 
 impl StoredEventEnvelope {
+    /// Whether the envelope carries `"skippable": true`.
+    #[must_use]
+    pub const fn skippable(&self) -> bool {
+        self.skippable
+    }
+
     /// Pairs the envelope with its payload. The result still has to pass
-    /// [`StoredEvent::validate`].
+    /// [`StoredEvent::validate`], and the payload's class has to agree with
+    /// [`Self::skippable`] ([`EventPayload::skippable_matches`]).
     #[must_use]
     pub fn with_payload(self, payload: EventPayload) -> StoredEvent {
         StoredEvent {
@@ -3368,6 +3555,8 @@ impl<'de> Deserialize<'de> for StoredEvent {
             engine_version: Option<String>,
             #[serde(default)]
             origin: Option<EventOrigin>,
+            #[serde(default)]
+            skippable: bool,
             session_id: SessionId,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             run_id: Option<RunId>,
@@ -3376,6 +3565,7 @@ impl<'de> Deserialize<'de> for StoredEvent {
             payload: Value,
         }
         let w = Wire::deserialize(d)?;
+        let skippable = w.skippable;
         let value = Self {
             engine_version: w.engine_version,
             origin: w.origin,
@@ -3387,6 +3577,11 @@ impl<'de> Deserialize<'de> for StoredEvent {
                 .map_err(serde::de::Error::custom)?
                 .payload,
         };
+        if !value.payload.skippable_matches(skippable) {
+            return Err(serde::de::Error::custom(
+                EventSchemaError::SkippableMismatch,
+            ));
+        }
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
     }
@@ -3740,6 +3935,8 @@ pub enum EventSchemaError {
     InvalidOrigin,
     InvalidAgentMd,
     InvalidDiagnostic,
+    UnsupportedHistoryFormat,
+    SkippableMismatch,
     InvalidModelTools,
     EmptyTitle,
     TitleTooLong,
@@ -3796,6 +3993,10 @@ impl fmt::Display for EventSchemaError {
             Self::InvalidOrigin => "event origin is invalid",
             Self::InvalidAgentMd => "AGENTS.md context event is invalid",
             Self::InvalidDiagnostic => "diagnostic message, count, or detail is invalid",
+            Self::UnsupportedHistoryFormat => {
+                "session history format is not the one this build writes"
+            }
+            Self::SkippableMismatch => "envelope `skippable` does not match the event's class",
             Self::InvalidModelTools => "published model tool names are invalid or too many",
             Self::EmptyTitle => "session title must not be blank",
             Self::TitleTooLong => "session title exceeds 512 bytes",

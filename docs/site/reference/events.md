@@ -1,74 +1,130 @@
 # Event Reference
 
-Session persistence and subscriptions use a versionless event format. Every new
-stored event contains `engine_version`, `session_id`, required nullable `run_id`,
-a positive physical `seq`, `timestamp`, a tagged `payload`, and an optional
-`origin`. The
-`engine_version` is the writing engine's binary semver; it is diagnostic metadata,
-not a compatibility gate, and old records may omit it. Pre-origin records omit
-`origin`; readers preserve that absence rather than synthesizing a default.
+A session's history is `events.jsonl`: one JSON record per line, appended in
+order. Subscriptions deliver the same records. The format follows the
+[compatibility specification](../specs/compatibility-v1.md#8-session-history):
+events and fields are added without a version bump, and only a change that
+cannot be made additively bumps the history format.
+
+## Records
+
+```json
+{ "engine_version": "0.5.0", "origin": "user", "session_id": "…",
+  "run_id": null, "seq": 1, "timestamp": "…", "skippable": true,
+  "payload": { "type": "…" } }
+```
+
+| Member | Meaning |
+|---|---|
+| `engine_version` | The writing engine's binary semver: diagnostic metadata, not a compatibility gate |
+| `origin` | Who authored this record (below) |
+| `session_id` | The session |
+| `run_id` | Required and nullable: the run a run-scoped event belongs to, `null` for a runless one |
+| `seq` | A positive physical sequence, strictly increasing down the file |
+| `timestamp` | When the record was written |
+| `skippable` | Present and `true` exactly on [audit events](#state-and-audit-events) |
+| `payload` | The event, tagged by `type` |
 
 `origin` is either `user` or `<class>:<slug>`, where `class` is `engine`,
-`plugin`, or `client` and `slug` matches
-`[a-z0-9][a-z0-9-]{0,63}`. It identifies the author of that individual event,
-not the component described by its payload. For example, a diagnostic about a
-plugin can have origin `engine:plugin-host`. Events caused by a client request
-carry that connection's handshake origin, `client:<kind>-<instance id>` (see
+`plugin`, or `client` and `slug` matches `[a-z0-9][a-z0-9-]{0,63}`. It
+identifies the author of that individual event, not the component described
+by its payload. For example, a diagnostic about a plugin can have origin
+`engine:plugin-host`. Events caused by a client request carry that
+connection's handshake origin, `client:<kind>-<instance id>` (see
 [the handshake](protocol.md)); the headless CLI's in-process runs use
 `client:headless`. A run cancelled through `run.cancel` records the caller's
-origin on its `run_finished`, and the engine's origin when it cancels on its own.
+origin on its `run_finished`, and the engine's origin when it cancels on its
+own. When tool-emitted additional messages are materialized as persisted
+turns, their origin is `engine:tool-result`: the engine authors the durable
+turn from a validated tool result, and the tool name remains payload context.
 
-Readers handle each JSONL line independently. Fully readable events load
-normally. If a known event has an absent or type-mismatched optional field, that
-field defaults and the event loads with an in-memory degradation diagnostic.
-Unknown event tags, broken required fields, corrupt JSON, and unknown envelope
-fields cause that event to be skipped. Sequence numbers must increase strictly,
-but gaps are retained and reported rather than making the session unreadable.
-Each contiguous missing sequence range produces one bounded diagnostic. An
-unreadable initial `session_created` record is the exception: without creation
-identity the session cannot open, so the engine reports an unsupported-era or
-corrupt-log error. The initial `session_created` record carries an optional
-`short_id`, the tree-unique model-facing handle; sessions created before handles
-existed lack the field and resolve by full UUID only.
+The first record is always `session_created`. It carries `history_format`
+(currently `1`, the `HISTORY_FORMAT` constant of `cookie_agent_protocol`),
+and the optional `short_id`, the tree-unique model-facing handle.
 
-Writers remain strict: every appended event passes validation. Event evolution
-is additive only. Existing variant tags and fields are never removed or renamed,
-existing required fields remain required, and new fields must be optional. New
-behavior that cannot fit an optional field uses a new variant tag. CI compares
-the generated `EventPayload` schema with the committed baseline in
-`crates/protocol/compat/events/` (see [Schemas](schemas.md)).
-Because older binaries do not know the `origin` envelope key, their tolerant
-readers skip newly originated events and report an unknown-envelope diagnostic;
-they do not reinterpret those events without attribution.
+## Reading a log
+
+Writers are strict: every appended record passes validation, including a
+`skippable` that agrees with its payload's class. Readers handle each line on
+its own:
+
+- A fully readable record loads normally.
+- A known event with an absent or type-mismatched optional field loads with
+  that field defaulted and an in-memory degradation diagnostic.
+- A record with a broken required field, corrupt JSON, an unknown envelope
+  member, or a failed validation is skipped with a diagnostic.
+- **An event type this build does not know** is skipped silently when its
+  record says `skippable`. Without `skippable` it is a state event from a
+  newer build: the record is skipped with a diagnostic naming its type, and
+  the session is **render-only**. It opens and can be viewed and subscribed,
+  but nothing appends to it: `run.start`, `run.steer`, `session.submit_input`,
+  revert, fork, compaction (manual or automatic), title generation, and every
+  other change fail with error code `session_requires_newer_engine`, and
+  adopting it repairs nothing.
+- Sequence numbers must increase strictly. Gaps are retained and reported,
+  one bounded diagnostic per contiguous missing range.
+
+The first record decides whether the log opens at all. Without a readable
+`session_created` the session cannot open: the engine reports an
+unsupported-era or corrupt-log error. A `session_created` without
+`history_format` was written before history formats and is not read. A
+higher `history_format` than this build's fails with
+`session_requires_newer_engine`; a lower one has no conversion yet and fails
+as unsupported.
+
+CI compares the generated `EventPayload` schema with the committed baseline in
+`crates/protocol/compat/events/` (see [Schemas](schemas.md)). A new optional
+field must be safe to ignore, since its absence means the old behaviour; a
+field whose absence would be misread needs a new event type; and a new value
+of an open enum needs a fallback that is safe for older readers.
 
 Terminal tool-result truncation and `tool_output_elided` references use the
 [retained-output readback lifecycle](tools.md#retained-tool-output).
 
-When tool-emitted additional messages are materialized as persisted turns, their
-event origin is `engine:tool-result`. The engine authors the durable turn from a
-validated tool result; the tool name remains payload context rather than a new
-origin class. This keeps the origin grammar restricted to `user`, `engine`,
-`plugin`, and `client`.
+## State and audit events
 
-## Payloads
+Every event type is a **state** event or an **audit** event. A state event is
+read by the projection, model history, delegation recovery, goals, producers,
+approvals, or usage; an audit event changes none of them, so an older reader
+may skip it. Writers stamp `skippable` on audit events. Live-only events are
+never stored.
 
-| Category | Event payload types |
-|---|---|
-| Session | `session_created`, `session_permission_overlay_set`, `runtime_attached`, `runtime_detached`, `skill_loaded`, `skill_invocation_noted`, `session_title_committed`, `delegated_context_seeded` |
-| AGENTS.md context | `agent_md_loaded` |
-| Diagnostics | `diagnostic` |
-| Goals | `goal_activated`, `goal_checklist_revised`, `goal_lifecycle_changed` |
-| Producer messaging | `producer_message_accepted`, `producer_message_admitted`, `producer_messages_claimed`, `producer_messages_released`, `producer_message_consumed`, `producer_message_discarded` |
-| User input | `message_injected`, `user_input_admitted`, `user_input_submitted`, `user_input_transformed`, `user_input_recalled`, `user_input_applied`, `user_input_queued`, `user_input_queue_recalled`, `user_input_queue_voided`, `session_model_selected` |
-| Run | `run_started`, `run_finished` |
-| Model | `model_attempt_started`, `model_tools_published`, `model_request_prepared`, `model_output_started`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback`; live-only: `text_delta`, `reasoning_delta` |
-| Tools | `tool_call_started`, `tool_call_terminated`, `tool_output_elided`, `tool_call_linked`; live-only: `tool_call_progress` |
-| Delegation | `delegation_reserved`, `delegation_progressed`, `delegation_finished`, `delegate_child_terminated` |
-| Approvals | `approval_requested`, `approval_step`, `approval_finalized`, `tree_approval_grant_committed` |
-| Internal agents | `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_finished`, `internal_agent_fallback`; live-only: `internal_agent_text_delta` |
-| Compaction | `context_checkpoint_committed`; live-only: `native_compaction_started`, `native_compaction_finished` |
+| Event | Class | Run scope | Records |
+|---|---|---|---|
+| `session_created` | state | runless | The session's creation: origin, handle, workspace, selection, agent, revisions, `history_format` |
+| `session_permission_overlay_set` | state | runless | The session's permission overlay |
+| `runtime_attached`, `runtime_detached` | state | runless | The session's [runtime attachments](#runtime-attachments) |
+| `skill_loaded` | state | either | A loaded skill body |
+| `skill_invocation_noted` | audit | either | A repeat of an identical skill load |
+| `session_title_committed` | state | either | A title change |
+| `agent_md_loaded` | state | run | The `AGENTS.md` context of one attachment |
+| `diagnostic` | audit | either | A notice about the engine, a plugin, or a runtime |
+| `goal_activated`, `goal_checklist_revised`, `goal_lifecycle_changed` | state | runless or run | The session goal |
+| `producer_message_accepted`, `producer_message_discarded` | state | runless or run | A producer message's body; its withdrawal |
+| `producer_message_admitted`, `producer_messages_claimed`, `producer_messages_released`, `producer_message_consumed` | state | run | A producer message's delivery |
+| `message_injected` | state | run | A message `agent_before_start` injected |
+| `user_input_admitted` | state | run or runless | A steer waiting for the next turn |
+| `user_input_submitted` | state | run | Input that became model history |
+| `user_input_transformed` | audit | run | A `user_before_input` rewrite of direct input |
+| `user_input_recalled` | state | run or runless | A withdrawn admission |
+| `user_input_applied` | state | run | Where an admitted input took effect |
+| `user_input_queued`, `user_input_queue_recalled`, `user_input_queue_voided` | state | runless | The [queued-input lane](#the-queued-input-lane) |
+| `session_model_selected` | state | runless | The session's model selection |
+| `delegated_context_seeded` | state | runless | A child's inherited context |
+| `run_started`, `run_finished` | state | run | A run's start and end |
+| `model_attempt_started`, `attempt_abandoned`, `model_fallback` | state | run | A model attempt's lifecycle |
+| `model_request_prepared`, `model_tools_published`, `model_output_started`, `model_replay_evaluated` | audit | run | Request and streaming bookkeeping |
+| `model_turn_committed`, `model_usage_recorded` | state | run | A committed turn and its usage |
+| `tool_call_started`, `tool_call_terminated`, `tool_output_elided`, `tool_call_linked` | state | run | A tool call's lifecycle |
+| `delegation_reserved`, `delegation_progressed`, `delegation_finished` | state | run | A [delegation](#delegation) on the parent |
+| `delegate_child_terminated` | state | runless | A delegation ended the child before it ran |
+| `approval_requested`, `approval_finalized`, `tree_approval_grant_committed` | state | run | An [approval](#approvals) |
+| `approval_step` | state; audit for `doom_loop` | run | An approval step |
+| `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_finished`, `internal_agent_fallback` | state | run | An internal agent invocation |
+| `context_checkpoint_committed` | state | run | A [compaction checkpoint](#compaction-checkpoints) |
+| `text_delta`, `reasoning_delta`, `internal_agent_text_delta`, `native_compaction_started`, `native_compaction_finished`, `tool_call_progress` | live-only | run | [Stream output](#live-only-stream-output) |
 
-### Live-only stream output
+## Live-only stream output
 
 `text_delta`, `reasoning_delta`, `internal_agent_text_delta`,
 `native_compaction_started`, `native_compaction_finished`, and
@@ -110,7 +166,7 @@ inputs admitted meanwhile, and to time thinking identically live and on replay
 A stored record of a live-only payload fails validation, so the reader skips it
 with a diagnostic like any other invalid record.
 
-### Goal and producer contracts
+## Goal and producer contracts
 
 Goal and producer state is projected independently from model summaries. The engine
 serializes mutations, message acceptance, and admission through the session actor.
@@ -235,7 +291,7 @@ Failed/disabled recovery notices are runless `diagnostic` events whose `source`
 is the producer source and whose `kind` is `recovery_failed` or
 `recovery_disabled`, not persisted readiness/registration records.
 
-### Existing event behavior
+## Event details
 
 `model_replay_evaluated` records, for one model attempt, the replay decision
 for each history entry of its request. Every attempt re-evaluates the whole
@@ -278,6 +334,8 @@ belongs to that run; any other is runless. The kinds written today:
 | `engine:agent-md` | `agent_md_too_large` | An `AGENTS.md` file is over the size limit and contributes no context; run-scoped, with `detail` `{ path, byte_length, attachment }` |
 
 
+### Delegation
+
 `delegated_context_seeded` is a runless creation event containing the bounded,
 text-only user/assistant turns copied by `inherit_context`; it must precede the
 child's first run and deterministically rebuilds the same initial model history
@@ -313,6 +371,15 @@ in history exactly once. Full output remains available through
 delegation ends it before it ran (cancelled or failed); it sets the child's own
 status.
 
+Engine startup projects delegation state while opening session logs. A reserved
+or started delegation without a terminal event resumes or rolls back according
+to its child and parent state. Recovery recomputes the reservation fingerprint;
+a mismatch rejects the reservation. If best-effort reading skips a corrupt
+delegation event, that delegation is not recovered, the parent session records
+the diagnostic, and unrelated delegations remain recoverable.
+
+### Runs and internal agents
+
 `run_finished { outcome }` ends a run. `outcome` is `completed { final_text? }`,
 `failed { error, model_error?, resolved_model? }`, `cancelled { reason? }`, or
 `interrupted { reason? }`; an outcome this build does not know reads as
@@ -320,6 +387,8 @@ interrupted. `internal_agent_finished { invocation_id, internal_run_id, kind,
 outcome }` ends an internal agent invocation the same way, with
 `completed { result }`, `failed { failure }`, `cancelled { reason? }`, or
 `interrupted { reason? }`.
+
+### Approvals
 
 An approval's lifecycle after its `approval_requested` is a series of
 `approval_step { approval_id, step }` records and one
@@ -337,14 +406,7 @@ the user, or `cancelled { reason_code }`, the engine withdrawing the approval
 cancelled the request. An outcome this build does not know reads as cancelled,
 so the operation is not approved.
 
-Engine startup projects delegation state while opening session logs. A reserved
-or started delegation without a terminal event resumes or rolls back according
-to its child and parent state. Recovery recomputes the reservation fingerprint;
-a mismatch rejects the reservation. If best-effort reading skips a corrupt
-delegation event, that delegation is not recovered, the parent session records
-the diagnostic, and unrelated delegations remain recoverable. Legacy
-`delegations.jsonl` files are ignored, so pre-release in-flight journal entries
-do not cross this upgrade.
+### Runtime attachments
 
 The runless `runtime_attached` and `runtime_detached` events record the
 session's [runtime attachments](../specs/runtimes.md#5-session-attachments).
@@ -358,6 +420,8 @@ of these events in log order; a session's creation writes one
 both reach disk with the session's first persistence. A session created with
 no attachment records no attachment event. Delegated children record their own
 attachments.
+
+### Other events
 
 The runless `session_permission_overlay_set` event's `overlay`
 contains the complete, validated set of unique `(action, resource)` rules for
@@ -468,6 +532,8 @@ pending input and preserves the others.
 `session_model_selected` (`selection`) is the session-level model pick a client
 made with `session.select_model`; it is runless and its origin names the client.
 Later runs that name no selection of their own use it.
+
+### The queued-input lane
 
 The queued-input lane is session-level, so its events are runless.
 `user_input_queued` holds an input waiting for the running run to complete, with

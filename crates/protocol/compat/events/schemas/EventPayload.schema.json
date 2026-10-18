@@ -5201,6 +5201,12 @@
           "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
           "type": "string"
         },
+        "history_format": {
+          "description": "The session log's [`HISTORY_FORMAT`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
         "manifest_revision": {
           "maxLength": 71,
           "minLength": 71,
@@ -5248,6 +5254,7 @@
       },
       "required": [
         "type",
+        "history_format",
         "origin",
         "cwd_identity",
         "creation_selection",

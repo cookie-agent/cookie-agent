@@ -276,6 +276,7 @@ async fn replayed_footer_cost_matches_engine_session_usage() {
     let created =
         session_created_from_bindings(session, 1, selection.clone(), vec![binding.clone()], 0);
     let EventPayload::SessionCreated {
+        history_format: cookie_agent_protocol::HISTORY_FORMAT,
         creation_agent,
         runtime_revision,
         catalog_revision,
