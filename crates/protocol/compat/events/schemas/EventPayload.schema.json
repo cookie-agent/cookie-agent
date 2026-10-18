@@ -625,6 +625,44 @@
       ],
       "type": "string"
     },
+    "ArtifactRef": {
+      "description": "A content-addressed artifact in a session tree's store: a user upload, a\ntool attachment, or the full content of a truncated display block.",
+      "properties": {
+        "byte_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "filename": {
+          "description": "The name the file was attached under, without a directory.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_type": {
+          "description": "The media type sniffed from the content, such as `image/png`.",
+          "maxLength": 255,
+          "minLength": 3,
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Lowercase hex SHA-256 of the bytes.",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "byte_length",
+        "media_type"
+      ],
+      "type": "object"
+    },
     "ArtifactReference": {
       "additionalProperties": false,
       "properties": {
@@ -4262,6 +4300,52 @@
         "output_tokens_reasoning"
       ],
       "type": "object"
+    },
+    "UserContent": {
+      "description": "A user's input: a nonempty list of parts.",
+      "items": {
+        "$ref": "#/$defs/UserContentPart"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "UserContentPart": {
+      "description": "One part of a user's input.",
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "artifact": {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            "type": {
+              "const": "file",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "artifact"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4644,7 +4728,8 @@
           ]
         },
         "body": {
-          "type": "string"
+          "$ref": "#/$defs/UserContent",
+          "description": "Text parts only."
         },
         "description": {
           "description": "Control-free bounded presentation text.",
@@ -4876,9 +4961,10 @@
       "type": "object"
     },
     {
+      "description": "`content` carries text parts only.",
       "properties": {
-        "input": {
-          "type": "string"
+        "content": {
+          "$ref": "#/$defs/UserContent"
         },
         "role": {
           "$ref": "#/$defs/ExtensionMessageRole"
@@ -4891,14 +4977,14 @@
       "required": [
         "type",
         "role",
-        "input"
+        "content"
       ],
       "type": "object"
     },
     {
       "properties": {
-        "input": {
-          "type": "string"
+        "content": {
+          "$ref": "#/$defs/UserContent"
         },
         "type": {
           "const": "user_input_admitted",
@@ -4907,14 +4993,14 @@
       },
       "required": [
         "type",
-        "input"
+        "content"
       ],
       "type": "object"
     },
     {
       "properties": {
-        "input": {
-          "type": "string"
+        "content": {
+          "$ref": "#/$defs/UserContent"
         },
         "type": {
           "const": "user_input_submitted",
@@ -4923,17 +5009,17 @@
       },
       "required": [
         "type",
-        "input"
+        "content"
       ],
       "type": "object"
     },
     {
       "properties": {
-        "input": {
-          "type": "string"
+        "content": {
+          "$ref": "#/$defs/UserContent"
         },
-        "original_input": {
-          "type": "string"
+        "original_content": {
+          "$ref": "#/$defs/UserContent"
         },
         "type": {
           "const": "user_input_transformed",
@@ -4942,15 +5028,15 @@
       },
       "required": [
         "type",
-        "original_input",
-        "input"
+        "original_content",
+        "content"
       ],
       "type": "object"
     },
     {
       "properties": {
-        "input": {
-          "type": "string"
+        "content": {
+          "$ref": "#/$defs/UserContent"
         },
         "type": {
           "const": "user_input_recalled",
@@ -4965,7 +5051,7 @@
       "required": [
         "type",
         "user_input_seq",
-        "input"
+        "content"
       ],
       "type": "object"
     },
@@ -4997,8 +5083,8 @@
           "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
           "type": "string"
         },
-        "input": {
-          "type": "string"
+        "content": {
+          "$ref": "#/$defs/UserContent"
         },
         "selection": {
           "$ref": "#/$defs/RunSelection"
@@ -5010,7 +5096,7 @@
       },
       "required": [
         "type",
-        "input",
+        "content",
         "selection",
         "client_run_id"
       ],

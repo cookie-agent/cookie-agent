@@ -1,18 +1,19 @@
 //! Role-safe Oven history assembly and durable turn conversion.
 
 use std::{
-    borrow::Borrow,
+    borrow::{Borrow, Cow},
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
 };
 
 use cookie_agent_protocol::{
-    ApprovalDecisionSource, ArtifactReference, ContextCheckpoint, DelegatedContextRole,
-    EventPayload, FrozenModelBinding, ModelFinishReason, ModelSelection, NativeContextScope,
-    NativeReplayArtifact, PersistedAssistantPart, PersistedContentValue, PersistedFilePart,
-    PersistedFileSource, PersistedModelTurn, PersistedToolContent, PersistedToolResult,
-    ReplayDecision, ReplayDisposition, ResolvedModelRef, SafeCode, SafeErrorMessage, SessionId,
-    Sha256Digest, StoredEvent, ToolAttachment, ToolCallId, ToolEmittedContent, ToolEmittedMessage,
-    ToolEmittedMessageRole, ToolTerminationOutcome, Usage,
+    ApprovalDecisionSource, ArtifactRef, ArtifactReference, ContextCheckpoint,
+    DelegatedContextRole, EventPayload, FrozenModelBinding, ModelFinishReason, ModelSelection,
+    NativeContextScope, NativeReplayArtifact, Open, PersistedAssistantPart, PersistedContentValue,
+    PersistedFilePart, PersistedFileSource, PersistedModelTurn, PersistedToolContent,
+    PersistedToolResult, ReplayDecision, ReplayDisposition, ResolvedModelRef, SafeCode,
+    SafeErrorMessage, SessionId, Sha256Digest, StoredEvent, ToolAttachment, ToolCallId,
+    ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole, ToolTerminationOutcome, Usage,
+    UserContent, UserContentPart,
 };
 use oven_sdk::{
     AdapterId, AssistantMessage, AssistantPart, CompletedTurn, ContentValue, CustomPart, FilePart,
@@ -289,9 +290,9 @@ pub(crate) fn replay_decisions_with_preflight(
 /// History items borrow from the event log; only the final `HistoryTurn`s own
 /// their content.
 enum LogicalTurn<'a> {
-    System(&'a str),
+    System(Cow<'a, str>),
     User(UserMessage),
-    SeedAssistant(&'a str),
+    SeedAssistant(Cow<'a, str>),
     Assistant(Box<AssistantRecord<'a>>),
 }
 
@@ -845,7 +846,7 @@ fn assemble_history_with_replay(
                 .admission
                 .and_then(|(admission_run, admission_seq)| {
                     (message.consumed || current_run.is_none_or(|run| admission_run == run))
-                        .then_some((admission_seq, message.body.as_str()))
+                        .then_some((admission_seq, &message.body))
                 })
         })
         .collect::<HashMap<_, _>>();
@@ -863,7 +864,7 @@ fn assemble_history_with_replay(
         (!loaded.is_empty()).then(|| agent_md_turn(&loaded))
     };
     let mut logical = Vec::<LogicalTurn<'_>>::new();
-    let mut submitted = HashMap::<u64, &str>::new();
+    let mut submitted = HashMap::<u64, &UserContent>::new();
     let mut pending_model_calls = HashMap::<
         (
             cookie_agent_protocol::RunId,
@@ -879,32 +880,35 @@ fn assemble_history_with_replay(
             EventPayload::DelegatedContextSeeded { turns, .. } => {
                 logical.extend(turns.iter().map(|turn| match turn.role {
                     DelegatedContextRole::User => LogicalTurn::User(user_text(&turn.text)),
-                    DelegatedContextRole::Assistant => LogicalTurn::SeedAssistant(&turn.text),
+                    DelegatedContextRole::Assistant => {
+                        LogicalTurn::SeedAssistant(Cow::Borrowed(&turn.text))
+                    }
                 }));
             }
-            EventPayload::MessageInjected { role, input } => match role {
+            // Injected messages carry text parts only.
+            EventPayload::MessageInjected { role, content } => match role {
                 cookie_agent_protocol::ExtensionMessageRole::System => {
-                    logical.push(LogicalTurn::System(input));
+                    logical.push(LogicalTurn::System(content.as_plain_text()));
                 }
                 cookie_agent_protocol::ExtensionMessageRole::User => {
-                    logical.push(LogicalTurn::User(user_text(input)));
+                    logical.push(LogicalTurn::User(user_content(content, store)?));
                 }
                 cookie_agent_protocol::ExtensionMessageRole::Assistant => {
-                    logical.push(LogicalTurn::SeedAssistant(input));
+                    logical.push(LogicalTurn::SeedAssistant(content.as_plain_text()));
                 }
                 cookie_agent_protocol::ExtensionMessageRole::Tool => {}
             },
-            EventPayload::UserInputSubmitted { input, .. } => {
-                submitted.insert(envelope.seq, input);
+            EventPayload::UserInputSubmitted { content } => {
+                submitted.insert(envelope.seq, content);
             }
             EventPayload::UserInputApplied { user_input_seq } => {
-                if let Some(input) = submitted.remove(user_input_seq) {
-                    logical.push(LogicalTurn::User(user_text(input)));
+                if let Some(content) = submitted.remove(user_input_seq) {
+                    logical.push(LogicalTurn::User(user_content(content, store)?));
                 }
             }
             EventPayload::ProducerMessageAdmitted { .. } => {
                 if let Some(body) = producer_admissions.get(&envelope.seq) {
-                    logical.push(LogicalTurn::User(user_text(body)));
+                    logical.push(LogicalTurn::User(user_content(body, store)?));
                 }
             }
             EventPayload::ModelTurnCommitted {
@@ -1374,6 +1378,50 @@ fn append_tool_emitted_message(
 
 fn user_text(input: &str) -> UserMessage {
     UserMessage::new(vec![InputPart::Text(TextPart::new(input))])
+}
+
+/// A stored user input for a live request. Text parts stay as they are, and
+/// file parts become files from the tree's store the way tool-emitted user
+/// messages do, with the same note standing in for a missing artifact. A part
+/// of a kind this build does not know never reaches a model.
+fn user_content(
+    content: &UserContent,
+    store: SessionArtifacts<'_>,
+) -> Result<UserMessage, HistoryError> {
+    let parts = content
+        .parts()
+        .iter()
+        .filter_map(|part| match part {
+            Open::Known(UserContentPart::Text { text }) => {
+                Some(Ok(InputPart::Text(TextPart::new(text))))
+            }
+            Open::Known(UserContentPart::File { artifact }) => {
+                Some(user_file_attachment(artifact).and_then(|attachment| {
+                    attachment_file(&attachment, store).map(|file| match file {
+                        Ok(file) => InputPart::File(file),
+                        Err(note) => InputPart::Text(TextPart::new(note)),
+                    })
+                }))
+            }
+            Open::Unknown { .. } => None,
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(UserMessage::new(parts))
+}
+
+/// A user file part as the attachment the artifact store reads.
+fn user_file_attachment(artifact: &ArtifactRef) -> Result<ToolAttachment, HistoryError> {
+    let corrupt = |error: &dyn std::fmt::Display| HistoryError::Corrupt(error.to_string());
+    Ok(ToolAttachment {
+        mime_type: cookie_agent_protocol::MimeType::new(artifact.media_type.clone())
+            .map_err(|error| corrupt(&error))?,
+        filename: artifact.filename.clone(),
+        byte_length: artifact.byte_length,
+        sha256: Sha256Digest::new(artifact.sha256.clone()).map_err(|error| corrupt(&error))?,
+        reference: ArtifactReference {
+            uri: format!("artifact://sha256/{}", artifact.sha256),
+        },
+    })
 }
 
 #[derive(serde::Deserialize)]

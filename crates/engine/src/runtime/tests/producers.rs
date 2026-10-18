@@ -1330,20 +1330,42 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
     let reminder_json: serde_json::Value = serde_json::from_str(
         first_record
             .body
+            .as_plain_text()
             .lines()
             .last()
             .expect("serialized goal reminder"),
     )
     .expect("goal reminder JSON");
     assert_eq!(reminder_json, serde_json::to_value(&goal).unwrap());
-    assert!(first_record.body.contains(&goal.objective));
-    assert!(first_record.body.starts_with("Goal started."));
-    assert!(first_record.body.contains("Build release artifacts"));
-    assert!(first_record.body.contains("Verify production smoke tests"));
-    assert!(first_record.body.contains(&goal.goal_id.to_string()));
+    assert!(first_record.body.as_plain_text().contains(&goal.objective));
     assert!(
         first_record
             .body
+            .as_plain_text()
+            .starts_with("Goal started.")
+    );
+    assert!(
+        first_record
+            .body
+            .as_plain_text()
+            .contains("Build release artifacts")
+    );
+    assert!(
+        first_record
+            .body
+            .as_plain_text()
+            .contains("Verify production smoke tests")
+    );
+    assert!(
+        first_record
+            .body
+            .as_plain_text()
+            .contains(&goal.goal_id.to_string())
+    );
+    assert!(
+        first_record
+            .body
+            .as_plain_text()
             .contains(&format!("\"revision\":{}", goal.revision))
     );
 
@@ -1392,10 +1414,25 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
         .into_iter()
         .find(|message| message.message_id == second_id)
         .expect("second reminder record");
-    assert!(second_record.body.starts_with("Continue the root goal."));
+    assert!(
+        second_record
+            .body
+            .as_plain_text()
+            .starts_with("Continue the root goal.")
+    );
     assert_eq!(
-        second_record.body.lines().skip(1).collect::<Vec<_>>(),
-        first_record.body.lines().skip(1).collect::<Vec<_>>()
+        second_record
+            .body
+            .as_plain_text()
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>(),
+        first_record
+            .body
+            .as_plain_text()
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>()
     );
 
     // Hold the next request before it claims the already-admitted reminder.
@@ -1467,16 +1504,36 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
         .expect("accepted pause control");
     assert_eq!(control.mode, ProducerDeliveryMode::Steer);
     assert_eq!(control.reminder, None);
-    assert!(control.body.contains("paused by the user"));
+    assert!(control.body.as_plain_text().contains("paused by the user"));
     assert_eq!(
         control.description.as_str(),
         format!("Goal paused: {}", goal.objective)
     );
-    assert!(control.body.contains(&format!("\"{}\"", goal.objective)));
-    assert!(control.body.contains("Stop pursuing it autonomously"));
-    assert!(control.body.contains("Wrap up current work"));
-    assert!(control.body.contains("report status"));
-    assert!(control.body.contains("follow new user directions"));
+    assert!(
+        control
+            .body
+            .as_plain_text()
+            .contains(&format!("\"{}\"", goal.objective))
+    );
+    assert!(
+        control
+            .body
+            .as_plain_text()
+            .contains("Stop pursuing it autonomously")
+    );
+    assert!(
+        control
+            .body
+            .as_plain_text()
+            .contains("Wrap up current work")
+    );
+    assert!(control.body.as_plain_text().contains("report status"));
+    assert!(
+        control
+            .body
+            .as_plain_text()
+            .contains("follow new user directions")
+    );
     let accepted = producer_events(&fixture.engine, session_id)
         .into_iter()
         .find(|event| {
@@ -1573,7 +1630,10 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
                 .collect::<String>(),
             content => panic!("unexpected message content: {content}"),
         };
-        assert!(text.contains(expected), "model-visible reminder: {text}");
+        assert!(
+            text.contains(expected.as_plain_text().as_ref()),
+            "model-visible reminder: {text}"
+        );
     }
     for request in &requests[..2] {
         assert!(request.contains(&goal.objective));
@@ -1684,15 +1744,40 @@ async fn active_goal_cancel_notifies_once_and_preserves_other_producer_work() {
         .clone();
     assert_eq!(control.mode, ProducerDeliveryMode::Steer);
     assert_eq!(control.reminder, None);
-    assert!(control.body.contains("cancelled by the user"));
+    assert!(
+        control
+            .body
+            .as_plain_text()
+            .contains("cancelled by the user")
+    );
     assert_eq!(
         control.description.as_str(),
         format!("Goal cancelled: {}", goal.objective)
     );
-    assert!(control.body.contains(&format!("\"{}\"", goal.objective)));
-    assert!(control.body.contains("Stop pursuing this cancelled goal"));
-    assert!(control.body.contains("do not call goal_update"));
-    assert!(control.body.contains("Follow new user directions"));
+    assert!(
+        control
+            .body
+            .as_plain_text()
+            .contains(&format!("\"{}\"", goal.objective))
+    );
+    assert!(
+        control
+            .body
+            .as_plain_text()
+            .contains("Stop pursuing this cancelled goal")
+    );
+    assert!(
+        control
+            .body
+            .as_plain_text()
+            .contains("do not call goal_update")
+    );
+    assert!(
+        control
+            .body
+            .as_plain_text()
+            .contains("Follow new user directions")
+    );
     let accepted = producer_events(&fixture.engine, session_id)
         .into_iter()
         .find(|event| {

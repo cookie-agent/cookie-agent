@@ -648,7 +648,7 @@ fn producer_description_round_trips_and_legacy_events_default_to_empty() {
     assert!(matches!(
         &recovered.payload,
         EventPayload::ProducerMessageAccepted { description, body, .. }
-            if description.as_str().is_empty() && body == "Full model-facing result\nwith details"
+            if description.as_str().is_empty() && body.as_plain_text() == "Full model-facing result\nwith details"
     ));
     round_trip(recovered.payload);
     let strict: EventPayload = serde_json::from_value(wire).unwrap();

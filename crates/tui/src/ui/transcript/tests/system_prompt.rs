@@ -250,7 +250,7 @@ fn new_transcript_blocks_are_visible_at_default_threshold_and_expand() {
             2,
             EventPayload::MessageInjected {
                 role: cookie_agent_protocol::ExtensionMessageRole::User,
-                input: "plugin first\nplugin second".into(),
+                content: "plugin first\nplugin second".into(),
             },
         ),
         runless_event(
@@ -917,7 +917,7 @@ fn replay_rebuild_restores_new_event_backed_blocks() {
             2,
             EventPayload::MessageInjected {
                 role: cookie_agent_protocol::ExtensionMessageRole::Assistant,
-                input: "replayed plugin text".into(),
+                content: "replayed plugin text".into(),
             },
         ),
         runless_event(

@@ -404,16 +404,19 @@ fn reference_validate_records(
         }
         validate_record_local(path, record)?;
         let strict = strict_from_seq.is_some_and(|from| record.seq >= from);
-        let missing_admission = |user_input_seq: u64, run_id: Option<RunId>, input: &str| {
-            !records[..index].iter().any(|prior| {
+        let missing_admission =
+            |user_input_seq: u64,
+             run_id: Option<RunId>,
+             input: &cookie_agent_protocol::UserContent| {
+                !records[..index].iter().any(|prior| {
                 prior.seq == user_input_seq
                     && prior.run_id == run_id
                     && matches!(
                         &prior.payload,
-                        EventPayload::UserInputAdmitted { input: admitted } if admitted == input
+                        EventPayload::UserInputAdmitted { content: admitted } if admitted == input
                     )
             })
-        };
+            };
         let tainted_prerequisite = if strict {
             false
         } else {
@@ -432,7 +435,7 @@ fn reference_validate_records(
                 }
                 EventPayload::UserInputRecalled {
                     user_input_seq,
-                    input,
+                    content: input,
                 } => {
                     missing_admission(*user_input_seq, record.run_id, input)
                         && taint.admission_before(*user_input_seq, record.seq)
@@ -662,7 +665,7 @@ fn reference_validate_records(
             }
             EventPayload::UserInputRecalled {
                 user_input_seq,
-                input,
+                content: input,
             } => {
                 if record.run_id.is_none()
                     && active_run.is_some()
@@ -1386,7 +1389,7 @@ fn incremental_validation_matches_historical_reference_corpus() {
         Some(run_id),
         3,
         EventPayload::UserInputAdmitted {
-            input: "admitted".into(),
+            content: "admitted".into(),
         },
     );
     let recalled = event(
@@ -1395,7 +1398,7 @@ fn incremental_validation_matches_historical_reference_corpus() {
         4,
         EventPayload::UserInputRecalled {
             user_input_seq: 3,
-            input: "admitted".into(),
+            content: "admitted".into(),
         },
     );
     let admission = vec![
@@ -1423,7 +1426,7 @@ fn incremental_validation_matches_historical_reference_corpus() {
             4,
             EventPayload::UserInputRecalled {
                 user_input_seq: 3,
-                input: "missing but tainted".into(),
+                content: "missing but tainted".into(),
             },
         ),
     ];
@@ -2131,7 +2134,7 @@ fn barrier_sync_precedes_publication_without_holding_snapshot_lock() {
                 None,
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::UserInputAdmitted {
-                    input: "steer".into(),
+                    content: "steer".into(),
                 },
             )
         })
@@ -2293,7 +2296,7 @@ fn event_log_best_effort_reader_applies_all_three_tiers() {
         None,
         3,
         EventPayload::UserInputAdmitted {
-            input: "future".into(),
+            content: "future".into(),
         },
     ))
     .expect("unknown event");
@@ -2321,7 +2324,7 @@ fn event_log_best_effort_reader_applies_all_three_tiers() {
         None,
         5,
         EventPayload::UserInputAdmitted {
-            input: "accepted".into(),
+            content: "accepted".into(),
         },
     ))
     .expect("future field event");
@@ -2333,7 +2336,7 @@ fn event_log_best_effort_reader_applies_all_three_tiers() {
         None,
         6,
         EventPayload::UserInputAdmitted {
-            input: "skip envelope".into(),
+            content: "skip envelope".into(),
         },
     ))
     .expect("unknown envelope");
@@ -2389,7 +2392,7 @@ fn event_log_best_effort_reader_applies_all_three_tiers() {
             None,
             EventOrigin::new("engine:test").unwrap(),
             EventPayload::UserInputAdmitted {
-                input: "after skipped tail".into(),
+                content: "after skipped tail".into(),
             },
         )
         .expect("append after skipped tail");
@@ -2426,7 +2429,7 @@ fn log_around_future_event(skippable: bool) -> (tempfile::TempDir, std::path::Pa
         None,
         3,
         EventPayload::UserInputAdmitted {
-            input: "still readable".into(),
+            content: "still readable".into(),
         },
     );
     write_event_values(

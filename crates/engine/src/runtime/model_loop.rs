@@ -612,7 +612,7 @@ impl Engine {
                     event_origin("engine:model-loop"),
                     Event::MessageInjected {
                         role: message.role,
-                        input: message.content,
+                        content: message.content.into(),
                     },
                 )
                 .await
@@ -632,8 +632,8 @@ impl Engine {
                     Some(run_id),
                     origin.clone(),
                     Event::UserInputTransformed {
-                        original_input,
-                        input: params.input.clone(),
+                        original_content: original_input.into(),
+                        content: params.input.clone().into(),
                     },
                 )
                 .await?;
@@ -643,7 +643,7 @@ impl Engine {
                 Some(run_id),
                 origin,
                 Event::UserInputSubmitted {
-                    input: params.input,
+                    content: params.input.into(),
                 },
             )
             .await

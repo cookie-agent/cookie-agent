@@ -372,8 +372,8 @@ async fn finished_subagent_woken_by_send_message_reports_running_then_new_turn_t
     .await;
     let reports = reports(&parent);
     assert_eq!(reports.len(), 1, "{reports:?}");
-    assert!(reports[0].starts_with("<subagent_report "));
-    assert!(reports[0].contains("child turn two"));
+    assert!(reports[0].as_plain_text().starts_with("<subagent_report "));
+    assert!(reports[0].as_plain_text().contains("child turn two"));
     fixture.engine.shutdown().await;
 }
 
@@ -649,7 +649,10 @@ async fn the_user_moves_a_foreground_delegation_to_the_background() {
     .await;
     let reports = reports(&projection);
     assert_eq!(reports.len(), 1, "{reports:?}");
-    assert!(reports[0].contains("child finished"), "{reports:?}");
+    assert!(
+        reports[0].as_plain_text().contains("child finished"),
+        "{reports:?}"
+    );
     server.abort();
     fixture.engine.shutdown().await;
 }

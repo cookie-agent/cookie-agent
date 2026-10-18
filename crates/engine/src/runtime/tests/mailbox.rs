@@ -140,7 +140,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     assert!(before_boundary.iter().any(|event| {
         matches!(
             &event.payload,
-            EventPayload::UserInputAdmitted { input } if input == first_pending
+            EventPayload::UserInputAdmitted { content: input } if input == first_pending
         ) && event
             .origin
             .as_ref()
@@ -149,7 +149,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     }));
     assert!(!before_boundary.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::UserInputSubmitted { input } if input != &initial_input
+        EventPayload::UserInputSubmitted { content: input } if input != &initial_input
     )));
     approve_once(&fixture.engine, &approval, "steering-race-approval").await;
     wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
@@ -217,8 +217,12 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     let submitted = events
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::UserInputSubmitted { input } if input != &initial_input => {
-                Some((event.seq, input.as_str(), event.origin.as_ref()))
+            EventPayload::UserInputSubmitted { content: input } if input != &initial_input => {
+                Some((
+                    event.seq,
+                    input.as_plain_text().into_owned(),
+                    event.origin.as_ref(),
+                ))
             }
             _ => None,
         })
@@ -226,7 +230,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     assert_eq!(
         submitted
             .iter()
-            .map(|(_, input, _)| *input)
+            .map(|(_, input, _)| input.as_str())
             .collect::<Vec<_>>(),
         vec![
             first_pending,
@@ -666,19 +670,28 @@ async fn user_input_transform_audit_uses_the_final_chain_value() {
             .events();
         assert!(events.iter().any(|event| matches!(
             &event.payload,
-            EventPayload::UserInputSubmitted { input } if input == expected_input
+            EventPayload::UserInputSubmitted { content: input } if input == expected_input
         )));
         let audits = events
             .iter()
             .filter_map(|event| match &event.payload {
                 EventPayload::UserInputTransformed {
-                    original_input,
-                    input,
-                } => Some((original_input.as_str(), input.as_str())),
+                    original_content: original_input,
+                    content: input,
+                } => Some((
+                    original_input.as_plain_text().into_owned(),
+                    input.as_plain_text().into_owned(),
+                )),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(audits, expected_audit.into_iter().collect::<Vec<_>>());
+        assert_eq!(
+            audits,
+            expected_audit
+                .into_iter()
+                .map(|(original, input)| (original.to_owned(), input.to_owned()))
+                .collect::<Vec<_>>()
+        );
         fixture.engine.shutdown().await;
     }
 }
@@ -757,12 +770,12 @@ async fn active_run_steering_uses_user_input_interception_and_audit() {
         .events();
     assert!(events.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::UserInputTransformed { original_input, input }
+        EventPayload::UserInputTransformed { original_content: original_input, content: input }
             if original_input == "steer original" && input == "steer transformed"
     )));
     assert!(events.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::UserInputAdmitted { input } if input == "steer transformed"
+        EventPayload::UserInputAdmitted { content: input } if input == "steer transformed"
     )));
     fixture.engine.shutdown().await;
 }

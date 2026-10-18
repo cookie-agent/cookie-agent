@@ -1286,9 +1286,9 @@ struct CommittedTurn {
 /// SHA-256 of an admitted input, which a later submission must match.
 type InputDigest = [u8; 32];
 
-fn input_digest(input: &str) -> InputDigest {
+fn input_digest(content: &cookie_agent_protocol::UserContent) -> InputDigest {
     use sha2::Digest as _;
-    sha2::Sha256::digest(input.as_bytes()).into()
+    sha2::Sha256::digest(serde_json::to_vec(content).unwrap_or_default()).into()
 }
 
 impl ValidationState {
@@ -1997,14 +1997,19 @@ fn validate_record_incremental(
         active_run,
         ..
     } = state;
-    if let EventPayload::UserInputAdmitted { input } = &record.payload {
-        admissions.insert(record.seq, (record.run_id, input_digest(input)));
+    if let EventPayload::UserInputAdmitted { content } = &record.payload {
+        admissions.insert(record.seq, (record.run_id, input_digest(content)));
     }
-    let missing_admission = |user_input_seq: u64, run_id: Option<RunId>, input: &str| {
-        !admissions
-            .get(&user_input_seq)
-            .is_some_and(|(owner, admitted)| *owner == run_id && *admitted == input_digest(input))
-    };
+    let missing_admission =
+        |user_input_seq: u64,
+         run_id: Option<RunId>,
+         content: &cookie_agent_protocol::UserContent| {
+            !admissions
+                .get(&user_input_seq)
+                .is_some_and(|(owner, admitted)| {
+                    *owner == run_id && *admitted == input_digest(content)
+                })
+        };
     let tainted_prerequisite = if strict {
         false
     } else {
@@ -2023,9 +2028,9 @@ fn validate_record_incremental(
             }
             EventPayload::UserInputRecalled {
                 user_input_seq,
-                input,
+                content,
             } => {
-                missing_admission(*user_input_seq, record.run_id, input)
+                missing_admission(*user_input_seq, record.run_id, content)
                     && taint.admission_before(*user_input_seq, record.seq)
             }
             EventPayload::ModelAttemptStarted { .. }
@@ -2243,7 +2248,7 @@ fn validate_record_incremental(
         }
         EventPayload::UserInputRecalled {
             user_input_seq,
-            input,
+            content,
         } => {
             if record.run_id.is_none()
                 && active_run.is_some()
@@ -2251,7 +2256,7 @@ fn validate_record_incremental(
             {
                 return corrupt(path, "runless UserInputRecalled requires no active run");
             }
-            if missing_admission(*user_input_seq, record.run_id, input) {
+            if missing_admission(*user_input_seq, record.run_id, content) {
                 return corrupt(path, "UserInputRecalled target is not a prior admission");
             }
         }

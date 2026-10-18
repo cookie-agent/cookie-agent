@@ -67,7 +67,7 @@ fn event(session_id: SessionId, seq: u64) -> StoredEvent {
         seq,
         timestamp: Timestamp::now(),
         payload: EventPayload::UserInputAdmitted {
-            input: seq.to_string(),
+            content: seq.to_string().into(),
         },
     }
 }

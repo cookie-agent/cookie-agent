@@ -440,7 +440,7 @@ fn input_event(session_id: SessionId, seq: u64, input: &str) -> StoredEvent {
         seq,
         timestamp: Timestamp::now(),
         payload: EventPayload::UserInputAdmitted {
-            input: input.into(),
+            content: input.into(),
         },
     }
 }

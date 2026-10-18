@@ -1306,7 +1306,7 @@ mod tests {
             seq,
             timestamp: "2026-01-01T00:00:00Z".parse().expect("timestamp"),
             payload: EventPayload::UserInputSubmitted {
-                input: "cursor test".into(),
+                content: "cursor test".into(),
             },
         };
         let mut state = DriverState::new(2);

@@ -88,7 +88,7 @@ async fn adopting_a_session_reconciles_its_dead_run_before_resume() {
             Some(run_id),
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::UserInputSubmitted {
-                input: "persist abandoned run".into(),
+                content: "persist abandoned run".into(),
             },
         )
         .expect("persist abandoned run");
@@ -836,7 +836,7 @@ async fn an_unreadable_frozen_binding_fails_only_what_runs_it_again() {
             Some(run_id),
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::UserInputSubmitted {
-                input: "persist the run".into(),
+                content: "persist the run".into(),
             },
         )
         .expect("persist the run");

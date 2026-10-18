@@ -361,6 +361,7 @@ async fn discarded_initial_reminder_and_fresh_replacement_are_both_started() {
     assert!(
         stale_record
             .body
+            .as_plain_text()
             .contains("Establish the checklist with goal_update, then pursue its unfinished work.")
     );
 
@@ -462,10 +463,16 @@ async fn discarded_initial_reminder_and_fresh_replacement_are_both_started() {
         .into_iter()
         .find(|message| message.message_id == revised_id)
         .expect("revised reminder record");
-    assert!(revised_record.body.contains("Goal started."));
     assert!(
         revised_record
             .body
+            .as_plain_text()
+            .contains("Goal started.")
+    );
+    assert!(
+        revised_record
+            .body
+            .as_plain_text()
             .contains("Establish the checklist with goal_update, then pursue its unfinished work.")
     );
     fixture

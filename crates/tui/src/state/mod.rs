@@ -196,6 +196,65 @@ impl FrozenAssistantAttribution {
     }
 }
 
+/// A file part as one line: `📎 name · type · size`.
+pub(crate) fn attachment_chip(artifact: &cookie_agent_protocol::ArtifactRef) -> String {
+    format!(
+        "📎 {} · {} · {}",
+        artifact.display_name(),
+        artifact.media_type,
+        cookie_agent_protocol::human_bytes(artifact.byte_length)
+    )
+}
+
+/// The text a person reads for `content`: text parts as they are and each
+/// file part as its [`attachment_chip`], one part per line. A part of a kind
+/// this build does not know reads as its tag.
+pub(crate) fn user_content_text(content: &cookie_agent_protocol::UserContent) -> String {
+    use cookie_agent_protocol::{Open, UserContentPart};
+    if let [Open::Known(UserContentPart::Text { text })] = content.parts() {
+        return text.clone();
+    }
+    content
+        .parts()
+        .iter()
+        .map(|part| match part {
+            Open::Known(UserContentPart::Text { text }) => text.clone(),
+            Open::Known(UserContentPart::File { artifact }) => attachment_chip(artifact),
+            Open::Unknown { tag, .. } => format!("[unsupported content: {tag}]"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// [`user_content_text`] as markdown: text parts are markdown already, and
+/// a chip's characters are escaped so a filename renders as written.
+fn user_content_markdown(content: &cookie_agent_protocol::UserContent) -> String {
+    use cookie_agent_protocol::{Open, UserContentPart};
+    if let [Open::Known(UserContentPart::Text { text })] = content.parts() {
+        return text.clone();
+    }
+    let escape = |text: String| {
+        text.chars()
+            .fold(String::with_capacity(text.len()), |mut out, character| {
+                if character.is_ascii_punctuation() {
+                    out.push('\\');
+                }
+                out.push(character);
+                out
+            })
+    };
+    content
+        .parts()
+        .iter()
+        .map(|part| match part {
+            Open::Known(UserContentPart::Text { text }) => text.clone(),
+            Open::Known(UserContentPart::File { artifact }) => escape(attachment_chip(artifact)),
+            Open::Unknown { tag, .. } => escape(format!("[unsupported content: {tag}]")),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// One steered message the engine admitted into its pending-input lane but
 /// has not yet promoted to the model-facing log. Pure event reduction: the
 /// lane is exactly what `UserInputAdmitted`/`UserInputSubmitted` and the recall

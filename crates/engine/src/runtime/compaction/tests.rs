@@ -459,7 +459,7 @@ fn compact_provider_request_is_the_assembled_normal_prefix_plus_one_instruction(
         seq: 1,
         timestamp: jiff::Timestamp::now(),
         payload: Event::UserInputSubmitted {
-            input: "work".into(),
+            content: "work".into(),
         },
     }];
     let context =

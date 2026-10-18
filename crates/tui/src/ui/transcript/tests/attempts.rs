@@ -523,7 +523,7 @@ fn retry_started_before_input_promotion_rebinds_without_losing_committed_tools()
                 13,
                 run,
                 EventPayload::UserInputAdmitted {
-                    input: "user steering".into(),
+                    content: "user steering".into(),
                 },
             ),
             // stream_attempt emits retry/fallback metadata BEFORE prompt_events
@@ -542,7 +542,7 @@ fn retry_started_before_input_promotion_rebinds_without_losing_committed_tools()
                 16,
                 run,
                 EventPayload::UserInputSubmitted {
-                    input: "user steering".into(),
+                    content: "user steering".into(),
                 },
             ),
             event(
@@ -1167,7 +1167,7 @@ fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
             3,
             run,
             EventPayload::UserInputSubmitted {
-                input: "initial request".into(),
+                content: "initial request".into(),
             },
         ),
         event(
@@ -1298,7 +1298,7 @@ fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
             27,
             run,
             EventPayload::UserInputAdmitted {
-                input: "user steering".into(),
+                content: "user steering".into(),
             },
         ),
         commit(28, attempts[2], 25, vec![text_part("after cancel")], None),
@@ -1322,7 +1322,7 @@ fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
             31,
             run,
             EventPayload::UserInputSubmitted {
-                input: "user steering".into(),
+                content: "user steering".into(),
             },
         ),
         event(

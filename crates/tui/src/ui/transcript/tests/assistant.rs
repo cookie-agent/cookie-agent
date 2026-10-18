@@ -352,7 +352,7 @@ async fn replayed_footer_cost_matches_engine_session_usage() {
                 3,
                 run,
                 EventPayload::UserInputSubmitted {
-                    input: "question".into(),
+                    content: "question".into(),
                 },
             ),
             0,

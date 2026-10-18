@@ -18,7 +18,7 @@ pub(crate) struct ProducerMessageRecord {
     pub mode: ProducerDeliveryMode,
     pub idempotency_key: ProducerIdempotencyKey,
     pub description: SafeDisplayText,
-    pub body: String,
+    pub body: cookie_agent_protocol::UserContent,
     pub reminder: Option<GoalReminderIdentity>,
     /// `send_message` hop depth stamped by the guard; present exactly on an
     /// Agent producer's message.

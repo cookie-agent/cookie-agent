@@ -178,7 +178,7 @@ even before its first model request.
 | `goal_activated` | `goal_id`, `objective`, `revision` | Runless allowed |
 | `goal_checklist_revised` | `goal_id`, `items`, `revision` | Runless allowed |
 | `goal_lifecycle_changed` | `goal_id`, `status`, `revision` | Runless allowed |
-| `producer_message_accepted` | `message_id`, `producer_owner`, `mode`, `idempotency_key`, `description`, `body`; optional `reminder`, `retained_output` | Runless allowed, including during an active run |
+| `producer_message_accepted` | `message_id`, `producer_owner`, `mode`, `idempotency_key`, `description`, `body` (user content, text parts only); optional `reminder`, `retained_output` | Runless allowed, including during an active run |
 | `producer_message_admitted` | `message_id` | Requires the destination run |
 | `producer_messages_claimed` | Nonempty `message_ids` | Requires the admission run; envelope `seq` identifies the claim |
 | `producer_messages_released` | Positive `claim_seq` | Requires the claimed run |
@@ -554,11 +554,23 @@ inputs cannot leak into a later resume. Promotion appends the ordinary run-owned
 `user_input_submitted` event, so transcript rendering and model history use the
 same path as interactive run steering.
 
-`message_injected` is a run-owned role and text message accepted from `agent_before_start`. It is
+Every input-lane event stores its input as `content: UserContent`, a nonempty
+list of parts tagged by `type`: `text { text }` or
+`file { artifact: { sha256, byte_length, media_type, filename? } }`. That covers
+`user_input_admitted`, `user_input_submitted`, `user_input_recalled`, and
+`user_input_queued`. Model history sends text parts as they are and file parts
+as files read from the session tree's artifact store, the way tool-emitted user
+messages carry theirs; a missing or damaged artifact becomes a short note. A
+part of a kind this build does not know is kept and never sent to a model.
+Clients still submit text, which the engine stores as one text part. A writer
+rejects a file part whose artifact reference is malformed.
+
+`message_injected` is a run-owned role and `content` message accepted from `agent_before_start`. It is
 written during run setup and projected into model history, so reopen, fork, revert, and compaction
-use the injected message without consulting the plugin again. `user_input_transformed` is the
+use the injected message without consulting the plugin again. Its `content`, like a
+`producer_message_accepted` `body`, has text parts only. `user_input_transformed` is the
 run-owned audit record written immediately before `user_input_submitted` when `user_before_input`
-changes direct input; it contains both `original_input` and the non-empty committed `input`.
+changes direct input; it contains both `original_content` and the non-blank committed `content`.
 
 Running-resume rollback and `session.recall_input` append
 `user_input_recalled` with the exact `user_input_seq` of its admission (in the

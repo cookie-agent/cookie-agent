@@ -1201,7 +1201,7 @@ fn input_rows_follow_application_order_without_changing_queue_identity() {
         accepted_message(first, owner.clone(), "first", None),
         accepted_message(second, owner, "second", None),
         EventPayload::UserInputSubmitted {
-            input: "user input".into(),
+            content: "user input".into(),
         },
         EventPayload::ProducerMessageAdmitted { message_id: second },
         EventPayload::UserInputApplied { user_input_seq: 3 },
@@ -1267,7 +1267,7 @@ fn valid_producer_admission_marks_initial_input_and_promotes_pending_user_input(
             1,
             Some(run_id),
             EventPayload::UserInputAdmitted {
-                input: "steer after producer start".into(),
+                content: "steer after producer start".into(),
             },
         ),
         (
@@ -1308,7 +1308,7 @@ fn valid_producer_admission_marks_initial_input_and_promotes_pending_user_input(
         4,
         jiff::Timestamp::new(4, 0).expect("timestamp"),
         EventPayload::UserInputSubmitted {
-            input: "steer after producer start".into(),
+            content: "steer after producer start".into(),
         },
     );
     assert!(state.pending_inputs.is_empty());
@@ -3231,7 +3231,7 @@ fn rewound_cuts_the_projection_and_reused_sequences_follow_on() {
         seq,
         timestamp: jiff::Timestamp::now(),
         payload: EventPayload::UserInputSubmitted {
-            input: input.into(),
+            content: input.into(),
         },
     };
     let mut store = StateStore::default();
@@ -3513,4 +3513,44 @@ fn connection_failures_become_error_rows_in_each_named_session() {
     );
     assert!(errors(&store, other).is_empty());
     assert!(!store.sessions.contains_key(&unknown));
+}
+
+#[test]
+fn user_file_parts_render_as_attachment_chips() {
+    use cookie_agent_protocol::{ArtifactRef, Open, UserContent, UserContentPart};
+    let content = UserContent::new(vec![
+        Open::Known(UserContentPart::Text {
+            text: "What is wrong with this *layout*?".into(),
+        }),
+        Open::Known(UserContentPart::File {
+            artifact: ArtifactRef {
+                sha256: "ab".repeat(32),
+                byte_length: 482_113,
+                media_type: "image/png".into(),
+                filename: Some("my_screenshot.png".into()),
+            },
+        }),
+    ])
+    .unwrap();
+    assert_eq!(
+        super::user_content_text(&content),
+        "What is wrong with this *layout*?\n📎 my_screenshot.png · image/png · 471 KB"
+    );
+    assert_eq!(super::user_content_text(&"plain".into()), "plain");
+    let mut state = SessionState::default();
+    reduce_event(
+        &mut state,
+        SessionId::new_v7(),
+        Some(RunId::new_v7()),
+        1,
+        jiff::Timestamp::new(1, 0).expect("timestamp"),
+        EventPayload::UserInputSubmitted { content },
+    );
+    let Some(TranscriptItem::User { markdown, .. }) = state.transcript.last() else {
+        panic!("expected a user row");
+    };
+    assert_eq!(
+        markdown.as_str(),
+        "What is wrong with this *layout*?\n📎 my\\_screenshot\\.png · image\\/png · 471 KB"
+    );
 }

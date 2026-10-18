@@ -395,11 +395,11 @@ impl SessionProjection {
                 );
             }
             // User input is prompt history, not a lifecycle transition.
-            EventPayload::UserInputSubmitted { input } => {
+            EventPayload::UserInputSubmitted { content } => {
                 if let Some(run) = self.runs.get_mut(&run_id)
                     && run.input.is_empty()
                 {
-                    run.input = input.clone();
+                    run.input = content.as_plain_text().into_owned();
                 }
             }
             EventPayload::RunFinished { outcome } => {

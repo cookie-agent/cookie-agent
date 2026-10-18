@@ -1116,7 +1116,7 @@ async fn clicking_a_strip_entry_recalls_and_restores_the_returned_text() {
         run,
         EventPayload::UserInputRecalled {
             user_input_seq: 1,
-            input: "first".into(),
+            content: "first".into(),
         },
     )))
     .await;
@@ -1263,7 +1263,7 @@ fn queued(session: SessionId, seq: u64, input: &str) -> cookie_agent_protocol::S
             seq,
             run_id(),
             EventPayload::UserInputQueued {
-                input: input.into(),
+                content: input.into(),
                 selection: cookie_agent_protocol::RunSelection {
                     agent: agent_id(),
                     model: cookie_agent_protocol::ModelSelection {

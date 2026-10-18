@@ -1583,7 +1583,7 @@ async fn a_producing_runtime_sends_only_to_the_sessions_attached_to_it() {
                 producer_owner,
                 body,
                 ..
-            } => Some((producer_owner.clone(), body.clone())),
+            } => Some((producer_owner.clone(), body.as_plain_text().into_owned())),
             _ => None,
         })
         .expect("the message is accepted");

@@ -900,7 +900,7 @@ async fn producer_reminders_never_restore_into_the_user_composer() {
             retained_output: None,
         },
         EventPayload::UserInputAdmitted {
-            input: "user pending text".into(),
+            content: "user pending text".into(),
         },
         EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Interrupted { reason: None }),
     ]

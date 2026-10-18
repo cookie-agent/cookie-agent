@@ -1359,6 +1359,7 @@ impl Engine {
             description,
             body,
         } = params;
+        let body = UserContent::text(body);
         self.require_registration(session, producer_id, authority)?;
         if description.as_str().trim().is_empty() {
             return Err(EngineError::Producer(
@@ -1473,12 +1474,12 @@ impl Engine {
         if let Some(existing) = projection.messages.iter().find(|message| {
             message.producer_owner == authority.owner && message.idempotency_key == key
         }) {
-            let envelope = super::messaging_api::render_agent_message_envelope(
+            let envelope = UserContent::text(super::messaging_api::render_agent_message_envelope(
                 sender,
                 sender_short_id.as_deref(),
                 &body,
                 reply,
-            );
+            ));
             if existing.mode != mode
                 || existing.description != description
                 || existing.body != envelope
@@ -1501,12 +1502,12 @@ impl Engine {
         )
         .map_err(|code| EngineError::Messaging(code.to_owned()))?;
         let message_id = ProducerMessageId::new_v7();
-        let envelope = super::messaging_api::render_agent_message_envelope(
+        let envelope = UserContent::text(super::messaging_api::render_agent_message_envelope(
             sender,
             sender_short_id.as_deref(),
             &body,
             reply,
-        );
+        ));
         self.append_direct(
             session,
             None,

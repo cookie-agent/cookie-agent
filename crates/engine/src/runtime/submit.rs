@@ -7,6 +7,7 @@ use std::time::Duration;
 use cookie_agent_protocol::{
     EventOrigin, InputDelivery, QueuedInputs, RunId, RunSelection, RunStartParams, SessionId,
     SessionRecallInputResult, SessionStatus, SessionSubmitInputParams, SessionSubmitInputResult,
+    UserContent,
 };
 
 use super::{Engine, EngineError, Event, mailbox::pending_inputs};
@@ -164,11 +165,11 @@ impl Engine {
                     origin,
                     Event::UserInputRecalled {
                         user_input_seq: seq,
-                        input: pending.input.clone(),
+                        content: pending.content.clone(),
                     },
                 )?;
                 return Ok(SessionRecallInputResult::Recalled {
-                    input: pending.input,
+                    input: pending.content.as_plain_text().into_owned(),
                 });
             }
             let queue = QueuedInputs::from_events(&events);
@@ -178,7 +179,7 @@ impl Engine {
             if entry.origin.as_ref() != Some(&origin) {
                 return Ok(SessionRecallInputResult::NotOwner);
             }
-            let input = entry.input.clone();
+            let input = entry.content.as_plain_text().into_owned();
             engine.append_direct(
                 session,
                 None,
@@ -216,7 +217,7 @@ impl Engine {
                         session_id: session,
                         client_run_id: head.client_run_id,
                         selection: head.selection,
-                        input: head.input,
+                        input: head.content.as_plain_text().into_owned(),
                     },
                     origin,
                 )
@@ -275,7 +276,7 @@ impl Engine {
             Some(selection) => selection.clone(),
             None => self.current_selection(session)?,
         };
-        let input = params.input.clone();
+        let content = UserContent::text(params.input.clone());
         let client_run_id = params.client_run_id.clone();
         self.on_actor(session, move |engine| {
             let projection = engine.inner.store.get(session)?;
@@ -289,7 +290,7 @@ impl Engine {
                 .find(|entry| entry.client_run_id == client_run_id)
             {
                 // A retried submission resolves to the entry it queued.
-                return if entry.input == input && entry.selection == selection {
+                return if entry.content == content && entry.selection == selection {
                     Ok(Some(entry.queued_seq))
                 } else {
                     Err(EngineError::RunIdempotencyConflict)
@@ -307,7 +308,7 @@ impl Engine {
                 None,
                 origin,
                 Event::UserInputQueued {
-                    input,
+                    content,
                     selection,
                     client_run_id,
                 },

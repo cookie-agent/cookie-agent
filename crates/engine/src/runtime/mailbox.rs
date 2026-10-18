@@ -1417,7 +1417,7 @@ impl Engine {
                 Some(run),
                 pending.origin,
                 Event::UserInputSubmitted {
-                    input: pending.input,
+                    content: pending.content,
                 },
             )?;
             promoted = true;
@@ -1469,13 +1469,13 @@ pub(super) fn pending_inputs<E: std::borrow::Borrow<StoredEvent>>(
     }) {
         match &event.payload {
             Event::ProducerMessageAdmitted { .. } => initial_input_submitted = true,
-            Event::UserInputAdmitted { input } => pending.push_back(PendingInput {
+            Event::UserInputAdmitted { content } => pending.push_back(PendingInput {
                 admission_seq: event.seq,
                 origin: event
                     .origin
                     .clone()
                     .unwrap_or_else(|| super::event_origin("user")),
-                input: input.clone(),
+                content: content.clone(),
             }),
             Event::UserInputRecalled { user_input_seq, .. } => {
                 if let Some(position) = pending
@@ -1525,21 +1525,21 @@ mod tests {
                 run,
                 1,
                 Event::UserInputSubmitted {
-                    input: "initial".into(),
+                    content: "initial".into(),
                 },
             ),
             event(
                 run,
                 2,
                 Event::UserInputAdmitted {
-                    input: "one".into(),
+                    content: "one".into(),
                 },
             ),
             event(
                 run,
                 3,
                 Event::UserInputAdmitted {
-                    input: "two".into(),
+                    content: "two".into(),
                 },
             ),
             event(
@@ -1547,21 +1547,21 @@ mod tests {
                 4,
                 Event::UserInputRecalled {
                     user_input_seq: 3,
-                    input: "two".into(),
+                    content: "two".into(),
                 },
             ),
             event(
                 run,
                 5,
                 Event::UserInputAdmitted {
-                    input: "three".into(),
+                    content: "three".into(),
                 },
             ),
             event(
                 run,
                 6,
                 Event::UserInputSubmitted {
-                    input: "one".into(),
+                    content: "one".into(),
                 },
             ),
         ];
@@ -1570,7 +1570,7 @@ mod tests {
             vec![PendingInput {
                 admission_seq: 5,
                 origin: cookie_agent_protocol::EventOrigin::new("user").unwrap(),
-                input: "three".into(),
+                content: "three".into(),
             }]
         );
         let replayed = serde_json::from_slice::<Vec<StoredEvent>>(
@@ -1596,21 +1596,21 @@ mod tests {
                 run,
                 1,
                 Event::UserInputSubmitted {
-                    input: "initial".into(),
+                    content: "initial".into(),
                 },
             ),
             event(
                 run,
                 2,
                 Event::UserInputAdmitted {
-                    input: "resume".into(),
+                    content: "resume".into(),
                 },
             ),
             event(
                 run,
                 3,
                 Event::UserInputAdmitted {
-                    input: "direct steer".into(),
+                    content: "direct steer".into(),
                 },
             ),
             event(
@@ -1618,7 +1618,7 @@ mod tests {
                 4,
                 Event::UserInputRecalled {
                     user_input_seq: 2,
-                    input: "resume".into(),
+                    content: "resume".into(),
                 },
             ),
         ];
@@ -1627,7 +1627,7 @@ mod tests {
             vec![PendingInput {
                 admission_seq: 3,
                 origin: cookie_agent_protocol::EventOrigin::new("user").unwrap(),
-                input: "direct steer".into(),
+                content: "direct steer".into(),
             }]
         );
     }

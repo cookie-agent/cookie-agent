@@ -366,7 +366,7 @@ struct AttemptTurn {
 struct PendingInput {
     admission_seq: u64,
     origin: cookie_agent_protocol::EventOrigin,
-    input: String,
+    content: cookie_agent_protocol::UserContent,
 }
 
 struct DelegatedResumeAdmission {

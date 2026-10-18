@@ -421,7 +421,7 @@ async fn a_plugin_runs_named_producers_each_with_its_own_keys() {
                 producer_owner,
                 body,
                 ..
-            } => Some((producer_owner.clone(), body.clone())),
+            } => Some((producer_owner.clone(), body.as_plain_text().into_owned())),
             _ => None,
         })
         .collect::<Vec<_>>();

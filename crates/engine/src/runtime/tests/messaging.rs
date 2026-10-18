@@ -590,10 +590,15 @@ async fn the_reply_hint_follows_the_direction_of_the_mail() {
         .expect("parent to child");
     let to_child = body_of(child);
     assert!(
-        to_child.contains("[reply in your final answer: it reaches"),
+        to_child
+            .as_plain_text()
+            .contains("[reply in your final answer: it reaches"),
         "{to_child}"
     );
-    assert!(!to_child.contains("send_message"), "{to_child}");
+    assert!(
+        !to_child.as_plain_text().contains("send_message"),
+        "{to_child}"
+    );
 
     fixture
         .engine
@@ -601,6 +606,9 @@ async fn the_reply_hint_follows_the_direction_of_the_mail() {
         .await
         .expect("child to parent");
     let to_parent = body_of(parent);
-    assert!(!to_parent.contains("final answer"), "{to_parent}");
+    assert!(
+        !to_parent.as_plain_text().contains("final answer"),
+        "{to_parent}"
+    );
     fixture.engine.shutdown().await;
 }

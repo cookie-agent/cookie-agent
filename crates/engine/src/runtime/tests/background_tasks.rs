@@ -323,7 +323,7 @@ fn background_result(
                 producer_owner: owner @ ProducerOwner::Tool { .. },
                 body,
                 ..
-            } => Some((owner.clone(), body.clone())),
+            } => Some((owner.clone(), body.as_plain_text().into_owned())),
             _ => None,
         })
 }

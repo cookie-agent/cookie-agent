@@ -119,7 +119,7 @@ pub(super) fn reduce_event_from(
             seq: entry.queued_seq,
             origin: entry.origin,
             parked: false,
-            text: entry.input,
+            text: user_content_text(&entry.content),
         }));
     // Every durable timestamp is indexed by sequence so a committed turn
     // can measure its generation wall time from the exact event that closed
@@ -249,7 +249,7 @@ pub(super) fn reduce_event_from(
                 message_id,
                 producer_owner: producer_owner.clone(),
                 mode,
-                body,
+                body: user_content_text(&body),
                 summary,
                 reminder,
                 status: ProducerMessageStatus::Pending,
@@ -438,17 +438,17 @@ pub(super) fn reduce_event_from(
             state.run_snapshot = Some(agent);
             state.agent_md_previous_run = std::mem::take(&mut state.agent_md_latest_run);
         }
-        EventPayload::UserInputAdmitted { input } => {
+        EventPayload::UserInputAdmitted { content } => {
             close_open_assistant(state, timestamp);
             state.last_agent_activity = Some(timestamp);
             state.pending_inputs.push_back(PendingInput {
-                text: input,
+                text: user_content_text(&content),
                 admission_seq: sequence,
                 admitted_at: timestamp,
                 origin,
             });
         }
-        EventPayload::UserInputSubmitted { input } => {
+        EventPayload::UserInputSubmitted { content } => {
             close_open_assistant(state, timestamp);
             state.last_agent_activity = Some(timestamp);
             if run_id.is_some_and(|run_id| !state.initial_input_submitted.insert(run_id)) {
@@ -460,7 +460,8 @@ pub(super) fn reduce_event_from(
             push_item(state, timestamp, |id| TranscriptItem::User {
                 id,
                 version: 0,
-                markdown: MarkdownDocument::with_hard_breaks(input).finished(),
+                markdown: MarkdownDocument::with_hard_breaks(user_content_markdown(&content))
+                    .finished(),
                 seq: sequence,
             });
         }
@@ -1297,13 +1298,13 @@ pub(super) fn reduce_event_from(
                 }
             }
         }
-        EventPayload::MessageInjected { role, input } => {
+        EventPayload::MessageInjected { role, content } => {
             push_item(state, timestamp, |id| TranscriptItem::PluginMessage {
                 id,
                 version: 0,
                 seq: sequence,
                 role,
-                input,
+                input: user_content_text(&content),
             })
         }
         EventPayload::AgentMdLoaded {

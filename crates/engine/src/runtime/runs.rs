@@ -76,8 +76,8 @@ impl Engine {
                             Some(run_id),
                             origin.clone(),
                             Event::UserInputTransformed {
-                                original_input,
-                                input: input.clone(),
+                                original_content: original_input.into(),
+                                content: input.clone().into(),
                             },
                         )?;
                     }
@@ -85,7 +85,9 @@ impl Engine {
                         session,
                         Some(run_id),
                         origin,
-                        Event::UserInputAdmitted { input },
+                        Event::UserInputAdmitted {
+                            content: input.into(),
+                        },
                     )?;
                     let user_input_seq = engine.inner.store.get(session)?.meta.last_event_seq;
                     engine.clear_skill_turn_state(session);

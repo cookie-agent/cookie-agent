@@ -682,7 +682,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
             None,
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::UserInputAdmitted {
-                input: "queued steer must stay resident".into(),
+                content: "queued steer must stay resident".into(),
             },
         )
         .await
@@ -712,7 +712,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::UserInputRecalled {
                 user_input_seq: steer_seq,
-                input: "queued steer must stay resident".into(),
+                content: "queued steer must stay resident".into(),
             },
         )
         .await

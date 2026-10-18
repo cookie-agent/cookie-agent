@@ -95,8 +95,10 @@ async fn a_queued_input_starts_the_next_run_as_its_author_once_the_run_completes
     let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
     let queue = QueuedInputs::from_events(&projection.log.event_snapshot());
     assert_eq!(
-        queue.head().map(|entry| entry.input.as_str()),
-        Some("after you")
+        queue
+            .head()
+            .map(|entry| entry.content.as_plain_text().into_owned()),
+        Some("after you".to_owned())
     );
 
     release.notify_one();

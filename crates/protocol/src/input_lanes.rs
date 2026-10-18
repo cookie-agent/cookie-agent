@@ -8,7 +8,7 @@
 
 use std::borrow::Borrow;
 
-use crate::{ClientRunId, EventOrigin, EventPayload, RunSelection, StoredEvent};
+use crate::{ClientRunId, EventOrigin, EventPayload, RunSelection, StoredEvent, UserContent};
 
 /// One input waiting in a session's queue.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -17,7 +17,7 @@ pub struct QueuedInput {
     pub queued_seq: u64,
     /// Who queued it; absent only on records written without an origin.
     pub origin: Option<EventOrigin>,
-    pub input: String,
+    pub content: UserContent,
     pub selection: RunSelection,
     pub client_run_id: ClientRunId,
     pub queued_at: jiff::Timestamp,
@@ -60,13 +60,13 @@ impl QueuedInputs {
     ) -> Vec<QueuedInput> {
         match payload {
             EventPayload::UserInputQueued {
-                input,
+                content,
                 selection,
                 client_run_id,
             } => self.entries.push(QueuedInput {
                 queued_seq: seq,
                 origin: origin.cloned(),
-                input: input.clone(),
+                content: content.clone(),
                 selection: selection.clone(),
                 client_run_id: client_run_id.clone(),
                 queued_at: timestamp,
@@ -151,7 +151,7 @@ mod tests {
             seq,
             origin,
             EventPayload::UserInputQueued {
-                input: input.into(),
+                content: crate::UserContent::text(input),
                 selection: selection(),
                 client_run_id: ClientRunId::new(format!("queued-{seq}")).unwrap(),
             },
@@ -178,7 +178,7 @@ mod tests {
             queue
                 .entries()
                 .iter()
-                .map(|entry| entry.input.as_str())
+                .map(|entry| entry.content.as_plain_text().into_owned())
                 .collect::<Vec<_>>(),
             ["first", "third"]
         );
@@ -205,7 +205,7 @@ mod tests {
             assert_eq!(
                 voided
                     .iter()
-                    .map(|entry| entry.input.as_str())
+                    .map(|entry| entry.content.as_plain_text().into_owned())
                     .collect::<Vec<_>>(),
                 ["first", "second"]
             );

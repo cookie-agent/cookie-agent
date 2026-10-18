@@ -27,7 +27,7 @@ async fn direct_store_appends_share_the_subscription_handoff() {
                     None,
                     cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                     EventPayload::UserInputAdmitted {
-                        input: format!("input {index}"),
+                        content: format!("input {index}").into(),
                     },
                 )
                 .expect("direct append");
@@ -60,7 +60,7 @@ async fn direct_store_appends_share_the_subscription_handoff() {
     for (index, event) in events.iter().enumerate() {
         assert_eq!(event.seq, cursor + index as u64 + 1);
         assert!(
-            matches!(&event.payload, EventPayload::UserInputAdmitted { input }
+            matches!(&event.payload, EventPayload::UserInputAdmitted { content: input }
             if input == &format!("input {index}"))
         );
     }
@@ -72,7 +72,7 @@ async fn direct_store_appends_share_the_subscription_handoff() {
             None,
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::UserInputAdmitted {
-                input: "actor append".into(),
+                content: "actor append".into(),
             },
         )
         .await
@@ -758,7 +758,7 @@ async fn revert_truncates_closes_cut_runs_and_rewinds_live_tails() {
         .event_snapshot()
         .iter()
         .find(|event| {
-            matches!(&event.payload, EventPayload::UserInputSubmitted { input } if input == "second input")
+            matches!(&event.payload, EventPayload::UserInputSubmitted { content: input } if input == "second input")
         })
         .cloned()
         .expect("second message");
@@ -1122,7 +1122,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .events();
     assert!(visible.iter().all(|event| !matches!(
         &event.payload,
-        EventPayload::UserInputSubmitted { input } if input == "second input must disappear"
+        EventPayload::UserInputSubmitted { content: input } if input == "second input must disappear"
     )));
 
     fixture
@@ -1227,11 +1227,11 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
     assert_eq!(reopened_meta.last_activity, reopened_physical_tip.timestamp);
     assert!(reopened_visible.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::UserInputSubmitted { input } if input == "branch input"
+        EventPayload::UserInputSubmitted { content: input } if input == "branch input"
     )));
     assert!(reopened_visible.iter().all(|event| !matches!(
         &event.payload,
-        EventPayload::UserInputSubmitted { input } if input == "second input must disappear"
+        EventPayload::UserInputSubmitted { content: input } if input == "second input must disappear"
     )));
     assert_eq!(
         reopened
@@ -1259,7 +1259,7 @@ fn append_inputs(
                 None,
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::UserInputAdmitted {
-                    input: format!("input {index}"),
+                    content: format!("input {index}").into(),
                 },
             )
             .expect("direct append");
@@ -1325,7 +1325,7 @@ async fn replay_pages_stop_at_their_byte_budget_but_always_make_progress() {
                 None,
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::UserInputAdmitted {
-                    input: "x".repeat(size),
+                    content: "x".repeat(size).into(),
                 },
             )
             .expect("direct append");
@@ -1370,7 +1370,9 @@ async fn replay_pages_stop_at_their_byte_budget_but_always_make_progress() {
         .map(|page| {
             page.iter()
                 .filter_map(|event| match &event.payload {
-                    EventPayload::UserInputAdmitted { input } => Some(input.len() / (MIB / 2)),
+                    EventPayload::UserInputAdmitted { content: input } => {
+                        Some(input.as_plain_text().len() / (MIB / 2))
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -1531,7 +1533,7 @@ async fn a_tail_owner_holds_one_live_tail_per_session() {
                 None,
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::UserInputAdmitted {
-                    input: input.into(),
+                    content: input.into(),
                 },
             )
             .expect("append")

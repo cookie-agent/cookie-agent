@@ -404,7 +404,7 @@ fn admitted_user_message_live_resorts_siblings() {
         1,
         "2026-08-06T12:00:00Z",
         EventPayload::UserInputAdmitted {
-            input: "new work".into(),
+            content: "new work".into(),
         },
     )));
 

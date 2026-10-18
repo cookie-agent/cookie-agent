@@ -517,10 +517,10 @@ impl Engine {
             .event_snapshot()
             .iter()
             .find_map(|event| match &event.payload {
-                cookie_agent_protocol::EventPayload::UserInputSubmitted { input }
+                cookie_agent_protocol::EventPayload::UserInputSubmitted { content }
                     if event.seq > through_seq =>
                 {
-                    Some(input.clone())
+                    Some(content.as_plain_text().into_owned())
                 }
                 _ => None,
             });

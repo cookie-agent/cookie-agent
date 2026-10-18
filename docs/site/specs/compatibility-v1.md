@@ -1372,3 +1372,20 @@ Deviations and choices made while implementing, by phase.
   C1, went with them. The per-child owner-lock sweep stays: it cleans up
   files, not history. `PersistedToolResult.display`'s default is left to
   C3.
+- **User content in events.** The input-lane events, `message_injected`, and
+  producer bodies store `UserContent`; the client RPCs, `QueuedInput`'s
+  source, the recall result, plugin producer bodies, and the
+  `user_before_input` hook stay text until phases E and F, so the engine
+  wraps text as one part and hands back `as_plain_text`. A writer validates
+  file parts' references, and `message_injected` and producer bodies refuse
+  any part but text; the existing "not blank" rules read whitespace-only text
+  parts and nothing else as blank, and there is no other input limit today.
+  `UserContent` converts from a string and equals a string when it is exactly
+  that one text part, which keeps the text comparisons (queue and producer
+  idempotency, admission matching) as they were. Load validation matches a
+  recall to its admission by a digest of the content's JSON instead of its
+  text. The run projection's input, compared when a `run.start` is retried,
+  stays the plain text the RPC carries. Artifact liveness still scans for
+  `artifact://sha256/` URIs, which a file part's `ArtifactRef` does not
+  spell out; no writer produces file parts yet, so phase F adds them to the
+  scan with uploads.

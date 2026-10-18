@@ -525,12 +525,12 @@ async fn cancelling_the_parent_leaves_foreground_children_running_and_reporting(
             .session_short_id(child)
             .expect("child handle");
         assert!(
-            body.starts_with(&format!(
+            body.as_plain_text().starts_with(&format!(
                 "<subagent_report handle=\"{handle}\" status=\"completed\">"
             )),
             "{body}"
         );
-        assert!(body.contains("complete"), "{body}");
+        assert!(body.as_plain_text().contains("complete"), "{body}");
     }
     // The reports wake the parent; what it does with them is not this test's
     // concern.

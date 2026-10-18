@@ -80,21 +80,21 @@ impl Engine {
             .iter()
             .filter(|event| event.seq <= input_through_seq)
             .filter_map(|event| match &event.payload {
-                Event::UserInputSubmitted { input } => Some(input),
+                Event::UserInputSubmitted { content } => Some(content.as_plain_text()),
                 _ => None,
             })
             .collect::<Vec<_>>();
         let input = events
             .iter()
             .find_map(|event| match &event.payload {
-                Event::UserInputSubmitted { input } if event.run_id == Some(run) => {
-                    Some(input.as_str())
+                Event::UserInputSubmitted { content } if event.run_id == Some(run) => {
+                    Some(content.as_plain_text())
                 }
                 _ => None,
             })
             .unwrap_or_default();
         let prompt = title_prompt(
-            inputs.iter().map(|input| input.as_str()),
+            inputs.iter().map(|input| input.as_ref()),
             policy.max_input_messages,
         );
         let generated = self
@@ -127,13 +127,13 @@ impl Engine {
                 .or_else(|| {
                     policy
                         .fallback_to_input_excerpt
-                        .then(|| fallback_title(input, policy.max_chars))
+                        .then(|| fallback_title(&input, policy.max_chars))
                         .flatten()
                         .map(|title| SessionTitleChange::FallbackSet { title })
                 }),
             Err(_) => policy
                 .fallback_to_input_excerpt
-                .then(|| fallback_title(input, policy.max_chars))
+                .then(|| fallback_title(&input, policy.max_chars))
                 .flatten()
                 .map(|title| SessionTitleChange::FallbackSet { title }),
         };

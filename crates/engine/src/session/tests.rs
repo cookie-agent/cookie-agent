@@ -178,7 +178,7 @@ fn persist_test_session_with_origin(store: &SessionStore, origin: SessionOrigin)
             Some(run_id),
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::UserInputSubmitted {
-                input: "persist me".into(),
+                content: "persist me".into(),
             },
         )
         .unwrap();
@@ -365,7 +365,7 @@ fn a_blocked_sync_holds_up_its_own_session_and_structural_changes_only() {
                 Some(attempt.run_id),
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::UserInputAdmitted {
-                    input: "steer".into(),
+                    content: "steer".into(),
                 },
             )
             .expect("append synced record")
@@ -2881,7 +2881,7 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
         Some(run_id),
         cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
         EventPayload::UserInputSubmitted {
-            input: "question".into(),
+            content: "question".into(),
         },
     )
     .unwrap();
@@ -3691,7 +3691,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                     &store,
                     Some(run_id),
                     EventPayload::UserInputSubmitted {
-                        input: format!("follow-up {step}"),
+                        content: format!("follow-up {step}").into(),
                     },
                 ),
             },
@@ -3733,7 +3733,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                 &store,
                 Some(run_id),
                 EventPayload::UserInputSubmitted {
-                    input: format!("input {seed}-{step}"),
+                    content: format!("input {seed}-{step}").into(),
                 },
             ),
         }
@@ -3814,7 +3814,7 @@ fn usage_rollup_after_a_usage_less_commit(
         Some(run_id),
         cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
         EventPayload::UserInputSubmitted {
-            input: "question".into(),
+            content: "question".into(),
         },
     )
     .unwrap();
@@ -3987,7 +3987,9 @@ fn append_realistic_run(
         append(
             Some(run_id),
             EventPayload::UserInputSubmitted {
-                input: "Please refactor the session store so appends stay cheap. ".repeat(4),
+                content: "Please refactor the session store so appends stay cheap. "
+                    .repeat(4)
+                    .into(),
             },
         );
     }

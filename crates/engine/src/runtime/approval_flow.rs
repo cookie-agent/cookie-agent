@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     sync::{Arc, Mutex},
 };
@@ -492,7 +493,8 @@ impl Engine {
             .collect::<Vec<_>>();
         let prior =
             prior_approval_decisions(tree_events.iter().map(|events| events.as_slice()), &actions);
-        let prompt = approval_stateless_input(tool, latest_user_message(&events, run), &prior);
+        let prompt =
+            approval_stateless_input(tool, latest_user_message(&events, run).as_deref(), &prior);
         let history = internal_text_history(
             expand_internal_prompt(policy, DEFAULT_APPROVAL_PROMPT),
             prompt.clone(),
@@ -677,19 +679,19 @@ fn canonical_approval_parameters(value: &Value) -> Value {
     }
 }
 
-fn latest_user_message(events: &[Arc<StoredEvent>], run: RunId) -> Option<&str> {
+fn latest_user_message(events: &[Arc<StoredEvent>], run: RunId) -> Option<Cow<'_, str>> {
     events
         .iter()
         .rev()
         .find_map(|event| match &event.payload {
-            Event::UserInputSubmitted { input } if event.run_id == Some(run) => {
-                Some(input.as_str())
+            Event::UserInputSubmitted { content } if event.run_id == Some(run) => {
+                Some(content.as_plain_text())
             }
             _ => None,
         })
         .or_else(|| {
             events.iter().rev().find_map(|event| match &event.payload {
-                Event::UserInputSubmitted { input } => Some(input.as_str()),
+                Event::UserInputSubmitted { content } => Some(content.as_plain_text()),
                 _ => None,
             })
         })

@@ -468,7 +468,7 @@ impl App {
                     kind: QueueEntryKind::Queued,
                     seq: queued.queued_seq,
                     accepted_at: queued.queued_at,
-                    preview: queued.input.clone(),
+                    preview: crate::state::user_content_text(&queued.content),
                     author: self.input_author(queued.origin.as_ref()),
                 }),
         );

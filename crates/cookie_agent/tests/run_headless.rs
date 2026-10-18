@@ -1214,7 +1214,7 @@ async fn wait_for_background_report(
                 body,
                 retained_output,
                 ..
-            } => Some((body.clone(), retained_output.clone())),
+            } => Some((body.as_plain_text().into_owned(), retained_output.clone())),
             _ => None,
         }) {
             return report;

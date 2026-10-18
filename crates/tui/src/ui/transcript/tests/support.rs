@@ -1679,7 +1679,7 @@ pub(crate) fn footer_event_log(
                 2,
                 run,
                 EventPayload::UserInputSubmitted {
-                    input: "question".into(),
+                    content: "question".into(),
                 },
             ),
             0,
@@ -2087,7 +2087,7 @@ pub(crate) async fn expansion_scroll_app(kind: &str) -> (App, SessionId, BlockId
             let payload = match kind {
                 "plugin" => EventPayload::MessageInjected {
                     role: cookie_agent_protocol::ExtensionMessageRole::User,
-                    input: body.clone(),
+                    content: body.clone().into(),
                 },
                 "compaction" => EventPayload::ContextCheckpointCommitted {
                     commit: checkpoint_commit(&body),
@@ -2244,7 +2244,7 @@ pub(crate) fn admitted(session: SessionId, seq: u64, run: RunId, input: &str) ->
         seq,
         run,
         EventPayload::UserInputAdmitted {
-            input: input.into(),
+            content: input.into(),
         },
     )
 }
@@ -2262,7 +2262,7 @@ pub(crate) fn recalled(
         run,
         EventPayload::UserInputRecalled {
             user_input_seq,
-            input: input.into(),
+            content: input.into(),
         },
     )
 }
@@ -2273,7 +2273,7 @@ pub(crate) fn user_input(session: SessionId, seq: u64, run: RunId, input: &str) 
         seq,
         run,
         EventPayload::UserInputSubmitted {
-            input: input.into(),
+            content: input.into(),
         },
     )
 }
@@ -2299,7 +2299,7 @@ pub(crate) fn producer_accepted(
                 "message-{seq}"
             ))
             .expect("idempotency key"),
-            body: body.to_owned(),
+            body: body.into(),
             reminder,
             agent_hop: None,
             retained_output: None,

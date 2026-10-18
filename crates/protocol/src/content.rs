@@ -1,8 +1,9 @@
 //! User content and media references, as specified in
 //! `docs/site/specs/compatibility-v1.md` section 11.
 //!
-//! Nothing on the wire uses these types yet; the input-lane events and the
-//! run and input params switch to [`UserContent`] in later phases.
+//! The input-lane events, `message_injected`, and producer message bodies
+//! store [`UserContent`]; the run and input params switch to it in a later
+//! phase.
 
 use std::{borrow::Cow, fmt};
 
@@ -147,6 +148,38 @@ impl UserContent {
         self.0
     }
 
+    /// Checks the content as a writer must before storing it: every file
+    /// part names a valid artifact reference.
+    pub fn validate(&self) -> Result<(), ContentError> {
+        self.files().try_for_each(ArtifactRef::validate)
+    }
+
+    /// Whether every part is a text part. `message_injected` and producer
+    /// message bodies accept nothing else yet.
+    #[must_use]
+    pub fn is_text_only(&self) -> bool {
+        self.0
+            .iter()
+            .all(|part| matches!(part, Open::Known(UserContentPart::Text { .. })))
+    }
+
+    /// [`Self::validate`] for content that may carry text parts only.
+    pub fn validate_text_only(&self) -> Result<(), ContentError> {
+        if self.is_text_only() {
+            Ok(())
+        } else {
+            Err(ContentError::NotText)
+        }
+    }
+
+    /// Whether the content has no text but whitespace and no other part.
+    #[must_use]
+    pub fn is_blank(&self) -> bool {
+        self.0.iter().all(|part| {
+            matches!(part, Open::Known(UserContentPart::Text { text }) if text.trim().is_empty())
+        })
+    }
+
     /// The artifacts of the file parts, in order.
     pub fn files(&self) -> impl Iterator<Item = &ArtifactRef> {
         self.0.iter().filter_map(|part| match part {
@@ -178,6 +211,39 @@ impl UserContent {
             })
             .collect::<Vec<_>>();
         Cow::Owned(parts.join("\n"))
+    }
+}
+
+/// Content of one text part.
+impl From<String> for UserContent {
+    fn from(text: String) -> Self {
+        Self::text(text)
+    }
+}
+
+/// Content of one text part.
+impl From<&str> for UserContent {
+    fn from(text: &str) -> Self {
+        Self::text(text)
+    }
+}
+
+/// Content equals a text when it is exactly one text part of that text.
+impl PartialEq<str> for UserContent {
+    fn eq(&self, other: &str) -> bool {
+        matches!(self.0.as_slice(), [Open::Known(UserContentPart::Text { text })] if text == other)
+    }
+}
+
+impl PartialEq<&str> for UserContent {
+    fn eq(&self, other: &&str) -> bool {
+        self == *other
+    }
+}
+
+impl PartialEq<String> for UserContent {
+    fn eq(&self, other: &String) -> bool {
+        self == other.as_str()
     }
 }
 
@@ -251,6 +317,8 @@ pub enum ContentError {
     MediaType,
     #[error("an artifact filename is 1 to 255 bytes without control characters or slashes")]
     Filename,
+    #[error("only text parts are accepted here")]
+    NotText,
 }
 
 impl fmt::Display for UserContent {
@@ -368,6 +436,8 @@ mod tests {
     fn plain_text_keeps_a_single_text_part_exact_and_marks_files() {
         let single = UserContent::text("  line one\nline two ");
         assert_eq!(single.as_plain_text(), "  line one\nline two ");
+        assert_eq!(single, "  line one\nline two ");
+        assert_ne!(UserContent::text("a\nb"), "a");
         assert_eq!(
             serde_json::to_value(&single).unwrap(),
             json!([{"type": "text", "text": "  line one\nline two "}])

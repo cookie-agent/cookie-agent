@@ -473,18 +473,100 @@ fn agent_snapshots_of_earlier_schemas_are_rejected() {
 }
 
 #[test]
+fn input_lane_events_store_user_content_and_text_only_events_refuse_files() {
+    let validate = |payload: EventPayload| {
+        StoredEvent {
+            engine_version: None,
+            origin: None,
+            session_id: SessionId::new_v7(),
+            run_id: Some(RunId::new_v7()),
+            seq: 2,
+            timestamp: jiff::Timestamp::now(),
+            payload,
+        }
+        .validate()
+    };
+    let artifact = |sha256: String| {
+        Open::Known(UserContentPart::File {
+            artifact: ArtifactRef {
+                sha256,
+                byte_length: 482_113,
+                media_type: "image/png".into(),
+                filename: Some("screenshot.png".into()),
+            },
+        })
+    };
+    let with_file = |sha256: String| {
+        UserContent::new(vec![
+            Open::Known(UserContentPart::Text {
+                text: "look".into(),
+            }),
+            artifact(sha256),
+        ])
+        .unwrap()
+    };
+    let submitted = EventPayload::UserInputSubmitted {
+        content: with_file("ab".repeat(32)),
+    };
+    assert!(validate(submitted.clone()).is_ok());
+    assert_eq!(
+        serde_json::to_value(&submitted).unwrap()["content"][1]["artifact"]["media_type"],
+        "image/png"
+    );
+    assert_eq!(
+        validate(EventPayload::UserInputAdmitted {
+            content: with_file("AB".repeat(32)),
+        }),
+        Err(EventSchemaError::InvalidUserContent)
+    );
+    assert!(
+        validate(EventPayload::MessageInjected {
+            role: ExtensionMessageRole::User,
+            content: with_file("ab".repeat(32)),
+        })
+        .is_err()
+    );
+    assert!(
+        validate(EventPayload::MessageInjected {
+            role: ExtensionMessageRole::User,
+            content: "context".into(),
+        })
+        .is_ok()
+    );
+    let accepted = |body: UserContent| EventPayload::ProducerMessageAccepted {
+        message_id: ProducerMessageId::new_v7(),
+        producer_owner: ProducerOwner::external(
+            ProducerSource::plugin("jobs").unwrap(),
+            ProducerName::default_name(),
+        ),
+        mode: ProducerDeliveryMode::Queue,
+        idempotency_key: ProducerIdempotencyKey::new("body").unwrap(),
+        description: SafeDisplayText::new("Job done").unwrap(),
+        body,
+        reminder: None,
+        agent_hop: None,
+        retained_output: None,
+    };
+    assert!(validate(accepted("done".into())).is_ok());
+    assert_eq!(
+        validate(accepted(with_file("ab".repeat(32)))),
+        Err(EventSchemaError::InvalidProducerMessage)
+    );
+}
+
+#[test]
 fn pending_input_events_and_recall_rpc_round_trip() {
     let run_id = RunId::new_v7();
     for payload in [
         EventPayload::UserInputAdmitted {
-            input: "pending".into(),
+            content: "pending".into(),
         },
         EventPayload::UserInputRecalled {
             user_input_seq: 1,
-            input: "pending".into(),
+            content: "pending".into(),
         },
         EventPayload::UserInputSubmitted {
-            input: "pending".into(),
+            content: "pending".into(),
         },
     ] {
         let value = serde_json::to_value(&payload).expect("serialize pending-input event");
@@ -501,7 +583,7 @@ fn pending_input_events_and_recall_rpc_round_trip() {
         seq: 1,
         timestamp: jiff::Timestamp::now(),
         payload: EventPayload::UserInputAdmitted {
-            input: "queued steer".into(),
+            content: "queued steer".into(),
         },
     };
     assert!(runless_admission.validate().is_ok());
@@ -816,7 +898,7 @@ fn stored_event_origin_is_additive_strict_and_not_payload_degraded() {
         "run_id": null,
         "seq": 1,
         "timestamp": jiff::Timestamp::now(),
-        "payload": {"type":"user_input_admitted","input":"legacy"}
+        "payload": {"type":"user_input_admitted","content":[{"type":"text","text":"legacy"}]}
     });
     let legacy = serde_json::from_value::<StoredEvent>(base.clone()).expect("pre-origin event");
     assert_eq!(legacy.origin, None);
@@ -2284,7 +2366,7 @@ fn audit_events_and_only_they_carry_skippable() {
         prompt_fingerprint: Sha256Digest::of_bytes(b"prompt"),
     });
     let state = event(EventPayload::UserInputSubmitted {
-        input: "hello".into(),
+        content: "hello".into(),
     });
     let audit_wire = serde_json::to_value(&audit).unwrap();
     assert_eq!(audit_wire["skippable"], json!(true));

@@ -799,7 +799,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
             let prompt_admitted = child.log.events().iter().any(|event| {
                 matches!(
                     &event.payload,
-                    EventPayload::UserInputAdmitted { input }
+                    EventPayload::UserInputAdmitted { content: input }
                         if event.run_id == Some(original_run_id)
                             && input == "resume active prompt"
                 )
@@ -853,7 +853,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         .filter(|event| {
             matches!(
                 &event.payload,
-                EventPayload::UserInputAdmitted { input }
+                EventPayload::UserInputAdmitted { content: input }
                     if input == "resume active prompt"
             )
         })
@@ -894,7 +894,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
     assert!(
         child.log.events().iter().any(|event| matches!(
             &event.payload,
-            EventPayload::UserInputAdmitted { input }
+            EventPayload::UserInputAdmitted { content: input }
                 if event.run_id == Some(original_run_id) && input == "resume active prompt"
         )),
         "child events: {:#?}",
@@ -902,7 +902,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
     );
     assert!(child.log.events().iter().any(|event| matches!(
         &event.payload,
-        EventPayload::UserInputSubmitted { input }
+        EventPayload::UserInputSubmitted { content: input }
             if event.run_id == Some(original_run_id) && input == "resume active prompt"
     )));
     let entries = fixture.engine.inner.delegation_events.entries();
@@ -1210,7 +1210,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
                 .events()
                 .iter()
                 .find_map(|event| match &event.payload {
-                    EventPayload::UserInputAdmitted { input }
+                    EventPayload::UserInputAdmitted { content: input }
                         if input == "resume active prompt" =>
                     {
                         Some(event.seq)
@@ -1223,7 +1223,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
                         &event.payload,
                         EventPayload::UserInputRecalled {
                             user_input_seq,
-                            input,
+                            content: input,
                         } if *user_input_seq == admission_seq
                             && input == "resume active prompt"
                     )
@@ -1232,7 +1232,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
             let steer_preserved = child.log.events().iter().any(|event| {
                 matches!(
                     &event.payload,
-                    EventPayload::UserInputAdmitted { input } if input == "interleaved direct steer"
+                    EventPayload::UserInputAdmitted { content: input } if input == "interleaved direct steer"
                 )
             });
             recalled && steer_preserved
@@ -1279,7 +1279,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
     assert_eq!(child.status, SessionStatus::Running);
     assert!(!child.log.events().iter().any(|event| matches!(
         &event.payload,
-        EventPayload::UserInputSubmitted { input } if input == "resume active prompt"
+        EventPayload::UserInputSubmitted { content: input } if input == "resume active prompt"
     )));
     release_child
         .send(())
@@ -1297,7 +1297,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
                 .expect("interleaved steer child projection");
             let steer_submitted = child.log.events().iter().any(|event| matches!(
                 &event.payload,
-                EventPayload::UserInputSubmitted { input } if input == "interleaved direct steer"
+                EventPayload::UserInputSubmitted { content: input } if input == "interleaved direct steer"
             ));
             let old_notifications = fixture
                 .engine
@@ -1452,7 +1452,7 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
         .expect("monitor failure child projection");
     assert!(!child.log.events().iter().any(|event| matches!(
         &event.payload,
-        EventPayload::UserInputAdmitted { input } if input == "resume active prompt"
+        EventPayload::UserInputAdmitted { content: input } if input == "resume active prompt"
     )));
     let (registry_invocation, terminal_status, _) = fixture
         .engine
@@ -1586,7 +1586,7 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
         .expect("attachment cancellation child projection");
     assert!(!child.log.events().iter().any(|event| matches!(
         &event.payload,
-        EventPayload::UserInputAdmitted { input } if input == "resume active prompt"
+        EventPayload::UserInputAdmitted { content: input } if input == "resume active prompt"
     )));
     let (registry_invocation, terminal_status, _) = fixture
         .engine

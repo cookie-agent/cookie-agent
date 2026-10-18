@@ -2275,7 +2275,8 @@ pub enum EventPayload {
         idempotency_key: ProducerIdempotencyKey,
         #[serde(default, skip_serializing_if = "producer_description_is_empty")]
         description: SafeDisplayText,
-        body: String,
+        /// Text parts only.
+        body: UserContent,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reminder: Option<GoalReminderIdentity>,
         /// Internal `send_message` guard metadata: position of this message in
@@ -2333,23 +2334,24 @@ pub enum EventPayload {
         internal_agents: Vec<FrozenInternalAgentDefinition>,
         input_through_seq: u64,
     },
+    /// `content` carries text parts only.
     MessageInjected {
         role: crate::ExtensionMessageRole,
-        input: String,
+        content: UserContent,
     },
     UserInputAdmitted {
-        input: String,
+        content: UserContent,
     },
     UserInputSubmitted {
-        input: String,
+        content: UserContent,
     },
     UserInputTransformed {
-        original_input: String,
-        input: String,
+        original_content: UserContent,
+        content: UserContent,
     },
     UserInputRecalled {
         user_input_seq: u64,
-        input: String,
+        content: UserContent,
     },
     UserInputApplied {
         user_input_seq: u64,
@@ -2358,7 +2360,7 @@ pub enum EventPayload {
     /// then starts with it carries `client_run_id`; a failed, cancelled, or
     /// interrupted run voids every queued input instead.
     UserInputQueued {
-        input: String,
+        content: UserContent,
         selection: RunSelection,
         client_run_id: ClientRunId,
     },
@@ -2867,10 +2869,14 @@ impl EventPayload {
             }
             Self::ProducerMessageAccepted {
                 producer_owner,
+                body,
                 reminder,
                 retained_output,
                 ..
             } => {
+                if body.validate_text_only().is_err() {
+                    return Err(EventSchemaError::InvalidProducerMessage);
+                }
                 if reminder.as_ref().is_some_and(|identity| {
                         !matches!(producer_owner, ProducerOwner::Goal { goal_id } if *goal_id == identity.goal_id)
                     })
@@ -2975,20 +2981,33 @@ impl EventPayload {
                     return Err(EventSchemaError::InvalidAgentSnapshot);
                 }
             }
-            Self::MessageInjected { role, input }
-                if input.trim().is_empty() || *role == crate::ExtensionMessageRole::Tool =>
-            {
-                return Err(EventSchemaError::InvalidJson);
+            Self::MessageInjected { role, content } => {
+                if content.is_blank()
+                    || content.validate_text_only().is_err()
+                    || *role == crate::ExtensionMessageRole::Tool
+                {
+                    return Err(EventSchemaError::InvalidJson);
+                }
             }
             Self::UserInputTransformed {
-                original_input,
-                input,
-            } if original_input.trim().is_empty()
-                || input.trim().is_empty()
-                || original_input == input =>
-            {
-                return Err(EventSchemaError::InvalidJson);
+                original_content,
+                content,
+            } => {
+                if original_content.is_blank() || content.is_blank() || original_content == content
+                {
+                    return Err(EventSchemaError::InvalidJson);
+                }
+                original_content
+                    .validate()
+                    .and_then(|()| content.validate())
+                    .map_err(|_| EventSchemaError::InvalidUserContent)?;
             }
+            Self::UserInputAdmitted { content }
+            | Self::UserInputSubmitted { content }
+            | Self::UserInputRecalled { content, .. }
+            | Self::UserInputQueued { content, .. } => content
+                .validate()
+                .map_err(|_| EventSchemaError::InvalidUserContent)?,
             Self::ModelAttemptStarted {
                 attempt_ordinal,
                 resolved_model,
@@ -3955,6 +3974,7 @@ pub enum EventSchemaError {
     EmptyToolEmittedText,
     ToolEmittedTextTooLarge,
     InvalidJson,
+    InvalidUserContent,
     ZeroModelTurnSequence,
     InvalidToolTermination,
     InvalidDelegateFinished,
@@ -4019,6 +4039,7 @@ impl fmt::Display for EventSchemaError {
             Self::EmptyToolEmittedText => "tool-emitted text must not be blank",
             Self::ToolEmittedTextTooLarge => "tool-emitted message text exceeds 64 KiB",
             Self::InvalidJson => "JSON value could not be serialized",
+            Self::InvalidUserContent => "user content names an invalid artifact",
             Self::ZeroModelTurnSequence => "model_turn_seq must be positive",
             Self::InvalidToolTermination => {
                 "tool termination outcome/result/error combination is invalid"

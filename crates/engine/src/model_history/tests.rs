@@ -425,6 +425,65 @@ fn a_missing_or_damaged_attachment_becomes_a_note_instead_of_an_error() {
 }
 
 #[test]
+fn a_stored_user_file_part_becomes_a_file_input_part() {
+    use cookie_agent_protocol::{ArtifactRef, Open, UserContent, UserContentPart};
+    let directory = tempfile::tempdir().unwrap();
+    let artifacts = directory.path().join("artifacts");
+    let store = crate::ArtifactRouter::open_flat(artifacts.clone()).unwrap();
+    let session = SessionId(uuid::Uuid::from_u128(1));
+    let file = |content: &[u8], filename: &str| {
+        let (_, sha256) = store.retain(session, content).unwrap();
+        Open::Known(UserContentPart::File {
+            artifact: ArtifactRef {
+                sha256,
+                byte_length: content.len() as u64,
+                media_type: "image/png".into(),
+                filename: Some(filename.into()),
+            },
+        })
+    };
+    let kept = file(b"user image", "screenshot.png");
+    let lost = file(b"lost image", "lost.png");
+    let Open::Known(UserContentPart::File { artifact }) = &lost else {
+        unreachable!()
+    };
+    std::fs::remove_file(artifacts.join(&artifact.sha256)).unwrap();
+    let run = RunId::new_v7();
+    let content = UserContent::new(vec![
+        Open::Known(UserContentPart::Text {
+            text: "What is wrong with this layout?".into(),
+        }),
+        kept,
+        lost,
+    ])
+    .unwrap();
+    let events = vec![
+        event(1, run, EventPayload::UserInputSubmitted { content }),
+        event(2, run, EventPayload::UserInputApplied { user_input_seq: 1 }),
+    ];
+    let history = assemble_full_history(&events, &store, &binding(), "system").unwrap();
+    let Some(oven_sdk::HistoryTurn::User(message)) = history.last() else {
+        panic!("expected a user turn: {history:?}");
+    };
+    assert!(matches!(
+        &message.content[0],
+        oven_sdk::InputPart::Text(text) if text.text == "What is wrong with this layout?"
+    ));
+    assert!(matches!(
+        &message.content[1],
+        oven_sdk::InputPart::File(file)
+            if file.media_type == "image/png"
+                && file.filename.as_deref() == Some("screenshot.png")
+                && matches!(&file.source, oven_sdk::FileSource::Bytes(bytes) if bytes.as_ref() == b"user image")
+    ));
+    assert!(matches!(
+        &message.content[2],
+        oven_sdk::InputPart::Text(text)
+            if text.text == "[lost.png (image/png) is unavailable: its stored copy is missing or damaged]"
+    ));
+}
+
+#[test]
 fn compaction_summary_framing_is_byte_stable() {
     assert_eq!(
         COMPACTION_SUMMARY_PREFIX,
@@ -998,7 +1057,7 @@ fn user_events(seq: u64, run: RunId, input: &str) -> [StoredEvent; 2] {
             seq,
             run,
             EventPayload::UserInputSubmitted {
-                input: input.into(),
+                content: input.into(),
             },
         ),
         event(
@@ -1633,7 +1692,7 @@ fn checkpoint_before_new_user_keeps_summary_and_user_live() {
             1,
             run,
             EventPayload::UserInputSubmitted {
-                input: "old compacted input".into(),
+                content: "old compacted input".into(),
             },
         ),
         event(
@@ -1664,7 +1723,7 @@ fn checkpoint_before_new_user_keeps_summary_and_user_live() {
             3,
             run,
             EventPayload::UserInputSubmitted {
-                input: "extremely long live user input".into(),
+                content: "extremely long live user input".into(),
             },
         ),
         event(4, run, EventPayload::UserInputApplied { user_input_seq: 3 }),
@@ -1692,22 +1751,22 @@ fn injected_and_transformed_messages_replay_from_durable_events() {
             run,
             EventPayload::MessageInjected {
                 role: cookie_agent_protocol::ExtensionMessageRole::User,
-                input: "durable injected context".into(),
+                content: "durable injected context".into(),
             },
         ),
         event(
             2,
             run,
             EventPayload::UserInputTransformed {
-                original_input: "original command".into(),
-                input: "committed transformed input".into(),
+                original_content: "original command".into(),
+                content: "committed transformed input".into(),
             },
         ),
         event(
             3,
             run,
             EventPayload::UserInputSubmitted {
-                input: "committed transformed input".into(),
+                content: "committed transformed input".into(),
             },
         ),
         event(4, run, EventPayload::UserInputApplied { user_input_seq: 3 }),
@@ -1748,7 +1807,7 @@ fn native_checkpoint_carries_window_and_drops_pre_checkpoint_history() {
             1,
             run,
             EventPayload::UserInputSubmitted {
-                input: "old compacted input".into(),
+                content: "old compacted input".into(),
             },
         ),
         event(
@@ -1779,7 +1838,7 @@ fn native_checkpoint_carries_window_and_drops_pre_checkpoint_history() {
             3,
             run,
             EventPayload::UserInputSubmitted {
-                input: "live input".into(),
+                content: "live input".into(),
             },
         ),
         event(4, run, EventPayload::UserInputApplied { user_input_seq: 3 }),
@@ -2161,7 +2220,7 @@ fn tail_candidates_do_not_split_queued_user_application() {
         3,
         run,
         EventPayload::UserInputSubmitted {
-            input: "queued input".into(),
+            content: "queued input".into(),
         },
     ));
     events.push(event(
@@ -2169,7 +2228,7 @@ fn tail_candidates_do_not_split_queued_user_application() {
         run,
         EventPayload::MessageInjected {
             role: cookie_agent_protocol::ExtensionMessageRole::Assistant,
-            input: "interleaved assistant".into(),
+            content: "interleaved assistant".into(),
         },
     ));
     events.push(event(
@@ -2345,7 +2404,7 @@ fn assembled_tool_transcript_snapshot_is_stable() {
             1,
             run,
             EventPayload::UserInputSubmitted {
-                input: "inspect the workspace".into(),
+                content: "inspect the workspace".into(),
             },
         ),
         event(2, run, EventPayload::UserInputApplied { user_input_seq: 1 }),

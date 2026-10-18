@@ -807,7 +807,9 @@ impl Engine {
                         child_session_id,
                         Some(child_run_id),
                         super::event_origin("engine:delegation"),
-                        Event::UserInputAdmitted { input },
+                        Event::UserInputAdmitted {
+                            content: input.into(),
+                        },
                     )?;
                     engine.clear_skill_turn_state(child_session_id);
                     let admission_seq = engine
@@ -1751,7 +1753,7 @@ impl Engine {
                     super::event_origin("engine:delegation"),
                     Event::UserInputRecalled {
                         user_input_seq: admission_seq,
-                        input: pending.input,
+                        content: pending.content,
                     },
                 )?;
                 Ok(true)
@@ -2191,21 +2193,21 @@ impl Engine {
             .filter(|event| event.seq > boundary && event.run_id.is_none())
         {
             match &event.payload {
-                Event::UserInputAdmitted { input } => pending.push((event.seq, input.clone())),
+                Event::UserInputAdmitted { content } => pending.push((event.seq, content.clone())),
                 Event::UserInputRecalled { user_input_seq, .. } => {
                     pending.retain(|(seq, _)| seq != user_input_seq);
                 }
                 _ => {}
             }
         }
-        for (user_input_seq, input) in pending.into_iter().rev() {
+        for (user_input_seq, content) in pending.into_iter().rev() {
             self.append(
                 child_session_id,
                 None,
                 super::event_origin("engine:delegation"),
                 Event::UserInputRecalled {
                     user_input_seq,
-                    input,
+                    content,
                 },
             )
             .await?;

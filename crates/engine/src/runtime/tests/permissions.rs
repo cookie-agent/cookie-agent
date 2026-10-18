@@ -482,7 +482,7 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
                 Some(run),
                 origin.clone(),
                 EventPayload::UserInputSubmitted {
-                    input: "persist the log".into(),
+                    content: "persist the log".into(),
                 },
             )
             .expect("publish the session");

@@ -1281,7 +1281,9 @@ async fn compaction_full_history_preserves_eligible_reasoning_and_recent_tail() 
     let recent_seq = before
         .iter()
         .find_map(|event| match &event.payload {
-            EventPayload::UserInputSubmitted { input } if input == RECENT_TAIL => Some(event.seq),
+            EventPayload::UserInputSubmitted { content: input } if input == RECENT_TAIL => {
+                Some(event.seq)
+            }
             _ => None,
         })
         .expect("recent-tail user event");

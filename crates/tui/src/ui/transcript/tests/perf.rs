@@ -138,7 +138,9 @@ fn user_input(root: SessionId, seq: &mut Seq, run_id: RunId, base: i64, text: &s
             root,
             seq.next(),
             run_id,
-            EventPayload::UserInputSubmitted { input: text.into() },
+            EventPayload::UserInputSubmitted {
+                content: text.into(),
+            },
         ),
         base,
     )

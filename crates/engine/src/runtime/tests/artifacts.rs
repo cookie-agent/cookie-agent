@@ -791,7 +791,7 @@ async fn a_revert_deletes_artifacts_only_the_reverted_events_referenced() {
         .iter()
         .find(|event| {
             matches!(&event.payload,
-                EventPayload::UserInputSubmitted { input } if input == "second-input")
+                EventPayload::UserInputSubmitted { content: input } if input == "second-input")
         })
         .map(|event| event.seq)
         .unwrap();
