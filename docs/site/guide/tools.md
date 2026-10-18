@@ -329,7 +329,7 @@ Only when the agent can delegate to at least one subagent at this depth. The `ag
 | `inherit_context` | `boolean` | no | Default: `false`. |
 | `prompt` | `string` | yes | Full task brief with objective, context, and deliverable |
 | `resume_session_id` | `string` | no | Optional. Handle or UUID of an existing subagent of yours to resume, e.g. "explore_1a2b3c4d". Only subagents you delegated are valid. |
-| `runtimes` | `string[]` | no | Optional. Names of your runtimes the subagent may use, as your tools' descriptions name them; all of them when omitted. Not allowed with resume_session_id. |
+| `runtimes` | `string[]` | no | Optional. The runtimes the subagent may use, by name (see <runtimes>): a subset of yours; all of yours when omitted. Not allowed with resume_session_id. |
 
 ??? note "Parameters JSON Schema"
 
@@ -360,7 +360,7 @@ Only when the agent can delegate to at least one subagent at this depth. The `ag
           "type": "string"
         },
         "runtimes": {
-          "description": "Optional. Names of your runtimes the subagent may use, as your tools' descriptions name them; all of them when omitted. Not allowed with resume_session_id.",
+          "description": "Optional. The runtimes the subagent may use, by name (see <runtimes>): a subset of yours; all of yours when omitted. Not allowed with resume_session_id.",
           "items": {
             "type": "string"
           },

@@ -304,7 +304,7 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
             .description
     };
     // One runtime besides `global`: its tools say nothing about it.
-    assert!(!description("write").contains("Runs in runtime"));
+    assert!(!description("write").contains("Runs on runtime"));
 
     let api = workspace_dir(root, "api");
     let attached = fixture
@@ -327,17 +327,26 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
     // Several: each runtime's tools say where they run.
     let labpc_description = description("labpc_api_write");
     assert!(
-        labpc_description.ends_with(&format!(
-            "\n\nRuns in runtime `labpc_api` on {}, in the workspace `{}`; relative paths resolve against it.",
-            std::env::consts::OS,
-            attached.workspace.as_deref().expect("labpc workspace")
-        )),
+        labpc_description.ends_with("\n\nRuns on runtime `labpc_api`."),
         "{labpc_description}"
     );
     assert!(
         description(&format!("{local_name}_write"))
-            .contains(&format!("Runs in runtime `{local_name}`")),
+            .ends_with(&format!("Runs on runtime `{local_name}`.")),
     );
+    // And the system prompt lists both, without `global`.
+    let mut composed = policy.clone();
+    fixture
+        .engine
+        .compose_runtimes_prompt(&mut composed, session);
+    let prompt = &composed.agent.composed_prompt;
+    assert!(
+        prompt.contains("This session has several runtimes attached."),
+        "{prompt}"
+    );
+    assert!(prompt.contains(&format!("<runtime name=\"{local_name}\" kind=\"coding\"")));
+    assert!(prompt.contains("<runtime name=\"labpc_api\" kind=\"coding\""));
+    assert!(!prompt.contains("name=\"global\""));
 
     // A prefixed call runs on its own runtime under the name it knows.
     let published = fixture

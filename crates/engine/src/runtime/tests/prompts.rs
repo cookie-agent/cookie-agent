@@ -213,12 +213,14 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
         .agent
         .composed_prompt;
     let agent = prompt.find("Test prompt.").unwrap();
+    let directory = prompt.find("Working directory: ").unwrap();
     let provider = prompt.find("Provider section.").unwrap();
     let skills = prompt.find("<available_skills>").unwrap();
     let plugin = prompt.find("Plugin tail.").unwrap();
-    assert!(agent < provider && provider < skills && skills < plugin);
+    assert!(agent < directory && directory < provider && provider < skills && skills < plugin);
     // Every appended block is introduced by the markdown horizontal-rule
     // separator, so block boundaries are visible in the assembled prompt.
+    assert!(prompt.contains("---\n\nWorking directory: "));
     assert!(prompt.contains("---\n\n<tool_instructions provider=\"test.order\">"));
     assert!(prompt.contains("---\n\n<available_skills>"));
     assert!(prompt.contains("---\n\nPlugin tail."));
@@ -238,9 +240,10 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
     fixture.engine.shutdown().await;
 }
 
-/// The system prompt carries no runtimes block.
+/// With one runtime besides `global`, the system prompt gives only its
+/// working directory and platform.
 #[tokio::test]
-async fn the_system_prompt_does_not_list_runtimes() {
+async fn one_runtime_gives_the_prompt_its_working_directory() {
     let (endpoint, captured) = scripted_model_server().await;
     let fixture = synthetic_default_fixture_with_config(None, &endpoint, "").expect("engine");
     let descriptor = fixture
@@ -279,12 +282,25 @@ async fn the_system_prompt_does_not_list_runtimes() {
         .values()
         .find(|run| run.client_run_id.as_str() == "working-directory")
         .expect("working-directory run");
-    // Runtimes are told apart in tool descriptions, and only when there are
-    // several; the system prompt does not list them.
+    let cwd = fixture
+        .engine
+        .inner
+        .runtimes
+        .local_workspace_root()
+        .display()
+        .to_string();
     assert!(
-        !run.agent.composed_prompt.contains("<runtime"),
+        run.agent.composed_prompt.ends_with(&format!(
+            "---\n\nWorking directory: {cwd}\nPlatform: {}",
+            std::env::consts::OS
+        )),
         "{}",
         run.agent.composed_prompt
+    );
+    assert!(!run.agent.composed_prompt.contains("runtime"));
+    assert_eq!(
+        Sha256Digest::of_bytes(run.agent.composed_prompt.as_bytes()),
+        run.agent.prompt_fingerprint
     );
     with_watchdog("captured fixture completion", captured)
         .await

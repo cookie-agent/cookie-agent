@@ -10,23 +10,26 @@ agent but is not copied into prompt text.
 For a root or delegated run, the engine composes the model request in this order:
 
 1. The selected agent document body becomes `AgentSnapshot.composed_prompt`.
-2. Tool providers may append bounded behavioral-policy sections. Sections
+2. Where the session's runtimes work is appended (see [Runtimes](#runtimes)):
+   the working directory, or the list of runtimes when there are several. The
+   prompt and document fingerprints are updated.
+3. Tool providers may append bounded behavioral-policy sections. Sections
    retain provider provenance and update both prompt and document
    fingerprints.
-3. If skills are visible to the model, a generated available-skills listing is
+4. If skills are visible to the model, a generated available-skills listing is
    appended to that prompt. The prompt and document fingerprints are updated.
-4. `agent_before_start` plugins run in configured order. A plugin can replace the
+5. `agent_before_start` plugins run in configured order. A plugin can replace the
    composed prompt or append an addendum, subject to the 128 KiB prompt limit.
    Each accepted change recomputes the prompt fingerprint.
-5. History assembly puts the final composed prompt in `history[0]` as the sole
+6. History assembly puts the final composed prompt in `history[0]` as the sole
    system turn.
-6. Root runs may then add a durable [AGENTS.md context](#agentsmd-context-turn)
+7. Root runs may then add a durable [AGENTS.md context](#agentsmd-context-turn)
    user turn. Loaded skill bodies follow as user turns, followed by normal
    session history.
 
 Appended blocks are joined by a markdown horizontal rule (`\n\n---\n\n`) so the
-boundaries between the authored body, tool-provider sections, the skills
-listing, and a plugin addendum are visible. The authored
+boundaries between the authored body, the runtimes block, tool-provider
+sections, the skills listing, and a plugin addendum are visible. The authored
 body is first and carries no leading separator; a plugin `replace_system_prompt`
 replaces the whole prompt instead of appending to it.
 
@@ -39,9 +42,9 @@ needs current history.
 ## Fingerprints
 
 The document fingerprint covers the agent identity, strict frontmatter, and
-body. The prompt fingerprint covers prompt text only. Tool-provider
-sections, skill listings, and plugin composition update the effective
-fingerprints before
+body. The prompt fingerprint covers prompt text only. The runtimes block,
+tool-provider sections, skill listings, and plugin composition update the
+effective fingerprints before
 `run_started` is persisted. Model-attempt events record the prompt fingerprint,
 and replay validation rejects attempt attribution that contradicts the frozen
 run snapshot.
@@ -80,23 +83,37 @@ MCP providers are architecturally excluded. Remote MCP output remains delimited
 data and typed tool metadata; it cannot contribute durable system instructions,
 and no configuration switch enables that path.
 
-## Runtimes in tool descriptions
+## Runtimes
 
-The system prompt does not list the session's runtimes. With one runtime
-besides `global` there is nothing to tell apart: its tools keep their own
-descriptions, and relative paths resolve against its workspace. When a
-session attaches more than one runtime besides `global`, the description of
-each of their tools ends with a note naming the runtime it runs in:
+`global` (MCP servers, plugins, the fallback `webfetch`) is available to every
+session and is never mentioned. What the model is told about the other
+runtimes depends on how many the session attaches:
 
-```text
-Runs in runtime `labpc_api` on linux, in the workspace `/home/me/api`; relative paths resolve against it.
-```
+- **One** (the usual case): the prompt gains only where it works, and tool
+  descriptions are left as the runtime wrote them:
 
-A runtime without a workspace says `Runs in runtime `<name>`.` The notes are
-part of the tool definitions sent with each request, not the system prompt,
-so attaching or detaching a runtime changes the tool definitions (and their
-cache breakpoint) rather than the system turn. Tools offered under one name by
-several runtimes are still published as `<runtime name>_<tool>`.
+  ```text
+  Working directory: /home/me/web
+  Platform: linux
+  ```
+
+  A runtime without a workspace adds nothing.
+- **Several:** the prompt says so and lists them, and the description of each
+  of their tools ends with `Runs on runtime `<name>`.`:
+
+  ```text
+  This session has several runtimes attached. Each tool's description names the runtime it runs on, and file tools and bash resolve relative paths against that runtime's workspace. A tool several runtimes offer is named `<runtime>_<tool>`.
+  <runtimes>
+  <runtime name="local_web" kind="coding" workspace="/home/me/web" platform="linux"/>
+  <runtime name="labpc_api" kind="coding" workspace="/home/me/api" platform="linux"/>
+  </runtimes>
+  ```
+
+Attribute values are XML-escaped. The block is frozen with the prompt: an
+attachment added or removed after admission changes the next run's block,
+while the tool descriptions follow the attachments at once. The block is
+skipped rather than truncated if the composed prompt is already at its byte
+limit.
 
 ## AGENTS.md context turn
 
@@ -165,8 +182,8 @@ cached prefix rather than using an isolated cache namespace. See the
 
 | Agent type | System prompt | Additional context |
 |---|---|---|
-| Root | Selected authored agent body, or the concise built-in default coding prompt; optional tool-provider sections, skill listing, and plugin composition | Root-only AGENTS.md context turn, loaded skill bodies, then session history |
-| Delegated | Frozen delegated agent body; optional tool-provider sections, skill listing, and plugin composition | No filesystem AGENTS.md context load. Explicit inherited user/assistant text and ordinary child history remain separate turns. |
+| Root | Selected authored agent body, or the concise built-in default coding prompt; runtimes block, optional tool-provider sections, skill listing, and plugin composition | Root-only AGENTS.md context turn, loaded skill bodies, then session history |
+| Delegated | Frozen delegated agent body; runtimes block, optional tool-provider sections, skill listing, and plugin composition | No filesystem AGENTS.md context load. Explicit inherited user/assistant text and ordinary child history remain separate turns. |
 | Internal | Authored reserved internal agent body when available, otherwise its built-in prompt | No AGENTS.md discovery, skill listing, or plugin prompt interception. Invocation-specific input is supplied separately. |
 
 The built-in `approval`, `compaction`, and `title` prompts are each roughly 100
@@ -180,10 +197,10 @@ The system prompt does not contain an environment dump, tool-schema prose, MCP
 server instructions, filesystem inventories, or generic operational boilerplate.
 Tools and MCP capabilities are represented by typed request definitions and
 permission policy. Runtime state belongs in events or request fields. The narrow
-exception is the bounded set of authored behavioral-policy sections from
-tool providers: fingerprints cover them, and the admitted run freezes them.
-Which runtime a tool runs in is told in that tool's description (see
-[Runtimes in tool descriptions](#runtimes-in-tool-descriptions)). Changing, externally controlled, or redundant information remains in
+exceptions are the frozen runtimes block, which says where relative paths
+resolve and tells several runtimes apart, and the bounded set of authored
+behavioral-policy sections from tool providers: fingerprints cover them, and
+the admitted run freezes them. Changing, externally controlled, or redundant information remains in
 typed fields or explicit context turns.
 
 See [Agents](../guide/agents.md), [Events](events.md), and
