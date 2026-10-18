@@ -114,6 +114,7 @@ nav:
       - Persistent daemon and runtime capabilities: specs/runtime-capabilities.md
       - Live engine configuration: specs/engine-configuration.md
       - Plugins (tools, hooks, events, producers): specs/plugins-v1.md
+      - Compatibility v1: specs/compatibility-v1.md
       - Tool output streams: specs/tool-output-streams.md
       - Agent messaging: specs/agent-messaging.md
       - Model configuration: specs/model-configuration.md

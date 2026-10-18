@@ -6,9 +6,12 @@ settled details differently. This document is the governing
 specification for cleaning up the plugin protocol, host, SDK, and
 configuration: plugin tools speak the runtime protocol's tool messages, the
 host runs on the runtime stack, and dead or half-built parts go.
-There are no plugin implementations outside this repository, so every part
-of the plugin protocol may change. Section [Decisions](#8-decisions) records
-what review settled.
+This spec was written while there were no plugin implementations outside
+this repository, so every part of the plugin protocol could change. The
+[compatibility spec](compatibility-v1.md) now governs how the plugin protocol
+changes: it is versioned by semver, and plugins written for one major keep
+working with every daemon of that major. Section [Decisions](#8-decisions)
+records what review settled.
 
 ## 1. Goal and scope
 
