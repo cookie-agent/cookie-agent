@@ -67,6 +67,7 @@ fn tool_failures_with_output_stay_inline_on_replay() {
                             _ => Vec::new(),
                         },
                         metadata: serde_json::json!({"status": 1, "success": false}),
+                        background: None,
                         retained_output: None,
                         attachments: vec![],
                         additional_messages: vec![],
@@ -2754,6 +2755,7 @@ fn tool_termination_clears_streamed_output_and_sets_detail() {
                 outcome: ToolTerminationOutcome::Completed,
                 result: Some(cookie_agent_protocol::PersistedToolResult {
                     display: cookie_agent_protocol::text_display("stdout:\nonce\n"),
+                    background: None,
                     retained_output: None,
                     title: cookie_agent_protocol::SafeDisplayText::new("Bash")
                         .expect("result title"),
@@ -2839,6 +2841,7 @@ fn tool_display_is_bounded_and_final_replacement_matches_replay() {
                 title: cookie_agent_protocol::SafeDisplayText::new("Test").unwrap(),
                 output: "model-only authoritative output".into(),
                 display: cookie_agent_protocol::text_display("final display\nsecond line"),
+                background: None,
                 retained_output: None,
                 metadata: serde_json::json!({"model_only": true}),
                 attachments: Vec::new(),
@@ -3000,6 +3003,7 @@ fn replay_with_tool_chunks_ends_at_committed_result_only() {
                     outcome: ToolTerminationOutcome::Completed,
                     result: Some(cookie_agent_protocol::PersistedToolResult {
                         display: cookie_agent_protocol::text_display("committed replacement"),
+                        background: None,
                         retained_output: None,
                         title: cookie_agent_protocol::SafeDisplayText::new("Bash").expect("title"),
                         output: "committed replacement".into(),

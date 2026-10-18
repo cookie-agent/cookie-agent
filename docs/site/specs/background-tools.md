@@ -130,9 +130,11 @@ The tool result committed at detach, model-visible as the call's result:
   its result when it finishes; do not wait for it or run it again. Stop it
   with stop_background(<job>).`
 
-The detach note, when present, follows on its own line. The result's metadata
-carries `{"background": {"job": "<job>", "by": "model" | "user"}}` so clients
-can show the call as backgrounded.
+The detach note, when present, follows on its own line. The result carries
+`background: {"state": "job", "job": "<job>", "by": "model" | "user"}` so
+clients can show the call as backgrounded (`state` is `self_reporting`, with no
+`job`, for work that reports itself). The compatibility spec replaced the
+earlier `metadata.background` key with this typed field.
 
 ## 5. Background result
 

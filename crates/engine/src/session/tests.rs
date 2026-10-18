@@ -4124,6 +4124,7 @@ fn append_realistic_run(
                             output: "    let value = compute(input)?; // a line of source\n"
                                 .repeat(40),
                             display: Vec::new(),
+                            background: None,
                             retained_output: None,
                             metadata: serde_json::Value::Null,
                             attachments: Vec::new(),

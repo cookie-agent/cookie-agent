@@ -2033,6 +2033,7 @@ fn map_tool_result(
     };
     Ok(ToolResult {
         display: Vec::new(),
+        background: None,
         retained_output: None,
         title: safe_title(tool_name),
         output: text_output,

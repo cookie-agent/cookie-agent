@@ -94,6 +94,7 @@ mod tests {
             ] {
                 let result = ToolResult {
                     display: Vec::new(),
+                    background: None,
                     retained_output: None,
                     title: cookie_agent_protocol::SafeDisplayText::new("Delegate cancelled")
                         .unwrap(),

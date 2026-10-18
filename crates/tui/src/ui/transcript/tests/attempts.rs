@@ -650,7 +650,7 @@ fn retry_started_before_input_promotion_rebinds_without_losing_committed_tools()
             assert!(live.apply_event(stored.clone()));
             let state = &live.sessions[&session];
             let mut replay = StateStore::default();
-            assert!(replay.rebuild_session(session, 0, events[..=index].to_vec()));
+            assert!(replay.rebuild_session(session, 0, durable(&events[..=index])));
             let settled = settled(&events[..=index]);
             ensure_cached_transcript_layout(
                 &mut cache,
@@ -862,7 +862,7 @@ fn input_boundary_does_not_relocate_an_already_streaming_attempt() {
     assert_eq!(state.turn_items[&2], state.turn_items[&8]);
     assert_ne!(state.turn_items[&8], state.turn_items[&10]);
     let mut replay = StateStore::default();
-    assert!(replay.rebuild_session(session, 0, events));
+    assert!(replay.rebuild_session(session, 0, durable(&events)));
     assert_eq!(projection, assistant_projection(&replay.sessions[&session]));
 }
 
@@ -1014,7 +1014,7 @@ fn goal_activation_precedes_triggered_streaming_and_preserves_existing_output() 
         for (index, stored) in events.iter().enumerate() {
             assert!(live.apply_event(stored.clone()));
             let mut replay = StateStore::default();
-            assert!(replay.rebuild_session(session, 0, events[..=index].to_vec()));
+            assert!(replay.rebuild_session(session, 0, durable(&events[..=index])));
             let settled = settled(&events[..=index]);
             let state = &live.sessions[&session];
             for (width, cache) in [18, 80].into_iter().zip(&mut caches) {
@@ -1362,7 +1362,7 @@ fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
         assert!(live.apply_event(stored.clone()));
         let state = &live.sessions[&session];
         let mut replay = StateStore::default();
-        assert!(replay.rebuild_session(session, 0, events[..=index].to_vec()));
+        assert!(replay.rebuild_session(session, 0, durable(&events[..=index])));
         let settled = settled(&events[..=index]);
         if settled {
             assert_eq!(
@@ -1556,6 +1556,7 @@ fn replayed_failure_diagnostic_precedes_output_beyond_the_render_budget() {
                 output: output.clone(),
                 display: Vec::new(),
                 metadata: serde_json::Value::Null,
+                background: None,
                 retained_output: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),

@@ -1429,3 +1429,20 @@ Deviations and choices made while implementing, by phase.
 - **Approval requests** carry a required `tool_call_id`, which
   `ApprovalRequest::new` takes. The TUI finds an approval's call by it
   instead of matching operation fingerprints.
+- **Background state.** `PersistedToolResult.background` is
+  `{ state, by, job? }`, `state` an open `job` | `self_reporting` (the two
+  immediate results the engine commits today: a background job, or work that
+  reports itself), and `job` present exactly in the `job` state. The
+  immediate result's `metadata` is now null, so the model-visible tool result
+  JSON no longer repeats the job and actor its output text already states.
+  The daemon drops a `background` a tool or peer returns.
+- **Clients.** The TUI renders user content as today for text and a file
+  part as its `📎 name · type · size` chip (escaped in the markdown row),
+  renders every display block through `display_text` (text blocks as
+  today, other kinds by `to_text`), applies progress deltas through
+  `LiveDisplay`, reads the tool name for its remaining name special cases
+  from `presentation.tool.name`, and reads `background`. Its
+  `rebuild_session` no longer drops live-only records, which only older
+  logs held; a few tests that fed it mixed streams now filter them first.
+  The CLI prints no tool display; its diagnostics read results through
+  `display_text`. `SessionMeta`'s client-type defaults stay for phase F.

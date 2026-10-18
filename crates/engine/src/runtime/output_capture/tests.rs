@@ -25,6 +25,7 @@ fn completion(output: ToolCompletionOutput) -> ToolCompletion {
             title: SafeDisplayText::new("Test output").unwrap(),
             output: String::new(),
             display: cookie_agent_protocol::text_display("final UI display"),
+            background: None,
             retained_output: None,
             metadata: serde_json::Value::Null,
             attachments: Vec::new(),

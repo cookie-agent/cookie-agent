@@ -536,6 +536,12 @@ shell's only stream), the result carries `display_span`, a `[start, end)`
 byte range of `output`, instead of `display`; decoding restores the block
 from it.
 
+The result a call commits when it moves to the background carries
+`background { state, by, job? }`: `state` is `job` (the call runs as
+background job `job`) or `self_reporting` (the work, such as a subagent,
+reports itself); an unknown state still means the call is backgrounded. `by`
+is `model` or `user`. Only the daemon sets it; it drops one a tool returns.
+
 Authoritative output chunks go to runtime capture before completion, not into
 unbounded event records. Terminal `retained_output` contains ordered per-stream
 byte/line counts, truncation offsets, and an incomplete flag. Only a stream

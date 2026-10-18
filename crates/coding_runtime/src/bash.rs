@@ -688,6 +688,7 @@ impl BashExecutor {
                 std::mem::take(&mut *merged.lock().await),
                 status.code(),
             )),
+            background: None,
             retained_output: None,
             title: crate::safe_title("Bash"),
             output: String::new(),

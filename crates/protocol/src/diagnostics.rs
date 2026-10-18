@@ -328,6 +328,7 @@ mod tests {
             output: format!("{}\nRequired asset missing é", "é".repeat(6000)),
             metadata: serde_json::json!({"status":23}),
             display: Vec::new(),
+            background: None,
             retained_output: None,
             attachments: vec![],
             additional_messages: vec![],
@@ -375,6 +376,7 @@ mod tests {
                     "t".repeat(6000)
                 ),
                 display: crate::text_display("Finished"),
+                background: None,
                 metadata: serde_json::json!({"status":23,"source":"/work/input"}),
                 retained_output: named.then(|| crate::RetainedToolOutput {
                     reference: Some(reference.clone()),

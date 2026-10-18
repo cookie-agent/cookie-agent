@@ -181,7 +181,7 @@ impl Engine {
                 Event::ToolCallTerminated { termination }
                     if termination.tool_call_id == entry.reservation.parent_tool_call_id
                         && termination.result.as_ref().is_some_and(|result| {
-                            result.metadata.get("background").is_none()
+                            result.background.is_none()
                                 && crate::delegation_api::delegate_result_matches_child(
                                     result, child,
                                 )

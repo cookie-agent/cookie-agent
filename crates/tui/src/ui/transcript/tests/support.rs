@@ -912,6 +912,7 @@ pub(crate) fn tool_terminated(
                 outcome,
                 result: completed.then(|| cookie_agent_protocol::PersistedToolResult {
                     display: cookie_agent_protocol::text_display("done"),
+                    background: None,
                     retained_output: None,
                     title: SafeDisplayText::new("ran true").expect("result title"),
                     output: "done".into(),

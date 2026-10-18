@@ -1397,16 +1397,14 @@ impl StateStore {
 
     /// Replace a session projection with one rebuilt from its durable
     /// history, which must start at the session's creation and advance
-    /// strictly. Gaps are allowed: older logs held live-only records that are
-    /// no longer history, and any such record passed here is ignored. An
-    /// invalid history leaves the existing projection intact.
+    /// strictly; gaps are allowed. An invalid history leaves the existing
+    /// projection intact.
     pub fn rebuild_session(
         &mut self,
         session_id: SessionId,
         generation: u64,
-        mut events: Vec<StoredEvent>,
+        events: Vec<StoredEvent>,
     ) -> bool {
-        events.retain(|event| !event.payload.is_transient());
         let mut previous = 0;
         for event in &events {
             if event.session_id != session_id

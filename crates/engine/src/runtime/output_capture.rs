@@ -765,6 +765,8 @@ fn byte_size(bytes: u64) -> String {
 }
 
 fn normalize_result(result: &mut PersistedToolResult) -> Result<(), ToolError> {
+    // The background state is the daemon's to record, never a tool's.
+    result.background = None;
     result.display = cookie_agent_protocol::fit_result_display(std::mem::take(&mut result.display));
     result
         .validate()

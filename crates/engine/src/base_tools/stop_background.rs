@@ -166,6 +166,7 @@ impl PreparedExecutor for StopBackgroundExecutor {
                 title: safe_title("Background call stopped"),
                 output: format!("Stopped {}. {follows}", self.job),
                 display: Vec::new(),
+                background: None,
                 retained_output: None,
                 metadata: serde_json::json!({"job": self.job}),
                 attachments: Vec::new(),

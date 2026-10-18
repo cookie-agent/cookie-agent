@@ -291,6 +291,7 @@ mod tests {
             title: SafeDisplayText::new("Bash").unwrap(),
             output: output.to_owned(),
             display: Vec::new(),
+            background: None,
             retained_output: None,
             metadata: serde_json::Value::Null,
             attachments: Vec::new(),

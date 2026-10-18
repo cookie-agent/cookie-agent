@@ -919,7 +919,7 @@ pub(super) fn reduce_event_from(
             let backgrounded = termination
                 .result
                 .as_ref()
-                .is_some_and(|result| result.metadata.get("background").is_some());
+                .is_some_and(|result| result.background.is_some());
             let failure_message = matches!(
                 termination.outcome,
                 ToolTerminationOutcome::Failed | ToolTerminationOutcome::Interrupted

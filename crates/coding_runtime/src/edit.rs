@@ -305,6 +305,7 @@ impl PreparedExecutor for EditExecutor {
         Ok(cookie_agent_runtime_api::ToolCompletion::single(
             ToolResult {
                 display: Vec::new(),
+                background: None,
                 retained_output: None,
                 title: crate::safe_title(format!("Edited {path}")),
                 output: "Edit applied atomically".into(),

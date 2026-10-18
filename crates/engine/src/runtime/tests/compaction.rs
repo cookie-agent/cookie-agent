@@ -296,6 +296,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             binding,
             cookie_agent_protocol::PersistedToolResult {
                 display: Vec::new(),
+                background: None,
                 retained_output: None,
                 title: cookie_agent_protocol::SafeDisplayText::new("Historical output").unwrap(),
                 output,
@@ -344,6 +345,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                 binding,
                 cookie_agent_protocol::PersistedToolResult {
                     display: Vec::new(),
+                    background: None,
                     retained_output: None,
                     title: cookie_agent_protocol::SafeDisplayText::new("Recent output").unwrap(),
                     output,

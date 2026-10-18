@@ -1225,6 +1225,7 @@ pub(super) fn incomplete_completion(message: &str) -> crate::ToolCompletion {
         title: safe_display("Incomplete tool output"),
         output: String::new(),
         display: cookie_agent_runtime_api::bounded_tool_display(message),
+        background: None,
         retained_output: None,
         metadata: Value::Null,
         attachments: Vec::new(),

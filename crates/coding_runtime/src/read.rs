@@ -233,6 +233,7 @@ impl PreparedExecutor for ReadExecutor {
             output.push_str("</entries>");
             return Ok(ToolResult {
 display: Vec::new(),
+background: None,
 retained_output: None,
                 title: crate::safe_title(format!(
                     "Read directory {}",
@@ -331,6 +332,7 @@ fn attachment_result(
     };
     Ok(ToolResult {
         display: Vec::new(),
+        background: None,
         retained_output: None,
         title: crate::safe_title(format!("Read attachment {}", path.display())),
         output,
@@ -412,6 +414,7 @@ fn text_result(
     }
     Ok(ToolResult {
         display: Vec::new(),
+        background: None,
         retained_output: None,
         title: crate::safe_title(format!("Read file {}", path.display())),
         output,

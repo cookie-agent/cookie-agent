@@ -219,6 +219,7 @@ output: vec![cookie_agent_protocol::ToolOutputChunk { stream: None, text: "autho
         ) {
             return Ok(cookie_agent_protocol::PersistedToolResult {
 display: Vec::new(),
+background: None,
 retained_output: None,
                 title: cookie_agent_protocol::SafeDisplayText::new("External result").unwrap(),
                 output: "external cleanup result".into(),
@@ -537,6 +538,7 @@ impl PreparedExecutor for TestParallelToolExecutor {
                 .push(self.name.clone());
             Ok(cookie_agent_protocol::PersistedToolResult {
                 display: Vec::new(),
+                background: None,
                 retained_output: None,
                 title: cookie_agent_protocol::SafeDisplayText::new("parallel test result")
                     .expect("result title"),
@@ -771,6 +773,7 @@ impl PreparedExecutor for TestDelegateExecutor {
                 let metadata = serde_json::json!({"session_id":handle.child_session_id});
                 Ok(cookie_agent_protocol::PersistedToolResult {
                     display: Vec::new(),
+                    background: None,
                     retained_output: None,
                     title: cookie_agent_protocol::SafeDisplayText::new("Subagent started")
                         .expect("title"),
@@ -918,6 +921,7 @@ impl PreparedExecutor for TestWriteExecutor {
             self.executed.set();
             Ok(cookie_agent_protocol::PersistedToolResult {
                 display: Vec::new(),
+                background: None,
                 retained_output: None,
                 title: cookie_agent_protocol::SafeDisplayText::new("approval test write")
                     .expect("result title"),
@@ -1087,6 +1091,7 @@ impl PreparedExecutor for TestAliasExecutor {
         Ok(crate::ToolCompletion::single(
             cookie_agent_protocol::PersistedToolResult {
                 display: Vec::new(),
+                background: None,
                 retained_output: None,
                 title: cookie_agent_protocol::SafeDisplayText::new("aliased tool result")
                     .expect("result title"),
@@ -1236,6 +1241,7 @@ impl PreparedExecutor for TestMediaReadExecutor {
             let attachment = context.retain_attachment(mime, None, &bytes)?;
             Ok(cookie_agent_protocol::PersistedToolResult {
                 display: Vec::new(),
+                background: None,
                 retained_output: None,
                 title: cookie_agent_protocol::SafeDisplayText::new("Read attachment").unwrap(),
                 output: format!("Attached {mime}."),
@@ -1585,6 +1591,7 @@ impl PreparedExecutor for NamedOutputExecutor {
                 title: cookie_agent_protocol::SafeDisplayText::new("Named output").unwrap(),
                 output: String::new(),
                 display: cookie_agent_protocol::text_display("UI_FINAL_ONLY"),
+                background: None,
                 retained_output: None,
                 metadata: serde_json::Value::Null,
                 attachments: Vec::new(),

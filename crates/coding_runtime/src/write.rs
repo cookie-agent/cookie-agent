@@ -175,6 +175,7 @@ impl PreparedExecutor for WriteExecutor {
         Ok(cookie_agent_runtime_api::ToolCompletion::single(
             ToolResult {
                 display: Vec::new(),
+                background: None,
                 retained_output: None,
                 title: crate::safe_title(format!("Wrote {path}")),
                 output: format!("Wrote {bytes} bytes to {path}"),

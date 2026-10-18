@@ -720,6 +720,14 @@
       ],
       "type": "object"
     },
+    "BackgroundActor": {
+      "description": "Who moved a call to the background.",
+      "enum": [
+        "model",
+        "user"
+      ],
+      "type": "string"
+    },
     "ContextCheckpoint": {
       "oneOf": [
         {
@@ -5214,6 +5222,17 @@
           "maxItems": 256,
           "type": "array"
         },
+        "background": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolBackground"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present on the result a call committed when it moved to the\nbackground; the daemon alone sets it."
+        },
         "display": {
           "items": {
             "$ref": "#/$defs/DisplayBlock"
@@ -6568,6 +6587,49 @@
         "reference"
       ],
       "type": "object"
+    },
+    "ToolBackground": {
+      "additionalProperties": false,
+      "description": "What became of a call that moved to the background: its work goes on and\nreports its result later.",
+      "properties": {
+        "by": {
+          "$ref": "#/$defs/BackgroundActor",
+          "description": "Who moved the call there."
+        },
+        "job": {
+          "description": "The job the call runs as, present in the `job` state.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/ToolBackgroundState"
+        }
+      },
+      "required": [
+        "state",
+        "by"
+      ],
+      "type": "object"
+    },
+    "ToolBackgroundState": {
+      "description": "How a backgrounded call's work goes on. An unknown state reads as\n`job` without a job: the call is backgrounded and its result arrives\nlater.",
+      "oneOf": [
+        {
+          "const": "job",
+          "description": "It runs as background job `job`, which reports its result once.",
+          "type": "string"
+        },
+        {
+          "const": "self_reporting",
+          "description": "The work reports itself, as a subagent's turns do.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
     },
     "ToolEmittedContent": {
       "oneOf": [

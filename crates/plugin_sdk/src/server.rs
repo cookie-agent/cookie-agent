@@ -1035,6 +1035,7 @@ impl Server {
                         display: cookie_agent_protocol::fit_result_display(
                             cookie_agent_protocol::text_display(output.text.clone()),
                         ),
+                        background: None,
                         retained_output: None,
                         metadata: Value::Null,
                         attachments: Vec::new(),

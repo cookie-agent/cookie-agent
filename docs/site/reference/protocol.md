@@ -115,7 +115,9 @@ and file parts) instead of `input`, `user_input_transformed` stores
 text-only user content. A tool result's `display` is a list of display
 blocks, and `tool_call_progress.display` a display delta;
 `tool_call_started.presentation` names the tool and its source, and
-approval requests name their `tool_call_id`. Older clients are rejected.
+approval requests name their `tool_call_id`; a backgrounded result carries a
+typed `background` state instead of `metadata.background`. Older clients are
+rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility

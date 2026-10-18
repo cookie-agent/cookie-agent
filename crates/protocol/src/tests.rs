@@ -707,6 +707,7 @@ fn display_result(output: &str, display: Vec<Open<DisplayBlock>>) -> PersistedTo
         title: SafeDisplayText::new("Bash").unwrap(),
         output: output.into(),
         display,
+        background: None,
         retained_output: None,
         metadata: Value::Null,
         attachments: Vec::new(),
@@ -772,6 +773,54 @@ fn tool_result_display_found_in_output_is_stored_as_a_span() {
 }
 
 #[test]
+fn a_backgrounded_result_carries_a_typed_open_state() {
+    let mut result = display_result("Started in the background as job job_1.", Vec::new());
+    result.background = Some(ToolBackground {
+        state: ToolBackgroundState::Job,
+        by: BackgroundActor::User,
+        job: Some("job_1".into()),
+    });
+    let value = serde_json::to_value(&result).unwrap();
+    assert_eq!(
+        value["background"],
+        json!({"state": "job", "by": "user", "job": "job_1"})
+    );
+    assert_eq!(
+        serde_json::from_value::<PersistedToolResult>(value.clone()).unwrap(),
+        result
+    );
+    let mut future = value.clone();
+    future["background"] = json!({"state": "paused", "by": "model", "job": "job_1"});
+    assert_eq!(
+        serde_json::from_value::<PersistedToolResult>(future)
+            .unwrap()
+            .background
+            .map(|background| background.state),
+        Some(ToolBackgroundState::Unknown)
+    );
+    for invalid in [
+        json!({"state": "job", "by": "model"}),
+        json!({"state": "self_reporting", "by": "model", "job": "job_1"}),
+        json!({"state": "job", "by": "model", "job": ""}),
+    ] {
+        let mut value = value.clone();
+        value["background"] = invalid.clone();
+        assert!(
+            serde_json::from_value::<PersistedToolResult>(value).is_err(),
+            "{invalid}"
+        );
+    }
+    let mut foreground = value;
+    foreground.as_object_mut().unwrap().remove("background");
+    assert_eq!(
+        serde_json::from_value::<PersistedToolResult>(foreground)
+            .unwrap()
+            .background,
+        None
+    );
+}
+
+#[test]
 fn tool_result_display_span_must_be_a_range_of_output() {
     let mut value = serde_json::to_value(display_result("é ok", Vec::new())).unwrap();
     value.as_object_mut().unwrap().remove("display");
@@ -799,6 +848,7 @@ fn tool_emitted_messages_round_trip_and_empty_results_stay_compact() {
     let digest = Sha256Digest::of_bytes(b"emitted file");
     let result = PersistedToolResult {
         display: Vec::new(),
+        background: None,
         retained_output: None,
         title: SafeDisplayText::new("Tool result").unwrap(),
         output: "done".into(),

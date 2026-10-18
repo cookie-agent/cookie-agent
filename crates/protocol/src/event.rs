@@ -555,6 +555,10 @@ pub struct PersistedToolResult {
     pub title: SafeDisplayText,
     pub output: String,
     pub display: Vec<Open<DisplayBlock>>,
+    /// Present on the result a call committed when it moved to the
+    /// background; the daemon alone sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<ToolBackground>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_output: Option<crate::RetainedToolOutput>,
     pub metadata: Value,
@@ -598,6 +602,17 @@ impl PersistedToolResult {
         })?;
         if let Some(retained) = &self.retained_output {
             retained.validate()?;
+        }
+        if self.background.as_ref().is_some_and(|background| {
+            background.job.as_ref().is_some_and(|job| {
+                job.is_empty() || job.len() > 64 || job.chars().any(char::is_control)
+            }) || match background.state {
+                ToolBackgroundState::Job => background.job.is_none(),
+                ToolBackgroundState::SelfReporting => background.job.is_some(),
+                ToolBackgroundState::Unknown => false,
+            }
+        }) {
+            return Err(EventSchemaError::InvalidToolBackground);
         }
         if json_len_exceeds(&self.metadata, Self::MAX_METADATA_BYTES)
             .map_err(|_| EventSchemaError::InvalidJson)?
@@ -664,6 +679,8 @@ impl Serialize for PersistedToolResult {
             #[serde(skip_serializing_if = "Option::is_none")]
             display_span: Option<[usize; 2]>,
             #[serde(skip_serializing_if = "Option::is_none")]
+            background: Option<&'a ToolBackground>,
+            #[serde(skip_serializing_if = "Option::is_none")]
             retained_output: Option<&'a crate::RetainedToolOutput>,
             metadata: &'a Value,
             attachments: &'a [ToolAttachment],
@@ -687,6 +704,7 @@ impl Serialize for PersistedToolResult {
             output: &self.output,
             display: display_span.is_none().then_some(self.display.as_slice()),
             display_span,
+            background: self.background.as_ref(),
             retained_output: self.retained_output.as_ref(),
             metadata: &self.metadata,
             attachments: &self.attachments,
@@ -710,6 +728,8 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
             display: Option<Vec<Open<DisplayBlock>>>,
             #[serde(default)]
             display_span: Option<[usize; 2]>,
+            #[serde(default)]
+            background: Option<ToolBackground>,
             #[serde(default)]
             retained_output: Option<crate::RetainedToolOutput>,
             metadata: Value,
@@ -736,6 +756,7 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
             title: w.title,
             output: w.output,
             display,
+            background: w.background,
             retained_output: w.retained_output,
             metadata: w.metadata,
             attachments: w.attachments,
@@ -743,6 +764,34 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
+    }
+}
+
+/// What became of a call that moved to the background: its work goes on and
+/// reports its result later.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolBackground {
+    pub state: ToolBackgroundState,
+    /// Who moved the call there.
+    pub by: BackgroundActor,
+    /// The job the call runs as, present in the `job` state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 64))]
+    pub job: Option<String>,
+}
+
+crate::open_enum! {
+    /// How a backgrounded call's work goes on. An unknown state reads as
+    /// `job` without a job: the call is backgrounded and its result arrives
+    /// later.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ToolBackgroundState {
+        /// It runs as background job `job`, which reports its result once.
+        Job,
+        /// The work reports itself, as a subagent's turns do.
+        SelfReporting,
     }
 }
 
@@ -3983,6 +4032,7 @@ pub enum EventSchemaError {
     InvalidJson,
     InvalidUserContent,
     InvalidDisplay,
+    InvalidToolBackground,
     ZeroModelTurnSequence,
     InvalidToolTermination,
     InvalidDelegateFinished,
@@ -4049,6 +4099,9 @@ impl fmt::Display for EventSchemaError {
             Self::InvalidJson => "JSON value could not be serialized",
             Self::InvalidUserContent => "user content names an invalid artifact",
             Self::InvalidDisplay => "a display block is invalid",
+            Self::InvalidToolBackground => {
+                "a background state names a job exactly in the job state"
+            }
             Self::ZeroModelTurnSequence => "model_turn_seq must be positive",
             Self::InvalidToolTermination => {
                 "tool termination outcome/result/error combination is invalid"

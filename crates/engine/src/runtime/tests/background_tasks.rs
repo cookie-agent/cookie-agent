@@ -208,6 +208,7 @@ impl PreparedExecutor for JobExecutor {
                 title: SafeDisplayText::new("Job").expect("title"),
                 output: String::new(),
                 display: Vec::new(),
+                background: None,
                 retained_output: None,
                 metadata: serde_json::json!({"status": 0}),
                 attachments: Vec::new(),

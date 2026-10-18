@@ -238,6 +238,7 @@ impl WebfetchArgs {
         });
         Ok(PersistedToolResult {
             display: Vec::new(),
+            background: None,
             retained_output: None,
             title: safe_title(&self.url),
             output: format!(

@@ -22,8 +22,8 @@ use std::{
 
 use cookie_agent_protocol::{
     PersistedToolResult, ProducerDeliveryMode, ProducerId, ProducerIdempotencyKey, ProducerOwner,
-    ProducerSendParams, RetainedToolOutput, SessionId, ToolCallId, ToolCallTermination,
-    ToolTerminationOutcome,
+    ProducerSendParams, RetainedToolOutput, SessionId, ToolBackground, ToolBackgroundState,
+    ToolCallId, ToolCallTermination, ToolTerminationOutcome,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -62,13 +62,6 @@ impl BackgroundTaskState {
 }
 
 pub(crate) use cookie_agent_protocol::BackgroundActor;
-
-fn actor_name(actor: BackgroundActor) -> &'static str {
-    match actor {
-        BackgroundActor::Model => "model",
-        BackgroundActor::User => "user",
-    }
-}
 
 struct Job {
     session: SessionId,
@@ -549,8 +542,13 @@ fn immediate_result(job: &str, by: BackgroundActor, note: Option<&str>) -> Persi
             .expect("static title is valid"),
         display: cookie_agent_runtime_api::bounded_tool_display(&output),
         output,
+        background: Some(ToolBackground {
+            state: ToolBackgroundState::Job,
+            by,
+            job: Some(job.to_owned()),
+        }),
         retained_output: None,
-        metadata: serde_json::json!({"background": {"job": job, "by": actor_name(by)}}),
+        metadata: serde_json::Value::Null,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     }
@@ -579,8 +577,13 @@ pub(super) fn self_reporting_result(
             .expect("static title is valid"),
         display: cookie_agent_runtime_api::bounded_tool_display(&output),
         output,
+        background: Some(ToolBackground {
+            state: ToolBackgroundState::SelfReporting,
+            by,
+            job: None,
+        }),
         retained_output: None,
-        metadata: serde_json::json!({"background": {"by": actor_name(by)}}),
+        metadata: serde_json::Value::Null,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     }
@@ -806,13 +809,26 @@ mod tests {
                 .output
                 .contains("Stop it with stop_background(job_1a2b3c4d).\nProcess 42")
         );
-        assert_eq!(model.metadata["background"]["by"], "model");
+        assert_eq!(
+            model.background,
+            Some(ToolBackground {
+                state: ToolBackgroundState::Job,
+                by: BackgroundActor::Model,
+                job: Some("job_1a2b3c4d".into()),
+            })
+        );
         let user = immediate_result("job_1a2b3c4d", BackgroundActor::User, None);
         assert!(
             user.output
                 .starts_with("User manually moved this call to the background")
         );
-        assert_eq!(user.metadata["background"]["job"], "job_1a2b3c4d");
+        assert_eq!(
+            user.background
+                .as_ref()
+                .and_then(|background| background.job.as_deref()),
+            Some("job_1a2b3c4d")
+        );
+        assert_eq!(user.metadata, serde_json::Value::Null);
     }
 
     #[test]
@@ -821,6 +837,7 @@ mod tests {
             title: cookie_agent_protocol::SafeDisplayText::new("Bash").unwrap(),
             output: "[stdout]\nok\n".into(),
             display: Vec::new(),
+            background: None,
             retained_output: None,
             metadata: serde_json::json!({"status": 0}),
             attachments: Vec::new(),
