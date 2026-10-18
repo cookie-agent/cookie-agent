@@ -39,7 +39,7 @@ for line in sys.stdin:
             'protocol_version':frame['params']['protocol_version'],
             'name':'producer_fixture','version':'1',
             'capabilities':{'producer_messaging':True,
-                'subscribe_events':False,'subscribe_bus':False,'publish_bus':False,'intercept':[]}}})
+                'subscribe_events':[],'subscribe_bus':False,'publish_bus':False,'intercept':[]}}})
     elif method == 'producer/recovery/start':
         assert 'id' not in frame and frame['params'] == {}
         send({'jsonrpc':'2.0','id':1002,'method':'producer/register',
@@ -306,7 +306,7 @@ for line in sys.stdin:
             'protocol_version':frame['params']['protocol_version'],
             'name':'named_fixture','version':'1',
             'capabilities':{'producer_messaging':True,
-                'subscribe_events':False,'subscribe_bus':False,'publish_bus':False,'intercept':[]}}})
+                'subscribe_events':[],'subscribe_bus':False,'publish_bus':False,'intercept':[]}}})
     elif method == 'producer/recovery/start':
         send({'jsonrpc':'2.0','id':1005,'method':'producer/register',
             'params':{'session_id':session,'name':'alpha'}})

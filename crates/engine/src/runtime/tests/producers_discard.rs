@@ -40,7 +40,7 @@ for line in sys.stdin:
             'protocol_version':frame['params']['protocol_version'],
             'name':'discard_callback','version':'1',
             'capabilities':{'producer_messaging':True,
-                'subscribe_events':True,'subscribe_bus':False,'publish_bus':False,'intercept':[]}}})
+                'subscribe_events':['*'],'subscribe_bus':False,'publish_bus':False,'intercept':[]}}})
     elif method == 'producer/recovery/start':
         assert 'id' not in frame and frame['params'] == {}
         send({'jsonrpc':'2.0','id':1001,'method':'producer/register',

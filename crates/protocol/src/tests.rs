@@ -2590,3 +2590,20 @@ fn audit_events_and_only_they_carry_skippable() {
         .is_audit()
     );
 }
+
+#[test]
+fn hook_names_and_event_patterns_are_labels() {
+    assert!(HookName::new("tool_before_call").is_ok());
+    for name in ["", "Tool", "tool-before", "1st", &"a".repeat(65)] {
+        assert!(HookName::new(name).is_err(), "{name}");
+    }
+    let pattern = |pattern: &str| EventPattern::new(pattern).expect("pattern");
+    assert!(pattern("*").matches("text_delta"));
+    assert!(pattern("tool_call_*").matches("tool_call_started"));
+    assert!(!pattern("tool_call_*").matches("tool_calls"));
+    assert!(pattern("run_finished").matches("run_finished"));
+    assert!(!pattern("run_finished").matches("run_finished_late"));
+    for invalid in ["", "**", "run*_x", "*run", "Run_*", "run-*"] {
+        assert!(EventPattern::new(invalid).is_err(), "{invalid}");
+    }
+}

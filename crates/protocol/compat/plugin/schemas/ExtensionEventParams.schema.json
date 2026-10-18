@@ -6966,9 +6966,10 @@
     },
     "event": {
       "$ref": "#/$defs/EventPayload",
-      "description": "The stored event's payload; an event type the plugin does not know\nreads as [`crate::Open::Unknown`]."
+      "description": "The event's payload under the event contract (`events.md`); an event\ntype the plugin does not know reads as [`crate::Open::Unknown`]."
     },
     "seq": {
+      "description": "The event's sequence; a live-only event carries the sequence of the\ndurable event it follows.",
       "format": "uint64",
       "minimum": 1,
       "type": "integer"

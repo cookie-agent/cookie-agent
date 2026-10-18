@@ -161,7 +161,9 @@ pub struct ExtensionIntercept {
 pub struct ExtensionPluginCapabilities {
     // Explicit opt-in, off by default in plugin configuration and SDK builders.
     pub producer_messaging: bool,
-    pub subscribe_events: bool,
+    /// The types of the session events the plugin receives; empty for none.
+    /// The daemon skips a pattern it cannot read, with a diagnostic.
+    pub subscribe_events: Vec<crate::EventPattern>,
     pub subscribe_bus: bool,
     pub publish_bus: bool,
     /// The hooks the plugin intercepts, each at most once. The daemon skips
@@ -212,10 +214,12 @@ pub struct ExtensionShutdownParams {}
 pub struct ExtensionEventParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
+    /// The event's sequence; a live-only event carries the sequence of the
+    /// durable event it follows.
     #[schemars(range(min = 1))]
     pub seq: u64,
-    /// The stored event's payload; an event type the plugin does not know
-    /// reads as [`crate::Open::Unknown`].
+    /// The event's payload under the event contract (`events.md`); an event
+    /// type the plugin does not know reads as [`crate::Open::Unknown`].
     pub event: crate::Open<crate::EventPayload>,
     pub timestamp: jiff::Timestamp,
 }

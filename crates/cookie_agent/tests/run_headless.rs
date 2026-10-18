@@ -570,7 +570,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
                     "FIXTURE_NAME":"opt_out_gate","FIXTURE_TOOLS":"[]",
                     "FIXTURE_CAPABILITIES":serde_json::json!({
                         "producer_messaging":false,
-                        "subscribe_events":false,"subscribe_bus":false,"publish_bus":false,
+                        "subscribe_events":[],"subscribe_bus":false,"publish_bus":false,
                         "intercept":[{"hook":"tool_after_result"}]
                     }).to_string(),
                     "FIXTURE_INTERCEPT_FILE":reached.to_str().unwrap(),
@@ -1938,7 +1938,7 @@ async fn session_scoped_plugin_diagnostic_is_visible_without_verbose_output() {
         "command":["/usr/bin/python3", PLUGIN_FIXTURE],
         "env": {
             "FIXTURE_NAME":"review_guard", "FIXTURE_TOOLS":"[]",
-            "FIXTURE_CAPABILITIES": serde_json::json!({"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[{"hook":"tool_before_call"}]}).to_string(),
+            "FIXTURE_CAPABILITIES": serde_json::json!({"producer_messaging":false,"subscribe_events":[],"subscribe_bus":false,"publish_bus":false,"intercept":[{"hook":"tool_before_call"}]}).to_string(),
             "FIXTURE_TOOL_BEFORE_RESULT": serde_json::json!({"action":"block", "reason":"Review hook rejected; password=\"review\\\"secret-tail\""}).to_string()
         }
     })).unwrap();
@@ -2708,7 +2708,7 @@ fn cookie_binary_treats_plugin_handled_input_as_success_without_a_run() {
         r#"
 [plugins.command_handler]
 command = ["/usr/bin/python3", '{PLUGIN_FIXTURE}']
-env = {{ FIXTURE_NAME = 'command_handler', FIXTURE_CAPABILITIES = '{{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[{{"hook":"user_before_input"}}]}}', FIXTURE_USER_BEFORE_INPUT_RESULT = '{{"action":"handled","reason":"command consumed"}}' }}
+env = {{ FIXTURE_NAME = 'command_handler', FIXTURE_CAPABILITIES = '{{"producer_messaging":false,"subscribe_events":[],"subscribe_bus":false,"publish_bus":false,"intercept":[{{"hook":"user_before_input"}}]}}', FIXTURE_USER_BEFORE_INPUT_RESULT = '{{"action":"handled","reason":"command consumed"}}' }}
 "#
     )
     .expect("plugin config");
@@ -2743,7 +2743,7 @@ fn cookie_binary_treats_blocked_model_selection_as_failure() {
         r#"
 [plugins.model_guard]
 command = ["/usr/bin/python3", '{PLUGIN_FIXTURE}']
-env = {{ FIXTURE_NAME = 'model_guard', FIXTURE_CAPABILITIES = '{{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[{{"hook":"model_before_select"}}]}}', FIXTURE_MODEL_BEFORE_SELECT_RESULT = '{{"action":"block","reason":"model denied"}}' }}
+env = {{ FIXTURE_NAME = 'model_guard', FIXTURE_CAPABILITIES = '{{"producer_messaging":false,"subscribe_events":[],"subscribe_bus":false,"publish_bus":false,"intercept":[{{"hook":"model_before_select"}}]}}', FIXTURE_MODEL_BEFORE_SELECT_RESULT = '{{"action":"block","reason":"model denied"}}' }}
 "#
     )
     .expect("plugin config");

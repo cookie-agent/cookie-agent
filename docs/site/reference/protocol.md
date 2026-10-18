@@ -118,7 +118,9 @@ blocks, and `tool_call_progress.display` a display delta;
 approval requests name their `tool_call_id`; a backgrounded result carries a
 typed `background` state instead of `metadata.background`. Protocol 50
 changed `PluginInfo.hooks` to the names of the hooks a plugin intercepts
-(snake-case strings such as `tool_before_call`) and added the
+(snake-case strings such as `tool_before_call`) and
+`PluginInfo.subscribe_events` to the event-type patterns it subscribes to
+(such as `run_*`; empty for none), and added the
 `plugin_hook_failed` error, with which a request a plugin's failed hook
 blocked is refused. Older clients are rejected.
 

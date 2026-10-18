@@ -37,7 +37,7 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
                 ("FIXTURE_NAME".into(), "fixture".into()),
                 (
                     "FIXTURE_CAPABILITIES".into(),
-                    r#"{"producer_messaging":false,"subscribe_events":true,"subscribe_bus":true,"publish_bus":true,"intercept":[]}"#.into(),
+                    r#"{"producer_messaging":false,"subscribe_events":["*"],"subscribe_bus":true,"publish_bus":true,"intercept":[]}"#.into(),
                 ),
                 (
                     "FIXTURE_EMIT_ON_EVENT".into(),
@@ -261,7 +261,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
                 ("FIXTURE_NAME".into(), "fixture".into()),
                 (
                     "FIXTURE_CAPABILITIES".into(),
-                    r#"{"producer_messaging":false,"subscribe_events":true,"subscribe_bus":false,"publish_bus":true,"intercept":[]}"#.into(),
+                    r#"{"producer_messaging":false,"subscribe_events":["*"],"subscribe_bus":false,"publish_bus":true,"intercept":[]}"#.into(),
                 ),
                 (
                     "FIXTURE_EMIT_ON_EVENT".into(),

@@ -10,7 +10,7 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, BoundedDisplayText,
+    ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, BoundedDisplayText, EventPattern,
     ExtensionAgentBeforeStartParams, ExtensionAgentBeforeStartResult, ExtensionAllowBlockResult,
     ExtensionBusEventParams, ExtensionEmitParams, ExtensionEmitResultParams, ExtensionEmitStatus,
     ExtensionEventParams, ExtensionHookOnError, ExtensionInitializeParams,
@@ -86,6 +86,8 @@ struct Handlers {
     intercepts: HashMap<ExtensionInterceptionHook, InterceptHandler>,
     on_error: HashMap<ExtensionInterceptionHook, ExtensionHookOnError>,
     event: Option<EventHandler>,
+    /// The event types `event` receives; every type when unset.
+    event_patterns: Option<Vec<EventPattern>>,
     bus: Option<BusHandler>,
     unknown: Option<UnknownHandler>,
     recovery: Option<RecoveryHandler>,
@@ -97,7 +99,11 @@ impl Handlers {
     fn capabilities(&self) -> ExtensionPluginCapabilities {
         ExtensionPluginCapabilities {
             producer_messaging: self.producers,
-            subscribe_events: self.event.is_some(),
+            subscribe_events: match (&self.event, &self.event_patterns) {
+                (None, _) => Vec::new(),
+                (Some(_), Some(patterns)) => patterns.clone(),
+                (Some(_), None) => vec![EventPattern::new("*").expect("`*` is a pattern")],
+            },
             subscribe_bus: self.bus.is_some(),
             publish_bus: self.publish_bus,
             intercept: ExtensionInterceptionHook::ALL
@@ -355,7 +361,34 @@ impl PluginServerBuilder {
         self
     }
 
-    /// Registers a session-event notification handler.
+    /// Narrows the session events [`Self::on_event`] receives to the types
+    /// `patterns` select: a type such as `run_finished`, a prefix ending in
+    /// `*` such as `tool_call_*`, or `*` for every type (the default). Live
+    /// deltas and tool progress are selected by their types too.
+    #[must_use]
+    pub fn event_patterns<I, S>(mut self, patterns: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let parsed = patterns
+            .into_iter()
+            .map(|pattern| {
+                let pattern = pattern.into();
+                EventPattern::new(pattern.clone()).map_err(|error| {
+                    PluginError::Protocol(format!("invalid event pattern `{pattern}`: {error}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>();
+        match parsed {
+            Ok(patterns) => self.handlers.event_patterns = Some(patterns),
+            Err(error) => self.error = Some(error),
+        }
+        self
+    }
+
+    /// Registers a session-event notification handler. It receives every
+    /// event type unless [`Self::event_patterns`] narrows it.
     #[must_use]
     pub fn on_event<F, Fut>(mut self, handler: F) -> Self
     where
@@ -440,6 +473,11 @@ impl PluginServerBuilder {
             return Err(PluginError::Protocol(format!(
                 "on_hook_error names `{hook}`, which has no handler"
             )));
+        }
+        if self.handlers.event_patterns.is_some() && self.handlers.event.is_none() {
+            return Err(PluginError::Protocol(
+                "event_patterns requires on_event".into(),
+            ));
         }
         if !self.handlers.producers && self.handlers.recovery.is_some() {
             return Err(PluginError::Protocol(

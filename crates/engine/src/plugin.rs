@@ -618,18 +618,30 @@ impl PluginRegistry {
             }
             _ => PluginDeliveryClass::Ordinary,
         };
+        // Serialized once, when a plugin subscribes to any event; its type,
+        // which the patterns select by, is read back from that JSON.
+        let encoded = std::cell::OnceCell::new();
+        let encoded = || encoded.get_or_init(|| EncodedEvent::of(payload));
         self.stream_notification(
             session_id,
             None,
             PLUGIN_EVENT_METHOD,
             class,
-            |capabilities| capabilities.subscribe_events,
+            |capabilities| {
+                !capabilities.subscribe_events.is_empty() && {
+                    let tag = &encoded().tag;
+                    capabilities
+                        .subscribe_events
+                        .iter()
+                        .any(|pattern| pattern.matches(tag))
+                }
+            },
             |context_id| {
                 raw_params(&EventParamsRef {
                     session_id,
                     context_id,
                     seq,
-                    event: payload,
+                    event: &encoded().json,
                     timestamp,
                 })
             },
@@ -859,8 +871,9 @@ impl PluginRuntime {
                     .map(|intercept| intercept.hook.clone())
                     .collect()
             }),
-            subscribe_events: capabilities
-                .is_some_and(|capabilities| capabilities.subscribe_events),
+            subscribe_events: capabilities.map_or_else(Vec::new, |capabilities| {
+                capabilities.subscribe_events.clone()
+            }),
             subscribe_bus: capabilities.is_some_and(|capabilities| capabilities.subscribe_bus),
             publish_bus: capabilities.is_some_and(|capabilities| capabilities.publish_bus),
             producer_messaging: connection
@@ -1365,8 +1378,29 @@ struct EventParamsRef<'a> {
     session_id: cookie_agent_protocol::SessionId,
     context_id: &'a str,
     seq: u64,
-    event: &'a cookie_agent_protocol::EventPayload,
+    event: &'a RawValue,
     timestamp: jiff::Timestamp,
+}
+
+/// An event payload's JSON and its type.
+struct EncodedEvent {
+    json: Box<RawValue>,
+    tag: String,
+}
+
+impl EncodedEvent {
+    fn of(payload: &cookie_agent_protocol::EventPayload) -> Self {
+        #[derive(serde::Deserialize)]
+        struct Tagged<'a> {
+            #[serde(rename = "type", borrow)]
+            tag: std::borrow::Cow<'a, str>,
+        }
+        let json = serde_json::value::to_raw_value(payload).expect("event payloads serialize");
+        let tag = serde_json::from_str::<Tagged<'_>>(json.get())
+            .map(|tagged| tagged.tag.into_owned())
+            .unwrap_or_default();
+        Self { json, tag }
+    }
 }
 
 /// [`ExtensionBusEventParams`] with its context, borrowing the rest.

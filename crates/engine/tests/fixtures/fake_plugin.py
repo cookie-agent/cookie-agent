@@ -144,7 +144,7 @@ for line in sys.stdin:
                 "features": json.loads(os.environ.get("FIXTURE_FEATURES", "[]")),
                 "capabilities": json.loads(os.environ.get(
                     "FIXTURE_CAPABILITIES",
-                    '{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[]}',
+                    '{"producer_messaging":false,"subscribe_events":[],"subscribe_bus":false,"publish_bus":false,"intercept":[]}',
                 )),
                 "tools": {"tools": declarations(), "prompt_sections": []},
             },

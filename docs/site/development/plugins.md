@@ -77,7 +77,8 @@ tool's name and parameter schema when the server is built.
   `cancel_compaction` build results. `on_hook_error(hook,
   ExtensionHookOnError::Block)` makes a failure of that hook block its
   operation (see [Hooks](#hooks)).
-- **Events.** `on_event` and `on_bus_event` receive streamed notifications.
+- **Events.** `on_event` and `on_bus_event` receive streamed notifications;
+  `event_patterns(["run_*", ...])` narrows the event types `on_event` gets.
   A handler may publish one bus event with `context.emit_bus(...)` after
   `enable_bus_publishing()`. `on_unknown` receives notifications the SDK does
   not know or cannot read (see [Compatibility](#compatibility)).
@@ -110,7 +111,7 @@ version, its features, its capabilities, and its tools:
 ```json
 {"jsonrpc":"2.0","id":1,"result":{
   "protocol_version":"0.4.0","name":"issues","version":"1.2.0","features":[],
-  "capabilities":{"producer_messaging":false,"subscribe_events":false,
+  "capabilities":{"producer_messaging":false,"subscribe_events":["run_*","tool_call_*"],
     "subscribe_bus":false,"publish_bus":false,
     "intercept":[{"hook":"tool_before_call","on_error":"block"}]},
   "tools":{"tools":[],"prompt_sections":[]}}}
@@ -359,15 +360,23 @@ run for delegated sessions.
 
 ## Events and the bus
 
-With `subscribe_events`, a plugin receives `plugin/event` notifications:
-`{ session_id, context_id, seq, event, timestamp }`, where `event` is the
-stored `EventPayload` ([events](../reference/events.md)), which the SDK reads
-as `Open<EventPayload>`: an event type it does not know arrives as
-`Unknown`. Durable events
-arrive after they are appended, in sequence order per session. Live-only
-output (tool progress, text and reasoning deltas, native compaction) arrives
-as it happens and carries the `seq` of the durable event it follows. There
-is no replay and no filter.
+`capabilities.subscribe_events` lists the event types a plugin receives, as
+patterns: a type such as `run_finished`, a prefix ending in `*` such as
+`tool_call_*`, or `*` alone for every type. An empty list subscribes to
+nothing; the daemon skips a pattern it cannot read, with a note in the
+plugin's status. For each event a pattern selects, the plugin receives a
+`plugin/event` notification: `{ session_id, context_id, seq, event,
+timestamp }`, where `event` is the event's payload under the
+[event contract](../reference/events.md), which the SDK reads as
+`Open<EventPayload>`: an event type it does not know arrives as `Unknown`.
+Durable events arrive after they are appended, in sequence order per
+session. Live-only events (`text_delta`, `reasoning_delta`,
+`internal_agent_text_delta`, `tool_call_progress`,
+`native_compaction_started`, and `native_compaction_finished`) are selected
+by their types like any other, so `*` includes them and `run_*` does not;
+they arrive as they happen, are never stored, and carry the `seq` of the
+durable event they follow. There is no replay. The SDK's `on_event`
+subscribes to `*` unless `event_patterns([...])` narrows it.
 
 With `subscribe_bus`, it receives `plugin/bus_event` notifications that
 other plugins publish: `{ session_id, context_id, plugin, name, payload }`.

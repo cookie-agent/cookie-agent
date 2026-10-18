@@ -409,7 +409,7 @@ async fn cancellation_after_successful_finalization_is_reconciled_at_terminal_co
                 "FIXTURE_CAPABILITIES",
                 serde_json::json!({
                     "producer_messaging":false,
-                    "subscribe_events":false,"subscribe_bus":false,"publish_bus":false,
+                    "subscribe_events":[],"subscribe_bus":false,"publish_bus":false,
                     "intercept":[{"hook":"tool_after_result"}]
                 })
                 .to_string(),
@@ -576,7 +576,7 @@ async fn plugin_named_output_contract_reaches_capture_manifest_and_model_history
                 "FIXTURE_CAPABILITIES",
                 serde_json::json!({
                     "producer_messaging":false,
-                    "subscribe_events":false,"subscribe_bus":false,"publish_bus":false,
+                    "subscribe_events":[],"subscribe_bus":false,"publish_bus":false,
                     "intercept":[]
                 })
                 .to_string(),

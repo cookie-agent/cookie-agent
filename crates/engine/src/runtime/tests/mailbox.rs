@@ -593,7 +593,7 @@ async fn cancellation_deadline_bounds_a_wedged_tool_without_hanging() {
 
 #[tokio::test]
 async fn user_input_transform_audit_uses_the_final_chain_value() {
-    let capabilities = r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[{"hook":"user_before_input"}]}"#;
+    let capabilities = r#"{"producer_messaging":false,"subscribe_events":[],"subscribe_bus":false,"publish_bus":false,"intercept":[{"hook":"user_before_input"}]}"#;
     let cases = [
         (
             "noop",
@@ -709,7 +709,7 @@ async fn user_input_transform_audit_uses_the_final_chain_value() {
 async fn active_run_steering_uses_user_input_interception_and_audit() {
     let (endpoint, responses, captured) = scripted_channel_server(2).await;
     let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    let capabilities = r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[{"hook":"user_before_input"}]}"#;
+    let capabilities = r#"{"producer_messaging":false,"subscribe_events":[],"subscribe_bus":false,"publish_bus":false,"intercept":[{"hook":"user_before_input"}]}"#;
     reopen_with_interception_plugins(
         &mut fixture,
         vec![(

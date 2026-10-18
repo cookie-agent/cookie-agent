@@ -354,6 +354,38 @@ string_wire_impl!(
     |value: &str| validate_snake_label(value, HookName::MAX_BYTES)
 );
 
+/// Event types a plugin subscribes to: one type such as `run_finished`, a
+/// prefix ending in `*` such as `tool_call_*`, or `*` alone for every type.
+/// A pattern matches live-only events (deltas, tool progress) by their type
+/// too.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct EventPattern(String);
+string_wire_impl!(
+    EventPattern,
+    64,
+    "^(\\*|[a-z][a-z0-9_]*\\*?)$",
+    "Event types: a type, a prefix ending in `*`, or `*` for every type.",
+    |value: &str| {
+        validate_bounded(value, EventPattern::MAX_BYTES)?;
+        match value.strip_suffix('*') {
+            Some("") => Ok(()),
+            Some(prefix) => validate_snake_label(prefix, EventPattern::MAX_BYTES),
+            None => validate_snake_label(value, EventPattern::MAX_BYTES),
+        }
+    }
+);
+
+impl EventPattern {
+    /// Whether the pattern selects events of type `tag`.
+    #[must_use]
+    pub fn matches(&self, tag: &str) -> bool {
+        match self.0.strip_suffix('*') {
+            Some(prefix) => tag.starts_with(prefix),
+            None => tag == self.0,
+        }
+    }
+}
+
 fn validate_snake_label(value: &str, maximum: usize) -> Result<(), WireStringError> {
     validate_bounded(value, maximum)?;
     let mut bytes = value.bytes();

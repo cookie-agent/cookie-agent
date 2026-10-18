@@ -70,7 +70,7 @@ impl Hook {
     /// calls of it fail with `failure`.
     fn plugin(&self, failure: Failure, block: bool) -> Vec<(String, PluginConfig)> {
         let capabilities = serde_json::json!({
-            "producer_messaging": false, "subscribe_events": false,
+            "producer_messaging": false, "subscribe_events": [],
             "subscribe_bus": false, "publish_bus": false,
             "intercept": [{
                 "hook": self.hook.name(),

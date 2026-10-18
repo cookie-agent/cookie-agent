@@ -28,7 +28,7 @@ const PYTHON: &str = "python";
 /// A liveness bound on the Python fixture, not a latency assertion.
 const WAIT: Duration = Duration::from_secs(10);
 
-fn capabilities(subscribe_events: bool, subscribe_bus: bool, intercept: &[&str]) -> String {
+fn capabilities(subscribe_events: &[&str], subscribe_bus: bool, intercept: &[&str]) -> String {
     serde_json::json!({
         "producer_messaging": false,
         "subscribe_events": subscribe_events,
@@ -48,7 +48,7 @@ fn config(name: &str, env: &[(&str, &str)]) -> PluginConfig {
         ("FIXTURE_TOOLS".to_owned(), "[]".to_owned()),
         (
             "FIXTURE_CAPABILITIES".to_owned(),
-            capabilities(false, false, &[]),
+            capabilities(&[], false, &[]),
         ),
     ]);
     variables.extend(
@@ -292,7 +292,7 @@ async fn events_stream_in_order_and_bus_events_skip_their_source() {
         config(
             "fixture",
             &[
-                ("FIXTURE_CAPABILITIES", &capabilities(true, true, &[])),
+                ("FIXTURE_CAPABILITIES", &capabilities(&["*"], true, &[])),
                 (
                     "FIXTURE_EVENT_FILE",
                     event_file.to_str().expect("event path"),
@@ -349,7 +349,7 @@ async fn each_hook_call_gets_its_own_context() {
             &[
                 (
                     "FIXTURE_CAPABILITIES",
-                    &capabilities(false, false, &["tool_before_call"]),
+                    &capabilities(&[], false, &["tool_before_call"]),
                 ),
                 (
                     "FIXTURE_INTERCEPT_FILE",
@@ -382,7 +382,7 @@ async fn each_hook_call_gets_its_own_context() {
 
 #[tokio::test]
 async fn hook_failures_fail_open_with_their_diagnostic_kind() {
-    let hook = capabilities(false, false, &["tool_before_call"]);
+    let hook = capabilities(&[], false, &["tool_before_call"]);
     let mut slow = config(
         "slow",
         &[
@@ -482,7 +482,7 @@ async fn an_emit_spends_the_context_it_was_delivered_with() {
         config(
             "fixture",
             &[
-                ("FIXTURE_CAPABILITIES", &capabilities(true, false, &[])),
+                ("FIXTURE_CAPABILITIES", &capabilities(&["*"], false, &[])),
                 (
                     "FIXTURE_EMIT_ON_EVENT",
                     r#"{"name":"note","payload":{"n":1}}"#,
@@ -659,11 +659,13 @@ fn a_full_queue_evicts_what_a_notification_outranks_and_keeps_order() {
 fn borrowed_params_decode_as_the_protocol_params() {
     let session_id = SessionId::new_v7();
     let event = stored_event(session_id, 7);
+    let encoded = super::EncodedEvent::of(&event.payload);
+    assert_eq!(encoded.tag, "diagnostic");
     let params = raw_params(&super::EventParamsRef {
         session_id,
         context_id: "context-1",
         seq: event.seq,
-        event: &event.payload,
+        event: &encoded.json,
         timestamp: event.timestamp,
     });
     assert_eq!(
@@ -696,4 +698,105 @@ fn borrowed_params_decode_as_the_protocol_params() {
             payload,
         }
     );
+}
+
+#[tokio::test]
+async fn event_patterns_select_what_each_plugin_receives() {
+    let marker = tempfile::tempdir().expect("marker directory");
+    let subscribers = [
+        ("runs", &["run_*"][..]),
+        ("diagnostics", &["diagnostic"][..]),
+        ("all", &["*"][..]),
+        ("none", &[][..]),
+    ];
+    let files = subscribers.map(|(name, _)| marker.path().join(format!("{name}.jsonl")));
+    let registry = start(
+        subscribers
+            .iter()
+            .zip(&files)
+            .map(|((name, patterns), file)| {
+                (
+                    *name,
+                    config(
+                        name,
+                        &[
+                            ("FIXTURE_CAPABILITIES", &capabilities(patterns, false, &[])),
+                            ("FIXTURE_EVENT_FILE", file.to_str().expect("event path")),
+                        ],
+                    ),
+                )
+            })
+            .collect(),
+    )
+    .await;
+    for (name, _) in subscribers {
+        wait_for(&registry, name, PluginState::Connected).await;
+    }
+    assert_eq!(
+        registry
+            .statuses()
+            .iter()
+            .map(|status| (
+                status.name.as_str(),
+                status
+                    .subscribe_events
+                    .iter()
+                    .map(|pattern| pattern.as_str().to_owned())
+                    .collect::<Vec<_>>()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("runs", vec!["run_*".to_owned()]),
+            ("diagnostics", vec!["diagnostic".to_owned()]),
+            ("all", vec!["*".to_owned()]),
+            ("none", vec![]),
+        ]
+    );
+    let session_id = SessionId::new_v7();
+    let run_id = cookie_agent_protocol::RunId::new_v7();
+    assert!(
+        registry
+            .stream_session_event(&stored_event(session_id, 2))
+            .is_empty()
+    );
+    let mut finished = stored_event(session_id, 3);
+    finished.run_id = Some(run_id);
+    finished.payload = EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+        final_text: None,
+    });
+    assert!(registry.stream_session_event(&finished).is_empty());
+    // A live-only event is selected by its type too.
+    let delta = cookie_agent_protocol::TransientEvent {
+        session_id,
+        run_id: Some(run_id),
+        after_seq: 3,
+        timestamp: jiff::Timestamp::now(),
+        payload: EventPayload::TextDelta {
+            attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
+            text: "live".into(),
+        },
+    };
+    assert!(registry.stream_transient_event(&delta).is_empty());
+
+    let types = |events: Vec<Value>| {
+        events
+            .iter()
+            .map(|event| {
+                event["event"]["type"]
+                    .as_str()
+                    .expect("event type")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        types(lines(&files[2], 3).await),
+        ["diagnostic", "run_finished", "text_delta"]
+    );
+    assert_eq!(types(lines(&files[0], 1).await), ["run_finished"]);
+    assert_eq!(types(lines(&files[1], 1).await), ["diagnostic"]);
+    // Each plugin's queue is in order, so by now the others would have had
+    // theirs; the plugin that subscribes to nothing got none.
+    assert!(!files[3].exists());
+    registry.shutdown().await;
 }

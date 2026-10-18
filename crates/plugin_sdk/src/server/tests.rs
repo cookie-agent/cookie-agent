@@ -223,9 +223,13 @@ fn capabilities_follow_the_registered_handlers() {
             ExtensionHookOnError::Block,
         )
         .on_event(|_context, _event| async {})
+        .event_patterns(["run_*", "diagnostic"])
         .enable_bus_publishing();
     let capabilities = builder.capabilities();
-    assert!(capabilities.subscribe_events);
+    assert_eq!(
+        serde_json::to_value(&capabilities.subscribe_events).expect("patterns JSON"),
+        json!(["run_*", "diagnostic"])
+    );
     assert!(!capabilities.subscribe_bus);
     assert!(capabilities.publish_bus);
     assert!(!capabilities.producer_messaging);
@@ -285,6 +289,20 @@ fn building_rejects_invalid_registrations() {
         ))
         .to_string()
         .contains("`tool_before_call`, which has no handler")
+    );
+    assert!(
+        error(PluginServer::builder("watcher", "1").event_patterns(["run_*"]))
+            .to_string()
+            .contains("event_patterns requires on_event")
+    );
+    assert!(
+        error(
+            PluginServer::builder("watcher", "1")
+                .on_event(|_context, _event| async {})
+                .event_patterns(["run*_x"])
+        )
+        .to_string()
+        .contains("invalid event pattern `run*_x`")
     );
     let mut background = declaration("echo");
     background.background_default = true;
@@ -510,7 +528,12 @@ async fn an_event_handler_emits_once_with_the_delivered_context() {
         .build()
         .expect("server");
     let mut engine = Engine::connect(server, false).await;
-    assert!(engine.initialized.capabilities.subscribe_events);
+    // An event handler alone subscribes to every event type.
+    assert_eq!(
+        serde_json::to_value(&engine.initialized.capabilities.subscribe_events)
+            .expect("patterns JSON"),
+        json!(["*"])
+    );
     let session_id = SessionId::new_v7();
     engine
         .peer

@@ -56,7 +56,15 @@
           "type": "boolean"
         },
         "subscribe_events": {
-          "type": "boolean"
+          "description": "The types of the session events the plugin receives; empty for none.\nThe daemon skips a pattern it cannot read, with a diagnostic.",
+          "items": {
+            "description": "Event types: a type, a prefix ending in `*`, or `*` for every type.",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^(\\*|[a-z][a-z0-9_]*\\*?)$",
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [

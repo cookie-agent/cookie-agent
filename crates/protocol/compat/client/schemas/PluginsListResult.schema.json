@@ -52,7 +52,15 @@
           "type": "boolean"
         },
         "subscribe_events": {
-          "type": "boolean"
+          "description": "The event types it subscribes to; empty for none.",
+          "items": {
+            "description": "Event types: a type, a prefix ending in `*`, or `*` for every type.",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^(\\*|[a-z][a-z0-9_]*\\*?)$",
+            "type": "string"
+          },
+          "type": "array"
         },
         "tools": {
           "description": "The names its tools are declared under.",

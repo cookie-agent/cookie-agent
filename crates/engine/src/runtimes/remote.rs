@@ -426,6 +426,32 @@ fn take_unusable_intercepts(reply: &mut serde_json::Value) -> Vec<String> {
     notes
 }
 
+/// Drops the patterns of a plugin's initialize reply's
+/// `capabilities.subscribe_events` this build cannot read, before the reply
+/// is decoded, and returns a note for each.
+fn take_unreadable_event_patterns(reply: &mut serde_json::Value) -> Vec<String> {
+    let Some(patterns) = reply
+        .pointer_mut("/capabilities/subscribe_events")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Vec::new();
+    };
+    let mut notes = Vec::new();
+    patterns.retain(|pattern| {
+        match serde_json::from_value::<cookie_agent_protocol::EventPattern>(pattern.clone()) {
+            Ok(_) => true,
+            Err(error) => {
+                notes.push(format!(
+                    "the plugin subscribes to events by {pattern}, which this daemon cannot read \
+                     ({error}); it is skipped"
+                ));
+                false
+            }
+        }
+    });
+    notes
+}
+
 /// Reads a handshake reply: the peer's version first, from the raw JSON
 /// (`docs/site/specs/compatibility-v1.md` section 3.2), then the rest.
 fn read_handshake<T: serde::de::DeserializeOwned>(
@@ -786,7 +812,8 @@ impl RuntimeClient {
             .await
             .map_err(|error| failed(&error))?;
         let mut reply = reply;
-        let intercept_notes = take_unusable_intercepts(&mut reply);
+        let mut intercept_notes = take_unusable_intercepts(&mut reply);
+        intercept_notes.extend(take_unreadable_event_patterns(&mut reply));
         let result: cookie_agent_protocol::ExtensionInitializeResult =
             read_handshake(cookie_agent_protocol::PLUGIN_PROTOCOL_VERSION, reply)
                 .map_err(|reason| failed(&reason))?;

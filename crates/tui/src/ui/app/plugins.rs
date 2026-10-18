@@ -192,8 +192,13 @@ fn plugin_detail(plugin: &PluginInfo) -> String {
         .collect::<Vec<_>>();
     text.push_str(&format!("\nhooks: {}", list(&hooks)));
     let mut streams = Vec::new();
-    if plugin.subscribe_events {
-        streams.push("events".to_owned());
+    if !plugin.subscribe_events.is_empty() {
+        let patterns = plugin
+            .subscribe_events
+            .iter()
+            .map(cookie_agent_protocol::EventPattern::as_str)
+            .collect::<Vec<_>>();
+        streams.push(format!("events ({})", patterns.join(", ")));
     }
     if plugin.subscribe_bus {
         streams.push("bus".to_owned());
@@ -229,7 +234,7 @@ mod tests {
             reason: None,
             tools: Vec::new(),
             hooks: Vec::new(),
-            subscribe_events: false,
+            subscribe_events: Vec::new(),
             subscribe_bus: false,
             publish_bus: false,
             producer_messaging: false,
@@ -244,7 +249,10 @@ mod tests {
         failed.reason = Some("exited with status 1".into());
         failed.tools = vec!["read_issue".into(), "close_issue".into()];
         failed.hooks = vec![cookie_agent_protocol::HookName::new("tool_before_call").unwrap()];
-        failed.subscribe_events = true;
+        failed.subscribe_events = vec![
+            cookie_agent_protocol::EventPattern::new("run_*").unwrap(),
+            cookie_agent_protocol::EventPattern::new("tool_call_*").unwrap(),
+        ];
         failed.dropped_events = 3;
         failed.stderr = Some("token missing".into());
         let detail = plugin_detail(&failed);
@@ -253,7 +261,7 @@ mod tests {
             "reason: exited with status 1",
             "tools: read_issue, close_issue",
             "hooks: tool_before_call",
-            "also: events",
+            "also: events (run_*, tool_call_*)",
             "dropped notifications: 3",
             "stderr:\ntoken missing",
         ] {

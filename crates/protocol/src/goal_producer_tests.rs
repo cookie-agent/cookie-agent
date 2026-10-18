@@ -794,7 +794,7 @@ fn recovery_handshake_has_only_explicit_completion_outcomes() {
     assert_eq!(wire["features"], json!(["producer_messaging"]));
     round_trip(params);
     tolerant::<ExtensionPluginCapabilities>(
-        json!({"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[]}),
+        json!({"producer_messaging":false,"subscribe_events":[],"subscribe_bus":false,"publish_bus":false,"intercept":[]}),
     );
 }
 

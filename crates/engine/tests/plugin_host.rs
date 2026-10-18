@@ -418,14 +418,15 @@ async fn shutdown_during_pending_initialize_is_bounded() {
 }
 
 #[tokio::test]
-async fn unusable_intercept_entries_are_skipped_with_a_diagnostic_and_the_plugin_starts() {
+async fn unusable_intercept_entries_and_event_patterns_are_skipped_with_a_diagnostic() {
     let config = plugin_table(
         "fixture",
         &[
             ("FIXTURE_NAME", "fixture".into()),
             (
                 "FIXTURE_CAPABILITIES",
-                r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,
+                r#"{"producer_messaging":false,"subscribe_events":["run_*","Run Anything"],
+                    "subscribe_bus":false,
                     "publish_bus":false,"intercept":[
                         {"hook":"tool_before_call","on_error":"block","since":"0.9.0"},
                         {"hook":"tool_teleport"},
@@ -449,11 +450,20 @@ async fn unusable_intercept_entries_are_skipped_with_a_diagnostic_and_the_plugin
             .collect::<Vec<_>>(),
         ["tool_before_call"]
     );
+    assert_eq!(
+        connected
+            .subscribe_events
+            .iter()
+            .map(cookie_agent_protocol::EventPattern::as_str)
+            .collect::<Vec<_>>(),
+        ["run_*"]
+    );
     let reason = connected.reason.as_deref().unwrap_or_default();
     for expected in [
         "hook `tool_teleport`, which this daemon does not know",
         "an intercept entry this daemon cannot read",
         "hook `tool_before_call` more than once",
+        "events by \"Run Anything\", which this daemon cannot read",
     ] {
         assert!(
             reason.contains(expected),

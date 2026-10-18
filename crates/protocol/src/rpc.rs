@@ -680,7 +680,8 @@ pub struct PluginInfo {
     pub tools: Vec<String>,
     /// The hooks it intercepts, in no particular order.
     pub hooks: Vec<crate::HookName>,
-    pub subscribe_events: bool,
+    /// The event types it subscribes to; empty for none.
+    pub subscribe_events: Vec<crate::EventPattern>,
     pub subscribe_bus: bool,
     pub publish_bus: bool,
     /// Its producer messaging is open: the plugin declares it and its

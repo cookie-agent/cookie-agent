@@ -160,7 +160,7 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
     fixture.config.skills =
         cookie_agent_config::load_skill_roots(None, None, &[fixture._directory.path().to_owned()])
             .expect("fixture skills");
-    let capabilities = r#"{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[{"hook":"agent_before_start"}]}"#;
+    let capabilities = r#"{"producer_messaging":false,"subscribe_events":[],"subscribe_bus":false,"publish_bus":false,"intercept":[{"hook":"agent_before_start"}]}"#;
     reopen_with_interception_plugins(
         &mut fixture,
         vec![(
