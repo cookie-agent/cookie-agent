@@ -1543,3 +1543,9 @@ Deviations and choices made while implementing, by phase.
   liveness, and fork linking scan a log through `artifact_references_in_log`:
   its raw lines as read, and the records written since as they serialize.
   Manifest expansion uses the same scanner.
+- **Metadata caches.** A root's or a filed child's `metadata` that does not
+  decode, or names another session, is rebuilt by folding the session's log
+  (read through the read-only log cache) and is rewritten only when this
+  process owns the session; a listing, an index entry's check, and a child's
+  adoption all go through it. A missing `metadata` still means a directory
+  being published and is skipped. `subagents/index.json` rebuilds as before.

@@ -4454,3 +4454,43 @@ fn metadata_cache_without_last_activity_reads_the_log_mtime() {
     );
     assert_eq!(repaired.session_id, written.session_id);
 }
+
+/// A `metadata` cache that does not decode is rebuilt from the session's log,
+/// so the session stays listed, and a child with one is still adopted from
+/// the tree directory.
+#[test]
+fn an_unreadable_metadata_cache_is_rebuilt_from_the_log() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let owner = SessionStore::open(&data, &cwd).expect("owner store");
+    let root = persist_test_session(&owner);
+    let child = persist_test_session_with_origin(&owner, delegated_origin(root, root, 1));
+    let root_meta = owner.summary(root).expect("root summary").meta;
+    let child_meta = owner.summary(child).expect("child summary").meta;
+    let root_dir = owner.session_dir(root);
+    let child_dir = root_dir.join(SUBAGENTS_DIR).join(child.to_string());
+    drop(owner);
+    fs::write(meta_path(&root_dir), b"{\"not\": \"metadata\"").expect("corrupt root cache");
+    fs::write(meta_path(&child_dir), b"[]").expect("corrupt child cache");
+    fs::remove_file(root_dir.join(SUBAGENTS_DIR).join(SUBAGENT_INDEX_FILE))
+        .expect("remove the child index");
+
+    let store = SessionStore::open(&data, &cwd).expect("store");
+    let listed = store
+        .list_roots()
+        .into_iter()
+        .find(|meta| meta.session_id == root)
+        .expect("the root is still listed");
+    assert_eq!(listed, root_meta);
+    let children = store.children(root).expect("children");
+    assert_eq!(
+        children
+            .iter()
+            .map(|child| child.session_id)
+            .collect::<Vec<_>>(),
+        vec![child]
+    );
+    assert_eq!(children[0].title, child_meta.title);
+}

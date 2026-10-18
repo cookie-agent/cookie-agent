@@ -2647,18 +2647,39 @@ impl SessionStore {
                 continue;
             }
             let dir = self.workdir_dir.join(root.to_string());
-            match read_cache(&meta_path(&dir), &dir.join(EVENTS_FILE)) {
-                Ok(meta) if meta.session_id == root => {
+            match self.read_meta(root, &dir) {
+                Ok(meta) => {
                     self.record_location(root, SessionLocation::Root);
                     roots.push(meta);
                 }
-                Ok(_) => eprintln!("session {root} metadata ID does not match its directory"),
                 Err(SessionError::Io { source, .. })
                     if source.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => eprintln!("session {root} metadata skipped: {error}"),
+                Err(error) => eprintln!("session {root} skipped: {error}"),
             }
         }
         roots
+    }
+
+    /// The `metadata` cache of the session `id` in `dir`. A cache that does
+    /// not decode, or names another session, is rebuilt from the session's
+    /// log, and rewritten when this process owns the session; a missing one
+    /// is the error it is, since a session directory without it is still
+    /// being published.
+    fn read_meta(&self, id: SessionId, dir: &Path) -> Result<SessionMeta, SessionError> {
+        let path = meta_path(dir);
+        let error = match read_cache(&path, &dir.join(EVENTS_FILE)) {
+            Ok(meta) if meta.session_id == id => return Ok(meta),
+            Ok(_) => format!("session {id} metadata names another session"),
+            Err(error @ SessionError::Io { .. }) => return Err(error),
+            Err(error) => error.to_string(),
+        };
+        eprintln!("{error}; rebuilding it from the session's log");
+        let log = self.read_only_log(id, dir.join(EVENTS_FILE))?;
+        let meta = projection(log)?.meta;
+        if self.is_owned(id) {
+            write_cache(&path, &meta, CacheSync::Atomic)?;
+        }
+        Ok(meta)
     }
 
     /// Summaries of every session in the tree that holds `id`: its root and
@@ -3233,14 +3254,13 @@ impl SessionStore {
             eprintln!("subagent index for {root} names root session {id}; ignored");
             return None;
         }
-        let Ok(meta) = read_cache(&meta_path(&dir), &dir.join(EVENTS_FILE)) else {
-            eprintln!("subagent index for {root}: child {id} metadata is unreadable");
-            return None;
+        let meta = match self.read_meta(id, &dir) {
+            Ok(meta) => meta,
+            Err(error) => {
+                eprintln!("subagent index for {root}: child {id} is unreadable: {error}");
+                return None;
+            }
         };
-        if meta.session_id != id {
-            eprintln!("session {id} metadata ID does not match its directory");
-            return None;
-        }
         match meta.origin {
             SessionOrigin::Delegated {
                 root_session_id, ..
@@ -3262,13 +3282,18 @@ impl SessionStore {
         id: SessionId,
     ) -> Result<Option<SessionId>, SessionError> {
         let dir = self.path_for(SessionLocation::Child { root }, id);
-        let Ok(meta) = read_cache(&meta_path(&dir), &dir.join(EVENTS_FILE)) else {
-            return Ok(None);
+        let meta = match self.read_meta(id, &dir) {
+            Ok(meta) => meta,
+            Err(SessionError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                return Ok(None);
+            }
+            Err(error) => {
+                eprintln!("subagent {id} of {root} skipped: {error}");
+                return Ok(None);
+            }
         };
-        if meta.session_id != id {
-            eprintln!("session {id} metadata ID does not match its directory");
-            return Ok(None);
-        }
         let parent = match meta.origin {
             SessionOrigin::Delegated {
                 parent_session_id, ..
