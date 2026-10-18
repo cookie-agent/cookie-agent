@@ -1857,8 +1857,38 @@ fn delegation_request_has_only_the_current_strict_shape() {
 }
 
 #[test]
+fn adapter_labels_accept_unknown_adapters_and_reject_malformed_ones() {
+    let adapter = serde_json::from_value::<AdaptorId>(json!("acme-messages-v2")).unwrap();
+    assert_eq!(adapter.as_str(), "acme-messages-v2");
+    assert_eq!(
+        serde_json::to_value(&AdaptorId::AZURE_OPENAI_RESPONSES).unwrap(),
+        json!("azure-openai-responses")
+    );
+    for malformed in ["", "Anthropic", "-openai", "openai_chat", &"a".repeat(33)] {
+        assert!(
+            serde_json::from_value::<AdaptorId>(json!(malformed)).is_err(),
+            "{malformed:?}"
+        );
+    }
+
+    use crate::runtime_protocol::AdapterFamily;
+    assert_eq!(
+        serde_json::from_value::<AdapterFamily>(json!("anthropic-compatible")).unwrap(),
+        AdapterFamily::AnthropicCompatible
+    );
+    assert_eq!(
+        serde_json::from_value::<AdapterFamily>(json!("acme-messages-v2")).unwrap(),
+        AdapterFamily::Unknown
+    );
+    assert_eq!(
+        serde_json::to_value(AdapterFamily::GoogleVertexGemini).unwrap(),
+        json!("google-vertex-gemini")
+    );
+    assert!(serde_json::from_value::<AdapterFamily>(json!("Anthropic")).is_err());
+}
+
+#[test]
 fn open_responses_is_not_a_current_protocol_surface() {
-    assert!(serde_json::from_value::<AdaptorId>(json!("open-responses")).is_err());
     assert!(
         serde_json::from_value::<ProviderOptions>(
             json!({"type":"open-responses","protocol_mode":"standard"})

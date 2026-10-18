@@ -45,7 +45,7 @@ pub fn attachment_gate_error(
     gate: AttachmentGate,
     mime_type: &str,
     model: &ModelKey,
-    family: AdaptorId,
+    family: &AdaptorId,
 ) -> Option<String> {
     match gate {
         AttachmentGate::AttachToolResult | AttachmentGate::DeliverViaUserTurn => None,
@@ -1266,7 +1266,7 @@ mod tests {
                 },
                 "image/png",
                 &"test/model".parse().unwrap(),
-                AdaptorId::AwsBedrockConverse,
+                &AdaptorId::AWS_BEDROCK_CONVERSE,
             )
             .unwrap(),
             "Cannot attach image/png: exceeds the 3.75 MiB inline limit for this provider"
@@ -1399,6 +1399,10 @@ mod tests {
         );
         assert_eq!(
             gate_attachment(AdapterFamily::Anthropic, &video, "video/mp4", 5),
+            AttachmentGate::RejectUnsupportedFamily
+        );
+        assert_eq!(
+            gate_attachment(AdapterFamily::Unknown, &video, "video/mp4", 5),
             AttachmentGate::RejectUnsupportedFamily
         );
     }

@@ -1001,38 +1001,18 @@ pub(crate) fn resolve_agent<'a>(
 }
 
 pub(crate) fn wire_adapter(value: &str) -> protocol::AdaptorId {
+    use cookie_agent_models::adapters::OvenAdapterFamily as Oven;
     match adapter_family(value) {
-        cookie_agent_models::adapters::OvenAdapterFamily::Anthropic
-        | cookie_agent_models::adapters::OvenAdapterFamily::AnthropicCompatible => {
-            protocol::AdaptorId::Anthropic
-        }
-        cookie_agent_models::adapters::OvenAdapterFamily::OpenaiChat => {
-            protocol::AdaptorId::OpenaiChat
-        }
-        cookie_agent_models::adapters::OvenAdapterFamily::OpenaiResponses => {
-            protocol::AdaptorId::OpenaiResponses
-        }
-        cookie_agent_models::adapters::OvenAdapterFamily::OpenaiCompatible => {
-            protocol::AdaptorId::OpenaiCompatible
-        }
-        cookie_agent_models::adapters::OvenAdapterFamily::GoogleGemini => {
-            protocol::AdaptorId::GoogleGemini
-        }
-        cookie_agent_models::adapters::OvenAdapterFamily::GoogleVertexGemini => {
-            protocol::AdaptorId::GoogleVertexGemini
-        }
-        cookie_agent_models::adapters::OvenAdapterFamily::AwsBedrockConverse => {
-            protocol::AdaptorId::AwsBedrockConverse
-        }
-        cookie_agent_models::adapters::OvenAdapterFamily::AzureOpenaiChat => {
-            protocol::AdaptorId::AzureOpenaiChat
-        }
-        cookie_agent_models::adapters::OvenAdapterFamily::AzureOpenaiResponses => {
-            protocol::AdaptorId::AzureOpenaiResponses
-        }
-        cookie_agent_models::adapters::OvenAdapterFamily::CohereV2Chat => {
-            protocol::AdaptorId::CohereV2Chat
-        }
+        Oven::Anthropic | Oven::AnthropicCompatible => protocol::AdaptorId::ANTHROPIC,
+        Oven::OpenaiChat => protocol::AdaptorId::OPENAI_CHAT,
+        Oven::OpenaiResponses => protocol::AdaptorId::OPENAI_RESPONSES,
+        Oven::OpenaiCompatible => protocol::AdaptorId::OPENAI_COMPATIBLE,
+        Oven::GoogleGemini => protocol::AdaptorId::GOOGLE_GEMINI,
+        Oven::GoogleVertexGemini => protocol::AdaptorId::GOOGLE_VERTEX_GEMINI,
+        Oven::AwsBedrockConverse => protocol::AdaptorId::AWS_BEDROCK_CONVERSE,
+        Oven::AzureOpenaiChat => protocol::AdaptorId::AZURE_OPENAI_CHAT,
+        Oven::AzureOpenaiResponses => protocol::AdaptorId::AZURE_OPENAI_RESPONSES,
+        Oven::CohereV2Chat => protocol::AdaptorId::COHERE_V2_CHAT,
     }
 }
 

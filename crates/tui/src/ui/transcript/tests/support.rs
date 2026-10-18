@@ -323,7 +323,7 @@ pub(crate) fn resolved_model(variant: Option<&str>) -> cookie_agent_protocol::Re
     cookie_agent_protocol::ResolvedModelRef {
         provider_id: ProviderId::new("gateway").expect("provider id"),
         model_id: cookie_agent_protocol::ProviderModelId::new("arbitrary-model").expect("model id"),
-        adapter_id: cookie_agent_protocol::AdaptorId::OpenaiCompatible,
+        adapter_id: cookie_agent_protocol::AdaptorId::OPENAI_COMPATIBLE,
         selection_fingerprint: Sha256Digest::of_bytes(
             format!("selection:{selection:?}").as_bytes(),
         ),

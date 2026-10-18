@@ -2118,7 +2118,7 @@ fn retain_base64_attachment(
             gate,
             mime,
             &context.turn_context.model,
-            context.turn_context.adapter,
+            &context.turn_context.adapter,
         ) {
             return Err(McpAttachmentError::Gated(error));
         }

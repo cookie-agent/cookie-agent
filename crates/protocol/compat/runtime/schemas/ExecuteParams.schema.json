@@ -1,37 +1,5 @@
 {
   "$defs": {
-    "AdapterFamily": {
-      "description": "Exact model adapter family of a turn. Unlike [`AdaptorId`] it keeps\ncompatible families apart, because their media delivery differs.",
-      "enum": [
-        "anthropic",
-        "anthropic-compatible",
-        "openai-chat",
-        "openai-responses",
-        "openai-compatible",
-        "google-gemini",
-        "google-vertex-gemini",
-        "aws-bedrock-converse",
-        "azure-openai-chat",
-        "azure-openai-responses",
-        "cohere-v2-chat"
-      ],
-      "type": "string"
-    },
-    "AdaptorId": {
-      "enum": [
-        "anthropic",
-        "openai-chat",
-        "openai-responses",
-        "openai-compatible",
-        "google-gemini",
-        "google-vertex-gemini",
-        "aws-bedrock-converse",
-        "azure-openai-chat",
-        "azure-openai-responses",
-        "cohere-v2-chat"
-      ],
-      "type": "string"
-    },
     "CancellationCapability": {
       "enum": [
         "local_only",
@@ -187,10 +155,14 @@
       "description": "The agent and model context of one tool batch.",
       "properties": {
         "adapter": {
-          "$ref": "#/$defs/AdaptorId"
+          "description": "Wire adapter a model is reached through, such as `anthropic` or `openai-responses`.",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$",
+          "type": "string"
         },
         "adapter_family": {
-          "$ref": "#/$defs/AdapterFamily"
+          "description": "Exact adapter family of the turn's model, such as `anthropic-compatible` or `openai-responses`.",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$",
+          "type": "string"
         },
         "agent": {
           "maxLength": 64,

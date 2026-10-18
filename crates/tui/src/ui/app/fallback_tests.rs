@@ -153,7 +153,7 @@ impl Harness {
                 selection: self.b.selection.clone(),
                 provider_id: self.b.selection.model.provider_id(),
                 model_id: self.b.selection.model.model_id(),
-                adapter_id: cookie_agent_protocol::AdaptorId::OpenaiResponses,
+                adapter_id: cookie_agent_protocol::AdaptorId::OPENAI_RESPONSES,
                 selection_fingerprint: self.b.selection_fingerprint.clone(),
             },
             turn: cookie_agent_protocol::PersistedModelTurn {

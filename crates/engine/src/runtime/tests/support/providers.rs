@@ -6,7 +6,7 @@ pub(crate) fn test_turn_context() -> Arc<TurnAgentContext> {
     Arc::new(TurnAgentContext {
         agent: AgentId::new("test").expect("test agent ID"),
         model: "test/model".parse().expect("test model key"),
-        adapter: cookie_agent_protocol::AdaptorId::OpenaiChat,
+        adapter: cookie_agent_protocol::AdaptorId::OPENAI_CHAT,
         adapter_family: cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
         capabilities: cookie_agent_protocol::ModelCapabilities {
             input: BTreeSet::from([cookie_agent_protocol::Modality::Text]),
@@ -1226,7 +1226,7 @@ impl PreparedExecutor for TestMediaReadExecutor {
                 gate,
                 mime,
                 &context.turn_context.model,
-                context.turn_context.adapter,
+                &context.turn_context.adapter,
             ) {
                 return Err(ToolError::execution(error));
             }

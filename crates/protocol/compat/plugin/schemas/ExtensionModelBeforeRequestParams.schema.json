@@ -1,20 +1,5 @@
 {
   "$defs": {
-    "AdaptorId": {
-      "enum": [
-        "anthropic",
-        "openai-chat",
-        "openai-responses",
-        "openai-compatible",
-        "google-gemini",
-        "google-vertex-gemini",
-        "aws-bedrock-converse",
-        "azure-openai-chat",
-        "azure-openai-responses",
-        "cohere-v2-chat"
-      ],
-      "type": "string"
-    },
     "ExtensionMessageRole": {
       "enum": [
         "system",
@@ -70,7 +55,9 @@
       "additionalProperties": false,
       "properties": {
         "adapter_id": {
-          "$ref": "#/$defs/AdaptorId"
+          "description": "Wire adapter a model is reached through, such as `anthropic` or `openai-responses`.",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$",
+          "type": "string"
         },
         "model_id": {
           "maxLength": 384,

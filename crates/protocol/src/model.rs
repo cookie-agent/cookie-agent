@@ -15,38 +15,85 @@ use crate::{
     SafeStaticHeaderValue, Sha256Digest, VariantId,
 };
 
-#[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
-)]
-#[serde(rename_all = "kebab-case")]
-pub enum AdaptorId {
-    Anthropic,
-    OpenaiChat,
-    OpenaiResponses,
-    OpenaiCompatible,
-    GoogleGemini,
-    GoogleVertexGemini,
-    AwsBedrockConverse,
-    AzureOpenaiChat,
-    AzureOpenaiResponses,
-    CohereV2Chat,
-}
+/// The wire adapter a model is reached through, such as `anthropic` or
+/// `openai-responses`: a label matching `[a-z][a-z0-9-]{0,31}`. Readers
+/// accept adapters they do not know; the constants are the ones this build
+/// resolves models to.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AdaptorId(Cow<'static, str>);
 
 impl AdaptorId {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Anthropic => "anthropic",
-            Self::OpenaiChat => "openai-chat",
-            Self::OpenaiResponses => "openai-responses",
-            Self::OpenaiCompatible => "openai-compatible",
-            Self::GoogleGemini => "google-gemini",
-            Self::GoogleVertexGemini => "google-vertex-gemini",
-            Self::AwsBedrockConverse => "aws-bedrock-converse",
-            Self::AzureOpenaiChat => "azure-openai-chat",
-            Self::AzureOpenaiResponses => "azure-openai-responses",
-            Self::CohereV2Chat => "cohere-v2-chat",
+    pub const ANTHROPIC: Self = Self(Cow::Borrowed("anthropic"));
+    pub const OPENAI_CHAT: Self = Self(Cow::Borrowed("openai-chat"));
+    pub const OPENAI_RESPONSES: Self = Self(Cow::Borrowed("openai-responses"));
+    pub const OPENAI_COMPATIBLE: Self = Self(Cow::Borrowed("openai-compatible"));
+    pub const GOOGLE_GEMINI: Self = Self(Cow::Borrowed("google-gemini"));
+    pub const GOOGLE_VERTEX_GEMINI: Self = Self(Cow::Borrowed("google-vertex-gemini"));
+    pub const AWS_BEDROCK_CONVERSE: Self = Self(Cow::Borrowed("aws-bedrock-converse"));
+    pub const AZURE_OPENAI_CHAT: Self = Self(Cow::Borrowed("azure-openai-chat"));
+    pub const AZURE_OPENAI_RESPONSES: Self = Self(Cow::Borrowed("azure-openai-responses"));
+    pub const COHERE_V2_CHAT: Self = Self(Cow::Borrowed("cohere-v2-chat"));
+
+    pub const MAX_LEN: usize = 32;
+
+    pub fn new(value: impl Into<String>) -> Result<Self, crate::WireStringError> {
+        let value = value.into();
+        if adapter_label_valid(&value) {
+            Ok(Self(Cow::Owned(value)))
+        } else {
+            Err(crate::WireStringError::Invalid("adapter"))
         }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Whether `value` is an adapter label: `[a-z][a-z0-9-]{0,31}`.
+pub(crate) fn adapter_label_valid(value: &str) -> bool {
+    value.len() <= AdaptorId::MAX_LEN
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase() || (index > 0 && (byte.is_ascii_digit() || byte == b'-'))
+        })
+        && !value.is_empty()
+}
+
+impl fmt::Display for AdaptorId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+impl Serialize for AdaptorId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+impl<'de> Deserialize<'de> for AdaptorId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+impl JsonSchema for AdaptorId {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("AdaptorId")
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,31}$",
+            "description": "Wire adapter a model is reached through, such as `anthropic` or `openai-responses`."
+        })
     }
 }
 
@@ -818,16 +865,16 @@ impl ProviderOptions {
     #[must_use]
     pub const fn adapter_id(&self) -> AdaptorId {
         match self {
-            Self::Anthropic { .. } => AdaptorId::Anthropic,
-            Self::OpenAiChat { .. } => AdaptorId::OpenaiChat,
-            Self::OpenAiResponses { .. } => AdaptorId::OpenaiResponses,
-            Self::OpenAiCompatible { .. } => AdaptorId::OpenaiCompatible,
-            Self::GoogleGemini { .. } => AdaptorId::GoogleGemini,
-            Self::GoogleVertexGemini { .. } => AdaptorId::GoogleVertexGemini,
-            Self::AwsBedrockConverse { .. } => AdaptorId::AwsBedrockConverse,
-            Self::AzureOpenAiChat { .. } => AdaptorId::AzureOpenaiChat,
-            Self::AzureOpenAiResponses { .. } => AdaptorId::AzureOpenaiResponses,
-            Self::CohereV2Chat { .. } => AdaptorId::CohereV2Chat,
+            Self::Anthropic { .. } => AdaptorId::ANTHROPIC,
+            Self::OpenAiChat { .. } => AdaptorId::OPENAI_CHAT,
+            Self::OpenAiResponses { .. } => AdaptorId::OPENAI_RESPONSES,
+            Self::OpenAiCompatible { .. } => AdaptorId::OPENAI_COMPATIBLE,
+            Self::GoogleGemini { .. } => AdaptorId::GOOGLE_GEMINI,
+            Self::GoogleVertexGemini { .. } => AdaptorId::GOOGLE_VERTEX_GEMINI,
+            Self::AwsBedrockConverse { .. } => AdaptorId::AWS_BEDROCK_CONVERSE,
+            Self::AzureOpenAiChat { .. } => AdaptorId::AZURE_OPENAI_CHAT,
+            Self::AzureOpenAiResponses { .. } => AdaptorId::AZURE_OPENAI_RESPONSES,
+            Self::CohereV2Chat { .. } => AdaptorId::COHERE_V2_CHAT,
         }
     }
 }

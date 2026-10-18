@@ -1300,3 +1300,9 @@ Deviations and choices made while implementing, by phase.
   The field and `ToolOutputTruncation` are gone. `PersistedToolResult` is
   also the `tool/execute` result, so the runtime protocol moves to 6
   (`0.6.0`); the plugin protocol already moved to 2 in this step.
+- **Adapter labels.** `AdaptorId` is a label (`[a-z][a-z0-9-]{0,31}`; the
+  `kind_label!` grammar with room for `azure-openai-responses`) with
+  constants for the adapters this build resolves to; nothing branches on it.
+  `AdapterFamily` stays an enum, since media delivery branches on it, but
+  reads and writes the same label grammar, and a family this build does not
+  know reads as `Unknown`, which delivers no media.

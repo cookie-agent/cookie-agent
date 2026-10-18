@@ -473,7 +473,7 @@ async fn activation_and_resume_send_current_draft_without_changing_running_attri
                 selection: previous.model.clone(),
                 provider_id: previous.model.model.provider_id(),
                 model_id: previous.model.model.model_id(),
-                adapter_id: AdaptorId::OpenaiCompatible,
+                adapter_id: AdaptorId::OPENAI_COMPATIBLE,
                 selection_fingerprint: Sha256Digest::of_bytes(b"running-model-a"),
             },
         };

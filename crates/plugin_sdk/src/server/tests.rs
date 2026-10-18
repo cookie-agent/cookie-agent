@@ -141,7 +141,7 @@ fn turn() -> WireTurnContext {
     WireTurnContext {
         agent: AgentId::new("test").expect("agent ID"),
         model: "test/model".parse().expect("model key"),
-        adapter: AdaptorId::OpenaiChat,
+        adapter: AdaptorId::OPENAI_CHAT,
         adapter_family: AdapterFamily::OpenaiChat,
         capabilities: ModelCapabilities {
             input: [Modality::Text].into_iter().collect(),

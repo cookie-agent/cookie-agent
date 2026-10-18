@@ -253,7 +253,9 @@ exists but cannot be read fails the request with `-32014` and `data.path`.
 
 Params: `instance`, the instance whose tools the calls name; `session`,
 `run`, `turn` (the agent, model, adapter, adapter family, and model
-capabilities of the turn); and `calls` (`id`, `name`, `arguments`; at most
+capabilities of the turn; the adapter and its family are labels such as
+`openai-responses` and `anthropic-compatible`, and a family the runtime does
+not know delivers no media); and `calls` (`id`, `name`, `arguments`; at most
 256). A plugin's prepare carries no `instance`. The runtime prepares a turn's calls together, so calls on one
 target chain. The result has one entry per call, tagged by `status`:
 

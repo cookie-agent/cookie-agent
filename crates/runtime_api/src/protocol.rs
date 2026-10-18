@@ -86,7 +86,7 @@ impl From<&TurnAgentContext> for WireTurnContext {
         Self {
             agent: context.agent.clone(),
             model: context.model.clone(),
-            adapter: context.adapter,
+            adapter: context.adapter.clone(),
             adapter_family: context.adapter_family,
             capabilities: context.capabilities.clone(),
         }
@@ -98,7 +98,7 @@ impl From<WireTurnContext> for TurnAgentContext {
         Self {
             agent: context.agent,
             model: context.model,
-            adapter: context.adapter,
+            adapter: context.adapter.clone(),
             adapter_family: context.adapter_family,
             capabilities: context.capabilities,
         }

@@ -61,21 +61,15 @@ fn turn_context(
     Arc::new(TurnAgentContext {
         agent: base.agent.clone(),
         model: base.model.clone(),
-        adapter,
-        adapter_family: match adapter {
-            AdaptorId::Anthropic => cookie_agent_runtime_api::AdapterFamily::AnthropicCompatible,
-            AdaptorId::OpenaiCompatible => {
-                cookie_agent_runtime_api::AdapterFamily::OpenaiCompatible
-            }
-            AdaptorId::AwsBedrockConverse => {
-                cookie_agent_runtime_api::AdapterFamily::AwsBedrockConverse
-            }
-            AdaptorId::GoogleGemini => cookie_agent_runtime_api::AdapterFamily::GoogleGemini,
-            AdaptorId::GoogleVertexGemini => {
-                cookie_agent_runtime_api::AdapterFamily::GoogleVertexGemini
-            }
+        adapter_family: match adapter.as_str() {
+            "anthropic" => cookie_agent_runtime_api::AdapterFamily::AnthropicCompatible,
+            "openai-compatible" => cookie_agent_runtime_api::AdapterFamily::OpenaiCompatible,
+            "aws-bedrock-converse" => cookie_agent_runtime_api::AdapterFamily::AwsBedrockConverse,
+            "google-gemini" => cookie_agent_runtime_api::AdapterFamily::GoogleGemini,
+            "google-vertex-gemini" => cookie_agent_runtime_api::AdapterFamily::GoogleVertexGemini,
             _ => cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
         },
+        adapter,
         capabilities,
     })
 }
@@ -362,7 +356,7 @@ async fn media_reads_follow_capability_family_and_size_gates() {
     fs::write(root.path().join("clip.mp4"), &video).unwrap();
 
     let image_capable = turn_context(
-        AdaptorId::Anthropic,
+        AdaptorId::ANTHROPIC,
         Some((
             MediaKind::Image,
             Modality::Image,
@@ -379,7 +373,7 @@ async fn media_reads_follow_capability_family_and_size_gates() {
     let image_incapable = execute_media(
         root.path(),
         "pixel.png",
-        turn_context(AdaptorId::Anthropic, None),
+        turn_context(AdaptorId::ANTHROPIC, None),
     )
     .await
     .unwrap_err();
@@ -389,7 +383,7 @@ async fn media_reads_follow_capability_family_and_size_gates() {
     );
 
     let pdf_capable = turn_context(
-        AdaptorId::Anthropic,
+        AdaptorId::ANTHROPIC,
         Some((
             MediaKind::Pdf,
             Modality::Pdf,
@@ -409,7 +403,7 @@ async fn media_reads_follow_capability_family_and_size_gates() {
     let pdf_incapable = execute_media(
         root.path(),
         "page.pdf",
-        turn_context(AdaptorId::Anthropic, None),
+        turn_context(AdaptorId::ANTHROPIC, None),
     )
     .await
     .unwrap_err();
@@ -422,7 +416,7 @@ async fn media_reads_follow_capability_family_and_size_gates() {
         root.path(),
         "pixel.png",
         turn_context(
-            AdaptorId::OpenaiCompatible,
+            AdaptorId::OPENAI_COMPATIBLE,
             Some((
                 MediaKind::Image,
                 Modality::Image,
@@ -451,7 +445,7 @@ async fn media_reads_follow_capability_family_and_size_gates() {
         root.path(),
         "pixel.png",
         turn_context(
-            AdaptorId::Anthropic,
+            AdaptorId::ANTHROPIC,
             Some((
                 MediaKind::Image,
                 Modality::Image,
@@ -469,16 +463,16 @@ async fn media_reads_follow_capability_family_and_size_gates() {
     );
 
     for family in [
-        AdaptorId::OpenaiCompatible,
-        AdaptorId::Anthropic,
-        AdaptorId::GoogleGemini,
-        AdaptorId::GoogleVertexGemini,
+        AdaptorId::OPENAI_COMPATIBLE,
+        AdaptorId::ANTHROPIC,
+        AdaptorId::GOOGLE_GEMINI,
+        AdaptorId::GOOGLE_VERTEX_GEMINI,
     ] {
         let result = execute_media(
             root.path(),
             "clip.mp4",
             turn_context(
-                family,
+                family.clone(),
                 Some((
                     MediaKind::Video,
                     Modality::Video,
@@ -507,7 +501,7 @@ async fn media_reads_follow_capability_family_and_size_gates() {
     let video_incapable = execute_media(
         root.path(),
         "clip.mp4",
-        turn_context(AdaptorId::OpenaiCompatible, None),
+        turn_context(AdaptorId::OPENAI_COMPATIBLE, None),
     )
     .await
     .unwrap_err();
@@ -525,7 +519,7 @@ async fn malformed_media_still_errors_and_text_path_is_unchanged() {
         root.path(),
         "bad.png",
         turn_context(
-            AdaptorId::Anthropic,
+            AdaptorId::ANTHROPIC,
             Some((MediaKind::Image, Modality::Image, "image/png", 1024)),
         ),
     )
@@ -542,7 +536,7 @@ async fn malformed_media_still_errors_and_text_path_is_unchanged() {
     let text = execute_media(
         root.path(),
         "note.txt",
-        turn_context(AdaptorId::OpenaiCompatible, None),
+        turn_context(AdaptorId::OPENAI_COMPATIBLE, None),
     )
     .await
     .unwrap();

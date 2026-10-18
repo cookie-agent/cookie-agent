@@ -261,7 +261,7 @@ retained_output: None,
                 gate,
                 mime,
                 &context.turn_context.model,
-                context.turn_context.adapter,
+                &context.turn_context.adapter,
             ) {
                 return Err(ToolError::execution(error));
             }

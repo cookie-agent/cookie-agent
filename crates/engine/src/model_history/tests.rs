@@ -1293,7 +1293,7 @@ fn native_replay_with_adapter_mismatching_persisted_turn_is_discarded() {
     )
     .expect("artifact");
     let mut persisted_resolved = resolved;
-    persisted_resolved.adapter_id = cookie_agent_protocol::AdaptorId::Anthropic;
+    persisted_resolved.adapter_id = cookie_agent_protocol::AdaptorId::ANTHROPIC;
     let events = vec![event(
         1,
         RunId::new_v7(),

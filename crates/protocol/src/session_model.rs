@@ -129,7 +129,7 @@ mod tests {
                 selection: model.model.clone(),
                 provider_id: "test".parse().unwrap(),
                 model_id: model.model.model.model_id().clone(),
-                adapter_id: crate::AdaptorId::OpenaiCompatible,
+                adapter_id: crate::AdaptorId::OPENAI_COMPATIBLE,
                 selection_fingerprint: crate::Sha256Digest::of_bytes(b"fixture"),
             },
             turn: crate::PersistedModelTurn {

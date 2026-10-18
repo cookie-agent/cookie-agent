@@ -699,20 +699,10 @@ pub enum ToolResultTruncationPolicy {
 
 /// Exact model adapter family of a turn. Unlike [`AdaptorId`] it keeps
 /// compatible families apart, because their media delivery differs.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Deserialize,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    schemars::JsonSchema,
-)]
-#[serde(rename_all = "kebab-case")]
+///
+/// On the wire it is a label (`[a-z][a-z0-9-]{0,31}`); a family this build
+/// does not know reads as [`Self::Unknown`], which delivers no media.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum AdapterFamily {
     Anthropic,
     AnthropicCompatible,
@@ -725,4 +715,89 @@ pub enum AdapterFamily {
     AzureOpenaiChat,
     AzureOpenaiResponses,
     CohereV2Chat,
+    /// A family newer than this build.
+    Unknown,
+}
+
+impl AdapterFamily {
+    const KNOWN: [Self; 11] = [
+        Self::Anthropic,
+        Self::AnthropicCompatible,
+        Self::OpenaiChat,
+        Self::OpenaiResponses,
+        Self::OpenaiCompatible,
+        Self::GoogleGemini,
+        Self::GoogleVertexGemini,
+        Self::AwsBedrockConverse,
+        Self::AzureOpenaiChat,
+        Self::AzureOpenaiResponses,
+        Self::CohereV2Chat,
+    ];
+
+    /// The family's label; `unknown` for [`Self::Unknown`].
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::AnthropicCompatible => "anthropic-compatible",
+            Self::OpenaiChat => "openai-chat",
+            Self::OpenaiResponses => "openai-responses",
+            Self::OpenaiCompatible => "openai-compatible",
+            Self::GoogleGemini => "google-gemini",
+            Self::GoogleVertexGemini => "google-vertex-gemini",
+            Self::AwsBedrockConverse => "aws-bedrock-converse",
+            Self::AzureOpenaiChat => "azure-openai-chat",
+            Self::AzureOpenaiResponses => "azure-openai-responses",
+            Self::CohereV2Chat => "cohere-v2-chat",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// The family a label names, [`Self::Unknown`] for one this build does
+    /// not know.
+    #[must_use]
+    pub fn from_label(label: &str) -> Self {
+        Self::KNOWN
+            .into_iter()
+            .find(|family| family.as_str() == label)
+            .unwrap_or(Self::Unknown)
+    }
+}
+
+impl Serialize for AdapterFamily {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AdapterFamily {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let label = String::deserialize(deserializer)?;
+        if !crate::model::adapter_label_valid(&label) {
+            return Err(serde::de::Error::custom("invalid adapter family label"));
+        }
+        Ok(Self::from_label(&label))
+    }
+}
+
+impl schemars::JsonSchema for AdapterFamily {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("AdapterFamily")
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,31}$",
+            "description": "Exact adapter family of the turn's model, such as `anthropic-compatible` or `openai-responses`."
+        })
+    }
 }

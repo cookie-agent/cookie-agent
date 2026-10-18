@@ -198,7 +198,7 @@ async fn wait_until_debounce_armed(armed: &AtomicU64, expected: u64) {
 
 fn turn_context() -> Arc<TurnAgentContext> {
     Arc::new(make_turn_context(
-        cookie_agent_protocol::AdaptorId::OpenaiChat,
+        cookie_agent_protocol::AdaptorId::OPENAI_CHAT,
         false,
     ))
 }
@@ -239,19 +239,13 @@ fn make_turn_context(
     TurnAgentContext {
         agent: AgentId::new("test").expect("agent"),
         model: "test/model".parse().expect("model key"),
-        adapter,
-        adapter_family: match adapter {
-            cookie_agent_protocol::AdaptorId::Anthropic => {
-                cookie_agent_runtime_api::AdapterFamily::AnthropicCompatible
-            }
-            cookie_agent_protocol::AdaptorId::OpenaiCompatible => {
-                cookie_agent_runtime_api::AdapterFamily::OpenaiCompatible
-            }
-            cookie_agent_protocol::AdaptorId::GoogleGemini => {
-                cookie_agent_runtime_api::AdapterFamily::GoogleGemini
-            }
+        adapter_family: match adapter.as_str() {
+            "anthropic" => cookie_agent_runtime_api::AdapterFamily::AnthropicCompatible,
+            "openai-compatible" => cookie_agent_runtime_api::AdapterFamily::OpenaiCompatible,
+            "google-gemini" => cookie_agent_runtime_api::AdapterFamily::GoogleGemini,
             _ => cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
         },
+        adapter,
         capabilities,
     }
 }
@@ -334,7 +328,7 @@ fn tool_result_retains_only_distinct_structured_content() {
         progress: ProgressSink::new(progress_tx),
         cancellation: CancellationToken::new(),
         turn_context: Arc::new(make_turn_context(
-            cookie_agent_protocol::AdaptorId::Anthropic,
+            cookie_agent_protocol::AdaptorId::ANTHROPIC,
             false,
         )),
         artifacts: memory_artifacts(),
@@ -410,7 +404,7 @@ fn base64_attachments_follow_the_media_gate() {
     };
 
     let rejected = super::retain_base64_attachment(
-        &context(make_turn_context(AdaptorId::Anthropic, false)),
+        &context(make_turn_context(AdaptorId::ANTHROPIC, false)),
         "image/png".into(),
         &data,
     )
@@ -421,14 +415,14 @@ fn base64_attachments_follow_the_media_gate() {
     );
 
     super::retain_base64_attachment(
-        &context(make_turn_context(AdaptorId::Anthropic, true)),
+        &context(make_turn_context(AdaptorId::ANTHROPIC, true)),
         "image/png".into(),
         &data,
     )
     .expect("capable model must retain");
 
     let retained = super::retain_base64_attachment(
-        &context(make_turn_context(AdaptorId::OpenaiChat, true)),
+        &context(make_turn_context(AdaptorId::OPENAI_CHAT, true)),
         "image/png".into(),
         &data,
     )
@@ -459,7 +453,7 @@ fn base64_attachments_follow_the_media_gate() {
     let encoded_video = base64::engine::general_purpose::STANDARD.encode(video);
 
     let rejected = super::retain_base64_attachment(
-        &context(video_turn(AdaptorId::OpenaiChat)),
+        &context(video_turn(AdaptorId::OPENAI_CHAT)),
         "video/mp4".into(),
         &encoded_video,
     )
@@ -469,7 +463,7 @@ fn base64_attachments_follow_the_media_gate() {
         "unexpected error: {rejected:?}"
     );
 
-    let video_context = context(video_turn(AdaptorId::OpenaiCompatible));
+    let video_context = context(video_turn(AdaptorId::OPENAI_COMPATIBLE));
     let retained =
         super::retain_base64_attachment(&video_context, "video/mp4".into(), &encoded_video)
             .expect("user-turn video must retain");
@@ -507,7 +501,7 @@ fn base64_attachments_follow_the_media_gate() {
     .expect("map ordinary MCP result");
     assert!(ordinary.additional_messages.is_empty());
 
-    let mut audio_turn = make_turn_context(AdaptorId::GoogleGemini, false);
+    let mut audio_turn = make_turn_context(AdaptorId::GOOGLE_GEMINI, false);
     audio_turn.capabilities.input.insert(Modality::Audio);
     audio_turn.capabilities.media.insert(
         cookie_agent_protocol::MediaKind::Audio,
@@ -542,7 +536,7 @@ fn base64_attachments_follow_the_media_gate() {
     }))
     .expect("MCP octet-stream blob result");
     let mapped = super::map_tool_result(
-        &context(make_turn_context(AdaptorId::Anthropic, true)),
+        &context(make_turn_context(AdaptorId::ANTHROPIC, true)),
         "blob",
         octet_stream,
     )
@@ -583,7 +577,7 @@ fn tool_result_caps_combined_attachments_and_degrades_overflow_inline() {
         run: RunId::new_v7(),
         progress: ProgressSink::new(progress_tx),
         cancellation: CancellationToken::new(),
-        turn_context: Arc::new(make_turn_context(AdaptorId::Anthropic, true)),
+        turn_context: Arc::new(make_turn_context(AdaptorId::ANTHROPIC, true)),
         artifacts: memory_artifacts(),
         detach: cookie_agent_runtime_api::DetachPoint::channel().0,
         producers: None,

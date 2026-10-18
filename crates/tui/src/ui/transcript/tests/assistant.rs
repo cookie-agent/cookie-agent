@@ -244,7 +244,7 @@ async fn replayed_footer_cost_matches_engine_session_usage() {
         ..Usage::default()
     };
     let mut resolved = resolved_model(None);
-    resolved.adapter_id = cookie_agent_protocol::AdaptorId::OpenaiResponses;
+    resolved.adapter_id = cookie_agent_protocol::AdaptorId::OPENAI_RESPONSES;
     let mut binding = frozen_binding(resolved.clone());
     binding.protocol_recipe =
         cookie_agent_protocol::ProtocolRecipeId::new("oven.openai.responses").unwrap();

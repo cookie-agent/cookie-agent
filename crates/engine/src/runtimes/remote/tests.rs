@@ -30,7 +30,7 @@ fn turn_context() -> Arc<TurnAgentContext> {
     Arc::new(TurnAgentContext {
         agent: cookie_agent_protocol::AgentId::new("test").expect("agent ID"),
         model: "test/model".parse().expect("model key"),
-        adapter: cookie_agent_protocol::AdaptorId::OpenaiChat,
+        adapter: cookie_agent_protocol::AdaptorId::OPENAI_CHAT,
         adapter_family: cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
         capabilities: cookie_agent_protocol::ModelCapabilities {
             input: std::collections::BTreeSet::from([cookie_agent_protocol::Modality::Text]),
