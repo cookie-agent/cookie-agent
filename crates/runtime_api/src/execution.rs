@@ -258,6 +258,15 @@ impl ProgressSink {
         self
     }
 
+    /// Reports display blocks of kinds this build does not know, of tags
+    /// `tags`, that the host dropped from a progress update before it reached
+    /// the sink, as a runtime's `tool/progress` carries them.
+    pub fn report_unknown_blocks(&self, tags: Vec<String>) {
+        if let Some(reporter) = self.unknown_blocks.as_ref().filter(|_| !tags.is_empty()) {
+            reporter(tags);
+        }
+    }
+
     pub async fn send(&self, mut progress: ToolProgress) -> Result<(), ToolError> {
         if !progress.output.is_empty() && self.capture.is_none() {
             return Err(ToolError::execution("output capture is unavailable"));

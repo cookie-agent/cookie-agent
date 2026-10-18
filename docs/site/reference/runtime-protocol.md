@@ -57,7 +57,10 @@ protocol over either:
   it is decoded: a member, or an enum value or tag, the schema does not list
   is refused with `-32602`, `data.code` `unknown_field` or `unknown_variant`,
   and `data.field` set to its JSON path, such as `progress.display.type`. A
-  sender gates new fields of a command on the receiver's version.
+  sender gates new fields of a command on the receiver's version. The one
+  exception is a display block of a kind the daemon does not know in a
+  `tool/progress` replacement: it is only shown, so the daemon drops it with
+  a diagnostic instead (see [Display blocks](#display-blocks)).
 - **Unreadable messages.** A frame that is not JSON, or not a request,
   notification, or reply, closes the connection. A request whose params do
   not match its method is answered with `-32602` (`invalid_params`, with

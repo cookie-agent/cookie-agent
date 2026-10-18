@@ -632,6 +632,35 @@ pub struct ToolProgressParams {
     pub progress: WireProgress,
 }
 
+/// Removes from raw `tool/progress` params the display blocks of a `replace`
+/// whose kind this build does not know, and returns their tags. `tool/progress`
+/// is a command, and a command refuses what its schema does not list, but a
+/// display block is only shown: the daemon drops such a block, with a
+/// diagnostic, before it checks the rest of the command
+/// (`docs/site/specs/compatibility-v1.md` section 12.4).
+pub fn take_unknown_progress_blocks(params: &mut Value) -> Vec<String> {
+    let Some(display) = params
+        .pointer_mut("/progress/display")
+        .filter(|display| display.get("type").and_then(Value::as_str) == Some("replace"))
+    else {
+        return Vec::new();
+    };
+    let Some(blocks) = display.get_mut("blocks").and_then(Value::as_array_mut) else {
+        return Vec::new();
+    };
+    let mut unknown = Vec::new();
+    blocks.retain(
+        |block| match serde_json::from_value::<Open<DisplayBlock>>(block.clone()) {
+            Ok(Open::Unknown { tag, .. }) => {
+                unknown.push(tag);
+                false
+            }
+            _ => true,
+        },
+    );
+    unknown
+}
+
 // --- tool/detachable ---------------------------------------------------------
 
 /// An executing call reached its detach point.

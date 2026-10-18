@@ -1467,16 +1467,20 @@ impl ClientInner {
     }
 
     async fn call_progress(&self, request: &IncomingRequest) -> Result<Outcome, RpcError> {
+        let mut params: serde_json::Value = request.params()?;
+        let unknown = protocol::take_unknown_progress_blocks(&mut params);
         let ToolProgressParams {
             prepared_id,
             progress,
-        } = request.command()?;
+        } = cookie_agent_protocol::strict::decode_command(params)
+            .map_err(|error| RpcError::from(error.to_rpc_error()))?;
         let sink = lock(&self.executions)
             .get(&prepared_id)
             .map(|host| host.progress.clone());
         let Some(sink) = sink else {
             return Ok(Outcome::of(Err(ToolError::ProgressSinkClosed)));
         };
+        sink.report_unknown_blocks(unknown);
         Ok(Outcome::of(sink.send(progress.into()).await))
     }
 

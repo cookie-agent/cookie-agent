@@ -177,6 +177,19 @@ for line in sys.stdin:
                 },
             })
             continue
+        progress = os.environ.get("FIXTURE_TOOL_PROGRESS")
+        if progress:
+            # Reports progress and waits for its answer before replying.
+            progress = dict(json.loads(progress), tool_call_id=call.get("id"))
+            send({
+                "jsonrpc": "2.0",
+                "id": "fixture-progress",
+                "method": "tool/progress",
+                "params": {"prepared_id": params.get("prepared_id"), "progress": progress},
+            })
+            for reply in sys.stdin:
+                if json.loads(reply).get("id") == "fixture-progress":
+                    break
         arguments = call.get("arguments", {})
         content = arguments.get("text", json.dumps(arguments, separators=(",", ":")))
         output = json.loads(os.environ.get(

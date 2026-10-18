@@ -591,12 +591,20 @@ async fn a_plugin_tool_is_prepared_and_executed_like_a_runtime_tool() {
         {"type": "hologram", "frames": 3},
         {"type": "text", "text": "echoed"},
     ]);
+    // So does its progress, though `tool/progress` is a command.
+    let progress = serde_json::json!({
+        "message": "echoing",
+        "display": {"type": "replace", "blocks": [
+            {"type": "sparkle"},
+            {"type": "text", "text": "echoing"},
+        ]},
+    });
     let toml_string = |value: &str| toml::Value::String(value.to_owned()).to_string();
     let extra_config = format!(
         r#"
 [plugins.issues]
 command = [{}, {}]
-env = {{ FIXTURE_NAME = "issues", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {}, FIXTURE_TOOL_RESOURCE_PARAM = "plugin_arg", FIXTURE_PREPARED_EXTRA = {}, FIXTURE_TOOL_DISPLAY_BLOCKS = {} }}
+env = {{ FIXTURE_NAME = "issues", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {}, FIXTURE_TOOL_RESOURCE_PARAM = "plugin_arg", FIXTURE_PREPARED_EXTRA = {}, FIXTURE_TOOL_DISPLAY_BLOCKS = {}, FIXTURE_TOOL_PROGRESS = {} }}
 "#,
         toml_string(python_command()),
         toml_string(PLUGIN_FIXTURE),
@@ -604,6 +612,7 @@ env = {{ FIXTURE_NAME = "issues", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {
         toml_string(&plugin_call.display().to_string()),
         toml_string(&prepared_extra.to_string()),
         toml_string(&display.to_string()),
+        toml_string(&progress.to_string()),
     );
     // The plugin declares its own permission action, which a rule names
     // like any other.
@@ -710,7 +719,7 @@ env = {{ FIXTURE_NAME = "issues", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {
         serde_json::to_value(&result.display).unwrap(),
         serde_json::json!([{"type": "text", "text": "echoed"}])
     );
-    let diagnostic = tokio::time::timeout(test_timeout(3), async {
+    let diagnostics = tokio::time::timeout(test_timeout(3), async {
         loop {
             let projection = fixture
                 .engine
@@ -722,7 +731,7 @@ env = {{ FIXTURE_NAME = "issues", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {
                 .log
                 .events()
                 .iter()
-                .find_map(|event| match &event.payload {
+                .filter_map(|event| match &event.payload {
                     EventPayload::Diagnostic {
                         source,
                         kind,
@@ -734,18 +743,33 @@ env = {{ FIXTURE_NAME = "issues", FIXTURE_TOOLS = {}, FIXTURE_TOOL_CALL_FILE = {
                         Some((source.to_string(), message.clone()))
                     }
                     _ => None,
-                });
-            if let Some(found) = found {
+                })
+                .collect::<Vec<_>>();
+            if found.len() == 2 {
                 break found;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("unknown block diagnostic");
-    assert_eq!(diagnostic.0, "plugin:issues");
-    assert!(diagnostic.1.contains("hologram"), "{}", diagnostic.1);
-    assert!(diagnostic.1.contains("result"), "{}", diagnostic.1);
+    .expect("unknown block diagnostics");
+    assert!(
+        diagnostics
+            .iter()
+            .all(|(source, _)| source == "plugin:issues")
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|(_, message)| message.contains("hologram") && message.contains("result")),
+        "{diagnostics:?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|(_, message)| message.contains("sparkle") && message.contains("progress")),
+        "{diagnostics:?}"
+    );
     let call: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&plugin_call).expect("plugin executed"))
             .expect("call record");
