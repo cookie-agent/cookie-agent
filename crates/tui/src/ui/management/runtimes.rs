@@ -25,6 +25,25 @@ use super::super::app::paint_panel;
 pub(in crate::ui) struct RuntimeRow {
     pub(in crate::ui) attachment: RuntimeAttachment,
     pub(in crate::ui) instance: Option<RuntimeInstanceInfo>,
+    /// What the runtime says its capability offers, once it has connected.
+    pub(in crate::ui) description: Option<String>,
+}
+
+/// The description `listing` has for `capability` of `runtime_id`.
+fn capability_description(
+    listing: Option<&RuntimesListResult>,
+    runtime_id: &RuntimeId,
+    capability: &CapabilityName,
+) -> Option<String> {
+    listing?
+        .runtimes
+        .iter()
+        .find(|runtime| runtime.runtime_id == *runtime_id)?
+        .capabilities
+        .iter()
+        .find(|offered| offered.name == *capability)
+        .map(|offered| offered.description.clone())
+        .filter(|description| !description.is_empty())
 }
 
 /// A runtime a new-session draft attaches. Its instance is opened as soon as
@@ -334,6 +353,11 @@ pub(in crate::ui) fn runtime_rows(
     attachments
         .iter()
         .map(|attachment| RuntimeRow {
+            description: capability_description(
+                listing,
+                &attachment.runtime_id,
+                &attachment.capability,
+            ),
             attachment: attachment.clone(),
             instance: listing.and_then(|listing| {
                 listing
@@ -393,6 +417,11 @@ pub(in crate::ui) fn draft_runtime_rows(
                 None => None,
             });
             Some(RuntimeRow {
+                description: capability_description(
+                    listing,
+                    &entry.request.runtime_id,
+                    &capability,
+                ),
                 attachment: RuntimeAttachment {
                     name: match instance
                         .as_ref()
@@ -546,6 +575,9 @@ fn row_detail(row: &RuntimeRow) -> String {
         attachment.capability,
         attachment.kind.as_str()
     );
+    if let Some(description) = &row.description {
+        text.push_str(&format!("\ndescription: {description}"));
+    }
     if let Some(workspace) = &attachment.workspace {
         text.push_str(&format!("\nworkspace: {workspace}"));
     }
@@ -598,7 +630,7 @@ fn render_attach_form(frame: &mut Frame, area: Rect, panel: &mut RuntimePanel, t
         .constraints([
             Constraint::Length(3),
             Constraint::Min(3),
-            Constraint::Length(4),
+            Constraint::Length(5),
         ])
         .split(area);
     crate::ui::input::render(
@@ -651,13 +683,18 @@ fn render_attach_form(frame: &mut Frame, area: Rect, panel: &mut RuntimePanel, t
             |choice| {
                 let mut text = match &choice.capability {
                     Some(capability) => format!(
-                        "{} ({}){}",
+                        "{} ({}){}{}",
                         choice.label(),
                         capability.kind.as_str(),
                         if capability.takes_workspace {
                             ", takes a workspace"
                         } else {
                             ", takes no workspace"
+                        },
+                        if capability.description.is_empty() {
+                            String::new()
+                        } else {
+                            format!("\n{}", capability.description)
                         }
                     ),
                     None => format!(

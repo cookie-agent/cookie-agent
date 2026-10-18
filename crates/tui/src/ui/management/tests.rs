@@ -885,7 +885,8 @@ fn runtime_retry_names_the_attachments_capability_and_workspace() {
 
 #[test]
 fn runtime_panel_renders_attachments_with_status_and_failure_reason() {
-    let listing = runtime_listing();
+    let mut listing = runtime_listing();
+    listing.runtimes[0].capabilities[0].description = "The daemon's global tools".into();
     let attached = [
         attachment("global", "global", "global", None),
         attachment("labpc_api", "labpc", "coding", Some("/srv/api")),
@@ -923,6 +924,36 @@ fn runtime_panel_renders_attachments_with_status_and_failure_reason() {
     );
     assert!(text.contains("connection refused"), "{text}");
     assert!(text.contains("a attach | d detach"), "{text}");
+    assert_eq!(
+        rows[0].description.as_deref(),
+        Some("The daemon's global tools")
+    );
+    assert_eq!(rows[1].description, None);
+
+    // The selected attachment's description shows in its details.
+    panel.selection.select(Some(0));
+    terminal
+        .draw(|frame| {
+            super::render_runtimes(
+                frame,
+                frame.area(),
+                &mut panel,
+                &rows,
+                &crate::theme::Theme::default(),
+            );
+        })
+        .expect("render runtime panel");
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(
+        text.contains("description: The daemon's global tools"),
+        "{text}"
+    );
 }
 
 #[test]

@@ -460,12 +460,14 @@ a session with none.
 attachment's name, runtime and capability (`labpc/coding`), workspace, and
 instance status (`starting`, `ready`, `reconnecting`, `failed`, `stopped`, or
 `not running`). The details pane shows the selected attachment's kind,
-platform, and, for a failed instance, the reason. The panel refreshes on every runtime change and while it
+what its capability offers (the runtime's description of it), platform, and,
+for a failed instance, the reason. The panel refreshes on every runtime change and while it
 is open.
 
 Press `a` to attach: the panel lists every capability of every runtime
 (`labpc/coding`, `devbox/computer_use`), with its description and whether
-the runtime is connected. Type to filter by runtime, capability, kind, or
+the runtime is connected; the details below the list repeat the selected
+capability's description. Type to filter by runtime, capability, kind, or
 description, choose with the arrow keys, and press Enter. A capability that
 takes no workspace attaches at once; one that takes a workspace asks for its
 path next (Enter attaches, Esc returns to the list). A runtime that has not
