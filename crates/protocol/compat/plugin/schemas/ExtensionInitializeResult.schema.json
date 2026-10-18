@@ -221,12 +221,21 @@
     "capabilities": {
       "$ref": "#/$defs/ExtensionPluginCapabilities"
     },
+    "features": {
+      "default": [],
+      "description": "What the plugin's own configuration enables. None are defined yet;\nthe daemon ignores one it does not know, with a diagnostic.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "name": {
       "type": "string"
     },
     "protocol_version": {
-      "const": 2,
-      "type": "integer"
+      "description": "The plugin's [`crate::PLUGIN_PROTOCOL_VERSION`].",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "type": "string"
     },
     "tools": {
       "$ref": "#/$defs/RuntimeTools",

@@ -12,11 +12,11 @@ mod error;
 mod server;
 
 pub use cookie_agent_protocol::{
-    EXTENSION_PROTOCOL_VERSION, ExtensionAgentBeforeStartParams, ExtensionAgentBeforeStartResult,
-    ExtensionAllowBlockAction, ExtensionAllowBlockResult, ExtensionBusEventParams,
-    ExtensionEmitStatus, ExtensionEventParams, ExtensionInjectedMessage, ExtensionInterceptionHook,
-    ExtensionMessageEndAction, ExtensionMessageEndParams, ExtensionMessageEndResult,
-    ExtensionMessageRole, ExtensionModelBeforeRequestAction, ExtensionModelBeforeRequestParams,
+    ExtensionAgentBeforeStartParams, ExtensionAgentBeforeStartResult, ExtensionAllowBlockAction,
+    ExtensionAllowBlockResult, ExtensionBusEventParams, ExtensionEmitStatus, ExtensionEventParams,
+    ExtensionInjectedMessage, ExtensionInterceptionHook, ExtensionMessageEndAction,
+    ExtensionMessageEndParams, ExtensionMessageEndResult, ExtensionMessageRole,
+    ExtensionModelBeforeRequestAction, ExtensionModelBeforeRequestParams,
     ExtensionModelBeforeRequestResult, ExtensionModelBeforeSelectParams, ExtensionModelMessage,
     ExtensionModelParamsAdjustments, ExtensionProviderAfterResponseParams,
     ExtensionProviderAfterResponseResult, ExtensionProviderBeforeRequestAction,
@@ -28,13 +28,14 @@ pub use cookie_agent_protocol::{
     ExtensionToolAfterResultParams, ExtensionToolAfterResultResult, ExtensionToolBeforeCallAction,
     ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult, ExtensionToolOrigin,
     ExtensionUserBeforeInputAction, ExtensionUserBeforeInputParams, ExtensionUserBeforeInputResult,
-    PermissionAction, ProducerDeliveryMode, ProducerId, ProducerIdempotencyKey, ProducerMessageId,
-    ProducerName, RunId, SessionId, ToolCallId, ToolOutputDeclaration,
+    PLUGIN_PROTOCOL_VERSION, PermissionAction, ProducerDeliveryMode, ProducerId,
+    ProducerIdempotencyKey, ProducerMessageId, ProducerName, RunId, SemVer, SessionId, ToolCallId,
+    ToolOutputDeclaration,
     runtime_protocol::{ToolCollision, ToolConcurrency, ToolResultTruncationPolicy},
 };
 pub use error::{PluginError, ToolFailure};
 pub use server::{
-    PluginContext, PluginServer, PluginServerBuilder, ProducerHandle, RecoveryFailure,
+    DaemonInfo, PluginContext, PluginServer, PluginServerBuilder, ProducerHandle, RecoveryFailure,
     RecoveryResult, ToolContext,
 };
 

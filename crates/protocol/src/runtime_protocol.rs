@@ -18,9 +18,6 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The runtime protocol version. Both ends must speak exactly this version.
-pub const RUNTIME_PROTOCOL_VERSION: u32 = 6;
-
 /// The largest frame either end sends or accepts. It fits an `execute`
 /// reply carrying [`MAX_INLINE_MEDIA_BYTES`] of base64 media next to a full
 /// tool result.
@@ -100,8 +97,14 @@ pub struct Empty {}
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InitializeParams {
-    /// The daemon's [`RUNTIME_PROTOCOL_VERSION`].
-    pub version: u32,
+    /// The daemon's [`crate::RUNTIME_PROTOCOL_VERSION`].
+    pub protocol_version: crate::SemVer,
+    /// The daemon's own version, for logs and diagnostics.
+    pub engine_version: String,
+    /// What the daemon's configuration enables for this runtime. None are
+    /// defined yet; a runtime ignores one it does not know.
+    #[serde(default)]
+    pub features: Vec<String>,
     /// The runtime's ID.
     pub runtime_id: String,
     pub settings: RuntimeSettings,
@@ -208,8 +211,12 @@ pub struct McpReconnectParams {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InitializeResult {
-    /// The runtime's [`RUNTIME_PROTOCOL_VERSION`].
-    pub version: u32,
+    /// The runtime's [`crate::RUNTIME_PROTOCOL_VERSION`].
+    pub protocol_version: crate::SemVer,
+    /// What the runtime's own configuration enables. None are defined yet;
+    /// the daemon ignores one it does not know, with a diagnostic.
+    #[serde(default)]
+    pub features: Vec<String>,
     /// Operating system, as Rust's `std::env::consts::OS` names it, for a
     /// runtime where it matters.
     #[serde(default)]

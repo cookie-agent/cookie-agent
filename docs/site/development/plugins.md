@@ -93,28 +93,41 @@ and sends `plugin/initialize` within `startup_timeout_ms`:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"plugin/initialize","params":{
-  "protocol_version":2,"engine_version":"0.3.0",
-  "capabilities":{"producer_messaging":false}}}
+  "protocol_version":"0.3.0","engine_version":"0.3.0",
+  "features":["producer_messaging"],"interception_timeout_ms":2000}}
 ```
 
-`capabilities.producer_messaging` is true when the plugin's configuration
-enables producers. The plugin answers with the same protocol version, its
-configured name, its own version, its capabilities, and its tools:
+`features` lists what the plugin's configuration enables: today only
+`producer_messaging`, sent when `producer_messaging = true`. A version never
+implies a feature. `interception_timeout_ms` is the plugin's
+`interception_timeout_ms`: how long the daemon waits for a hook's answer. The
+plugin answers with its own protocol version, its configured name, its own
+version, its features, its capabilities, and its tools:
 
 ```json
 {"jsonrpc":"2.0","id":1,"result":{
-  "protocol_version":2,"name":"issues","version":"1.2.0",
+  "protocol_version":"0.3.0","name":"issues","version":"1.2.0","features":[],
   "capabilities":{"producer_messaging":false,"subscribe_events":false,
     "subscribe_bus":false,"publish_bus":false,"intercept":["tool_before_call"]},
   "tools":{"tools":[],"prompt_sections":[]}}}
 ```
 
-The protocol version is the integer `2` and must match exactly; a different
-version or name fails the start. Capabilities are fixed for the connection;
-`tools` is the runtime protocol's `RuntimeTools`.
+The protocol version is a semver string, currently `0.3.0`
+(`PLUGIN_PROTOCOL_VERSION`, which the SDK re-exports). Each end reads the
+other's `protocol_version` from the raw JSON before anything else, and refuses
+an incompatible one with `unsupported_protocol` naming both versions: the
+majors must be equal and, until the protocol freezes at `1.0.0`, so must the
+minors. A different name also fails the start. No plugin feature is defined
+yet; the daemon ignores one it does not know and shows it in the plugin's
+status. Capabilities are fixed for the connection; `tools` is the runtime
+protocol's `RuntimeTools`. The SDK exposes what the handshake said about the
+daemon to handlers as `PluginContext::daemon()`: its protocol version,
+`engine_version`, features, and interception timeout. Before
+`plugin/initialize` the SDK refuses every request with `not_initialized`.
 
-Request IDs are integers. Every frame is at most 48 MiB, parsed strictly,
-and a malformed frame ends the connection. Standard output carries only
+Request IDs may be integers or strings (the daemon sends integers). Every
+frame is at most 48 MiB, and a frame that is not a JSON-RPC request,
+notification, or reply ends the connection. Standard output carries only
 protocol messages; standard error is kept as a bounded tail (the last 32
 lines, at most 4 KiB) that clients see in plugin status.
 

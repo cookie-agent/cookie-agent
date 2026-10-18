@@ -95,22 +95,34 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "engine_version": {
+      "description": "The daemon's own version, for logs and diagnostics.",
+      "type": "string"
+    },
+    "features": {
+      "default": [],
+      "description": "What the daemon's configuration enables for this runtime. None are\ndefined yet; a runtime ignores one it does not know.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "protocol_version": {
+      "description": "The daemon's [`crate::RUNTIME_PROTOCOL_VERSION`].",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "type": "string"
+    },
     "runtime_id": {
       "description": "The runtime's ID.",
       "type": "string"
     },
     "settings": {
       "$ref": "#/$defs/RuntimeSettings"
-    },
-    "version": {
-      "description": "The daemon's [`RUNTIME_PROTOCOL_VERSION`].",
-      "format": "uint32",
-      "minimum": 0,
-      "type": "integer"
     }
   },
   "required": [
-    "version",
+    "protocol_version",
+    "engine_version",
     "runtime_id",
     "settings"
   ],

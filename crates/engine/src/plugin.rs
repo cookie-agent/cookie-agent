@@ -266,6 +266,9 @@ impl Drop for PluginContextLease {
 struct Connected {
     client: RuntimeClient,
     capabilities: ExtensionPluginCapabilities,
+    /// What the daemon ignored in its handshake, shown as the plugin's
+    /// reason once it is connected.
+    notes: Vec<String>,
 }
 
 /// One configured plugin.
@@ -926,12 +929,14 @@ impl PluginRuntime {
         });
         let name = self.name.clone();
         let producer_messaging = self.config.producer_messaging;
+        let interception_timeout = Duration::from_millis(self.config.interception_timeout_ms);
         let attempt = async move {
             let connection = connector.connect().await?;
             RuntimeClient::initialize_plugin(
                 connection,
                 &name,
                 producer_messaging,
+                interception_timeout,
                 grace,
                 extension,
             )
@@ -945,9 +950,10 @@ impl PluginRuntime {
                     startup.as_millis()
                 ))
             });
-        result.map(|(client, initialized)| Connected {
-            client,
-            capabilities: initialized.capabilities,
+        result.map(|handshake| Connected {
+            client: handshake.client,
+            capabilities: handshake.result.capabilities,
+            notes: handshake.notes,
         })
     }
 
@@ -955,8 +961,9 @@ impl PluginRuntime {
     /// daemon stops.
     async fn serve(self: &Arc<Self>, connected: Connected, restart: &CancellationToken) -> Ended {
         let client = connected.client.clone();
+        let notes = (!connected.notes.is_empty()).then(|| connected.notes.join("; "));
         *lock(&self.connection) = Some(connected);
-        self.set_state(PluginState::Connected, None);
+        self.set_state(PluginState::Connected, notes);
         self.finish_first_attempt();
         let writer = tokio::spawn(Arc::clone(self).write_notifications(client.clone()));
         let ended = tokio::select! {

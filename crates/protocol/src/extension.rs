@@ -1,11 +1,7 @@
-use std::borrow::Cow;
-
-use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The plugin protocol version. Both ends must speak exactly this version.
-pub const EXTENSION_PROTOCOL_VERSION: u32 = 2;
 // Producer messaging uses the runtime protocol's method names.
 pub const PLUGIN_PRODUCER_REGISTER_METHOD: &str = "producer/register";
 pub const PLUGIN_PRODUCER_SEND_METHOD: &str = "producer/send";
@@ -39,62 +35,9 @@ pub const PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD: &str =
 pub const PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD: &str =
     "plugin/intercept/session_before_revert";
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct ExtensionProtocolVersion(());
-
-impl ExtensionProtocolVersion {
-    #[must_use]
-    pub const fn current() -> Self {
-        Self(())
-    }
-}
-
-impl Serialize for ExtensionProtocolVersion {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_u32(EXTENSION_PROTOCOL_VERSION)
-    }
-}
-
-impl<'de> Deserialize<'de> for ExtensionProtocolVersion {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let found = u32::deserialize(deserializer)?;
-        if found == EXTENSION_PROTOCOL_VERSION {
-            Ok(Self::current())
-        } else {
-            Err(serde::de::Error::custom(format!(
-                "extension protocol version must be exactly {EXTENSION_PROTOCOL_VERSION}; found {found}"
-            )))
-        }
-    }
-}
-
-impl JsonSchema for ExtensionProtocolVersion {
-    fn inline_schema() -> bool {
-        true
-    }
-
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("ExtensionProtocolVersion")
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"integer","const":EXTENSION_PROTOCOL_VERSION})
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionEngineCapabilities {
-    /// The daemon accepts this plugin's producer messages: the plugin's
-    /// configuration enables them.
-    pub producer_messaging: bool,
-}
+/// The handshake feature the daemon sends when the plugin's configuration
+/// lets it produce messages (`producer_messaging = true`).
+pub const FEATURE_PRODUCER_MESSAGING: &str = "producer_messaging";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -124,20 +67,35 @@ pub struct ExtensionPluginCapabilities {
     pub intercept: Vec<ExtensionInterceptionHook>,
 }
 
+/// `plugin/initialize` params: the daemon's version and what its
+/// configuration enables for this plugin.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionInitializeParams {
-    pub protocol_version: ExtensionProtocolVersion,
+    /// The daemon's [`crate::PLUGIN_PROTOCOL_VERSION`].
+    pub protocol_version: crate::SemVer,
+    /// The daemon's own version, for logs and diagnostics.
     pub engine_version: String,
-    pub capabilities: ExtensionEngineCapabilities,
+    /// What the plugin's configuration enables, such as
+    /// [`FEATURE_PRODUCER_MESSAGING`]. A version never implies a feature.
+    #[serde(default)]
+    pub features: Vec<String>,
+    /// How long the daemon waits for a hook's answer, and for the plugin's
+    /// `plugin/emit` to be answered with `plugin/emit_result`.
+    pub interception_timeout_ms: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionInitializeResult {
-    pub protocol_version: ExtensionProtocolVersion,
+    /// The plugin's [`crate::PLUGIN_PROTOCOL_VERSION`].
+    pub protocol_version: crate::SemVer,
     pub name: String,
     pub version: String,
+    /// What the plugin's own configuration enables. None are defined yet;
+    /// the daemon ignores one it does not know, with a diagnostic.
+    #[serde(default)]
+    pub features: Vec<String>,
     pub capabilities: ExtensionPluginCapabilities,
     /// The plugin's tools and their prompt sections, declared as a runtime
     /// declares them; it runs them with the runtime protocol's `tool/*`
@@ -548,22 +506,6 @@ pub struct ExtensionSessionBeforeRevertResult {
 }
 
 #[must_use]
-pub fn extension_initialize_request(engine_version: impl Into<String>) -> crate::Request {
-    let params = ExtensionInitializeParams {
-        protocol_version: ExtensionProtocolVersion::current(),
-        engine_version: engine_version.into(),
-        capabilities: ExtensionEngineCapabilities {
-            producer_messaging: true,
-        },
-    };
-    crate::Request::new(
-        crate::JsonRpcId::Number(1),
-        PLUGIN_INITIALIZE_METHOD,
-        Some(serde_json::to_value(params).expect("extension initialize params serialize")),
-    )
-}
-
-#[must_use]
 pub fn extension_recovery_start_notification() -> crate::Notification {
     crate::Notification::new(
         PLUGIN_RECOVERY_START_METHOD,
@@ -625,13 +567,5 @@ mod tests {
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn protocol_version_rejection_reports_found_value() {
-        let error =
-            serde_json::from_str::<ExtensionProtocolVersion>("7").expect_err("version mismatch");
-        assert!(error.to_string().contains('7'));
-        assert!(serde_json::from_str::<ExtensionProtocolVersion>("\"1\"").is_err());
     }
 }

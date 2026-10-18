@@ -4,14 +4,16 @@
 use std::{collections::BTreeMap, path::Path, time::Duration};
 
 use base64::Engine as _;
-use cookie_agent_protocol::{RunId, SessionId, ToolCallId, in_process_pair};
+use cookie_agent_protocol::{
+    RUNTIME_PROTOCOL_VERSION, RunId, SessionId, ToolCallId, in_process_pair,
+};
 use cookie_agent_runtime_api::{
     protocol::{
         AgentMdLimits, CapabilityOpenParams, CapabilityOpenResult, CapabilityToolsChangedParams,
         ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams, InitializeResult,
         McpChangedParams, McpReconnectParams, McpServerSettings, McpServerState, Outcome,
-        PrepareOutcome, PrepareParams, PrepareResult, RUNTIME_PROTOCOL_VERSION, RuntimeSettings,
-        RuntimeTools, ToolOutputLimits, WireToolCall, WireTurnContext, method,
+        PrepareOutcome, PrepareParams, PrepareResult, RuntimeSettings, RuntimeTools,
+        ToolOutputLimits, WireToolCall, WireTurnContext, method,
     },
     reconnect::ReconnectPolicy,
     rpc::{Incoming, Peer},
@@ -59,7 +61,9 @@ fn initialize_params(
         workspace: Some(workspace.to_string_lossy().into_owned()),
     };
     let initialize = InitializeParams {
-        version: RUNTIME_PROTOCOL_VERSION,
+        protocol_version: RUNTIME_PROTOCOL_VERSION,
+        engine_version: "test".into(),
+        features: Vec::new(),
         runtime_id: "labpc".into(),
         settings: RuntimeSettings {
             tool_output: ToolOutputLimits {

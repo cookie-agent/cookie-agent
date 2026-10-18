@@ -15,7 +15,8 @@ describe the model; this page covers configuration and use.
 ## Example: a repository on another machine over ssh
 
 Install the same cookie agent version on the remote machine (the runtime
-protocol version must match exactly) and make sure `ssh labpc cookie --version`
+protocol versions must be compatible: before the protocol's `1.0.0`, their
+major and minor must match) and make sure `ssh labpc cookie --version`
 works without a password prompt. Then add a template to
 `~/.cookie-agent/config.toml` on the machine that runs the daemon:
 

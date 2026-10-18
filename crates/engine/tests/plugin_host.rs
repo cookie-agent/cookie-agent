@@ -263,23 +263,67 @@ async fn plugin_environment_inherits_the_engine_and_adds_configured_values() {
 }
 
 #[tokio::test]
-async fn exact_version_mismatch_fails_without_stopping_engine() {
+async fn a_plugin_of_another_version_fails_with_unsupported_protocol() {
+    let daemon = cookie_agent_protocol::PLUGIN_PROTOCOL_VERSION;
+    let next_minor = cookie_agent_protocol::SemVer::new(daemon.major(), daemon.minor() + 1, 0);
+    let next_major = cookie_agent_protocol::SemVer::new(daemon.major() + 1, 0, 0);
+    for peer in [
+        format!("\"{next_minor}\""),
+        format!("\"{next_major}\""),
+        // A build from before semver versions.
+        "2".to_owned(),
+    ] {
+        let config = plugin_table(
+            "fixture",
+            &[
+                ("FIXTURE_NAME", "fixture".into()),
+                ("FIXTURE_PROTOCOL_VERSION", peer.clone()),
+            ],
+            "",
+        );
+        let harness = open_engine(&config);
+        wait_for_state(&harness.engine, "fixture", PluginState::Reconnecting).await;
+        let reason = status(&harness.engine, "fixture").reason.unwrap();
+        let named = peer.trim_matches('"');
+        assert!(
+            reason.contains("plugin `fixture`")
+                && reason.contains(&format!("{daemon} here and {named}")),
+            "{reason}"
+        );
+        harness
+            .engine
+            .runtime_snapshot()
+            .expect("engine remains usable");
+        harness.engine.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn a_plugin_of_another_patch_connects_and_unknown_features_are_noted() {
+    let daemon = cookie_agent_protocol::PLUGIN_PROTOCOL_VERSION;
+    let patch =
+        cookie_agent_protocol::SemVer::new(daemon.major(), daemon.minor(), daemon.patch() + 3);
     let config = plugin_table(
         "fixture",
         &[
             ("FIXTURE_NAME", "fixture".into()),
-            ("FIXTURE_PROTOCOL_VERSION", "7".into()),
+            ("FIXTURE_PROTOCOL_VERSION", format!("\"{patch}\"")),
+            ("FIXTURE_FEATURES", r#"["time_travel"]"#.into()),
+            ("FIXTURE_TOOLS", tools("fixture_tool")),
         ],
         "",
     );
     let harness = open_engine(&config);
-    wait_for_state(&harness.engine, "fixture", PluginState::Reconnecting).await;
-    let reason = status(&harness.engine, "fixture").reason.unwrap();
-    assert!(reason.contains("found 7"), "{reason}");
-    harness
-        .engine
-        .runtime_snapshot()
-        .expect("engine remains usable");
+    wait_for_state(&harness.engine, "fixture", PluginState::Connected).await;
+    let connected = status(&harness.engine, "fixture");
+    assert_eq!(connected.tools, ["fixture_tool"]);
+    assert!(
+        connected
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("feature `time_travel`")),
+        "{connected:?}"
+    );
     harness.engine.shutdown().await;
 }
 

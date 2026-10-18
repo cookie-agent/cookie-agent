@@ -45,9 +45,8 @@ use cookie_agent_runtime_api::{
         ContextParams, ContextResult, DetachableParams, Empty, ExecuteOutcome, ExecuteParams,
         ExecuteResult, InitializeParams, InitializeResult, InlineMedia, McpChangedParams,
         McpReconnectParams, McpServerReport, Outcome, OutcomeExt as _, PrepareOutcome,
-        PrepareParams, PrepareResult, PreparedCall, PreparedRef, RUNTIME_PROTOCOL_VERSION,
-        RuntimeSettings, RuntimeSkills, RuntimeTools, ToolDeclarationExt as _, ToolProgressParams,
-        WireToolCall, method,
+        PrepareParams, PrepareResult, PreparedCall, PreparedRef, RuntimeSettings, RuntimeSkills,
+        RuntimeTools, ToolDeclarationExt as _, ToolProgressParams, WireToolCall, method,
     },
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
 };
@@ -370,6 +369,25 @@ struct ProducerState {
     outcome: Option<RecoveryOutcome>,
 }
 
+/// A plugin connection after its handshake.
+pub(crate) struct PluginHandshake {
+    pub(crate) client: RuntimeClient,
+    pub(crate) result: cookie_agent_protocol::ExtensionInitializeResult,
+    /// What the daemon ignored in the plugin's reply, one entry each.
+    pub(crate) notes: Vec<String>,
+}
+
+/// Reads a handshake reply: the peer's version first, from the raw JSON
+/// (`docs/site/specs/compatibility-v1.md` section 3.2), then the rest.
+fn read_handshake<T: serde::de::DeserializeOwned>(
+    supported: cookie_agent_protocol::SemVer,
+    reply: serde_json::Value,
+) -> Result<T, String> {
+    cookie_agent_protocol::negotiate_version(supported, &reply)
+        .map_err(|refusal| refusal.to_string())?;
+    serde_json::from_value(reply).map_err(|error| format!("invalid reply: {error}"))
+}
+
 /// One connection to a runtime. Dropping the last handle closes it.
 #[derive(Clone)]
 pub(crate) struct RuntimeClient {
@@ -606,24 +624,29 @@ impl RuntimeClient {
             mcp_settled: Notify::new(),
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
-        let result: InitializeResult = inner
+        let reply: serde_json::Value = inner
             .peer
             .request(
                 method::INITIALIZE,
                 &InitializeParams {
-                    version: RUNTIME_PROTOCOL_VERSION,
+                    protocol_version: cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION,
+                    engine_version: env!("CARGO_PKG_VERSION").to_owned(),
+                    features: Vec::new(),
                     runtime_id: runtime_id.to_owned(),
                     settings: settings.clone(),
                 },
             )
             .await
             .map_err(|error| format!("runtime `{runtime_id}`: {error}"))?;
-        if result.version != RUNTIME_PROTOCOL_VERSION {
-            return Err(format!(
-                "runtime protocol version mismatch: the daemon speaks version \
-                 {RUNTIME_PROTOCOL_VERSION}, the runtime speaks version {}",
-                result.version
-            ));
+        let result: InitializeResult =
+            read_handshake(cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION, reply)
+                .map_err(|reason| format!("runtime `{runtime_id}`: {reason}"))?;
+        // No runtime feature is defined yet.
+        for feature in &result.features {
+            eprintln!(
+                "cookie-agent: runtime `{runtime_id}` declares feature `{feature}`, which this \
+                 daemon does not know; ignoring it"
+            );
         }
         if let Ok(source) = cookie_agent_protocol::ProducerSource::runtime(runtime_id) {
             let _ = inner.producer_source.set(source);
@@ -656,14 +679,16 @@ impl RuntimeClient {
     /// handshake. The plugin's tools then run over the runtime protocol's
     /// `tool/*` messages and its producers as `plugin:<name>`; what only
     /// plugins send goes to `extension`. `producer_messaging` is whether its
-    /// configuration lets it produce.
+    /// configuration lets it produce. Also returns a diagnostic for each
+    /// entry of the reply this daemon does not know and ignored.
     pub(crate) async fn initialize_plugin(
         connection: RuntimeConnection,
         name: &str,
         producer_messaging: bool,
+        interception_timeout: Duration,
         shutdown_grace: Duration,
         extension: Arc<dyn ClientExtension>,
-    ) -> Result<(Self, cookie_agent_protocol::ExtensionInitializeResult), String> {
+    ) -> Result<PluginHandshake, String> {
         let (peer, incoming) = Peer::start(connection.transport);
         let source = cookie_agent_protocol::ProducerSource::plugin(name)
             .map_err(|error| format!("invalid plugin name: {error}"))?;
@@ -688,25 +713,43 @@ impl RuntimeClient {
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
         let client = Self { inner };
-        let result: cookie_agent_protocol::ExtensionInitializeResult = client
+        let failed = |reason: &dyn std::fmt::Display| {
+            client
+                .inner
+                .annotate(&format!("plugin `{name}`: handshake failed: {reason}"))
+        };
+        let reply: serde_json::Value = client
             .inner
             .peer
             .request(
                 cookie_agent_protocol::PLUGIN_INITIALIZE_METHOD,
                 &cookie_agent_protocol::ExtensionInitializeParams {
-                    protocol_version: cookie_agent_protocol::ExtensionProtocolVersion::current(),
+                    protocol_version: cookie_agent_protocol::PLUGIN_PROTOCOL_VERSION,
                     engine_version: env!("CARGO_PKG_VERSION").to_owned(),
-                    capabilities: cookie_agent_protocol::ExtensionEngineCapabilities {
-                        producer_messaging,
-                    },
+                    features: producer_messaging
+                        .then(|| cookie_agent_protocol::FEATURE_PRODUCER_MESSAGING.to_owned())
+                        .into_iter()
+                        .collect(),
+                    interception_timeout_ms: u64::try_from(interception_timeout.as_millis())
+                        .unwrap_or(u64::MAX),
                 },
             )
             .await
-            .map_err(|error| {
-                client
-                    .inner
-                    .annotate(&format!("plugin `{name}`: handshake failed: {error}"))
-            })?;
+            .map_err(|error| failed(&error))?;
+        let result: cookie_agent_protocol::ExtensionInitializeResult =
+            read_handshake(cookie_agent_protocol::PLUGIN_PROTOCOL_VERSION, reply)
+                .map_err(|reason| failed(&reason))?;
+        // No plugin feature is defined yet.
+        let notes = result
+            .features
+            .iter()
+            .map(|feature| {
+                format!(
+                    "the plugin declares feature `{feature}`, which this daemon does not know; \
+                     it is ignored"
+                )
+            })
+            .collect();
         if result.name != name {
             return Err(format!(
                 "plugin name mismatch: configured `{name}`, reported `{}`",
@@ -718,7 +761,11 @@ impl RuntimeClient {
             .or_insert_with(|| Arc::new(result.tools.clone().into()));
         lock(&client.inner.producers).declared =
             producer_messaging && result.capabilities.producer_messaging;
-        Ok((client, result))
+        Ok(PluginHandshake {
+            client,
+            result,
+            notes,
+        })
     }
 
     /// Sends request `method` with `params` and returns its raw result.

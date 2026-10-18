@@ -105,12 +105,16 @@ def prepare(call):
     }
 
 
-def protocol_version():
+def protocol_version(params):
     # Until the gate file exists, the plugin speaks an unknown version.
     gate = os.environ.get("FIXTURE_VERSION_GATE_FILE")
     if gate and not os.path.exists(gate):
-        return 999
-    return json.loads(os.environ.get("FIXTURE_PROTOCOL_VERSION", "2"))
+        return "999.0.0"
+    configured = os.environ.get("FIXTURE_PROTOCOL_VERSION")
+    if configured is not None:
+        return json.loads(configured)
+    # By default the fixture speaks the daemon's version.
+    return params.get("protocol_version")
 
 
 for line in sys.stdin:
@@ -127,9 +131,10 @@ for line in sys.stdin:
             "jsonrpc": "2.0",
             "id": request_id,
             "result": {
-                "protocol_version": protocol_version(),
+                "protocol_version": protocol_version(message.get("params", {})),
                 "name": os.environ.get("FIXTURE_NAME", "fixture"),
                 "version": "1.0.0",
+                "features": json.loads(os.environ.get("FIXTURE_FEATURES", "[]")),
                 "capabilities": json.loads(os.environ.get(
                     "FIXTURE_CAPABILITIES",
                     '{"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[]}',

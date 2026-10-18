@@ -43,6 +43,14 @@
       },
       "type": "array"
     },
+    "features": {
+      "default": [],
+      "description": "What the runtime's own configuration enables. None are defined yet;\nthe daemon ignores one it does not know, with a diagnostic.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "platform": {
       "default": null,
       "description": "Operating system, as Rust's `std::env::consts::OS` names it, for a\nruntime where it matters.",
@@ -55,15 +63,14 @@
       "description": "The runtime sends producer messages to the sessions attached to its\ninstances (`producer/*`), once the daemon sends\n`producer/recovery/start`.",
       "type": "boolean"
     },
-    "version": {
-      "description": "The runtime's [`RUNTIME_PROTOCOL_VERSION`].",
-      "format": "uint32",
-      "minimum": 0,
-      "type": "integer"
+    "protocol_version": {
+      "description": "The runtime's [`crate::RUNTIME_PROTOCOL_VERSION`].",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "type": "string"
     }
   },
   "required": [
-    "version",
+    "protocol_version",
     "capabilities"
   ],
   "title": "InitializeResult",

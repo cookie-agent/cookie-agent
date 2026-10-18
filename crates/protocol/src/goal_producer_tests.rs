@@ -734,7 +734,7 @@ fn reminder_metadata_is_not_send_identity_and_is_best_effort_on_read() {
 }
 
 #[test]
-fn recovery_handshake_has_only_explicit_completion_outcomes_and_exact_version() {
+fn recovery_handshake_has_only_explicit_completion_outcomes() {
     strict::<RecoveryStartParams>(json!({}));
     let notification = serde_json::to_value(extension_recovery_start_notification()).unwrap();
     assert_eq!(
@@ -780,17 +780,19 @@ fn recovery_handshake_has_only_explicit_completion_outcomes_and_exact_version() 
             status,
         });
     }
-    assert_eq!(EXTENSION_PROTOCOL_VERSION, 2);
-    assert!(serde_json::from_value::<ExtensionProtocolVersion>(json!(1)).is_err());
-    round_trip(ExtensionProtocolVersion::current());
-    assert!(serde_json::from_value::<ExtensionProtocolVersion>(json!("1")).is_err());
-    let params: ExtensionInitializeParams =
-        serde_json::from_value(extension_initialize_request("phase1").params.unwrap()).unwrap();
-    assert!(
-        params.capabilities.producer_messaging,
-        "the engine supports explicit producer messaging"
+    let params = ExtensionInitializeParams {
+        protocol_version: PLUGIN_PROTOCOL_VERSION,
+        engine_version: "phase1".into(),
+        features: vec![FEATURE_PRODUCER_MESSAGING.into()],
+        interception_timeout_ms: 2_000,
+    };
+    let wire = serde_json::to_value(&params).unwrap();
+    assert_eq!(
+        wire["protocol_version"],
+        json!(PLUGIN_PROTOCOL_VERSION.to_string())
     );
-    strict::<ExtensionEngineCapabilities>(serde_json::to_value(params.capabilities).unwrap());
+    assert_eq!(wire["features"], json!(["producer_messaging"]));
+    round_trip(params);
     strict::<ExtensionPluginCapabilities>(
         json!({"producer_messaging":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"intercept":[]}),
     );

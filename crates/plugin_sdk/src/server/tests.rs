@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use cookie_agent_protocol::{
-    AdaptorId, AgentId, CancellationCapability, ExtensionEngineCapabilities,
-    ExtensionToolBeforeCallAction, ExtensionToolOrigin, Modality, ModelCapabilities,
-    ReplayCapability, runtime_protocol::AdapterFamily, runtime_protocol::WireTurnContext,
+    AdaptorId, AgentId, CancellationCapability, ExtensionToolBeforeCallAction, ExtensionToolOrigin,
+    Modality, ModelCapabilities, ReplayCapability, runtime_protocol::AdapterFamily,
+    runtime_protocol::WireTurnContext,
 };
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -37,21 +37,42 @@ struct Engine {
     initialized: ExtensionInitializeResult,
 }
 
+/// The initialize params the daemon sends.
+fn initialize_params(producer_messaging: bool) -> ExtensionInitializeParams {
+    ExtensionInitializeParams {
+        protocol_version: PLUGIN_PROTOCOL_VERSION,
+        engine_version: "test".into(),
+        features: producer_messaging
+            .then(|| FEATURE_PRODUCER_MESSAGING.to_owned())
+            .into_iter()
+            .collect(),
+        interception_timeout_ms: 2_000,
+    }
+}
+
+/// Serves `server` over an in-memory stream; returns the daemon's end.
+fn serve(
+    server: PluginServer,
+) -> (
+    Peer,
+    mpsc::Receiver<Incoming>,
+    JoinHandle<Result<(), PluginError>>,
+) {
+    let (engine_io, plugin_io) = tokio::io::duplex(1 << 20);
+    let (plugin_read, plugin_write) = tokio::io::split(plugin_io);
+    let server = tokio::spawn(server.run_io(plugin_read, plugin_write));
+    let (engine_read, engine_write) = tokio::io::split(engine_io);
+    let (peer, incoming) = Peer::start(Box::new(LineTransport::new(engine_read, engine_write)));
+    (peer, incoming, server)
+}
+
 impl Engine {
     async fn connect(server: PluginServer, producer_messaging: bool) -> Self {
-        let (engine_io, plugin_io) = tokio::io::duplex(1 << 20);
-        let (plugin_read, plugin_write) = tokio::io::split(plugin_io);
-        let server = tokio::spawn(server.run_io(plugin_read, plugin_write));
-        let (engine_read, engine_write) = tokio::io::split(engine_io);
-        let (peer, incoming) = Peer::start(Box::new(LineTransport::new(engine_read, engine_write)));
+        let (peer, incoming, server) = serve(server);
         let initialized = peer
             .request(
                 PLUGIN_INITIALIZE_METHOD,
-                &ExtensionInitializeParams {
-                    protocol_version: ExtensionProtocolVersion::current(),
-                    engine_version: "test".into(),
-                    capabilities: ExtensionEngineCapabilities { producer_messaging },
-                },
+                &initialize_params(producer_messaging),
             )
             .await
             .expect("initialize");
@@ -279,10 +300,7 @@ async fn a_tool_is_declared_prepared_and_executed_over_the_runtime_protocol() {
         .build()
         .expect("server");
     let engine = Engine::connect(server, false).await;
-    assert_eq!(
-        engine.initialized.protocol_version,
-        ExtensionProtocolVersion::current()
-    );
+    assert_eq!(engine.initialized.protocol_version, PLUGIN_PROTOCOL_VERSION);
     assert_eq!(engine.initialized.name, "issues");
     assert_eq!(
         engine
@@ -636,5 +654,105 @@ async fn producers_stay_closed_when_the_engine_does_not_enable_them() {
         .await;
     assert_eq!(completed_text(&result), ("started", false));
     assert!(registered.recv().await.expect("tool outcome"));
+    engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_daemon_of_another_version_is_refused_before_the_rest_is_read() {
+    let server = PluginServer::builder("versions", "0.1.0")
+        .build()
+        .expect("server");
+    let (peer, _incoming, _server) = serve(server);
+    // Before initialize, requests are refused.
+    let early = peer
+        .request::<_, Value>(method::TOOL_REVALIDATE, &json!({"prepared_id": 1}))
+        .await
+        .expect_err("not initialized");
+    assert_eq!(early.data_code(), Some("not_initialized"));
+    let next_minor = SemVer::new(
+        PLUGIN_PROTOCOL_VERSION.major(),
+        PLUGIN_PROTOCOL_VERSION.minor() + 1,
+        0,
+    );
+    for version in [json!(next_minor.to_string()), json!("9.0.0"), json!(2)] {
+        // The rest of the params is a shape this build does not share.
+        let error = peer
+            .request::<_, ExtensionInitializeResult>(
+                PLUGIN_INITIALIZE_METHOD,
+                &json!({"protocol_version": version, "engine": {"name": "future"}}),
+            )
+            .await
+            .expect_err("another version");
+        assert_eq!(error.data_code(), Some("unsupported_protocol"), "{error}");
+        assert_eq!(
+            error.data_member("supported_version"),
+            Some(PLUGIN_PROTOCOL_VERSION.to_string().as_str())
+        );
+    }
+    let malformed = peer
+        .request::<_, ExtensionInitializeResult>(PLUGIN_INITIALIZE_METHOD, &json!({}))
+        .await
+        .expect_err("no version");
+    assert_eq!(malformed.data_code(), Some("invalid_params"));
+    // A patch of the same minor connects.
+    let mut params = serde_json::to_value(initialize_params(false)).unwrap();
+    params["protocol_version"] = json!(
+        SemVer::new(
+            PLUGIN_PROTOCOL_VERSION.major(),
+            PLUGIN_PROTOCOL_VERSION.minor(),
+            PLUGIN_PROTOCOL_VERSION.patch() + 1
+        )
+        .to_string()
+    );
+    let initialized: ExtensionInitializeResult = peer
+        .request(PLUGIN_INITIALIZE_METHOD, &params)
+        .await
+        .expect("a patch connects");
+    assert_eq!(initialized.protocol_version, PLUGIN_PROTOCOL_VERSION);
+    let again = peer
+        .request::<_, ExtensionInitializeResult>(PLUGIN_INITIALIZE_METHOD, &params)
+        .await
+        .expect_err("initialized twice");
+    assert_eq!(again.data_code(), Some("already_initialized"));
+}
+
+#[tokio::test]
+async fn handlers_see_the_daemon_the_handshake_described() {
+    let (seen, mut daemons) = mpsc::unbounded_channel();
+    let server = PluginServer::builder("observer", "0.1.0")
+        .tool(declaration("observe"), move |context, _arguments| {
+            let seen = seen.clone();
+            async move {
+                let _ = seen.send(context.plugin().daemon().clone());
+                Ok(ToolOutput::success("seen"))
+            }
+        })
+        .build()
+        .expect("server");
+    let engine = Engine::connect(server, true).await;
+    let session = SessionId::new_v7();
+    let outcomes = engine
+        .prepare(
+            session,
+            vec![WireToolCall {
+                id: ToolCallId::new_v7(),
+                name: "observe".into(),
+                arguments: json!({}),
+            }],
+        )
+        .await;
+    let PrepareOutcome::Prepared(prepared) = &outcomes[0] else {
+        panic!("prepared: {outcomes:?}");
+    };
+    engine.execute(session, prepared.prepared_id).await;
+    let daemon = tokio::time::timeout(WAIT, daemons.recv())
+        .await
+        .expect("the tool ran")
+        .expect("daemon info");
+    assert_eq!(daemon.protocol_version(), PLUGIN_PROTOCOL_VERSION);
+    assert_eq!(daemon.engine_version(), "test");
+    assert!(daemon.has_feature(FEATURE_PRODUCER_MESSAGING));
+    assert_eq!(daemon.features(), ["producer_messaging"]);
+    assert_eq!(daemon.interception_timeout(), Duration::from_millis(2_000));
     engine.shutdown().await;
 }

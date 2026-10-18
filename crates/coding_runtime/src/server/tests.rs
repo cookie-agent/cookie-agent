@@ -1,13 +1,14 @@
 use std::time::Duration;
 
-use cookie_agent_protocol::{RunId, SessionId, ToolCallId, errors, in_process_pair};
+use cookie_agent_protocol::{
+    RUNTIME_PROTOCOL_VERSION, RunId, SessionId, ToolCallId, errors, in_process_pair,
+};
 use cookie_agent_runtime_api::{
     protocol::{
         AgentMdLimits, CapabilityOpenParams, CapabilityOpenResult, ContextParams, ContextResult,
         Empty, ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams, InitializeResult,
-        Outcome, PrepareOutcome, PrepareParams, PrepareResult, PreparedRef,
-        RUNTIME_PROTOCOL_VERSION, RuntimeSettings, ToolOutputLimits, ToolProgressParams,
-        WireToolCall, WireTurnContext, method,
+        Outcome, PrepareOutcome, PrepareParams, PrepareResult, PreparedRef, RuntimeSettings,
+        ToolOutputLimits, ToolProgressParams, WireToolCall, WireTurnContext, method,
     },
     rpc::{Incoming, Peer, RpcError},
 };
@@ -32,7 +33,9 @@ fn settings() -> RuntimeSettings {
 
 fn initialize_params() -> InitializeParams {
     InitializeParams {
-        version: RUNTIME_PROTOCOL_VERSION,
+        protocol_version: RUNTIME_PROTOCOL_VERSION,
+        engine_version: "test".into(),
+        features: Vec::new(),
         runtime_id: "labpc".into(),
         settings: settings(),
     }
@@ -116,24 +119,50 @@ fn turn() -> WireTurnContext {
 }
 
 #[tokio::test]
-async fn a_version_mismatch_fails_initialize_with_both_versions() {
+async fn a_daemon_of_another_version_fails_initialize_with_both_versions() {
+    let next_minor = cookie_agent_protocol::SemVer::new(
+        RUNTIME_PROTOCOL_VERSION.major(),
+        RUNTIME_PROTOCOL_VERSION.minor() + 1,
+        0,
+    );
+    let next_major = cookie_agent_protocol::SemVer::new(RUNTIME_PROTOCOL_VERSION.major() + 1, 0, 0);
+    for (version, named) in [
+        (json!(next_minor), next_minor.to_string()),
+        (json!(next_major), next_major.to_string()),
+        // A build from before semver versions.
+        (json!(6), "6".to_owned()),
+    ] {
+        let harness = start(ServeOptions::default());
+        // Read before the rest, whose shape the other version need not share.
+        let error = harness
+            .daemon
+            .request::<_, InitializeResult>(
+                method::INITIALIZE,
+                &json!({"protocol_version": version, "settings": "elsewhere"}),
+            )
+            .await
+            .expect_err("another version");
+        let (code, message) = remote_code(error);
+        assert_eq!(code, "unsupported_protocol");
+        assert!(
+            message.contains(&format!("{RUNTIME_PROTOCOL_VERSION} here and {named}")),
+            "{message}"
+        );
+    }
+    // Another patch of the same minor connects.
     let harness = start(ServeOptions::default());
     let mut params = initialize_params();
-    params.version = RUNTIME_PROTOCOL_VERSION + 1;
-    let error = harness
-        .daemon
-        .request::<_, InitializeResult>(method::INITIALIZE, &params)
-        .await
-        .expect_err("version mismatch");
-    let (code, message) = remote_code(error);
-    assert_eq!(code, "unsupported_protocol");
-    assert!(
-        message.contains(&format!(
-            "{RUNTIME_PROTOCOL_VERSION} here and {}",
-            RUNTIME_PROTOCOL_VERSION + 1
-        )),
-        "{message}"
+    params.protocol_version = cookie_agent_protocol::SemVer::new(
+        RUNTIME_PROTOCOL_VERSION.major(),
+        RUNTIME_PROTOCOL_VERSION.minor(),
+        RUNTIME_PROTOCOL_VERSION.patch() + 1,
     );
+    let initialized: InitializeResult = harness
+        .daemon
+        .request(method::INITIALIZE, &params)
+        .await
+        .unwrap();
+    assert_eq!(initialized.protocol_version, RUNTIME_PROTOCOL_VERSION);
 }
 
 #[tokio::test]
@@ -191,7 +220,8 @@ async fn requests_before_initialize_and_unsupported_settings_are_refused() {
         .request::<_, InitializeResult>(
             method::INITIALIZE,
             &json!({
-                "version": RUNTIME_PROTOCOL_VERSION,
+                "protocol_version": RUNTIME_PROTOCOL_VERSION,
+                "engine_version": "test",
                 "runtime_id": "labpc",
                 "settings": settings(),
                 "plugins": [],
@@ -227,7 +257,7 @@ async fn opening_reports_identity_tools_and_project_skills_then_shuts_down() {
         .request(method::INITIALIZE, &initialize_params())
         .await
         .unwrap();
-    assert_eq!(initialized.version, RUNTIME_PROTOCOL_VERSION);
+    assert_eq!(initialized.protocol_version, RUNTIME_PROTOCOL_VERSION);
     assert_eq!(initialized.platform.as_deref(), Some(std::env::consts::OS));
     let [capability] = &initialized.capabilities[..] else {
         panic!("one capability: {:?}", initialized.capabilities);

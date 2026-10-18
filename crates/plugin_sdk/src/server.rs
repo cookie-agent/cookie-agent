@@ -3,7 +3,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -16,24 +16,24 @@ use cookie_agent_protocol::{
     ExtensionEventParams, ExtensionInitializeParams, ExtensionInitializeResult,
     ExtensionInterceptionHook, ExtensionMessageEndParams, ExtensionMessageEndResult,
     ExtensionModelBeforeRequestParams, ExtensionModelBeforeRequestResult,
-    ExtensionModelBeforeSelectParams, ExtensionPluginCapabilities, ExtensionProtocolVersion,
+    ExtensionModelBeforeSelectParams, ExtensionPluginCapabilities,
     ExtensionProviderAfterResponseParams, ExtensionProviderAfterResponseResult,
     ExtensionProviderBeforeRequestParams, ExtensionProviderBeforeRequestResult,
     ExtensionSessionBeforeCompactParams, ExtensionSessionBeforeCompactResult,
     ExtensionSessionBeforeForkParams, ExtensionSessionBeforeRevertParams,
     ExtensionSessionBeforeRevertResult, ExtensionToolAfterResultParams,
     ExtensionToolAfterResultResult, ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult,
-    ExtensionUserBeforeInputParams, ExtensionUserBeforeInputResult, PLUGIN_BUS_EVENT_METHOD,
-    PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD, PLUGIN_INITIALIZE_METHOD,
-    PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD, PLUGIN_INTERCEPT_MESSAGE_END_METHOD,
-    PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD, PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD,
-    PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD,
+    ExtensionUserBeforeInputParams, ExtensionUserBeforeInputResult, FEATURE_PRODUCER_MESSAGING,
+    PLUGIN_BUS_EVENT_METHOD, PLUGIN_EMIT_METHOD, PLUGIN_EMIT_RESULT_METHOD, PLUGIN_EVENT_METHOD,
+    PLUGIN_INITIALIZE_METHOD, PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
+    PLUGIN_INTERCEPT_MESSAGE_END_METHOD, PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD,
+    PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD, PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD,
     PLUGIN_INTERCEPT_PROVIDER_BEFORE_REQUEST_METHOD,
     PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD, PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD,
     PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD, PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
     PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD, PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD,
     PLUGIN_PRODUCER_DISCARD_METHOD, PLUGIN_PRODUCER_REGISTER_METHOD, PLUGIN_PRODUCER_SEND_METHOD,
-    PLUGIN_PRODUCER_UNREGISTER_METHOD, PLUGIN_RECOVERY_COMPLETE_METHOD,
+    PLUGIN_PRODUCER_UNREGISTER_METHOD, PLUGIN_PROTOCOL_VERSION, PLUGIN_RECOVERY_COMPLETE_METHOD,
     PLUGIN_RECOVERY_START_METHOD, PLUGIN_SHUTDOWN_METHOD, PermissionAction, PersistedToolResult,
     PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
     PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity,
@@ -41,7 +41,7 @@ use cookie_agent_protocol::{
     ProducerIdempotencyKey, ProducerMessageId, ProducerName, ProducerRegisterParams,
     ProducerRegisterResult, ProducerSendParams, ProducerSendResult, ProducerUnregisterParams,
     ProducerUnregisterResult, RecoveryCompleteParams, RecoveryCompleteResult, RecoveryOutcome,
-    RunId, SafeDisplayText, SafeErrorMessage, SessionId, Sha256Digest, ToolCallId,
+    RunId, SafeDisplayText, SafeErrorMessage, SemVer, SessionId, Sha256Digest, ToolCallId,
     ToolCallPresentation, ToolCompletionOutput, ToolOutputChunk, Transport, errors,
     peer::{Incoming, IncomingNotification, IncomingRequest, LineTransport, Peer, RpcError},
     runtime_protocol::{
@@ -207,6 +207,7 @@ impl PluginServer {
             handlers: self.handlers,
             context: Arc::new(ContextState {
                 peer: peer.clone(),
+                daemon: OnceLock::new(),
                 grants: Mutex::new(HashMap::new()),
                 pending_emits: Mutex::new(HashMap::new()),
                 publish_bus: AtomicBool::new(false),
@@ -421,6 +422,52 @@ impl PluginServerBuilder {
     }
 }
 
+/// The daemon a plugin serves, as its `plugin/initialize` described it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct DaemonInfo {
+    protocol_version: SemVer,
+    engine_version: String,
+    features: Vec<String>,
+    interception_timeout: Duration,
+}
+
+impl DaemonInfo {
+    /// The daemon's plugin protocol version. Its major (and, before 1.0,
+    /// its minor) equals [`PLUGIN_PROTOCOL_VERSION`]'s; a plugin uses
+    /// what the lower minor includes.
+    #[must_use]
+    pub const fn protocol_version(&self) -> SemVer {
+        self.protocol_version
+    }
+
+    /// The daemon's own version.
+    #[must_use]
+    pub fn engine_version(&self) -> &str {
+        &self.engine_version
+    }
+
+    /// What the plugin's configuration enables, such as
+    /// `producer_messaging`.
+    #[must_use]
+    pub fn features(&self) -> &[String] {
+        &self.features
+    }
+
+    /// Whether the daemon sent `feature`.
+    #[must_use]
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.features.iter().any(|sent| sent == feature)
+    }
+
+    /// How long the daemon waits for a hook's answer; also how long
+    /// [`PluginContext::emit_bus`] waits for the daemon's.
+    #[must_use]
+    pub const fn interception_timeout(&self) -> Duration {
+        self.interception_timeout
+    }
+}
+
 /// Context passed to plugin handlers for publishing correlated events and
 /// producing messages.
 #[derive(Clone)]
@@ -430,6 +477,16 @@ pub struct PluginContext {
 }
 
 impl PluginContext {
+    /// The daemon this plugin serves. Handlers run only after
+    /// `plugin/initialize`, which sets it.
+    #[must_use]
+    pub fn daemon(&self) -> &DaemonInfo {
+        self.state
+            .daemon
+            .get()
+            .expect("handlers run only after plugin/initialize")
+    }
+
     /// Publishes a non-durable bus event using this handler's one-shot context grant.
     ///
     /// The server must be configured with
@@ -810,6 +867,8 @@ type EmitReply = oneshot::Sender<ExtensionEmitResultParams>;
 
 struct ContextState {
     peer: Peer,
+    /// The daemon, as `plugin/initialize` described it.
+    daemon: OnceLock<DaemonInfo>,
     grants: Mutex<HashMap<String, Grant>>,
     pending_emits: Mutex<HashMap<String, VecDeque<EmitReply>>>,
     /// The plugin declared bus publishing.
@@ -887,8 +946,19 @@ impl Server {
         request: IncomingRequest,
         execution: Option<(ExecuteParams, CancellationToken)>,
     ) {
+        let initialized = self.context.daemon.get().is_some();
         let result = match request.method.as_str() {
             PLUGIN_INITIALIZE_METHOD => self.initialize(&request).map(to_value),
+            // Handlers run only once the daemon is known.
+            other if !initialized => {
+                if let Some((params, _)) = &execution {
+                    lock(&self.executions).remove(&params.prepared_id);
+                }
+                Err(errors::NOT_INITIALIZED
+                    .error()
+                    .detail(format!("`{other}` before `{PLUGIN_INITIALIZE_METHOD}`"))
+                    .into())
+            }
             method::TOOL_PREPARE => self.prepare(&request).map(to_value),
             method::TOOL_REVALIDATE => request
                 .params::<PreparedRef>()
@@ -916,18 +986,33 @@ impl Server {
         };
     }
 
+    /// Answers `plugin/initialize`: the daemon's version is checked before
+    /// anything else of the request is read.
     fn initialize(&self, request: &IncomingRequest) -> Result<ExtensionInitializeResult, RpcError> {
+        let raw: Value = request.params()?;
+        let protocol_version =
+            cookie_agent_protocol::negotiate_version(PLUGIN_PROTOCOL_VERSION, &raw)
+                .map_err(|refusal| RpcError::from(refusal.to_rpc_error()))?;
         let params: ExtensionInitializeParams = request.params()?;
         let capabilities = self.handlers.capabilities();
+        let daemon = DaemonInfo {
+            protocol_version,
+            engine_version: params.engine_version,
+            features: params.features,
+            interception_timeout: Duration::from_millis(params.interception_timeout_ms),
+        };
+        let producers =
+            capabilities.producer_messaging && daemon.has_feature(FEATURE_PRODUCER_MESSAGING);
+        if self.context.daemon.set(daemon).is_err() {
+            return Err(errors::ALREADY_INITIALIZED.error().into());
+        }
         self.context
             .publish_bus
             .store(capabilities.publish_bus, Ordering::Release);
-        self.context.producers.store(
-            capabilities.producer_messaging && params.capabilities.producer_messaging,
-            Ordering::Release,
-        );
+        self.context.producers.store(producers, Ordering::Release);
         Ok(ExtensionInitializeResult {
-            protocol_version: ExtensionProtocolVersion::current(),
+            protocol_version: PLUGIN_PROTOCOL_VERSION,
+            features: Vec::new(),
             name: self.name.clone(),
             version: self.version.clone(),
             capabilities,
@@ -1076,6 +1161,13 @@ impl Server {
     }
 
     fn handle_notification(&self, notification: &IncomingNotification) {
+        if self.context.daemon.get().is_none() && notification.method != PLUGIN_SHUTDOWN_METHOD {
+            diagnostic(&format!(
+                "ignored `{}` before `{PLUGIN_INITIALIZE_METHOD}`",
+                notification.method
+            ));
+            return;
+        }
         match notification.method.as_str() {
             PLUGIN_EVENT_METHOD => {
                 let (Some(handler), Ok(params)) = (
@@ -1227,6 +1319,13 @@ fn truncate(text: &str, max: usize) -> String {
         end -= 1;
     }
     text[..end].to_owned()
+}
+
+/// Reports what the SDK could not do with a message from the daemon. It
+/// goes to standard error, whose tail the daemon shows as the plugin's
+/// `stderr`; standard output carries only protocol messages.
+fn diagnostic(message: &str) {
+    eprintln!("cookie_agent_plugin_sdk: {message}");
 }
 
 /// An `internal_error` whose detail says what failed. Every error the SDK

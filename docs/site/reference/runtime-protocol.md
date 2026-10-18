@@ -56,27 +56,40 @@ protocol over either:
 
 ## Version
 
-The protocol version is an integer, currently **6**
-(`runtime_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its version in
-`runtime/initialize`; a runtime that speaks another version fails the request
-with `unsupported_protocol` naming both versions, and the daemon checks
-the version in the reply the same way. There is no negotiation.
-Version 3 removed `tool/stdin` and the `stdin` flag of `tool/execute`: tools
-no longer take input while they run. It also replaced the `job/*` messages and
-the `background` flag and `launched_jobs` of `tool/execute` with
-`tool/detachable`, and added `background` and `background_default` to tool
-declarations. Version 4 added producer messaging: the `producer_messaging`
-capability, the `producer/*` requests, and the recovery handshake (see
-[Producer messaging](#producer-messaging)). Version 5 added capabilities: one
-connection serves every workspace and capability of a runtime.
-`runtime/initialize` lost `workspace` and reports `capabilities`;
+The protocol version is a semver string, currently **0.7.0**
+(`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
+version in `runtime/initialize` and the runtime answers with its own. Each end
+reads the other's `protocol_version` from the raw JSON before it decodes
+anything else, so a peer of another version is answered with
+`unsupported_protocol`, naming both versions, rather than with a decoding
+error of a shape the two do not share; a hello without a readable version
+fails as `invalid_params`. Two versions are compatible when their majors are
+equal and, while the major is 0 (before the protocol freezes at `1.0.0`),
+their minors are too; the patch never matters. A build from before semver
+versions sends an integer and is refused the same way.
+
+Both ends also send `features`: what their configuration enables, never what
+a version already implies. None are defined yet for runtimes; an end ignores
+a feature it does not know, and the daemon says so in its log.
+
+Versions before 0.7.0 were integers. 3 removed `tool/stdin` and the `stdin`
+flag of `tool/execute`: tools no longer take input while they run. It also
+replaced the `job/*` messages and the `background` flag and `launched_jobs`
+of `tool/execute` with `tool/detachable`, and added `background` and
+`background_default` to tool declarations. 4 added producer messaging: the
+`producer_messaging` capability, the `producer/*` requests, and the recovery
+handshake (see [Producer messaging](#producer-messaging)). 5 added
+capabilities: one connection serves every workspace and capability of a
+runtime. `runtime/initialize` lost `workspace` and reports `capabilities`;
 `capability/open` opens an instance for a workspace and returns what
 `runtime/initialize` used to (identity, tools, skills, MCP servers);
 `capability/tools_changed` replaced `runtime/tools_changed`; and
 `tool/prepare`, `runtime/context`, `mcp/changed`, and `mcp/reconnect` name
 their `instance` (see the [runtime capabilities spec](../specs/runtime-capabilities.md)).
-Version 6 removed the tool result's `truncation`, which nothing set: a
-result's retained output is `retained_output`.
+6 removed the tool result's `truncation`, which nothing set: a result's
+retained output is `retained_output`. 0.7.0 made the version a semver string,
+added `engine_version` and `features` to the handshake, and moved errors to
+the registry's codes (see [Errors](#errors)).
 
 ## Capabilities and instances
 
@@ -161,7 +174,9 @@ ignored.
 
 | Params field | Meaning |
 |---|---|
-| `version` | The daemon's protocol version. |
+| `protocol_version` | The daemon's protocol version (see [Version](#version)). |
+| `engine_version` | The daemon's own version, for logs. |
+| `features` | What the daemon's configuration enables for the runtime; none are defined yet. |
 | `runtime_id` | The runtime's ID, `[a-z][a-z0-9_]{0,31}`. |
 | `settings.tool_output` | The `[tool_output]` preview limits: `max_lines`, `max_bytes`, `head_lines`, `tail_lines`. |
 | `settings.agent_md` | `max_bytes`: files larger than this are skipped. At most the `AGENTS.md` event bound. |
@@ -174,7 +189,8 @@ or enables OAuth, which stays with the daemon's global runtime.
 
 | Result field | Meaning |
 |---|---|
-| `version` | The runtime's protocol version. |
+| `protocol_version` | The runtime's protocol version. |
+| `features` | Optional: what the runtime's configuration enables; none are defined yet. |
 | `platform` | Optional: the operating system, as Rust's `std::env::consts::OS` names it, for a runtime where it matters. Shown in the system prompt with the runtime's workspace. |
 | `capabilities` | What the runtime offers: `name` (`[a-z][a-z0-9_]{0,31}`, unique within the runtime); `kind`, a self-declared label such as `coding` (a lowercase ASCII letter followed by up to 15 lowercase letters, digits, or hyphens) that the daemon shows to clients and in approval reviews and never branches on; `takes_workspace`; and an optional `description`. The coding runtime offers `coding`, which takes a workspace. |
 | `producer_messaging` | Optional, default `false`: the runtime sends producer messages to the sessions attached to its instances (see [Producer messaging](#producer-messaging)). |

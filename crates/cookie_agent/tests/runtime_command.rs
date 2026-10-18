@@ -3,10 +3,11 @@
 
 use std::{path::Path, process::Stdio, time::Duration};
 
+use cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION;
 use cookie_agent_runtime_api::{
     protocol::{
         AgentMdLimits, CapabilityOpenParams, CapabilityOpenResult, Empty, InitializeParams,
-        InitializeResult, RUNTIME_PROTOCOL_VERSION, RuntimeSettings, ToolOutputLimits, method,
+        InitializeResult, RuntimeSettings, ToolOutputLimits, method,
     },
     rpc::{LineTransport, Peer},
 };
@@ -42,7 +43,9 @@ fn connect(child: &mut Child) -> Peer {
 
 fn params() -> InitializeParams {
     InitializeParams {
-        version: RUNTIME_PROTOCOL_VERSION,
+        protocol_version: RUNTIME_PROTOCOL_VERSION,
+        engine_version: "test".into(),
+        features: Vec::new(),
         runtime_id: "labpc".into(),
         settings: RuntimeSettings {
             tool_output: ToolOutputLimits {

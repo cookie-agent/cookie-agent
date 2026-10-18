@@ -34,7 +34,7 @@ for line in sys.stdin:
     frame = json.loads(line)
     method = frame.get('method')
     if method == 'plugin/initialize':
-        assert frame['params']['capabilities']['producer_messaging'] is True
+        assert 'producer_messaging' in frame['params']['features']
         send({'jsonrpc':'2.0','id':frame['id'],'result':{
             'protocol_version':frame['params']['protocol_version'],
             'name':'producer_fixture','version':'1',

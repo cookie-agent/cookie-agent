@@ -1224,19 +1224,29 @@ async fn local_mcp_servers_need_the_protocol_local_runtime() {
 /// be, that offers one capability, `browse`, of kind `browser` without a
 /// workspace, and answers `capability/open` with `opened`.
 async fn initialize_fake(opened: serde_json::Value) -> Result<crate::StartedRuntime, String> {
+    initialize_fake_with(fake_hello(), opened).await
+}
+
+/// The fake runtime's initialize reply.
+fn fake_hello() -> serde_json::Value {
+    serde_json::json!({
+        "protocol_version": cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION,
+        "capabilities": [{
+            "name": "browse",
+            "kind": "browser",
+            "takes_workspace": false,
+        }],
+    })
+}
+
+/// [`initialize_fake`] with the initialize reply `hello`.
+async fn initialize_fake_with(
+    hello: serde_json::Value,
+    opened: serde_json::Value,
+) -> Result<crate::StartedRuntime, String> {
     let (daemon, mut runtime) = in_process_pair(8);
     let fake = tokio::spawn(async move {
-        for reply in [
-            serde_json::json!({
-                "version": cookie_agent_runtime_api::protocol::RUNTIME_PROTOCOL_VERSION,
-                "capabilities": [{
-                    "name": "browse",
-                    "kind": "browser",
-                    "takes_workspace": false,
-                }],
-            }),
-            opened,
-        ] {
+        for reply in [hello, opened] {
             let Ok(Some(request)) = runtime.recv().await else {
                 return runtime;
             };
@@ -1307,6 +1317,41 @@ async fn a_runtime_of_any_kind_declares_its_own_permission_actions() {
         .unwrap();
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].permission_name.as_deref(), Some("browse"));
+}
+
+/// A runtime of another version is refused from its reply's version alone,
+/// with both versions named; one of another patch connects.
+#[tokio::test]
+async fn a_runtime_of_another_version_is_refused_with_unsupported_protocol() {
+    let daemon = cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION;
+    let next_minor = cookie_agent_protocol::SemVer::new(daemon.major(), daemon.minor() + 1, 0);
+    let next_major = cookie_agent_protocol::SemVer::new(daemon.major() + 1, 0, 0);
+    for (version, named) in [
+        (serde_json::json!(next_minor), next_minor.to_string()),
+        (serde_json::json!(next_major), next_major.to_string()),
+        (serde_json::json!(6), "6".to_owned()),
+    ] {
+        // The rest of the reply is a shape this build does not share.
+        let hello = serde_json::json!({"protocol_version": version, "capabilities": "many"});
+        let error = initialize_fake_with(hello, fake_result(serde_json::json!([])))
+            .await
+            .err()
+            .expect("another version");
+        assert!(
+            error.contains("runtime `fake`")
+                && error.contains(&format!("{daemon} here and {named}")),
+            "{error}"
+        );
+    }
+    let mut hello = fake_hello();
+    hello["protocol_version"] = serde_json::json!(cookie_agent_protocol::SemVer::new(
+        daemon.major(),
+        daemon.minor(),
+        daemon.patch() + 1
+    ));
+    initialize_fake_with(hello, fake_result(serde_json::json!([])))
+        .await
+        .expect("another patch connects");
 }
 
 /// A runtime may declare a tool that needs no permission by leaving out its

@@ -35,10 +35,10 @@ for line in sys.stdin:
     method = frame.get('method')
     request_id = frame.get('id')
     if method == 'plugin/initialize':
-        assert frame['params']['protocol_version'] == 2
-        assert frame['params']['capabilities']['producer_messaging'] is True
+        assert 'producer_messaging' in frame['params']['features']
         send({'jsonrpc':'2.0','id':request_id,'result':{
-            'protocol_version':2,'name':'discard_callback','version':'1',
+            'protocol_version':frame['params']['protocol_version'],
+            'name':'discard_callback','version':'1',
             'capabilities':{'producer_messaging':True,
                 'subscribe_events':True,'subscribe_bus':False,'publish_bus':False,'intercept':[]}}})
     elif method == 'producer/recovery/start':

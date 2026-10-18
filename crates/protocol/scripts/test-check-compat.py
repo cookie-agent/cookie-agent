@@ -128,8 +128,9 @@ def remove_emit_status(surfaces):
 
 
 def change_const(surfaces):
-    node = schema(surfaces, "plugin", "ExtensionInitializeParams")["properties"]["protocol_version"]
-    node["const"] = node["const"] + 1
+    origin = schema(surfaces, "plugin", "ExtensionToolBeforeCallParams")["$defs"]["ExtensionToolOrigin"]
+    node = origin["oneOf"][0]["properties"]["kind"]
+    node["const"] = node["const"] + "_layer"
 
 
 def close_information(surfaces):

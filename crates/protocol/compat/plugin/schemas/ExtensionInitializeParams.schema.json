@@ -1,37 +1,36 @@
 {
-  "$defs": {
-    "ExtensionEngineCapabilities": {
-      "additionalProperties": false,
-      "properties": {
-        "producer_messaging": {
-          "description": "The daemon accepts this plugin's producer messages: the plugin's\nconfiguration enables them.",
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "producer_messaging"
-      ],
-      "type": "object"
-    }
-  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "`plugin/initialize` params: the daemon's version and what its\nconfiguration enables for this plugin.",
   "properties": {
-    "capabilities": {
-      "$ref": "#/$defs/ExtensionEngineCapabilities"
-    },
     "engine_version": {
+      "description": "The daemon's own version, for logs and diagnostics.",
       "type": "string"
     },
-    "protocol_version": {
-      "const": 2,
+    "features": {
+      "default": [],
+      "description": "What the plugin's configuration enables, such as\n[`FEATURE_PRODUCER_MESSAGING`]. A version never implies a feature.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "interception_timeout_ms": {
+      "description": "How long the daemon waits for a hook's answer, and for the plugin's\n`plugin/emit` to be answered with `plugin/emit_result`.",
+      "format": "uint64",
+      "minimum": 0,
       "type": "integer"
+    },
+    "protocol_version": {
+      "description": "The daemon's [`crate::PLUGIN_PROTOCOL_VERSION`].",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "type": "string"
     }
   },
   "required": [
     "protocol_version",
     "engine_version",
-    "capabilities"
+    "interception_timeout_ms"
   ],
   "title": "ExtensionInitializeParams",
   "type": "object"

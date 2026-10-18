@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::{LoadedMcpServer, McpOAuthConfig, McpServerConfig, McpServerSource};
 use cookie_agent_mcp::{McpRegistry, McpRegistryOptions, McpServerFailure, McpServerStatus};
-use cookie_agent_protocol::{SessionId, Transport, errors};
+use cookie_agent_protocol::{RUNTIME_PROTOCOL_VERSION, SessionId, Transport, errors};
 use cookie_agent_runtime_api::{
     CodingToolsFactory, DetachPoint, ProgressCapture, ProgressSink, RuntimeConnection,
     RuntimeConnector, RuntimeInfo, RuntimeKind, SessionToolContext, ToolArtifacts, ToolCall,
@@ -46,9 +46,9 @@ use cookie_agent_runtime_api::{
         ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams, InitializeResult,
         InlineMedia, McpChangedParams, McpFailureReport, McpReconnectParams, McpServerReport,
         McpServerSettings, Outcome, OutcomeExt as _, PrepareOutcome, PrepareParams, PrepareResult,
-        PreparedCall, PreparedRef, PromptSectionDeclaration, RUNTIME_PROTOCOL_VERSION,
-        RuntimeSettings, RuntimeSkills, RuntimeTools, SkillDeclaration, SkillDiscoveryDeclaration,
-        ToolDeclaration, ToolDeclarationExt as _, ToolProgressParams, WireToolError, method,
+        PreparedCall, PreparedRef, PromptSectionDeclaration, RuntimeSettings, RuntimeSkills,
+        RuntimeTools, SkillDeclaration, SkillDiscoveryDeclaration, ToolDeclaration,
+        ToolDeclarationExt as _, ToolProgressParams, WireToolError, method,
     },
     reconnect::ReconnectPolicy,
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
@@ -445,18 +445,14 @@ impl Server {
         })
     }
 
-    /// Initializes the runtime: checks the version and settings, and reports
-    /// the `coding` capability. Workspaces open later, with
-    /// `capability/open`.
+    /// Initializes the runtime: checks the version, before anything else of
+    /// the request is read, and the settings, and reports the `coding`
+    /// capability. Workspaces open later, with `capability/open`.
     fn initialize(&self, request: &IncomingRequest) -> Result<InitializeResult, RpcError> {
+        let raw: serde_json::Value = request.params()?;
+        cookie_agent_protocol::negotiate_version(RUNTIME_PROTOCOL_VERSION, &raw)
+            .map_err(|refusal| RpcError::from(refusal.to_rpc_error()))?;
         let params: InitializeParams = request.params()?;
-        if params.version != RUNTIME_PROTOCOL_VERSION {
-            return Err(errors::PROTOCOL_UNSUPPORTED
-                .error()
-                .field("supported_version", RUNTIME_PROTOCOL_VERSION.to_string())
-                .field("peer_version", params.version.to_string())
-                .into());
-        }
         if self.initializing.swap(true, Ordering::AcqRel) {
             return Err(errors::ALREADY_INITIALIZED.error().into());
         }
@@ -489,7 +485,8 @@ impl Server {
             return Err("the runtime is already initialized".into());
         }
         Ok(InitializeResult {
-            version: RUNTIME_PROTOCOL_VERSION,
+            protocol_version: RUNTIME_PROTOCOL_VERSION,
+            features: Vec::new(),
             platform: Some(std::env::consts::OS.to_owned()),
             capabilities: vec![CapabilityDeclaration {
                 name: cookie_agent_protocol::CapabilityName::coding(),

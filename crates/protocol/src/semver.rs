@@ -4,11 +4,15 @@
 //! Each surface's version is the string `"MAJOR.MINOR.PATCH"`: three decimal
 //! integers without leading zeros, and no pre-release or build suffix. Peers
 //! with different majors do not connect; peers with the same major share the
-//! lower of their two minors.
+//! lower of their two minors. Before the freeze (major 0) every minor may
+//! break the wire, as semver's `0.x` convention allows, so peers must also
+//! agree on the minor.
 //!
-//! [`SemVer`] is the type the handshakes switch to; until they do, the exact
-//! numeric [`crate::ProtocolVersion`] stays on the wire, and the constants
-//! below are not sent anywhere. They stay `0.x` until the freeze.
+//! The plugin and runtime handshakes send [`PLUGIN_PROTOCOL_VERSION`] and
+//! [`RUNTIME_PROTOCOL_VERSION`] and read the peer's with
+//! [`negotiate_version`]; the client handshake still sends the exact numeric
+//! [`crate::ProtocolVersion`] until it switches. The constants stay `0.x`
+//! until the freeze.
 
 use std::{borrow::Cow, fmt, str::FromStr};
 
@@ -19,9 +23,9 @@ use serde_json::Value;
 /// The client protocol version this build speaks.
 pub const CLIENT_PROTOCOL_VERSION: SemVer = SemVer::new(0, 49, 0);
 /// The plugin protocol version this build speaks.
-pub const PLUGIN_PROTOCOL_VERSION: SemVer = SemVer::new(0, 2, 0);
+pub const PLUGIN_PROTOCOL_VERSION: SemVer = SemVer::new(0, 3, 0);
 /// The runtime protocol version this build speaks.
-pub const RUNTIME_PROTOCOL_VERSION: SemVer = SemVer::new(0, 6, 0);
+pub const RUNTIME_PROTOCOL_VERSION: SemVer = SemVer::new(0, 7, 0);
 
 /// The handshake member that carries a peer's version.
 pub const PROTOCOL_VERSION_MEMBER: &str = "protocol_version";
@@ -70,14 +74,15 @@ impl SemVer {
         self.patch
     }
 
-    /// Whether a peer at `other` may connect: the majors are equal.
+    /// Whether a peer at `other` may connect: the majors are equal and,
+    /// while the major is 0, so are the minors.
     #[must_use]
     pub const fn is_compatible_with(self, other: Self) -> bool {
-        self.major == other.major
+        self.major == other.major && (self.major != 0 || self.minor == other.minor)
     }
 
     /// The minor two compatible peers share: the lower of the two. `None`
-    /// when the majors differ.
+    /// when they are not compatible.
     #[must_use]
     pub fn shared_minor(self, other: Self) -> Option<u32> {
         self.is_compatible_with(other)
@@ -179,6 +184,65 @@ pub fn peer_protocol_version(params: &Value) -> Result<SemVer, PeerVersionError>
     }
 }
 
+/// Why a handshake's peer version is refused.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VersionRefusal {
+    /// A version this build cannot speak with: another major, another minor
+    /// before 1.0, or the integer version of a build from before semver.
+    Unsupported { supported: SemVer, peer: String },
+    /// The handshake carries no readable version.
+    Malformed(PeerVersionError),
+}
+
+impl VersionRefusal {
+    /// The answer to the handshake: the registry's `unsupported_protocol`
+    /// naming both versions, or `invalid_params`.
+    #[must_use]
+    pub fn to_rpc_error(&self) -> crate::JsonRpcError {
+        match self {
+            Self::Unsupported { supported, peer } => crate::errors::PROTOCOL_UNSUPPORTED
+                .error()
+                .field("supported_version", supported.to_string())
+                .field("peer_version", peer)
+                .build(),
+            Self::Malformed(error) => crate::errors::BAD_PARAMS
+                .error()
+                .field("field", PROTOCOL_VERSION_MEMBER)
+                .detail(error.to_string())
+                .build(),
+        }
+    }
+}
+
+impl fmt::Display for VersionRefusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unsupported { .. } => formatter.write_str(&self.to_rpc_error().message),
+            Self::Malformed(error) => write!(formatter, "the handshake is malformed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for VersionRefusal {}
+
+/// Reads the peer's version from a handshake's raw params or reply, before
+/// anything else of it is decoded, and checks that a build speaking
+/// `supported` can talk to it. Returns the peer's version.
+pub fn negotiate_version(supported: SemVer, handshake: &Value) -> Result<SemVer, VersionRefusal> {
+    match peer_protocol_version(handshake) {
+        Ok(peer) if supported.is_compatible_with(peer) => Ok(peer),
+        Ok(peer) => Err(VersionRefusal::Unsupported {
+            supported,
+            peer: peer.to_string(),
+        }),
+        Err(PeerVersionError::Legacy(peer)) => Err(VersionRefusal::Unsupported {
+            supported,
+            peer: peer.to_string(),
+        }),
+        Err(error) => Err(VersionRefusal::Malformed(error)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -240,6 +304,50 @@ mod tests {
         assert!(!daemon.is_compatible_with(SemVer::new(2, 4, 0)));
         assert!(!daemon.is_compatible_with(SemVer::new(0, 4, 0)));
         assert_eq!(daemon.shared_minor(SemVer::new(2, 0, 0)), None);
+    }
+
+    #[test]
+    fn before_the_freeze_peers_must_also_agree_on_the_minor() {
+        let daemon = SemVer::new(0, 7, 0);
+        assert!(daemon.is_compatible_with(SemVer::new(0, 7, 3)));
+        assert_eq!(daemon.shared_minor(SemVer::new(0, 7, 3)), Some(7));
+        assert!(!daemon.is_compatible_with(SemVer::new(0, 6, 0)));
+        assert!(!daemon.is_compatible_with(SemVer::new(0, 8, 0)));
+        assert_eq!(daemon.shared_minor(SemVer::new(0, 8, 0)), None);
+        assert!(!daemon.is_compatible_with(SemVer::new(1, 7, 0)));
+    }
+
+    #[test]
+    fn a_handshake_of_another_version_is_refused_with_both_versions() {
+        let supported = SemVer::new(0, 3, 0);
+        assert_eq!(
+            negotiate_version(supported, &json!({"protocol_version": "0.3.9", "x": 1})),
+            Ok(SemVer::new(0, 3, 9))
+        );
+        for (peer, named) in [
+            (json!("0.4.0"), "0.4.0"),
+            (json!("1.3.0"), "1.3.0"),
+            (json!(2), "2"),
+        ] {
+            let refusal =
+                negotiate_version(supported, &json!({"protocol_version": peer})).unwrap_err();
+            let error = refusal.to_rpc_error();
+            assert_eq!(error.code, crate::errors::UNSUPPORTED_PROTOCOL);
+            let data = error.data.unwrap();
+            assert_eq!(data["code"], "unsupported_protocol");
+            assert_eq!(data["supported_version"], "0.3.0");
+            assert_eq!(data["peer_version"], named);
+            assert!(
+                refusal
+                    .to_string()
+                    .contains(&format!("0.3.0 here and {named}"))
+            );
+        }
+        for malformed in [json!({}), json!({"protocol_version": "3"})] {
+            let refusal = negotiate_version(supported, &malformed).unwrap_err();
+            assert!(matches!(refusal, VersionRefusal::Malformed(_)));
+            assert_eq!(refusal.to_rpc_error().code, crate::errors::INVALID_PARAMS);
+        }
     }
 
     #[test]

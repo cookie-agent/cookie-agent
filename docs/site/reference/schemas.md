@@ -11,8 +11,8 @@ emit only their current version and reject unsupported versions.
 | Runtime configuration | unversioned | unversioned current shape |
 | Agent document | unversioned | unversioned current shape |
 | Client protocol | 49 | 49 |
-| Plugin protocol | 2 | 2 |
-| Runtime protocol | 6 | 6 |
+| Plugin protocol | 0.3.0 | 0.3.x |
+| Runtime protocol | 0.7.0 | 0.7.x |
 | Events and session JSONL | versionless | versionless |
 | Session metadata | unversioned | unversioned current shape |
 | Runtime snapshot | 6 | 6 |
@@ -22,11 +22,13 @@ emit only their current version and reject unsupported versions.
 | In-memory model manifest (recorded run bindings) | 1 | 1 |
 
 The three protocols are moving to semver versions, as the
-[compatibility specification](../specs/compatibility-v1.md) describes. Until
-their handshakes switch, the exact numbers above stay on the wire; the semver
-constants `CLIENT_PROTOCOL_VERSION`, `PLUGIN_PROTOCOL_VERSION`, and
-`RUNTIME_PROTOCOL_VERSION` (`0.49.0`, `0.2.0`, and `0.6.0`) are what the
-baselines below record. They stay `0.x` until the protocols freeze at `1.0.0`.
+[compatibility specification](../specs/compatibility-v1.md) describes. The
+plugin and runtime handshakes send `PLUGIN_PROTOCOL_VERSION` and
+`RUNTIME_PROTOCOL_VERSION` and accept a peer of the same major and, before
+`1.0.0`, the same minor. Until the client handshake switches, its exact
+number above stays on the wire; the semver constant `CLIENT_PROTOCOL_VERSION`
+(`0.49.0`) is what its baseline records. The versions stay `0.x` until the
+protocols freeze at `1.0.0`.
 
 Agent snapshots embedded in events are read in their current shape only
 (`schema` 7); earlier shapes are rejected. Delegation lifecycle records are
