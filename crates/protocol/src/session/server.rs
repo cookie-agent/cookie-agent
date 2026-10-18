@@ -32,12 +32,12 @@ use crate::{
     SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
     SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
-    SessionProducersResult, SessionRenameChange, SessionRenameError, SessionRenameErrorCode,
-    SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
-    SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
-    SessionSetPermissionModeResult, SessionTitle, SessionTreeParams, SessionTreeResult,
-    SessionTreeUsageResult, SessionUsageParams, SessionUsageResult, SkillsGetParams,
-    SkillsGetResult, SkillsListParams, SkillsListResult, Transport, TransportError,
+    SessionProducersResult, SessionRenameChange, SessionRenameParams, SessionRenameResult,
+    SessionResumeParams, SessionResumeResult, SessionRevertParams, SessionRevertResult,
+    SessionSetPermissionModeParams, SessionSetPermissionModeResult, SessionTitle,
+    SessionTreeParams, SessionTreeResult, SessionTreeUsageResult, SessionUsageParams,
+    SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult,
+    Transport, TransportError,
 };
 
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
@@ -595,19 +595,32 @@ impl ServerFault {
         }
     }
 
+    /// `method_not_found`, naming `method`.
     #[must_use]
-    pub const fn method_not_found() -> Self {
-        Self::new(-32601, "method not found", None)
+    pub fn method_not_found(method: &str) -> Self {
+        Self::from_error(
+            crate::errors::UNKNOWN_METHOD
+                .error()
+                .field("method", method)
+                .build(),
+        )
+    }
+
+    /// `invalid_params`, with what was wrong as its detail.
+    #[must_use]
+    pub fn invalid_params(detail: impl Into<String>) -> Self {
+        Self::from_error(crate::errors::BAD_PARAMS.error().detail(detail).build())
     }
 
     #[must_use]
-    pub const fn invalid_params() -> Self {
-        Self::new(-32602, "invalid params", None)
+    pub fn internal() -> Self {
+        Self::from_error(crate::errors::INTERNAL.error().build())
     }
 
+    /// An error of the registry's `code` with no fields, and `detail`.
     #[must_use]
-    pub const fn internal() -> Self {
-        Self::new(-32603, "internal error", None)
+    pub fn registry(code: &'static crate::errors::ErrorCode, detail: impl Into<String>) -> Self {
+        Self::from_error(code.error().detail(detail).build())
     }
 }
 
@@ -956,10 +969,13 @@ async fn dispatch<S: ServerProtocol>(
         }
         crate::RUNTIME_SNAPSHOT_GET_METHOD
         | crate::PROVIDER_CONNECT_METHOD
-        | crate::PROVIDER_DISCONNECT_METHOD => {
-            Err(ServerFault::new(-32600, "request id required", None))
-        }
-        _ => Err(ServerFault::method_not_found()),
+        | crate::PROVIDER_DISCONNECT_METHOD => Err(ServerFault::from_error(
+            crate::errors::REQUEST_ID_REQUIRED
+                .error()
+                .field("method", method)
+                .build(),
+        )),
+        _ => Err(ServerFault::method_not_found(method)),
     }
 }
 
@@ -984,14 +1000,7 @@ where
 }
 
 fn command_fault(error: crate::strict::CommandDecodeError) -> ServerFault {
-    match error {
-        crate::strict::CommandDecodeError::Invalid(_) => ServerFault::invalid_params(),
-        refusal => ServerFault::new(
-            crate::errors::INVALID_PARAMS,
-            "invalid params",
-            refusal.to_rpc_error().data,
-        ),
-    }
+    ServerFault::from_error(error.to_rpc_error())
 }
 
 #[derive(Deserialize)]
@@ -1018,14 +1027,14 @@ fn decode_rename(params: Option<Value>) -> Result<SessionRenameParams, ServerFau
         return Ok(request);
     }
     if serde_json::to_vec(&params)
-        .map_err(|_| ServerFault::invalid_params())?
+        .map_err(|error| ServerFault::invalid_params(error.to_string()))?
         .len()
         > MAX_RAW_RENAME_PARAMS_BYTES
     {
-        return Err(ServerFault::invalid_params());
+        return Err(ServerFault::invalid_params("the params are too large"));
     }
-    let raw: RawSessionRenameParams =
-        serde_json::from_value(params).map_err(|_| ServerFault::invalid_params())?;
+    let raw: RawSessionRenameParams = serde_json::from_value(params)
+        .map_err(|error| ServerFault::invalid_params(error.to_string()))?;
     let invalid_title = rename_invalid_title(&raw);
     let change = match raw.change {
         RawSessionRenameChange::Set { title } => SessionRenameChange::Set {
@@ -1042,15 +1051,11 @@ fn decode_rename(params: Option<Value>) -> Result<SessionRenameParams, ServerFau
 }
 
 fn rename_invalid_title(raw: &RawSessionRenameParams) -> ServerFault {
-    ServerFault::new(
-        -32602,
-        "session rename rejected",
-        serde_json::to_value(SessionRenameError {
-            code: SessionRenameErrorCode::InvalidTitle,
-            session_id: raw.session_id,
-            client_rename_id: raw.client_rename_id.clone(),
-        })
-        .ok(),
+    ServerFault::from_error(
+        crate::errors::INVALID_TITLE
+            .error()
+            .field("session_id", raw.session_id)
+            .build(),
     )
 }
 
@@ -1091,30 +1096,27 @@ fn parse_incoming(frame: MessageFrame) -> Result<Value, ServerFault> {
             parsed
         }
     };
-    parsed.map_err(|_| ServerFault::new(-32700, "parse error", None))
+    parsed.map_err(|error| ServerFault::registry(&crate::errors::PARSE_FAILED, error.to_string()))
 }
 
 fn classify_incoming(value: Value) -> Result<Incoming, ServerFault> {
     let object = value.as_object().ok_or_else(|| {
-        ServerFault::new(
-            -32600,
-            "invalid request",
-            Some(json!({ "detail": "a batch or scalar is not a request" })),
+        ServerFault::registry(
+            &crate::errors::INVALID_MESSAGE,
+            "a batch or scalar is not a request",
         )
     })?;
     if object.contains_key("id") {
         let request: Request = serde_json::from_value(value).map_err(|_| {
-            ServerFault::new(
-                -32600,
-                "invalid request",
-                Some(json!({ "detail": "invalid JSON-RPC request envelope" })),
+            ServerFault::registry(
+                &crate::errors::INVALID_MESSAGE,
+                "invalid JSON-RPC request envelope",
             )
         })?;
         if request.method.is_empty() {
-            return Err(ServerFault::new(
-                -32600,
-                "invalid request",
-                Some(json!({ "detail": "method must be non-empty" })),
+            return Err(ServerFault::registry(
+                &crate::errors::INVALID_MESSAGE,
+                "method must be non-empty",
             ));
         }
         Ok(Incoming::Request {
@@ -1124,17 +1126,15 @@ fn classify_incoming(value: Value) -> Result<Incoming, ServerFault> {
         })
     } else {
         let notification: Notification = serde_json::from_value(value).map_err(|_| {
-            ServerFault::new(
-                -32600,
-                "invalid request",
-                Some(json!({ "detail": "invalid JSON-RPC notification envelope" })),
+            ServerFault::registry(
+                &crate::errors::INVALID_MESSAGE,
+                "invalid JSON-RPC notification envelope",
             )
         })?;
         if notification.method.is_empty() {
-            return Err(ServerFault::new(
-                -32600,
-                "invalid request",
-                Some(json!({ "detail": "method must be non-empty" })),
+            return Err(ServerFault::registry(
+                &crate::errors::INVALID_MESSAGE,
+                "method must be non-empty",
             ));
         }
         Ok(Incoming::Notification {

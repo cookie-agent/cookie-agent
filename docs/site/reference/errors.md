@@ -1,0 +1,90 @@
+<!-- Generated from the registry in crates/protocol/src/errors.rs. Do not edit by hand; regenerate with
+COOKIE_UPDATE_ERROR_REFERENCE=1 cargo test -p cookie_agent_protocol --lib errors -->
+
+# Errors
+
+Every error the client, plugin, and runtime protocols send has a stable
+`data.code` and a `message` a user can understand; `data.hint` says what to
+do next where that helps, and `data.detail` carries technical detail for a
+details view. Clients branch only on `data.code`, show `message` and then
+`hint`, and show `detail` on request. A code a client does not know is
+still readable: its `message` and `hint` are written for people. See the
+[compatibility spec](../specs/compatibility-v1.md) section 6.
+
+The JSON-RPC `code` is `-32000` for every application error; the protocol
+codes are the standard `-32700`, `-32600`, `-32601`, `-32602`, and
+`-32603`, and `-32001` (handshake required), `-32002`
+(`unsupported_protocol`), and `-32003` (unauthenticated).
+
+| `data.code` | JSON-RPC | Meaning | Message | Hint | Fields |
+|---|---|---|---|---|---|
+| `parse_error` | `-32700` | A frame that is not JSON; the connection closes. | A message could not be read because it is not valid JSON. | – | – |
+| `invalid_request` | `-32600` | A frame that is not a JSON-RPC request, notification, or reply. | A message is not a valid request. | – | – |
+| `request_id_required` | `-32600` | A method that only works as a request arrived as a notification. | {method} must be sent as a request with an ID. | – | `method`: The method that was sent as a notification. |
+| `method_not_found` | `-32601` | A method the receiver does not know. | The other side does not know the method {method}. | Update the older of the two programs. | `method`: The method name. |
+| `invalid_params` | `-32602` | Params that do not match the method. | The request's parameters are not valid. | – | `field` (optional): The JSON path of the first bad member. |
+| `unknown_field` | `-32602` | A command carried a member its receiver does not know. | The request has a member the receiver does not know: {field}. | Update the older of the two programs. | `field`: The JSON path of the member. |
+| `unknown_variant` | `-32602` | A command carried an enum value or tag its receiver does not know. | The request uses a value the receiver does not know at {field}. | Update the older of the two programs. | `field`: The JSON path of the value.<br>`value` (optional): The value that is not known. |
+| `internal_error` | `-32603` | A failure the receiver cannot describe further. | Something went wrong while handling the request. | Try again; if it keeps failing, check the daemon log. | – |
+| `handshake_required` | `-32001` | A request before the handshake. | The connection must complete its handshake first. | – | – |
+| `unsupported_protocol` | `-32002` | The peer speaks another major version of the protocol. | The two sides speak incompatible protocol versions: {supported_version} here and {peer_version} on the other side. | Update cookie or the program connecting to it so that their versions match. | `supported_version`: The version the receiver speaks.<br>`peer_version`: The version the peer sent. |
+| `unauthenticated` | `-32003` | A request before authentication, or a wrong token. | The connection is not authenticated. | Connect with the daemon's token. | – |
+| `engine_error` | `-32000` | A failure with no more specific code; `detail` says what failed. | The daemon could not complete the request. | See the details for the cause. | – |
+| `no_runnable_model` | `-32000` | No configured model can run: no provider is connected or none offers the model. | No model is ready to run. | Connect a provider with /connect, or choose another model. | – |
+| `provider_store_reload_failed` | `-32000` | Reloading the provider store after a change failed. | The saved provider connections could not be reloaded. | Check the details, then reconnect the provider. | – |
+| `session_owned_elsewhere` | `-32000` | Another process holds the session's lock. | This session is open in another cookie process. | Close it there, or open it read-only. | `session_id` (optional): The session. |
+| `session_not_found` | `-32000` | A request named a session the daemon does not have. | The session does not exist. | – | `session_id` (optional): The session. |
+| `session_running` | `-32000` | `run.start` on a session that is running. | Another run is already active in this session. | Steer or queue the input instead, or wait for the run to finish. | `session_id`: The session.<br>`client_run_id` (optional): The run request's idempotency key. |
+| `idempotency_conflict` | `-32000` | An idempotency key was reused with different params. | This request reuses the ID of an earlier request that was different. | Send the request again with a new ID. | `session_id` (optional): The session the request named.<br>`provider_id` (optional): The provider the request named.<br>`approval_id` (optional): The approval the request named.<br>`client_run_id` (optional): The reused run key.<br>`client_rename_id` (optional): The reused rename key.<br>`client_response_id` (optional): The reused approval-response key.<br>`client_connect_id` (optional): The reused connect key.<br>`client_request_id` (optional): The reused request key. |
+| `stale_revert` | `-32000` | A revert named an expected last event that is no longer the last. | The session changed before the revert could be applied. | Reload the session and choose the point to revert to again. | `session_id`: The session.<br>`current_last_seq`: The session's last event now. |
+| `session_requires_newer_engine` | `-32000` | The session's log has an event or history format this build cannot continue. | This session was written by a newer version of cookie, so it can only be viewed. | Update cookie to continue this session. | `session_id` (optional): The session.<br>`event` (optional): The event type this build does not know.<br>`history_format` (optional): The session's history format. |
+| `sequence_broken` | `-32000` | The session's log has a record whose sequence does not advance; the readable part opens render-only. | This session's log is damaged after event {seq}, so it can only be viewed. | Fork the session from an earlier point to continue it. | `session_id` (optional): The session.<br>`seq`: The first record whose sequence does not advance. |
+| `unreadable_model_binding` | `-32000` | An operation needed a run's stored model binding, which this build cannot decode. | The stored setup of the model {model} cannot be read by this version of cookie. | Start a new run, which resolves the model again. | `model`: The model whose stored binding cannot be read. |
+| `agent_unavailable` | `-32000` | An agent that is disabled, not eligible in this session, unknown, or whose model is unavailable. | The selected agent cannot run here. | Choose another agent or model; the details say why. | `agent` (optional): The agent. |
+| `run_not_found` | `-32000` | A request named a run that is not active. | The run does not exist or has already finished. | – | `run_id` (optional): The run. |
+| `invalid_title` | `-32000` | A rename with an empty, too long, or unsafe title. | The title is not valid. | Use a shorter title without control characters. | `session_id`: The session. |
+| `tree_usage_session_missing` | `-32000` | `session.tree_usage` met a session that is gone. | A session of this tree no longer exists, so its usage cannot be added up. | – | `session_id` (optional): The missing session. |
+| `tree_usage_delegation_corrupt` | `-32000` | `session.tree_usage` met a delegation record that does not decode. | A subagent record of this tree is damaged, so its usage cannot be added up. | – | `invocation_id` (optional): The damaged delegation. |
+| `goal_rejected` | `-32000` | A goal operation the session's goal state does not allow. | The goal could not be changed: {reason}. | – | `reason`: Why, in the daemon's words. |
+| `producer_rejected` | `-32000` | A producer operation was refused: messaging is not open, the session is not attached, or the operation failed. | The message source's request was refused. | See the details for why. | – |
+| `plugin_rejected` | `-32000` | A plugin hook or request refused the operation. | A plugin refused the request: {reason}. | – | `reason`: Why, in the plugin's or the daemon's words.<br>`plugin` (optional): The plugin. |
+| `plugin_hook_failed` | `-32000` | A hook of a plugin that blocks on failure timed out, was not connected, or answered with an error or a malformed result. | The plugin {plugin} could not check this request in its {hook} hook, and it refuses what it cannot check. | Check the plugin's status in /plugins, restart or fix it, and try again. | `plugin`: The plugin.<br>`hook`: The hook that failed, such as `user_before_input`. |
+| `runtime_rejected` | `-32000` | A runtime could not be attached, detached, started, or reached. | The runtime request was refused: {reason}. | – | `reason`: Why, in the daemon's words. |
+| `mcp_rejected` | `-32000` | An `mcp.server.*` or `mcp.auth.*` request the daemon could not carry out. | The MCP server request was refused: {reason}. | – | `reason`: Why, in the daemon's words. |
+| `config_apply_refused` | `-32000` | `config.apply` changed nothing; `detail` says why. | The configuration was not changed ({reason}). | On a conflict, reload the configuration and apply the change again; otherwise fix what the details name. | `reason`: `conflict`, `invalid_configuration`, or `invalid_change`. |
+| `approval_not_found` | `-32000` | A response named an approval the session does not have. | The approval request does not exist. | – | `approval_id`: The approval. |
+| `approval_not_pending` | `-32000` | A response to an approval that is no longer pending. | The approval request was already answered or cancelled. | – | `approval_id`: The approval. |
+| `approval_revision_conflict` | `-32000` | A response to an outdated revision of an approval. | The approval request changed before the answer arrived. | Review the request again and answer it. | `approval_id`: The approval.<br>`expected_revision` (optional): The revision the response answered.<br>`found_revision` (optional): The approval's revision now. |
+| `decision_not_allowed` | `-32000` | A response with a decision the approval does not offer. | That answer is not offered for this approval request. | – | `approval_id`: The approval. |
+| `operation_fingerprint_mismatch` | `-32000` | A response whose operation fingerprint does not match the approval. | The answer is for a different operation than the one awaiting approval. | Review the request again and answer it. | `approval_id`: The approval. |
+| `operation_changed` | `-32000` | The approved operation no longer matches what would run. | The operation changed after it was approved. | Review it again. | `approval_id` (optional): The approval. |
+| `unknown_provider` | `-32000` | `provider.connect` named a provider the catalog does not have. | There is no provider named {provider_id}. | Choose a provider from the list. | `provider_id`: The provider. |
+| `unsupported_provider` | `-32000` | The provider needs a protocol or setup this build does not support. | The provider {provider_id} cannot be connected by this build of cookie. | – | `provider_id`: The provider. |
+| `custom_provider_not_store_backed` | `-32000` | A connect or disconnect of a provider that `config.toml` defines. | The provider {provider_id} is defined in the configuration file, so it cannot be changed here. | Edit its entry in config.toml instead. | `provider_id`: The provider. |
+| `removed_without_retained_recipe_match` | `-32000` | The catalog removed the provider and no retained recipe matches. | The provider {provider_id} is no longer offered, and its saved setup cannot be reused. | Choose another provider. | `provider_id`: The provider. |
+| `catalog_revision_conflict` | `-32000` | The catalog revision the request expected is no longer current. | The provider list changed while connecting {provider_id}. | Start the connection again. | `provider_id`: The provider. |
+| `missing_setup_field` | `-32000` | `provider.connect` without a required setup value. | A required setup value for {provider_id} is missing. | Fill in every required field. | `provider_id`: The provider. |
+| `invalid_setup_field` | `-32000` | `provider.connect` with a setup value its recipe rejects. | A setup value for {provider_id} is not valid. | Check the values you entered. | `provider_id`: The provider. |
+| `missing_credential` | `-32000` | `provider.connect` without a required credential. | A credential for {provider_id} is missing. | Enter the provider's API key or sign in. | `provider_id`: The provider. |
+| `invalid_credential` | `-32000` | `provider.connect` with a credential of the wrong shape. | The credential for {provider_id} is not valid. | Check the key and enter it again. | `provider_id`: The provider. |
+| `unsupported_auth_method` | `-32000` | `provider.connect` with an auth method the provider does not offer. | The provider {provider_id} does not support that way of signing in. | Choose one of the provider's sign-in methods. | `provider_id`: The provider. |
+| `provider_store_write_failed` | `-32000` | Writing the provider store failed. | The connection to {provider_id} could not be saved. | Check that the cookie data directory is writable. | `provider_id`: The provider. |
+| `lock_contention` | `-32000` | The provider store was locked by a concurrent change. | Another change to the provider connections is in progress. | Try again in a moment. | `provider_id`: The provider. |
+| `runtime_compile_failed` | `-32000` | Compiling the runtime model catalog after a provider change failed. | The model list could not be rebuilt after the change. | See the details, then try again. | `provider_id` (optional): The provider. |
+| `runtime_revision_conflict` | `-32000` | The runtime revision the disconnect expected is no longer current. | The model list changed while disconnecting {provider_id}. | Reload and try again. | `provider_id`: The provider. |
+| `provider_state_revision_conflict` | `-32000` | The provider state revision the disconnect expected is no longer current. | The provider {provider_id} changed while it was being disconnected. | Reload and try again. | `provider_id`: The provider. |
+| `stale_provider_connection_generation` | `-32000` | The disconnect named an older connection of the provider. | The provider {provider_id} was reconnected since it was read. | Reload and try again. | `provider_id`: The provider. |
+| `media_too_large` | `-32000` | An upload or attachment above the model's or the store's limits. | The {kind} is too large to attach. | Attach a smaller file, or downscale it first. | `kind`: The media kind.<br>`byte_length`: The file's size.<br>`max_bytes`: The largest accepted size.<br>`width` (optional): The image's width.<br>`height` (optional): The image's height.<br>`max_dimension` (optional): The longest accepted side.<br>`max_pixels` (optional): The most accepted pixels. |
+| `media_type_unsupported` | `-32000` | An upload whose content is not an accepted media type. | Files of type {media_type} cannot be attached. | Attach an image, PDF, audio, or video file the model accepts. | `media_type`: The sniffed media type. |
+| `media_unsupported` | `-32000` | An input with a file part the run's model does not accept. | The model {model} does not accept {kind} input. | Choose a model that accepts it, or remove the attachment. | `kind`: The media kind.<br>`model`: The model of the run. |
+| `media_limit_exceeded` | `-32000` | An input with more file parts of one kind than the model accepts. | The input has {count} {kind} attachments, more than the {max_count} the model accepts. | Remove some attachments. | `kind`: The media kind.<br>`count`: The parts of that kind in the input.<br>`max_count`: The most the model accepts. |
+| `digest_mismatch` | `-32000` | `artifact.upload.finish` with a digest that does not match the bytes. | The uploaded file did not arrive intact. | Attach it again. | – |
+| `upload_not_found` | `-32000` | An upload request named an unknown or dropped upload. | The upload does not exist or has expired. | Attach the file again. | – |
+| `artifact_not_found` | `-32000` | A request named an artifact the session tree's store does not have. | The file is not in this session. | – | – |
+| `already_initialized` | `-32000` | A second `runtime/initialize` or `plugin/initialize` on one connection. | The connection was already initialized. | – | – |
+| `initialize_rejected` | `-32000` | A runtime rejected `runtime/initialize`, such as settings it does not support. | The runtime refused its settings. | See the details, then fix the runtime's configuration. | – |
+| `capability_open_failed` | `-32000` | `capability/open` for a capability the runtime does not offer or a workspace it cannot open. | The runtime could not open the capability for this workspace. | See the details, then check the attachment's workspace. | `capability` (optional): The capability the daemon asked for.<br>`workspace` (optional): The workspace it asked for. |
+| `not_initialized` | `-32000` | A request before `runtime/initialize` or `plugin/initialize`. | The connection has not been initialized yet. | – | – |
+| `unknown_handle` | `-32000` | A request named a prepared call, job, or instance the runtime does not have. | The tool call or workspace the request names is no longer open. | – | – |
+| `context_failed` | `-32000` | Reading a runtime's `AGENTS.md` context failed. | The workspace's instructions could not be read. | Check that the AGENTS.md files are readable. | `path` (optional): The file that could not be read. |
+| `reply_too_large` | `-32000` | A reply would exceed the frame bound. | The answer is too large to send. | – | – |

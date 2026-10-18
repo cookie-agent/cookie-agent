@@ -6,8 +6,6 @@ use serde_json::Value;
 
 use crate::*;
 
-pub const SESSION_TREE_USAGE_MISSING_SESSION_CODE: i32 = -32030;
-pub const SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE: i32 = -32031;
 pub const SESSION_GOAL_GET_METHOD: &str = "session.goal.get";
 pub const SESSION_GOAL_SET_METHOD: &str = "session.goal.set";
 pub const SESSION_GOAL_LIFECYCLE_METHOD: &str = "session.goal.lifecycle";
@@ -1216,14 +1214,6 @@ pub struct SessionRevertParams {
     #[schemars(range(min = 1))]
     pub expected_last_seq: u64,
 }
-/// `session.revert` was refused: the session's log moved past the
-/// `expected_last_seq` the client sent.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionRevertConflict {
-    pub session_id: SessionId,
-    pub current_last_seq: u64,
-}
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct SessionRevertResult {
     pub session: SessionMeta,
@@ -1281,20 +1271,6 @@ impl SessionRenameRecord {
         self.client_rename_id == request.client_rename_id && self.change == request.change
     }
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionRenameErrorCode {
-    SessionNotFound,
-    InvalidTitle,
-    IdempotencyConflict,
-}
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionRenameError {
-    pub code: SessionRenameErrorCode,
-    pub session_id: SessionId,
-    pub client_rename_id: ClientRenameId,
-}
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1310,21 +1286,6 @@ pub struct RunStartParams {
 
 fn is_false(value: &bool) -> bool {
     !value
-}
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunStartConflictCode {
-    IdempotencyConflict,
-    /// Another run is active; `session.submit_input` steers or queues
-    /// instead.
-    SessionRunning,
-}
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunStartConflict {
-    pub code: RunStartConflictCode,
-    pub session_id: SessionId,
-    pub client_run_id: ClientRunId,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct RunStartResult {
@@ -1618,6 +1579,7 @@ pub struct ApprovalRespondResult {
     pub client_response_id: ClientResponseId,
     pub approval: ApprovalRecord,
 }
+/// Why the daemon refused an approval response; each is a registry code.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalRespondErrorCode {
@@ -1629,17 +1591,38 @@ pub enum ApprovalRespondErrorCode {
     OperationChanged,
     IdempotencyConflict,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ApprovalRespondError {
-    pub code: ApprovalRespondErrorCode,
-    pub session_id: SessionId,
-    pub approval_id: ApprovalId,
-    pub client_response_id: ClientResponseId,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected_revision: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub found_revision: Option<u64>,
+
+impl ApprovalRespondErrorCode {
+    /// The registry entry the daemon answers with.
+    #[must_use]
+    pub fn error_code(self) -> &'static crate::errors::ErrorCode {
+        use crate::errors;
+        match self {
+            Self::ApprovalNotFound => &errors::APPROVAL_NOT_FOUND,
+            Self::ApprovalNotPending => &errors::APPROVAL_NOT_PENDING,
+            Self::ApprovalRevisionConflict => &errors::APPROVAL_REVISION_CONFLICT,
+            Self::DecisionNotAllowed => &errors::DECISION_NOT_ALLOWED,
+            Self::OperationFingerprintMismatch => &errors::OPERATION_FINGERPRINT_MISMATCH,
+            Self::OperationChanged => &errors::OPERATION_CHANGED,
+            Self::IdempotencyConflict => &errors::IDEMPOTENCY_CONFLICT,
+        }
+    }
+
+    /// The code of an approval error the daemon sent, when it is one.
+    #[must_use]
+    pub fn from_error_code(code: &str) -> Option<Self> {
+        [
+            Self::ApprovalNotFound,
+            Self::ApprovalNotPending,
+            Self::ApprovalRevisionConflict,
+            Self::DecisionNotAllowed,
+            Self::OperationFingerprintMismatch,
+            Self::OperationChanged,
+            Self::IdempotencyConflict,
+        ]
+        .into_iter()
+        .find(|candidate| candidate.error_code().code == code)
+    }
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

@@ -312,6 +312,14 @@ not captured at the time; historical events are not rewritten to invent them.
 
 ## Error details
 
+When the daemon refuses a request, the TUI's status line and the CLI show its
+message, a sentence a person can act on, and then its hint, what to do next.
+Every refusal also has a stable code (see [Errors](../reference/errors.md)).
+Technical detail, such as the upstream cause or a path, is shown on request:
+the TUI adds an error row to the session you are viewing whose first line is
+the error and whose collapsed rest, behind `▸`, is the detail; the CLI prints
+it with `--error-details`, an option of every command.
+
 Run failures show a concise headline followed by available model/provider identity,
 HTTP status, provider code, request ID, and response body. The same diagnostics
 are retained in session events and shown on replay. Model fallback and internal

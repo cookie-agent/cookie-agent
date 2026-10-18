@@ -1615,20 +1615,13 @@ pub(crate) fn usage_loaded_update(
 pub(crate) fn failed_tree_usage_update(
     generation: u64,
     session_id: SessionId,
-    code: i32,
-    message: &str,
+    code: &'static cookie_agent_protocol::errors::ErrorCode,
 ) -> RpcUpdate {
     RpcUpdate::UsageLoaded {
         generation,
         session_id: Some(session_id),
         session: Ok(None),
-        tree: Err(crate::ClientError::Rpc(
-            cookie_agent_protocol::JsonRpcError {
-                code,
-                message: message.into(),
-                data: None,
-            },
-        )),
+        tree: Err(crate::ClientError::Rpc(code.error().build())),
     }
 }
 

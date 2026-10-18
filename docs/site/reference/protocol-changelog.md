@@ -20,6 +20,14 @@ section 3).
   reader ignores members it does not know, and every enum in them is open,
   read as a documented fallback or as `unknown` (see
   [Decoding](protocol.md#decoding)). Params stay strict.
+- Every application error is `-32000` with a registry `data.code`, a
+  `message` and `hint` from the registry, and the cause as `data.detail` (see
+  [Errors](errors.md)). The old codes `-32011`, `-32012`, `-32020` to
+  `-32022`, `-32030`, `-32031`, and `-32040`, the several meanings of
+  `-32602` for refusals, the typed error data (`RunStartConflict`,
+  `SessionRenameError`, `SessionRevertConflict`, `ApprovalRespondError`,
+  `ProviderConnectError`, `ProviderDisconnectError`, `ConfigApplyError`), and
+  `debug_code` are gone.
 
 ## Before semver versions
 

@@ -57,7 +57,7 @@ impl Client {
                 Ok(result) => return Ok(result),
                 Err(error) => error,
             };
-            match error.rpc_error_code() {
+            match error.error_code() {
                 Some("lock_contention") if !contention_retried => contention_retried = true,
                 Some("catalog_revision_conflict") if !catalog_retried => {
                     catalog_retried = true;

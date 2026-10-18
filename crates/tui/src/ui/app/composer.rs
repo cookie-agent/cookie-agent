@@ -720,7 +720,7 @@ impl App {
                 Ok(SessionRecallInputResult::NotOwner) => RpcUpdate::Notice(
                     "only the client that sent a message can recall it".to_owned(),
                 ),
-                Err(error) => RpcUpdate::Status(error.to_string()),
+                Err(error) => RpcUpdate::failure(&error),
             };
             let _ = updates.send(update);
         });
@@ -862,7 +862,7 @@ impl App {
                     let _ = updates.send(RpcUpdate::Reverted { session_id, text });
                     return;
                 }
-                Err(crate::ClientError::Rpc(error)) if error.message == "stale revert" => {
+                Err(error) if error.is(&cookie_agent_protocol::errors::STALE_REVERT) => {
                     "revert refused: the session changed since you opened this message; \
                      review the new turns and revert again"
                         .to_owned()

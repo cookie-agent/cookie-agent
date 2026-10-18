@@ -258,6 +258,24 @@ fn provider(state: ProviderSupportState) -> ProviderDescriptor {
 }
 
 #[test]
+fn error_details_is_a_flag_of_every_command() {
+    assert!(
+        !Cli::try_parse_from(["cookie", "config", "status"])
+            .unwrap()
+            .error_details
+    );
+    for arguments in [
+        &["cookie", "--error-details", "config", "status"][..],
+        &["cookie", "config", "status", "--error-details"][..],
+    ] {
+        assert!(
+            Cli::try_parse_from(arguments).unwrap().error_details,
+            "{arguments:?}"
+        );
+    }
+}
+
+#[test]
 fn cli_commands_and_removed_flags_are_exact() {
     assert_eq!(Cli::try_parse_from(["cookie"]).unwrap().command, None);
     let daemon = |port| Command::Daemon {
@@ -1248,7 +1266,7 @@ async fn connect_retries_a_catalog_conflict_when_the_provider_form_is_unchanged(
         .connect_provider_retrying(params(), &changed)
         .await
         .expect_err("a changed form is not retried");
-    assert_eq!(error.rpc_error_code(), Some("catalog_revision_conflict"));
+    assert_eq!(error.error_code(), Some("catalog_revision_conflict"));
     let connected = client
         .connect_provider_retrying(params(), &provider)
         .await

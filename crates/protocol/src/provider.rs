@@ -784,54 +784,6 @@ impl<'de> Deserialize<'de> for ProviderDisconnectResult {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderConnectErrorCode {
-    UnknownProvider,
-    UnsupportedProvider,
-    CustomProviderNotStoreBacked,
-    RemovedWithoutRetainedRecipeMatch,
-    CatalogRevisionConflict,
-    MissingSetupField,
-    InvalidSetupField,
-    MissingCredential,
-    InvalidCredential,
-    UnsupportedAuthMethod,
-    ProviderStoreWriteFailed,
-    LockContention,
-    RuntimeCompileFailed,
-    IdempotencyConflict,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProviderConnectError {
-    pub code: ProviderConnectErrorCode,
-    pub provider_id: ProviderId,
-    pub client_connect_id: ClientConnectId,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderDisconnectErrorCode {
-    CustomProviderNotStoreBacked,
-    RuntimeRevisionConflict,
-    ProviderStateRevisionConflict,
-    StaleProviderConnectionGeneration,
-    ProviderStoreWriteFailed,
-    LockContention,
-    RuntimeCompileFailed,
-    IdempotencyConflict,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProviderDisconnectError {
-    pub code: ProviderDisconnectErrorCode,
-    pub provider_id: ProviderId,
-    pub client_request_id: ClientRequestId,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProviderSchemaError {
     InvalidCounter,

@@ -45,20 +45,19 @@ use anyhow::Context;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::oauth_callback::OAuthCallbackListener;
 use cookie_agent_protocol::{
-    AgentDescriptor, AgentId, ApprovalListParams, ApprovalListResult, ApprovalRespondError,
-    ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision,
-    AvailableModelDescriptor, ClientConnectId, ClientRequestId, ClientResponseId, ClientRunId,
-    EffectivePermissionAction, EventPayload, InputDelivery, McpAuthBeginParams, McpAuthBeginResult,
-    McpAuthCancelParams, McpAuthCompleteParams, McpServerAddParams, McpServerEditParams,
-    McpServerInfo, McpServerNameParams, McpServerPersistParams, McpServerReconnectParams,
+    AgentDescriptor, AgentId, ApprovalListParams, ApprovalListResult, ApprovalRespondErrorCode,
+    ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision, AvailableModelDescriptor,
+    ClientConnectId, ClientRequestId, ClientResponseId, ClientRunId, EffectivePermissionAction,
+    EventPayload, InputDelivery, McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams,
+    McpAuthCompleteParams, McpServerAddParams, McpServerEditParams, McpServerInfo,
+    McpServerNameParams, McpServerPersistParams, McpServerReconnectParams,
     McpServerSetEnabledParams, McpServerState, ModelKey, ModelSelection, PermissionAction,
     PermissionEffect, PermissionMode, PermissionRule, PermissionRuleSource, ProviderConnectParams,
-    ProviderDescriptor, ProviderDisconnectParams, RunCancelParams, RunSelection,
-    SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE, SafeDisplayText, SessionCompactParams,
-    SessionCreateParams, SessionForkParams, SessionId, SessionListParams, SessionMeta,
-    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
-    SessionPermissionPreviewParams, SessionPermissionSetParams, SessionRecallInputParams,
-    SessionRecallInputResult, SessionResumeParams, SessionRevertParams,
+    ProviderDescriptor, ProviderDisconnectParams, RunCancelParams, RunSelection, SafeDisplayText,
+    SessionCompactParams, SessionCreateParams, SessionForkParams, SessionId, SessionListParams,
+    SessionMeta, SessionPermissionClearParams, SessionPermissionGetParams,
+    SessionPermissionGetResult, SessionPermissionPreviewParams, SessionPermissionSetParams,
+    SessionRecallInputParams, SessionRecallInputResult, SessionResumeParams, SessionRevertParams,
     SessionSetPermissionModeParams, SessionStatus, SessionSubmitInputParams,
     SessionSubmitInputResult, SessionTitle, SessionTitleChange, SessionTree, SessionTreeParams,
     SessionTreeUsageResult, SessionUsageParams, SessionUsageResult, StoredEvent, VariantId,
@@ -163,25 +162,24 @@ pub(super) enum GoalBarAction {
     Cancel,
 }
 
-pub(super) const SESSION_OWNED_BY_ANOTHER_PROCESS_CODE: i32 = -32022;
+impl RpcUpdate {
+    /// The update that reports `error`.
+    pub(in crate::ui) fn failure(error: &ClientError) -> Self {
+        Self::Failure {
+            status: error.to_string(),
+            detail: error.detail(),
+        }
+    }
+}
 
 pub(super) fn session_owned_by_another_process(error: &ClientError) -> bool {
-    matches!(error, ClientError::Rpc(error) if error.code == SESSION_OWNED_BY_ANOTHER_PROCESS_CODE)
+    error.is(&cookie_agent_protocol::errors::SESSION_OWNED_ELSEWHERE)
 }
 
 /// Whether the daemon reported retryable store contention (`lock_contention`),
 /// covering both the bounded-lock budget and a lost commit-time CAS.
 pub(super) fn is_store_contention(error: &ClientError) -> bool {
-    match error {
-        ClientError::Rpc(rpc) => {
-            rpc.data
-                .as_ref()
-                .and_then(|data| data.get("code"))
-                .and_then(serde_json::Value::as_str)
-                == Some("lock_contention")
-        }
-        _ => false,
-    }
+    error.is(&cookie_agent_protocol::errors::LOCK_CONTENTION)
 }
 
 /// Provider disconnect resubmit policy: the first contention-class failure
@@ -835,6 +833,13 @@ pub(in crate::ui) enum RpcUpdate {
     /// A failure: shown in the status line and recorded among the errors
     /// printed when the TUI exits.
     Status(String),
+    /// A daemon error: its message and hint in the status line, like
+    /// [`Self::Status`], and, when it has technical detail, an error row in
+    /// the viewed session whose collapsed tail holds the detail.
+    Failure {
+        status: String,
+        detail: Option<String>,
+    },
     /// An outcome that is not a failure: shown in the status line only.
     Notice(String),
     RunStartFinished {
@@ -1044,14 +1049,9 @@ pub(super) struct ApprovalSubmissionError {
 
 impl ApprovalSubmissionError {
     fn from_client(error: ClientError) -> Self {
-        let code = match &error {
-            ClientError::Rpc(error) => error
-                .data
-                .clone()
-                .and_then(|data| serde_json::from_value::<ApprovalRespondError>(data).ok())
-                .map(|error| error.code),
-            _ => None,
-        };
+        let code = error
+            .error_code()
+            .and_then(ApprovalRespondErrorCode::from_error_code);
         Self {
             message: error.to_string(),
             code,

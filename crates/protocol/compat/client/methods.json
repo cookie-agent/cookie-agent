@@ -1,13 +1,5 @@
 {
-  "information": [
-    "RunStartConflict",
-    "SessionRenameError",
-    "SessionRevertConflict",
-    "ApprovalRespondError",
-    "ProviderConnectError",
-    "ProviderDisconnectError",
-    "ConfigApplyError"
-  ],
+  "information": [],
   "methods": [
     {
       "direction": "to_daemon",

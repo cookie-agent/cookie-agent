@@ -21,10 +21,9 @@
 //! ```
 //!
 //! Clients branch only on `data.code`, show `message`, then `hint` when
-//! present, and `detail` on request. The plugin and runtime protocols send
-//! only these errors, both ways; the client protocol sends
-//! `session_requires_newer_engine` and the command refusals, and switches the
-//! rest in a later phase.
+//! present, and `detail` on request ([`ErrorData`] reads them). Every
+//! protocol sends only these errors, both ways. `docs/site/reference/errors.md`
+//! is generated from this table ([`reference_markdown`]).
 
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -337,6 +336,33 @@ error_codes! {
         hint: Some("Update cookie to continue this session."),
         description: "The session's log has an event or history format this build cannot continue.",
     }
+    SEQUENCE_BROKEN {
+        code: "sequence_broken",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            optional("session_id", "The session."),
+            required("seq", "The first record whose sequence does not advance."),
+        ],
+        message: "This session's log is damaged after event {seq}, so it can only be viewed.",
+        hint: Some("Fork the session from an earlier point to continue it."),
+        description: "The session's log has a record whose sequence does not advance; the readable part opens render-only.",
+    }
+    UNREADABLE_MODEL_BINDING {
+        code: "unreadable_model_binding",
+        rpc: APPLICATION_ERROR,
+        fields: [required("model", "The model whose stored binding cannot be read.")],
+        message: "The stored setup of the model {model} cannot be read by this version of cookie.",
+        hint: Some("Start a new run, which resolves the model again."),
+        description: "An operation needed a run's stored model binding, which this build cannot decode.",
+    }
+    AGENT_UNAVAILABLE {
+        code: "agent_unavailable",
+        rpc: APPLICATION_ERROR,
+        fields: [optional("agent", "The agent.")],
+        message: "The selected agent cannot run here.",
+        hint: Some("Choose another agent or model; the details say why."),
+        description: "An agent that is disabled, not eligible in this session, unknown, or whose model is unavailable.",
+    }
     RUN_NOT_FOUND {
         code: "run_not_found",
         rpc: APPLICATION_ERROR,
@@ -372,9 +398,9 @@ error_codes! {
     GOAL_REJECTED {
         code: "goal_rejected",
         rpc: APPLICATION_ERROR,
-        fields: [],
-        message: "The goal could not be changed.",
-        hint: Some("See the details for why."),
+        fields: [required("reason", "Why, in the daemon's words.")],
+        message: "The goal could not be changed: {reason}.",
+        hint: None,
         description: "A goal operation the session's goal state does not allow.",
     }
     PRODUCER_REJECTED {
@@ -388,9 +414,12 @@ error_codes! {
     PLUGIN_REJECTED {
         code: "plugin_rejected",
         rpc: APPLICATION_ERROR,
-        fields: [optional("plugin", "The plugin.")],
-        message: "A plugin refused the request.",
-        hint: Some("See the details for why."),
+        fields: [
+            required("reason", "Why, in the plugin's or the daemon's words."),
+            optional("plugin", "The plugin."),
+        ],
+        message: "A plugin refused the request: {reason}.",
+        hint: None,
         description: "A plugin hook or request refused the operation.",
     }
     PLUGIN_HOOK_FAILED {
@@ -400,9 +429,25 @@ error_codes! {
             required("plugin", "The plugin."),
             required("hook", "The hook that failed, such as `user_before_input`."),
         ],
-        message: "A plugin could not check this request, and it refuses what it cannot check.",
+        message: "The plugin {plugin} could not check this request in its {hook} hook, and it refuses what it cannot check.",
         hint: Some("Check the plugin's status in /plugins, restart or fix it, and try again."),
         description: "A hook of a plugin that blocks on failure timed out, was not connected, or answered with an error or a malformed result.",
+    }
+    RUNTIME_REJECTED {
+        code: "runtime_rejected",
+        rpc: APPLICATION_ERROR,
+        fields: [required("reason", "Why, in the daemon's words.")],
+        message: "The runtime request was refused: {reason}.",
+        hint: None,
+        description: "A runtime could not be attached, detached, started, or reached.",
+    }
+    MCP_REJECTED {
+        code: "mcp_rejected",
+        rpc: APPLICATION_ERROR,
+        fields: [required("reason", "Why, in the daemon's words.")],
+        message: "The MCP server request was refused: {reason}.",
+        hint: None,
+        description: "An `mcp.server.*` or `mcp.auth.*` request the daemon could not carry out.",
     }
     CONFIG_APPLY_REFUSED {
         code: "config_apply_refused",
@@ -905,6 +950,124 @@ fn bounded(text: &str, limit: usize, multiline: bool) -> String {
     safe
 }
 
+/// What a reader takes from an error object: its stable `data.code`, the
+/// hint and detail, and the fields its code defines. Data is read per code:
+/// a code this build knows keeps only the fields the registry declares for
+/// it; a code it does not know reads as a generic error with every member
+/// kept, since its `message` and `hint` are already readable.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ErrorData {
+    /// `data.code`; `None` for an error without registry data.
+    pub code: Option<String>,
+    pub hint: Option<String>,
+    pub detail: Option<String>,
+    pub fields: Map<String, Value>,
+}
+
+impl ErrorData {
+    /// Reads `error.data`.
+    #[must_use]
+    pub fn of(error: &JsonRpcError) -> Self {
+        let Some(Value::Object(data)) = &error.data else {
+            return Self::default();
+        };
+        let text = |name: &str| data.get(name).and_then(Value::as_str).map(str::to_owned);
+        let code = text("code");
+        let entry = code.as_deref().and_then(lookup);
+        let fields = data
+            .iter()
+            .filter(|(name, _)| !RESERVED_DATA_MEMBERS.contains(&name.as_str()))
+            .filter(|(name, _)| entry.is_none_or(|entry| entry.field(name).is_some()))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        Self {
+            code,
+            hint: text("hint"),
+            detail: text("detail"),
+            fields,
+        }
+    }
+
+    /// The registry entry of the code, when this build knows it.
+    #[must_use]
+    pub fn entry(&self) -> Option<&'static ErrorCode> {
+        self.code.as_deref().and_then(lookup)
+    }
+
+    /// Whether the error is of `code`.
+    #[must_use]
+    pub fn is(&self, code: &ErrorCode) -> bool {
+        self.code.as_deref() == Some(code.code)
+    }
+
+    /// A string field of the code.
+    #[must_use]
+    pub fn text(&self, name: &str) -> Option<&str> {
+        self.fields.get(name).and_then(Value::as_str)
+    }
+
+    /// An integer field of the code.
+    #[must_use]
+    pub fn integer(&self, name: &str) -> Option<u64> {
+        self.fields.get(name).and_then(Value::as_u64)
+    }
+}
+
+/// The error reference page, `docs/site/reference/errors.md`: every
+/// registered code with its JSON-RPC code, description, message, hint, and
+/// fields. A test keeps the committed page equal to it.
+#[must_use]
+pub fn reference_markdown() -> String {
+    let cell = |text: &str| text.replace('|', "\\|").replace('\n', " ");
+    let mut out = String::from(
+        "<!-- Generated from the registry in crates/protocol/src/errors.rs. Do not edit by hand; regenerate with\n\
+         COOKIE_UPDATE_ERROR_REFERENCE=1 cargo test -p cookie_agent_protocol --lib errors -->\n\n\
+         # Errors\n\n\
+         Every error the client, plugin, and runtime protocols send has a stable\n\
+         `data.code` and a `message` a user can understand; `data.hint` says what to\n\
+         do next where that helps, and `data.detail` carries technical detail for a\n\
+         details view. Clients branch only on `data.code`, show `message` and then\n\
+         `hint`, and show `detail` on request. A code a client does not know is\n\
+         still readable: its `message` and `hint` are written for people. See the\n\
+         [compatibility spec](../specs/compatibility-v1.md) section 6.\n\n\
+         The JSON-RPC `code` is `-32000` for every application error; the protocol\n\
+         codes are the standard `-32700`, `-32600`, `-32601`, `-32602`, and\n\
+         `-32603`, and `-32001` (handshake required), `-32002`\n\
+         (`unsupported_protocol`), and `-32003` (unauthenticated).\n\n\
+         | `data.code` | JSON-RPC | Meaning | Message | Hint | Fields |\n\
+         |---|---|---|---|---|---|\n",
+    );
+    for entry in REGISTRY {
+        let fields = entry
+            .fields
+            .iter()
+            .map(|field| {
+                format!(
+                    "`{}`{}: {}",
+                    field.name,
+                    if field.required { "" } else { " (optional)" },
+                    cell(field.description)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("<br>");
+        out.push_str(&format!(
+            "| `{}` | `{}` | {} | {} | {} | {} |\n",
+            entry.code,
+            entry.rpc_code,
+            cell(entry.description),
+            cell(entry.message),
+            entry.hint.map_or_else(|| "–".to_owned(), cell),
+            if fields.is_empty() {
+                "–".to_owned()
+            } else {
+                fields
+            },
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -912,6 +1075,67 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn the_error_reference_is_generated_from_the_registry() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/site/reference/errors.md"
+        );
+        let generated = reference_markdown();
+        if std::env::var_os("COOKIE_UPDATE_ERROR_REFERENCE").is_some() {
+            std::fs::write(path, &generated).expect("write the error reference");
+            return;
+        }
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap_or_default(),
+            generated,
+            "docs/site/reference/errors.md is stale; regenerate it with \
+             COOKIE_UPDATE_ERROR_REFERENCE=1 cargo test -p cookie_agent_protocol --lib errors"
+        );
+        for entry in REGISTRY {
+            assert!(generated.contains(&format!("| `{}` |", entry.code)));
+        }
+    }
+
+    #[test]
+    fn error_data_is_read_per_code() {
+        let known = MEDIA_UNSUPPORTED
+            .error()
+            .field("kind", "image")
+            .field("model", "m")
+            .detail("why")
+            .build();
+        let mut sent = known.clone();
+        sent.data.as_mut().unwrap()["added_later"] = json!(1);
+        let data = ErrorData::of(&sent);
+        assert!(data.is(&MEDIA_UNSUPPORTED));
+        assert_eq!(data.entry(), Some(&MEDIA_UNSUPPORTED));
+        assert_eq!(data.text("kind"), Some("image"));
+        assert_eq!(data.detail.as_deref(), Some("why"));
+        assert!(data.hint.is_some());
+        // A known code keeps only the fields it declares.
+        assert!(!data.fields.contains_key("added_later"));
+
+        let unknown = JsonRpcError {
+            code: APPLICATION_ERROR,
+            message: "Something new went wrong.".into(),
+            data: Some(json!({"code": "from_the_future", "hint": "Try later.", "count": 3})),
+        };
+        let data = ErrorData::of(&unknown);
+        assert_eq!(data.code.as_deref(), Some("from_the_future"));
+        assert_eq!(data.entry(), None);
+        assert_eq!(data.hint.as_deref(), Some("Try later."));
+        assert_eq!(data.integer("count"), Some(3));
+        assert_eq!(
+            ErrorData::of(&JsonRpcError {
+                code: INTERNAL_ERROR,
+                message: "x".into(),
+                data: None,
+            }),
+            ErrorData::default()
+        );
+    }
 
     #[test]
     fn every_code_is_unique_snake_case_and_documented() {
@@ -1018,39 +1242,22 @@ mod tests {
     }
 
     #[test]
-    fn protocol_enums_used_as_codes_are_registered() {
-        let enum_codes = |schema: schemars::Schema| {
-            schema
-                .get("enum")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .chain(
-                    schema
-                        .get("oneOf")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|variant| variant.get("const")),
-                )
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        };
-        let codes = [
-            schemars::schema_for!(crate::ProviderConnectErrorCode),
-            schemars::schema_for!(crate::ProviderDisconnectErrorCode),
-            schemars::schema_for!(crate::ApprovalRespondErrorCode),
-            schemars::schema_for!(crate::SessionRenameErrorCode),
-            schemars::schema_for!(crate::RunStartConflictCode),
-        ]
-        .into_iter()
-        .flat_map(enum_codes)
-        .collect::<Vec<_>>();
-        assert!(codes.len() > 20, "{codes:?}");
-        for code in codes {
-            assert!(lookup(&code).is_some(), "{code}");
+    fn approval_refusals_are_registered_codes() {
+        use crate::ApprovalRespondErrorCode as Code;
+        for code in [
+            Code::ApprovalNotFound,
+            Code::ApprovalNotPending,
+            Code::ApprovalRevisionConflict,
+            Code::DecisionNotAllowed,
+            Code::OperationFingerprintMismatch,
+            Code::OperationChanged,
+            Code::IdempotencyConflict,
+        ] {
+            let entry = code.error_code();
+            assert_eq!(lookup(entry.code), Some(entry));
+            assert_eq!(Code::from_error_code(entry.code), Some(code));
         }
+        assert_eq!(Code::from_error_code("session_not_found"), None);
     }
 
     #[test]

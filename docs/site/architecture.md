@@ -130,8 +130,9 @@ delegating every call to `Engine`.
 `protocol::serve` drives one complete server-side session over a `Transport`:
 
 - **Handshake gating.** Every request before a valid `handshake` is rejected with
-  error code `-32001`; the exact-version handshake is answered with
-  `ServerHello`, then `connected` is invoked on the implementation. The
+  `-32003` (a connection that has not authenticated) or `-32001`; a handshake
+  of a compatible version is answered with `ServerHello`, then `connected` is
+  invoked on the implementation. The
   handshake's client identity fixes the connection's origin, which
   `ServerContext::client_origin` hands to every mutating method.
 - **Request dispatch.** Incoming requests are correlated by JSON-RPC id and
@@ -549,8 +550,7 @@ source's tree and therefore needs that tree's lock, taking it when it is free
 and failing as foreign-owned when it is not. Grants and grant invalidations
 committed by another process become
 visible after restart. Concurrent MCP configuration edits remain last-writer
-wins. Ownership failures use an ordinary fault message rather than a new wire
-error.
+wins. An ownership failure is the registry error `session_owned_elsewhere`.
 
 The data directory must be on a local filesystem with correct `flock` or
 `LockFileEx` semantics. NFS-class and other network filesystems are unsupported

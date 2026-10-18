@@ -340,6 +340,13 @@ impl App {
                 self.session_errors.record(&status);
                 self.status = status;
             }
+            RpcUpdate::Failure { status, detail } => {
+                self.session_errors.record(&status);
+                if let (Some(detail), Some(session_id)) = (detail, self.selected) {
+                    self.store.push_error_details(session_id, &status, &detail);
+                }
+                self.status = status;
+            }
             RpcUpdate::Notice(status) => self.status = status,
             RpcUpdate::Reconnected { .. } => {
                 // The event loop adopts the client, which needs async work.
@@ -721,8 +728,10 @@ impl App {
                     }
                     match tree {
                         Ok(result) => self.usage_panel.tree = result,
-                        Err(ClientError::Rpc(error))
-                            if error.code == SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE =>
+                        Err(error)
+                            if error.is(
+                                &cookie_agent_protocol::errors::TREE_USAGE_DELEGATION_CORRUPT,
+                            ) =>
                         {
                             self.usage_panel.tree_corrupt = true;
                         }

@@ -867,11 +867,11 @@ async fn watching_a_descendant_keeps_the_stable_root() {
 }
 
 #[test]
-fn ownership_classification_uses_rpc_code_instead_of_message_text() {
+fn ownership_classification_uses_the_error_code_instead_of_message_text() {
     let owned = crate::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
-        code: SESSION_OWNED_BY_ANOTHER_PROCESS_CODE,
+        code: -32000,
         message: "unrelated wording".into(),
-        data: None,
+        data: Some(serde_json::json!({"code": "session_owned_elsewhere"})),
     });
     let same_message = crate::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
         code: -32000,
@@ -886,12 +886,12 @@ fn ownership_classification_uses_rpc_code_instead_of_message_text() {
 #[test]
 fn store_contention_retry_policy_is_exactly_once() {
     let contention = crate::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
-        code: -32011,
+        code: -32000,
         message: "provider connect error".into(),
         data: Some(serde_json::json!({"code": "lock_contention"})),
     });
     let other = crate::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
-        code: -32011,
+        code: -32000,
         message: "provider connect error".into(),
         data: Some(serde_json::json!({"code": "provider_store_write_failed"})),
     });
@@ -1546,4 +1546,71 @@ async fn trees_beyond_the_recent_few_release_settled_subscriptions_but_keep_runn
         serde_json::json!(settled)
     );
     assert_eq!(recorded_method_count(&recorded, "events.unsubscribe"), 1);
+}
+
+/// A daemon error shows its message and hint in the status line; its
+/// technical detail waits, collapsed, in an error row of the viewed session.
+#[tokio::test]
+async fn a_daemon_error_shows_message_and_hint_and_keeps_its_detail_collapsed() {
+    let mut app = test_app().await;
+    let session = SessionId::new_v7();
+    app.selected = Some(session);
+    app.store.sessions.entry(session).or_default();
+    let error = crate::ClientError::Rpc(
+        cookie_agent_protocol::errors::ENGINE_FAILED
+            .error()
+            .detail("disk full at /data/sessions")
+            .build(),
+    );
+    app.handle_rpc_update(RpcUpdate::failure(&error));
+    assert_eq!(
+        app.status,
+        "The daemon could not complete the request. See the details for the cause."
+    );
+    let rows = app.store.sessions[&session]
+        .transcript
+        .iter()
+        .filter_map(|item| match item {
+            TranscriptItem::Event {
+                level: crate::state::EventLevel::Error,
+                text,
+                ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        [format!(
+            "{}\ndetails: disk full at /data/sessions",
+            app.status
+        )]
+    );
+
+    // An error without detail adds no row.
+    let plain = crate::ClientError::Rpc(
+        cookie_agent_protocol::errors::NO_RUNNABLE_MODEL
+            .error()
+            .build(),
+    );
+    app.handle_rpc_update(RpcUpdate::failure(&plain));
+    assert!(
+        app.status.starts_with("No model is ready to run."),
+        "{}",
+        app.status
+    );
+    assert_eq!(
+        app.store.sessions[&session]
+            .transcript
+            .iter()
+            .filter(|item| matches!(
+                item,
+                TranscriptItem::Event {
+                    level: crate::state::EventLevel::Error,
+                    ..
+                }
+            ))
+            .count(),
+        1
+    );
 }

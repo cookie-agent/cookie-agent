@@ -333,8 +333,7 @@ async fn tree_usage_corruption_has_a_distinct_panel_state_from_missing_session()
     app.handle_rpc_update(failed_tree_usage_update(
         1,
         session,
-        cookie_agent_protocol::SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE,
-        "session tree usage corrupted delegation record",
+        &cookie_agent_protocol::errors::TREE_USAGE_DELEGATION_CORRUPT,
     ));
     let corrupt = rendered_frame(&mut app, 100, 24);
     assert!(
@@ -347,8 +346,7 @@ async fn tree_usage_corruption_has_a_distinct_panel_state_from_missing_session()
     app.handle_rpc_update(failed_tree_usage_update(
         2,
         session,
-        cookie_agent_protocol::SESSION_TREE_USAGE_MISSING_SESSION_CODE,
-        "session tree usage session not found",
+        &cookie_agent_protocol::errors::TREE_USAGE_SESSION_MISSING,
     ));
     let missing = rendered_frame(&mut app, 100, 24);
     assert!(

@@ -231,26 +231,26 @@ async fn mcp_management_is_reachable_through_protocol() {
             redirect_uri: "http://127.0.0.1:9/callback".into(),
         })
         .await
-        .expect_err("stdio server cannot begin OAuth")
-        .to_string();
-    assert!(auth_error.contains("-32000"), "{auth_error}");
+        .expect_err("stdio server cannot begin OAuth");
+    assert!(auth_error.error_code().is_some(), "{auth_error}");
+    assert!(!auth_error.to_string().is_empty());
     let complete_error = client
         .complete_mcp_auth(McpAuthCompleteParams {
             server: "runtime".into(),
             callback_url: "http://127.0.0.1:9/callback?code=c&state=s".into(),
         })
         .await
-        .expect_err("no OAuth flow to complete")
-        .to_string();
-    assert!(complete_error.contains("-32000"), "{complete_error}");
+        .expect_err("no OAuth flow to complete");
+    assert!(complete_error.error_code().is_some(), "{complete_error}");
+    assert!(!complete_error.to_string().is_empty());
     let cancel_error = client
         .cancel_mcp_auth(McpAuthCancelParams {
             server: "runtime".into(),
         })
         .await
-        .expect_err("no OAuth flow to cancel")
-        .to_string();
-    assert!(cancel_error.contains("-32000"), "{cancel_error}");
+        .expect_err("no OAuth flow to cancel");
+    assert!(cancel_error.error_code().is_some(), "{cancel_error}");
+    assert!(!cancel_error.to_string().is_empty());
     let mut edited = runtime_definition;
     edited.args.push("--edited".into());
     client
@@ -588,10 +588,13 @@ async fn empty_session_create_returns_secret_free_no_runnable_failure() {
         }),
     )
     .await;
+    assert_eq!(no_runnable["error"]["code"], -32000);
     assert_eq!(no_runnable["error"]["data"]["code"], "no_runnable_model");
     assert_eq!(
-        no_runnable["error"]["data"]["message"],
-        "type /connect to continue"
+        no_runnable["error"]["data"]["hint"],
+        cookie_agent_protocol::errors::NO_RUNNABLE_MODEL
+            .hint
+            .unwrap()
     );
 
     let secret = "must-not-appear-in-response";

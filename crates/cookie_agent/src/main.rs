@@ -85,6 +85,10 @@ static SECRET_VALUES_WIPED: TestAtomicUsize = TestAtomicUsize::new(0);
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+    /// When the daemon refuses a request, also print the technical detail of
+    /// its error, such as the upstream cause or a path.
+    #[arg(long, global = true)]
+    error_details: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
@@ -330,11 +334,29 @@ impl ConnectIo for StdioConnectIo {
 
 #[tokio::main]
 async fn main() {
-    if let Err(error) = main_result().await {
+    let cli = Cli::parse();
+    let error_details = cli.error_details;
+    if let Err(error) = main_result(cli).await {
         eprintln!(
             "cookie: {}",
             cookie_agent_protocol::diagnostics::detail(&format!("{error:#}"))
         );
+        // A daemon error shows its message and hint above; its technical
+        // detail only on request.
+        if let Some(detail) = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<cookie_agent_protocol::ClientError>())
+            .and_then(cookie_agent_protocol::ClientError::detail)
+        {
+            if error_details {
+                eprintln!(
+                    "details: {}",
+                    cookie_agent_protocol::diagnostics::detail(&detail)
+                );
+            } else {
+                eprintln!("(run again with --error-details for the technical detail)");
+            }
+        }
         std::process::exit(1);
     }
 }
@@ -353,9 +375,9 @@ fn init_logging() {
         .init();
 }
 
-async fn main_result() -> anyhow::Result<()> {
+async fn main_result(cli: Cli) -> anyhow::Result<()> {
     init_logging();
-    let Cli { command } = Cli::parse();
+    let Cli { command, .. } = cli;
     if let Some(Command::Run { args }) = &command
         && let Err(message) = args.validate_cli()
     {

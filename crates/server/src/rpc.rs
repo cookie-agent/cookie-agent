@@ -1,196 +1,218 @@
+//! Every application error the daemon answers with, built from the error
+//! registry (`cookie_agent_protocol::errors`): a stable `data.code`, a
+//! message and hint from the registry, and the engine's own description as
+//! the detail.
+
 use cookie_agent_engine::{
     ApprovalRespondFailure, EngineError, delegation_events::DelegationEventError,
-    session::SessionError,
+    events::EventLogError, session::SessionError,
 };
+use cookie_agent_models::{ModelManagerError, provider_store::ProviderStoreError};
 use cookie_agent_protocol::{
-    ApprovalRespondError, ApprovalRespondErrorCode, ApprovalRespondParams, ClientResponseId,
-    ClientRunId, ProviderConnectError, ProviderConnectErrorCode, ProviderConnectParams,
-    ProviderDisconnectError, ProviderDisconnectErrorCode, ProviderDisconnectParams,
-    RunStartConflict, RunStartConflictCode, SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE,
-    SESSION_TREE_USAGE_MISSING_SESSION_CODE, SessionId, SessionRenameError, SessionRenameErrorCode,
+    ApprovalRespondErrorCode, ApprovalRespondParams, ClientResponseId, ClientRunId,
+    ConfigApplyErrorCode, JsonRpcError, ProviderConnectParams, ProviderDisconnectParams, SessionId,
     SessionRenameParams,
+    errors::{self, ErrorBuilder},
 };
-use serde::Serialize;
-use serde_json::{Value, json};
 
 #[derive(Debug)]
-pub(crate) struct RpcFault {
-    code: i32,
-    message: &'static str,
-    data: Option<Value>,
-}
+pub(crate) struct RpcFault(JsonRpcError);
 
 impl RpcFault {
-    pub(crate) fn run_start_conflict(
-        session_id: SessionId,
-        client_run_id: &ClientRunId,
-        code: RunStartConflictCode,
-    ) -> Self {
-        Self {
-            code: -32602,
-            message: match code {
-                RunStartConflictCode::IdempotencyConflict => "idempotency conflict",
-                RunStartConflictCode::SessionRunning => "session running",
-            },
-            data: typed_error_data(RunStartConflict {
-                code,
-                session_id,
-                client_run_id: client_run_id.clone(),
-            }),
-        }
+    fn of(builder: ErrorBuilder) -> Self {
+        Self(builder.build())
     }
 
-    pub(crate) const fn engine() -> Self {
-        Self {
-            code: -32000,
-            message: "engine error",
-            data: None,
-        }
+    /// A failure the daemon cannot describe further, such as a worker that
+    /// stopped before answering.
+    pub(crate) fn internal() -> Self {
+        Self::of(errors::INTERNAL.error())
+    }
+
+    /// `run.start` or `session.submit_input` on a session that is running.
+    pub(crate) fn session_running(session_id: SessionId, client_run_id: &ClientRunId) -> Self {
+        Self::of(
+            errors::SESSION_RUNNING
+                .error()
+                .field("session_id", session_id)
+                .field("client_run_id", client_run_id),
+        )
+    }
+
+    /// A run key reused with other params.
+    pub(crate) fn run_idempotency_conflict(
+        session_id: SessionId,
+        client_run_id: &ClientRunId,
+    ) -> Self {
+        Self::of(
+            errors::IDEMPOTENCY_CONFLICT
+                .error()
+                .field("session_id", session_id)
+                .field("client_run_id", client_run_id),
+        )
     }
 
     pub(crate) fn provider_connect(request: &ProviderConnectParams, error: EngineError) -> Self {
-        let code = match error {
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::UnknownProvider) => {
-                ProviderConnectErrorCode::UnknownProvider
-            }
-            EngineError::ModelManager(
-                cookie_agent_models::ModelManagerError::UnsupportedProvider,
-            ) => ProviderConnectErrorCode::UnsupportedProvider,
-            EngineError::ModelManager(
-                cookie_agent_models::ModelManagerError::RemovedWithoutRetainedRecipeMatch,
-            ) => ProviderConnectErrorCode::RemovedWithoutRetainedRecipeMatch,
-            EngineError::ModelManager(
-                cookie_agent_models::ModelManagerError::CustomProviderNotStoreBacked,
-            ) => ProviderConnectErrorCode::CustomProviderNotStoreBacked,
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::InvalidSetup) => {
-                ProviderConnectErrorCode::InvalidSetupField
-            }
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::MissingSetup) => {
-                ProviderConnectErrorCode::MissingSetupField
-            }
-            EngineError::ModelManager(
-                cookie_agent_models::ModelManagerError::MissingCredentials,
-            ) => ProviderConnectErrorCode::MissingCredential,
-            EngineError::ModelManager(
-                cookie_agent_models::ModelManagerError::UnsupportedAuthMethod,
-            ) => ProviderConnectErrorCode::UnsupportedAuthMethod,
-            EngineError::ModelManager(
-                cookie_agent_models::ModelManagerError::InvalidCredentials,
-            ) => ProviderConnectErrorCode::InvalidCredential,
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(
-                cookie_agent_models::provider_store::ProviderStoreError::CatalogRevisionConflict,
-            )) => ProviderConnectErrorCode::CatalogRevisionConflict,
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(
-                cookie_agent_models::provider_store::ProviderStoreError::IdempotencyConflict,
-            )) => ProviderConnectErrorCode::IdempotencyConflict,
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(
-                cookie_agent_models::provider_store::ProviderStoreError::Contention,
-            )) => ProviderConnectErrorCode::LockContention,
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::Contention) => {
-                ProviderConnectErrorCode::LockContention
-            }
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(_)) => {
-                ProviderConnectErrorCode::ProviderStoreWriteFailed
-            }
-            _ => ProviderConnectErrorCode::RuntimeCompileFailed,
-        };
-        Self {
-            code: -32011,
-            message: "provider connect error",
-            data: typed_error_data(ProviderConnectError {
-                code,
-                provider_id: request.provider_id.clone(),
-                client_connect_id: request.client_connect_id.clone(),
-            }),
-        }
-    }
-
-    /// A refused `config.apply`: a conflict, an invalid result, or a change
-    /// that cannot be made; anything else is an ordinary engine fault.
-    pub(crate) fn config_apply(error: EngineError) -> Self {
-        use cookie_agent_protocol::{ConfigApplyError, ConfigApplyErrorCode};
         let code = match &error {
-            EngineError::ConfigConflict(_) => ConfigApplyErrorCode::Conflict,
-            EngineError::ConfigChangeRefused(_) => ConfigApplyErrorCode::InvalidChange,
-            EngineError::Config(_) => ConfigApplyErrorCode::InvalidConfiguration,
-            _ => return engine_fault(error),
+            EngineError::ModelManager(error) => match error {
+                ModelManagerError::UnknownProvider => &errors::UNKNOWN_PROVIDER,
+                ModelManagerError::UnsupportedProvider => &errors::UNSUPPORTED_PROVIDER,
+                ModelManagerError::RemovedWithoutRetainedRecipeMatch => {
+                    &errors::REMOVED_WITHOUT_RETAINED_RECIPE_MATCH
+                }
+                ModelManagerError::CustomProviderNotStoreBacked => {
+                    &errors::CUSTOM_PROVIDER_NOT_STORE_BACKED
+                }
+                ModelManagerError::InvalidSetup => &errors::INVALID_SETUP_FIELD,
+                ModelManagerError::MissingSetup => &errors::MISSING_SETUP_FIELD,
+                ModelManagerError::MissingCredentials => &errors::MISSING_CREDENTIAL,
+                ModelManagerError::UnsupportedAuthMethod => &errors::UNSUPPORTED_AUTH_METHOD,
+                ModelManagerError::InvalidCredentials => &errors::INVALID_CREDENTIAL,
+                ModelManagerError::ProviderStore(ProviderStoreError::CatalogRevisionConflict) => {
+                    &errors::CATALOG_REVISION_CONFLICT
+                }
+                ModelManagerError::ProviderStore(ProviderStoreError::IdempotencyConflict) => {
+                    &errors::IDEMPOTENCY_CONFLICT
+                }
+                ModelManagerError::ProviderStore(ProviderStoreError::Contention)
+                | ModelManagerError::Contention => &errors::LOCK_CONTENTION,
+                ModelManagerError::ProviderStore(_) => &errors::PROVIDER_STORE_WRITE_FAILED,
+                _ => &errors::RUNTIME_COMPILE_FAILED,
+            },
+            _ => &errors::RUNTIME_COMPILE_FAILED,
         };
-        let message = match error {
-            EngineError::ConfigConflict(message) | EngineError::ConfigChangeRefused(message) => {
-                message
-            }
-            EngineError::Config(error) => error.to_string(),
-            _ => unreachable!("matched above"),
-        };
-        Self {
-            code: cookie_agent_protocol::CONFIG_APPLY_ERROR_CODE,
-            message: "configuration not changed",
-            data: typed_error_data(ConfigApplyError { code, message }),
+        let mut builder = code
+            .error()
+            .field("provider_id", &request.provider_id)
+            .detail(error.user_message());
+        if std::ptr::eq(code, &errors::IDEMPOTENCY_CONFLICT) {
+            builder = builder.field("client_connect_id", &request.client_connect_id);
         }
+        Self::of(builder)
     }
 
     pub(crate) fn provider_disconnect(
         request: &ProviderDisconnectParams,
         error: EngineError,
     ) -> Self {
-        let code = match error {
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::CustomProviderNotStoreBacked) => ProviderDisconnectErrorCode::CustomProviderNotStoreBacked,
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(cookie_agent_models::provider_store::ProviderStoreError::RuntimeRevisionConflict)) => ProviderDisconnectErrorCode::RuntimeRevisionConflict,
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(cookie_agent_models::provider_store::ProviderStoreError::ProviderStateRevisionConflict)) => ProviderDisconnectErrorCode::ProviderStateRevisionConflict,
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(cookie_agent_models::provider_store::ProviderStoreError::StaleConnectionGeneration)) => ProviderDisconnectErrorCode::StaleProviderConnectionGeneration,
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(cookie_agent_models::provider_store::ProviderStoreError::IdempotencyConflict)) => ProviderDisconnectErrorCode::IdempotencyConflict,
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(cookie_agent_models::provider_store::ProviderStoreError::Contention)) => ProviderDisconnectErrorCode::LockContention,
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::Contention) => ProviderDisconnectErrorCode::LockContention,
-            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(_)) => ProviderDisconnectErrorCode::ProviderStoreWriteFailed,
-            _ => ProviderDisconnectErrorCode::RuntimeCompileFailed,
+        let code = match &error {
+            EngineError::ModelManager(error) => match error {
+                ModelManagerError::CustomProviderNotStoreBacked => {
+                    &errors::CUSTOM_PROVIDER_NOT_STORE_BACKED
+                }
+                ModelManagerError::ProviderStore(ProviderStoreError::RuntimeRevisionConflict) => {
+                    &errors::RUNTIME_REVISION_CONFLICT
+                }
+                ModelManagerError::ProviderStore(
+                    ProviderStoreError::ProviderStateRevisionConflict,
+                ) => &errors::PROVIDER_STATE_REVISION_CONFLICT,
+                ModelManagerError::ProviderStore(ProviderStoreError::StaleConnectionGeneration) => {
+                    &errors::STALE_PROVIDER_CONNECTION_GENERATION
+                }
+                ModelManagerError::ProviderStore(ProviderStoreError::IdempotencyConflict) => {
+                    &errors::IDEMPOTENCY_CONFLICT
+                }
+                ModelManagerError::ProviderStore(ProviderStoreError::Contention)
+                | ModelManagerError::Contention => &errors::LOCK_CONTENTION,
+                ModelManagerError::ProviderStore(_) => &errors::PROVIDER_STORE_WRITE_FAILED,
+                _ => &errors::RUNTIME_COMPILE_FAILED,
+            },
+            _ => &errors::RUNTIME_COMPILE_FAILED,
         };
-        Self {
-            code: -32012,
-            message: "provider disconnect error",
-            data: typed_error_data(ProviderDisconnectError {
-                code,
-                provider_id: request.provider_id.clone(),
-                client_request_id: request.client_request_id.clone(),
-            }),
+        let mut builder = code
+            .error()
+            .field("provider_id", &request.provider_id)
+            .detail(error.user_message());
+        if std::ptr::eq(code, &errors::IDEMPOTENCY_CONFLICT) {
+            builder = builder.field("client_request_id", &request.client_request_id);
+        }
+        Self::of(builder)
+    }
+
+    /// A refused `config.apply`: a conflict, an invalid result, or a change
+    /// that cannot be made, with why as the detail; anything else is an
+    /// ordinary engine fault.
+    pub(crate) fn config_apply(error: EngineError) -> Self {
+        let (reason, detail) = match error {
+            EngineError::ConfigConflict(message) => (ConfigApplyErrorCode::Conflict, message),
+            EngineError::ConfigChangeRefused(message) => {
+                (ConfigApplyErrorCode::InvalidChange, message)
+            }
+            EngineError::Config(error) => (
+                ConfigApplyErrorCode::InvalidConfiguration,
+                error.to_string(),
+            ),
+            error => return engine_fault(error),
+        };
+        Self::of(
+            errors::CONFIG_APPLY_REFUSED
+                .error()
+                .field("reason", reason)
+                .detail(detail),
+        )
+    }
+
+    pub(crate) fn rename(request: &SessionRenameParams, error: EngineError) -> Self {
+        let builder = match &error {
+            EngineError::RenameConflict => errors::IDEMPOTENCY_CONFLICT
+                .error()
+                .field("client_rename_id", &request.client_rename_id),
+            EngineError::Session(SessionError::Missing(_)) | EngineError::MissingActor(_) => {
+                errors::SESSION_NOT_FOUND.error()
+            }
+            _ => return engine_fault(error),
+        };
+        Self::of(builder.field("session_id", request.session_id))
+    }
+
+    pub(crate) fn approval(request: &ApprovalRespondParams, error: EngineError) -> Self {
+        match error {
+            EngineError::ApprovalResponse(failure) => Self::approval_failure(request, &failure),
+            EngineError::ApprovalNotPending { .. } => Self::approval_code(
+                request,
+                ApprovalRespondErrorCode::ApprovalNotPending,
+                None,
+                None,
+            ),
+            EngineError::Session(SessionError::Missing(_)) | EngineError::MissingActor(_) => {
+                Self::approval_code(
+                    request,
+                    ApprovalRespondErrorCode::ApprovalNotFound,
+                    None,
+                    None,
+                )
+            }
+            error => engine_fault(error),
         }
     }
 
-    pub(crate) fn rename(request: &SessionRenameParams, code: SessionRenameErrorCode) -> Self {
-        Self {
-            code: -32602,
-            message: "session rename rejected",
-            data: typed_error_data(SessionRenameError {
-                code,
-                session_id: request.session_id,
-                client_rename_id: request.client_rename_id.clone(),
-            }),
-        }
-    }
-
-    pub(crate) fn approval(
+    fn approval_code(
         request: &ApprovalRespondParams,
         code: ApprovalRespondErrorCode,
         expected_revision: Option<u64>,
         found_revision: Option<u64>,
     ) -> Self {
-        Self {
-            code: -32602,
-            message: "approval response rejected",
-            data: typed_error_data(ApprovalRespondError {
-                code,
-                session_id: request.session_id,
-                approval_id: request.approval_id,
-                client_response_id: request.client_response_id.clone(),
-                expected_revision,
-                found_revision,
-            }),
+        let mut builder = code
+            .error_code()
+            .error()
+            .field("approval_id", request.approval_id);
+        match code {
+            ApprovalRespondErrorCode::ApprovalRevisionConflict => {
+                builder = builder
+                    .field("expected_revision", expected_revision)
+                    .field("found_revision", found_revision);
+            }
+            ApprovalRespondErrorCode::IdempotencyConflict => {
+                builder = builder
+                    .field("session_id", request.session_id)
+                    .field("client_response_id", &request.client_response_id);
+            }
+            _ => {}
         }
+        Self::of(builder)
     }
 
-    pub(crate) fn approval_failure(
-        request: &ApprovalRespondParams,
-        failure: &ApprovalRespondFailure,
-    ) -> Self {
+    fn approval_failure(request: &ApprovalRespondParams, failure: &ApprovalRespondFailure) -> Self {
         let (expected_revision, found_revision) =
             if failure.code == ApprovalRespondErrorCode::ApprovalRevisionConflict {
                 (failure.current_revision, Some(request.request_revision))
@@ -198,33 +220,30 @@ impl RpcFault {
                 (None, None)
             };
         let client_response_id = ClientResponseId::new(failure.client_response_id.clone())
-            .unwrap_or_else(|_| ClientResponseId::new("invalid-response-id").expect("static ID"));
-        Self {
-            code: -32602,
-            message: "approval response rejected",
-            data: typed_error_data(ApprovalRespondError {
-                code: failure.code,
-                session_id: failure.session_id,
-                approval_id: failure.approval_id,
-                client_response_id,
-                expected_revision,
-                found_revision,
-            }),
-        }
+            .unwrap_or_else(|_| request.client_response_id.clone());
+        let request = ApprovalRespondParams {
+            session_id: failure.session_id,
+            approval_id: failure.approval_id,
+            client_response_id,
+            ..request.clone()
+        };
+        Self::approval_code(&request, failure.code, expected_revision, found_revision)
     }
 
     pub(crate) fn session_tree_usage(error: EngineError) -> Self {
         match error {
-            EngineError::Session(SessionError::Missing(_)) => Self {
-                code: SESSION_TREE_USAGE_MISSING_SESSION_CODE,
-                message: "session tree usage session not found",
-                data: None,
-            },
-            EngineError::DelegationEvents(DelegationEventError::Corrupt(_)) => Self {
-                code: SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE,
-                message: "session tree usage corrupted delegation record",
-                data: None,
-            },
+            EngineError::Session(SessionError::Missing(session_id)) => Self::of(
+                errors::TREE_USAGE_SESSION_MISSING
+                    .error()
+                    .field("session_id", session_id),
+            ),
+            EngineError::DelegationEvents(DelegationEventError::Corrupt(invocation_id)) => {
+                Self::of(
+                    errors::TREE_USAGE_DELEGATION_CORRUPT
+                        .error()
+                        .field("invocation_id", invocation_id),
+                )
+            }
             error => engine_fault(error),
         }
     }
@@ -232,314 +251,166 @@ impl RpcFault {
 
 impl From<RpcFault> for cookie_agent_protocol::ServerFault {
     fn from(fault: RpcFault) -> Self {
-        Self::new(fault.code, fault.message, fault.data)
+        Self::from_error(fault.0)
     }
 }
 
-fn typed_error_data(error: impl Serialize) -> Option<Value> {
-    serde_json::to_value(error).ok()
+/// An engine reason as a message clause: bounded, and without the closing
+/// period the message template adds.
+fn reason_text(reason: &str) -> String {
+    cookie_agent_protocol::diagnostics::detail(reason.trim().trim_end_matches('.')).to_string()
 }
 
-/// The newer-build part of `error`, when a newer build wrote the session:
-/// the unknown state event that makes it render-only, or the newer history
-/// format that keeps it from opening.
-fn newer_engine_required(error: &EngineError) -> Option<(Option<&str>, Option<u32>)> {
-    let event_error = match error {
-        EngineError::Event(error) | EngineError::Session(SessionError::Event(error)) => error,
-        _ => return None,
-    };
-    match event_error {
-        cookie_agent_engine::events::EventLogError::RequiresNewerEngine {
-            event,
-            history_format,
-            ..
-        } => Some((event.as_deref(), *history_format)),
+/// The session-log part of `error`, if it is one.
+fn event_log_error(error: &EngineError) -> Option<&EventLogError> {
+    match error {
+        EngineError::Event(error) | EngineError::Session(SessionError::Event(error)) => Some(error),
         _ => None,
     }
 }
 
+/// The registry error that answers `error`: a specific code where the
+/// engine's error names one, else `engine_error`. The engine's own
+/// description is the detail.
 pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
-    if let Some((event, history_format)) = newer_engine_required(&error) {
-        let code = &cookie_agent_protocol::errors::SESSION_REQUIRES_NEWER_ENGINE;
-        let mut builder = code.error();
-        if let Some(event) = event {
-            builder = builder.field("event", event);
+    let detail = error.user_message();
+    match event_log_error(&error) {
+        Some(EventLogError::RequiresNewerEngine {
+            event,
+            history_format,
+            ..
+        }) => {
+            return RpcFault::of(
+                errors::SESSION_REQUIRES_NEWER_ENGINE
+                    .error()
+                    .field("event", event)
+                    .field("history_format", history_format)
+                    .detail(detail),
+            );
         }
-        if let Some(history_format) = history_format {
-            builder = builder.field("history_format", history_format);
+        Some(EventLogError::SequenceBroken { seq, .. }) => {
+            return RpcFault::of(
+                errors::SEQUENCE_BROKEN
+                    .error()
+                    .field("seq", seq)
+                    .detail(detail),
+            );
         }
-        let built = builder.build();
-        return RpcFault {
-            code: built.code,
-            message: code.message,
-            data: built.data,
-        };
+        _ => {}
     }
-    if let EngineError::PluginHookFailed(failure) = &error {
-        let code = &cookie_agent_protocol::errors::PLUGIN_HOOK_FAILED;
-        let built = code
+    let builder = match &error {
+        EngineError::PluginHookFailed(failure) => errors::PLUGIN_HOOK_FAILED
             .error()
             .field("plugin", &failure.plugin)
-            .field("hook", failure.hook.name())
-            .detail(failure.to_string())
-            .build();
-        return RpcFault {
-            code: built.code,
-            message: code.message,
-            data: built.data,
-        };
-    }
-    match error {
-        EngineError::NoRunnableModel => RpcFault {
-            code: -32020,
-            message: "no runnable model",
-            data: Some(json!({
-                "code": "no_runnable_model",
-                "message": "type /connect to continue"
-            })),
-        },
-        EngineError::ProviderStoreReloadFailed => RpcFault {
-            code: -32021,
-            message: "provider store reload failed",
-            data: Some(json!({ "code": "provider_store_reload_failed" })),
-        },
-        EngineError::SessionOwnedByAnotherProcess(_) => RpcFault {
-            code: -32022,
-            message: "session is owned by another cookie process",
-            data: None,
-        },
+            .field("hook", failure.hook.name()),
+        EngineError::NoRunnableModel => errors::NO_RUNNABLE_MODEL.error(),
+        EngineError::ProviderStoreReloadFailed => errors::PROVIDER_STORE_RELOAD_FAILED.error(),
+        EngineError::RuntimeCompileFailed => errors::RUNTIME_COMPILE_FAILED.error(),
+        EngineError::SessionOwnedByAnotherProcess(session_id) => errors::SESSION_OWNED_ELSEWHERE
+            .error()
+            .field("session_id", session_id),
+        EngineError::Session(SessionError::Missing(session_id))
+        | EngineError::MissingActor(session_id) => errors::SESSION_NOT_FOUND
+            .error()
+            .field("session_id", session_id),
+        EngineError::SessionRunning(session_id) => errors::SESSION_RUNNING
+            .error()
+            .field("session_id", session_id),
+        EngineError::MissingRun(run_id) => errors::RUN_NOT_FOUND.error().field("run_id", run_id),
         EngineError::StaleRevert {
             session_id,
             current_last_seq,
-        } => RpcFault {
-            code: -32602,
-            message: "stale revert",
-            data: typed_error_data(cookie_agent_protocol::SessionRevertConflict {
-                session_id,
-                current_last_seq,
-            }),
-        },
-        EngineError::ForkIdempotencyConflict => RpcFault {
-            code: -32602,
-            message: "idempotency conflict",
-            data: Some(json!({ "code": "idempotency_conflict" })),
-        },
-        EngineError::Goal(reason) => RpcFault {
-            code: -32602,
-            message: "goal operation rejected",
-            data: Some(json!({"reason": cookie_agent_protocol::diagnostics::detail(&reason)})),
-        },
-        EngineError::Producer(reason) => RpcFault {
-            code: -32602,
-            message: "producer operation rejected",
-            data: Some(json!({"reason": cookie_agent_protocol::diagnostics::detail(&reason)})),
-        },
-        EngineError::Plugin(reason) => RpcFault {
-            code: -32602,
-            message: "plugin request rejected",
-            data: Some(json!({"reason": cookie_agent_protocol::diagnostics::detail(&reason)})),
-        },
-        error => RpcFault {
-            data: Some(json!({"detail": error.user_message()})),
-            ..RpcFault::engine()
-        },
-    }
-}
-
-pub(crate) fn run_start_fault(error: EngineError) -> RpcFault {
-    #[cfg(debug_assertions)]
-    {
-        let diagnostic = run_start_debug_code(&error);
-        let mut fault = engine_fault(error);
-        fault.data.get_or_insert_with(|| json!({}))["debug_code"] = json!(diagnostic);
-        fault
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        engine_fault(error)
-    }
-}
-
-#[cfg(debug_assertions)]
-fn run_start_debug_code(error: &EngineError) -> &'static str {
-    match error {
-        EngineError::Session(error) => session_debug_code(error),
-        EngineError::Event(error) => event_log_debug_code(error),
-        EngineError::Config(error) => config_debug_code(error),
-        EngineError::ConfigConflict(_) => "config_conflict",
-        EngineError::ConfigChangeRefused(_) => "config_change_refused",
-        EngineError::DelegationEvents(_) => "delegation_events",
-        EngineError::GrantJournal(_) => "grant_journal",
-        EngineError::ToolOutput(_) => "tool_output_io",
-        EngineError::AgentMdIo { .. } => "agent_md_io",
-        EngineError::Workspace { .. } => "workspace_unavailable",
-        EngineError::IneligibleAgent(_) => "ineligible_agent",
-        EngineError::UnknownAgentModel { .. } => "unknown_agent_model",
-        EngineError::UnavailableAgentModel { .. } => "unavailable_agent_model",
-        EngineError::DisabledAgent(_) => "disabled_agent",
-        EngineError::MissingRun(_) => "missing_run",
-        EngineError::SessionRunning(_) => "session_running",
-        EngineError::StaleRevert { .. } => "stale_revert",
-        EngineError::ForkIdempotencyConflict => "fork_idempotency_conflict",
-        EngineError::RunIdempotencyConflict => "run_idempotency_conflict",
-        EngineError::InputHandled(_) => "input_handled",
-        EngineError::ModelSelectionBlocked(_) => "model_selection_blocked",
-        EngineError::SessionOperationBlocked(_) => "session_operation_blocked",
-        EngineError::CompactionCancelled(_) => "compaction_cancelled",
-        EngineError::PluginHookFailed(_) => "plugin_hook_failed",
-        EngineError::ApprovalNotPending { .. } => "approval_not_pending",
-        EngineError::ApprovalConflict => "approval_conflict",
-        EngineError::ApprovalResponse(_) => "approval_response",
-        EngineError::RenameConflict => "rename_conflict",
-        EngineError::Model(_) => "model",
-        EngineError::ModelHistory(_) => "model_history",
-        EngineError::ToolFailed(_) => "tool_failed",
-        EngineError::ToolPrompt(_) => "tool_prompt",
-        EngineError::MissingActor(_) => "missing_actor",
-        EngineError::SessionOwnedByAnotherProcess(_) => "session_owned_by_another_process",
-        EngineError::ActorStopped => "actor_stopped",
-        EngineError::NoRunnableModel => "no_runnable_model",
-        EngineError::UnreadableModelBinding(_) => "unreadable_model_binding",
-        EngineError::UnknownAgentPreset(_) => "unknown_agent_preset",
-        EngineError::ProviderStoreReloadFailed => "provider_store_reload_failed",
-        EngineError::RuntimeCompileFailed => "runtime_compile_failed",
-        EngineError::InvalidRuntimeAgent(_) => "invalid_runtime_agent",
-        EngineError::Mcp(_) => "mcp",
-        EngineError::CacheStrategy(_) => "cache_strategy",
-        EngineError::Permission(_) => "permission",
-        EngineError::Goal(_) => "goal",
-        EngineError::Producer(_) => "producer",
-        EngineError::Messaging(_) => "messaging",
-        EngineError::Runtime(_) => "runtime",
-        EngineError::Plugin(_) => "plugin",
-        EngineError::ModelManager(_) => "model_manager",
-        EngineError::Manifest(_) => "manifest",
-    }
-}
-
-#[cfg(debug_assertions)]
-fn session_debug_code(error: &SessionError) -> &'static str {
-    match error {
-        SessionError::Event(error) => event_log_debug_code(error),
-        SessionError::Io { .. } => "session_io",
-        SessionError::Json { .. } => "session_json",
-        SessionError::Missing(_) => "session_missing",
-        SessionError::SessionLocked(_) => "session_locked",
-        SessionError::StoreClosed => "session_store_closed",
-        SessionError::InvalidSequence { .. } => "session_invalid_sequence",
-        SessionError::InvalidForkTitle(_) => "session_invalid_fork_title",
-        SessionError::TreeRejected(_) => "session_tree_rejected",
-        SessionError::TreeContended(_) => "session_tree_contended",
-    }
-}
-
-#[cfg(debug_assertions)]
-fn event_log_debug_code(error: &cookie_agent_engine::events::EventLogError) -> &'static str {
-    match error {
-        cookie_agent_engine::events::EventLogError::Io { .. } => "event_log_io",
-        cookie_agent_engine::events::EventLogError::Json { .. } => "event_log_json",
-        cookie_agent_engine::events::EventLogError::MissingCreation(_) => {
-            "event_log_missing_creation"
+        } => errors::STALE_REVERT
+            .error()
+            .field("session_id", session_id)
+            .field("current_last_seq", current_last_seq),
+        EngineError::ForkIdempotencyConflict
+        | EngineError::RunIdempotencyConflict
+        | EngineError::RenameConflict => errors::IDEMPOTENCY_CONFLICT.error(),
+        EngineError::Goal(reason) => errors::GOAL_REJECTED
+            .error()
+            .field("reason", reason_text(reason)),
+        EngineError::Producer(_) => errors::PRODUCER_REJECTED.error(),
+        EngineError::Plugin(reason)
+        | EngineError::InputHandled(reason)
+        | EngineError::ModelSelectionBlocked(reason)
+        | EngineError::SessionOperationBlocked(reason)
+        | EngineError::CompactionCancelled(reason) => errors::PLUGIN_REJECTED
+            .error()
+            .field("reason", reason_text(reason)),
+        EngineError::Runtime(reason) => errors::RUNTIME_REJECTED
+            .error()
+            .field("reason", reason_text(reason)),
+        EngineError::Mcp(reason) => errors::MCP_REJECTED
+            .error()
+            .field("reason", reason_text(reason)),
+        EngineError::UnreadableModelBinding(model) => errors::UNREADABLE_MODEL_BINDING
+            .error()
+            .field("model", model),
+        EngineError::IneligibleAgent(agent) | EngineError::DisabledAgent(agent) => {
+            errors::AGENT_UNAVAILABLE.error().field("agent", agent)
         }
-        cookie_agent_engine::events::EventLogError::Corrupt { .. } => "event_log_corrupt",
-        cookie_agent_engine::events::EventLogError::ReadOnly(_) => "event_log_read_only",
-        cookie_agent_engine::events::EventLogError::RequiresNewerEngine { .. } => {
-            "event_log_requires_newer_engine"
+        EngineError::UnknownAgentModel { agent, .. }
+        | EngineError::UnavailableAgentModel { agent, .. } => {
+            errors::AGENT_UNAVAILABLE.error().field("agent", agent)
         }
-        cookie_agent_engine::events::EventLogError::SequenceBroken { .. } => {
-            "event_log_sequence_broken"
-        }
-    }
+        EngineError::UnknownAgentPreset(_) => errors::AGENT_UNAVAILABLE.error(),
+        EngineError::ApprovalNotPending { approval_id, .. } => errors::APPROVAL_NOT_PENDING
+            .error()
+            .field("approval_id", approval_id),
+        _ => errors::ENGINE_FAILED.error(),
+    };
+    RpcFault::of(builder.detail(detail))
 }
 
-#[cfg(debug_assertions)]
-fn config_debug_code(error: &cookie_agent_config::ConfigError) -> &'static str {
-    use cookie_agent_config::ConfigError;
-
-    match error {
-        ConfigError::Io(_) => "config_io",
-        ConfigError::UnsafePath => "config_unsafe_path",
-        ConfigError::ChangedOnDisk(_) => "config_changed_on_disk",
-        ConfigError::NotFound => "config_not_found",
-        ConfigError::TooLarge(_) => "config_too_large",
-        ConfigError::Toml(_) => "config_toml",
-        ConfigError::TomlLimit => "config_toml_limit",
-        ConfigError::Provider { .. } => "config_provider",
-        ConfigError::HeaderOwnership(_) => "config_header_ownership",
-        ConfigError::InvalidRuntime(_) => "config_invalid_runtime",
-        ConfigError::FileIo { .. } => "config_io",
-        ConfigError::McpServer { .. } => "config_mcp_server",
-        ConfigError::RuntimeTemplate { .. } => "config_runtime_template",
-        ConfigError::Interpolation(_) => "config_interpolation",
-        ConfigError::MissingEnvironment { .. } => "config_missing_environment",
-        ConfigError::NonUtf8Environment { .. } => "config_non_utf8_environment",
-        ConfigError::AgentFilename(_) => "config_agent_filename",
-        ConfigError::DuplicateAgent(_) => "config_duplicate_agent",
-        ConfigError::AgentPresetName { .. } => "config_agent_preset_name",
-        ConfigError::ReservedAgentId(_) => "config_reserved_agent_id",
-        ConfigError::AgentDocument { .. } => "config_agent_document",
-        ConfigError::AgentSchemaRemoved { .. } => "config_agent_schema_removed",
-        ConfigError::ConfigSchemaRemoved { .. } => "config_schema_removed",
-        ConfigError::AgentToolsRemoved(_) => "config_agent_tools_removed",
-        ConfigError::AgentModelsRenamed(_) => "config_agent_models_renamed",
-        ConfigError::AgentTimeoutInternalOnly(_) => "config_agent_timeout_internal_only",
-        ConfigError::AgentPermissionExpression(_) => "config_agent_permission_expression",
-        ConfigError::AgentYamlLimit => "config_agent_yaml_limit",
-        ConfigError::EmptyPrompt(_) => "config_empty_prompt",
-        ConfigError::UnknownPromptPlaceholder { .. } => "config_unknown_prompt_placeholder",
-        ConfigError::AgentField { .. } => "config_agent_field",
-        ConfigError::AgentLimit(_) => "config_agent_limit",
-        ConfigError::PrimaryFallback(_) => "config_primary_fallback",
-        ConfigError::Delegation(_) => "config_delegation",
-        ConfigError::UnknownDelegationTarget { .. } => "config_unknown_delegation_target",
-        ConfigError::IneligibleDelegationTarget { .. } => "config_ineligible_delegation_target",
-        ConfigError::UnmatchedDelegationPattern { .. } => "config_unmatched_delegation_pattern",
-        ConfigError::DuplicateFallbackModel { .. } => "config_duplicate_fallback_model",
-        ConfigError::SkillName { .. } => "config_skill_name",
-        ConfigError::SkillNameMismatch { .. } => "config_skill_name_mismatch",
-        ConfigError::SkillDocument { .. } => "config_skill_document",
-        ConfigError::SkillListingBudget => "config_skill_listing_budget",
-    }
+/// The registry entry `error` is answered with.
+#[cfg(test)]
+fn code_of(fault: RpcFault) -> &'static errors::ErrorCode {
+    let code = fault
+        .0
+        .data
+        .as_ref()
+        .and_then(|data| data["code"].as_str())
+        .expect("registry data");
+    errors::lookup(code).expect("a registered code")
 }
 
 #[cfg(test)]
 mod tests {
-    use cookie_agent_protocol::{InvocationId, SessionId};
+    use cookie_agent_protocol::{InvocationId, ServerFault, SessionId};
+    use serde_json::{Value, json};
 
     use super::*;
+
+    fn data(fault: RpcFault) -> Value {
+        ServerFault::from(fault).data.expect("registry data")
+    }
 
     #[test]
     fn a_session_a_newer_build_wrote_refuses_with_its_registry_code() {
         for (error, event, history_format) in [
             (
-                EngineError::Event(
-                    cookie_agent_engine::events::EventLogError::RequiresNewerEngine {
-                        path: "events.jsonl".into(),
-                        event: Some("future_state".into()),
-                        history_format: None,
-                    },
-                ),
+                EngineError::Event(EventLogError::RequiresNewerEngine {
+                    path: "events.jsonl".into(),
+                    event: Some("future_state".into()),
+                    history_format: None,
+                }),
                 json!("future_state"),
                 Value::Null,
             ),
             (
-                EngineError::Session(SessionError::Event(
-                    cookie_agent_engine::events::EventLogError::RequiresNewerEngine {
-                        path: "events.jsonl".into(),
-                        event: None,
-                        history_format: Some(2),
-                    },
-                )),
+                EngineError::Session(SessionError::Event(EventLogError::RequiresNewerEngine {
+                    path: "events.jsonl".into(),
+                    event: None,
+                    history_format: Some(2),
+                })),
                 Value::Null,
                 json!(2),
             ),
         ] {
-            let fault: cookie_agent_protocol::ServerFault = run_start_fault(error).into();
-            assert_eq!(fault.code, cookie_agent_protocol::errors::APPLICATION_ERROR);
-            assert_eq!(
-                fault.message,
-                cookie_agent_protocol::errors::SESSION_REQUIRES_NEWER_ENGINE.message
-            );
+            let fault: ServerFault = engine_fault(error).into();
+            assert_eq!(fault.code, errors::APPLICATION_ERROR);
+            assert_eq!(fault.message, errors::SESSION_REQUIRES_NEWER_ENGINE.message);
             let data = fault.data.expect("registry data");
             assert_eq!(data["code"], "session_requires_newer_engine");
             assert_eq!(data["hint"], "Update cookie to continue this session.");
@@ -552,19 +423,36 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_blocking_hook_is_the_registry_plugin_hook_failure() {
-        let fault: cookie_agent_protocol::ServerFault = engine_fault(
-            EngineError::PluginHookFailed(cookie_agent_engine::PluginHookFailure {
+    fn a_broken_sequence_has_its_own_code() {
+        let fault: ServerFault = engine_fault(EngineError::Event(EventLogError::SequenceBroken {
+            path: "events.jsonl".into(),
+            seq: 41,
+        }))
+        .into();
+        assert_eq!(
+            fault.message,
+            "This session's log is damaged after event 41, so it can only be viewed."
+        );
+        let data = fault.data.expect("registry data");
+        assert_eq!(data["code"], "sequence_broken");
+        assert_eq!(data["seq"], 41);
+    }
+
+    #[test]
+    fn a_failed_blocking_hook_is_the_registry_plugin_hook_failure_and_names_both() {
+        let fault: ServerFault = engine_fault(EngineError::PluginHookFailed(
+            cookie_agent_engine::PluginHookFailure {
                 plugin: "policy".into(),
                 hook: cookie_agent_protocol::ExtensionInterceptionHook::SessionBeforeFork,
                 reason: "timed out".into(),
-            }),
-        )
+            },
+        ))
         .into();
-        assert_eq!(fault.code, cookie_agent_protocol::errors::APPLICATION_ERROR);
-        assert_eq!(
-            fault.message,
-            cookie_agent_protocol::errors::PLUGIN_HOOK_FAILED.message
+        assert_eq!(fault.code, errors::APPLICATION_ERROR);
+        assert!(
+            fault.message.contains("policy") && fault.message.contains("session_before_fork"),
+            "{}",
+            fault.message
         );
         let data = fault.data.expect("registry data");
         assert_eq!(data["code"], "plugin_hook_failed");
@@ -580,27 +468,30 @@ mod tests {
     }
 
     #[test]
-    fn a_start_on_a_running_session_is_a_typed_conflict() {
+    fn run_conflicts_name_the_session_and_the_run_key() {
         let session_id = SessionId::new_v7();
         let client_run_id = ClientRunId::new("second").unwrap();
-        let fault: cookie_agent_protocol::ServerFault = RpcFault::run_start_conflict(
-            session_id,
-            &client_run_id,
-            RunStartConflictCode::SessionRunning,
-        )
-        .into();
-        assert_eq!(fault.code, -32602);
-        assert_eq!(fault.message, "session running");
-        let conflict: RunStartConflict =
-            serde_json::from_value(fault.data.expect("typed data")).expect("conflict data");
-        assert_eq!(conflict.code, RunStartConflictCode::SessionRunning);
-        assert_eq!(conflict.session_id, session_id);
-        assert_eq!(conflict.client_run_id, client_run_id);
+        for (fault, code) in [
+            (
+                RpcFault::session_running(session_id, &client_run_id),
+                "session_running",
+            ),
+            (
+                RpcFault::run_idempotency_conflict(session_id, &client_run_id),
+                "idempotency_conflict",
+            ),
+        ] {
+            let fault: ServerFault = fault.into();
+            assert_eq!(fault.code, errors::APPLICATION_ERROR);
+            let data = fault.data.expect("registry data");
+            assert_eq!(data["code"], code);
+            assert_eq!(data["session_id"], json!(session_id));
+            assert_eq!(data["client_run_id"], "second");
+        }
     }
 
     #[test]
     fn provider_connect_faults_name_the_failure() {
-        use cookie_agent_models::ModelManagerError;
         let request = ProviderConnectParams {
             provider_id: cookie_agent_protocol::ProviderId::new("openai").unwrap(),
             expected_catalog_revision: cookie_agent_protocol::CatalogRevision::new(format!(
@@ -616,129 +507,146 @@ mod tests {
         for (error, expected) in [
             (
                 ModelManagerError::CustomProviderNotStoreBacked,
-                ProviderConnectErrorCode::CustomProviderNotStoreBacked,
+                &errors::CUSTOM_PROVIDER_NOT_STORE_BACKED,
             ),
             (
                 ModelManagerError::MissingSetup,
-                ProviderConnectErrorCode::MissingSetupField,
+                &errors::MISSING_SETUP_FIELD,
             ),
             (
                 ModelManagerError::InvalidSetup,
-                ProviderConnectErrorCode::InvalidSetupField,
+                &errors::INVALID_SETUP_FIELD,
             ),
             (
                 ModelManagerError::MissingCredentials,
-                ProviderConnectErrorCode::MissingCredential,
+                &errors::MISSING_CREDENTIAL,
             ),
             (
                 ModelManagerError::InvalidCredentials,
-                ProviderConnectErrorCode::InvalidCredential,
+                &errors::INVALID_CREDENTIAL,
             ),
+            (ModelManagerError::Contention, &errors::LOCK_CONTENTION),
         ] {
-            let fault: cookie_agent_protocol::ServerFault =
-                RpcFault::provider_connect(&request, EngineError::ModelManager(error)).into();
-            let data: ProviderConnectError =
-                serde_json::from_value(fault.data.expect("typed data")).expect("connect error");
-            assert_eq!(data.code, expected);
+            let fault = RpcFault::provider_connect(&request, EngineError::ModelManager(error));
+            assert_eq!(code_of(fault), expected);
         }
+        let data = data(RpcFault::provider_connect(
+            &request,
+            EngineError::ModelManager(ModelManagerError::ProviderStore(
+                ProviderStoreError::IdempotencyConflict,
+            )),
+        ));
+        assert_eq!(data["code"], "idempotency_conflict");
+        assert_eq!(data["provider_id"], "openai");
+        assert_eq!(data["client_connect_id"], "connect-1");
+        assert!(!data.to_string().contains("placeholder"), "{data}");
     }
 
     #[test]
     fn config_apply_faults_say_why_nothing_changed() {
-        use cookie_agent_protocol::{ConfigApplyError, ConfigApplyErrorCode};
         for (error, expected) in [
-            (
-                EngineError::ConfigConflict("changed".into()),
-                ConfigApplyErrorCode::Conflict,
-            ),
+            (EngineError::ConfigConflict("changed".into()), "conflict"),
             (
                 EngineError::ConfigChangeRefused("bad path".into()),
-                ConfigApplyErrorCode::InvalidChange,
+                "invalid_change",
             ),
             (
                 EngineError::Config(Box::new(cookie_agent_config::ConfigError::UnsafePath)),
-                ConfigApplyErrorCode::InvalidConfiguration,
+                "invalid_configuration",
             ),
         ] {
-            let fault: cookie_agent_protocol::ServerFault = RpcFault::config_apply(error).into();
-            assert_eq!(fault.code, cookie_agent_protocol::CONFIG_APPLY_ERROR_CODE);
-            let data: ConfigApplyError =
-                serde_json::from_value(fault.data.expect("typed data")).expect("apply error");
-            assert_eq!(data.code, expected);
-            assert!(!data.message.is_empty());
+            let data = data(RpcFault::config_apply(error));
+            assert_eq!(data["code"], "config_apply_refused");
+            assert_eq!(data["reason"], expected);
+            assert!(
+                data["detail"]
+                    .as_str()
+                    .is_some_and(|detail| !detail.is_empty())
+            );
         }
-        let other: cookie_agent_protocol::ServerFault =
-            RpcFault::config_apply(EngineError::NoRunnableModel).into();
-        assert_ne!(other.code, cookie_agent_protocol::CONFIG_APPLY_ERROR_CODE);
+        assert_eq!(
+            code_of(RpcFault::config_apply(EngineError::NoRunnableModel)),
+            &errors::NO_RUNNABLE_MODEL
+        );
     }
 
     #[test]
-    fn generic_rpc_fault_preserves_config_path_and_cause_for_client_display() {
-        let fault: cookie_agent_protocol::ServerFault = engine_fault(EngineError::Config(
-            Box::new(cookie_agent_config::ConfigError::FileIo {
+    fn an_engine_fault_keeps_the_cause_as_detail_and_shows_message_and_hint() {
+        let fault: ServerFault = engine_fault(EngineError::Config(Box::new(
+            cookie_agent_config::ConfigError::FileIo {
                 path: "/workspace/config.toml".into(),
                 source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied"),
-            }),
-        ))
+            },
+        )))
         .into();
-        let client = cookie_agent_protocol::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
+        let client = cookie_agent_protocol::ClientError::Rpc(JsonRpcError {
             code: fault.code,
-            message: fault.message.into(),
+            message: fault.message.into_owned(),
             data: fault.data,
         });
-        let text = client.to_string();
-        assert!(text.contains("/workspace/config.toml"));
-        assert!(text.contains("access denied"));
+        assert_eq!(client.error_code(), Some("engine_error"));
+        assert_eq!(
+            client.to_string(),
+            format!(
+                "{} {}",
+                errors::ENGINE_FAILED.message,
+                errors::ENGINE_FAILED.hint.unwrap()
+            )
+        );
+        let detail = client.detail().expect("detail");
+        assert!(detail.contains("/workspace/config.toml") && detail.contains("access denied"));
     }
 
     #[test]
     fn session_tree_usage_faults_distinguish_missing_and_corruption() {
-        let missing: cookie_agent_protocol::ServerFault = RpcFault::session_tree_usage(
-            EngineError::Session(SessionError::Missing(SessionId::new_v7())),
-        )
-        .into();
-        let corrupt: cookie_agent_protocol::ServerFault = RpcFault::session_tree_usage(
-            EngineError::DelegationEvents(DelegationEventError::Corrupt(InvocationId::new_v7())),
-        )
-        .into();
-
-        assert_eq!(missing.code, SESSION_TREE_USAGE_MISSING_SESSION_CODE);
-        assert_eq!(missing.message, "session tree usage session not found");
-        assert_eq!(corrupt.code, SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE);
-        assert_eq!(
-            corrupt.message,
-            "session tree usage corrupted delegation record"
-        );
-        assert_ne!(missing.code, corrupt.code);
+        let session_id = SessionId::new_v7();
+        let missing = data(RpcFault::session_tree_usage(EngineError::Session(
+            SessionError::Missing(session_id),
+        )));
+        let invocation_id = InvocationId::new_v7();
+        let corrupt = data(RpcFault::session_tree_usage(EngineError::DelegationEvents(
+            DelegationEventError::Corrupt(invocation_id),
+        )));
+        assert_eq!(missing["code"], "tree_usage_session_missing");
+        assert_eq!(missing["session_id"], json!(session_id));
+        assert_eq!(corrupt["code"], "tree_usage_delegation_corrupt");
+        assert_eq!(corrupt["invocation_id"], json!(invocation_id));
     }
 
-    #[cfg(debug_assertions)]
     #[test]
-    fn run_start_debug_codes_are_allowlisted_and_causes_preserve_text() {
-        let secret = "plugin-secret-value";
+    fn engine_errors_map_to_their_codes_and_debug_codes_are_gone() {
+        let session_id = SessionId::new_v7();
         for (error, expected) in [
             (
-                EngineError::InputHandled(format!("Bearer {secret}")),
-                "input_handled",
+                EngineError::SessionOwnedByAnotherProcess(session_id),
+                &errors::SESSION_OWNED_ELSEWHERE,
             ),
             (
-                EngineError::ModelSelectionBlocked(format!("Bearer {secret}")),
-                "model_selection_blocked",
+                EngineError::StaleRevert {
+                    session_id,
+                    current_last_seq: 9,
+                },
+                &errors::STALE_REVERT,
             ),
             (
-                EngineError::Config(Box::new(
-                    cookie_agent_config::ConfigError::SkillListingBudget,
-                )),
-                "config_skill_listing_budget",
+                EngineError::ForkIdempotencyConflict,
+                &errors::IDEMPOTENCY_CONFLICT,
             ),
+            (EngineError::Goal("no".into()), &errors::GOAL_REJECTED),
+            (
+                EngineError::Producer("no".into()),
+                &errors::PRODUCER_REJECTED,
+            ),
+            (
+                EngineError::InputHandled("Bearer plugin-secret".into()),
+                &errors::PLUGIN_REJECTED,
+            ),
+            (EngineError::NoRunnableModel, &errors::NO_RUNNABLE_MODEL),
+            (EngineError::ActorStopped, &errors::ENGINE_FAILED),
         ] {
-            let fault: cookie_agent_protocol::ServerFault = run_start_fault(error).into();
-            let data = fault.data.expect("debug diagnostic data");
-            assert_eq!(data["debug_code"], expected);
-            assert_eq!(
-                data.to_string().contains(secret),
-                expected != "config_skill_listing_budget"
-            );
+            let data = data(engine_fault(error));
+            assert_eq!(data["code"], expected.code);
+            assert!(data.get("debug_code").is_none(), "{data}");
         }
     }
 }

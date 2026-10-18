@@ -899,19 +899,11 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
         .await
     {
         Ok(started) => started,
-        Err(crate::ClientError::Rpc(error)) => {
-            let debug_code = error
-                .data
-                .as_ref()
-                .and_then(|data| data.get("debug_code"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("missing_debug_code");
-            panic!(
-                "start direct skill run failed: rpc_code={}, debug_code={debug_code}",
-                error.code
-            );
-        }
-        Err(_) => panic!("start direct skill run failed with a non-RPC client error"),
+        Err(error) => panic!(
+            "start direct skill run failed: {:?} {error} ({:?})",
+            error.error_code(),
+            error.detail()
+        ),
     };
 
     let request =

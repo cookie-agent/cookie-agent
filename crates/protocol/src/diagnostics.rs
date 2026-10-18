@@ -248,32 +248,15 @@ fn excerpt(value: &str, maximum: usize) -> String {
     format!("{}{MARKER}{}", &clean[..head], &clean[tail..])
 }
 
-/// Only diagnostic fields are selected from RPC data. Debug remains redacted.
+/// How a person sees an error object: its `message`, then its `hint` when it
+/// has one. Technical detail (`data.detail`) is shown on request only, and
+/// `Debug` keeps the data redacted.
 pub fn rpc(error: &crate::JsonRpcError) -> String {
-    let mut text = format!("{} (RPC {})", error.message, error.code);
-    if let Some(Value::Object(data)) = &error.data {
-        for key in [
-            "message",
-            "reason",
-            "detail",
-            "cause",
-            "code",
-            "path",
-            "line",
-            "column",
-            "request_id",
-            "expected_revision",
-            "found_revision",
-        ] {
-            if let Some(value) = data.get(key).filter(|value| !value.is_null()) {
-                let value = value.as_str().map_or_else(
-                    || detail(&value.to_string()).to_string(),
-                    |value| detail(value).to_string(),
-                );
-                text.push_str(&format!("\n{key}: {value}"));
-            }
-        }
-    }
+    let data = crate::errors::ErrorData::of(error);
+    let text = match data.hint {
+        Some(hint) if !hint.is_empty() => format!("{} {hint}", error.message),
+        _ => error.message.clone(),
+    };
     detail(&text).to_string()
 }
 
@@ -429,18 +412,22 @@ mod tests {
     }
 
     #[test]
-    fn rpc_display_selects_cause_and_debug_remains_redacted() {
-        let error = crate::JsonRpcError {
+    fn rpc_display_is_the_message_and_hint_and_debug_remains_redacted() {
+        let error = crate::errors::CONFIG_APPLY_REFUSED
+            .error()
+            .field("reason", "invalid_configuration")
+            .detail("password=visible at /work/config.toml line 7")
+            .build();
+        let display = rpc(&error);
+        assert!(display.starts_with("The configuration was not changed (invalid_configuration)."));
+        assert!(display.contains("fix what the details name"), "{display}");
+        assert!(!display.contains("password=visible"), "{display}");
+        assert!(!format!("{error:?}").contains("password=visible"));
+        let plain = crate::JsonRpcError {
             code: -32603,
             message: "operation failed".into(),
-            data: Some(
-                serde_json::json!({"cause":"password=visible", "path":"/work/config.toml", "line":7}),
-            ),
+            data: None,
         };
-        let display = rpc(&error);
-        assert!(display.contains("password=visible"));
-        assert!(display.contains("/work/config.toml"));
-        assert!(display.contains("line: 7"));
-        assert!(!format!("{error:?}").contains("password=visible"));
+        assert_eq!(rpc(&plain), "operation failed");
     }
 }

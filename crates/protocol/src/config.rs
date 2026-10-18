@@ -9,9 +9,6 @@ use crate::ConfigRevision;
 pub const CONFIG_GET_METHOD: &str = "config.get";
 pub const CONFIG_APPLY_METHOD: &str = "config.apply";
 pub const CONFIG_RELOAD_METHOD: &str = "config.reload";
-/// The JSON-RPC error code of a refused `config.apply`; its data is a
-/// [`ConfigApplyError`].
-pub const CONFIG_APPLY_ERROR_CODE: i32 = -32040;
 
 /// A configuration part that takes effect only when the daemon restarts.
 ///
@@ -127,8 +124,12 @@ pub struct ConfigApplyResult {
     pub status: ConfigStatus,
 }
 
+/// Why a `config.apply` changed nothing: the `reason` of its
+/// `config_apply_refused` error. A reason this build does not know reads as
+/// `invalid_change`, whose detail says what to fix.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ConfigApplyErrorCode {
     /// The configuration changed since it was read: refetch and merge.
     Conflict,
@@ -136,13 +137,6 @@ pub enum ConfigApplyErrorCode {
     InvalidConfiguration,
     /// A change cannot be made as asked, such as a path that is not a
     /// document.
+    #[serde(other)]
     InvalidChange,
-}
-
-/// Why a `config.apply` changed nothing.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigApplyError {
-    pub code: ConfigApplyErrorCode,
-    pub message: String,
 }

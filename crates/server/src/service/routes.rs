@@ -1,34 +1,33 @@
 use async_trait::async_trait;
-use cookie_agent_engine::{EngineError, TailOwner, session::SessionError};
+use cookie_agent_engine::{EngineError, TailOwner};
 use cookie_agent_protocol::CapabilityName;
 use cookie_agent_protocol::{
-    ApprovalListParams, ApprovalListResult, ApprovalRespondErrorCode, ApprovalRespondParams,
-    ApprovalRespondResult, EventsSubscribeParams, EventsSubscribeResult, McpAuthBeginParams,
-    McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult, McpAuthCompleteParams,
-    McpAuthCompleteResult, McpServerAddParams, McpServerEditParams, McpServerListParams,
-    McpServerListResult, McpServerMutationResult, McpServerNameParams, McpServerPersistParams,
-    McpServerReconnectParams, McpServerSetEnabledParams, ProviderConnectParams,
-    ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, RunCancelParams,
-    RunCancelResult, RunStartConflictCode, RunStartParams, RunStartResult, RunSteerParams,
-    RunSteerResult, RuntimeSnapshotGetParams, RuntimeSnapshotResult, ServerContext, ServerFault,
-    ServerProtocol, SessionChildrenParams, SessionChildrenResult, SessionCompactParams,
-    SessionCompactResult, SessionCreateParams, SessionCreateResult, SessionForkParams,
-    SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
-    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
-    SessionGoalSetParams, SessionGoalSetResult, SessionListParams, SessionListResult,
-    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
-    SessionPermissionMutationResult, SessionPermissionPreviewParams,
+    ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
+    EventsSubscribeParams, EventsSubscribeResult, McpAuthBeginParams, McpAuthBeginResult,
+    McpAuthCancelParams, McpAuthCancelResult, McpAuthCompleteParams, McpAuthCompleteResult,
+    McpServerAddParams, McpServerEditParams, McpServerListParams, McpServerListResult,
+    McpServerMutationResult, McpServerNameParams, McpServerPersistParams, McpServerReconnectParams,
+    McpServerSetEnabledParams, ProviderConnectParams, ProviderConnectResult,
+    ProviderDisconnectParams, ProviderDisconnectResult, RunCancelParams, RunCancelResult,
+    RunStartParams, RunStartResult, RunSteerParams, RunSteerResult, RuntimeSnapshotGetParams,
+    RuntimeSnapshotResult, ServerContext, ServerFault, ServerProtocol, SessionChildrenParams,
+    SessionChildrenResult, SessionCompactParams, SessionCompactResult, SessionCreateParams,
+    SessionCreateResult, SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult,
+    SessionGoalGetParams, SessionGoalGetResult, SessionGoalLifecycleParams,
+    SessionGoalLifecycleResult, SessionGoalSetParams, SessionGoalSetResult, SessionListParams,
+    SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
+    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
     SessionProducersResult, SessionRecallInputParams, SessionRecallInputResult,
-    SessionRenameErrorCode, SessionRenameParams, SessionRenameResult, SessionResumeParams,
-    SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
+    SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
+    SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
     SessionSetPermissionModeResult, SessionSubmitInputParams, SessionSubmitInputResult,
     SessionTreeParams, SessionTreeResult, SessionTreeUsageResult, SessionUsageParams,
     SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult,
 };
 
 use super::Server;
-use crate::rpc::{RpcFault, engine_fault, run_start_fault};
+use crate::rpc::{RpcFault, engine_fault};
 
 type Result<T> = std::result::Result<T, ServerFault>;
 
@@ -349,19 +348,15 @@ impl ServerProtocol for Server {
             .await
         {
             Ok(result) => Ok(result),
-            Err(EngineError::RunIdempotencyConflict) => Err(RpcFault::run_start_conflict(
+            Err(EngineError::RunIdempotencyConflict) => Err(RpcFault::run_idempotency_conflict(
                 params.session_id,
                 &params.client_run_id,
-                RunStartConflictCode::IdempotencyConflict,
             )
             .into()),
-            Err(EngineError::SessionRunning(_)) => Err(RpcFault::run_start_conflict(
-                params.session_id,
-                &params.client_run_id,
-                RunStartConflictCode::SessionRunning,
-            )
-            .into()),
-            Err(error) => Err(run_start_fault(error).into()),
+            Err(EngineError::SessionRunning(_)) => {
+                Err(RpcFault::session_running(params.session_id, &params.client_run_id).into())
+            }
+            Err(error) => Err(engine_fault(error).into()),
         }
     }
 
@@ -389,19 +384,13 @@ impl ServerProtocol for Server {
             .await
         {
             Ok(result) => Ok(result),
-            Err(EngineError::RunIdempotencyConflict) => Err(RpcFault::run_start_conflict(
-                session_id,
-                &client_run_id,
-                RunStartConflictCode::IdempotencyConflict,
-            )
-            .into()),
-            Err(EngineError::SessionRunning(_)) => Err(RpcFault::run_start_conflict(
-                session_id,
-                &client_run_id,
-                RunStartConflictCode::SessionRunning,
-            )
-            .into()),
-            Err(error) => Err(run_start_fault(error).into()),
+            Err(EngineError::RunIdempotencyConflict) => {
+                Err(RpcFault::run_idempotency_conflict(session_id, &client_run_id).into())
+            }
+            Err(EngineError::SessionRunning(_)) => {
+                Err(RpcFault::session_running(session_id, &client_run_id).into())
+            }
+            Err(error) => Err(engine_fault(error).into()),
         }
     }
 
@@ -819,7 +808,7 @@ impl ServerProtocol for Server {
         let server = self.clone();
         tokio::task::spawn_blocking(move || Server::connect_provider(&server, params))
             .await
-            .map_err(|_| ServerFault::from(RpcFault::engine()))?
+            .map_err(|_| ServerFault::from(RpcFault::internal()))?
             .map_err(Into::into)
     }
 
@@ -832,7 +821,7 @@ impl ServerProtocol for Server {
         let server = self.clone();
         tokio::task::spawn_blocking(move || Server::disconnect_provider(&server, params))
             .await
-            .map_err(|_| ServerFault::from(RpcFault::engine()))?
+            .map_err(|_| ServerFault::from(RpcFault::internal()))?
             .map_err(Into::into)
     }
 }
@@ -842,33 +831,9 @@ fn protocol_fault(error: EngineError) -> ServerFault {
 }
 
 fn rename_fault(request: &SessionRenameParams, error: EngineError) -> RpcFault {
-    let code = match error {
-        EngineError::RenameConflict => SessionRenameErrorCode::IdempotencyConflict,
-        EngineError::Session(SessionError::Missing(_)) | EngineError::MissingActor(_) => {
-            SessionRenameErrorCode::SessionNotFound
-        }
-        _ => return engine_fault(error),
-    };
-    RpcFault::rename(request, code)
+    RpcFault::rename(request, error)
 }
 
 fn approval_fault(request: &ApprovalRespondParams, error: EngineError) -> RpcFault {
-    match error {
-        EngineError::ApprovalResponse(failure) => RpcFault::approval_failure(request, &failure),
-        EngineError::ApprovalNotPending { .. } => RpcFault::approval(
-            request,
-            ApprovalRespondErrorCode::ApprovalNotPending,
-            None,
-            None,
-        ),
-        EngineError::Session(SessionError::Missing(_)) | EngineError::MissingActor(_) => {
-            RpcFault::approval(
-                request,
-                ApprovalRespondErrorCode::ApprovalNotFound,
-                None,
-                None,
-            )
-        }
-        _ => engine_fault(error),
-    }
+    RpcFault::approval(request, error)
 }

@@ -1151,7 +1151,7 @@ impl App {
                     RpcUpdate::Notice("run cancellation requested".into())
                 }
                 Ok(_) => RpcUpdate::Notice("run was already complete".into()),
-                Err(error) => RpcUpdate::Status(error.to_string()),
+                Err(error) => RpcUpdate::failure(&error),
             };
             let _ = updates.send(update);
         });
@@ -1169,7 +1169,7 @@ impl App {
                     RpcUpdate::Notice("compaction cancellation requested".into())
                 }
                 Ok(_) => RpcUpdate::Notice("no compaction to cancel".into()),
-                Err(error) => RpcUpdate::Status(error.to_string()),
+                Err(error) => RpcUpdate::failure(&error),
             };
             let _ = updates.send(update);
         });

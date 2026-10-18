@@ -154,7 +154,7 @@ impl App {
         self.spawn_rpc(async move {
             let update = match client.restart_plugin(name.clone()).await {
                 Ok(_) => RpcUpdate::Notice(format!("plugin `{name}` is restarting")),
-                Err(error) => RpcUpdate::Status(error.to_string()),
+                Err(error) => RpcUpdate::failure(&error),
             };
             let _ = updates.send(update);
         });

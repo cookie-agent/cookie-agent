@@ -5,8 +5,8 @@
 use anyhow::Context as _;
 use clap::Subcommand;
 use cookie_agent_protocol::{
-    Client, ClientError, ConfigApplyError, ConfigApplyErrorCode, ConfigApplyParams, ConfigChange,
-    ConfigGetResult, ConfigStatus,
+    Client, ClientError, ConfigApplyErrorCode, ConfigApplyParams, ConfigChange, ConfigGetResult,
+    ConfigStatus,
 };
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
@@ -194,10 +194,18 @@ async fn apply(
         .map_err(ApplyFailure::from)
 }
 
+/// A refused `config.apply` (`config_apply_refused`): why, and the daemon's
+/// detail, which says what to fix.
+#[derive(Debug)]
+struct Refusal {
+    code: ConfigApplyErrorCode,
+    message: String,
+}
+
 /// A refused `config.apply`, or another failure.
 #[derive(Debug)]
 enum ApplyFailure {
-    Refused(ConfigApplyError),
+    Refused(Refusal),
     Other(ClientError),
 }
 
@@ -214,15 +222,18 @@ impl std::error::Error for ApplyFailure {}
 
 impl From<ClientError> for ApplyFailure {
     fn from(error: ClientError) -> Self {
-        match &error {
-            ClientError::Rpc(rpc) if rpc.code == cookie_agent_protocol::CONFIG_APPLY_ERROR_CODE => {
-                rpc.data
-                    .clone()
-                    .and_then(|data| serde_json::from_value(data).ok())
-                    .map_or(Self::Other(error), Self::Refused)
-            }
-            _ => Self::Other(error),
+        if !error.is(&cookie_agent_protocol::errors::CONFIG_APPLY_REFUSED) {
+            return Self::Other(error);
         }
+        let data = error.error_data().unwrap_or_default();
+        Self::Refused(Refusal {
+            code: data
+                .fields
+                .get("reason")
+                .and_then(|reason| serde_json::from_value(reason.clone()).ok())
+                .unwrap_or(ConfigApplyErrorCode::InvalidChange),
+            message: data.detail.unwrap_or_else(|| error.to_string()),
+        })
     }
 }
 

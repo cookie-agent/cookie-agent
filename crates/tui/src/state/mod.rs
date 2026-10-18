@@ -1220,6 +1220,20 @@ impl StateStore {
         }
     }
 
+    /// An error row in `session_id`'s transcript for a daemon error the
+    /// status line shows: its first line is the error, and the technical
+    /// detail stays collapsed behind it until the row is expanded.
+    pub fn push_error_details(&mut self, session_id: SessionId, error: &str, detail: &str) {
+        if let Some(state) = self.sessions.get_mut(&session_id) {
+            push_event(
+                state,
+                EventLevel::Error,
+                format!("{error}\ndetails: {detail}"),
+                jiff::Timestamp::now(),
+            );
+        }
+    }
+
     /// An error row in each of `sessions` this client shows. A connection
     /// failure is a live daemon notification, not a durable event: wall
     /// clock orders it.

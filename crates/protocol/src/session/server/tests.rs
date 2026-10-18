@@ -71,359 +71,359 @@ impl ServerProtocol for StubServer {
         &self,
         _: crate::SessionCreateParams,
     ) -> Result<crate::SessionCreateResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn get_session_goal(
         &self,
         _: crate::SessionGoalGetParams,
     ) -> Result<crate::SessionGoalGetResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn set_session_goal(
         &self,
         _: crate::SessionGoalSetParams,
         _context: &ServerContext,
     ) -> Result<crate::SessionGoalSetResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn change_session_goal_lifecycle(
         &self,
         _: crate::SessionGoalLifecycleParams,
         _context: &ServerContext,
     ) -> Result<crate::SessionGoalLifecycleResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn session_producers(
         &self,
         _: crate::SessionProducersParams,
     ) -> Result<crate::SessionProducersResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn session_usage(
         &self,
         _: crate::SessionUsageParams,
     ) -> Result<crate::SessionUsageResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn session_tree_usage(
         &self,
         _: crate::SessionUsageParams,
     ) -> Result<crate::SessionTreeUsageResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn session_children(
         &self,
         _: crate::SessionChildrenParams,
     ) -> Result<crate::SessionChildrenResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn session_tree(
         &self,
         _: crate::SessionTreeParams,
     ) -> Result<crate::SessionTreeResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn resume_session(
         &self,
         _: crate::SessionResumeParams,
     ) -> Result<crate::SessionResumeResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn rename_session(
         &self,
         _: crate::SessionRenameParams,
         _context: &ServerContext,
     ) -> Result<crate::SessionRenameResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn set_permission_mode(
         &self,
         _: crate::SessionSetPermissionModeParams,
         _context: &ServerContext,
     ) -> Result<crate::SessionSetPermissionModeResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn get_session_permissions(
         &self,
         _: crate::SessionPermissionGetParams,
     ) -> Result<crate::SessionPermissionGetResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn set_session_permission(
         &self,
         _: crate::SessionPermissionSetParams,
         _context: &ServerContext,
     ) -> Result<crate::SessionPermissionMutationResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn clear_session_permission(
         &self,
         _: crate::SessionPermissionClearParams,
         _context: &ServerContext,
     ) -> Result<crate::SessionPermissionMutationResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn preview_session_permissions(
         &self,
         _: crate::SessionPermissionPreviewParams,
     ) -> Result<crate::SessionPermissionPreviewResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn list_skills(
         &self,
         _: crate::SkillsListParams,
     ) -> Result<crate::SkillsListResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn get_skill(
         &self,
         _: crate::SkillsGetParams,
     ) -> Result<crate::SkillsGetResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn compact_session(
         &self,
         _: crate::SessionCompactParams,
         _context: &ServerContext,
     ) -> Result<crate::SessionCompactResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn cancel_compaction(
         &self,
         _: crate::SessionCompactCancelParams,
         _context: &ServerContext,
     ) -> Result<crate::SessionCompactCancelResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn revert_session(
         &self,
         _: crate::SessionRevertParams,
         _context: &ServerContext,
     ) -> Result<crate::SessionRevertResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn fork_session(
         &self,
         _: crate::SessionForkParams,
         _context: &ServerContext,
     ) -> Result<crate::SessionForkResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn start_run(
         &self,
         _: crate::RunStartParams,
         _context: &ServerContext,
     ) -> Result<crate::RunStartResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn steer_run(
         &self,
         _: crate::RunSteerParams,
         _context: &ServerContext,
     ) -> Result<crate::RunSteerResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn select_model(
         &self,
         _: crate::SessionSelectModelParams,
         _context: &ServerContext,
     ) -> Result<crate::SessionSelectModelResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn unsubscribe_events(
         &self,
         _: crate::EventsUnsubscribeParams,
         _context: &ServerContext,
     ) -> Result<crate::EventsUnsubscribeResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn submit_input(
         &self,
         _: crate::SessionSubmitInputParams,
         _context: &ServerContext,
     ) -> Result<crate::SessionSubmitInputResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn recall_input(
         &self,
         _: crate::SessionRecallInputParams,
         _context: &ServerContext,
     ) -> Result<crate::SessionRecallInputResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn cancel_run(
         &self,
         _: crate::RunCancelParams,
         _context: &ServerContext,
     ) -> Result<crate::RunCancelResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn respond_approval(
         &self,
         _: crate::ApprovalRespondParams,
         _context: &ServerContext,
     ) -> Result<crate::ApprovalRespondResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn list_approvals(
         &self,
         _: crate::ApprovalListParams,
     ) -> Result<crate::ApprovalListResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn begin_mcp_auth(
         &self,
         _: crate::McpAuthBeginParams,
     ) -> Result<crate::McpAuthBeginResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn complete_mcp_auth(
         &self,
         _: crate::McpAuthCompleteParams,
     ) -> Result<crate::McpAuthCompleteResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn cancel_mcp_auth(
         &self,
         _: crate::McpAuthCancelParams,
     ) -> Result<crate::McpAuthCancelResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn attach_runtime(
         &self,
         _: crate::SessionRuntimeAttachParams,
         _: &ServerContext,
     ) -> Result<crate::SessionRuntimeAttachResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn detach_runtime(
         &self,
         _: crate::SessionRuntimeDetachParams,
         _: &ServerContext,
     ) -> Result<crate::SessionRuntimeDetachResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn list_runtimes(
         &self,
         _: crate::RuntimesListParams,
     ) -> Result<crate::RuntimesListResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn reconnect_runtime(
         &self,
         _: crate::RuntimesReconnectParams,
     ) -> Result<crate::RuntimesReconnectResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn list_plugins(
         &self,
         _: crate::PluginsListParams,
     ) -> Result<crate::PluginsListResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn restart_plugin(
         &self,
         _: crate::PluginsRestartParams,
     ) -> Result<crate::PluginsRestartResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn get_config(
         &self,
         _: crate::ConfigGetParams,
     ) -> Result<crate::ConfigGetResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn apply_config(
         &self,
         _: crate::ConfigApplyParams,
     ) -> Result<crate::ConfigApplyResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn reload_config(
         &self,
         _: crate::ConfigReloadParams,
     ) -> Result<crate::ConfigReloadResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn background_tool(
         &self,
         _: crate::RunToolBackgroundParams,
         _context: &ServerContext,
     ) -> Result<crate::RunToolBackgroundResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn list_background(
         &self,
         _: crate::SessionBackgroundListParams,
     ) -> Result<crate::SessionBackgroundListResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn stop_background(
         &self,
         _: crate::SessionBackgroundStopParams,
         _context: &ServerContext,
     ) -> Result<crate::SessionBackgroundStopResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn list_mcp_servers(
         &self,
         _: crate::McpServerListParams,
     ) -> Result<crate::McpServerListResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn add_mcp_server(
         &self,
         _: crate::McpServerAddParams,
     ) -> Result<crate::McpServerMutationResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn edit_mcp_server(
         &self,
         _: crate::McpServerEditParams,
     ) -> Result<crate::McpServerMutationResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn remove_mcp_server(
         &self,
         _: crate::McpServerNameParams,
     ) -> Result<crate::McpServerMutationResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn set_mcp_server_enabled(
         &self,
         _: crate::McpServerSetEnabledParams,
     ) -> Result<crate::McpServerMutationResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn reconnect_mcp_server(
         &self,
         _: crate::McpServerReconnectParams,
     ) -> Result<crate::McpServerMutationResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn persist_mcp_server(
         &self,
         _: crate::McpServerPersistParams,
     ) -> Result<crate::McpServerMutationResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn runtime_snapshot(
         &self,
         _: crate::RuntimeSnapshotGetParams,
     ) -> Result<crate::RuntimeSnapshotResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn connect_provider(
         &self,
         _: crate::ProviderConnectParams,
     ) -> Result<crate::ProviderConnectResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
     async fn disconnect_provider(
         &self,
         _: crate::ProviderDisconnectParams,
     ) -> Result<crate::ProviderDisconnectResult, ServerFault> {
-        Err(ServerFault::method_not_found())
+        Err(ServerFault::method_not_found("stub"))
     }
 }
 

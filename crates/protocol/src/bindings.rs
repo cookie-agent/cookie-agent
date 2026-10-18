@@ -254,19 +254,12 @@ pub fn surface_methods(surface: Surface) -> Vec<MethodSpec> {
 }
 
 /// The roots of `surface` that no method carries but that flow as
-/// information: error data and the stored event set.
+/// information: the stored event set. Error data is described by the error
+/// registry (`crate::errors`), not by schemas.
 #[must_use]
 pub fn surface_information_roots(surface: Surface) -> Vec<RootType> {
     match surface {
-        Surface::Client => vec![
-            root!(RunStartConflict),
-            root!(SessionRenameError),
-            root!(SessionRevertConflict),
-            root!(ApprovalRespondError),
-            root!(ProviderConnectError),
-            root!(ProviderDisconnectError),
-            root!(ConfigApplyError),
-        ],
+        Surface::Client => Vec::new(),
         Surface::Events => vec![root!(EventPayload), root!(StoredEvent)],
         Surface::Plugin | Surface::Runtime => Vec::new(),
     }

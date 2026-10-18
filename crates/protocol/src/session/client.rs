@@ -149,10 +149,19 @@ pub enum ClientError {
 }
 
 impl ClientError {
-    /// The typed `code` a daemon error carries in its data, such as
-    /// `lock_contention` or `catalog_revision_conflict`.
+    /// What the daemon's error says beyond its message, read per code.
     #[must_use]
-    pub fn rpc_error_code(&self) -> Option<&str> {
+    pub fn error_data(&self) -> Option<crate::errors::ErrorData> {
+        match self {
+            Self::Rpc(rpc) => Some(crate::errors::ErrorData::of(rpc)),
+            _ => None,
+        }
+    }
+
+    /// The daemon error's stable `data.code`, such as `lock_contention` or
+    /// `session_owned_elsewhere`. Clients branch only on it.
+    #[must_use]
+    pub fn error_code(&self) -> Option<&str> {
         match self {
             Self::Rpc(rpc) => rpc
                 .data
@@ -161,6 +170,20 @@ impl ClientError {
                 .and_then(Value::as_str),
             _ => None,
         }
+    }
+
+    /// Whether the daemon answered with the registry's `code`.
+    #[must_use]
+    pub fn is(&self, code: &crate::errors::ErrorCode) -> bool {
+        self.error_code() == Some(code.code)
+    }
+
+    /// The technical detail of a daemon error, shown on request.
+    #[must_use]
+    pub fn detail(&self) -> Option<String> {
+        self.error_data()
+            .and_then(|data| data.detail)
+            .filter(|detail| !detail.is_empty())
     }
 }
 

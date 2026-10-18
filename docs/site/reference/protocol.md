@@ -111,11 +111,18 @@ and optionally includes `model_error` and `resolved_model`. Missing fields in ol
 events default to null and are omitted when serialized; this is an additive
 event change without a protocol version bump.
 
-Generic engine RPC failures include bounded, terminal-safe `data.detail` without
-application-level secret-pattern or sensitive-field redaction. Clients
-explicitly render selected diagnostic data such as message, reason, cause, path,
-and revision information; `JsonRpcError` Debug formatting continues to redact
-data. No request headers or credential dumps are added. See
+## Errors
+
+Every application error is `-32000` with a registry `data.code`, a `message`
+a user can understand, and optional `data.hint` and `data.detail`; the
+[error reference](errors.md) lists every code with its fields. The daemon
+builds `message` and `hint` from the registry, so a code always reads the
+same way, and keeps its own description of the cause (bounded and
+terminal-safe, without secret-pattern redaction) as `detail`. Clients branch
+only on `data.code`, show `message` and then `hint`, and show `detail` on
+request; a code a client does not know reads as a generic error, whose
+`message` and `hint` are already readable. `JsonRpcError` Debug formatting
+redacts data. No request headers or credential dumps are added. See
 [Error details](../guide/run.md#error-details) for display and upstream limits.
 
 ## Tool-emitted messages
@@ -201,7 +208,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `provider.connect` | Provider, expected catalog revision, setup/auth values, client ID | Durable connection, effective auth, snapshot, replay state |
 | `provider.disconnect` | Provider, expected revisions/generation, client ID | Disconnect receipt, effective auth, snapshot, replay state |
 | `config.get` | Empty object | The documents on disk (`config.toml`, `agents/<id>.md`, `agents/<preset>/<id>.md`), each with its `text` and `fingerprint`; their `revision`; `empty_presets`; and `status` |
-| `config.apply` | `expected_revision`, `changes`: `{"put": {path, text, expected_fingerprint?}}`, `{"delete": {path, expected_fingerprint}}`, `{"set": {key, value}}` (one key of `config.toml` by its path of names; `null` removes it) | The new `revision` and `status`. A refusal changes nothing and is error `-32040` with data `{code: conflict \| invalid_configuration \| invalid_change, message}` |
+| `config.apply` | `expected_revision`, `changes`: `{"put": {path, text, expected_fingerprint?}}`, `{"delete": {path, expected_fingerprint}}`, `{"set": {key, value}}` (one key of `config.toml` by its path of names; `null` removes it) | The new `revision` and `status`. A refusal changes nothing and is the error `config_apply_refused`, whose `reason` is `conflict`, `invalid_configuration`, or `invalid_change` and whose `detail` says why |
 | `config.reload` | Empty object | `status`: `applied_revision`, `restart_required` (`server`, `plugins`, `runtimes`), and `error` when the configuration on disk failed validation and was not applied |
 | `session.create` | Run selection, optional `permission_mode`, optional `permission_rules` (the initial session overlay, at most 256 rules), optional `runtimes` (`[{ runtime_id, capability?, workspace? }]`), optional `global` (default `true`), optional `cwd` (the client's directory) | Session metadata with skipped-event diagnostics, and the session's `runtimes` |
 | `session.list` | Optional cwd identity | Root session metadata list with skipped-event diagnostics |
@@ -474,8 +481,8 @@ back to `session.submit_input`.
 `session.revert` is idle-only. The target must be a positive existing
 sequence, and `expected_last_seq` must be the session's current last event
 sequence: a session that has moved on since the client looked (another client's
-turn, say) is refused with code `-32602`, message `stale revert`, and
-`SessionRevertConflict` data carrying `current_last_seq`, so a revert never
+turn, say) is refused with the error `stale_revert`, whose data carries
+`current_last_seq`, so a revert never
 deletes what the requester has not seen. The engine removes every event after it from the log (a run left with
 nothing but its `run_started` goes too), closes any run, tool call, internal
 agent, or approval the cut left open, and deletes the subagent sessions created

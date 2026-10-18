@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 
 use cookie_agent_protocol::{
-    ClientError, ConfigApplyError, ConfigApplyErrorCode, ConfigApplyParams, ConfigChange,
-    ConfigGetResult, ConfigRestartPart, ConfigRevision, ConfigStatus,
+    ClientError, ConfigApplyErrorCode, ConfigApplyParams, ConfigChange, ConfigGetResult,
+    ConfigRestartPart, ConfigRevision, ConfigStatus,
 };
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -37,7 +37,11 @@ pub(in crate::ui) struct EditorRequest {
 #[derive(Debug)]
 pub(in crate::ui) enum ConfigApplyOutcome {
     Applied(ConfigStatus),
-    Refused(ConfigApplyError),
+    /// `config_apply_refused`: why, and what the daemon says to fix.
+    Refused {
+        reason: ConfigApplyErrorCode,
+        detail: String,
+    },
     Failed(String),
 }
 
@@ -45,12 +49,17 @@ impl ConfigApplyOutcome {
     fn from_result(result: Result<cookie_agent_protocol::ConfigApplyResult, ClientError>) -> Self {
         match result {
             Ok(result) => Self::Applied(result.status),
-            Err(ClientError::Rpc(rpc))
-                if rpc.code == cookie_agent_protocol::CONFIG_APPLY_ERROR_CODE =>
-            {
-                rpc.data
-                    .and_then(|data| serde_json::from_value(data).ok())
-                    .map_or_else(|| Self::Failed(rpc.message), Self::Refused)
+            Err(error) if error.is(&cookie_agent_protocol::errors::CONFIG_APPLY_REFUSED) => {
+                let data = error.error_data().unwrap_or_default();
+                let reason = data
+                    .fields
+                    .get("reason")
+                    .and_then(|reason| serde_json::from_value(reason.clone()).ok())
+                    .unwrap_or(ConfigApplyErrorCode::InvalidChange);
+                Self::Refused {
+                    reason,
+                    detail: data.detail.unwrap_or_else(|| error.to_string()),
+                }
             }
             Err(error) => Self::Failed(error.to_string()),
         }
@@ -277,22 +286,21 @@ impl App {
                 self.config_panel.error = None;
                 self.status = format!("Applied {path}.{}", restart_note(&status));
             }
-            ConfigApplyOutcome::Refused(ConfigApplyError {
-                code: ConfigApplyErrorCode::Conflict,
-                message,
-            }) => {
+            ConfigApplyOutcome::Refused {
+                reason: ConfigApplyErrorCode::Conflict,
+                detail: message,
+            } => {
                 self.config_panel.drafts.remove(&path);
                 self.config_panel.error = Some(format!(
                     "{path} was not changed: {message}. The list is reloaded; edit it again."
                 ));
                 self.status = format!("{path} changed meanwhile; edit it again");
             }
-            ConfigApplyOutcome::Refused(error) => {
+            ConfigApplyOutcome::Refused { detail, .. } => {
                 if let Some(edit) = edit {
                     self.config_panel.drafts.insert(path.clone(), edit);
                 }
-                self.config_panel.error =
-                    Some(format!("{path} was not changed: {}", error.message));
+                self.config_panel.error = Some(format!("{path} was not changed: {detail}"));
                 self.status = format!("Not applied; Enter edits {path} again.");
             }
             ConfigApplyOutcome::Failed(error) => self.status = error,
@@ -396,7 +404,7 @@ impl App {
                 Ok(result) => RpcUpdate::ConfigReloaded {
                     status: result.status,
                 },
-                Err(error) => RpcUpdate::Status(error.to_string()),
+                Err(error) => RpcUpdate::failure(&error),
             };
             let _ = updates.send(update);
         });
