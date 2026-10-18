@@ -2236,7 +2236,7 @@ impl SessionStore {
             });
         }
         source.log.suspend_writer();
-        let source_events = source.log.all_events();
+        let source_events = source.log.event_snapshot();
         let prefix = source_events
             .iter()
             .filter(|event| event.seq <= through_seq)
@@ -2244,7 +2244,7 @@ impl SessionStore {
             .collect::<Vec<_>>();
         if through_seq == 0
             || through_seq > source_events.last().map_or(0, |event| event.seq)
-            || !crate::events::visible_events(prefix.clone())
+            || !prefix
                 .iter()
                 .any(|event| matches!(event.payload, EventPayload::UserInputSubmitted { .. }))
         {
@@ -2354,7 +2354,7 @@ impl SessionStore {
             create_windows_session_file(&log_path)?;
             let lines = crate::events::write_event_jsonl(
                 &log_path,
-                log.all_events().iter().map(AsRef::as_ref),
+                log.event_snapshot().iter().map(AsRef::as_ref),
             )?;
             write_cache(
                 &temporary.join(SESSION_META_FILE),
@@ -2477,7 +2477,7 @@ impl SessionStore {
             create_windows_session_file(&log_path)?;
             let lines = crate::events::write_event_jsonl(
                 &log_path,
-                projection.log.all_events().iter().map(AsRef::as_ref),
+                projection.log.event_snapshot().iter().map(AsRef::as_ref),
             )?;
             write_cache(
                 &temporary.join(SESSION_META_FILE),

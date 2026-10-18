@@ -107,17 +107,8 @@ fn push_instance(
     Ok(attachment)
 }
 
-/// The events a new session's creation writes for `attachments`. A log
-/// without any attach or detach event reads as attached to `global` and
-/// `local`, so a session created with no attachment records the detach of
-/// `global` instead.
+/// The events a new session's creation writes for `attachments`.
 pub(crate) fn initial_attachment_events(attachments: &[RuntimeAttachment]) -> Vec<Event> {
-    if attachments.is_empty() {
-        return vec![Event::RuntimeDetached {
-            name: AttachmentName::new(cookie_agent_protocol::RuntimeId::GLOBAL)
-                .expect("`global` is a valid attachment name"),
-        }];
-    }
     attachments.iter().map(attached_event).collect()
 }
 
@@ -125,15 +116,14 @@ pub(crate) fn attached_event(attachment: &RuntimeAttachment) -> Event {
     Event::RuntimeAttached {
         name: attachment.name.clone(),
         runtime_id: attachment.runtime_id.clone(),
-        capability: Some(attachment.capability.clone()),
+        capability: attachment.capability.clone(),
         kind: attachment.kind.clone(),
         workspace: attachment.workspace.clone(),
     }
 }
 
 impl Engine {
-    /// What a new session attaches by default, and what a session whose log
-    /// predates runtimes is attached to: `global`, then `local`.
+    /// What a new session attaches by default: `global`, then `local`.
     pub(crate) fn default_attachments(&self) -> Vec<RuntimeAttachment> {
         let mut attachments = Vec::with_capacity(2);
         for instance in [self.inner.runtimes.global(), self.inner.runtimes.local()] {
@@ -144,10 +134,7 @@ impl Engine {
 
     /// The session's attachments in attach order.
     pub(crate) fn attachments_of(&self, projection: &SessionProjection) -> Vec<RuntimeAttachment> {
-        projection
-            .runtime_attachments
-            .attachments()
-            .map_or_else(|| self.default_attachments(), <[_]>::to_vec)
+        projection.runtime_attachments.attachments().to_vec()
     }
 
     /// The runtimes `session` is attached to, in attach order.
@@ -358,7 +345,6 @@ impl Engine {
             }
             let mut attachments = engine.attachments_of(&projection);
             let attachment = push_instance(&mut attachments, &instance)?;
-            engine.materialize_legacy_attachments(session, &projection, &origin)?;
             engine.append_direct(session, None, origin, attached_event(&attachment))?;
             Ok(attachment)
         })
@@ -388,30 +374,10 @@ impl Engine {
                     "session has no runtime attached as `{name}`"
                 )));
             }
-            engine.materialize_legacy_attachments(session, &projection, &origin)?;
             engine.append_direct(session, None, origin, Event::RuntimeDetached { name })?;
             Ok(())
         })
         .await
-    }
-
-    /// A log that predates runtimes holds no attachment event and reads as
-    /// attached to `global` and `local`. Before its first attach or detach
-    /// those implicit attachments are written, so the fold stays the source
-    /// of truth.
-    fn materialize_legacy_attachments(
-        &self,
-        session: SessionId,
-        projection: &SessionProjection,
-        origin: &EventOrigin,
-    ) -> Result<(), EngineError> {
-        if projection.runtime_attachments.attachments().is_some() {
-            return Ok(());
-        }
-        for attachment in self.default_attachments() {
-            self.append_direct(session, None, origin.clone(), attached_event(&attachment))?;
-        }
-        Ok(())
     }
 
     /// Rejects a delegation narrowing that names an attachment the parent

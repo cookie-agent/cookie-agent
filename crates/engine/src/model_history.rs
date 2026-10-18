@@ -6,13 +6,13 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    ApprovalDecisionSource, ArtifactReference, ContextCheckpoint, ContextRehydratedFile,
-    DelegatedContextRole, EventPayload, FrozenModelBinding, ModelFinishReason, ModelSelection,
-    NativeContextScope, NativeReplayArtifact, PersistedAssistantPart, PersistedContentValue,
-    PersistedFilePart, PersistedFileSource, PersistedModelTurn, PersistedToolContent,
-    PersistedToolResult, ReplayDecision, ReplayDisposition, ResolvedModelRef, SafeCode,
-    SafeErrorMessage, SessionId, Sha256Digest, StoredEvent, ToolAttachment, ToolCallId,
-    ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole, ToolTerminationOutcome, Usage,
+    ApprovalDecisionSource, ArtifactReference, ContextCheckpoint, DelegatedContextRole,
+    EventPayload, FrozenModelBinding, ModelFinishReason, ModelSelection, NativeContextScope,
+    NativeReplayArtifact, PersistedAssistantPart, PersistedContentValue, PersistedFilePart,
+    PersistedFileSource, PersistedModelTurn, PersistedToolContent, PersistedToolResult,
+    ReplayDecision, ReplayDisposition, ResolvedModelRef, SafeCode, SafeErrorMessage, SessionId,
+    Sha256Digest, StoredEvent, ToolAttachment, ToolCallId, ToolEmittedContent, ToolEmittedMessage,
+    ToolEmittedMessageRole, ToolTerminationOutcome, Usage,
 };
 use oven_sdk::{
     AdapterId, AssistantMessage, AssistantPart, CompletedTurn, ContentValue, CustomPart, FilePart,
@@ -293,7 +293,6 @@ enum LogicalTurn<'a> {
     User(UserMessage),
     SeedAssistant(&'a str),
     Assistant(Box<AssistantRecord<'a>>),
-    Rehydration(&'a [ContextRehydratedFile]),
 }
 
 struct AssistantRecord<'a> {
@@ -687,10 +686,7 @@ pub(crate) fn compaction_tail_candidates<E: Borrow<StoredEvent>>(events: &[E]) -
                     groups[*index].end = groups[*index].end.max(event.seq);
                 }
             }
-            EventPayload::ContextRehydrated { .. }
-            | EventPayload::PluginEventAdded { .. }
-            | EventPayload::DelegateFinished { .. }
-            | EventPayload::DelegateFinishedV2 { .. } => groups.push(Group {
+            EventPayload::DelegateFinishedV2 { .. } => groups.push(Group {
                 start: event.seq,
                 end: event.seq,
                 ..Group::default()
@@ -875,10 +871,7 @@ fn assemble_history_with_replay(
                 EventPayload::AgentMdLoaded {
                     entries,
                     attachment,
-                } => Some((
-                    attachment.as_ref().map(|name| name.as_str()),
-                    entries.as_slice(),
-                )),
+                } => Some((attachment.as_str(), entries.as_slice())),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -1122,39 +1115,6 @@ fn assemble_history_with_replay(
                     &[],
                 )?;
             }
-            EventPayload::ContextRehydrated { files } => {
-                logical.push(LogicalTurn::Rehydration(files));
-            }
-            EventPayload::PluginEventAdded {
-                plugin,
-                name,
-                payload,
-            } => {
-                logical.push(LogicalTurn::User(user_text(&format!(
-                    "<plugin_event>{}</plugin_event>",
-                    serde_json::json!({
-                        "plugin": plugin,
-                        "name": name,
-                        "payload": payload,
-                    })
-                ))));
-            }
-            EventPayload::DelegateFinished {
-                session_id,
-                short_id,
-                status,
-                preview,
-                total_lines,
-            } => {
-                logical.push(LogicalTurn::User(user_text(
-                    &crate::runtime::render_subagent_notification(
-                        preview,
-                        *status,
-                        *total_lines,
-                        short_id.as_deref().unwrap_or(&session_id.to_string()),
-                    ),
-                )));
-            }
             EventPayload::DelegateFinishedV2 {
                 invocation_id,
                 session_id,
@@ -1314,27 +1274,6 @@ fn assemble_history_with_replay(
                     history.push(HistoryTurn::user(user_text(INTERRUPTED_TURN_MARKER)));
                 }
             }
-            LogicalTurn::Rehydration(files) => {
-                let mut calls = Vec::with_capacity(files.len());
-                let mut results = Vec::with_capacity(files.len());
-                for (index, file) in files.iter().enumerate() {
-                    let id = format!("context-rehydration-{index}");
-                    calls.push(AssistantPart::ToolCall(ToolCallPart::new(
-                        id.clone(),
-                        "read",
-                        serde_json::json!({"filePath": file.path.as_str()}),
-                    )));
-                    results.push(ToolResultPart::new(
-                        id,
-                        ToolContent::Text(file.content.clone()),
-                    ));
-                }
-                history.push(HistoryTurn::assistant(CompletedTurn::new(
-                    AssistantMessage::new(calls),
-                    Finish::new(oven_sdk::Usage::default(), FinishReason::ToolCalls),
-                )));
-                history.push(HistoryTurn::tool(ToolMessage::new(results)));
-            }
         }
     }
     Ok(AssembledHistory {
@@ -1344,8 +1283,7 @@ fn assemble_history_with_replay(
 }
 
 /// The current `AGENTS.md` context: the latest run's `agent_md_loaded`
-/// events, the latest one per attachment, in log order. Events without an
-/// attachment were written before runtimes and belong to `local`.
+/// events, the latest one per attachment, in log order.
 fn latest_agent_md_events<'a>(events: &[&'a StoredEvent]) -> Vec<&'a StoredEvent> {
     let latest_run = events.iter().rev().find_map(|event| {
         matches!(event.payload, EventPayload::RunStarted { .. }).then_some(event.run_id)
@@ -1357,14 +1295,7 @@ fn latest_agent_md_events<'a>(events: &[&'a StoredEvent]) -> Vec<&'a StoredEvent
         .copied()
         .filter(|event| latest_run.is_none_or(|run| event.run_id == run))
         .filter(|event| match &event.payload {
-            EventPayload::AgentMdLoaded { attachment, .. } => seen.insert(
-                attachment
-                    .as_ref()
-                    .map_or(cookie_agent_protocol::RuntimeId::LOCAL, |name| {
-                        name.as_str()
-                    })
-                    .to_owned(),
-            ),
+            EventPayload::AgentMdLoaded { attachment, .. } => seen.insert(attachment.as_str()),
             _ => false,
         })
         .collect::<Vec<_>>();
@@ -1378,17 +1309,18 @@ const AGENT_MD_FOOTNOTE: &str = "IMPORTANT: this context may or may not be relev
 
 /// One user turn holding every loaded file. With several attachments each
 /// file names the attachment it came from.
-fn agent_md_turn(loaded: &[(Option<&str>, &[cookie_agent_protocol::AgentMdEntry])]) -> String {
+fn agent_md_turn(loaded: &[(&str, &[cookie_agent_protocol::AgentMdEntry])]) -> String {
     let several = loaded.len() > 1;
     let files = loaded
         .iter()
         .flat_map(|(attachment, entries)| {
             entries.iter().map(move |entry| {
                 let source = escape_xml_attribute(entry.source.as_str());
-                let runtime = attachment
-                    .filter(|_| several)
-                    .map(|name| format!(" runtime=\"{}\"", escape_xml_attribute(name)))
-                    .unwrap_or_default();
+                let runtime = if several {
+                    format!(" runtime=\"{}\"", escape_xml_attribute(attachment))
+                } else {
+                    String::new()
+                };
                 format!(
                     "<contents from=\"{source}\"{runtime}>\n{}\n</contents>",
                     entry.content
@@ -1405,7 +1337,7 @@ fn agent_md_turn(loaded: &[(Option<&str>, &[cookie_agent_protocol::AgentMdEntry]
 
 #[cfg(test)]
 pub(crate) fn agent_md_turn_for_test(entries: &[cookie_agent_protocol::AgentMdEntry]) -> String {
-    agent_md_turn(&[(None, entries)])
+    agent_md_turn(&[("local", entries)])
 }
 
 fn escape_xml_attribute(value: &str) -> String {

@@ -22,9 +22,7 @@ use crate::{
 /// Subagent identifies a delegated session reporting its finished turns to
 /// its parent.
 /// The owner is durable and participates in `(session, owner, key)` dedup.
-/// A stored `plugin { plugin }` owner, from before external owners, decodes
-/// as `external { source: "plugin:<plugin>", name: "default" }`.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProducerOwner {
     /// A plugin's or a runtime's named producer.
@@ -67,72 +65,6 @@ impl ProducerOwner {
             Self::External { source, .. } => Some(source),
             _ => None,
         }
-    }
-}
-
-/// [`ProducerOwner`] as stored, including the owner kinds it replaced. Its
-/// schema is the owner's: everything a stored event may carry.
-#[derive(Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum StoredProducerOwner {
-    /// Before external owners; decodes as `external` with name `default`.
-    /// Never written.
-    Plugin {
-        plugin: String,
-    },
-    /// A plugin's or a runtime's named producer.
-    External {
-        source: ProducerSource,
-        name: ProducerName,
-    },
-    Delegation {
-        invocation_id: InvocationId,
-    },
-    Goal {
-        goal_id: GoalId,
-    },
-    GoalControl {
-        goal_id: GoalId,
-    },
-    Agent {
-        session_id: SessionId,
-    },
-    Tool {
-        tool_call_id: ToolCallId,
-    },
-    Subagent {
-        session_id: SessionId,
-    },
-}
-
-impl JsonSchema for ProducerOwner {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed("ProducerOwner")
-    }
-
-    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        StoredProducerOwner::json_schema(generator)
-    }
-}
-
-impl<'de> Deserialize<'de> for ProducerOwner {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Ok(match StoredProducerOwner::deserialize(deserializer)? {
-            StoredProducerOwner::Plugin { plugin } => Self::External {
-                source: ProducerSource::plugin(&plugin).map_err(serde::de::Error::custom)?,
-                name: ProducerName::default_name(),
-            },
-            StoredProducerOwner::External { source, name } => Self::External { source, name },
-            StoredProducerOwner::Delegation { invocation_id } => Self::Delegation { invocation_id },
-            StoredProducerOwner::Goal { goal_id } => Self::Goal { goal_id },
-            StoredProducerOwner::GoalControl { goal_id } => Self::GoalControl { goal_id },
-            StoredProducerOwner::Agent { session_id } => Self::Agent { session_id },
-            StoredProducerOwner::Tool { tool_call_id } => Self::Tool { tool_call_id },
-            StoredProducerOwner::Subagent { session_id } => Self::Subagent { session_id },
-        })
     }
 }
 
@@ -317,18 +249,9 @@ mod tests {
     }
 
     #[test]
-    fn stored_plugin_owners_decode_as_the_plugins_default_producer() {
-        let owner: ProducerOwner =
-            serde_json::from_value(json!({"type": "plugin", "plugin": "jobs"})).unwrap();
-        assert_eq!(
-            owner,
-            ProducerOwner::external(
-                ProducerSource::plugin("jobs").unwrap(),
-                ProducerName::default_name()
-            )
-        );
+    fn plugin_owners_from_before_external_owners_are_rejected() {
         assert!(
-            serde_json::from_value::<ProducerOwner>(json!({"type": "plugin", "plugin": ""}))
+            serde_json::from_value::<ProducerOwner>(json!({"type": "plugin", "plugin": "jobs"}))
                 .is_err()
         );
     }

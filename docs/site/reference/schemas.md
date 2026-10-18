@@ -10,10 +10,10 @@ emit only their current version and reject unsupported versions.
 |---|---:|---:|
 | Runtime configuration | unversioned | unversioned current shape |
 | Agent document | unversioned | unversioned current shape |
-| Client protocol | 48 | 48 |
-| Plugin protocol | 1 | 1 |
+| Client protocol | 49 | 49 |
+| Plugin protocol | 2 | 2 |
 | Runtime protocol | 5 | 5 |
-| Events and session JSONL | versionless | versionless plus legacy schema markers |
+| Events and session JSONL | versionless | versionless |
 | Session metadata | unversioned | unversioned current shape |
 | Runtime snapshot | 6 | 6 |
 | Catalog cache | 2 | 2 |
@@ -25,13 +25,13 @@ The three protocols are moving to semver versions, as the
 [compatibility specification](../specs/compatibility-v1.md) describes. Until
 their handshakes switch, the exact numbers above stay on the wire; the semver
 constants `CLIENT_PROTOCOL_VERSION`, `PLUGIN_PROTOCOL_VERSION`, and
-`RUNTIME_PROTOCOL_VERSION` (`0.48.0`, `0.1.0`, and `0.5.0`) are what the
+`RUNTIME_PROTOCOL_VERSION` (`0.49.0`, `0.2.0`, and `0.5.0`) are what the
 baselines below record. They stay `0.x` until the protocols freeze at `1.0.0`.
 
-Agent snapshots embedded in readable events upconvert supported historical
-shapes before validation. Delegation lifecycle records are ordinary parent
-session events; the removed `delegations.jsonl` surface and its schema versions
-are not read.
+Agent snapshots embedded in events are read in their current shape only
+(`schema` 7); earlier shapes are rejected. Delegation lifecycle records are
+ordinary parent session events; the removed `delegations.jsonl` surface and its
+schema versions are not read.
 
 ## Baselines and the checker
 

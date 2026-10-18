@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The plugin protocol version. Both ends must speak exactly this version.
-pub const EXTENSION_PROTOCOL_VERSION: u32 = 1;
+pub const EXTENSION_PROTOCOL_VERSION: u32 = 2;
 // Producer messaging uses the runtime protocol's method names.
 pub const PLUGIN_PRODUCER_REGISTER_METHOD: &str = "producer/register";
 pub const PLUGIN_PRODUCER_SEND_METHOD: &str = "producer/send";

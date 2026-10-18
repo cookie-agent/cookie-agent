@@ -100,6 +100,7 @@ async fn bottom_bar_renders_cwd_context_and_narrow_degradation_order() {
         SessionState {
             context_tokens: Some(48_200),
             estimated_cost_usd: Some(0.18),
+            runtime_attachments: local_workspace_attachments(),
             ..SessionState::default()
         },
     );
@@ -168,6 +169,11 @@ async fn bottom_bar_renders_cwd_context_and_narrow_degradation_order() {
 async fn bottom_bar_working_indicator_tracks_running_queued_and_idle_states() {
     let (mut app, session, run) = app_with_active_run().await;
     app.sessions = vec![session_meta(session)];
+    app.store
+        .sessions
+        .get_mut(&session)
+        .expect("session")
+        .runtime_attachments = local_workspace_attachments();
     app.animation_ticks = 0;
     let row = rendered_row(&mut app, 100, 24, 23);
     assert!(row.starts_with("◐ working"), "{row}");
@@ -182,7 +188,6 @@ async fn bottom_bar_working_indicator_tracks_running_queued_and_idle_states() {
     }
     app.store.sessions.get_mut(&session).unwrap().active_run = None;
     let idle = rendered_row(&mut app, 100, 24, 23);
-    // A session created before runtimes works in `local` at its directory.
     assert!(idle.starts_with("local · /workspace"), "{idle}");
     assert!(!idle.contains("working"));
     assert!(

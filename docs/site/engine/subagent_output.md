@@ -24,7 +24,7 @@ longer one shows its first `head_lines` and last `tail_lines` lines, splitting
 `get_subagent_result` pages the full report and is never truncated.
 
 The preview is stored when the turn reports, on the parent's
-`delegate_finished` event or report message, so changing these limits affects
+`delegate_finished_v2` event or report message, so changing these limits affects
 later reports only.
 
 | Key | Type | Default | Description |

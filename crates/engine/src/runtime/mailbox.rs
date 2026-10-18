@@ -497,7 +497,7 @@ impl Engine {
             self.observe_subagent_run(session, run, ended);
         }
         if !was_persisted && self.inner.store.is_persisted(session)? {
-            for durable in self.inner.store.log(session)?.all_events().iter() {
+            for durable in self.inner.store.log(session)?.event_snapshot().iter() {
                 let drops = self.inner.plugins.stream_session_event(durable);
                 self.record_plugin_drops(session, drops);
             }
@@ -1227,7 +1227,6 @@ impl Engine {
                     | Event::UserInputAdmitted { .. }
                     | Event::UserInputSubmitted { .. }
                     | Event::UserInputRecalled { .. }
-                    | Event::UserInputRecalledV2 { .. }
             ),
             SessionCommand::Start { .. }
             | SessionCommand::Resume { .. }
@@ -1463,10 +1462,7 @@ pub(super) fn pending_inputs<E: std::borrow::Borrow<StoredEvent>>(
                     .unwrap_or_else(|| super::event_origin("user")),
                 input: input.clone(),
             }),
-            Event::UserInputRecalled { .. } => {
-                pending.pop_back();
-            }
-            Event::UserInputRecalledV2 { user_input_seq, .. } => {
+            Event::UserInputRecalled { user_input_seq, .. } => {
                 if let Some(position) = pending
                     .iter()
                     .position(|pending| pending.admission_seq == *user_input_seq)
@@ -1510,7 +1506,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_lane_replays_fifo_promotion_lifo_recall_and_terminal_voiding() {
+    fn pending_lane_replays_fifo_promotion_targeted_recall_and_terminal_voiding() {
         let run = RunId::new_v7();
         let events = vec![
             event(
@@ -1538,6 +1534,7 @@ mod tests {
                 run,
                 4,
                 Event::UserInputRecalled {
+                    user_input_seq: 3,
                     input: "two".into(),
                 },
             ),
@@ -1603,7 +1600,7 @@ mod tests {
             event(
                 run,
                 4,
-                Event::UserInputRecalledV2 {
+                Event::UserInputRecalled {
                     user_input_seq: 2,
                     input: "resume".into(),
                 },

@@ -550,63 +550,6 @@ async fn sessions_attach_runtimes_under_unique_names() {
 }
 
 #[tokio::test]
-async fn a_log_without_attachment_events_reads_as_global_and_local() {
-    let (fixture, _selection) = custom_fixture();
-    let session = create_legacy_session(&fixture.engine, _selection);
-    let local_name = fixture
-        .engine
-        .inner
-        .runtimes
-        .local()
-        .info()
-        .attachment_name()
-        .to_owned();
-    let names = |engine: &crate::Engine| {
-        engine
-            .session_runtimes(session)
-            .expect("attachments")
-            .into_iter()
-            .map(|attachment| attachment.name.into_string())
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        names(&fixture.engine),
-        ["global".to_owned(), local_name.clone()]
-    );
-
-    // The first detach writes the implicit attachments out first.
-    fixture
-        .engine
-        .detach_runtime(
-            session,
-            cookie_agent_protocol::AttachmentName::new("global").unwrap(),
-            origin(),
-        )
-        .await
-        .expect("detach global");
-    assert_eq!(names(&fixture.engine), [local_name]);
-    let events = fixture
-        .engine
-        .inner
-        .store
-        .get(session)
-        .expect("session")
-        .log
-        .event_snapshot();
-    let attachment_events = events
-        .iter()
-        .filter(|event| {
-            matches!(
-                event.payload,
-                EventPayload::RuntimeAttached { .. } | EventPayload::RuntimeDetached { .. }
-            )
-        })
-        .count();
-    assert_eq!(attachment_events, 3);
-    fixture.engine.shutdown().await;
-}
-
-#[tokio::test]
 async fn attach_and_detach_are_rejected_while_the_session_runs() {
     let response = "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned();
     let (endpoint, _captured, reached, release) =
@@ -860,18 +803,15 @@ async fn each_coding_attachment_loads_its_own_agent_md() {
             EventPayload::AgentMdLoaded {
                 entries,
                 attachment,
-            } => Some((
-                attachment.as_ref().map(|name| name.to_string()),
-                entries[0].content.clone(),
-            )),
+            } => Some((attachment.to_string(), entries[0].content.clone())),
             _ => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(
         loaded,
         [
-            (Some(local.clone()), "local rules".to_owned()),
-            (Some("labpc_api".to_owned()), "labpc rules".to_owned()),
+            (local.clone(), "local rules".to_owned()),
+            ("labpc_api".to_owned(), "labpc rules".to_owned()),
         ]
     );
     let history = serde_json::to_string(
@@ -1144,7 +1084,7 @@ async fn a_session_attaches_each_capability_of_a_runtime_separately() {
                 runtime_id,
                 capability,
                 ..
-            } if runtime_id.as_str() == "devbox" => capability.clone(),
+            } if runtime_id.as_str() == "devbox" => Some(capability.clone()),
             _ => None,
         })
         .map(|capability| capability.into_string())

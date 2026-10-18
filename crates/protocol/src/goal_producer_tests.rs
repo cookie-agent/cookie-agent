@@ -350,7 +350,7 @@ fn producer_claim_and_discard_writer_validation_is_strict() {
     let legacy = json!({
         "type": "producer_message_discarded",
         "message_id": message_id,
-        "reminder": {"goal_id": goal_id, "revision": 4}
+        "reminder": {"goal_id": goal_id, "revision": 4, "kind": "continuation"}
     });
     assert!(matches!(
         serde_json::from_value::<EventPayload>(legacy).unwrap(),
@@ -453,46 +453,13 @@ fn goal_update_schema_and_arguments_have_only_the_current_fields() {
 }
 
 #[test]
-fn historical_checklist_item_ids_are_ignored_only_by_event_history_decoding() {
+fn checklist_item_ids_are_rejected_in_event_history() {
     let goal_id = GoalId::new_v7();
-    let legacy_item = json!({"id":GoalId::new_v7(),"description":"Verify","finished":false});
-    let legacy = json!({"type":"goal_checklist_revised","goal_id":goal_id,"revision":7,"items":vec![legacy_item; 12]});
-    assert!(serde_json::from_value::<EventPayload>(legacy.clone()).is_err());
-    let read = deserialize_event_payload_best_effort(&legacy).unwrap();
-    assert_eq!(read.degraded_fields, ["items[].id"]);
-    let EventPayload::GoalChecklistRevised {
-        goal_id: decoded_id,
-        items,
-        revision,
-    } = &read.payload
-    else {
-        panic!("checklist event");
-    };
-    assert_eq!(*decoded_id, goal_id);
-    assert_eq!(*revision, 7);
-    assert_eq!(items.len(), 12);
-    assert!(
-        items
-            .iter()
-            .all(|item| item.description == "Verify" && !item.finished)
-    );
-
-    let mut envelope = serde_json::to_value(stored(read.payload, None)).unwrap();
-    envelope["payload"] = legacy.clone();
-    let decoded = serde_json::from_value::<StoredEvent>(envelope).unwrap();
-    assert!(
-        serde_json::to_value(decoded).unwrap()["payload"]["items"][0]
-            .get("id")
-            .is_none()
-    );
-    for field in ["unexpected", "finished", "description"] {
-        let mut malformed = legacy.clone();
-        malformed["items"][0][field] = json!(42);
-        assert!(
-            deserialize_event_payload_best_effort(&malformed).is_err(),
-            "must not ignore {field}"
-        );
-    }
+    let item = json!({"id":GoalId::new_v7(),"description":"Verify","finished":false});
+    let revised =
+        json!({"type":"goal_checklist_revised","goal_id":goal_id,"revision":7,"items":[item]});
+    assert!(serde_json::from_value::<EventPayload>(revised.clone()).is_err());
+    assert!(deserialize_event_payload_best_effort(&revised).is_err());
 }
 
 #[test]
@@ -632,7 +599,7 @@ fn goal_control_messages_are_real_steers_not_reminders() {
         *reminder = Some(GoalReminderIdentity {
             goal_id,
             revision: 1,
-            kind: Default::default(),
+            kind: GoalReminderKind::Continuation,
         });
     }
     assert_eq!(
@@ -642,7 +609,7 @@ fn goal_control_messages_are_real_steers_not_reminders() {
 }
 
 #[test]
-fn reminder_kind_round_trips_and_legacy_events_default_to_continuation() {
+fn reminder_kind_round_trips_and_is_required() {
     for kind in [GoalReminderKind::Started, GoalReminderKind::Continuation] {
         let goal_id = GoalId::new_v7();
         let payload = EventPayload::ProducerMessageAccepted {
@@ -671,19 +638,7 @@ fn reminder_kind_round_trips_and_legacy_events_default_to_continuation() {
             }
         );
         wire["reminder"].as_object_mut().unwrap().remove("kind");
-        let recovered = deserialize_event_payload_best_effort(&wire).unwrap();
-        assert!(recovered.degraded_fields.is_empty());
-        assert!(stored(recovered.payload.clone(), None).validate().is_ok());
-        assert!(matches!(
-            recovered.payload,
-            EventPayload::ProducerMessageAccepted {
-                reminder: Some(GoalReminderIdentity {
-                    kind: GoalReminderKind::Continuation,
-                    ..
-                }),
-                ..
-            }
-        ));
+        assert!(serde_json::from_value::<EventPayload>(wire).is_err());
     }
 }
 
@@ -727,7 +682,7 @@ fn reminder_metadata_is_not_send_identity_and_is_best_effort_on_read() {
     let reminder = GoalReminderIdentity {
         goal_id,
         revision: 7,
-        kind: Default::default(),
+        kind: GoalReminderKind::Continuation,
     };
     let make = |message_id, key: &str| EventPayload::ProducerMessageAccepted {
         message_id,
@@ -746,7 +701,7 @@ fn reminder_metadata_is_not_send_identity_and_is_best_effort_on_read() {
     round_trip(stored(first.clone(), None));
     round_trip(stored(second, None));
     let mut wire = serde_json::to_value(first).unwrap();
-    wire["producer_owner"] = json!({"type":"plugin","plugin":"issues"});
+    wire["producer_owner"] = json!({"type":"external","source":"plugin:issues","name":"default"});
     let forged = serde_json::from_value::<EventPayload>(wire.clone()).unwrap();
     assert_eq!(
         stored(forged, None).validate(),
@@ -816,7 +771,8 @@ fn recovery_handshake_has_only_explicit_completion_outcomes_and_exact_version() 
             status,
         });
     }
-    assert_eq!(EXTENSION_PROTOCOL_VERSION, 1);
+    assert_eq!(EXTENSION_PROTOCOL_VERSION, 2);
+    assert!(serde_json::from_value::<ExtensionProtocolVersion>(json!(1)).is_err());
     round_trip(ExtensionProtocolVersion::current());
     assert!(serde_json::from_value::<ExtensionProtocolVersion>(json!("1")).is_err());
     let params: ExtensionInitializeParams =

@@ -1209,7 +1209,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
                 child.log.events().iter().any(|event| {
                     matches!(
                         &event.payload,
-                        EventPayload::UserInputRecalledV2 {
+                        EventPayload::UserInputRecalled {
                             user_input_seq,
                             input,
                         } if *user_input_seq == admission_seq

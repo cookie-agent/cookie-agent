@@ -349,7 +349,7 @@
           "type": "integer"
         },
         "runtime_id": {
-          "description": "Runtime ID of the tool the request is for; `null` for the base\nlayer. Requests recorded before runtimes have no field and read as\n`local`.",
+          "description": "Runtime ID of the tool the request is for; `null` for the base\nlayer.",
           "maxLength": 32,
           "minLength": 1,
           "pattern": "^[a-z][a-z0-9_]{0,31}$",
@@ -369,7 +369,8 @@
         "operation_fingerprint",
         "operation",
         "evaluations",
-        "constraints"
+        "constraints",
+        "runtime_id"
       ],
       "type": "object"
     },

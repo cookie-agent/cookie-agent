@@ -92,7 +92,7 @@ and sends `plugin/initialize` within `startup_timeout_ms`:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"plugin/initialize","params":{
-  "protocol_version":1,"engine_version":"0.3.0",
+  "protocol_version":2,"engine_version":"0.3.0",
   "capabilities":{"producer_messaging":false}}}
 ```
 
@@ -102,13 +102,13 @@ configured name, its own version, its capabilities, and its tools:
 
 ```json
 {"jsonrpc":"2.0","id":1,"result":{
-  "protocol_version":1,"name":"issues","version":"1.2.0",
+  "protocol_version":2,"name":"issues","version":"1.2.0",
   "capabilities":{"producer_messaging":false,"subscribe_events":false,
     "subscribe_bus":false,"publish_bus":false,"intercept":["tool_before_call"]},
   "tools":{"tools":[],"prompt_sections":[]}}}
 ```
 
-The protocol version is the integer `1` and must match exactly; a different
+The protocol version is the integer `2` and must match exactly; a different
 version or name fails the start. Capabilities are fixed for the connection;
 `tools` is the runtime protocol's `RuntimeTools`.
 

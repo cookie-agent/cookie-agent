@@ -235,7 +235,7 @@ fn legacy_goal_discard_matches_the_accepted_reminder() {
     let reminder = GoalReminderIdentity {
         goal_id,
         revision: 4,
-        kind: Default::default(),
+        kind: cookie_agent_protocol::GoalReminderKind::Continuation,
     };
     let message_id = ProducerMessageId::new_v7();
     let events = vec![
@@ -464,7 +464,7 @@ fn legacy_discard_after_covered_admission_is_consumed_and_cleared() {
     let reminder = GoalReminderIdentity {
         goal_id,
         revision: 1,
-        kind: Default::default(),
+        kind: cookie_agent_protocol::GoalReminderKind::Continuation,
     };
     let message_id = ProducerMessageId::new_v7();
     let run = RunId::new_v7();

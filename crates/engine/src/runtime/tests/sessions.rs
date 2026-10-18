@@ -264,7 +264,7 @@ async fn two_engines_share_a_data_dir_without_sharing_session_writers() {
             .get(session_id)
             .expect("owned projection")
             .log
-            .all_events();
+            .event_snapshot();
         assert!(events.iter().all(|event| event.session_id == session_id));
         assert!(
             events
@@ -753,7 +753,7 @@ async fn revert_truncates_closes_cut_runs_and_rewinds_live_tails() {
             .clone()
     };
     let message = log()
-        .all_events()
+        .event_snapshot()
         .iter()
         .find(|event| {
             matches!(&event.payload, EventPayload::UserInputSubmitted { input } if input == "second input")
@@ -761,7 +761,7 @@ async fn revert_truncates_closes_cut_runs_and_rewinds_live_tails() {
         .cloned()
         .expect("second message");
     let run_start = log()
-        .all_events()
+        .event_snapshot()
         .iter()
         .find(|event| event.seq == message.seq - 1)
         .cloned()
@@ -780,7 +780,7 @@ async fn revert_truncates_closes_cut_runs_and_rewinds_live_tails() {
         .revert_session(session_id, message.seq, origin(), None)
         .await
         .expect("revert inside the run");
-    let tail = log().all_events().last().cloned().expect("tip");
+    let tail = log().event_snapshot().last().cloned().expect("tip");
     assert_eq!(tail.seq, message.seq + 1);
     assert_eq!(tail.run_id, message.run_id);
     assert!(matches!(
@@ -854,7 +854,7 @@ async fn revert_truncates_closes_cut_runs_and_rewinds_live_tails() {
         .expect("third run");
     wait_for_session_not_running(&fixture.engine, session_id).await;
     let reused = log()
-        .all_events()
+        .event_snapshot()
         .iter()
         .find(|event| event.seq == run_start.seq)
         .cloned()
@@ -925,7 +925,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .get(session.session_id)
         .expect("first projection")
         .log
-        .all_events()
+        .event_snapshot()
         .last()
         .expect("first tip")
         .seq;
@@ -987,7 +987,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .get(session.session_id)
         .expect("source prefix")
         .log
-        .all_events()
+        .event_snapshot()
         .iter()
         .filter(|event| event.seq <= through_seq)
         .cloned()
@@ -999,7 +999,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .get(fork.session_id)
         .expect("fork projection")
         .log
-        .all_events();
+        .event_snapshot();
     // The prefix ends between runs, so the fork closes nothing: it adds only
     // its title.
     assert_eq!(fork_physical.len(), source_prefix.len() + 1);
@@ -1036,7 +1036,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .get(session.session_id)
         .expect("reverted source")
         .log
-        .all_events()
+        .event_snapshot()
         .last()
         .expect("revert tip")
         .clone();
@@ -1085,7 +1085,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .get(fork.session_id)
         .expect("first fork")
         .log
-        .all_events()
+        .event_snapshot()
         .iter()
         .filter(|event| event.seq <= through_seq)
         .cloned()
@@ -1097,7 +1097,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .get(fork_after_revert.session_id)
         .expect("fork after revert")
         .log
-        .all_events()
+        .event_snapshot()
         .iter()
         .filter(|event| event.seq <= through_seq)
         .cloned()
@@ -1153,7 +1153,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .get(session.session_id)
         .expect("source")
         .log
-        .all_events()
+        .event_snapshot()
         .len();
     let fork_meta = fixture
         .engine
@@ -1186,7 +1186,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
             .get(session.session_id)
             .expect("unchanged source")
             .log
-            .all_events()
+            .event_snapshot()
             .len(),
         source_tip_before_fork_rename
     );
@@ -1214,7 +1214,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .get(session.session_id)
         .expect("reopened physical source")
         .log
-        .all_events()
+        .event_snapshot()
         .last()
         .expect("reopened physical tip")
         .clone();

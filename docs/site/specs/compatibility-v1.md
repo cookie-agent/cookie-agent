@@ -1231,3 +1231,17 @@ Deviations and choices made while implementing, by phase.
   `ModelSnapshotManifestV1` is no longer exported (it is not on any surface),
   and `ProviderConnectParams` now is: its schema describes the credential
   fields' shape, never a value.
+
+### Phase C
+
+- **Runless recall.** The positional `user_input_recalled { input }` was
+  still written: a cancelled queued child's runless steers were withdrawn
+  with it. The plain-named `user_input_recalled { user_input_seq, input }`
+  therefore also exists runless, naming a runless admission, and readers
+  match every recall by its admission sequence.
+- **Attachments.** With the "no attach events" rule gone, a session's
+  attachment set is exactly the fold of its attach and detach events, and a
+  session created with no attachment writes no attachment event.
+- **Event storage.** Without revert markers the visible branch is the whole
+  log, so the engine keeps one event list instead of a physical and a
+  visible one.

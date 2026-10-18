@@ -161,7 +161,7 @@ impl Engine {
                     session,
                     Some(run),
                     origin,
-                    Event::UserInputRecalledV2 {
+                    Event::UserInputRecalled {
                         user_input_seq: seq,
                         input: pending.input.clone(),
                     },

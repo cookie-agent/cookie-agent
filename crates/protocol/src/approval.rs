@@ -663,8 +663,8 @@ pub struct ApprovalRequest {
     evaluations: Vec<ApprovalEvaluation>,
     constraints: ApprovalConstraints,
     /// Runtime ID of the tool the request is for; `null` for the base
-    /// layer. Requests recorded before runtimes have no field and read as
-    /// `local`.
+    /// layer.
+    #[schemars(with = "crate::NullableSchema<RuntimeId>", required)]
     runtime_id: Option<RuntimeId>,
 }
 impl ApprovalRequest {
@@ -771,7 +771,7 @@ impl<'de> Deserialize<'de> for ApprovalRequest {
             operation: PreparedOperationIdentity,
             evaluations: Vec<ApprovalEvaluation>,
             constraints: ApprovalConstraints,
-            #[serde(default = "crate::legacy_local_runtime")]
+            #[serde(deserialize_with = "crate::deserialize_required_option")]
             runtime_id: Option<RuntimeId>,
         }
         let w = Wire::deserialize(d)?;
@@ -807,8 +807,8 @@ pub struct TreeApprovalGrant {
     #[schemars(length(min = 1, max = 256))]
     pub resources: Vec<PreparedApprovalResource>,
     pub created_at: Timestamp,
-    /// Runtime ID the grant applies to; `null` for base-layer tools. Grants
-    /// recorded before runtimes have no field and read as `local`.
+    /// Runtime ID the grant applies to; `null` for base-layer tools.
+    #[schemars(with = "crate::NullableSchema<RuntimeId>", required)]
     pub runtime_id: Option<RuntimeId>,
 }
 impl TreeApprovalGrant {
@@ -862,7 +862,7 @@ impl<'de> Deserialize<'de> for TreeApprovalGrant {
             capabilities: Vec<ApprovalCapability>,
             resources: Vec<PreparedApprovalResource>,
             created_at: Timestamp,
-            #[serde(default = "crate::legacy_local_runtime")]
+            #[serde(deserialize_with = "crate::deserialize_required_option")]
             runtime_id: Option<RuntimeId>,
         }
         let w = Wire::deserialize(d)?;

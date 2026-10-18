@@ -54,44 +54,6 @@ impl JsonSchema for AgentSchemaVersion {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PreviousAgentSchemaVersion;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct OlderAgentSchemaVersion;
-
-impl<'de> Deserialize<'de> for PreviousAgentSchemaVersion {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = u32::deserialize(deserializer)?;
-        if value == 6 {
-            Ok(Self)
-        } else {
-            Err(serde::de::Error::custom(format!(
-                "unsupported previous agent schema {value}; expected 6"
-            )))
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for OlderAgentSchemaVersion {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = u32::deserialize(deserializer)?;
-        if value == 5 {
-            Ok(Self)
-        } else {
-            Err(serde::de::Error::custom(format!(
-                "unsupported older agent schema {value}; expected 5"
-            )))
-        }
-    }
-}
-
 #[derive(
     Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
@@ -336,10 +298,6 @@ impl<'de> Deserialize<'de> for SessionPermissionOverlay {
 #[serde(rename_all = "snake_case")]
 pub enum AgentDocumentSource {
     BuiltIn,
-    /// Also decodes `workspace`, which session logs written before the
-    /// workspace configuration layer was removed may contain: event history is
-    /// versionless and read best-effort, so those sessions still open.
-    #[serde(alias = "workspace")]
     User,
 }
 
@@ -495,7 +453,7 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
     {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
-        struct CurrentWire {
+        struct Wire {
             agent: AgentId,
             schema: AgentSchemaVersion,
             mode: AgentMode,
@@ -512,99 +470,21 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
             selected_suffix_start: u32,
         }
 
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct PreviousWire {
-            agent: AgentId,
-            #[serde(rename = "schema")]
-            _schema: PreviousAgentSchemaVersion,
-            mode: AgentMode,
-            description: String,
-            document_source: AgentDocumentSource,
-            document_fingerprint: Sha256Digest,
-            composed_prompt: String,
-            prompt_fingerprint: Sha256Digest,
-            max_output_tokens: u64,
-            permissions: Vec<PermissionRule>,
-            #[serde(deserialize_with = "crate::deserialize_required_option")]
-            delegation: Option<FrozenDelegationPolicy>,
-            fallback_chain: Vec<FrozenModelBinding>,
-            selected_suffix_start: u32,
-        }
-
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct OlderWire {
-            agent: AgentId,
-            #[serde(rename = "schema")]
-            _schema: OlderAgentSchemaVersion,
-            mode: AgentMode,
-            description: String,
-            document_source: AgentDocumentSource,
-            document_fingerprint: Sha256Digest,
-            composed_prompt: String,
-            prompt_fingerprint: Sha256Digest,
-            permissions: Vec<PermissionRule>,
-            #[serde(deserialize_with = "crate::deserialize_required_option")]
-            delegation: Option<FrozenDelegationPolicy>,
-            fallback_chain: Vec<FrozenModelBinding>,
-            selected_suffix_start: u32,
-        }
-
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Current(CurrentWire),
-            Previous(PreviousWire),
-            Older(OlderWire),
-        }
-
-        let value = match Wire::deserialize(d)? {
-            Wire::Current(w) => Self {
-                agent: w.agent,
-                schema: w.schema,
-                mode: w.mode,
-                description: w.description,
-                document_source: w.document_source,
-                document_fingerprint: w.document_fingerprint,
-                composed_prompt: w.composed_prompt,
-                prompt_fingerprint: w.prompt_fingerprint,
-                max_output_tokens: w.max_output_tokens,
-                permissions: w.permissions,
-                delegation: w.delegation,
-                fallback_chain: w.fallback_chain,
-                selected_suffix_start: w.selected_suffix_start,
-            },
-            Wire::Previous(w) => Self {
-                agent: w.agent,
-                schema: AgentSchemaVersion::current(),
-                mode: w.mode,
-                description: w.description,
-                document_source: w.document_source,
-                document_fingerprint: w.document_fingerprint,
-                composed_prompt: w.composed_prompt,
-                prompt_fingerprint: w.prompt_fingerprint,
-                max_output_tokens: w.max_output_tokens,
-                permissions: w.permissions,
-                delegation: w.delegation,
-                fallback_chain: w.fallback_chain,
-                selected_suffix_start: w.selected_suffix_start,
-            },
-            Wire::Older(w) => Self {
-                agent: w.agent,
-                schema: AgentSchemaVersion::current(),
-                mode: w.mode,
-                description: w.description,
-                document_source: w.document_source,
-                document_fingerprint: w.document_fingerprint,
-                composed_prompt: w.composed_prompt,
-                prompt_fingerprint: w.prompt_fingerprint,
-                max_output_tokens: 0,
-                permissions: w.permissions,
-                delegation: w.delegation,
-                fallback_chain: w.fallback_chain,
-                selected_suffix_start: w.selected_suffix_start,
-            },
+        let w = Wire::deserialize(d)?;
+        let value = Self {
+            agent: w.agent,
+            schema: w.schema,
+            mode: w.mode,
+            description: w.description,
+            document_source: w.document_source,
+            document_fingerprint: w.document_fingerprint,
+            composed_prompt: w.composed_prompt,
+            prompt_fingerprint: w.prompt_fingerprint,
+            max_output_tokens: w.max_output_tokens,
+            permissions: w.permissions,
+            delegation: w.delegation,
+            fallback_chain: w.fallback_chain,
+            selected_suffix_start: w.selected_suffix_start,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

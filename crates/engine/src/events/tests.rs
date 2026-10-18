@@ -400,10 +400,10 @@ fn reference_validate_records(
         }
         validate_record_local(path, record)?;
         let strict = strict_from_seq.is_some_and(|from| record.seq >= from);
-        let missing_admission = |user_input_seq: u64, run_id: RunId, input: &str| {
+        let missing_admission = |user_input_seq: u64, run_id: Option<RunId>, input: &str| {
             !records[..index].iter().any(|prior| {
                 prior.seq == user_input_seq
-                    && prior.run_id == Some(run_id)
+                    && prior.run_id == run_id
                     && matches!(
                         &prior.payload,
                         EventPayload::UserInputAdmitted { input: admitted } if admitted == input
@@ -426,13 +426,13 @@ fn reference_validate_records(
                         !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
                     })
                 }
-                EventPayload::UserInputRecalledV2 {
+                EventPayload::UserInputRecalled {
                     user_input_seq,
                     input,
-                } => record.run_id.is_some_and(|run_id| {
-                    missing_admission(*user_input_seq, run_id, input)
+                } => {
+                    missing_admission(*user_input_seq, record.run_id, input)
                         && taint.admission_before(*user_input_seq, record.seq)
-                }),
+                }
                 EventPayload::ModelAttemptStarted { .. }
                 | EventPayload::InternalAgentStarted { .. }
                 | EventPayload::ModelFallback { .. }
@@ -483,7 +483,6 @@ fn reference_validate_records(
                 }
                 EventPayload::ToolOutputElided { tool_call_id, .. }
                 | EventPayload::ToolCallProgress { tool_call_id, .. }
-                | EventPayload::ToolStdinSubmitted { tool_call_id, .. }
                 | EventPayload::ToolCallLinked { tool_call_id, .. } => {
                     !tool_starts.contains_key(tool_call_id)
                         && taint.tool_before(*tool_call_id, record.seq)
@@ -547,14 +546,6 @@ fn reference_validate_records(
             continue;
         }
         match &record.payload {
-            EventPayload::SessionReverted { through_seq } => {
-                if record.run_id.is_some() || *through_seq == 0 || *through_seq >= record.seq {
-                    return corrupt(
-                        path,
-                        "SessionReverted target is not an existing prior event",
-                    );
-                }
-            }
             EventPayload::SessionPermissionOverlaySet { .. } => {
                 if record.run_id.is_some() {
                     return corrupt(path, "SessionPermissionOverlaySet must not have run_id");
@@ -654,9 +645,7 @@ fn reference_validate_records(
                     return corrupt(path, "DelegateChildTerminated must not have run_id");
                 }
             }
-            EventPayload::UserInputAdmitted { .. } | EventPayload::UserInputRecalled { .. }
-                if record.run_id.is_none() =>
-            {
+            EventPayload::UserInputAdmitted { .. } if record.run_id.is_none() => {
                 if active_run.is_some() && !taint.active_run_ordering_before(record.seq) {
                     return corrupt(path, "runless UserInputAdmitted requires no active run");
                 }
@@ -664,23 +653,18 @@ fn reference_validate_records(
                     active_run = None;
                 }
             }
-            EventPayload::UserInputRecalledV2 {
+            EventPayload::UserInputRecalled {
                 user_input_seq,
                 input,
             } => {
-                let Some(run_id) = record.run_id else {
-                    return corrupt(path, "UserInputRecalledV2 is missing run_id");
-                };
-                if !records[..index].iter().any(|prior| {
-                    prior.seq == *user_input_seq
-                        && prior.run_id == Some(run_id)
-                        && matches!(
-                            &prior.payload,
-                            EventPayload::UserInputAdmitted { input: admitted }
-                                if admitted == input
-                        )
-                }) {
-                    return corrupt(path, "UserInputRecalledV2 target is not a prior admission");
+                if record.run_id.is_none()
+                    && active_run.is_some()
+                    && !taint.active_run_ordering_before(record.seq)
+                {
+                    return corrupt(path, "runless UserInputRecalled requires no active run");
+                }
+                if missing_admission(*user_input_seq, record.run_id, input) {
+                    return corrupt(path, "UserInputRecalled target is not a prior admission");
                 }
             }
             EventPayload::DelegatedContextSeeded { .. } => {
@@ -1187,7 +1171,6 @@ fn reference_validate_records(
                 }
             }
             EventPayload::ToolCallProgress { tool_call_id, .. }
-            | EventPayload::ToolStdinSubmitted { tool_call_id, .. }
             | EventPayload::ToolCallLinked { tool_call_id, .. } => {
                 let Some((run_id, _)) = tool_starts.get(tool_call_id) else {
                     return corrupt(path, "tool lifecycle event appeared before its start");
@@ -1231,7 +1214,7 @@ fn reference_validate_records(
             EventPayload::TreeApprovalGrantCommitted { grant } => {
                 validate_approval_owner(path, &approval_owners, grant.approval_id, record.run_id)?;
             }
-            EventPayload::PluginEventAdded { .. } | EventPayload::PluginDiagnostic { .. } => {
+            EventPayload::PluginDiagnostic { .. } => {
                 if record.run_id.is_some() {
                     return corrupt(path, "plugin events must be runless");
                 }
@@ -1255,18 +1238,11 @@ fn reference_validate_records(
 }
 
 fn assert_storage_matches_full_projection(storage: &mut EventStorage) {
-    let all = storage
+    let expected = storage
         .all
         .iter()
         .map(|event| event.as_ref().clone())
         .collect::<Vec<_>>();
-    let expected = cookie_agent_protocol::visible_events(&all);
-    let actual = storage
-        .visible
-        .iter()
-        .map(|event| event.as_ref().clone())
-        .collect::<Vec<_>>();
-    assert_eq!(actual, expected);
     let expected_run = expected
         .iter()
         .rev()
@@ -1424,7 +1400,7 @@ fn incremental_validation_matches_historical_reference_corpus() {
         session_id,
         Some(run_id),
         4,
-        EventPayload::UserInputRecalledV2 {
+        EventPayload::UserInputRecalled {
             user_input_seq: 3,
             input: "admitted".into(),
         },
@@ -1436,15 +1412,6 @@ fn incremental_validation_matches_historical_reference_corpus() {
         recalled.clone(),
     ];
     let missing_admission = vec![valid[0].clone(), valid[1].clone(), recalled];
-
-    let mut revert = valid.clone();
-    let revert_seq = revert.last().expect("last event").seq + 1;
-    revert.push(event(
-        session_id,
-        None,
-        revert_seq,
-        EventPayload::SessionReverted { through_seq: 4 },
-    ));
 
     let mut broad_taint = ValidationTaint::default();
     broad_taint.mark_broad(3, 3);
@@ -1461,7 +1428,7 @@ fn incremental_validation_matches_historical_reference_corpus() {
             session_id,
             Some(run_id),
             4,
-            EventPayload::UserInputRecalledV2 {
+            EventPayload::UserInputRecalled {
                 user_input_seq: 3,
                 input: "missing but tainted".into(),
             },
@@ -1513,7 +1480,6 @@ fn incremental_validation_matches_historical_reference_corpus() {
             ValidationTaint::default(),
             true,
         ),
-        ("revert", revert, ValidationTaint::default(), true),
         ("broad_taint", tainted_attempt, broad_taint, false),
         ("admission_taint", tainted_recall, admission_taint, false),
     ];
@@ -1582,7 +1548,7 @@ fn incremental_validation_matches_historical_reference_corpus() {
 
 fn assert_log_rebuilt_against_reference(log: &EventLog) {
     let records = log
-        .all_events()
+        .event_snapshot()
         .iter()
         .map(|event| event.as_ref().clone())
         .collect::<Vec<_>>();
@@ -1676,68 +1642,12 @@ fn rejected_append_and_persistence_failure_rebuild_incremental_state() {
 
 #[test]
 fn event_storage_snapshot_and_indexes_match_full_projection() {
-    let mut records = attribution_records();
-    let revert_seq = records.last().expect("last event").seq + 1;
-    records.push(event(
-        records[0].session_id,
-        None,
-        revert_seq,
-        EventPayload::SessionReverted { through_seq: 4 },
-    ));
+    let records = attribution_records();
     let mut storage = EventStorage::new(Vec::new());
     for record in records {
         storage.push(record);
         assert_storage_matches_full_projection(&mut storage);
     }
-}
-
-#[test]
-fn legacy_revert_markers_cut_only_their_own_branch() {
-    let creation = stored_event();
-    let session_id = creation.session_id;
-    let title = |seq, text: &str| {
-        event(
-            session_id,
-            None,
-            seq,
-            EventPayload::SessionTitleCommitted {
-                change: cookie_agent_protocol::SessionTitleChange::FallbackSet {
-                    title: SessionTitle::new(text).expect("title"),
-                },
-                input_through_seq: 1,
-            },
-        )
-    };
-    // 2 is reverted away by 3; 4 and 5 follow on the new branch, and the
-    // later marker 6 cuts after 4 only. A running minimum of targets would
-    // also hide 4, which is what wiped days of history from a real session.
-    let records = vec![
-        creation,
-        title(2, "first"),
-        event(
-            session_id,
-            None,
-            3,
-            EventPayload::SessionReverted { through_seq: 1 },
-        ),
-        title(4, "kept"),
-        title(5, "dropped"),
-        event(
-            session_id,
-            None,
-            6,
-            EventPayload::SessionReverted { through_seq: 4 },
-        ),
-    ];
-    let storage = EventStorage::new(records.into_iter().map(Arc::new).collect());
-    assert_eq!(
-        storage
-            .snapshot()
-            .iter()
-            .map(|event| event.seq)
-            .collect::<Vec<_>>(),
-        vec![1, 3, 4, 6]
-    );
 }
 
 #[test]
@@ -1759,16 +1669,16 @@ fn truncation_cuts_the_file_and_later_appends_reuse_its_sequences() {
             .expect("append record");
     }
     assert!(log.physical_tip_seq() > 3);
-    let kept = log.all_events()[..2].to_vec();
-    let replaced = log.all_events()[2].clone();
+    let kept = log.event_snapshot()[..2].to_vec();
+    let replaced = log.event_snapshot()[2].clone();
     let capability = log.write_capability.clone().expect("owned log");
 
     log.truncate_after(&capability, 2).expect("truncate");
     assert_eq!(log.physical_tip_seq(), 2);
-    assert_eq!(log.all_events().as_slice(), kept.as_slice());
+    assert_eq!(log.event_snapshot().as_slice(), kept.as_slice());
     assert_log_rebuilt_against_reference(&log);
     let reopened = EventLog::open_read_only(path.clone(), creation.session_id).expect("reopen");
-    assert_eq!(reopened.all_events().as_slice(), kept.as_slice());
+    assert_eq!(reopened.event_snapshot().as_slice(), kept.as_slice());
 
     // The freed sequence is reused, and only its timestamp tells the new
     // event from the one it replaced.
@@ -2038,7 +1948,9 @@ fn read_only_event_log_rejects_appends() {
         .append(
             None,
             EventOrigin::new("engine:test").expect("origin"),
-            EventPayload::SessionReverted { through_seq: 1 },
+            EventPayload::SessionModelSelected {
+                selection: run_selection("test"),
+            },
         )
         .expect_err("read-only append must fail");
 
@@ -2119,7 +2031,7 @@ fn live_only_stream_output_is_never_appended() {
         assert!(matches!(error, EventLogError::Corrupt { .. }), "{error}");
     }
     assert_eq!(fs::read(&path).expect("reread log"), before);
-    assert_eq!(log.all_events().len(), records.len());
+    assert_eq!(log.event_snapshot().len(), records.len());
     assert_eq!(log.physical_tip_seq(), records.last().unwrap().seq);
 }
 
@@ -2151,7 +2063,11 @@ fn barrier_sync_precedes_publication_without_holding_snapshot_lock() {
 
     sync_reached.recv().expect("barrier reached sync");
     assert!(log.snapshot_lock_available_for_test());
-    assert_eq!(log.all_events().len(), 1, "barrier is not published early");
+    assert_eq!(
+        log.event_snapshot().len(),
+        1,
+        "barrier is not published early"
+    );
     assert_eq!(
         load_jsonl::<StoredEvent>(&path)
             .expect("read durable prefix")
@@ -2165,7 +2081,7 @@ fn barrier_sync_precedes_publication_without_holding_snapshot_lock() {
         .expect("append thread")
         .expect("append barrier");
 
-    assert_eq!(log.all_events().len(), 2);
+    assert_eq!(log.event_snapshot().len(), 2);
     assert_eq!(
         load_jsonl::<StoredEvent>(&path)
             .expect("read durable barrier")
@@ -2175,17 +2091,15 @@ fn barrier_sync_precedes_publication_without_holding_snapshot_lock() {
 }
 
 #[test]
-fn stored_event_rejects_unknown_envelope_fields_and_ignores_legacy_version() {
-    let mut value = serde_json::to_value(stored_event()).expect("serialize record");
-    value
-        .as_object_mut()
-        .expect("record object")
-        .insert("legacy".into(), Value::Bool(true));
-    assert!(serde_json::from_value::<StoredEvent>(value).is_err());
-
-    let mut value = serde_json::to_value(stored_event()).expect("serialize record");
-    value["event_schema_version"] = Value::from(3);
-    assert!(serde_json::from_value::<StoredEvent>(value).is_ok());
+fn stored_event_rejects_unknown_envelope_fields() {
+    for field in ["legacy", "event_schema_version"] {
+        let mut value = serde_json::to_value(stored_event()).expect("serialize record");
+        value
+            .as_object_mut()
+            .expect("record object")
+            .insert(field.into(), Value::from(3));
+        assert!(serde_json::from_value::<StoredEvent>(value).is_err());
+    }
 }
 
 #[test]
@@ -2194,15 +2108,10 @@ fn strict_record_decoder_agrees_with_the_tolerant_reader_or_defers_to_it() {
         let line = serde_json::to_vec(&record).expect("serialize record");
         assert_eq!(StoredEvent::decode_strict(&line), Some(record));
     }
-    let mut legacy = serde_json::to_value(stored_event()).expect("serialize record");
-    legacy["event_schema_version"] = Value::from(3);
-    assert_eq!(
-        StoredEvent::decode_strict(&serde_json::to_vec(&legacy).unwrap()),
-        Some(stored_event())
-    );
     // Anything the tolerant reader would repair, report, or skip is left to it.
     for (field, replacement) in [
         ("legacy", Value::Bool(true)),
+        ("event_schema_version", Value::from(3)),
         ("engine_version", Value::from(7)),
         ("seq", Value::from(0)),
     ] {
@@ -2361,7 +2270,7 @@ fn event_log_best_effort_reader_applies_all_three_tiers() {
 
     let log = EventLog::open(path, session).expect("best-effort open");
     assert_eq!(
-        log.all_events()
+        log.event_snapshot()
             .iter()
             .map(|event| event.seq)
             .collect::<Vec<_>>(),
@@ -2452,7 +2361,7 @@ fn protocol_thirteen_project_context_event_is_skipped_without_harming_neighbors(
 
     let log = EventLog::open(path, session).expect("open around protocol 13 event");
     assert_eq!(
-        log.all_events()
+        log.event_snapshot()
             .iter()
             .map(|event| event.seq)
             .collect::<Vec<_>>(),
@@ -2555,7 +2464,7 @@ fn append_after_skipped_tool_start_still_requires_an_observed_start() {
         )
         .is_err()
     );
-    assert_eq!(log.all_events().len(), 1);
+    assert_eq!(log.event_snapshot().len(), 1);
 }
 
 #[test]
@@ -2694,7 +2603,7 @@ fn repeated_skipped_internal_fallbacks_refresh_phase_taint_and_no_skip_stays_str
     write_event_values(&accepted_path, &accepted);
     let log = EventLog::open(accepted_path, session).expect("phase-tainted usage loads");
     assert_eq!(
-        log.all_events()
+        log.event_snapshot()
             .iter()
             .map(|event| event.seq)
             .collect::<Vec<_>>(),
@@ -2901,7 +2810,7 @@ fn skipped_tool_termination_taints_terminal_state_but_no_skip_rejects_elision() 
     let accepted_path = directory.path().join("tool-terminal-tainted.jsonl");
     write_event_values(&accepted_path, &accepted);
     let log = EventLog::open(accepted_path, session).expect("terminal-tainted elision loads");
-    assert_eq!(log.all_events().last().expect("elision").seq, 7);
+    assert_eq!(log.event_snapshot().last().expect("elision").seq, 7);
 
     let forged = [
         serde_json::to_value(&base[0]).expect("creation"),
@@ -2968,110 +2877,46 @@ fn gaps_are_diagnosed_and_projection_remains_coherent() {
 /// validation taint, their sequences keep ordering the log, and appends
 /// continue after the physical tip.
 #[test]
-fn legacy_stored_stream_output_is_dropped_on_load() {
+fn stored_stream_output_is_skipped_with_a_diagnostic() {
     let directory = tempdir().expect("temporary directory");
     let path = directory.path().join("events.jsonl");
     let records = attribution_records();
     let session_id = records[0].session_id;
     let run_id = records[1].run_id.expect("run id");
     let attempt_id = AttemptId(Uuid::from_u128(77));
-    let tool_call_id = ToolCallId(Uuid::from_u128(78));
     let last = records.last().expect("last record").seq;
     let timestamp = records.last().expect("last record").timestamp;
     let mut lines = records
         .iter()
         .map(|record| serde_json::to_string(record).expect("serialize event"))
         .collect::<Vec<_>>();
-    // A record as the old writer laid it out, dropped before its payload is
-    // decoded...
-    let legacy = |seq: u64, payload: &str| {
-        format!(
-            r#"{{"engine_version":"0.2.0","origin":"engine:model-loop","session_id":"{session_id}","run_id":"{run_id}","seq":{seq},"timestamp":"{timestamp}","payload":{payload}}}"#
-        )
-    };
-    lines.push(legacy(
-        last + 1,
-        &format!(r#"{{"type":"text_delta","attempt_id":"{attempt_id}","text":"partial"}}"#),
-    ));
-    lines.push(legacy(
-        last + 2,
-        &format!(r#"{{"type":"reasoning_delta","attempt_id":"{attempt_id}","text":"hm"}}"#),
-    ));
-    lines.push(legacy(
-        last + 3,
-        &format!(
-            r#"{{"type":"tool_call_progress","tool_call_id":"{tool_call_id}","message":"bash stdout","output_chunk":"chunk"}}"#
-        ),
-    ));
-    // ...and ones only the tolerant reader recognizes: reordered keys, and a
-    // payload too damaged to decode.
     lines.push(
         serde_json::json!({
             "session_id": session_id,
             "run_id": run_id,
-            "seq": last + 4,
+            "seq": last + 1,
             "timestamp": timestamp,
-            "payload": {"text": "late", "attempt_id": attempt_id, "type": "text_delta"},
+            "payload": {"type": "text_delta", "attempt_id": attempt_id, "text": "partial"},
         })
         .to_string(),
     );
-    lines.push(legacy(last + 5, r#"{"type":"text_delta"}"#));
-    fs::write(&path, lines.join("\n") + "\n").expect("write legacy log");
+    fs::write(&path, lines.join("\n") + "\n").expect("write log");
 
-    let read_only = EventLog::open_read_only(path.clone(), session_id).expect("open read-only");
-    let owned = EventLog::open(path.clone(), session_id).expect("open owned");
-    for log in [&read_only, &owned] {
-        assert_eq!(
-            log.all_events()
-                .iter()
-                .map(|event| event.as_ref().clone())
-                .collect::<Vec<_>>(),
-            records
-        );
-        assert!(log.diagnostics().is_empty(), "{:?}", log.diagnostics());
-        assert_eq!(log.physical_tip_seq(), last + 5);
-    }
-    let appended = owned
-        .append(
-            None,
-            EventOrigin::new("engine:test").expect("origin"),
-            EventPayload::SessionPermissionOverlaySet {
-                overlay: Default::default(),
-            },
-        )
-        .expect("append after the legacy tail");
-    assert_eq!(appended.seq, last + 6);
-    let reloaded = EventLog::open_read_only(path, session_id).expect("reload");
-    assert_eq!(reloaded.all_events().len(), records.len() + 1);
+    let log = EventLog::open_read_only(path, session_id).expect("open read-only");
     assert_eq!(
-        reloaded.last_event().map(|event| event.seq),
-        Some(appended.seq)
+        log.event_snapshot()
+            .iter()
+            .map(|event| event.as_ref().clone())
+            .collect::<Vec<_>>(),
+        records
     );
-    assert!(reloaded.diagnostics().is_empty());
-}
-
-#[test]
-fn historical_era_fixtures_open_with_stable_projection_invariants() {
-    let session = SessionId(Uuid::from_u128(99));
-    for schema in [18, 20, 21] {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(format!("events-schema-{schema}.jsonl"));
-        let directory = tempdir().expect("temporary directory");
-        let path = directory.path().join("events.jsonl");
-        fs::copy(source, &path).expect("copy era fixture");
-        let log = EventLog::open(path, session).expect("open era fixture");
-        assert!(log.diagnostics().is_empty(), "schema {schema}");
-        let projected = crate::session::projection(log).expect("project era fixture");
-        assert_eq!(projected.meta.session_id, session);
-        assert_eq!(projected.meta.origin, SessionOrigin::Root);
-        assert_eq!(
-            projected.meta.status,
-            cookie_agent_protocol::SessionStatus::Idle
-        );
-        assert_eq!(projected.meta.last_event_seq, 1);
-        assert_eq!(projected.creation_agent.schema.value(), 7);
-    }
+    assert!(
+        log.diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.seq == last + 1 && diagnostic.skipped),
+        "{:?}",
+        log.diagnostics()
+    );
 }
 
 #[test]

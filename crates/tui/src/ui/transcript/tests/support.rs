@@ -2193,6 +2193,19 @@ pub(crate) async fn app_with_active_run() -> (App, SessionId, RunId) {
     (app, session, run)
 }
 
+/// A session's attachments when it works in `local` at `/workspace`.
+pub(crate) fn local_workspace_attachments() -> cookie_agent_protocol::RuntimeAttachmentFold {
+    let mut attachments = cookie_agent_protocol::RuntimeAttachmentFold::default();
+    attachments.observe(&EventPayload::RuntimeAttached {
+        name: cookie_agent_protocol::AttachmentName::new("local").expect("name"),
+        runtime_id: cookie_agent_protocol::RuntimeId::local(),
+        capability: cookie_agent_protocol::CapabilityName::coding(),
+        kind: cookie_agent_protocol::RuntimeKind::new("coding").expect("kind"),
+        workspace: Some("/workspace".into()),
+    });
+    attachments
+}
+
 pub(crate) fn live_event(event: StoredEvent) -> ClientDelivery {
     ClientDelivery::Live {
         message: Box::new(EventSubscriptionMessage::Event {
@@ -2213,12 +2226,19 @@ pub(crate) fn admitted(session: SessionId, seq: u64, run: RunId, input: &str) ->
     )
 }
 
-pub(crate) fn recalled(session: SessionId, seq: u64, run: RunId, input: &str) -> StoredEvent {
+pub(crate) fn recalled(
+    session: SessionId,
+    seq: u64,
+    run: RunId,
+    user_input_seq: u64,
+    input: &str,
+) -> StoredEvent {
     event(
         session,
         seq,
         run,
         EventPayload::UserInputRecalled {
+            user_input_seq,
             input: input.into(),
         },
     )

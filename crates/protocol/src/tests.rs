@@ -197,7 +197,8 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 48);
+    assert_eq!(PROTOCOL_VERSION, 49);
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(48)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(38)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(37)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(36)).is_err());
@@ -456,20 +457,13 @@ fn session_tree_usage_result_round_trips() {
 }
 
 #[test]
-fn prior_agent_snapshots_upconvert_exactly_and_write_schema_seven() {
+fn agent_snapshots_of_earlier_schemas_are_rejected() {
     let current = serde_json::to_value(child_agent(frozen_binding())).unwrap();
-    let mut previous = current.clone();
-    previous["schema"] = json!(6);
-    let converted = serde_json::from_value::<AgentSnapshot>(previous).unwrap();
-    assert_eq!(converted.schema.value(), 7);
-    assert_eq!(converted.max_output_tokens, 0);
-
-    let mut older = current.clone();
-    older["schema"] = json!(5);
-    older.as_object_mut().unwrap().remove("max_output_tokens");
-    let converted = serde_json::from_value::<AgentSnapshot>(older).unwrap();
-    assert_eq!(converted.schema.value(), 7);
-    assert_eq!(converted.max_output_tokens, 0);
+    for schema in [5, 6] {
+        let mut previous = current.clone();
+        previous["schema"] = json!(schema);
+        assert!(serde_json::from_value::<AgentSnapshot>(previous).is_err());
+    }
 }
 
 #[test]
@@ -480,9 +474,6 @@ fn pending_input_events_and_recall_rpc_round_trip() {
             input: "pending".into(),
         },
         EventPayload::UserInputRecalled {
-            input: "pending".into(),
-        },
-        EventPayload::UserInputRecalledV2 {
             user_input_seq: 1,
             input: "pending".into(),
         },
@@ -855,7 +846,7 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
         seq: 1,
         timestamp: jiff::Timestamp::now(),
         payload: EventPayload::AgentMdLoaded {
-            attachment: None,
+            attachment: crate::AttachmentName::new("local").unwrap(),
             entries: vec![AgentMdEntry {
                 source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                 content: "project rules".into(),
@@ -868,7 +859,7 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
 
     let invalid = StoredEvent {
         payload: EventPayload::AgentMdLoaded {
-            attachment: None,
+            attachment: crate::AttachmentName::new("local").unwrap(),
             entries: Vec::new(),
         },
         ..event
@@ -880,29 +871,15 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
         payload: EventPayload::AgentMdSkipped {
             path: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
             byte_length: AgentMdSkipped::MAX_SKIP_BYTES + 1,
-            attachment: None,
+            attachment: crate::AttachmentName::new("labpc_api").unwrap(),
         },
         ..invalid
     };
     let value = serde_json::to_value(&skipped).unwrap();
-    assert!(value["payload"].get("attachment").is_none(), "{value}");
-    assert_eq!(
-        serde_json::from_value::<StoredEvent>(value).unwrap(),
-        skipped
-    );
-    let attributed = StoredEvent {
-        payload: EventPayload::AgentMdSkipped {
-            path: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
-            byte_length: AgentMdSkipped::MAX_SKIP_BYTES + 1,
-            attachment: Some(crate::AttachmentName::new("labpc_api").unwrap()),
-        },
-        ..skipped.clone()
-    };
-    let value = serde_json::to_value(&attributed).unwrap();
     assert_eq!(value["payload"]["attachment"], "labpc_api");
     assert_eq!(
         serde_json::from_value::<StoredEvent>(value).unwrap(),
-        attributed
+        skipped
     );
     assert_eq!(skipped.validate(), Ok(()));
 
@@ -910,7 +887,7 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
         payload: EventPayload::AgentMdSkipped {
             path: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
             byte_length: AgentMdSkipped::MAX_SKIP_BYTES,
-            attachment: None,
+            attachment: crate::AttachmentName::new("local").unwrap(),
         },
         ..skipped
     };
@@ -1074,71 +1051,8 @@ fn transient_payloads_travel_only_as_transient_events() {
 }
 
 #[test]
-fn session_revert_reduces_visible_branch_and_rpc_types_round_trip() {
+fn session_revert_and_fork_rpc_types_round_trip() {
     let session_id = SessionId::new_v7();
-    let event = |seq, payload| StoredEvent {
-        engine_version: None,
-        origin: None,
-        session_id,
-        run_id: None,
-        seq,
-        timestamp: jiff::Timestamp::now(),
-        payload,
-    };
-    let events = vec![
-        event(
-            1,
-            EventPayload::SessionTitleCommitted {
-                change: SessionTitleChange::FallbackSet {
-                    title: SessionTitle::new("creation").expect("title"),
-                },
-                input_through_seq: 1,
-            },
-        ),
-        event(
-            2,
-            EventPayload::SessionTitleCommitted {
-                change: SessionTitleChange::FallbackSet {
-                    title: SessionTitle::new("first").expect("title"),
-                },
-                input_through_seq: 1,
-            },
-        ),
-        event(3, EventPayload::SessionReverted { through_seq: 1 }),
-        event(
-            4,
-            EventPayload::SessionTitleCommitted {
-                change: SessionTitleChange::FallbackSet {
-                    title: SessionTitle::new("branch").expect("title"),
-                },
-                input_through_seq: 1,
-            },
-        ),
-        event(5, EventPayload::SessionReverted { through_seq: 3 }),
-    ];
-    let visible_seqs = |events: &[StoredEvent]| {
-        visible_events(events)
-            .iter()
-            .map(|event| event.seq)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(visible_seqs(&events), vec![1, 3, 5]);
-    // A later marker cuts only the branch it was written on: events appended
-    // after an earlier revert stay visible up to its own target.
-    let mut kept = events[..4].to_vec();
-    kept.push(event(5, EventPayload::SessionReverted { through_seq: 4 }));
-    assert_eq!(visible_seqs(&kept), vec![1, 3, 4, 5]);
-    let invalid = StoredEvent {
-        engine_version: None,
-        origin: None,
-        session_id,
-        run_id: None,
-        seq: 6,
-        timestamp: jiff::Timestamp::now(),
-        payload: EventPayload::SessionReverted { through_seq: 0 },
-    };
-    assert!(serde_json::from_value::<StoredEvent>(serde_json::to_value(invalid).unwrap()).is_err());
-
     let revert = SessionRevertParams {
         session_id,
         through_seq: 1,
@@ -2169,11 +2083,8 @@ fn session_create_permission_settings_are_optional_and_strict() {
 }
 
 #[test]
-fn historical_workspace_document_source_decodes_as_user() {
-    assert_eq!(
-        serde_json::from_str::<AgentDocumentSource>("\"workspace\"").unwrap(),
-        AgentDocumentSource::User
-    );
+fn the_workspace_document_source_is_gone() {
+    assert!(serde_json::from_str::<AgentDocumentSource>("\"workspace\"").is_err());
     assert_eq!(
         serde_json::to_string(&AgentDocumentSource::User).unwrap(),
         "\"user\""

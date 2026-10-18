@@ -692,6 +692,16 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
         )
         .await
         .expect("pending steer marker");
+    let steer_seq = fixture
+        .engine
+        .inner
+        .store
+        .log(children[0])
+        .expect("child log")
+        .event_snapshot()
+        .last()
+        .expect("steer admission")
+        .seq;
     let pending_evictions = fixture
         .engine
         .evict_idle_subagents_for_test(0, std::time::Duration::ZERO)
@@ -706,6 +716,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
             None,
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::UserInputRecalled {
+                user_input_seq: steer_seq,
                 input: "queued steer must stay resident".into(),
             },
         )

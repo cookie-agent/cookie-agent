@@ -238,7 +238,7 @@ async fn revert_refuses_a_running_child_and_deletes_it_once_finished() {
         .get(parent_id)
         .expect("reverted parent");
     assert!(parent.status != SessionStatus::Running);
-    assert!(!parent.log.all_events().iter().any(|event| {
+    assert!(!parent.log.event_snapshot().iter().any(|event| {
         matches!(
             &event.payload,
             EventPayload::DelegationReserved { .. }
@@ -250,7 +250,7 @@ async fn revert_refuses_a_running_child_and_deletes_it_once_finished() {
     assert!(
         parent
             .log
-            .all_events()
+            .event_snapshot()
             .iter()
             .filter(|event| event.seq >= reservation.0)
             .all(|event| matches!(
@@ -260,7 +260,7 @@ async fn revert_refuses_a_running_child_and_deletes_it_once_finished() {
                     | EventPayload::InternalAgentInterrupted { .. }
             )),
         "{:#?}",
-        parent.log.all_events()
+        parent.log.event_snapshot()
     );
     let children = fixture
         .engine
@@ -282,7 +282,7 @@ async fn surviving_background_reservation_publishes_completion_once() {
         .get(parent_id)
         .expect("parent projection")
         .log
-        .all_events()
+        .event_snapshot()
         .last()
         .expect("parent tip")
         .seq;
@@ -317,7 +317,7 @@ async fn surviving_background_reservation_publishes_completion_once() {
         .get(parent_id)
         .expect("completed parent")
         .log
-        .all_events();
+        .event_snapshot();
     let description = events
         .iter()
         .find_map(|event| match &event.payload {

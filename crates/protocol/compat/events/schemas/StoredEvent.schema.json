@@ -16,19 +16,11 @@
       "type": "string"
     },
     "AgentDocumentSource": {
-      "oneOf": [
-        {
-          "enum": [
-            "built_in"
-          ],
-          "type": "string"
-        },
-        {
-          "const": "user",
-          "description": "Also decodes `workspace`, which session logs written before the\nworkspace configuration layer was removed may contain: event history is\nversionless and read best-effort, so those sessions still open.",
-          "type": "string"
-        }
-      ]
+      "enum": [
+        "built_in",
+        "user"
+      ],
+      "type": "string"
     },
     "AgentMdEntry": {
       "additionalProperties": false,
@@ -456,7 +448,7 @@
           "type": "integer"
         },
         "runtime_id": {
-          "description": "Runtime ID of the tool the request is for; `null` for the base\nlayer. Requests recorded before runtimes have no field and read as\n`local`.",
+          "description": "Runtime ID of the tool the request is for; `null` for the base\nlayer.",
           "maxLength": 32,
           "minLength": 1,
           "pattern": "^[a-z][a-z0-9_]{0,31}$",
@@ -476,7 +468,8 @@
         "operation_fingerprint",
         "operation",
         "evaluations",
-        "constraints"
+        "constraints",
+        "runtime_id"
       ],
       "type": "object"
     },
@@ -764,39 +757,6 @@
       ],
       "type": "object"
     },
-    "ContextRehydratedFile": {
-      "additionalProperties": false,
-      "properties": {
-        "byte_length": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "content": {
-          "type": "string"
-        },
-        "path": {
-          "description": "Control-free bounded presentation text.",
-          "maxLength": 1024,
-          "minLength": 1,
-          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-          "type": "string"
-        },
-        "sha256": {
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        }
-      },
-      "required": [
-        "path",
-        "content",
-        "byte_length",
-        "sha256"
-      ],
-      "type": "object"
-    },
     "DecisionTrace": {
       "additionalProperties": false,
       "properties": {
@@ -1046,24 +1006,6 @@
         },
         {
           "properties": {
-            "through_seq": {
-              "format": "uint64",
-              "minimum": 1,
-              "type": "integer"
-            },
-            "type": {
-              "const": "session_reverted",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "through_seq"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
             "overlay": {
               "$ref": "#/$defs/SessionPermissionOverlay"
             },
@@ -1082,14 +1024,11 @@
           "description": "The session was attached to a runtime instance under `name`.",
           "properties": {
             "capability": {
-              "description": "The capability attached; absent in events written before\ncapabilities, which read as `global` for the global runtime and\n`coding` otherwise.",
+              "description": "The capability attached.",
               "maxLength": 32,
               "minLength": 1,
               "pattern": "^[a-z][a-z0-9_]{0,31}$",
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "kind": {
               "description": "Runtime kind the runtime declares, such as `coding` or `global`.",
@@ -1124,6 +1063,7 @@
             "type",
             "name",
             "runtime_id",
+            "capability",
             "kind"
           ],
           "type": "object"
@@ -1207,14 +1147,11 @@
         {
           "properties": {
             "attachment": {
-              "description": "The coding-runtime attachment whose workspace the files came\nfrom. Events written before runtimes have none and belong to\n`local`.",
+              "description": "The coding-runtime attachment whose workspace the files came\nfrom.",
               "maxLength": 40,
               "minLength": 1,
               "pattern": "^[a-z][a-z0-9_]{0,39}$",
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "entries": {
               "items": {
@@ -1231,21 +1168,19 @@
           },
           "required": [
             "type",
-            "entries"
+            "entries",
+            "attachment"
           ],
           "type": "object"
         },
         {
           "properties": {
             "attachment": {
-              "description": "The coding-runtime attachment whose workspace holds the file.\nEvents written before runtimes have none and belong to `local`.",
+              "description": "The coding-runtime attachment whose workspace holds the file.",
               "maxLength": 40,
               "minLength": 1,
               "pattern": "^[a-z][a-z0-9_]{0,39}$",
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "byte_length": {
               "format": "uint64",
@@ -1267,29 +1202,8 @@
           "required": [
             "type",
             "path",
-            "byte_length"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "name": {
-              "type": "string"
-            },
-            "payload": true,
-            "plugin": {
-              "type": "string"
-            },
-            "type": {
-              "const": "plugin_event_added",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "plugin",
-            "name",
-            "payload"
+            "byte_length",
+            "attachment"
           ],
           "type": "object"
         },
@@ -1324,7 +1238,7 @@
           "type": "object"
         },
         {
-          "description": "A producer source (a plugin or a runtime) could not restore the\nexternal work it tracks: that work is unknown, and goal continuation\nis held. Plugin sources written before this event recorded it as a\n`plugin_diagnostic` of kind `recovery_failed` or `recovery_disabled`.",
+          "description": "A producer source (a plugin or a runtime) could not restore the\nexternal work it tracks: that work is unknown, and goal continuation\nis held.",
           "properties": {
             "kind": {
               "$ref": "#/$defs/ProducerDiagnosticKind"
@@ -1851,22 +1765,6 @@
             },
             "type": {
               "const": "user_input_recalled",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "input"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "input": {
-              "type": "string"
-            },
-            "type": {
-              "const": "user_input_recalled_v2",
               "type": "string"
             },
             "user_input_seq": {
@@ -2672,30 +2570,6 @@
           "type": "object"
         },
         {
-          "description": "Historical: stdin written to an interactive call. Tools no longer take\nstdin, so this is never written; older logs still read.",
-          "properties": {
-            "byte_count": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "tool_call_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "type": {
-              "const": "tool_stdin_submitted",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "tool_call_id",
-            "byte_count"
-          ],
-          "type": "object"
-        },
-        {
           "properties": {
             "child_session_id": {
               "format": "uuid",
@@ -2955,45 +2829,6 @@
             "type",
             "session_id",
             "position"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "preview": {
-              "maxLength": 2048,
-              "type": "string"
-            },
-            "session_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "short_id": {
-              "description": "Handle rendered into the notification body. Additive and optional:\npre-handle logs render the UUID.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "status": {
-              "$ref": "#/$defs/SessionStatus"
-            },
-            "total_lines": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "type": {
-              "const": "delegate_finished",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "session_id",
-            "status",
-            "preview",
-            "total_lines"
           ],
           "type": "object"
         },
@@ -3529,26 +3364,6 @@
             "checkpoint",
             "boundaries",
             "budgets"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "files": {
-              "items": {
-                "$ref": "#/$defs/ContextRehydratedFile"
-              },
-              "maxItems": 5,
-              "type": "array"
-            },
-            "type": {
-              "const": "context_rehydrated",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "files"
           ],
           "type": "object"
         },
@@ -4507,8 +4322,7 @@
           "type": "string"
         },
         "kind": {
-          "$ref": "#/$defs/GoalReminderKind",
-          "default": "continuation"
+          "$ref": "#/$defs/GoalReminderKind"
         },
         "revision": {
           "format": "uint64",
@@ -4518,12 +4332,13 @@
       },
       "required": [
         "goal_id",
-        "revision"
+        "revision",
+        "kind"
       ],
       "type": "object"
     },
     "GoalReminderKind": {
-      "description": "Whether a reminder introduces the objective or continues previously consumed work.\nLegacy reminder events always represented continuations.",
+      "description": "Whether a reminder introduces the objective or continues previously consumed work.",
       "enum": [
         "started",
         "continuation"
@@ -5692,21 +5507,6 @@
           "type": "string"
         },
         {
-          "const": "unsupported_capability",
-          "description": "Written for the removed `provider_before_headers` hook; kept for old\nlogs.",
-          "type": "string"
-        },
-        {
-          "const": "recovery_failed",
-          "description": "Written before producer recovery moved to `producer_diagnostic`;\nkept for old logs.",
-          "type": "string"
-        },
-        {
-          "const": "recovery_disabled",
-          "description": "Written before producer recovery moved to `producer_diagnostic`;\nkept for old logs.",
-          "type": "string"
-        },
-        {
           "const": "interception_rejected",
           "description": "A plugin answered a hook with an error or a malformed result.",
           "type": "string"
@@ -5846,26 +5646,8 @@
       ]
     },
     "ProducerOwner": {
-      "description": "[`ProducerOwner`] as stored, including the owner kinds it replaced. Its\nschema is the owner's: everything a stored event may carry.",
+      "description": "Stable identity used with session + idempotency key for durable deduplication.\nExternal identifies a producer outside the daemon, a plugin or a runtime:\nthe engine derives `source` from the authenticated connection, never from\nsend parameters, and the sender chooses `name` when it registers. The\nconnection epoch that authorizes live sends is runtime-only and never part\nof this durable owner or the deduplication key.\nGoalControl identifies engine-authored lifecycle steering, not a continuation\nreminder; its accepted messages survive goal-controller teardown.\nAgent identifies an in-tree agent mail sender; the session identity is\nengine-derived from the executing tool context, never from model arguments.\nTool identifies the background result of one tool call that ran in the\nbackground; the call identity is engine-derived from the executing tool\ncontext, never from model arguments.\nSubagent identifies a delegated session reporting its finished turns to\nits parent.\nThe owner is durable and participates in `(session, owner, key)` dedup.",
       "oneOf": [
-        {
-          "additionalProperties": false,
-          "description": "Before external owners; decodes as `external` with name `default`.\nNever written.",
-          "properties": {
-            "plugin": {
-              "type": "string"
-            },
-            "type": {
-              "const": "plugin",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "plugin"
-          ],
-          "type": "object"
-        },
         {
           "additionalProperties": false,
           "description": "A plugin's or a runtime's named producer.",
@@ -5988,6 +5770,7 @@
         },
         {
           "additionalProperties": false,
+          "description": "A delegated session reporting a finished turn to its parent.",
           "properties": {
             "session_id": {
               "format": "uuid",
@@ -7392,7 +7175,7 @@
           "type": "string"
         },
         "runtime_id": {
-          "description": "Runtime ID the grant applies to; `null` for base-layer tools. Grants\nrecorded before runtimes have no field and read as `local`.",
+          "description": "Runtime ID the grant applies to; `null` for base-layer tools.",
           "maxLength": 32,
           "minLength": 1,
           "pattern": "^[a-z][a-z0-9_]{0,31}$",
@@ -7409,7 +7192,8 @@
         "operation_fingerprint",
         "capabilities",
         "resources",
-        "created_at"
+        "created_at",
+        "runtime_id"
       ],
       "type": "object"
     },

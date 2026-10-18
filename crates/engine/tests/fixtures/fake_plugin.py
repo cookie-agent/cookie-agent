@@ -110,7 +110,7 @@ def protocol_version():
     gate = os.environ.get("FIXTURE_VERSION_GATE_FILE")
     if gate and not os.path.exists(gate):
         return 999
-    return json.loads(os.environ.get("FIXTURE_PROTOCOL_VERSION", "1"))
+    return json.loads(os.environ.get("FIXTURE_PROTOCOL_VERSION", "2"))
 
 
 for line in sys.stdin:

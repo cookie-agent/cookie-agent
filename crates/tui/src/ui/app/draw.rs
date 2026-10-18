@@ -1700,38 +1700,16 @@ impl App {
             else {
                 return "—".into();
             };
-            match state.runtime_attachments.attachments() {
-                Some(attachments) => attachments
-                    .iter()
-                    .map(|attachment| RuntimeLabelEntry {
-                        runtime_id: attachment.runtime_id.to_string(),
-                        name: Some(attachment.name.to_string()),
-                        workspace: attachment.workspace.clone(),
-                    })
-                    .collect(),
-                // A session created before runtimes is attached to `global`
-                // and to `local` at its directory.
-                None => vec![
-                    RuntimeLabelEntry {
-                        runtime_id: cookie_agent_protocol::RuntimeId::GLOBAL.to_owned(),
-                        name: None,
-                        workspace: None,
-                    },
-                    RuntimeLabelEntry {
-                        runtime_id: cookie_agent_protocol::RuntimeId::LOCAL.to_owned(),
-                        name: None,
-                        workspace: self
-                            .selected_session_meta()
-                            .map(|meta| meta.cwd_identity.as_str().to_owned())
-                            .or_else(|| {
-                                state
-                                    .cwd_identity
-                                    .as_ref()
-                                    .map(|cwd| cwd.as_str().to_owned())
-                            }),
-                    },
-                ],
-            }
+            state
+                .runtime_attachments
+                .attachments()
+                .iter()
+                .map(|attachment| RuntimeLabelEntry {
+                    runtime_id: attachment.runtime_id.to_string(),
+                    name: Some(attachment.name.to_string()),
+                    workspace: attachment.workspace.clone(),
+                })
+                .collect()
         };
         runtime_label(&entries)
     }

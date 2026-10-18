@@ -707,10 +707,10 @@ fn runtime_listing() -> cookie_agent_protocol::RuntimesListResult {
 }
 
 #[test]
-fn runtime_rows_match_instances_and_read_legacy_sessions_as_global_and_local() {
+fn runtime_rows_match_instances() {
     let listing = runtime_listing();
     let attached = [attachment("labpc_api", "labpc", "coding", Some("/srv/api"))];
-    let rows = super::runtime_rows(Some(&attached), Some(&listing));
+    let rows = super::runtime_rows(&attached, Some(&listing));
     assert_eq!(rows.len(), 1);
     assert_eq!(
         rows[0].instance.as_ref().map(|instance| instance.status),
@@ -724,24 +724,12 @@ fn runtime_rows_match_instances_and_read_legacy_sessions_as_global_and_local() {
         Some("/srv/api"),
     )];
     assert!(
-        super::runtime_rows(Some(&other), Some(&listing))[0]
+        super::runtime_rows(&other, Some(&listing))[0]
             .instance
             .is_none()
     );
 
-    let legacy = super::runtime_rows(None, Some(&listing));
-    assert_eq!(
-        legacy
-            .iter()
-            .map(|row| (
-                row.attachment.name.as_str(),
-                row.attachment.capability.as_str()
-            ))
-            .collect::<Vec<_>>(),
-        [("global", "global"), ("local_web", "coding")]
-    );
-    assert!(legacy.iter().all(|row| row.instance.is_some()));
-    assert!(super::runtime_rows(Some(&[]), Some(&listing)).is_empty());
+    assert!(super::runtime_rows(&[], Some(&listing)).is_empty());
 }
 
 #[test]
@@ -866,7 +854,7 @@ fn runtime_retry_names_the_attachments_capability_and_workspace() {
         attachment("global", "global", "global", None),
         attachment("labpc_api", "labpc", "coding", Some("/srv/api")),
     ];
-    let rows = super::runtime_rows(Some(&attached), Some(&runtime_listing()));
+    let rows = super::runtime_rows(&attached, Some(&runtime_listing()));
     let mut panel = super::RuntimePanel::default();
     assert!(
         panel.reconnect_request(&rows[1]).is_err(),
@@ -891,7 +879,7 @@ fn runtime_panel_renders_attachments_with_status_and_failure_reason() {
         attachment("global", "global", "global", None),
         attachment("labpc_api", "labpc", "coding", Some("/srv/api")),
     ];
-    let rows = super::runtime_rows(Some(&attached), Some(&listing));
+    let rows = super::runtime_rows(&attached, Some(&listing));
     let mut panel = super::RuntimePanel::default();
     panel.install(listing);
     panel.selection.select(Some(1));

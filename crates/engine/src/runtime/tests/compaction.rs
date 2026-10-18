@@ -136,11 +136,6 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
         assert_ne!(assembled, full);
         assert!(full.contains("compact this context"));
         assert!(!assembled.contains("compact this context"));
-        assert!(
-            events
-                .iter()
-                .all(|event| !matches!(event.payload, EventPayload::ContextRehydrated { .. }))
-        );
         let commit = commit.expect("compaction checkpoint");
         if fail_native {
             let Some(cookie_agent_protocol::ContextCheckpoint::InternalSummary { checkpoint }) =
@@ -1083,11 +1078,6 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
     assert_eq!(first_commit.budgets.input_tokens_before, expected_before);
     assert_eq!(first_commit.budgets.keep_recent_tokens, 300);
     assert!(first_commit.boundaries.recent_from_seq.is_some());
-    assert!(
-        first_events
-            .iter()
-            .all(|event| !matches!(event.payload, EventPayload::ContextRehydrated { .. }))
-    );
 
     let assembled = fixture
         .engine
@@ -1158,11 +1148,6 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
             ))
             .count(),
         2
-    );
-    assert!(
-        final_events
-            .iter()
-            .all(|event| !matches!(event.payload, EventPayload::ContextRehydrated { .. }))
     );
     let assembled = fixture
         .engine

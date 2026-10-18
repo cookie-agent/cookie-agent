@@ -110,17 +110,6 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
     assert_eq!(receipt["bus"], "published");
     assert!(
         engine
-            .inner
-            .store
-            .get(session.session_id)
-            .unwrap()
-            .log
-            .events()
-            .iter()
-            .all(|event| !matches!(event.payload, EventPayload::PluginEventAdded { .. }))
-    );
-    assert!(
-        engine
             .session_producers(cookie_agent_protocol::SessionProducersParams {
                 session_id: session.session_id
             })
@@ -243,17 +232,6 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
 
     drop(engine);
     let reopened = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
-    assert!(
-        reopened
-            .inner
-            .store
-            .get(session.session_id)
-            .expect("reopened session")
-            .log
-            .events()
-            .iter()
-            .all(|event| !matches!(event.payload, EventPayload::PluginEventAdded { .. }))
-    );
     reopened.shutdown().await;
 }
 
@@ -341,16 +319,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
         "delayed session A emit",
         |projection| {
             let events = projection.log.events();
-            let published = events
-                .iter()
-                .filter(|event| {
-                    matches!(
-                        &event.payload,
-                        EventPayload::PluginEventAdded { name, .. } if name == "delayed_a"
-                    )
-                })
-                .count();
-            let replay_diagnosed = events.iter().any(|event| {
+            events.iter().any(|event| {
                 matches!(
                     &event.payload,
                     EventPayload::PluginDiagnostic {
@@ -358,25 +327,10 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
                         ..
                     }
                 )
-            });
-            published == 0 && replay_diagnosed
+            })
         },
     )
     .await;
-    assert!(
-        engine
-            .inner
-            .store
-            .get(session_b.session_id)
-            .expect("session B")
-            .log
-            .events()
-            .iter()
-            .all(|event| !matches!(
-                &event.payload,
-                EventPayload::PluginEventAdded { name, .. } if name == "delayed_a"
-            ))
-    );
     let unknown = engine
         .publish_plugin_emit(crate::plugin::PluginEmitRequest {
             plugin: "fixture".into(),
@@ -503,7 +457,7 @@ async fn plugin_diagnostic_coalescing_is_exact_and_shutdown_drains() {
         .get(session.session_id)
         .expect("session after shutdown")
         .log
-        .all_events();
+        .event_snapshot();
     let dropped = events
         .iter()
         .filter_map(|event| match &event.payload {

@@ -1,11 +1,11 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 48 is current-only. A client must call `handshake` before any other
+Protocol 49 is current-only. A client must call `handshake` before any other
 method:
 
 ```json
-{ "protocol_version": 48, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+{ "protocol_version": 49, "client": { "kind": "tui", "instance_id": "<uuid>" } }
 ```
 
 `client.kind` names the client program: a lowercase letter followed by up to 15
@@ -27,8 +27,7 @@ protocol 36 added the `resync` runtime change reason. Protocol 37 made
 `client_fork_id`, and added `session.compact.cancel`. Protocol 38 added
 `session.select_model` and the `session_model_selected` event. Protocol 39
 removed the workspace configuration layer: the `workspace` agent document source
-and the `workspace_file` MCP configuration source and target are gone (session
-logs that recorded a `workspace` document source still read it as `user`).
+and the `workspace_file` MCP configuration source and target are gone.
 Protocol 40 added runtime attachments (see [Runtimes](#runtimes)):
 `session.create` takes `runtimes` and `global`, the session create, get, and
 resume results carry the session's `runtimes`, `session.runtime.attach`,
@@ -60,8 +59,7 @@ such a tool. Protocol 43 replaced the `plugin { plugin }` producer owner
 with `external { source, name }`: `source` is `plugin:<name>` or
 `runtime:<attachment name>`, and `name` is the producer's own label, so a
 plugin or runtime may run any number of named producers (see the [external
-producers spec](../specs/external-producers.md)). Stored `plugin` owners
-decode as `external` with name `default`. `session.producers` returns
+producers spec](../specs/external-producers.md)). `session.producers` returns
 `sources` (the recovery state of each producer source) in place of
 `plugin_recovery`, and a source that cannot recover records a
 `producer_diagnostic` event. Protocol 44 added `plugins.list`,
@@ -91,11 +89,19 @@ nothing produced. Protocol 47 added `config.reload` and the snapshot's
 `runtime.changed` with `config_reloaded`, and `agent_reloaded` when an agent
 document changed. Protocol 48 added `config.get` and `config.apply`, and
 `mcp.server.persist` writes through `config.apply`'s path (persisting a
-runtime removal deletes the server's table). Older clients are rejected.
+runtime removal deletes the server's table). Protocol 49 changed session
+history (see [Events](events.md)): it removed the legacy events
+`session_reverted`, `context_rehydrated`, `plugin_event_added`,
+`tool_stdin_submitted`, `delegate_finished`, and the positional
+`user_input_recalled`; `user_input_recalled_v2` took the plain name
+`user_input_recalled`; `runtime_attached.capability`, the `agent_md_*`
+`attachment`, and the runtime ID of approval requests and tree grants became
+required; and the legacy decoders of older logs are gone, so sessions written
+before protocol 49 no longer open. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 48.
+members of protocol 49.
 
 ## Error diagnostics
 
@@ -450,7 +456,7 @@ reduce the queue with `cookie_agent_protocol::QueuedInputs`, as the daemon does.
 `session.recall_input` takes back one pending steered input or one queued input
 by its seq. Only the client whose origin admitted it may do so: another client
 gets `{ "outcome": "not_owner" }`. A pending input is withdrawn with
-`user_input_recalled_v2` and a queued one with `user_input_queue_recalled`; both
+`user_input_recalled` and a queued one with `user_input_queue_recalled`; both
 return `{ "outcome": "recalled", "input" }`. An input that was already promoted,
 started, or voided returns `{ "outcome": "gone" }`.
 
@@ -470,9 +476,7 @@ nothing but its `run_started` goes too), closes any run, tool call, internal
 agent, or approval the cut left open, and deletes the subagent sessions created
 by removed delegations; a running one refuses the revert. Later appends reuse
 the freed sequence numbers. Subscribers receive a `rewound` notification (see
-[Subscriptions](events.md#subscriptions)). Logs from before protocol 28 may
-still hold `session_reverted` markers, which readers apply as before: each hides
-what followed its target on the branch visible when it was written.
+[Subscriptions](events.md#subscriptions)).
 
 `session.fork` takes a `client_fork_id`: while the daemon runs, a retry with the
 same key and target returns the first fork instead of making another, and the

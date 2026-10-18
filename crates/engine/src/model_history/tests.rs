@@ -511,7 +511,7 @@ fn checkpoint_accounting_retains_agent_md_and_every_skill_body() {
             1,
             run,
             EventPayload::AgentMdLoaded {
-                attachment: None,
+                attachment: cookie_agent_protocol::AttachmentName::new("local").unwrap(),
                 entries: vec![AgentMdEntry {
                     source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                     content: "pinned AGENTS.md context".into(),
@@ -593,7 +593,7 @@ fn replay_orders_agent_md_then_skills_then_delegated_seed() {
             3,
             run,
             EventPayload::AgentMdLoaded {
-                attachment: None,
+                attachment: cookie_agent_protocol::AttachmentName::new("local").unwrap(),
                 entries: vec![AgentMdEntry {
                     source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                     content: "AGENTS.md context body".into(),
@@ -1994,89 +1994,6 @@ fn native_checkpoint_does_not_reappend_covered_pending_producer_input() {
 }
 
 #[test]
-fn revert_voids_checkpoint_beyond_boundary_and_keeps_older_checkpoint() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let store =
-        crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
-    let binding = binding();
-    let run = RunId::new_v7();
-    let summary_limit = SummaryByteLimit::new(1024).expect("limit");
-    let checkpoint = |summary: &str, through_seq| ContextCheckpointCommit {
-        checkpoint: ContextCheckpoint::InternalSummary {
-            checkpoint: InternalSummaryCheckpoint::new(
-                summary.into(),
-                InternalAgentInvocationId::new_v7(),
-                InternalAgentRunId::new_v7(),
-                summary_limit,
-            )
-            .expect("checkpoint"),
-        },
-        boundaries: ContextCheckpointBoundaries {
-            source_from_seq: 1,
-            source_through_seq: through_seq,
-            recent_from_seq: None,
-            input_through_seq: through_seq,
-            prior_checkpoint_seq: None,
-        },
-        budgets: ContextCheckpointBudgets {
-            context_limit_tokens: 100,
-            trigger_tokens: 70,
-            input_tokens_before: 60,
-            input_tokens_after: 5,
-            keep_recent_tokens: 0,
-            max_summary_bytes: summary_limit,
-        },
-    };
-    let session = SessionId(uuid::Uuid::from_u128(1));
-    let mut events = vec![
-        event(
-            1,
-            run,
-            EventPayload::UserInputSubmitted {
-                input: "old input".into(),
-            },
-        ),
-        event(
-            2,
-            run,
-            EventPayload::ContextCheckpointCommitted {
-                commit: checkpoint("older summary", 1),
-            },
-        ),
-        event(
-            3,
-            run,
-            EventPayload::UserInputSubmitted {
-                input: "void input".into(),
-            },
-        ),
-        event(
-            4,
-            run,
-            EventPayload::ContextCheckpointCommitted {
-                commit: checkpoint("void summary", 3),
-            },
-        ),
-    ];
-    events.push(StoredEvent {
-        engine_version: None,
-        origin: None,
-        session_id: session,
-        run_id: None,
-        seq: 5,
-        timestamp: jiff::Timestamp::new(5, 0).expect("timestamp"),
-        payload: EventPayload::SessionReverted { through_seq: 2 },
-    });
-    let visible = cookie_agent_protocol::visible_events(&events);
-    let context = assemble_model_context(&visible, &store, &binding, "System prompt.")
-        .expect("assembled context");
-    let serialized = serde_json::to_string(&context.history).expect("serialized history");
-    assert!(serialized.contains("older summary"));
-    assert!(!serialized.contains("void summary"));
-    assert!(!serialized.contains("void input"));
-}
-
-#[test]
 fn projected_summary_matches_persisted_checkpoint_replay() {
     let directory = tempfile::tempdir().expect("tempdir");
     let store =
@@ -2124,7 +2041,7 @@ fn compaction_prefix_uses_current_agent_md_across_run_boundary() {
             seq,
             run,
             EventPayload::AgentMdLoaded {
-                attachment: None,
+                attachment: cookie_agent_protocol::AttachmentName::new("local").unwrap(),
                 entries: vec![AgentMdEntry {
                     source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                     content: content.into(),
@@ -2202,7 +2119,7 @@ fn summary_projection_orders_and_deduplicates_pinned_context() {
             1,
             run,
             EventPayload::AgentMdLoaded {
-                attachment: None,
+                attachment: cookie_agent_protocol::AttachmentName::new("local").unwrap(),
                 entries: vec![AgentMdEntry {
                     source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                     content: "pinned agent rules".into(),
@@ -2822,13 +2739,12 @@ fn aborted_reasoning_only_turn_is_skipped_without_an_interrupt_marker() {
 #[test]
 fn agent_md_replay_keeps_the_latest_event_per_attachment() {
     let run = RunId::new_v7();
-    let loaded = |seq, attachment: Option<&str>, content: &str| {
+    let loaded = |seq, attachment: &str, content: &str| {
         event(
             seq,
             run,
             EventPayload::AgentMdLoaded {
-                attachment: attachment
-                    .map(|name| cookie_agent_protocol::AttachmentName::new(name).unwrap()),
+                attachment: cookie_agent_protocol::AttachmentName::new(attachment).unwrap(),
                 entries: vec![AgentMdEntry {
                     source: SafeDisplayText::new("AGENTS.md").unwrap(),
                     content: content.into(),
@@ -2839,9 +2755,9 @@ fn agent_md_replay_keeps_the_latest_event_per_attachment() {
     };
     let events = [
         run_started_event(1, run, &binding()),
-        loaded(2, Some("local_web"), "stale local rules"),
-        loaded(3, Some("labpc_api"), "labpc rules"),
-        loaded(4, Some("local_web"), "local rules"),
+        loaded(2, "local_web", "stale local rules"),
+        loaded(3, "labpc_api", "labpc rules"),
+        loaded(4, "local_web", "local rules"),
     ];
     let events = events.iter().collect::<Vec<_>>();
     let latest = super::latest_agent_md_events(&events);
@@ -2853,7 +2769,7 @@ fn agent_md_replay_keeps_the_latest_event_per_attachment() {
     // Several attachments: each file names the attachment it came from.
     let rendered = super::agent_md_turn(&[
         (
-            Some("labpc_api"),
+            "labpc_api",
             &[AgentMdEntry {
                 source: SafeDisplayText::new("AGENTS.md").unwrap(),
                 content: "labpc rules".into(),
@@ -2861,7 +2777,7 @@ fn agent_md_replay_keeps_the_latest_event_per_attachment() {
             }][..],
         ),
         (
-            Some("local_web"),
+            "local_web",
             &[AgentMdEntry {
                 source: SafeDisplayText::new("AGENTS.md").unwrap(),
                 content: "local rules".into(),
@@ -2871,12 +2787,4 @@ fn agent_md_replay_keeps_the_latest_event_per_attachment() {
     ]);
     assert!(rendered.contains("<contents from=\"AGENTS.md\" runtime=\"labpc_api\">\nlabpc rules"));
     assert!(rendered.contains("<contents from=\"AGENTS.md\" runtime=\"local_web\">\nlocal rules"));
-
-    // An event written before runtimes has no attachment and is `local`'s.
-    let legacy = [
-        run_started_event(1, run, &binding()),
-        loaded(2, None, "legacy rules"),
-    ];
-    let legacy = legacy.iter().collect::<Vec<_>>();
-    assert_eq!(super::latest_agent_md_events(&legacy).len(), 1);
 }

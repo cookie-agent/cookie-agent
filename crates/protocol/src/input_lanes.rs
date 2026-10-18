@@ -33,19 +33,9 @@ impl QueuedInputs {
     /// The queue after a session's physical `events`, in order.
     #[must_use]
     pub fn from_events<E: Borrow<StoredEvent>>(events: &[E]) -> Self {
-        // A revert drops what it cut before the fold, as in
-        // [`crate::visible_events`].
-        let mut visible: Vec<&StoredEvent> = Vec::new();
-        for event in events {
-            let event = event.borrow();
-            if let EventPayload::SessionReverted { through_seq } = &event.payload {
-                visible.retain(|candidate| candidate.seq <= *through_seq);
-            }
-            visible.push(event);
-        }
         let mut queue = Self::default();
-        for event in visible {
-            queue.apply(event);
+        for event in events {
+            queue.apply(event.borrow());
         }
         queue
     }

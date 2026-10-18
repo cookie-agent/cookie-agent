@@ -86,10 +86,6 @@ removed delegations are deleted, together with their own subagents; a revert
 that would delete a running subagent is refused. A revert cannot be undone:
 fork first to keep the current branch.
 
-Logs written before protocol 28 may contain `session_reverted` markers. They
-are still read: each hides what followed its target on the branch visible when
-it was written.
-
 In the TUI, click a past user message, choose **Revert**, and confirm. The TUI
 targets the sequence immediately before that user message and restores the
 message text to the composer for editing.

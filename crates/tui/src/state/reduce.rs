@@ -500,13 +500,6 @@ pub(super) fn reduce_event_from(
                 seq: sequence,
             });
         }
-        EventPayload::UserInputRecalled { .. } => {
-            close_open_assistant(state, timestamp);
-            // The engine withdrew the newest pending entry positionally;
-            // its text comes back through the recall RPC result and is
-            // never consulted here.
-            state.pending_inputs.pop_back();
-        }
         // The session model state folded it above.
         EventPayload::SessionModelSelected { .. } => {}
         // The queued lane was folded above, before the payload moved.
@@ -515,7 +508,7 @@ pub(super) fn reduce_event_from(
         | EventPayload::UserInputQueueVoided {} => {
             state.last_agent_activity = Some(timestamp);
         }
-        EventPayload::UserInputRecalledV2 { user_input_seq, .. } => {
+        EventPayload::UserInputRecalled { user_input_seq, .. } => {
             close_open_assistant(state, timestamp);
             if let Some(position) = state
                 .pending_inputs
@@ -1390,12 +1383,6 @@ pub(super) fn reduce_event_from(
             ),
             timestamp,
         ),
-        EventPayload::ContextRehydrated { files } => push_event(
-            state,
-            EventLevel::Info,
-            format!("rehydrated {} recently read file(s)", files.len()),
-            timestamp,
-        ),
         EventPayload::DelegateQueued {
             session_id,
             position,
@@ -1408,13 +1395,7 @@ pub(super) fn reduce_event_from(
             ),
             timestamp,
         ),
-        EventPayload::DelegateFinished {
-            session_id,
-            status,
-            total_lines,
-            ..
-        }
-        | EventPayload::DelegateFinishedV2 {
+        EventPayload::DelegateFinishedV2 {
             session_id,
             status,
             total_lines,
@@ -1441,12 +1422,6 @@ pub(super) fn reduce_event_from(
                 || format!("subagent {status:?}").to_lowercase(),
                 |reason| format!("subagent {status:?}: {reason}").to_lowercase(),
             ),
-            timestamp,
-        ),
-        EventPayload::PluginEventAdded { plugin, name, .. } => push_event(
-            state,
-            EventLevel::Info,
-            format!("plugin {plugin}: {name}"),
             timestamp,
         ),
         EventPayload::PluginDiagnostic {
@@ -1482,10 +1457,6 @@ pub(super) fn reduce_event_from(
                 render_title_commit(&change),
                 timestamp,
             );
-        }
-        EventPayload::SessionReverted { .. } => {
-            close_open_assistant(state, timestamp);
-            state.active_run = None;
         }
         EventPayload::UserInputApplied { user_input_seq } => {
             if let Some(index) = state.transcript.iter().rposition(
@@ -1545,10 +1516,7 @@ pub(super) fn reduce_event_from(
             // row appears only when an attachment's context differs from its
             // previous run's. A run that loaded none for an attachment
             // breaks its chain, so re-enabling shows a row again.
-            let attachment = attachment.map_or_else(
-                || cookie_agent_protocol::RuntimeId::LOCAL.to_owned(),
-                |name| name.as_str().to_owned(),
-            );
+            let attachment = attachment.as_str().to_owned();
             let unchanged = state.agent_md_previous_run.get(&attachment) == Some(&entries);
             state
                 .agent_md_latest_run
@@ -1606,7 +1574,6 @@ pub(super) fn reduce_event_from(
         | EventPayload::DelegationFinished { .. }
         | EventPayload::ModelRequestPrepared { .. }
         | EventPayload::InternalAgentUsageRecorded { .. }
-        | EventPayload::ToolStdinSubmitted { .. }
         | EventPayload::ToolCallLinked { .. }
         | EventPayload::SessionPermissionOverlaySet { .. }
         | EventPayload::RuntimeAttached { .. }
@@ -1625,17 +1592,8 @@ pub(super) fn reduce_session_events<E: std::borrow::Borrow<StoredEvent>>(
         last_seq: physical_events.last().map_or(0, |event| event.borrow().seq),
         ..SessionState::default()
     };
-    // `cookie_agent_protocol::visible_events`, by reference: a revert drops
-    // what it cut before anything is copied.
-    let mut visible: Vec<&StoredEvent> = Vec::new();
     for event in physical_events {
         let event = event.borrow();
-        if let EventPayload::SessionReverted { through_seq } = &event.payload {
-            visible.retain(|candidate| candidate.seq <= *through_seq);
-        }
-        visible.push(event);
-    }
-    for event in visible {
         reduce_event_from(
             &mut state,
             session_id,

@@ -336,20 +336,10 @@ const fn cycle(index: usize, count: usize, backward: bool) -> usize {
 }
 
 /// The rows for `attachments`, each matched to its instance in `listing`.
-/// `None` attachments is a session created before runtimes: `global` and
-/// `local`.
 pub(in crate::ui) fn runtime_rows(
-    attachments: Option<&[RuntimeAttachment]>,
+    attachments: &[RuntimeAttachment],
     listing: Option<&RuntimesListResult>,
 ) -> Vec<RuntimeRow> {
-    let legacy;
-    let attachments = match attachments {
-        Some(attachments) => attachments,
-        None => {
-            legacy = legacy_attachments(listing);
-            &legacy
-        }
-    };
     attachments
         .iter()
         .map(|attachment| RuntimeRow {
@@ -439,41 +429,6 @@ pub(in crate::ui) fn draft_runtime_rows(
                     workspace,
                 },
                 instance,
-            })
-        })
-        .collect()
-}
-
-/// What a session created before runtimes is attached to.
-fn legacy_attachments(listing: Option<&RuntimesListResult>) -> Vec<RuntimeAttachment> {
-    [RuntimeId::GLOBAL, RuntimeId::LOCAL]
-        .into_iter()
-        .filter_map(|id| {
-            let runtime_id = RuntimeId::new(id).ok()?;
-            let instance = listing.and_then(|listing| {
-                listing
-                    .instances
-                    .iter()
-                    .find(|instance| instance.runtime_id == runtime_id)
-            });
-            Some(RuntimeAttachment {
-                capability: cookie_agent_protocol::default_capability(&runtime_id),
-                name: instance
-                    .and_then(|instance| instance.attachment_name.clone())
-                    .or_else(|| cookie_agent_protocol::AttachmentName::new(id).ok())?,
-                // Until the instance reports its kind, label the two built-ins
-                // with the kinds they declare.
-                kind: match instance.and_then(|instance| instance.kind.clone()) {
-                    Some(kind) => kind,
-                    None => RuntimeKind::new(if id == RuntimeId::GLOBAL {
-                        "global"
-                    } else {
-                        "coding"
-                    })
-                    .ok()?,
-                },
-                workspace: instance.and_then(|instance| instance.workspace.clone()),
-                runtime_id,
             })
         })
         .collect()

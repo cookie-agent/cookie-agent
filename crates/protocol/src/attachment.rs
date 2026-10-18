@@ -23,8 +23,9 @@ pub struct RuntimeAttachment {
     pub workspace: Option<String>,
 }
 
-/// The capability an attachment recorded before capabilities refers to:
-/// `global` for the global runtime, `coding` for any other.
+/// The capability a runtime's attachment most likely refers to before its
+/// instance reports one: `global` for the global runtime, `coding` for any
+/// other. Clients use it to label a runtime they have not opened yet.
 #[must_use]
 pub fn default_capability(runtime_id: &RuntimeId) -> CapabilityName {
     if runtime_id.as_str() == RuntimeId::GLOBAL {
@@ -38,10 +39,7 @@ pub fn default_capability(runtime_id: &RuntimeId) -> CapabilityName {
 /// `runtime_attached` and `runtime_detached` events in log order.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RuntimeAttachmentFold {
-    /// `None` until the log holds an attach or detach event: such a session
-    /// was created before runtimes and reads as attached to `global` and
-    /// `local`.
-    attachments: Option<Vec<RuntimeAttachment>>,
+    attachments: Vec<RuntimeAttachment>,
 }
 
 impl RuntimeAttachmentFold {
@@ -55,31 +53,28 @@ impl RuntimeAttachmentFold {
                 kind,
                 workspace,
             } => {
-                let attachments = self.attachments.get_or_insert_with(Vec::new);
-                attachments.retain(|attachment| &attachment.name != name);
-                attachments.push(RuntimeAttachment {
+                self.attachments
+                    .retain(|attachment| &attachment.name != name);
+                self.attachments.push(RuntimeAttachment {
                     name: name.clone(),
                     runtime_id: runtime_id.clone(),
-                    capability: capability
-                        .clone()
-                        .unwrap_or_else(|| default_capability(runtime_id)),
+                    capability: capability.clone(),
                     kind: kind.clone(),
                     workspace: workspace.clone(),
                 });
             }
             crate::EventPayload::RuntimeDetached { name } => {
                 self.attachments
-                    .get_or_insert_with(Vec::new)
                     .retain(|attachment| &attachment.name != name);
             }
             _ => {}
         }
     }
 
-    /// The folded attachments, or `None` for a log created before runtimes.
+    /// The folded attachments, in attach order.
     #[must_use]
-    pub fn attachments(&self) -> Option<&[RuntimeAttachment]> {
-        self.attachments.as_deref()
+    pub fn attachments(&self) -> &[RuntimeAttachment] {
+        &self.attachments
     }
 }
 
@@ -87,36 +82,29 @@ impl RuntimeAttachmentFold {
 mod tests {
     use super::*;
 
-    /// An attach event written before capabilities names none: the global
-    /// runtime's reads as `global`, any other as `coding`.
     #[test]
-    fn attach_events_without_a_capability_read_as_global_or_coding() {
+    fn the_fold_follows_attach_and_detach_in_log_order() {
+        let attached =
+            |name: &str, runtime: &str, capability: &str| crate::EventPayload::RuntimeAttached {
+                name: AttachmentName::new(name).unwrap(),
+                runtime_id: RuntimeId::new(runtime).unwrap(),
+                capability: CapabilityName::new(capability).unwrap(),
+                kind: RuntimeKind::new(capability).unwrap(),
+                workspace: None,
+            };
         let mut fold = RuntimeAttachmentFold::default();
-        for (name, runtime, kind) in [
-            ("global", "global", "global"),
-            ("labpc_api", "labpc", "coding"),
-        ] {
-            let event = serde_json::json!({
-                "type": "runtime_attached",
-                "name": name,
-                "runtime_id": runtime,
-                "kind": kind,
-            });
-            fold.observe(&serde_json::from_value(event).expect("old attach event"));
-        }
-        fold.observe(&crate::EventPayload::RuntimeAttached {
-            name: AttachmentName::new("devbox_notes").unwrap(),
-            runtime_id: RuntimeId::new("devbox").unwrap(),
-            capability: Some(CapabilityName::new("notes").unwrap()),
-            kind: RuntimeKind::new("notes").unwrap(),
-            workspace: None,
+        assert!(fold.attachments().is_empty());
+        fold.observe(&attached("global", "global", "global"));
+        fold.observe(&attached("devbox_notes", "devbox", "notes"));
+        fold.observe(&crate::EventPayload::RuntimeDetached {
+            name: AttachmentName::new("global").unwrap(),
         });
-        let capabilities = fold
+        fold.observe(&attached("labpc_api", "labpc", "coding"));
+        let names = fold
             .attachments()
-            .expect("attachments")
             .iter()
-            .map(|attachment| attachment.capability.as_str())
+            .map(|attachment| attachment.name.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(capabilities, ["global", "coding", "notes"]);
+        assert_eq!(names, ["devbox_notes", "labpc_api"]);
     }
 }

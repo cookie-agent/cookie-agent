@@ -170,14 +170,10 @@ pub type EventSnapshot = Arc<Vec<Arc<StoredEvent>>>;
 
 #[derive(Clone, Debug)]
 struct EventStorage {
-    /// Every physical record, including ones hidden by a later revert.
+    /// Every record, in log order.
     all: EventSnapshot,
-    /// The currently visible branch, in log order.
-    visible: EventSnapshot,
     index: EventIndex,
-    /// Physical `ModelTurnCommitted` records. Model turn sequences are
-    /// session-global and stay contiguous across reverts, so this counts
-    /// hidden records too.
+    /// `ModelTurnCommitted` records.
     physical_model_turns: u64,
     /// Where each sequenced line of the persisted file starts, so a revert
     /// cuts the file without reading it. `None` when the file's layout is not
@@ -229,12 +225,11 @@ impl EventStorage {
         let physical_model_turns = all.iter().filter(|event| is_model_turn(event)).count() as u64;
         let mut storage = Self {
             all: Arc::new(all),
-            visible: Arc::default(),
             index: EventIndex::default(),
             physical_model_turns,
             lines: None,
         };
-        storage.rebuild_visible();
+        storage.rebuild_index();
         storage
     }
 
@@ -247,32 +242,8 @@ impl EventStorage {
     fn push(&mut self, event: impl Into<Arc<StoredEvent>>) {
         let event = event.into();
         self.physical_model_turns += u64::from(is_model_turn(&event));
-        Arc::make_mut(&mut self.all).push(event.clone());
-        if let EventPayload::SessionReverted { through_seq } = &event.payload {
-            let through_seq = *through_seq;
-            let visible = Arc::make_mut(&mut self.visible);
-            visible.retain(|candidate| candidate.seq <= through_seq);
-            visible.push(event);
-            self.rebuild_index();
-        } else {
-            self.index.observe(&event);
-            Arc::make_mut(&mut self.visible).push(event);
-        }
-    }
-
-    /// Legacy `SessionReverted` markers each hide what follows their target
-    /// on the branch visible when they were written. Reverts no longer write
-    /// markers; they truncate the log (see [`Self::truncate`]).
-    fn rebuild_visible(&mut self) {
-        let mut visible: Vec<Arc<StoredEvent>> = Vec::with_capacity(self.all.len());
-        for event in self.all.iter() {
-            if let EventPayload::SessionReverted { through_seq } = &event.payload {
-                visible.retain(|candidate| candidate.seq <= *through_seq);
-            }
-            visible.push(event.clone());
-        }
-        self.visible = Arc::new(visible);
-        self.rebuild_index();
+        self.index.observe(&event);
+        Arc::make_mut(&mut self.all).push(event);
     }
 
     /// Drops every physical event after `through_seq`.
@@ -283,24 +254,19 @@ impl EventStorage {
         Arc::make_mut(&mut self.all).retain(|event| event.seq <= through_seq);
         self.physical_model_turns =
             self.all.iter().filter(|event| is_model_turn(event)).count() as u64;
-        self.rebuild_visible();
+        self.rebuild_index();
     }
 
     fn rebuild_index(&mut self) {
         self.index = EventIndex::default();
-        for event in self.visible.iter() {
+        for event in self.all.iter() {
             self.index.observe(event);
         }
     }
 
     fn snapshot(&self) -> EventSnapshot {
-        self.visible.clone()
+        self.all.clone()
     }
-}
-
-/// The branch of `events` that its revert markers leave visible.
-pub(crate) fn visible_events(events: Vec<Arc<StoredEvent>>) -> EventSnapshot {
-    EventStorage::new(events).snapshot()
 }
 
 /// Borrows each event of a slice of owned or shared events.
@@ -816,8 +782,8 @@ impl EventLog {
         Ok(event)
     }
 
-    /// Owned copies of the visible events. Deep-copies every payload; hot
-    /// paths use [`Self::event_snapshot`].
+    /// Owned copies of the events. Deep-copies every payload; hot paths use
+    /// [`Self::event_snapshot`].
     #[must_use]
     pub fn events(&self) -> Vec<StoredEvent> {
         self.event_snapshot()
@@ -826,16 +792,10 @@ impl EventLog {
             .collect()
     }
 
-    /// The visible events. O(1): a shared view, not a copy.
+    /// The events. O(1): a shared view, not a copy.
     #[must_use]
     pub fn event_snapshot(&self) -> EventSnapshot {
         self.storage().snapshot()
-    }
-
-    /// Every physical event, including ones a revert hid. O(1).
-    #[must_use]
-    pub fn all_events(&self) -> EventSnapshot {
-        self.storage().all.clone()
     }
 
     fn storage(&self) -> std::sync::MutexGuard<'_, EventStorage> {
@@ -875,7 +835,7 @@ impl EventLog {
         limit: Option<std::num::NonZeroU32>,
     ) -> cookie_agent_protocol::EventsSubscribeResult {
         // A shared view: the page is cut and measured without the lock.
-        let events = self.all_events();
+        let events = self.event_snapshot();
         let max_bytes = limit.map_or(usize::MAX, |_| REPLAY_PAGE_MAX_BYTES);
         let limit = limit.map_or(usize::MAX, |limit| limit.get() as usize);
         let first = cursor.map_or(0, |cursor| {
@@ -1247,8 +1207,9 @@ struct ValidationState {
     tool_starts: HashMap<ToolCallId, (RunId, AssistantToolCallRef)>,
     terminated_tools: HashSet<ToolCallId>,
     elided_tools: HashSet<ToolCallId>,
-    /// Admitted inputs by sequence, kept as a digest of the text.
-    admissions: HashMap<u64, (RunId, InputDigest)>,
+    /// Admitted inputs by sequence with their run (`None` for a runless
+    /// admission), kept as a digest of the text.
+    admissions: HashMap<u64, (Option<RunId>, InputDigest)>,
     next_model_turn_seq: u64,
     previous_seq: Option<u64>,
     previous_timestamp: Option<Timestamp>,
@@ -1868,14 +1829,6 @@ fn validate_record_local(path: &Path, record: &StoredEvent) -> Result<(), EventL
         return corrupt(path, "live-only stream output is never stored");
     }
     match &record.payload {
-        EventPayload::SessionReverted { through_seq } => {
-            if record.run_id.is_some() || *through_seq == 0 || *through_seq >= record.seq {
-                return corrupt(
-                    path,
-                    "SessionReverted target is not an existing prior event",
-                );
-            }
-        }
         EventPayload::SessionPermissionOverlaySet { .. } if record.run_id.is_some() => {
             return corrupt(path, "SessionPermissionOverlaySet must not have run_id");
         }
@@ -1885,9 +1838,7 @@ fn validate_record_local(path: &Path, record: &StoredEvent) -> Result<(), EventL
         EventPayload::DelegatedContextSeeded { .. } if record.run_id.is_some() => {
             return corrupt(path, "DelegatedContextSeeded must be runless");
         }
-        EventPayload::PluginEventAdded { .. } | EventPayload::PluginDiagnostic { .. }
-            if record.run_id.is_some() =>
-        {
+        EventPayload::PluginDiagnostic { .. } if record.run_id.is_some() => {
             return corrupt(path, "plugin events must be runless");
         }
         EventPayload::ProducerDiagnostic { .. } | EventPayload::EngineDiagnostic { .. }
@@ -2012,12 +1963,10 @@ fn validate_record_incremental(
         active_run,
         ..
     } = state;
-    if let EventPayload::UserInputAdmitted { input } = &record.payload
-        && let Some(run_id) = record.run_id
-    {
-        admissions.insert(record.seq, (run_id, input_digest(input)));
+    if let EventPayload::UserInputAdmitted { input } = &record.payload {
+        admissions.insert(record.seq, (record.run_id, input_digest(input)));
     }
-    let missing_admission = |user_input_seq: u64, run_id: RunId, input: &str| {
+    let missing_admission = |user_input_seq: u64, run_id: Option<RunId>, input: &str| {
         !admissions
             .get(&user_input_seq)
             .is_some_and(|(owner, admitted)| *owner == run_id && *admitted == input_digest(input))
@@ -2038,13 +1987,13 @@ fn validate_record_incremental(
                     !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
                 })
             }
-            EventPayload::UserInputRecalledV2 {
+            EventPayload::UserInputRecalled {
                 user_input_seq,
                 input,
-            } => record.run_id.is_some_and(|run_id| {
-                missing_admission(*user_input_seq, run_id, input)
+            } => {
+                missing_admission(*user_input_seq, record.run_id, input)
                     && taint.admission_before(*user_input_seq, record.seq)
-            }),
+            }
             EventPayload::ModelAttemptStarted { .. }
             | EventPayload::InternalAgentStarted { .. }
             | EventPayload::ModelFallback { .. }
@@ -2094,7 +2043,6 @@ fn validate_record_incremental(
                     && taint.tool_before(termination.tool_call_id, record.seq)
             }
             EventPayload::ToolOutputElided { tool_call_id, .. }
-            | EventPayload::ToolStdinSubmitted { tool_call_id, .. }
             | EventPayload::ToolCallLinked { tool_call_id, .. } => {
                 !tool_starts.contains_key(tool_call_id)
                     && taint.tool_before(*tool_call_id, record.seq)
@@ -2159,14 +2107,6 @@ fn validate_record_incremental(
         return Ok(());
     }
     match &record.payload {
-        EventPayload::SessionReverted { through_seq } => {
-            if record.run_id.is_some() || *through_seq == 0 || *through_seq >= record.seq {
-                return corrupt(
-                    path,
-                    "SessionReverted target is not an existing prior event",
-                );
-            }
-        }
         EventPayload::SessionPermissionOverlaySet { .. } => {
             if record.run_id.is_some() {
                 return corrupt(path, "SessionPermissionOverlaySet must not have run_id");
@@ -2265,9 +2205,7 @@ fn validate_record_incremental(
                 return corrupt(path, "DelegateChildTerminated must not have run_id");
             }
         }
-        EventPayload::UserInputAdmitted { .. } | EventPayload::UserInputRecalled { .. }
-            if record.run_id.is_none() =>
-        {
+        EventPayload::UserInputAdmitted { .. } if record.run_id.is_none() => {
             if active_run.is_some() && !taint.active_run_ordering_before(record.seq) {
                 return corrupt(path, "runless UserInputAdmitted requires no active run");
             }
@@ -2275,15 +2213,18 @@ fn validate_record_incremental(
                 *active_run = None;
             }
         }
-        EventPayload::UserInputRecalledV2 {
+        EventPayload::UserInputRecalled {
             user_input_seq,
             input,
         } => {
-            let Some(run_id) = record.run_id else {
-                return corrupt(path, "UserInputRecalledV2 is missing run_id");
-            };
-            if missing_admission(*user_input_seq, run_id, input) {
-                return corrupt(path, "UserInputRecalledV2 target is not a prior admission");
+            if record.run_id.is_none()
+                && active_run.is_some()
+                && !taint.active_run_ordering_before(record.seq)
+            {
+                return corrupt(path, "runless UserInputRecalled requires no active run");
+            }
+            if missing_admission(*user_input_seq, record.run_id, input) {
+                return corrupt(path, "UserInputRecalled target is not a prior admission");
             }
         }
         EventPayload::DelegatedContextSeeded { .. } => {
@@ -2791,8 +2732,7 @@ fn validate_record_incremental(
                 return corrupt(path, "tool elision ownership or ordering is invalid");
             }
         }
-        EventPayload::ToolStdinSubmitted { tool_call_id, .. }
-        | EventPayload::ToolCallLinked { tool_call_id, .. } => {
+        EventPayload::ToolCallLinked { tool_call_id, .. } => {
             let Some((run_id, _)) = tool_starts.get(tool_call_id) else {
                 return corrupt(path, "tool lifecycle event appeared before its start");
             };
@@ -2835,7 +2775,7 @@ fn validate_record_incremental(
         EventPayload::TreeApprovalGrantCommitted { grant } => {
             validate_approval_owner(path, approval_owners, grant.approval_id, record.run_id)?;
         }
-        EventPayload::PluginEventAdded { .. } | EventPayload::PluginDiagnostic { .. } => {
+        EventPayload::PluginDiagnostic { .. } => {
             if record.run_id.is_some() {
                 return corrupt(path, "plugin events must be runless");
             }
@@ -2899,37 +2839,6 @@ struct LoadedEvents {
     diagnostics: Vec<EventLoadDiagnostic>,
     validation_taint: ValidationTaint,
     next_seq: u64,
-}
-
-/// Wire tags of the live-only payloads ([`EventPayload::is_transient`]).
-const TRANSIENT_PAYLOAD_TAGS: [&str; 3] = ["text_delta", "reasoning_delta", "tool_call_progress"];
-
-/// The sequence of a record an older engine stored for live-only stream
-/// output, found without decoding its payload. The envelope's `payload` is
-/// its only object-valued field and the payload's `type` tag is serialized
-/// first, so the first `"payload":{"type":"` in the line is the envelope's.
-/// Anything else, including a record this cannot parse, is `None` and goes
-/// through the ordinary readers.
-fn legacy_transient_record_seq(line: &[u8]) -> Option<u64> {
-    const PAYLOAD_TAG: &[u8] = br#""payload":{"type":""#;
-    #[derive(Deserialize)]
-    struct Sequence {
-        seq: u64,
-    }
-    let tag_start = line
-        .windows(PAYLOAD_TAG.len())
-        .position(|window| window == PAYLOAD_TAG)?
-        + PAYLOAD_TAG.len();
-    let tag = &line[tag_start..];
-    TRANSIENT_PAYLOAD_TAGS
-        .iter()
-        .any(|transient| {
-            tag.strip_prefix(transient.as_bytes())
-                .is_some_and(|rest| rest.first() == Some(&b'"'))
-        })
-        .then(|| serde_json::from_slice::<Sequence>(line).ok())
-        .flatten()
-        .map(|record| record.seq)
 }
 
 /// Checks that a record's sequence advances the log and records any gap
@@ -2999,22 +2908,6 @@ fn load_event_jsonl_in_place(
         .enumerate()
     {
         let line_number = index as u64 + 1;
-        // Older engines stored live-only stream output. It is not history:
-        // its sequence still orders the log, but the record is dropped
-        // without decoding its payload.
-        if index > 0
-            && let Some(seq) = legacy_transient_record_seq(line)
-        {
-            observe_sequence(
-                path,
-                seq,
-                &mut last_observed_seq,
-                &mut diagnostics,
-                &mut validation_taint,
-            )?;
-            lines.starts.push((seq, line_start(line)));
-            continue;
-        }
         // Nearly every record is intact: type it straight from the bytes and
         // leave the untyped, repairing reader to the rest.
         if let Some(event) = StoredEvent::decode_strict(line) {
@@ -3082,15 +2975,6 @@ fn load_event_jsonl_in_place(
             )?;
             lines.starts.push((seq, line_start(line)));
         }
-        if index > 0
-            && object
-                .get("payload")
-                .and_then(|payload| payload.get("type"))
-                .and_then(Value::as_str)
-                .is_some_and(|tag| TRANSIENT_PAYLOAD_TAGS.contains(&tag))
-        {
-            continue;
-        }
         let unknown = object
             .keys()
             .filter(|key| {
@@ -3098,7 +2982,6 @@ fn load_event_jsonl_in_place(
                     key.as_str(),
                     "engine_version"
                         | "origin"
-                        | "event_schema_version"
                         | "session_id"
                         | "run_id"
                         | "seq"

@@ -1289,35 +1289,6 @@ pub(crate) fn frozen_root_policy_for(
         .1
 }
 
-/// A root session whose log predates runtimes: its creation event is not
-/// followed by any attachment event.
-pub(crate) fn create_legacy_session(engine: &Engine, selection: RunSelection) -> SessionId {
-    let template = engine.create_session(selection).expect("template session");
-    let creation = engine
-        .inner
-        .store
-        .get(template.session_id)
-        .expect("template projection")
-        .log
-        .event_snapshot()
-        .first()
-        .expect("creation event")
-        .payload
-        .clone();
-    let session = SessionId::new_v7();
-    engine
-        .inner
-        .store
-        .create(
-            session,
-            cookie_agent_protocol::EventOrigin::new("user").expect("event origin"),
-            creation,
-        )
-        .expect("legacy session");
-    engine.spawn_actor(session).expect("legacy session actor");
-    session
-}
-
 pub(crate) fn synthetic_default_fixture(authored_agent: Option<&str>) -> Fixture {
     synthetic_default_fixture_with_config(authored_agent, "http://127.0.0.1:9/v1", "")
         .expect("engine")

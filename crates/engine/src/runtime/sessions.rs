@@ -611,7 +611,7 @@ impl Engine {
                     }
                     // A revert removes the events after the cut: the log keeps no
                     // marker, and later appends reuse the freed sequences.
-                    let events = projection.log.all_events();
+                    let events = projection.log.event_snapshot();
                     let cut = revert_cut(&events, through_seq);
                     let deleted = engine.reverted_children(&events, cut)?;
                     // What the cut events and deleted children referenced is all a

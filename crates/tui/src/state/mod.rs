@@ -1010,21 +1010,16 @@ impl StateStore {
                         return true;
                     }
                     replay.physical_events.push(Arc::new(event.clone()));
-                    if matches!(event.payload, EventPayload::SessionReverted { .. }) {
-                        replay.scratch =
-                            reduce_session_events(session_id, generation, &replay.physical_events);
-                    } else {
-                        replay.scratch.last_seq = event.seq;
-                        reduce_event_from(
-                            &mut replay.scratch,
-                            event.session_id,
-                            event.run_id,
-                            event.seq,
-                            event.timestamp,
-                            event.origin,
-                            event.payload,
-                        );
-                    }
+                    replay.scratch.last_seq = event.seq;
+                    reduce_event_from(
+                        &mut replay.scratch,
+                        event.session_id,
+                        event.run_id,
+                        event.seq,
+                        event.timestamp,
+                        event.origin,
+                        event.payload,
+                    );
                     replay.scratch.version = replay.scratch.version.wrapping_add(1);
                     true
                 });
@@ -1223,29 +1218,17 @@ impl StateStore {
             .entry(event.session_id)
             .or_default()
             .push(Arc::new(event.clone()));
-        if matches!(event.payload, EventPayload::SessionReverted { .. }) {
-            let previous_version = state.version;
-            *state = reduce_session_events(
-                event.session_id,
-                generation,
-                self.physical_events
-                    .get(&event.session_id)
-                    .expect("physical event was inserted"),
-            );
-            state.version = previous_version.max(state.version).wrapping_add(1);
-        } else {
-            state.last_seq = event.seq;
-            reduce_event_from(
-                state,
-                event.session_id,
-                event.run_id,
-                event.seq,
-                event.timestamp,
-                event.origin,
-                event.payload,
-            );
-            state.version = state.version.wrapping_add(1);
-        }
+        state.last_seq = event.seq;
+        reduce_event_from(
+            state,
+            event.session_id,
+            event.run_id,
+            event.seq,
+            event.timestamp,
+            event.origin,
+            event.payload,
+        );
+        state.version = state.version.wrapping_add(1);
         true
     }
 

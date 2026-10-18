@@ -573,16 +573,18 @@ pub(super) fn has_runless_pending_inputs(
             )
         })
         .map_or(0, |event| event.seq);
-    let mut pending = 0_usize;
+    let mut pending = Vec::new();
     for event in events
         .iter()
         .filter(|event| event.seq > boundary && event.run_id.is_none())
     {
-        match event.payload {
-            Event::UserInputAdmitted { .. } => pending += 1,
-            Event::UserInputRecalled { .. } => pending = pending.saturating_sub(1),
+        match &event.payload {
+            Event::UserInputAdmitted { .. } => pending.push(event.seq),
+            Event::UserInputRecalled { user_input_seq, .. } => {
+                pending.retain(|seq| seq != user_input_seq);
+            }
             _ => {}
         }
     }
-    pending != 0
+    !pending.is_empty()
 }

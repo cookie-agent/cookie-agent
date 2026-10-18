@@ -1813,7 +1813,7 @@ fn overlay_rules_are_unique_per_runtime_selector() {
 }
 
 #[test]
-fn tree_grants_apply_only_to_their_runtime_and_old_grants_read_as_local() {
+fn tree_grants_apply_only_to_their_runtime() {
     use cookie_agent_protocol::{
         ApprovalId, OperationFingerprint, RuntimeId, SessionId, TreeApprovalGrant,
         TreeApprovalGrantId,
@@ -1843,14 +1843,13 @@ fn tree_grants_apply_only_to_their_runtime_and_old_grants_read_as_local() {
     );
     assert!(store.matching(root, &operation, None).is_none());
 
-    // A grant recorded before runtimes has no runtime ID and reads as local.
-    let mut legacy = serde_json::to_value(&grant).expect("grant JSON");
-    legacy
+    // The runtime ID is required.
+    let mut missing = serde_json::to_value(&grant).expect("grant JSON");
+    missing
         .as_object_mut()
         .expect("grant object")
         .remove("runtime_id");
-    let legacy: TreeApprovalGrant = serde_json::from_value(legacy).expect("legacy grant");
-    assert_eq!(legacy.runtime_id, Some(RuntimeId::local()));
+    assert!(serde_json::from_value::<TreeApprovalGrant>(missing).is_err());
     // A base-layer grant keeps an explicit null.
     let mut base = serde_json::to_value(&grant).expect("grant JSON");
     base["runtime_id"] = serde_json::Value::Null;

@@ -1750,7 +1750,7 @@ impl Engine {
                     child_session_id,
                     Some(child_run_id),
                     super::event_origin("engine:delegation"),
-                    Event::UserInputRecalledV2 {
+                    Event::UserInputRecalled {
                         user_input_seq: admission_seq,
                         input: pending.input,
                     },
@@ -2169,25 +2169,28 @@ impl Engine {
                 )
             })
             .map_or(0, |event| event.seq);
-        let mut pending = std::collections::VecDeque::new();
+        let mut pending = Vec::new();
         for event in events
             .iter()
             .filter(|event| event.seq > boundary && event.run_id.is_none())
         {
             match &event.payload {
-                Event::UserInputAdmitted { input } => pending.push_back(input.clone()),
-                Event::UserInputRecalled { .. } => {
-                    pending.pop_back();
+                Event::UserInputAdmitted { input } => pending.push((event.seq, input.clone())),
+                Event::UserInputRecalled { user_input_seq, .. } => {
+                    pending.retain(|(seq, _)| seq != user_input_seq);
                 }
                 _ => {}
             }
         }
-        for input in pending.into_iter().rev() {
+        for (user_input_seq, input) in pending.into_iter().rev() {
             self.append(
                 child_session_id,
                 None,
                 super::event_origin("engine:delegation"),
-                Event::UserInputRecalled { input },
+                Event::UserInputRecalled {
+                    user_input_seq,
+                    input,
+                },
             )
             .await?;
         }

@@ -7,8 +7,6 @@ a positive physical `seq`, `timestamp`, a tagged `payload`, and an optional
 `engine_version` is the writing engine's binary semver; it is diagnostic metadata,
 not a compatibility gate, and old records may omit it. Pre-origin records omit
 `origin`; readers preserve that absence rather than synthesizing a default.
-Legacy
-`event_schema_version` fields are ignored when reading.
 
 `origin` is either `user` or `<class>:<slug>`, where `class` is `engine`,
 `plugin`, or `client` and `slug` matches
@@ -56,20 +54,20 @@ origin class. This keeps the origin grammar restricted to `user`, `engine`,
 
 | Category | Event payload types |
 |---|---|
-| Session | `session_created`, `session_reverted` (legacy), `session_permission_overlay_set`, `runtime_attached`, `runtime_detached`, `skill_loaded`, `skill_invocation_noted`, `session_title_committed`, `delegated_context_seeded` |
+| Session | `session_created`, `session_permission_overlay_set`, `runtime_attached`, `runtime_detached`, `skill_loaded`, `skill_invocation_noted`, `session_title_committed`, `delegated_context_seeded` |
 | AGENTS.md context | `agent_md_loaded`, `agent_md_skipped` |
-| Plugins | `plugin_event_added`, `plugin_diagnostic` |
+| Plugins | `plugin_diagnostic` |
 | Engine | `engine_diagnostic` |
 | Goals | `goal_activated`, `goal_checklist_revised`, `goal_lifecycle_changed` |
 | Producer messaging | `producer_message_accepted`, `producer_diagnostic`, `producer_message_admitted`, `producer_messages_claimed`, `producer_messages_released`, `producer_message_consumed`, `producer_message_discarded` |
-| User input | `message_injected`, `user_input_admitted`, `user_input_submitted`, `user_input_transformed`, `user_input_recalled`, `user_input_recalled_v2`, `user_input_applied`, `user_input_queued`, `user_input_queue_recalled`, `user_input_queue_voided`, `session_model_selected` |
+| User input | `message_injected`, `user_input_admitted`, `user_input_submitted`, `user_input_transformed`, `user_input_recalled`, `user_input_applied`, `user_input_queued`, `user_input_queue_recalled`, `user_input_queue_voided`, `session_model_selected` |
 | Run | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_interrupted` |
 | Model | `model_attempt_started`, `model_tools_published`, `model_request_prepared`, `model_output_started`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback`; live-only: `text_delta`, `reasoning_delta` |
-| Tools | `tool_call_started`, `tool_call_terminated`, `tool_output_elided`, `tool_stdin_submitted` (historical: tools no longer take stdin, so it is never written), `tool_call_linked`, `delegate_queued`, `delegate_finished`, `delegate_finished_v2`, `delegate_child_terminated`; live-only: `tool_call_progress` |
+| Tools | `tool_call_started`, `tool_call_terminated`, `tool_output_elided`, `tool_call_linked`, `delegate_queued`, `delegate_finished_v2`, `delegate_child_terminated`; live-only: `tool_call_progress` |
 | Delegation durability | `delegation_reserved`, `delegation_started`, `delegation_run_started`, `delegation_run_attached`, `delegation_finished` |
 | Approvals | `approval_requested`, `approval_evaluated`, `approval_escalated`, `approval_user_decision_recorded`, `approval_finalized`, `approval_cancelled`, `approval_doom_loop_detected`, `tree_approval_grant_committed` |
 | Internal agents | `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_completed`, `internal_agent_failed`, `internal_agent_cancelled`, `internal_agent_interrupted`, `internal_agent_fallback`; live-only: `internal_agent_text_delta` |
-| Compaction | `context_checkpoint_committed`; live-only: `native_compaction_started`, `native_compaction_finished`; legacy read/render only: `context_rehydrated` |
+| Compaction | `context_checkpoint_committed`; live-only: `native_compaction_started`, `native_compaction_finished` |
 
 ### Live-only stream output
 
@@ -110,10 +108,8 @@ reasoning. Views use it to keep an attempt that is already streaming ahead of
 inputs admitted meanwhile, and to time thinking identically live and on replay
 (each reasoning part runs from its mark to the next mark or the commit).
 
-Logs written by older engines contain stored deltas and progress records. The
-reader drops them without a diagnostic or a validation taint: their sequences
-still order the log (no gap is reported), and new appends continue after the
-physical tip. The loaded history therefore has sequence gaps where they were.
+A stored record of a live-only payload fails validation, so the reader skips it
+with a diagnostic like any other invalid record.
 
 ### Goal and producer contracts
 
@@ -150,13 +146,10 @@ stale-identity and stale-revision rejection. Empty checklist revisions
 preserve the active/paused lifecycle. Completion requires nonempty all-finished
 items, including while paused.
 
-Handling of older stored checklist items containing an `id` is pending core
-implementation verification. No specific compatibility decoder or migration is
-promised here; the versionless best-effort session-history contract still applies.
+A stored checklist item carrying an `id` does not decode.
 
 `ProducerOwner` is tagged by `type`: `external { source, name }` (a plugin's
-or a runtime's named producer; a stored `plugin { plugin }` decodes as
-`external { source: "plugin:<plugin>", name: "default" }`),
+or a runtime's named producer),
 `delegation { invocation_id }`, `goal { goal_id }`,
 `goal_control { goal_id }`, `agent { session_id }`, `tool { tool_call_id }`, or
 `subagent { session_id }` (a child's `<subagent_report>`, keyed by its run ID). It identifies a specific
@@ -177,8 +170,8 @@ those artifacts alive; plugins cannot supply `retained_output`.
 
 The optional accepted-event
 `reminder: GoalReminderIdentity { goal_id, revision, kind }` identifies a goal
-reminder; if present, its goal must match the goal owner. `kind` is `started` or
-`continuation`, defaulting to `continuation` when absent from legacy events. Its
+reminder; if present, its goal must match the goal owner. `kind` is the required
+`started` or `continuation`. Its
 body must contain the full objective and checklist, including finished items and
 revision. Each continuation attempt has a fresh message ID/idempotency key even
 at an unchanged revision. A consumed reminder cannot suppress later continuation.
@@ -241,8 +234,7 @@ Goal state and unconsumed messages must survive compaction. Fork copies durable
 branch data, never registrations; revert reconciles only the visible branch.
 Failed/disabled recovery notices are runless `producer_diagnostic { source, kind,
 message }` events with `kind` `recovery_failed` or `recovery_disabled`, not
-persisted readiness/registration records. Logs from before external producers
-record them as `plugin_diagnostic` events of those kinds.
+persisted readiness/registration records.
 
 ### Existing event behavior
 
@@ -262,57 +254,46 @@ such an attempt.
 `agent_md_loaded` is a run-scoped root-session event stamped
 `engine:agent-md`. It contains one or two `AGENTS.md` entries a coding runtime
 discovered in its workspace, each with a bounded display source, retained
-content, truncation flag, and original byte size, and the optional `attachment`
-naming that runtime's attachment. A run writes one event per attachment that
+content, truncation flag, and original byte size, and the `attachment` naming
+that runtime's attachment. A run writes one event per attachment that
 returned a file. Missing or disabled context produces no event. History uses
-only the latest run's events, the latest per attachment (an event without
-`attachment` predates runtimes and counts as `local`'s), and replays their
+only the latest run's events, the latest per attachment, and replays their
 entries as one provenance-delimited user turn. Compaction pins that turn
 alongside loaded skill bodies. See
 [System Prompt Composition](system-prompt.md#agentsmd-context-turn).
 
 `agent_md_skipped` is a run-scoped warning for an `AGENTS.md` file over the
-size limit: its display `path`, its `byte_length`, and the optional
-`attachment` whose workspace holds it (absent in events written before
-runtimes, which belong to `local`). The file contributes no context.
-
-Legacy `plugin_event_added` is a runless plugin publication containing `plugin`, `name`, and arbitrary
-JSON `payload`. Plugin-originated payloads are capped at 256 KiB, names at 128 characters, and the
-complete serialized event at 272 KiB; per-plugin/session rate and byte quotas apply. The event is normal
-branch content: it survives reopen and fork, is visible to model history and compaction, and is
-tombstoned by revert. It is no longer written: model-bound plugin sends use an explicitly
-registered producer, and `plugin/emit` publishes to the bus only.
+size limit: its display `path`, its `byte_length`, and the `attachment` whose
+workspace holds it. The file contributes no context.
 
 `plugin_diagnostic { plugin, kind, message, count }` records a plugin's operational notices,
 coalesced by `count`. `kind` is `interception_timeout`, `interception_crash` (the plugin was not
 connected or exited during the hook), `interception_rejected` (it answered with an error or a
 malformed result), `hook_blocked`, `invalid_modification`, `oversized_event`, `event_drop`,
-`context_mismatch`, or `rate_limited`. `unsupported_capability` (the removed
-`provider_before_headers` hook), `recovery_failed`, and `recovery_disabled` are only in old logs.
+`context_mismatch`, or `rate_limited`.
 
 `engine_diagnostic { kind, message }` is a runless notice of something the engine itself turned
 off for the session. Its one `kind`, `auto_compaction_disabled`, is written when automatic context
-compaction failed three times in a row and stays off for the rest of the run. Logs written before
-it record the same notice as a `plugin_diagnostic` of plugin `engine:auto-compact`.
+compaction failed three times in a row and stays off for the rest of the run.
 
-Delegation persistence includes `delegate_queued` and `delegate_finished`. The completion event is
-written to the parent run and carries `{ session_id, status, preview, short_id,
-total_lines }`; `short_id` is the optional child handle so replay can render the
-same teaser the runtime pushed, and `preview` is the report as
+Delegation persistence includes `delegate_queued` and `delegate_finished_v2`.
+The completion event is written to the parent run and carries `{ invocation_id,
+session_id, status, preview, short_id, total_lines }`; `short_id` is the
+optional child handle so replay can render the same teaser the runtime pushed,
+and `preview` is the report as
 [`[subagent_output]`](../engine/subagent_output.md) previews it: whole, or its
-first and last lines around an omission marker (at most 64 KiB). It becomes model-visible at the next turn boundary, while full output
-remains available through `get_subagent_result`.
+first and last lines around an omission marker (at most 64 KiB). The
+`invocation_id` lets repeated resumes of one child each receive exactly one
+teaser. Background completions first durably accept a steer producer message,
+then emit the completion for transcript consumers. Model history suppresses it
+when the invocation has a producer acceptance, so the result is materialized
+only once, while full output remains available through `get_subagent_result`.
+Foreground delegation retains its tool result as its only result channel.
 
-Later delegation records add `delegated_context_seeded` and `delegate_finished_v2`.
 `delegated_context_seeded` is a runless creation event containing the bounded,
 text-only user/assistant turns copied by `inherit_context`; it must precede the
 child's first run and deterministically rebuilds the same initial model history
-after restart. `delegate_finished_v2` adds the delegation `invocation_id` to the
-same completion payload so repeated resumes of one child each receive exactly
-one teaser. Current background completions first durably accept a steer producer
-message, then emit V2 for transcript consumers. Model history suppresses V2 when
-the invocation has a producer acceptance, so the result is materialized only once.
-Foreground delegation retains its tool result as its only result channel.
+after restart.
 
 The `delegation_*` lifecycle records are durable control events on the parent
 session. `delegation_reserved` contains the complete current delegate request,
@@ -341,17 +322,12 @@ session's [runtime attachments](../specs/runtimes.md#5-session-attachments).
 `runtime_attached` carries the session-unique attachment `name`, the
 `runtime_id`, the `capability` attached, the `kind` label the capability
 declared (such as `global` or `coding`), and, when the instance has one, the
-canonical `workspace` it reported. An event written before capabilities has no
-`capability` and reads as `global` for the `global` runtime and `coding`
-otherwise.
+canonical `workspace` it reported.
 `runtime_detached` carries the `name` it removes. The attachment set is the fold
 of these events in log order; a session's creation writes one
 `runtime_attached` per initial attachment together with `session_created`, so
-both reach disk with the session's first persistence; a session created with no
-attachment records a single `runtime_detached` of `global` instead. A log that holds neither
-event was written before runtimes existed and reads as attached to `global`
-and `local`; the engine writes those two attachments out before such a
-session's first attach or detach. Delegated children record their own
+both reach disk with the session's first persistence. A session created with
+no attachment records no attachment event. Delegated children record their own
 attachments.
 
 The runless `session_permission_overlay_set` event's `overlay`
@@ -395,8 +371,7 @@ the background, so a client may offer to move the running call there
 (`run.tool_background`); the field is absent otherwise and in older logs.
 `tool_call_progress` is live-only. It contains a control-free status `message`
 and optional UI-only `display`. Display deltas append; terminal `result.display`
-replaces them. Historical `output_chunk` fields still decode, but current
-writers use `display`.
+replaces them.
 Each live message/display field is bounded at 1 KiB, their cumulative per-call
 budget is 64 KiB, and final display has an independent 64 KiB bound. TUI state is
 bounded and never reconstructs display by merging authoritative streams.
@@ -445,8 +420,8 @@ An identical repeat uses the shorter `skill_invocation_noted` payload.
 queued delegated child is runless and requires that the session have no active
 run. It is persisted immediately and enters the next run's pending-input FIFO,
 including when a terminal child is queued for resume. A queued cancellation
-appends matching runless `user_input_recalled` events so those inputs cannot leak
-into a later resume. Promotion appends the ordinary run-owned
+appends a runless `user_input_recalled` naming each such admission so those
+inputs cannot leak into a later resume. Promotion appends the ordinary run-owned
 `user_input_submitted` event, so transcript rendering and model history use the
 same path as interactive run steering.
 
@@ -457,9 +432,9 @@ run-owned audit record written immediately before `user_input_submitted` when `u
 changes direct input; it contains both `original_input` and the non-empty committed `input`.
 
 Running-resume rollback and `session.recall_input` append
-`user_input_recalled_v2` with the exact `user_input_seq` of its admission.
-Replay removes that specific pending input and preserves the others. Legacy
-`user_input_recalled` continues to recall the newest pending input.
+`user_input_recalled` with the exact `user_input_seq` of its admission (in the
+same run, or runless for a runless admission). Replay removes that specific
+pending input and preserves the others.
 
 `session_model_selected` (`selection`) is the session-level model pick a client
 made with `session.select_model`; it is runless and its origin names the client.
@@ -501,10 +476,8 @@ than exceeding the budget. An absent legacy retention boundary does not cause
 the reader to infer a suffix from current configuration.
 
 Native compacted windows retain their existing replay behavior, with no
-independently appended recent-message suffix. Neither checkpoint path triggers
-new file rereads or emits `context_rehydrated`. That legacy payload
-(`ContextRehydrated` in Rust) remains decodable and renderable for saved logs;
-its persisted contents do not require a new filesystem read.
+independently appended recent-message suffix. Neither checkpoint path rereads
+files.
 
 ## Subscriptions
 
@@ -592,11 +565,6 @@ event at `cursor` has a different timestamp (or no longer exists), the response
 is `{ "events": [], "stale_cursor": true }`, no tail is registered, and the
 reader must replay from the start. The shared client sends it on every
 recovery replay.
-
-`session_reverted` markers appear only in logs written before protocol 28.
-Each hides the events after its `through_seq` on the branch visible when it was
-written; events appended after an earlier marker stay visible up to a later
-marker's target.
 
 Tool stdout and stderr use separate snapshot, delta, and gap notifications.
 Offsets are byte offsets, and clients use a snapshot after a gap before applying

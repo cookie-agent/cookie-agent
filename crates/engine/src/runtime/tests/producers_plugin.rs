@@ -232,17 +232,6 @@ async fn installed_plugin_producer_callbacks_are_durable_and_drive_a_model_turn(
             .iter()
             .any(|message| message.message_id == accepted.0 && !message.consumed)
     );
-    assert!(
-        engine
-            .inner
-            .store
-            .get(session_id)
-            .expect("plugin producer history")
-            .log
-            .events()
-            .iter()
-            .all(|event| !matches!(event.payload, EventPayload::PluginEventAdded { .. }))
-    );
 
     let admission = await_event(&engine, session_id, "plugin producer admission", |event| {
         matches!(event.payload, EventPayload::ProducerMessageAdmitted { message_id } if message_id == accepted.0)

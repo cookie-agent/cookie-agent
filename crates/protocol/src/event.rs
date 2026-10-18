@@ -1729,15 +1729,6 @@ pub struct ContextCheckpointBudgets {
     pub max_summary_bytes: SummaryByteLimit,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ContextRehydratedFile {
-    pub path: SafeDisplayText,
-    pub content: String,
-    pub byte_length: u64,
-    pub sha256: Sha256Digest,
-}
-
 /// Most tool names one `model_tools_published` record carries.
 pub const MAX_MODEL_TOOL_NAMES: usize = 1024;
 /// Longest tool name a `model_tools_published` record accepts.
@@ -1787,20 +1778,6 @@ impl AgentMdSkipped {
     pub fn validate(&self) -> Result<(), EventSchemaError> {
         if self.byte_length <= Self::MAX_SKIP_BYTES {
             return Err(EventSchemaError::InvalidAgentMd);
-        }
-        Ok(())
-    }
-}
-
-impl ContextRehydratedFile {
-    pub const MAX_CONTENT_BYTES: usize = 32 * 1024;
-
-    pub fn validate(&self) -> Result<(), EventSchemaError> {
-        if self.content.len() > Self::MAX_CONTENT_BYTES
-            || self.byte_length != self.content.len() as u64
-            || self.sha256 != Sha256Digest::of_bytes(self.content.as_bytes())
-        {
-            return Err(EventSchemaError::InvalidContextRehydration);
         }
         Ok(())
     }
@@ -1987,10 +1964,6 @@ pub enum EventPayload {
         recipe_registry_revision: RecipeRegistryRevision,
         manifest_revision: ModelSnapshotRevision,
     },
-    SessionReverted {
-        #[schemars(range(min = 1))]
-        through_seq: u64,
-    },
     SessionPermissionOverlaySet {
         overlay: SessionPermissionOverlay,
     },
@@ -1998,11 +1971,8 @@ pub enum EventPayload {
     RuntimeAttached {
         name: AttachmentName,
         runtime_id: RuntimeId,
-        /// The capability attached; absent in events written before
-        /// capabilities, which read as `global` for the global runtime and
-        /// `coding` otherwise.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        capability: Option<CapabilityName>,
+        /// The capability attached.
+        capability: CapabilityName,
         kind: RuntimeKind,
         /// Canonical workspace the runtime reported; absent without one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2028,23 +1998,14 @@ pub enum EventPayload {
         #[schemars(length(min = 1, max = 2))]
         entries: Vec<AgentMdEntry>,
         /// The coding-runtime attachment whose workspace the files came
-        /// from. Events written before runtimes have none and belong to
-        /// `local`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        attachment: Option<AttachmentName>,
+        /// from.
+        attachment: AttachmentName,
     },
     AgentMdSkipped {
         path: SafeDisplayText,
         byte_length: u64,
         /// The coding-runtime attachment whose workspace holds the file.
-        /// Events written before runtimes have none and belong to `local`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        attachment: Option<AttachmentName>,
-    },
-    PluginEventAdded {
-        plugin: String,
-        name: String,
-        payload: Value,
+        attachment: AttachmentName,
     },
     PluginDiagnostic {
         plugin: String,
@@ -2054,8 +2015,7 @@ pub enum EventPayload {
     },
     /// A producer source (a plugin or a runtime) could not restore the
     /// external work it tracks: that work is unknown, and goal continuation
-    /// is held. Plugin sources written before this event recorded it as a
-    /// `plugin_diagnostic` of kind `recovery_failed` or `recovery_disabled`.
+    /// is held.
     ProducerDiagnostic {
         source: crate::ProducerSource,
         kind: ProducerDiagnosticKind,
@@ -2175,9 +2135,6 @@ pub enum EventPayload {
         input: String,
     },
     UserInputRecalled {
-        input: String,
-    },
-    UserInputRecalledV2 {
         user_input_seq: u64,
         input: String,
     },
@@ -2347,7 +2304,6 @@ pub enum EventPayload {
         message: SafeDisplayText,
         #[serde(
             default,
-            alias = "output_chunk",
             deserialize_with = "crate::tool_output::deserialize_delta_display"
         )]
         display: Option<String>,
@@ -2360,12 +2316,6 @@ pub enum EventPayload {
         tool_call_id: ToolCallId,
         original_bytes: u64,
         retained: ArtifactReference,
-    },
-    /// Historical: stdin written to an interactive call. Tools no longer take
-    /// stdin, so this is never written; older logs still read.
-    ToolStdinSubmitted {
-        tool_call_id: ToolCallId,
-        byte_count: u64,
     },
     ToolCallLinked {
         tool_call_id: ToolCallId,
@@ -2417,17 +2367,6 @@ pub enum EventPayload {
         #[serde(deserialize_with = "deserialize_required_option")]
         #[schemars(with = "crate::NullableSchema<u32>", required)]
         position: Option<u32>,
-    },
-    DelegateFinished {
-        session_id: SessionId,
-        /// Handle rendered into the notification body. Additive and optional:
-        /// pre-handle logs render the UUID.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        short_id: Option<String>,
-        status: SessionStatus,
-        #[schemars(length(max = 2048))]
-        preview: String,
-        total_lines: u64,
     },
     DelegateFinishedV2 {
         invocation_id: InvocationId,
@@ -2541,10 +2480,6 @@ pub enum EventPayload {
         #[serde(flatten)]
         commit: ContextCheckpointCommit,
     },
-    ContextRehydrated {
-        #[schemars(length(max = 5))]
-        files: Vec<ContextRehydratedFile>,
-    },
     SessionTitleCommitted {
         change: SessionTitleChange,
         input_through_seq: u64,
@@ -2572,13 +2507,11 @@ impl EventPayload {
         !matches!(
             self,
             Self::SessionCreated { .. }
-                | Self::SessionReverted { .. }
                 | Self::SessionPermissionOverlaySet { .. }
                 | Self::RuntimeAttached { .. }
                 | Self::RuntimeDetached { .. }
                 | Self::SkillLoaded { .. }
                 | Self::SkillInvocationNoted { .. }
-                | Self::PluginEventAdded { .. }
                 | Self::PluginDiagnostic { .. }
                 | Self::ProducerDiagnostic { .. }
                 | Self::EngineDiagnostic { .. }
@@ -2656,11 +2589,6 @@ impl EventPayload {
                 creation_agent
                     .validate_selection(creation_selection)
                     .map_err(|_| EventSchemaError::SelectionAgentMismatch)?;
-            }
-            Self::SessionReverted { through_seq } => {
-                if *through_seq == 0 {
-                    return Err(EventSchemaError::InvalidRevertSequence);
-                }
             }
             Self::SessionPermissionOverlaySet { overlay } => overlay
                 .validate()
@@ -2887,10 +2815,7 @@ impl EventPayload {
                     return Err(EventSchemaError::InvalidDelegatedContext);
                 }
             }
-            Self::DelegateFinished {
-                status, preview, ..
-            }
-            | Self::DelegateFinishedV2 {
+            Self::DelegateFinishedV2 {
                 status, preview, ..
             } => {
                 if !matches!(
@@ -2972,14 +2897,6 @@ impl EventPayload {
                 validate_internal_failure(failure)?;
             }
             Self::ContextCheckpointCommitted { commit } => commit.validate()?,
-            Self::ContextRehydrated { files } => {
-                if files.is_empty() || files.len() > 5 {
-                    return Err(EventSchemaError::InvalidContextRehydration);
-                }
-                for file in files {
-                    file.validate()?;
-                }
-            }
             _ => {}
         }
         Ok(())
@@ -2995,17 +2912,8 @@ pub enum PluginDiagnosticKind {
     HookBlocked,
     OversizedEvent,
     InvalidModification,
-    /// Written for the removed `provider_before_headers` hook; kept for old
-    /// logs.
-    UnsupportedCapability,
     ContextMismatch,
     RateLimited,
-    /// Written before producer recovery moved to `producer_diagnostic`;
-    /// kept for old logs.
-    RecoveryFailed,
-    /// Written before producer recovery moved to `producer_diagnostic`;
-    /// kept for old logs.
-    RecoveryDisabled,
     /// A plugin answered a hook with an error or a malformed result.
     InterceptionRejected,
 }
@@ -3115,21 +3023,6 @@ impl TransientEvent {
     }
 }
 
-/// Reduces an event stream to its visible branch. Reverts truncate the log,
-/// so only legacy logs carry `SessionReverted` markers: each hides what
-/// follows its target on the branch visible when it was written. Markers are
-/// physical control records and are not model/transcript content.
-#[must_use]
-pub fn visible_events(events: &[StoredEvent]) -> Vec<StoredEvent> {
-    let mut visible = Vec::new();
-    for event in events {
-        if let EventPayload::SessionReverted { through_seq } = &event.payload {
-            visible.retain(|candidate: &StoredEvent| candidate.seq <= *through_seq);
-        }
-        visible.push(event.clone());
-    }
-    visible
-}
 impl StoredEvent {
     /// Decodes one JSONL record that needs no repair, typed in a single pass
     /// over its bytes. `None` means the record has to go through the tolerant
@@ -3143,8 +3036,6 @@ impl StoredEvent {
             engine_version: Option<String>,
             #[serde(default)]
             origin: Option<EventOrigin>,
-            #[serde(default, rename = "event_schema_version")]
-            _event_schema_version: Option<serde::de::IgnoredAny>,
             session_id: SessionId,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             run_id: Option<RunId>,
@@ -3176,8 +3067,6 @@ pub struct StoredEventEnvelope {
     engine_version: Option<String>,
     #[serde(default)]
     origin: Option<EventOrigin>,
-    #[serde(default, rename = "event_schema_version")]
-    _event_schema_version: Option<serde::de::IgnoredAny>,
     session_id: SessionId,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     run_id: Option<RunId>,
@@ -3214,8 +3103,6 @@ impl<'de> Deserialize<'de> for StoredEvent {
             engine_version: Option<String>,
             #[serde(default)]
             origin: Option<EventOrigin>,
-            #[serde(default)]
-            event_schema_version: Option<Value>,
             session_id: SessionId,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             run_id: Option<RunId>,
@@ -3224,7 +3111,6 @@ impl<'de> Deserialize<'de> for StoredEvent {
             payload: Value,
         }
         let w = Wire::deserialize(d)?;
-        let _ = w.event_schema_version;
         let value = Self {
             engine_version: w.engine_version,
             origin: w.origin,
@@ -3251,43 +3137,19 @@ pub struct EventPayloadRead {
 
 /// Decodes an event payload, replacing only leaves which Serde identifies as
 /// nullable fields. Required-field and unknown-variant failures remain errors.
-/// Historical checklist item IDs are ignored here only; authored tool/RPC values
-/// remain strict. The original event log is not rewritten.
+/// The original event log is not rewritten.
 ///
 /// A payload that decodes strictly is read in place; only a payload that
 /// needs repair is copied and re-decoded with path tracking.
 pub fn deserialize_event_payload_best_effort(value: &Value) -> Result<EventPayloadRead, String> {
-    let mut value = Cow::Borrowed(value);
-    let mut degraded_fields = Vec::new();
-    let has_checklist_item_ids = value.get("type").and_then(Value::as_str)
-        == Some("goal_checklist_revised")
-        && value
-            .get("items")
-            .and_then(Value::as_array)
-            .is_some_and(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_object)
-                    .any(|item| item.contains_key("id"))
-            });
-    if has_checklist_item_ids
-        && let Some(items) = value
-            .to_mut()
-            .get_mut("items")
-            .and_then(Value::as_array_mut)
-    {
-        for item in items.iter_mut().filter_map(Value::as_object_mut) {
-            item.remove("id");
-        }
-        degraded_fields.push("items[].id".into());
-    }
-    if let Ok(payload) = EventPayload::deserialize(value.as_ref()) {
+    if let Ok(payload) = EventPayload::deserialize(value) {
         return Ok(EventPayloadRead {
             payload,
-            degraded_fields,
+            degraded_fields: Vec::new(),
         });
     }
-    let mut value = value.into_owned();
+    let mut degraded_fields = Vec::new();
+    let mut value = value.clone();
     let mut previous_path = None;
     for _ in 0..=MAX_DEGRADED_FIELDS {
         match serde_path_to_error::deserialize::<_, EventPayload>(value.clone().into_deserializer())
@@ -3618,7 +3480,6 @@ pub enum EventSchemaError {
     TitleControlCharacter,
     InvalidArtifactReference,
     InvalidToolElision,
-    InvalidContextRehydration,
     ToolOutputTooLarge,
     ToolMetadataTooLarge,
     TooManyAttachments,
@@ -3651,7 +3512,6 @@ pub enum EventSchemaError {
     TooManyReplayDecisions,
     InvalidModelTurnCommit,
     InvalidFallback,
-    InvalidRevertSequence,
     InvalidSessionPermissionOverlay,
     InvalidSkillEvent,
     ZeroEventSequence,
@@ -3677,7 +3537,6 @@ impl fmt::Display for EventSchemaError {
                 "artifact reference must be a bounded artifact:// URI"
             }
             Self::InvalidToolElision => "tool output elision is invalid",
-            Self::InvalidContextRehydration => "context rehydration is invalid",
             Self::ToolOutputTooLarge => "persisted tool output exceeds 2 MiB",
             Self::ToolMetadataTooLarge => "persisted tool metadata exceeds 2 MiB",
             Self::TooManyAttachments => "persisted tool result exceeds 256 attachments",
@@ -3722,7 +3581,6 @@ impl fmt::Display for EventSchemaError {
             Self::InvalidFallback => {
                 "fallback must advance to a distinct later model after at least one attempt"
             }
-            Self::InvalidRevertSequence => "session revert sequence must be positive",
             Self::InvalidSessionPermissionOverlay => "session permission overlay is invalid",
             Self::InvalidSkillEvent => "skill event is invalid",
             Self::ZeroEventSequence => "event sequence must be positive",

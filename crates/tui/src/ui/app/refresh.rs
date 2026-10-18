@@ -1012,7 +1012,6 @@ impl App {
                     | EventPayload::RunFailed { .. }
                     | EventPayload::RunCancelled { .. }
                     | EventPayload::RunInterrupted { .. }
-                    | EventPayload::DelegateFinished { .. }
                     | EventPayload::DelegateFinishedV2 { .. }
                     | EventPayload::DelegateChildTerminated { .. }
             )
@@ -1080,10 +1079,7 @@ impl App {
             ClientDelivery::ReplayEnd { session_id, .. } => Some(*session_id),
             _ => None,
         };
-        let revert_rebuild = event.is_some_and(|event| {
-            Some(event.session_id) == self.selected
-                && matches!(&event.payload, EventPayload::SessionReverted { .. })
-        }) || matches!(
+        let revert_rebuild = matches!(
             &delivery,
             ClientDelivery::Live { message, .. } if matches!(
                 message.as_ref(),

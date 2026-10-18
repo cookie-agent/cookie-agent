@@ -61,7 +61,7 @@ async fn the_runtime_panel_detaches_and_attaches_and_the_status_line_follows() {
         app.store
             .sessions
             .get(&session)
-            .is_some_and(|state| state.runtime_attachments.attachments().is_some())
+            .is_some_and(|state| !state.runtime_attachments.attachments().is_empty())
     })
     .await;
 
@@ -199,14 +199,12 @@ async fn a_new_session_draft_chooses_its_runtimes_before_the_session_exists() {
         app.store
             .sessions
             .get(&created)
-            .and_then(|state| state.runtime_attachments.attachments())
-            .is_some()
+            .is_some_and(|state| !state.runtime_attachments.attachments().is_empty())
     })
     .await;
     let attached = app.store.sessions[&created]
         .runtime_attachments
         .attachments()
-        .expect("attachments")
         .iter()
         .map(|attachment| attachment.name.to_string())
         .collect::<Vec<_>>();

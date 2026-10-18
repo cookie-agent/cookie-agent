@@ -37,7 +37,7 @@ request. Later native compactions are seeded with the previous window. The
 window has a 32 MiB cap; `max_summary_bytes` applies only to text summaries.
 Native windows remain unchanged by recent-history retention: the engine does not
 append an independent recent-message tail to them. Neither native nor internal
-compaction rereads files or emits new `context_rehydrated` events.
+compaction rereads files.
 
 ## The trigger threshold
 
@@ -232,8 +232,5 @@ summarizer fallback.
 The internal summarizer's in-memory pruning retry does not produce
 `tool_output_elided` events.
 
-`context_rehydrated` (`ContextRehydrated` in Rust) is legacy-only. Saved logs
-containing it remain decodable and renderable, but new compactions never reread
-files or emit this event, including on the native path. See the
-[event reference](../reference/events.md#compaction-checkpoints) for checkpoint
-retention fields and legacy defaults.
+See the [event reference](../reference/events.md#compaction-checkpoints) for
+checkpoint retention fields.

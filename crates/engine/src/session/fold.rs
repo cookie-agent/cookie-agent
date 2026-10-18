@@ -332,18 +332,6 @@ impl SessionProjection {
             } => {
                 self.status = *terminal;
             }
-            EventPayload::SessionReverted { .. } => {
-                if matches!(step, FoldStep::Append) {
-                    return Observed::NeedsRefold;
-                }
-                self.status = SessionStatus::Idle;
-                for run in self.runs.values_mut() {
-                    if run.status == SessionStatus::Running {
-                        run.status = SessionStatus::Interrupted;
-                        run.pending_calls.clear();
-                    }
-                }
-            }
             // An admission (a steer, or input queued for later) may have no
             // run.
             EventPayload::UserInputAdmitted { .. } | EventPayload::UserInputSubmitted { .. } => {

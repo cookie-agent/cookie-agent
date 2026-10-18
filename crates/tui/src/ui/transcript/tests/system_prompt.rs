@@ -963,7 +963,7 @@ fn replay_rebuild_restores_new_event_backed_blocks() {
 
 fn agent_md_loaded(content: &str) -> EventPayload {
     EventPayload::AgentMdLoaded {
-        attachment: None,
+        attachment: cookie_agent_protocol::AttachmentName::new("local").expect("name"),
         entries: vec![cookie_agent_protocol::AgentMdEntry {
             source: SafeDisplayText::new("/work/AGENTS.md").expect("source"),
             content: content.into(),
@@ -1010,7 +1010,7 @@ fn agent_md_and_skill_loads_render_as_expandable_context_rows() {
             EventPayload::AgentMdSkipped {
                 path: SafeDisplayText::new("/work/sub/AGENTS.md").expect("path"),
                 byte_length: cookie_agent_protocol::AgentMdSkipped::MAX_SKIP_BYTES + 1,
-                attachment: None,
+                attachment: cookie_agent_protocol::AttachmentName::new("local").expect("name"),
             },
         ),
     ];
@@ -1102,7 +1102,7 @@ fn multi_file_agent_md_names_each_source_when_expanded() {
             session,
             2,
             EventPayload::AgentMdLoaded {
-                attachment: None,
+                attachment: cookie_agent_protocol::AttachmentName::new("local").expect("name"),
                 entries: vec![
                     entry("/repo/AGENTS.md", "repo rule"),
                     entry("/repo/app/AGENTS.md", "app rule\napp detail"),
@@ -1168,7 +1168,7 @@ fn agent_md_row_reappears_when_a_run_without_it_breaks_the_chain() {
 fn agent_md_rows_compare_each_attachment_with_its_own_previous_run() {
     let session = SessionId::new_v7();
     let loaded = |attachment: &str, source: &str, content: &str| EventPayload::AgentMdLoaded {
-        attachment: Some(cookie_agent_protocol::AttachmentName::new(attachment).expect("name")),
+        attachment: cookie_agent_protocol::AttachmentName::new(attachment).expect("name"),
         entries: vec![cookie_agent_protocol::AgentMdEntry {
             source: SafeDisplayText::new(source).expect("source"),
             content: content.into(),

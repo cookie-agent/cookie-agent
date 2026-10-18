@@ -71,12 +71,10 @@ pub struct GoalUpdateResult {
 }
 
 /// Whether a reminder introduces the objective or continues previously consumed work.
-/// Legacy reminder events always represented continuations.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalReminderKind {
     Started,
-    #[default]
     Continuation,
 }
 
@@ -88,6 +86,5 @@ pub enum GoalReminderKind {
 pub struct GoalReminderIdentity {
     pub goal_id: GoalId,
     pub revision: u64,
-    #[serde(default)]
     pub kind: GoalReminderKind,
 }

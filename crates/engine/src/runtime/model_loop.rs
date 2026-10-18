@@ -592,7 +592,7 @@ impl Engine {
                         event_origin("engine:agent-md"),
                         Event::AgentMdLoaded {
                             entries: loaded.entries,
-                            attachment: Some(loaded.attachment.clone()),
+                            attachment: loaded.attachment.clone(),
                         },
                     )
                     .await
@@ -612,7 +612,7 @@ impl Engine {
                         Event::AgentMdSkipped {
                             path,
                             byte_length,
-                            attachment: Some(loaded.attachment.clone()),
+                            attachment: loaded.attachment.clone(),
                         },
                     )
                     .await

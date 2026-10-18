@@ -351,14 +351,9 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
         .unwrap();
     fixture
         .engine
-        .append_direct(
-            session.session_id,
-            None,
-            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-            EventPayload::SessionReverted {
-                through_seq: termination_seq - 1,
-            },
-        )
+        .inner
+        .store
+        .truncate(session.session_id, termination_seq - 1)
         .unwrap();
     let events = fixture
         .engine

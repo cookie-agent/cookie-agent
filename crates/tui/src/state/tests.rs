@@ -1050,14 +1050,9 @@ fn goal_projection_rebuilds_for_replay_revert_and_fork_like_history() {
     let forked = reduce_session_events(SessionId::new_v7(), 0, &events);
     assert_eq!(forked.goal, replayed.goal);
 
-    let mut reverted_events = events;
-    reverted_events.push(stored_event(
-        session_id,
-        None,
-        4,
-        EventPayload::SessionReverted { through_seq: 1 },
-    ));
-    let reverted = reduce_session_events(session_id, 5, &reverted_events);
+    // A revert to sequence 1 cuts the log after it.
+    let reverted_events = &events[..1];
+    let reverted = reduce_session_events(session_id, 5, reverted_events);
     let goal = reverted.goal.expect("reverted goal");
     assert_eq!(goal.status, GoalStatus::Active);
     assert!(goal.items.is_empty());
@@ -1685,14 +1680,9 @@ fn discard_inside_committed_input_window_stays_discarded_and_reverts() {
     ));
     assert!(!replayed.producer_messages[&message_id].consumption_recorded);
 
-    let mut reverted_events = events;
-    reverted_events.push(stored_event(
-        session_id,
-        None,
-        5,
-        EventPayload::SessionReverted { through_seq: 3 },
-    ));
-    let reverted = reduce_session_events(session_id, 0, &reverted_events);
+    // A revert to sequence 3 cuts the log after it.
+    let reverted_events = &events[..3];
+    let reverted = reduce_session_events(session_id, 0, reverted_events);
     assert!(matches!(
         producer_rows(&reverted).as_slice(),
         [TranscriptItem::ProducerMessage {
@@ -2259,12 +2249,8 @@ fn replay_and_revert_preserve_terminal_claim_until_explicit_recovery_release() {
         ProducerMessageStatus::Admitted
     );
 
-    events.push(stored_event(
-        session_id,
-        None,
-        7,
-        EventPayload::SessionReverted { through_seq: 4 },
-    ));
+    // A revert to sequence 4 cuts the log after it.
+    events.truncate(4);
     let reverted = reduce_session_events(session_id, 3, &events);
     assert_eq!(reverted.producer_claims[&3].run_id, interrupted_run);
     assert_eq!(
@@ -3208,44 +3194,6 @@ fn thinking_duration_transfers_to_the_committed_child_on_rebuild() {
         state.thinking_duration(item_id, committed_id),
         Some(Duration::from_secs(7))
     );
-}
-
-#[test]
-fn session_revert_rebuilds_transcript_across_a_persisted_sequence_gap() {
-    let session_id = SessionId::new_v7();
-    let run_id = RunId::new_v7();
-    let event = |seq, payload| StoredEvent {
-        engine_version: None,
-        origin: None,
-        session_id,
-        run_id: Some(run_id),
-        seq,
-        timestamp: jiff::Timestamp::now(),
-        payload,
-    };
-    let mut store = StateStore::default();
-    assert!(store.apply_event(event(
-        1,
-        EventPayload::UserInputSubmitted {
-            input: "kept".into(),
-        },
-    )));
-    assert!(store.apply_event(event(
-        3,
-        EventPayload::UserInputSubmitted {
-            input: "removed".into(),
-        },
-    )));
-    let mut reverted = event(4, EventPayload::SessionReverted { through_seq: 1 });
-    reverted.run_id = None;
-    assert!(store.apply_event(reverted));
-    let state = store.sessions.get(&session_id).expect("session state");
-    assert_eq!(state.last_seq, 4);
-    assert_eq!(state.transcript.len(), 1);
-    assert!(matches!(
-        &state.transcript[0],
-        TranscriptItem::User { markdown, .. } if markdown.as_str() == "kept"
-    ));
 }
 
 #[test]

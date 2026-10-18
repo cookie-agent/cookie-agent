@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::ui::transcript::*;
 
-use cookie_agent_protocol::{EventPayload, SessionId};
+use cookie_agent_protocol::{EventSubscriptionMessage, SessionId};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 
@@ -596,13 +596,15 @@ async fn conversation_selection_retires_on_transcript_rebuild() {
         matches!(app.selection, Some(TextSelection::Conversation { .. })),
         "the drag selected conversation rows"
     );
-    // A revert marker rebuilds the visible transcript onto a new
-    // branch; the pre-rebuild selection coordinates are meaningless.
-    app.handle_delivery(live_event(runless_event(
-        session,
-        3,
-        EventPayload::SessionReverted { through_seq: 1 },
-    )))
+    // A revert rebuilds the visible transcript onto a new branch; the
+    // pre-rebuild selection coordinates are meaningless.
+    app.handle_delivery(ClientDelivery::Live {
+        message: Box::new(EventSubscriptionMessage::Rewound {
+            session_id: session,
+            through_seq: 1,
+        }),
+        generation: 0,
+    })
     .await;
     assert!(
         app.selection.is_none(),

@@ -51,16 +51,16 @@ async fn pending_lane_tracks_admit_promote_and_recall_events() {
         .collect();
     assert_eq!(rendered, ["alpha"]);
 
-    // Recall removes the newest entry positionally.
-    app.handle_delivery(live_event(recalled(session, 5, run, "gamma")))
+    // Recall removes the admission it names.
+    app.handle_delivery(live_event(recalled(session, 5, run, 3, "gamma")))
         .await;
     assert_eq!(pending_texts(&app, session), ["beta"]);
 
-    // The reduction never consults payload text — promotion pops the
-    // front, recall pops the back, mirroring the engine's own replay
-    // exactly. A payload that names no lane entry still withdraws the
-    // newest one, so nothing the engine says is gone can be stranded.
-    app.handle_delivery(live_event(recalled(session, 6, run, "ghost")))
+    // A recall that names no lane entry leaves the lane alone.
+    app.handle_delivery(live_event(recalled(session, 6, run, 1, "alpha")))
+        .await;
+    assert_eq!(pending_texts(&app, session), ["beta"]);
+    app.handle_delivery(live_event(recalled(session, 7, run, 2, "beta")))
         .await;
     assert!(pending_texts(&app, session).is_empty());
     assert_eq!(app.queue_strip_height(), 0);
@@ -871,15 +871,15 @@ async fn pending_producer_survives_run_terminal_and_cramped_frames_do_not_overla
 }
 
 #[tokio::test]
-async fn recall_ignores_payload_text_and_pops_the_newest_entry() {
+async fn recall_removes_the_admission_it_names() {
     let (mut app, session, run) = app_with_active_run().await;
     assert!(app.store.apply_event(admitted(session, 1, run, "alpha")));
     assert!(app.store.apply_event(admitted(session, 2, run, "beta")));
-    // The recalled payload names the OLDEST entry; positional replay
-    // still withdraws the newest, exactly like the engine.
-    app.handle_delivery(live_event(recalled(session, 3, run, "alpha")))
+    // Recalling the oldest entry leaves the newest, exactly like the
+    // engine.
+    app.handle_delivery(live_event(recalled(session, 3, run, 1, "alpha")))
         .await;
-    assert_eq!(pending_texts(&app, session), ["alpha"]);
+    assert_eq!(pending_texts(&app, session), ["beta"]);
     // A promotion payload naming the newest entry still graduates the
     // oldest.
     app.handle_delivery(live_event(user_input(session, 4, run, "anything")))
@@ -892,11 +892,11 @@ async fn duplicate_texts_resolve_by_position_not_identity() {
     let (mut app, session, run) = app_with_active_run().await;
     assert!(app.store.apply_event(admitted(session, 1, run, "same")));
     assert!(app.store.apply_event(admitted(session, 2, run, "same")));
-    // Promotion takes the oldest duplicate; recall takes the newest.
+    // Promotion takes the oldest duplicate; recall names the other.
     app.handle_delivery(live_event(user_input(session, 3, run, "same")))
         .await;
     assert_eq!(pending_texts(&app, session), ["same"]);
-    app.handle_delivery(live_event(recalled(session, 4, run, "same")))
+    app.handle_delivery(live_event(recalled(session, 4, run, 2, "same")))
         .await;
     assert!(pending_texts(&app, session).is_empty());
 }
@@ -1104,7 +1104,7 @@ async fn clicking_a_strip_entry_recalls_and_restores_the_returned_text() {
         session,
         3,
         run,
-        EventPayload::UserInputRecalledV2 {
+        EventPayload::UserInputRecalled {
             user_input_seq: 1,
             input: "first".into(),
         },
