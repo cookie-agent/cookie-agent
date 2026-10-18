@@ -202,6 +202,12 @@ and the CLI share one implementation of the protocol mechanics.
 
 ## Methods
 
+Params are commands: a member a method's params schema does not list is
+refused with `-32602` and `data.code` `unknown_field`, whose `field` is the
+member's JSON path (`selection.model.extra`). That holds inside types session
+history also stores, such as a run selection or a permission rule, which
+ignore unknown members when they are read as history.
+
 `run.start` accepts optional `reset_fallback` (default `false`). The server
 normally trims a requested earlier model's suffix to the latest successfully
 committed fallback in this session, matching exact model/variant identity and

@@ -46,9 +46,10 @@ protocol over either:
   tool result. A sender refuses to send a larger message; a receiver that gets
   one closes the connection.
 - **Strict.** Every message and every params or result object rejects unknown
-  fields. A frame that is not a valid request, notification, or reply closes
-  the connection. A request whose params do not match its method is answered
-  with `-32602`, and the connection stays up.
+  fields, except the types session history also stores, such as a tool
+  result, which ignore them. A frame that is not a valid request,
+  notification, or reply closes the connection. A request whose params do not
+  match its method is answered with `-32602`, and the connection stays up.
 
 ## Version
 
