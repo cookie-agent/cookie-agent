@@ -38,7 +38,7 @@ impl Reloadable {
         write_private_test_file(&self.root.join(path), text);
     }
 
-    fn snapshot(&self) -> cookie_agent_protocol::RuntimeSnapshotV1 {
+    fn snapshot(&self) -> cookie_agent_protocol::ModelCatalogView {
         self.engine.runtime_snapshot().expect("snapshot").snapshot
     }
 }
@@ -58,9 +58,11 @@ async fn a_reload_applies_settings_and_agents_and_publishes_once() {
     assert_eq!(status.error, None);
     assert!(status.restart_required.is_empty());
     let after = fixture.snapshot();
-    assert_eq!(after.config_revision, status.applied_revision);
-    assert_ne!(after.config_revision, before.config_revision);
-    assert_ne!(after.runtime_revision, before.runtime_revision);
+    assert_eq!(
+        fixture.engine.current_runtime().revisions.config_revision,
+        status.applied_revision
+    );
+    assert_ne!(after.revision, before.revision);
     assert!(
         after
             .agents

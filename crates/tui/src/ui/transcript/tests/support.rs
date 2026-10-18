@@ -1088,13 +1088,11 @@ pub(crate) fn model_descriptor() -> cookie_agent_protocol::AvailableModelDescrip
                 id: cookie_agent_protocol::VariantId::new("fast").expect("variant"),
                 display_name: "Fast".into(),
                 origin: cookie_agent_protocol::VariantOrigin::Explicit,
-                behavior_fingerprint: Sha256Digest::of_bytes(b"fast"),
             },
             cookie_agent_protocol::AvailableVariantDescriptor {
                 id: cookie_agent_protocol::VariantId::new("high").expect("variant"),
                 display_name: "High".into(),
                 origin: cookie_agent_protocol::VariantOrigin::ModelsDevEffort,
-                behavior_fingerprint: Sha256Digest::of_bytes(b"high"),
             },
         ],
         variant_order: vec![
@@ -1102,7 +1100,6 @@ pub(crate) fn model_descriptor() -> cookie_agent_protocol::AvailableModelDescrip
             cookie_agent_protocol::VariantId::new("high").expect("variant"),
         ],
         default_variant: None,
-        behavior_fingerprint: Sha256Digest::of_bytes(b"model"),
     }
 }
 
@@ -1252,27 +1249,18 @@ pub(crate) fn runtime_snapshot(
     providers: Vec<cookie_agent_protocol::ProviderDescriptor>,
     models: Vec<cookie_agent_protocol::AvailableModelDescriptor>,
     agents: Vec<cookie_agent_protocol::AgentDescriptor>,
-) -> cookie_agent_protocol::RuntimeSnapshotV1 {
-    cookie_agent_protocol::RuntimeSnapshotV1 {
-        snapshot_schema_version: cookie_agent_protocol::RuntimeSnapshotSchemaVersion::current(),
-        recipe_registry_revision: protocol_revision(digit),
-        catalog_revision: protocol_revision(digit),
-        catalog_source: cookie_agent_protocol::CatalogSource::Network,
-        catalog_state: cookie_agent_protocol::CatalogRuntimeState {
+) -> cookie_agent_protocol::ModelCatalogView {
+    cookie_agent_protocol::ModelCatalogView {
+        revision: cookie_agent_protocol::ViewRevision::new(format!("view-{digit}"))
+            .expect("view revision"),
+        catalog: cookie_agent_protocol::CatalogStatus {
+            source: cookie_agent_protocol::CatalogSource::Network,
             stale: false,
             age: cookie_agent_protocol::CatalogAge::Current,
             provider_quarantine_count: 0,
             model_quarantine_count: 0,
-            quarantine_digest: Sha256Digest::of_bytes(b"quarantine"),
             last_error: None,
         },
-        provider_state_revision: protocol_revision(digit),
-        provider_store_generation: cookie_agent_protocol::ProviderStoreGeneration::new(1)
-            .expect("store generation"),
-        model_revision: protocol_revision(digit),
-        agent_revision: protocol_revision(digit),
-        config_revision: protocol_revision(digit),
-        runtime_revision: protocol_revision(digit),
         providers,
         models,
         agents,
@@ -1293,7 +1281,6 @@ pub(crate) fn catalog_model(
             id: cookie_agent_protocol::VariantId::new(*id).expect("variant"),
             display_name: format!("Variant {id}"),
             origin: cookie_agent_protocol::VariantOrigin::Explicit,
-            behavior_fingerprint: Sha256Digest::of_bytes(id.as_bytes()),
         })
         .collect();
     descriptor

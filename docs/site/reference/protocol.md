@@ -204,9 +204,9 @@ Idempotent redelivery resolves against the state preceding the original run.
 | Method | Parameters | Result summary |
 |---|---|---|
 | `handshake` | `protocol_version`, `client` identity, optional `token`, `features` | The daemon's `protocol_version` and `engine_version`, the connection's event `origin`, `machine_id` when the daemon has one, and `features` (see [Handshake and authentication](#handshake-and-authentication)) |
-| `runtime.snapshot.get` | Empty object | One coherent runtime snapshot |
-| `provider.connect` | Provider, expected catalog revision, setup/auth values, client ID | Durable connection, effective auth, snapshot, replay state |
-| `provider.disconnect` | Provider, expected revisions/generation, client ID | Disconnect receipt, effective auth, snapshot, replay state |
+| `runtime.snapshot.get` | Empty object | The daemon's current [catalog view](#the-catalog-view) |
+| `provider.connect` | Provider, the `expected_revision` of the catalog view, setup/auth values, client ID | Durable connection, effective auth, the new catalog view, replay state |
+| `provider.disconnect` | Provider, the `expected_revision` of the catalog view, expected connection generation, client ID | Disconnect receipt (ID and time), effective auth, the new catalog view, replay state |
 | `config.get` | Empty object | The documents on disk (`config.toml`, `agents/<id>.md`, `agents/<preset>/<id>.md`), each with its `text` and `fingerprint`; their `revision`; `empty_presets`; and `status` |
 | `config.apply` | `expected_revision`, `changes`: `{"put": {path, text, expected_fingerprint?}}`, `{"delete": {path, expected_fingerprint}}`, `{"set": {key, value}}` (one key of `config.toml` by its path of names; `null` removes it) | The new `revision` and `status`. A refusal changes nothing and is the error `config_apply_refused`, whose `reason` is `conflict`, `invalid_configuration`, or `invalid_change` and whose `detail` says why |
 | `config.reload` | Empty object | `status`: `applied_revision`, `restart_required` (`server`, `plugins`, `runtimes`), and `error` when the configuration on disk failed validation and was not applied |
@@ -335,11 +335,40 @@ plugin is started at once, and a `connected` one is stopped and started. An
 unknown or disabled plugin is an error (`plugin request rejected`). Status
 changes arrive as `plugins.changed`.
 
+### The catalog view
+
+`runtime.snapshot.get` returns, and `runtime.changed` carries, a
+`ModelCatalogView`:
+
+```json
+{ "revision": "<opaque>",
+  "catalog": { "source": "network", "stale": false, "age": "current",
+               "provider_quarantine_count": 0, "model_quarantine_count": 0,
+               "last_error": null },
+  "providers": [ … ], "models": [ … ], "agents": [ … ] }
+```
+
+- **`revision`** is one opaque string: it changes whenever anything the view
+  shows changes. Clients compare it and send it back, never parse it.
+  `provider.connect` and `provider.disconnect` take the revision of the view
+  their form was filled from as `expected_revision`; a view whose catalog (for
+  a connect) or provider state (for a disconnect) has changed since is
+  refused with `catalog_revision_conflict` or `runtime_revision_conflict`,
+  and the client reads the view again.
+- **`catalog`** says where the model catalog stands: its `source`
+  (`network`, `cache`, or `bootstrap`), whether it is `stale`, its `age`
+  (`current`, `older_than_seven_days`, or `older_than_thirty_days`), the
+  records it quarantined, and its nullable `last_error`.
+- **`providers`, `models`, and `agents`** are client-facing descriptors only:
+  no frozen model bindings, recipe identities, fingerprints, compiler versions,
+  or the internal revisions and counters the view's `revision` stands for.
+  `models` lists only selectable models; an agent's `resolved_fallback` names
+  model selections.
+
 ### Model availability
 
-Protocol 24 (runtime snapshot schema 6) makes unusable models visible instead
-of silently dropping them. `snapshot.models` still lists only selectable
-models. Each `ProviderDescriptor` additionally carries:
+Unusable models are visible instead of silently dropped. Each
+`ProviderDescriptor` carries:
 
 - `model_counts`: `available`, `quarantined`, `unsupported`, `needs_setup`, and
   `needs_credentials` counts over the provider's catalog rows (deprecated,
@@ -352,9 +381,6 @@ models. Each `ProviderDescriptor` additionally carries:
 - `documentation_url` and `environment`: the models.dev `doc` URL and `env`
   variable names. They are display hints; cookie never reads those variables.
 
-`catalog_state.age` is `current`, `older_than_seven_days`, or
-`older_than_thirty_days` for the selected catalog body, alongside the existing
-`stale` flag, quarantine counts, and nullable `last_error`.
 
 ## Steering
 
@@ -502,7 +528,7 @@ the title, and continues with new physical sequences.
 
 | Notification | Payload |
 |---|---|
-| `runtime.changed` | Previous revision, complete snapshot, sorted change reasons |
+| `runtime.changed` | The previous view's `revision`, the complete new [catalog view](#the-catalog-view), and the change reasons, sorted and without repeats |
 | `events.subscription` | One stored event, live-only stream output, a session sequence gap, or a rewind |
 | `events.plugin` | Session-scoped non-durable plugin event |
 | `sessions.changed` | One session index change: `upserted`, `removed`, `approvals_changed`, `permission_mode_changed`, or `resync` |

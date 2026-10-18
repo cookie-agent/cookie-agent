@@ -52,21 +52,17 @@ impl Harness {
         let selected_suffix = agent.selected_suffix();
         let a = selected_suffix[0].clone();
         let b = selected_suffix[1].clone();
-        let digest = cookie_agent_protocol::Sha256Digest::of_bytes(b"fallback test");
-        let revision = format!("sha256:{digest}");
         let mut models = selected_suffix.iter().map(|binding| {
             serde_json::from_value::<AvailableModelDescriptor>(json!({
                 "key":binding.selection.model, "display_name":binding.selection.model.to_string(),
                 "capabilities":{"input":["text"],"output":["text"],"context_tokens":8192,"output_tokens":2048,"tool_calling":true,"parallel_tool_calls":true,"structured_output":false,"reasoning":false,"temperature":true,"top_p":true,"seed":false,"native_replay":"unsupported","cancellation":"local_only","media":{}},
-                "variants":[],"variant_order":[],"default_variant":null,"behavior_fingerprint":digest,
+                "variants":[],"variant_order":[],"default_variant":null,
             })).unwrap()
         }).collect::<Vec<_>>();
         models.sort_by(|left, right| left.key.cmp(&right.key));
         let runtime = serde_json::from_value(json!({
-            "snapshot_schema_version":cookie_agent_protocol::RuntimeSnapshotSchemaVersion::current(),
-            "recipe_registry_revision":revision,"catalog_revision":revision,"catalog_source":"network",
-            "catalog_state":{"stale":false,"age":"current","provider_quarantine_count":0,"model_quarantine_count":0,"quarantine_digest":digest,"last_error":null},
-            "provider_state_revision":revision,"provider_store_generation":1,"model_revision":revision,"agent_revision":revision,"config_revision":revision,"runtime_revision":revision,
+            "revision":"view-fallback",
+            "catalog":{"source":"network","stale":false,"age":"current","provider_quarantine_count":0,"model_quarantine_count":0,"last_error":null},
             "providers":[],"models":models,"agents":[{"id":selection.agent,"preset":null,"description":"Fixture agent","mode":"primary","enabled":true,"runnable_as_root":true,"resolved_fallback":selected_suffix.iter().map(|binding| binding.selection.clone()).collect::<Vec<_>>(),"delegation_targets":[]}],
         })).unwrap();
         let (responses, incoming) = mpsc::unbounded_channel();

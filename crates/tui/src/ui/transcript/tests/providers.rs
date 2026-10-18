@@ -823,7 +823,7 @@ async fn supported_removed_provider_reconnects_through_setup_and_secret_workflow
     client
         .connect_provider(cookie_agent_protocol::ProviderConnectParams {
             provider_id: ProviderId::new("openai").expect("provider ID"),
-            expected_catalog_revision: current.snapshot.catalog_revision,
+            expected_revision: current.snapshot.revision,
             setup_values: initial_form.setup_values().expect("initial setup"),
             auth_method: initial_form.auth_method.clone(),
             auth_values: initial_form.auth_values().expect("initial credentials"),
@@ -851,7 +851,7 @@ async fn supported_removed_provider_reconnects_through_setup_and_secret_workflow
         cookie_agent_protocol::ProviderSupportState::Supported
     );
     assert!(projected.durable_connection.is_some());
-    let generation_before = removed.snapshot.provider_store_generation;
+    let generation_before = removed.snapshot.revision.clone();
 
     let mut app = test_app().await;
     app.client = client.clone();
@@ -890,7 +890,7 @@ async fn supported_removed_provider_reconnects_through_setup_and_secret_workflow
         .runtime_snapshot()
         .await
         .expect("reconnected runtime");
-    assert!(reconnected.snapshot.provider_store_generation > generation_before);
+    assert_ne!(reconnected.snapshot.revision, generation_before);
     let projected = &reconnected.snapshot.providers[0];
     assert_eq!(
         projected.presence,
@@ -930,7 +930,7 @@ async fn unsupported_removed_provider_is_typed_details_only() {
         projected.support.reason.as_ref().map(SafeCode::as_str),
         Some("removed_without_retained_recipe_match")
     );
-    let generation_before = runtime.snapshot.provider_store_generation;
+    let generation_before = runtime.snapshot.revision.clone();
 
     let mut app = test_app().await;
     app.client = client.clone();
@@ -951,7 +951,7 @@ async fn unsupported_removed_provider_is_typed_details_only() {
         .await;
     assert_eq!(app.modal, Modal::ConnectDetails);
     let after = client.runtime_snapshot().await.expect("unchanged runtime");
-    assert_eq!(after.snapshot.provider_store_generation, generation_before);
+    assert_eq!(after.snapshot.revision, generation_before);
 }
 
 #[tokio::test]
@@ -985,11 +985,8 @@ async fn catalog_shape_does_not_quarantine_provider() {
     assert_eq!(app.modal, Modal::ConnectSetup);
     let after = client.runtime_snapshot().await.expect("unchanged runtime");
     assert_eq!(
-        after.snapshot.provider_store_generation,
-        app.runtime
-            .snapshot()
-            .expect("installed runtime")
-            .provider_store_generation
+        after.snapshot.revision,
+        app.runtime.snapshot().expect("installed runtime").revision
     );
 }
 
@@ -1199,7 +1196,7 @@ async fn out_of_chain_runtime_notification_refetches_the_current_snapshot() {
     // A missed notification breaks the chain: this one links to a revision
     // the client never saw, so it is rejected and the client refetches.
     let skipped = runtime_snapshot("3", Vec::new(), Vec::new(), Vec::new());
-    let unseen = runtime_snapshot("2", Vec::new(), Vec::new(), Vec::new()).runtime_revision;
+    let unseen = runtime_snapshot("2", Vec::new(), Vec::new(), Vec::new()).revision;
     app.handle_delivery(cookie_agent_protocol::ClientDelivery::RuntimeChanged(
         Box::new(cookie_agent_protocol::RuntimeChangedNotification {
             previous_revision: Some(unseen),
@@ -1237,7 +1234,7 @@ async fn out_of_chain_runtime_notification_refetches_the_current_snapshot() {
         .expect("runtime resync timeout")
         .expect("runtime resync update");
     app.handle_rpc_update(update);
-    assert_eq!(app.runtime.revision(), Some(&current.runtime_revision));
+    assert_eq!(app.runtime.revision(), Some(&current.revision));
     assert!(
         app.agents
             .iter()
@@ -1256,9 +1253,9 @@ async fn catalog_refresh_and_fallback_notifications_update_durable_state_monoton
         vec![model_descriptor()],
         vec![descriptor("primary", true)],
     );
-    stale.catalog_source = cookie_agent_protocol::CatalogSource::Cache;
-    stale.catalog_state.stale = true;
-    stale.catalog_state.last_error = Some(cookie_agent_protocol::CatalogSafeErrorMeta {
+    stale.catalog.source = cookie_agent_protocol::CatalogSource::Cache;
+    stale.catalog.stale = true;
+    stale.catalog.last_error = Some(cookie_agent_protocol::CatalogSafeErrorMeta {
         code: SafeCode::new("network_unavailable").expect("code"),
         message: SafeErrorMessage::new("catalog refresh failed").expect("message"),
         time: Timestamp::now(),
@@ -1298,8 +1295,8 @@ async fn catalog_refresh_and_fallback_notifications_update_durable_state_monoton
         vec![model_descriptor()],
         vec![descriptor("primary", true)],
     );
-    old_fallback.catalog_source = cookie_agent_protocol::CatalogSource::Cache;
-    old_fallback.catalog_state.stale = true;
+    old_fallback.catalog.source = cookie_agent_protocol::CatalogSource::Cache;
+    old_fallback.catalog.stale = true;
     assert!(
         !app.install_runtime_notification(cookie_agent_protocol::RuntimeChangedNotification {
             previous_revision: Some(ready_revision),
@@ -1316,8 +1313,8 @@ async fn catalog_refresh_and_fallback_notifications_update_durable_state_monoton
         vec![model_descriptor()],
         vec![descriptor("primary", true)],
     );
-    bootstrap.catalog_source = cookie_agent_protocol::CatalogSource::Bootstrap;
-    bootstrap.catalog_state.stale = true;
+    bootstrap.catalog.source = cookie_agent_protocol::CatalogSource::Bootstrap;
+    bootstrap.catalog.stale = true;
     assert!(
         app.install_runtime_notification(cookie_agent_protocol::RuntimeChangedNotification {
             previous_revision: Some(refreshed_revision),
@@ -1390,9 +1387,9 @@ async fn loading_stale_bootstrap_and_error_retry_have_distinct_durable_ui() {
         vec![model_descriptor()],
         vec![descriptor("primary", true)],
     );
-    stale.catalog_source = cookie_agent_protocol::CatalogSource::Cache;
-    stale.catalog_state.stale = true;
-    stale.catalog_state.last_error = Some(cookie_agent_protocol::CatalogSafeErrorMeta {
+    stale.catalog.source = cookie_agent_protocol::CatalogSource::Cache;
+    stale.catalog.stale = true;
+    stale.catalog.last_error = Some(cookie_agent_protocol::CatalogSafeErrorMeta {
         code: SafeCode::new("network_unavailable").expect("code"),
         message: SafeErrorMessage::new("catalog refresh failed").expect("message"),
         time: Timestamp::now(),
@@ -1412,8 +1409,8 @@ async fn loading_stale_bootstrap_and_error_retry_have_distinct_durable_ui() {
         vec![model_descriptor()],
         vec![descriptor("primary", true)],
     );
-    bootstrap.catalog_source = cookie_agent_protocol::CatalogSource::Bootstrap;
-    bootstrap.catalog_state.stale = true;
+    bootstrap.catalog.source = cookie_agent_protocol::CatalogSource::Bootstrap;
+    bootstrap.catalog.stale = true;
     app.install_initial_runtime(bootstrap);
     assert_eq!(app.runtime.phase(), crate::state::RuntimePhase::Bootstrap);
     let bootstrap_ui = rendered_frame(&mut app, 160, 30);
@@ -1437,18 +1434,18 @@ fn credentials_only_provider() -> cookie_agent_protocol::ProviderDescriptor {
     provider
 }
 
-fn stale_catalog_snapshot() -> cookie_agent_protocol::RuntimeSnapshotV1 {
+fn stale_catalog_snapshot() -> cookie_agent_protocol::ModelCatalogView {
     let mut snapshot = runtime_snapshot(
         "8",
         Vec::new(),
         vec![model_descriptor()],
         vec![descriptor("primary", true)],
     );
-    snapshot.catalog_source = cookie_agent_protocol::CatalogSource::Cache;
-    snapshot.catalog_state.stale = true;
-    snapshot.catalog_state.age = cookie_agent_protocol::CatalogAge::OlderThanSevenDays;
-    snapshot.catalog_state.model_quarantine_count = 3;
-    snapshot.catalog_state.last_error = Some(cookie_agent_protocol::CatalogSafeErrorMeta {
+    snapshot.catalog.source = cookie_agent_protocol::CatalogSource::Cache;
+    snapshot.catalog.stale = true;
+    snapshot.catalog.age = cookie_agent_protocol::CatalogAge::OlderThanSevenDays;
+    snapshot.catalog.model_quarantine_count = 3;
+    snapshot.catalog.last_error = Some(cookie_agent_protocol::CatalogSafeErrorMeta {
         code: SafeCode::new("catalog_regression").expect("code"),
         message: SafeErrorMessage::new("refresh would drop 63% of models; kept previous catalog")
             .expect("message"),

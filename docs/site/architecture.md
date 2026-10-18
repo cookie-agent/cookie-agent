@@ -590,7 +590,7 @@ The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
 an authenticated WebSocket at `/ws`, client protocol 0.51 (a client of another
 major, or another minor before 1.0, is refused), `handshake` first.
 Discovery is a single `runtime.snapshot.get` call that returns one coherent
-runtime snapshot (schema 5). Session events stream through `events.subscribe`
+catalog view with one opaque revision. Session events stream through `events.subscribe`
 and plugin bus events through `events.plugin`. Raw tool output is not streamed
 to clients: displays come from live-only `tool_call_progress` and durable
 terminal events, and retained output is read back through artifacts.

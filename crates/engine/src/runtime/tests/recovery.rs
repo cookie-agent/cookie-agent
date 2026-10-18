@@ -280,12 +280,12 @@ async fn delegation_reservation_reopens_from_parent_events_and_trusts_its_finger
     let agent = parent.creation_agent.as_ref().clone();
     let runtime = fixture.engine.current_runtime();
     let revisions = cookie_agent_protocol::RuntimeRevisions {
-        runtime_revision: runtime.result.snapshot.runtime_revision.clone(),
-        catalog_revision: runtime.result.snapshot.catalog_revision.clone(),
-        provider_state_revision: runtime.result.snapshot.provider_state_revision.clone(),
-        model_revision: runtime.result.snapshot.model_revision.clone(),
-        agent_revision: runtime.result.snapshot.agent_revision.clone(),
-        recipe_registry_revision: runtime.result.snapshot.recipe_registry_revision.clone(),
+        runtime_revision: runtime.revisions.runtime_revision.clone(),
+        catalog_revision: runtime.revisions.catalog_revision.clone(),
+        provider_state_revision: runtime.revisions.provider_state_revision.clone(),
+        model_revision: runtime.revisions.model_revision.clone(),
+        agent_revision: runtime.revisions.agent_revision.clone(),
+        recipe_registry_revision: runtime.revisions.recipe_registry_revision.clone(),
         manifest_revision: crate::test_support::manifest_of(&agent.fallback_chain[0]),
     };
     let request = cookie_agent_protocol::DelegateRequestPayload {
@@ -460,12 +460,12 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
     let agent = parent.creation_agent.as_ref().clone();
     let runtime = fixture.engine.current_runtime();
     let revisions = cookie_agent_protocol::RuntimeRevisions {
-        runtime_revision: runtime.result.snapshot.runtime_revision.clone(),
-        catalog_revision: runtime.result.snapshot.catalog_revision.clone(),
-        provider_state_revision: runtime.result.snapshot.provider_state_revision.clone(),
-        model_revision: runtime.result.snapshot.model_revision.clone(),
-        agent_revision: runtime.result.snapshot.agent_revision.clone(),
-        recipe_registry_revision: runtime.result.snapshot.recipe_registry_revision.clone(),
+        runtime_revision: runtime.revisions.runtime_revision.clone(),
+        catalog_revision: runtime.revisions.catalog_revision.clone(),
+        provider_state_revision: runtime.revisions.provider_state_revision.clone(),
+        model_revision: runtime.revisions.model_revision.clone(),
+        agent_revision: runtime.revisions.agent_revision.clone(),
+        recipe_registry_revision: runtime.revisions.recipe_registry_revision.clone(),
         manifest_revision: crate::test_support::manifest_of(&agent.fallback_chain[0]),
     };
     let first_id = InvocationId::new_v7();
@@ -676,12 +676,12 @@ async fn a_delegation_whose_records_do_not_verify_is_unrecoverable_alone() {
     let agent = parent.creation_agent.as_ref().clone();
     let runtime = fixture.engine.current_runtime();
     let revisions = cookie_agent_protocol::RuntimeRevisions {
-        runtime_revision: runtime.result.snapshot.runtime_revision.clone(),
-        catalog_revision: runtime.result.snapshot.catalog_revision.clone(),
-        provider_state_revision: runtime.result.snapshot.provider_state_revision.clone(),
-        model_revision: runtime.result.snapshot.model_revision.clone(),
-        agent_revision: runtime.result.snapshot.agent_revision.clone(),
-        recipe_registry_revision: runtime.result.snapshot.recipe_registry_revision.clone(),
+        runtime_revision: runtime.revisions.runtime_revision.clone(),
+        catalog_revision: runtime.revisions.catalog_revision.clone(),
+        provider_state_revision: runtime.revisions.provider_state_revision.clone(),
+        model_revision: runtime.revisions.model_revision.clone(),
+        agent_revision: runtime.revisions.agent_revision.clone(),
+        recipe_registry_revision: runtime.revisions.recipe_registry_revision.clone(),
         manifest_revision: crate::test_support::manifest_of(&agent.fallback_chain[0]),
     };
     let broken_id = InvocationId::new_v7();

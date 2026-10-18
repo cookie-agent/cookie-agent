@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use cookie_agent_protocol::{ModelKey, ModelSelection, RuntimeSnapshotV1};
+use cookie_agent_protocol::{ModelCatalogView, ModelKey, ModelSelection};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ModelDisplayNames {
@@ -22,7 +22,7 @@ pub struct ModelDisplayNames {
 impl ModelDisplayNames {
     /// Replace the names with those of `snapshot`, bumping the revision only
     /// when the resulting map differs.
-    pub(super) fn update(&mut self, snapshot: &RuntimeSnapshotV1) {
+    pub(super) fn update(&mut self, snapshot: &ModelCatalogView) {
         let names = snapshot_names(snapshot);
         if names != self.names {
             self.names = names;
@@ -65,7 +65,7 @@ pub fn variant_label(selection: &ModelSelection) -> String {
         .map_or_else(|| "base".to_owned(), ToString::to_string)
 }
 
-fn snapshot_names(snapshot: &RuntimeSnapshotV1) -> BTreeMap<ModelKey, String> {
+fn snapshot_names(snapshot: &ModelCatalogView) -> BTreeMap<ModelKey, String> {
     let mut names = BTreeMap::new();
     // Unavailable models keep their names so a model that dropped out of
     // the runnable set still reads by name; runnable entries win on overlap.

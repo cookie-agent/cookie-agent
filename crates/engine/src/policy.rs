@@ -59,10 +59,7 @@ impl std::fmt::Debug for FrozenRunPolicy {
             .field("preset", &self.preset)
             .field("internal_agents", &self.internal_agents.len())
             .field("selected_suffix", &self.selected_suffix)
-            .field(
-                "runtime_revision",
-                &self.runtime.result.snapshot.runtime_revision,
-            )
+            .field("runtime_revision", &self.runtime.revisions.runtime_revision)
             .finish_non_exhaustive()
     }
 }
@@ -545,14 +542,14 @@ pub(crate) fn runtime_revisions(
     runtime: &PublishedRuntime,
     manifest_revision: protocol::ModelSnapshotRevision,
 ) -> protocol::RuntimeRevisions {
-    let snapshot = &runtime.result.snapshot;
+    let revisions = &runtime.revisions;
     protocol::RuntimeRevisions {
-        runtime_revision: snapshot.runtime_revision.clone(),
-        catalog_revision: snapshot.catalog_revision.clone(),
-        provider_state_revision: snapshot.provider_state_revision.clone(),
-        model_revision: snapshot.model_revision.clone(),
-        agent_revision: snapshot.agent_revision.clone(),
-        recipe_registry_revision: snapshot.recipe_registry_revision.clone(),
+        runtime_revision: revisions.runtime_revision.clone(),
+        catalog_revision: revisions.catalog_revision.clone(),
+        provider_state_revision: revisions.provider_state_revision.clone(),
+        model_revision: revisions.model_revision.clone(),
+        agent_revision: revisions.agent_revision.clone(),
+        recipe_registry_revision: revisions.recipe_registry_revision.clone(),
         manifest_revision,
     }
 }

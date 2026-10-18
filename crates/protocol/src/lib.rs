@@ -6,8 +6,8 @@
 
 use std::borrow::Cow;
 
-use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
-use serde::{Deserialize, Serialize};
+use schemars::{JsonSchema, Schema, SchemaGenerator};
+use serde::Deserialize;
 
 mod tool_output;
 pub use tool_output::*;
@@ -234,75 +234,6 @@ pub use session::*;
 pub use session_model::*;
 pub use setup_value::*;
 pub use stop::StopSignals;
-
-/// The only coherent runtime snapshot schema supported by this build.
-pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 6;
-
-macro_rules! exact_numeric_wire_type {
-    ($name:ident, $value:expr, $description:literal) => {
-        #[doc = $description]
-        #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-        pub struct $name(());
-
-        impl $name {
-            #[must_use]
-            pub const fn current() -> Self {
-                Self(())
-            }
-
-            #[must_use]
-            pub const fn value(self) -> u32 {
-                $value
-            }
-        }
-
-        impl Serialize for $name {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: serde::Serializer,
-            {
-                serializer.serialize_u32($value)
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                let value = u32::deserialize(deserializer)?;
-                if value == $value {
-                    Ok(Self::current())
-                } else {
-                    Err(serde::de::Error::custom(format!(
-                        "unsupported exact wire version {value}; expected {}",
-                        $value
-                    )))
-                }
-            }
-        }
-
-        impl JsonSchema for $name {
-            fn inline_schema() -> bool {
-                true
-            }
-
-            fn schema_name() -> Cow<'static, str> {
-                Cow::Borrowed(stringify!($name))
-            }
-
-            fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-                json_schema!({"type": "integer", "const": $value})
-            }
-        }
-    };
-}
-
-exact_numeric_wire_type!(
-    RuntimeSnapshotSchemaVersion,
-    6,
-    "The exact coherent runtime snapshot schema version."
-);
 
 #[cfg(test)]
 mod goal_producer_tests;

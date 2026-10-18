@@ -70,7 +70,7 @@ impl Client {
                     if !unchanged {
                         return Err(error);
                     }
-                    params.expected_catalog_revision = snapshot.catalog_revision;
+                    params.expected_revision = snapshot.revision;
                     params.client_connect_id =
                         crate::ClientConnectId::new(uuid::Uuid::now_v7().to_string())
                             .expect("uuid-derived client connect id");
@@ -91,16 +91,13 @@ impl Client {
 fn provider_connect_value(params: &ProviderConnectParams) -> Result<SensitiveJson, ClientError> {
     let setup_values = serde_json::to_value(&params.setup_values)?;
     let provider_id = serde_json::to_value(&params.provider_id)?;
-    let expected_catalog_revision = serde_json::to_value(&params.expected_catalog_revision)?;
+    let expected_revision = serde_json::to_value(&params.expected_revision)?;
     let auth_method = serde_json::to_value(&params.auth_method)?;
     let client_connect_id = serde_json::to_value(&params.client_connect_id)?;
     let mut value = SensitiveJson::object();
     let object = value.object_mut();
     object.insert("provider_id".into(), provider_id);
-    object.insert(
-        "expected_catalog_revision".into(),
-        expected_catalog_revision,
-    );
+    object.insert("expected_revision".into(), expected_revision);
     object.insert("setup_values".into(), setup_values);
     object.insert("auth_method".into(), auth_method);
     object.insert("auth_values".into(), Value::Object(serde_json::Map::new()));

@@ -1027,7 +1027,7 @@ async fn run_connect_with<I: ConnectIo>(
         .context("handshake with daemon")?;
     let runtime = runtime_snapshot(client).await?;
     let provider = choose_provider(&runtime.snapshot.providers, provider_id, io)?;
-    print_provider_details(provider, runtime.snapshot.catalog_revision.as_str(), io)?;
+    print_provider_details(provider, runtime.snapshot.revision.as_str(), io)?;
     ensure_supported(provider)?;
     io.write_line("Scope: durable, global (available to all workspaces).")?;
     if !matches!(
@@ -1048,7 +1048,7 @@ async fn run_connect_with<I: ConnectIo>(
         .connect_provider_retrying(
             cookie_agent_protocol::ProviderConnectParams {
                 provider_id: provider.id.clone(),
-                expected_catalog_revision: runtime.snapshot.catalog_revision,
+                expected_revision: runtime.snapshot.revision,
                 setup_values,
                 auth_method: auth_method.id.clone(),
                 auth_values,
@@ -1060,9 +1060,9 @@ async fn run_connect_with<I: ConnectIo>(
         .await
         .context("provider.connect failed")?;
     io.write_line(&format!(
-        "provider.connect succeeded for {} at runtime revision {}{}.",
+        "provider.connect succeeded for {} at catalog revision {}{}.",
         result.durable_connection.provider_id,
-        result.runtime.runtime_revision,
+        result.runtime.revision,
         if result.replayed { " (replayed)" } else { "" }
     ))?;
     Ok(())
@@ -1083,11 +1083,7 @@ async fn run_disconnect(url: &str, token: &str, provider_id: Option<String>) -> 
         .context("handshake with daemon")?;
     let runtime = runtime_snapshot(&client).await?;
     let provider = choose_provider(&runtime.snapshot.providers, provider_id, &mut io)?;
-    print_provider_details(
-        provider,
-        runtime.snapshot.catalog_revision.as_str(),
-        &mut io,
-    )?;
+    print_provider_details(provider, runtime.snapshot.revision.as_str(), &mut io)?;
     println!("Scope: durable, global (available to all workspaces).");
     if !prompt_confirmation("Disconnect this managed provider? [y/N] ")? {
         anyhow::bail!("provider disconnection cancelled");
@@ -1095,8 +1091,7 @@ async fn run_disconnect(url: &str, token: &str, provider_id: Option<String>) -> 
     let result: ProviderDisconnectResult = client
         .disconnect_provider(ProviderDisconnectParams {
             provider_id: provider.id.clone(),
-            expected_runtime_revision: runtime.snapshot.runtime_revision,
-            expected_provider_state_revision: runtime.snapshot.provider_state_revision,
+            expected_revision: runtime.snapshot.revision,
             expected_connection_generation: provider
                 .durable_connection
                 .as_ref()
@@ -1107,9 +1102,9 @@ async fn run_disconnect(url: &str, token: &str, provider_id: Option<String>) -> 
         .await
         .context("provider.disconnect failed")?;
     println!(
-        "provider.disconnect succeeded for {} at runtime revision {}{}.",
+        "provider.disconnect succeeded for {} at catalog revision {}{}.",
         result.provider_id,
-        result.runtime.snapshot.runtime_revision,
+        result.runtime.snapshot.revision,
         if result.replayed { " (replayed)" } else { "" }
     );
     Ok(())

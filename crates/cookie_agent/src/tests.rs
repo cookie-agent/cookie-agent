@@ -1142,7 +1142,7 @@ async fn connect_reconnect_and_disconnect_are_idempotent() {
     let snapshot = runtime.engine.runtime_snapshot().unwrap().snapshot;
     let connect_json = serde_json::json!({
         "provider_id": "openai",
-        "expected_catalog_revision": snapshot.catalog_revision,
+        "expected_revision": snapshot.revision,
         "setup_values": {},
         "auth_method": "bearer-api-key-v1",
         "auth_values": {"api_key": "invented-test-placeholder"},
@@ -1162,8 +1162,7 @@ async fn connect_reconnect_and_disconnect_are_idempotent() {
     );
     let disconnect = ProviderDisconnectParams {
         provider_id: ProviderId::new("openai").unwrap(),
-        expected_runtime_revision: connected.runtime.runtime_revision,
-        expected_provider_state_revision: connected.runtime.provider_state_revision,
+        expected_revision: connected.runtime.revision,
         expected_connection_generation: Some(connected.durable_connection.connection_generation),
         client_request_id: ClientRequestId::new("disconnect-replay-1").unwrap(),
     };
@@ -1235,13 +1234,8 @@ async fn connect_retries_a_catalog_conflict_when_the_provider_form_is_unchanged(
     .unwrap();
     runtime.engine.refresh_catalog(Arc::new(refreshed)).unwrap();
     assert_ne!(
-        runtime
-            .engine
-            .runtime_snapshot()
-            .unwrap()
-            .snapshot
-            .catalog_revision,
-        stale.catalog_revision
+        runtime.engine.runtime_snapshot().unwrap().snapshot.revision,
+        stale.revision
     );
 
     let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
@@ -1253,7 +1247,7 @@ async fn connect_retries_a_catalog_conflict_when_the_provider_form_is_unchanged(
     client.handshake().await.unwrap();
     let params = || cookie_agent_protocol::ProviderConnectParams {
         provider_id: provider.id.clone(),
-        expected_catalog_revision: stale.catalog_revision.clone(),
+        expected_revision: stale.revision.clone(),
         setup_values: BTreeMap::new(),
         auth_method: cookie_agent_protocol::AuthMethodId::new("bearer-api-key-v1").unwrap(),
         auth_values: serde_json::from_value(serde_json::json!({"api_key": "placeholder"})).unwrap(),
@@ -1308,7 +1302,7 @@ async fn cli_reconnects_supported_removed_provider_through_real_server() {
         .connect_provider(
             serde_json::from_value(serde_json::json!({
                 "provider_id": "openai",
-                "expected_catalog_revision": initial.catalog_revision,
+                "expected_revision": initial.revision,
                 "setup_values": {},
                 "auth_method": "bearer-api-key-v1",
                 "auth_values": {"api_key": "invented-initial-placeholder"},

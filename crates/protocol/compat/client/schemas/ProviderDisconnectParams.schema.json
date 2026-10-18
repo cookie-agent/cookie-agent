@@ -18,16 +18,10 @@
         "null"
       ]
     },
-    "expected_provider_state_revision": {
-      "maxLength": 71,
-      "minLength": 71,
-      "pattern": "^sha256:[0-9a-f]{64}$",
-      "type": "string"
-    },
-    "expected_runtime_revision": {
-      "maxLength": 71,
-      "minLength": 71,
-      "pattern": "^sha256:[0-9a-f]{64}$",
+    "expected_revision": {
+      "description": "The revision of the catalog view the provider was read from.",
+      "maxLength": 256,
+      "minLength": 1,
       "type": "string"
     },
     "provider_id": {
@@ -39,8 +33,7 @@
   },
   "required": [
     "provider_id",
-    "expected_runtime_revision",
-    "expected_provider_state_revision",
+    "expected_revision",
     "expected_connection_generation",
     "client_request_id"
   ],

@@ -271,8 +271,10 @@ impl DelegateRequestPayload {
 pub struct SessionMeta {
     pub session_id: SessionId,
     pub origin: SessionOrigin,
-    /// Short, tree-unique model-facing handle, absent for pre-handle sessions.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Short, tree-unique model-facing handle. Every session has one; it is
+    /// null only in a projection built without its creation event.
+    #[serde(deserialize_with = "deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<String>", required)]
     pub short_id: Option<String>,
     pub cwd_identity: CwdIdentity,
     pub creation_selection: RunSelection,
@@ -322,7 +324,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
         struct Wire {
             session_id: SessionId,
             origin: SessionOrigin,
-            #[serde(default)]
+            #[serde(deserialize_with = "deserialize_required_option")]
             short_id: Option<String>,
             cwd_identity: CwdIdentity,
             creation_selection: RunSelection,

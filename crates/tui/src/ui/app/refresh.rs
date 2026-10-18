@@ -125,7 +125,7 @@ impl App {
 
     pub(in crate::ui) fn install_initial_runtime(
         &mut self,
-        snapshot: cookie_agent_protocol::RuntimeSnapshotV1,
+        snapshot: cookie_agent_protocol::ModelCatalogView,
     ) {
         if self.runtime.snapshot().is_some() {
             return;
@@ -136,8 +136,8 @@ impl App {
 
     pub(in crate::ui) fn install_runtime_response(
         &mut self,
-        baseline: Option<&cookie_agent_protocol::RuntimeRevision>,
-        snapshot: cookie_agent_protocol::RuntimeSnapshotV1,
+        baseline: Option<&cookie_agent_protocol::ViewRevision>,
+        snapshot: cookie_agent_protocol::ModelCatalogView,
     ) -> bool {
         if !self.runtime.install_response(baseline, snapshot.clone()) {
             return false;
@@ -257,11 +257,9 @@ impl App {
 
     pub(super) fn install_runtime_projection(
         &mut self,
-        snapshot: cookie_agent_protocol::RuntimeSnapshotV1,
+        snapshot: cookie_agent_protocol::ModelCatalogView,
     ) {
-        self.catalog_revision = Some(snapshot.catalog_revision);
-        self.model_revision = Some(snapshot.model_revision);
-        self.agent_revision = Some(snapshot.agent_revision);
+        self.catalog_view_revision = Some(snapshot.revision);
         self.providers = snapshot.providers;
         self.models = snapshot.models;
         self.agents = snapshot.agents;
@@ -931,7 +929,7 @@ impl App {
             self.poll_plugins();
         }
         if let ClientDelivery::RuntimeChanged(changed) = &delivery {
-            let duplicate = self.runtime.revision() == Some(&changed.snapshot.runtime_revision);
+            let duplicate = self.runtime.revision() == Some(&changed.snapshot.revision);
             if !self.install_runtime_notification((**changed).clone()) && !duplicate {
                 // Outside the predecessor chain: this client missed a
                 // notification (the daemon drops them for a lagging

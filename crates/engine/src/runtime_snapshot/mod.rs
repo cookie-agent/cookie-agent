@@ -11,10 +11,25 @@ use cookie_agent_protocol::{RuntimeChangedNotification, RuntimeSnapshotResult};
 pub(crate) use agents::{AgentRegistry, ResolvedAgent, ResolvedAgentFallback, delegation_targets};
 pub(crate) use projection::build_runtime_snapshot;
 
+/// The revisions a runtime was compiled from. Session history freezes
+/// them; clients see only the catalog view's one opaque revision, which is
+/// `runtime_revision`'s text.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnapshotRevisions {
+    pub runtime_revision: cookie_agent_protocol::RuntimeRevision,
+    pub recipe_registry_revision: cookie_agent_protocol::RecipeRegistryRevision,
+    pub catalog_revision: cookie_agent_protocol::CatalogRevision,
+    pub provider_state_revision: cookie_agent_protocol::ProviderStateRevision,
+    pub model_revision: cookie_agent_protocol::ModelRevision,
+    pub agent_revision: cookie_agent_protocol::AgentRevision,
+    pub config_revision: cookie_agent_protocol::ConfigRevision,
+}
+
 /// Exact executable and wire state published as one atomic value.
 #[derive(Clone)]
 pub struct PublishedRuntime {
     pub result: RuntimeSnapshotResult,
+    pub revisions: SnapshotRevisions,
     pub models: Arc<CompiledModelRuntime>,
     pub agents: Arc<AgentRegistry>,
     pub agent_presets: BTreeMap<String, Arc<AgentRegistry>>,
@@ -41,7 +56,7 @@ impl std::fmt::Debug for PublishedRuntime {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("PublishedRuntime")
-            .field("runtime_revision", &self.result.snapshot.runtime_revision)
+            .field("runtime_revision", &self.revisions.runtime_revision)
             .field("models", &self.result.snapshot.models.len())
             .field("agents", &self.result.snapshot.agents.len())
             .finish()

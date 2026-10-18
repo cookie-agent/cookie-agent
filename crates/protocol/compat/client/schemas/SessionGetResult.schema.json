@@ -173,7 +173,7 @@
           "type": "string"
         },
         "short_id": {
-          "description": "Short, tree-unique model-facing handle, absent for pre-handle sessions.",
+          "description": "Short, tree-unique model-facing handle. Every session has one; it is\nnull only in a projection built without its creation event.",
           "type": [
             "string",
             "null"
@@ -206,6 +206,7 @@
       "required": [
         "session_id",
         "origin",
+        "short_id",
         "cwd_identity",
         "creation_selection",
         "runtime_revision",

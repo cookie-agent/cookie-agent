@@ -1,8 +1,8 @@
 //! Coherent protocol-10 runtime snapshot state machine.
 
 use cookie_agent_protocol::{
-    CatalogSource, ProviderConfigurationState, RuntimeChangedNotification, RuntimeRevision,
-    RuntimeSnapshotV1,
+    CatalogSource, ModelCatalogView, ProviderConfigurationState, RuntimeChangedNotification,
+    ViewRevision,
 };
 
 pub const EMPTY_RUNTIME_GUIDANCE: &str = "type /connect to continue";
@@ -19,7 +19,7 @@ pub enum RuntimePhase {
 
 #[derive(Clone, Debug)]
 pub struct RuntimeState {
-    snapshot: Option<RuntimeSnapshotV1>,
+    snapshot: Option<ModelCatalogView>,
     phase: RuntimePhase,
     durable_explanation: Option<String>,
     model_names: super::ModelDisplayNames,
@@ -37,7 +37,7 @@ impl Default for RuntimeState {
 }
 
 impl RuntimeState {
-    pub fn snapshot(&self) -> Option<&RuntimeSnapshotV1> {
+    pub fn snapshot(&self) -> Option<&ModelCatalogView> {
         self.snapshot.as_ref()
     }
 
@@ -54,17 +54,15 @@ impl RuntimeState {
         self.durable_explanation.as_deref()
     }
 
-    pub fn revision(&self) -> Option<&RuntimeRevision> {
-        self.snapshot
-            .as_ref()
-            .map(|snapshot| &snapshot.runtime_revision)
+    pub fn revision(&self) -> Option<&ViewRevision> {
+        self.snapshot.as_ref().map(|snapshot| &snapshot.revision)
     }
 
     pub fn is_empty(&self) -> bool {
         self.phase == RuntimePhase::Empty
     }
 
-    pub fn install_initial(&mut self, snapshot: RuntimeSnapshotV1) {
+    pub fn install_initial(&mut self, snapshot: ModelCatalogView) {
         if self.snapshot.is_none() {
             self.install(snapshot);
         }
@@ -74,10 +72,10 @@ impl RuntimeState {
     /// while that operation was in flight.
     pub fn install_response(
         &mut self,
-        baseline: Option<&RuntimeRevision>,
-        snapshot: RuntimeSnapshotV1,
+        baseline: Option<&ViewRevision>,
+        snapshot: ModelCatalogView,
     ) -> bool {
-        if self.revision() == Some(&snapshot.runtime_revision) {
+        if self.revision() == Some(&snapshot.revision) {
             return false;
         }
         if self.revision() != baseline {
@@ -90,8 +88,8 @@ impl RuntimeState {
     /// Install a snapshot fetched from `runtime.snapshot`. It is the daemon's
     /// current runtime, so it replaces whatever the notification chain
     /// installed; only an identical revision is skipped.
-    pub fn install_current(&mut self, snapshot: RuntimeSnapshotV1) -> bool {
-        if self.revision() == Some(&snapshot.runtime_revision) {
+    pub fn install_current(&mut self, snapshot: ModelCatalogView) -> bool {
+        if self.revision() == Some(&snapshot.revision) {
             return false;
         }
         self.install(snapshot);
@@ -102,7 +100,7 @@ impl RuntimeState {
     /// Duplicate and stale/out-of-order notifications never replace the
     /// currently installed coherent snapshot.
     pub fn apply_notification(&mut self, changed: RuntimeChangedNotification) -> bool {
-        if self.revision() == Some(&changed.snapshot.runtime_revision) {
+        if self.revision() == Some(&changed.snapshot.revision) {
             return false;
         }
         if let Some(current) = self.revision()
@@ -122,19 +120,19 @@ impl RuntimeState {
         }
     }
 
-    fn install(&mut self, snapshot: RuntimeSnapshotV1) {
+    fn install(&mut self, snapshot: ModelCatalogView) {
         let empty = snapshot.models.is_empty();
         let (phase, explanation) = if empty {
             (
                 RuntimePhase::Empty,
                 catalog_explanation(&snapshot).or_else(|| unusable_providers(&snapshot)),
             )
-        } else if snapshot.catalog_source == CatalogSource::Bootstrap {
+        } else if snapshot.catalog.source == CatalogSource::Bootstrap {
             (
                 RuntimePhase::Bootstrap,
                 Some("Using bundled bootstrap catalog; provider and model availability may be limited.".into()),
             )
-        } else if snapshot.catalog_state.stale {
+        } else if snapshot.catalog.stale {
             (RuntimePhase::Stale, catalog_explanation(&snapshot))
         } else {
             (RuntimePhase::Ready, None)
@@ -146,14 +144,14 @@ impl RuntimeState {
     }
 }
 
-fn catalog_explanation(snapshot: &RuntimeSnapshotV1) -> Option<String> {
-    if snapshot.catalog_source == CatalogSource::Bootstrap {
+fn catalog_explanation(snapshot: &ModelCatalogView) -> Option<String> {
+    if snapshot.catalog.source == CatalogSource::Bootstrap {
         return Some(
             "Using bundled bootstrap catalog; provider and model availability may be limited."
                 .into(),
         );
     }
-    snapshot.catalog_state.last_error.as_ref().map(|error| {
+    snapshot.catalog.last_error.as_ref().map(|error| {
         format!(
             "Using stale catalog cache after {} at {}: {}",
             error.code, error.time, error.message
@@ -163,7 +161,7 @@ fn catalog_explanation(snapshot: &RuntimeSnapshotV1) -> Option<String> {
 
 /// Names configured providers that yield no usable models, so an empty
 /// runtime says why instead of only "No models are available".
-fn unusable_providers(snapshot: &RuntimeSnapshotV1) -> Option<String> {
+fn unusable_providers(snapshot: &ModelCatalogView) -> Option<String> {
     let names = snapshot
         .providers
         .iter()
@@ -193,15 +191,7 @@ fn unusable_providers(snapshot: &RuntimeSnapshotV1) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn revision<T>() -> T
-    where
-        T: serde::de::DeserializeOwned,
-    {
-        serde_json::from_value(serde_json::json!(format!("sha256:{}", "a".repeat(64))))
-            .expect("revision")
-    }
-
-    fn snapshot(with_model: bool) -> RuntimeSnapshotV1 {
+    fn snapshot(with_model: bool) -> ModelCatalogView {
         let model = cookie_agent_protocol::AvailableModelDescriptor {
             key: "custom.test/model".parse().expect("model key"),
             display_name: "Model".to_owned(),
@@ -228,32 +218,21 @@ mod tests {
             variants: Vec::new(),
             variant_order: Vec::new(),
             default_variant: None,
-            behavior_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(b"model"),
         };
         let selection = cookie_agent_protocol::ModelSelection {
             model: model.key.clone(),
             variant: None,
         };
-        RuntimeSnapshotV1 {
-            snapshot_schema_version: cookie_agent_protocol::RuntimeSnapshotSchemaVersion::current(),
-            recipe_registry_revision: revision(),
-            catalog_revision: revision(),
-            catalog_source: CatalogSource::Network,
-            catalog_state: cookie_agent_protocol::CatalogRuntimeState {
+        ModelCatalogView {
+            revision: cookie_agent_protocol::ViewRevision::new("view-test").expect("view revision"),
+            catalog: cookie_agent_protocol::CatalogStatus {
+                source: CatalogSource::Network,
                 stale: false,
                 age: cookie_agent_protocol::CatalogAge::Current,
                 provider_quarantine_count: 0,
                 model_quarantine_count: 0,
-                quarantine_digest: cookie_agent_protocol::Sha256Digest::of_bytes(b"quarantine"),
                 last_error: None,
             },
-            provider_state_revision: revision(),
-            provider_store_generation: cookie_agent_protocol::ProviderStoreGeneration::new(1)
-                .expect("generation"),
-            model_revision: revision(),
-            agent_revision: revision(),
-            config_revision: revision(),
-            runtime_revision: revision(),
             providers: Vec::new(),
             models: if with_model { vec![model] } else { Vec::new() },
             agents: if with_model {

@@ -631,17 +631,14 @@ pub struct App {
     /// session attaches `session.create`'s defaults.
     pub(super) draft_runtimes: Option<Vec<crate::ui::management::DraftRuntime>>,
     pub(super) next_draft_runtime: u64,
-    /// Revision of the current agent descriptor snapshot; refreshed
-    /// coherently with the model revision.
-    pub(super) agent_revision: Option<cookie_agent_protocol::AgentRevision>,
     pub(super) models: Vec<AvailableModelDescriptor>,
-    /// Revision of the current model descriptor snapshot.
-    pub(super) model_revision: Option<cookie_agent_protocol::ModelRevision>,
     pub(super) providers: Vec<ProviderDescriptor>,
     pub(super) skills: Vec<cookie_agent_protocol::SkillDescriptor>,
     #[cfg(test)]
     pub(super) skill_refresh_requests: Vec<SessionId>,
-    pub(super) catalog_revision: Option<cookie_agent_protocol::CatalogRevision>,
+    /// Revision of the catalog view the providers, models, and agents above
+    /// were installed from.
+    pub(super) catalog_view_revision: Option<cookie_agent_protocol::ViewRevision>,
     /// Client-local draft selection; never alters an active run.
     pub(super) draft: Option<RunSelection>,
     pub(super) draft_reset_fallback: bool,
@@ -874,7 +871,7 @@ pub(in crate::ui) enum RpcUpdate {
     /// The current runtime snapshot, fetched after a `runtime.changed`
     /// notification fell outside the revision chain.
     RuntimeResynced {
-        result: Result<Box<cookie_agent_protocol::RuntimeSnapshotV1>, String>,
+        result: Result<Box<cookie_agent_protocol::ModelCatalogView>, String>,
     },
     /// A submission steered, queued, or was handled by a plugin instead of
     /// starting the run it was tracked as.
@@ -1081,13 +1078,13 @@ pub(super) enum ProviderMutationOutcome {
     },
     Connected {
         provider_id: cookie_agent_protocol::ProviderId,
-        baseline: Option<cookie_agent_protocol::RuntimeRevision>,
-        runtime: Box<cookie_agent_protocol::RuntimeSnapshotV1>,
+        baseline: Option<cookie_agent_protocol::ViewRevision>,
+        runtime: Box<cookie_agent_protocol::ModelCatalogView>,
     },
     Disconnected {
         provider_id: cookie_agent_protocol::ProviderId,
-        baseline: Option<cookie_agent_protocol::RuntimeRevision>,
-        runtime: Box<cookie_agent_protocol::RuntimeSnapshotV1>,
+        baseline: Option<cookie_agent_protocol::ViewRevision>,
+        runtime: Box<cookie_agent_protocol::ModelCatalogView>,
     },
 }
 
@@ -1233,14 +1230,12 @@ impl App {
             draft_permissions: DraftPermissions::default(),
             draft_runtimes: None,
             next_draft_runtime: 0,
-            agent_revision: None,
             models: Vec::new(),
-            model_revision: None,
             providers: Vec::new(),
             skills: Vec::new(),
             #[cfg(test)]
             skill_refresh_requests: Vec::new(),
-            catalog_revision: None,
+            catalog_view_revision: None,
             draft: None,
             draft_reset_fallback: false,
             draft_generation: 0,

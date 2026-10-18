@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 
 use cookie_agent_protocol::{
     AuthCredentialDescriptor, AuthMethodId, AvailableModelDescriptor, CatalogAge, CatalogSource,
-    EffectiveAuthState, ModelUnavailableKind, ProviderConfigurationState, ProviderCredentialValues,
-    ProviderDescriptor, ProviderPresence, ProviderSupportState, RuntimeSnapshotV1, SafeSetupValue,
-    SetupFieldDescriptor, SetupFieldId, UnavailableModelDescriptor, parse_setup_value,
-    setup_value_text,
+    EffectiveAuthState, ModelCatalogView, ModelUnavailableKind, ProviderConfigurationState,
+    ProviderCredentialValues, ProviderDescriptor, ProviderPresence, ProviderSupportState,
+    SafeSetupValue, SetupFieldDescriptor, SetupFieldId, UnavailableModelDescriptor,
+    parse_setup_value, setup_value_text,
 };
 use serde::{Serialize, ser::SerializeMap as _};
 use zeroize::Zeroizing;
@@ -551,11 +551,11 @@ pub(crate) fn env_config_hint(
 
 /// One-line catalog provenance: source, age when stale, quarantine counts,
 /// and the last refresh error when there is one.
-pub(crate) fn catalog_status_line(snapshot: &RuntimeSnapshotV1) -> String {
-    let state = &snapshot.catalog_state;
+pub(crate) fn catalog_status_line(snapshot: &ModelCatalogView) -> String {
+    let state = &snapshot.catalog;
     let mut parts = vec![format!(
         "Catalog: {}",
-        match snapshot.catalog_source {
+        match snapshot.catalog.source {
             CatalogSource::Network => "models.dev (network)",
             CatalogSource::Cache => "models.dev (cache)",
             CatalogSource::Bootstrap => "bundled bootstrap",
@@ -566,7 +566,7 @@ pub(crate) fn catalog_status_line(snapshot: &RuntimeSnapshotV1) -> String {
         CatalogAge::OlderThanSevenDays => parts.push("older than 7 days".to_owned()),
         CatalogAge::OlderThanThirtyDays => parts.push("older than 30 days".to_owned()),
     }
-    if state.stale && snapshot.catalog_source == CatalogSource::Cache {
+    if state.stale && snapshot.catalog.source == CatalogSource::Cache {
         parts.push("stale".to_owned());
     }
     if state.model_quarantine_count > 0 {
@@ -601,10 +601,10 @@ pub(crate) fn catalog_status_line(snapshot: &RuntimeSnapshotV1) -> String {
 }
 
 /// Whether the catalog line should read as a warning rather than metadata.
-pub(crate) fn catalog_needs_attention(snapshot: &RuntimeSnapshotV1) -> bool {
-    snapshot.catalog_state.last_error.is_some()
-        || snapshot.catalog_state.age != CatalogAge::Current
-        || snapshot.catalog_source == CatalogSource::Bootstrap
+pub(crate) fn catalog_needs_attention(snapshot: &ModelCatalogView) -> bool {
+    snapshot.catalog.last_error.is_some()
+        || snapshot.catalog.age != CatalogAge::Current
+        || snapshot.catalog.source == CatalogSource::Bootstrap
 }
 
 pub(crate) const fn action_name(action: ProviderAction) -> &'static str {

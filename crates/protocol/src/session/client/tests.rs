@@ -27,26 +27,16 @@ fn recovery() -> (
 }
 
 fn runtime_snapshot_json(digit: &str) -> Value {
-    let revision = format!("sha256:{}", digit.repeat(64 / digit.len()));
     serde_json::json!({
-        "snapshot_schema_version": crate::RuntimeSnapshotSchemaVersion::current(),
-        "recipe_registry_revision": revision,
-        "catalog_revision": revision,
-        "catalog_source": "bootstrap",
-        "catalog_state": {
+        "revision": format!("view-{digit}"),
+        "catalog": {
+            "source": "bootstrap",
             "stale": true,
             "age": "current",
             "provider_quarantine_count": 0,
             "model_quarantine_count": 0,
-            "quarantine_digest": digit.repeat(64 / digit.len()),
             "last_error": null
         },
-        "provider_state_revision": revision,
-        "provider_store_generation": 1,
-        "model_revision": revision,
-        "agent_revision": revision,
-        "config_revision": revision,
-        "runtime_revision": revision,
         "providers": [],
         "models": [],
         "agents": []
@@ -679,8 +669,7 @@ async fn runtime_changed_notifications_reach_the_ui_in_transport_order() {
     });
     let mut deliveries = client.subscribe_deliveries().expect("delivery receiver");
     for (previous, digit, reason) in [(None, "1", "startup"), (Some("1"), "2", "config_reloaded")] {
-        let previous_revision = previous
-            .map(|digit| serde_json::json!(format!("sha256:{}", digit.repeat(64 / digit.len()))));
+        let previous_revision = previous.map(|digit| serde_json::json!(format!("view-{digit}")));
         incoming
             .send(MessageFrame::Value(serde_json::json!({
                 "jsonrpc": "2.0",
@@ -704,7 +693,7 @@ async fn runtime_changed_notifications_reach_the_ui_in_transport_order() {
     assert_eq!(first.previous_revision, None);
     assert_eq!(
         second.previous_revision.as_ref(),
-        Some(&first.snapshot.runtime_revision)
+        Some(&first.snapshot.revision)
     );
 }
 
@@ -727,10 +716,8 @@ async fn cancelled_provider_connect_wipes_source_and_serialized_credentials() {
                         .expect("client connect id"),
                     provider_id: cookie_agent_protocol::ProviderId::new("test")
                         .expect("provider id"),
-                    expected_catalog_revision: cookie_agent_protocol::CatalogRevision::new(
-                        format!("sha256:{}", "1".repeat(64)),
-                    )
-                    .expect("catalog revision"),
+                    expected_revision: cookie_agent_protocol::ViewRevision::new("view-1")
+                        .expect("view revision"),
                     setup_values: std::collections::BTreeMap::new(),
                     auth_method: cookie_agent_protocol::AuthMethodId::new("api-key")
                         .expect("auth method"),
@@ -810,11 +797,8 @@ async fn unpolled_provider_connect_future_still_wipes_owned_credentials() {
         client_connect_id: cookie_agent_protocol::ClientConnectId::new("unpolled")
             .expect("client connect id"),
         provider_id: cookie_agent_protocol::ProviderId::new("test").expect("provider id"),
-        expected_catalog_revision: cookie_agent_protocol::CatalogRevision::new(format!(
-            "sha256:{}",
-            "1".repeat(64)
-        ))
-        .expect("catalog revision"),
+        expected_revision: cookie_agent_protocol::ViewRevision::new("view-1")
+            .expect("view revision"),
         setup_values: std::collections::BTreeMap::new(),
         auth_method: cookie_agent_protocol::AuthMethodId::new("api-key").expect("auth method"),
         auth_values: credential_values("sentinel-secret"),
@@ -833,11 +817,8 @@ async fn failed_provider_connect_wipes_source_and_sensitive_json_tree() {
             client_connect_id: cookie_agent_protocol::ClientConnectId::new("failed-connect")
                 .expect("client connect id"),
             provider_id: cookie_agent_protocol::ProviderId::new("test").expect("provider id"),
-            expected_catalog_revision: cookie_agent_protocol::CatalogRevision::new(format!(
-                "sha256:{}",
-                "1".repeat(64)
-            ))
-            .expect("catalog revision"),
+            expected_revision: cookie_agent_protocol::ViewRevision::new("view-1")
+                .expect("view revision"),
             setup_values: std::collections::BTreeMap::new(),
             auth_method: cookie_agent_protocol::AuthMethodId::new("api-key").expect("auth method"),
             auth_values: credential_values("sentinel-secret"),

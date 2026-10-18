@@ -29,6 +29,15 @@ section 3).
   `ProviderConnectError`, `ProviderDisconnectError`, `ConfigApplyError`), and
   `debug_code` are gone.
 
+- `runtime.snapshot.get` and `runtime.changed` carry a `ModelCatalogView`
+  (`revision`, `catalog`, `providers`, `models`, `agents`) in place of the
+  runtime snapshot: one opaque revision replaces the snapshot schema version
+  and the eleven revisions and counters, and descriptors lose their
+  fingerprints. `provider.connect` and `provider.disconnect` take that
+  revision as `expected_revision`; the disconnect receipt keeps its ID and
+  time only. `runtime.changed` takes any number of reasons.
+- `SessionMeta.short_id` is required (nullable).
+
 ## Before semver versions
 
 Builds before 0.51.0 sent the protocol version as an integer, from 34 to 50;

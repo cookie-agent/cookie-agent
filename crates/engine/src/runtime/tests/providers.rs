@@ -112,7 +112,7 @@ fn shared_project_cwd_reopens_with_the_same_model_revision_and_no_snapshot_files
         .runtime_snapshot()
         .expect("runtime snapshot")
         .snapshot
-        .model_revision;
+        .revision;
     drop(engine);
 
     // Model manifests live only in memory; opening writes no snapshot files.
@@ -132,7 +132,7 @@ fn shared_project_cwd_reopens_with_the_same_model_revision_and_no_snapshot_files
             .runtime_snapshot()
             .expect("reopened runtime snapshot")
             .snapshot
-            .model_revision,
+            .revision,
         revision
     );
 }
@@ -148,8 +148,7 @@ fn absent_disconnect_commits_once_and_replay_publishes_nothing() {
     let mut notifications = fixture.engine.subscribe_runtime_changes();
     let request = ProviderDisconnectParams {
         provider_id: ProviderId::new("openai").expect("provider ID"),
-        expected_runtime_revision: initial.runtime_revision.clone(),
-        expected_provider_state_revision: initial.provider_state_revision.clone(),
+        expected_revision: initial.revision.clone(),
         expected_connection_generation: None,
         client_request_id: ClientRequestId::new("absent-disconnect").expect("request ID"),
     };
@@ -163,7 +162,7 @@ fn absent_disconnect_commits_once_and_replay_publishes_nothing() {
         changed.reasons,
         vec![RuntimeChangeReason::ProviderDisconnected]
     );
-    assert_eq!(changed.previous_revision, Some(initial.runtime_revision));
+    assert_eq!(changed.previous_revision, Some(initial.revision));
 
     let replay = fixture
         .engine
@@ -172,8 +171,8 @@ fn absent_disconnect_commits_once_and_replay_publishes_nothing() {
     assert!(replay.replayed);
     assert!(notifications.try_recv().is_err());
     assert_eq!(
-        replay.runtime.snapshot.runtime_revision,
-        first.runtime.snapshot.runtime_revision
+        replay.runtime.snapshot.revision,
+        first.runtime.snapshot.revision
     );
 }
 
@@ -183,8 +182,7 @@ fn disconnect_replay_survives_a_clean_engine_restart() {
     let initial = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
     let request = ProviderDisconnectParams {
         provider_id: ProviderId::new("openai").expect("provider ID"),
-        expected_runtime_revision: initial.runtime_revision,
-        expected_provider_state_revision: initial.provider_state_revision,
+        expected_revision: initial.revision,
         expected_connection_generation: None,
         client_request_id: ClientRequestId::new("restart-disconnect").expect("request ID"),
     };
@@ -235,7 +233,7 @@ async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_prese
     let connected = engine_one
         .connect_provider(ProviderConnectParams {
             provider_id: ProviderId::new("amazon-bedrock").expect("provider ID"),
-            expected_catalog_revision: catalog.revision.clone(),
+            expected_revision: initial.revision.clone(),
             setup_values: BTreeMap::from([(
                 SetupFieldId::new("region").expect("setup field"),
                 cookie_agent_protocol::SafeSetupValue::String(
@@ -329,8 +327,7 @@ async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_prese
         .expect("durable connection");
     let disconnect_request = ProviderDisconnectParams {
         provider_id: ProviderId::new("amazon-bedrock").expect("provider ID"),
-        expected_runtime_revision: second.runtime_revision,
-        expected_provider_state_revision: second.provider_state_revision,
+        expected_revision: second.revision,
         expected_connection_generation: Some(connection.connection_generation),
         client_request_id: ClientRequestId::new("global-bedrock-disconnect")
             .expect("disconnect ID"),
@@ -415,7 +412,7 @@ async fn connect_names_a_missing_setup_field_or_credential() {
     let connect = |setup_values, auth_values: serde_json::Value| {
         engine.connect_provider(ProviderConnectParams {
             provider_id: ProviderId::new("amazon-bedrock").expect("provider ID"),
-            expected_catalog_revision: catalog.revision.clone(),
+            expected_revision: engine.runtime_snapshot().expect("view").snapshot.revision,
             setup_values,
             auth_method: cookie_agent_protocol::AuthMethodId::new("aws-sigv4-credentials-v1")
                 .expect("auth method"),
@@ -476,14 +473,14 @@ fn catalog_refresh_publishes_one_coherent_reasoned_snapshot() {
     assert_eq!(changed.reasons, vec![RuntimeChangeReason::CatalogRefreshed]);
     assert_eq!(
         changed.previous_revision,
-        Some(before.result.snapshot.runtime_revision.clone())
+        Some(before.result.snapshot.revision.clone())
     );
     assert_eq!(changed.snapshot, result.snapshot);
     assert_eq!(fixture.engine.current_runtime().result, result);
 }
 
 #[test]
-fn parser_quarantine_is_counted_and_changes_the_global_digest() {
+fn parser_quarantine_is_counted_and_changes_the_view() {
     let fixture = fixture();
     let before = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
     let mut catalog = (**fixture.manager.current().catalog()).clone();
@@ -512,12 +509,9 @@ fn parser_quarantine_is_counted_and_changes_the_global_digest() {
         .refresh_catalog(Arc::new(catalog))
         .expect("parser quarantine refresh")
         .snapshot;
-    assert_eq!(refreshed.catalog_state.provider_quarantine_count, 1);
-    assert_eq!(refreshed.catalog_state.model_quarantine_count, 0);
-    assert_ne!(
-        refreshed.catalog_state.quarantine_digest,
-        before.catalog_state.quarantine_digest
-    );
+    assert_eq!(refreshed.catalog.provider_quarantine_count, 1);
+    assert_eq!(refreshed.catalog.model_quarantine_count, 0);
+    assert_ne!(refreshed.revision, before.revision);
     let provider = refreshed
         .providers
         .iter()
@@ -527,7 +521,7 @@ fn parser_quarantine_is_counted_and_changes_the_global_digest() {
         provider.support.state,
         cookie_agent_protocol::ProviderSupportState::Quarantined
     );
-    assert!(refreshed.catalog_state.provider_quarantine_count >= 1);
+    assert!(refreshed.catalog.provider_quarantine_count >= 1);
 }
 
 #[test]
@@ -548,8 +542,8 @@ fn registry_provider_drift_counts_but_unsupported_provider_does_not() {
         .refresh_catalog(Arc::new(drifted))
         .expect("provider drift refresh")
         .snapshot;
-    assert_eq!(drifted.catalog_state.provider_quarantine_count, 0);
-    assert_eq!(drifted.catalog_state.model_quarantine_count, 0);
+    assert_eq!(drifted.catalog.provider_quarantine_count, 0);
+    assert_eq!(drifted.catalog.model_quarantine_count, 0);
     assert_eq!(
         drifted.providers[0].support.state,
         cookie_agent_protocol::ProviderSupportState::Supported
@@ -582,8 +576,8 @@ fn registry_provider_drift_counts_but_unsupported_provider_does_not() {
         .refresh_catalog(Arc::new(unsupported))
         .expect("unsupported provider refresh")
         .snapshot;
-    assert_eq!(unsupported.catalog_state.provider_quarantine_count, 0);
-    assert_eq!(unsupported.catalog_state.model_quarantine_count, 0);
+    assert_eq!(unsupported.catalog.provider_quarantine_count, 0);
+    assert_eq!(unsupported.catalog.model_quarantine_count, 0);
     assert_eq!(
         unsupported.providers[0].support.state,
         cookie_agent_protocol::ProviderSupportState::Unsupported
@@ -616,8 +610,8 @@ fn registry_model_shape_drift_is_counted_with_exact_model_identity() {
         .refresh_catalog(Arc::new(catalog))
         .expect("model drift refresh")
         .snapshot;
-    assert_eq!(snapshot.catalog_state.provider_quarantine_count, 0);
-    assert_eq!(snapshot.catalog_state.model_quarantine_count, 0);
+    assert_eq!(snapshot.catalog.provider_quarantine_count, 0);
+    assert_eq!(snapshot.catalog.model_quarantine_count, 0);
     assert!(snapshot.models.is_empty());
 }
 
@@ -708,8 +702,8 @@ fn combined_quarantine_digest_is_order_independent_and_notifications_are_coheren
         .snapshot;
     let first_notification = notifications.try_recv().expect("first notification");
     assert_eq!(first_notification.snapshot, first);
-    assert_eq!(first.catalog_state.provider_quarantine_count, 1);
-    assert_eq!(first.catalog_state.model_quarantine_count, 2);
+    assert_eq!(first.catalog.provider_quarantine_count, 1);
+    assert_eq!(first.catalog.model_quarantine_count, 2);
 
     catalog.revision =
         CatalogRevision::new(format!("sha256:{}", "6".repeat(64))).expect("catalog revision");
@@ -722,16 +716,12 @@ fn combined_quarantine_digest_is_order_independent_and_notifications_are_coheren
     let reordered_notification = notifications.try_recv().expect("reordered notification");
     assert_eq!(reordered_notification.snapshot, reordered);
     assert_eq!(
-        reordered.catalog_state.quarantine_digest,
-        first.catalog_state.quarantine_digest
+        reordered.catalog.provider_quarantine_count,
+        first.catalog.provider_quarantine_count
     );
     assert_eq!(
-        reordered.catalog_state.provider_quarantine_count,
-        first.catalog_state.provider_quarantine_count
-    );
-    assert_eq!(
-        reordered.catalog_state.model_quarantine_count,
-        first.catalog_state.model_quarantine_count
+        reordered.catalog.model_quarantine_count,
+        first.catalog.model_quarantine_count
     );
 
     catalog.revision =
@@ -744,10 +734,10 @@ fn combined_quarantine_digest_is_order_independent_and_notifications_are_coheren
         .snapshot;
     let changed_notification = notifications.try_recv().expect("changed notification");
     assert_eq!(changed_notification.snapshot, changed);
-    assert_ne!(
-        changed.catalog_state.quarantine_digest,
-        reordered.catalog_state.quarantine_digest
-    );
+    let quarantined = |view: &cookie_agent_protocol::ModelCatalogView| {
+        view.catalog.provider_quarantine_count + view.catalog.model_quarantine_count
+    };
+    assert_eq!(quarantined(&changed) + 1, quarantined(&reordered));
 }
 
 #[test]
@@ -768,8 +758,7 @@ fn failed_publication_preparation_commits_nothing_and_publishes_nothing() {
         .engine
         .disconnect_provider(ProviderDisconnectParams {
             provider_id: ProviderId::new("openai").expect("provider ID"),
-            expected_runtime_revision: initial.runtime_revision,
-            expected_provider_state_revision: initial.provider_state_revision,
+            expected_revision: initial.revision,
             expected_connection_generation: None,
             client_request_id: ClientRequestId::new("failed-publication").expect("request ID"),
         });
@@ -812,14 +801,14 @@ fn external_store_generation_is_reloaded_before_discovery() {
         .current_runtime()
         .result
         .snapshot
-        .runtime_revision
+        .revision
         .clone();
     let after = fixture
         .engine
         .runtime_snapshot()
         .expect("reloaded snapshot")
         .snapshot;
-    assert_ne!(before, after.runtime_revision);
+    assert_ne!(before, after.revision);
     let changed = notifications.try_recv().expect("reload notification");
     assert_eq!(
         changed.reasons,
@@ -829,7 +818,7 @@ fn external_store_generation_is_reloaded_before_discovery() {
         ]
     );
     assert_eq!(changed.previous_revision, Some(before));
-    assert_eq!(changed.snapshot.runtime_revision, after.runtime_revision);
+    assert_eq!(changed.snapshot.revision, after.revision);
 }
 
 #[test]
@@ -894,8 +883,7 @@ async fn accepted_root_run_keeps_its_exact_manifest_binding_after_runtime_change
         .engine
         .disconnect_provider(ProviderDisconnectParams {
             provider_id: ProviderId::new("openai").expect("provider ID"),
-            expected_runtime_revision: runtime.runtime_revision,
-            expected_provider_state_revision: runtime.provider_state_revision,
+            expected_revision: runtime.revision,
             expected_connection_generation: None,
             client_request_id: ClientRequestId::new("immutability-change").expect("request ID"),
         })
@@ -998,7 +986,7 @@ fn unconfigured_provider_reports_model_counts_docs_and_env_without_a_list() {
         ]
     );
     assert_eq!(
-        snapshot.catalog_state.age,
+        snapshot.catalog.age,
         cookie_agent_protocol::CatalogAge::Current
     );
 }
@@ -1025,7 +1013,7 @@ fn configured_provider_lists_unavailable_models_with_reasons() {
     let connected = engine
         .connect_provider(ProviderConnectParams {
             provider_id: ProviderId::new("amazon-bedrock").expect("provider ID"),
-            expected_catalog_revision: catalog.revision.clone(),
+            expected_revision: engine.runtime_snapshot().expect("view").snapshot.revision,
             setup_values: BTreeMap::from([(
                 SetupFieldId::new("region").expect("setup field"),
                 cookie_agent_protocol::SafeSetupValue::String(

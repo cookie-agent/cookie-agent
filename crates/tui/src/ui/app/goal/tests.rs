@@ -164,6 +164,7 @@ fn meta(session_id: SessionId, origin: SessionOrigin) -> SessionMeta {
     serde_json::from_value(json!({
             "session_id": session_id,
             "origin": origin,
+            "short_id": null,
             "cwd_identity": "/workspace",
             "creation_selection": {"agent": "primary", "model": {"model": "test/model", "variant": null}, "preset": null},
             "runtime_revision": revision, "catalog_revision": revision, "provider_state_revision": revision,

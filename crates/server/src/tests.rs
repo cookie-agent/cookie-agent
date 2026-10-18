@@ -531,10 +531,10 @@ async fn empty_runtime_snapshot_is_coherent_and_legacy_lists_are_absent() {
     let harness = harness();
     let mut client = connect(Arc::clone(&harness.server)).await;
     let (snapshot, _) = request(&mut client, 2, "runtime.snapshot.get", json!({})).await;
-    assert_eq!(
-        snapshot["result"]["snapshot"]["snapshot_schema_version"],
-        serde_json::json!(cookie_agent_protocol::RuntimeSnapshotSchemaVersion::current())
-    );
+    let view = &snapshot["result"]["snapshot"];
+    assert!(view["revision"].is_string());
+    assert!(view.get("snapshot_schema_version").is_none());
+    assert!(view["catalog"]["source"].is_string());
     assert_eq!(snapshot["result"]["snapshot"]["models"], json!([]));
     let agents = snapshot["result"]["snapshot"]["agents"]
         .as_array()
@@ -604,7 +604,7 @@ async fn empty_session_create_returns_secret_free_no_runnable_failure() {
         "provider.connect",
         json!({
             "provider_id": "missing",
-            "expected_catalog_revision": harness.engine.runtime_snapshot().expect("snapshot").snapshot.catalog_revision,
+            "expected_revision": harness.engine.runtime_snapshot().expect("view").snapshot.revision,
             "setup_values": {},
             "auth_method": "bearer-api-key-v1",
             "auth_values": { "api_key": secret },
@@ -635,8 +635,7 @@ async fn disconnect_publishes_one_ordered_runtime_changed_notification() {
         "provider.disconnect",
         json!({
             "provider_id": "openai",
-            "expected_runtime_revision": snapshot.runtime_revision,
-            "expected_provider_state_revision": snapshot.provider_state_revision,
+            "expected_revision": snapshot.revision,
             "expected_connection_generation": null,
             "client_request_id": "disconnect-absent"
         }),
@@ -673,11 +672,11 @@ async fn disconnect_publishes_one_ordered_runtime_changed_notification() {
     );
     assert_eq!(
         changed["params"]["previous_revision"],
-        json!(snapshot.runtime_revision)
+        json!(snapshot.revision)
     );
     assert_eq!(
-        changed["params"]["snapshot"]["runtime_revision"],
-        response["result"]["runtime"]["snapshot"]["runtime_revision"]
+        changed["params"]["snapshot"]["revision"],
+        response["result"]["runtime"]["snapshot"]["revision"]
     );
 }
 
@@ -701,7 +700,7 @@ async fn goal_and_producer_inspection_are_reachable_through_rpc() {
         "provider.connect",
         json!({
             "provider_id":"openai",
-            "expected_catalog_revision":catalog.revision,
+            "expected_revision": harness.engine.runtime_snapshot().expect("view").snapshot.revision,
             "setup_values":{},
             "auth_method":"bearer-api-key-v1",
             "auth_values":{"api_key":"test-secret"},
@@ -789,7 +788,7 @@ async fn catalog_churn_projects_supported_removed_and_reconnects_via_retained_re
         "provider.connect",
         json!({
             "provider_id":"openai",
-            "expected_catalog_revision":current.revision,
+            "expected_revision": harness.engine.runtime_snapshot().expect("view").snapshot.revision,
             "setup_values":{},
             "auth_method":"bearer-api-key-v1",
             "auth_values":{"api_key":"stored-secret"},
@@ -823,7 +822,7 @@ async fn catalog_churn_projects_supported_removed_and_reconnects_via_retained_re
         "provider.connect",
         json!({
             "provider_id":"openai",
-            "expected_catalog_revision":removed_catalog.revision,
+            "expected_revision": harness.engine.runtime_snapshot().expect("view").snapshot.revision,
             "setup_values":{},
             "auth_method":"bearer-api-key-v1",
             "auth_values":{"api_key":"rotated-secret"},
@@ -905,7 +904,7 @@ async fn unmatched_retained_policy_is_unsupported_and_reconnect_is_blocked() {
         "provider.connect",
         json!({
             "provider_id":"openai",
-            "expected_catalog_revision":revision,
+            "expected_revision": harness.engine.runtime_snapshot().expect("view").snapshot.revision,
             "setup_values":{},
             "auth_method":"bearer-api-key-v1",
             "auth_values":{"api_key":"replacement"},
@@ -938,7 +937,7 @@ async fn catalog_shape_is_compiled_without_provider_quarantine() {
         "provider.connect",
         json!({
             "provider_id":"openai",
-            "expected_catalog_revision":catalog.revision,
+            "expected_revision": harness.engine.runtime_snapshot().expect("view").snapshot.revision,
             "setup_values":{},
             "auth_method":"bearer-api-key-v1",
             "auth_values":{"api_key":"secret"},
@@ -1050,7 +1049,7 @@ async fn runtime_attachments_are_reachable_through_rpc() {
         "provider.connect",
         json!({
             "provider_id":"openai",
-            "expected_catalog_revision":catalog.revision,
+            "expected_revision": harness.engine.runtime_snapshot().expect("view").snapshot.revision,
             "setup_values":{},
             "auth_method":"bearer-api-key-v1",
             "auth_values":{"api_key":"test-secret"},
@@ -1270,7 +1269,7 @@ async fn mcp_connection_failures_reach_clients_viewing_affected_sessions() {
         "provider.connect",
         json!({
             "provider_id":"openai",
-            "expected_catalog_revision":catalog.revision,
+            "expected_revision": harness.engine.runtime_snapshot().expect("view").snapshot.revision,
             "setup_values":{},
             "auth_method":"bearer-api-key-v1",
             "auth_values":{"api_key":"test-secret"},

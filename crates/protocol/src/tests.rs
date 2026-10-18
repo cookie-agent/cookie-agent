@@ -176,26 +176,17 @@ fn child_agent(binding: FrozenModelBinding) -> AgentSnapshot {
     }
 }
 
-fn runtime() -> RuntimeSnapshotV1 {
-    RuntimeSnapshotV1 {
-        snapshot_schema_version: RuntimeSnapshotSchemaVersion::current(),
-        recipe_registry_revision: revision("recipes"),
-        catalog_revision: revision("catalog"),
-        catalog_source: CatalogSource::Network,
-        catalog_state: CatalogRuntimeState {
+fn runtime() -> ModelCatalogView {
+    ModelCatalogView {
+        revision: ViewRevision::new("view-1").unwrap(),
+        catalog: CatalogStatus {
+            source: CatalogSource::Network,
             stale: false,
             age: CatalogAge::Current,
             provider_quarantine_count: 0,
             model_quarantine_count: 0,
-            quarantine_digest: Sha256Digest::of_bytes(b"quarantine"),
             last_error: None,
         },
-        provider_state_revision: revision("providers"),
-        provider_store_generation: ProviderStoreGeneration::new(1).unwrap(),
-        model_revision: revision("models"),
-        agent_revision: revision("agents"),
-        config_revision: revision("config"),
-        runtime_revision: revision("runtime"),
         providers: Vec::new(),
         models: Vec::new(),
         agents: Vec::new(),
@@ -221,8 +212,6 @@ fn wire_versions_accept_only_documented_history() {
         .unwrap()["protocol_version"],
         json!(CLIENT_PROTOCOL_VERSION.to_string())
     );
-    assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 6);
-    assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(5)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
 }
 
@@ -1610,7 +1599,6 @@ fn available_model_descriptor_serde_round_trip_preserves_variant_order() {
                 id: VariantId::new(id).expect("variant ID"),
                 display_name: id.into(),
                 origin: VariantOrigin::Explicit,
-                behavior_fingerprint: Sha256Digest::of_bytes(id.as_bytes()),
             })
             .collect(),
         variant_order: ["zeta", "alpha"]
@@ -1618,7 +1606,6 @@ fn available_model_descriptor_serde_round_trip_preserves_variant_order() {
             .map(|id| VariantId::new(id).expect("variant ID"))
             .collect(),
         default_variant: None,
-        behavior_fingerprint: Sha256Digest::of_bytes(b"model behavior"),
     };
 
     let encoded = serde_json::to_value(&descriptor).expect("serialize model descriptor");
@@ -1629,7 +1616,6 @@ fn available_model_descriptor_serde_round_trip_preserves_variant_order() {
 
 #[test]
 fn session_meta_serde_round_trip_preserves_last_activity() {
-    let runtime = runtime();
     let last_activity = "2026-08-06T12:34:56Z".parse().expect("timestamp");
     let meta = SessionMeta {
         session_id: SessionId::new_v7(),
@@ -1644,12 +1630,12 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
             },
             preset: None,
         },
-        runtime_revision: runtime.runtime_revision,
-        catalog_revision: runtime.catalog_revision,
-        provider_state_revision: runtime.provider_state_revision,
-        model_revision: runtime.model_revision,
-        agent_revision: runtime.agent_revision,
-        recipe_registry_revision: runtime.recipe_registry_revision,
+        runtime_revision: revision("runtime"),
+        catalog_revision: revision("catalog"),
+        provider_state_revision: revision("providers"),
+        model_revision: revision("models"),
+        agent_revision: revision("agents"),
+        recipe_registry_revision: revision("recipes"),
         manifest_revision: revision("manifest"),
         title: None,
         title_updated_seq: 0,
@@ -1856,36 +1842,74 @@ fn yolo_approved_is_coherent_only_for_policy_allow_and_approved() {
 }
 
 #[test]
-fn runtime_snapshot_ignores_unknown_members_and_is_source_coherent() {
+fn the_catalog_view_ignores_unknown_members_and_is_source_coherent() {
     let mut value = serde_json::to_value(runtime()).unwrap();
     value["unknown"] = json!(true);
+    value["catalog"]["unknown"] = json!(true);
     assert_eq!(
-        serde_json::from_value::<RuntimeSnapshotV1>(value).unwrap(),
+        serde_json::from_value::<ModelCatalogView>(value).unwrap(),
         runtime()
     );
 
     let mut bootstrap = runtime();
-    bootstrap.catalog_source = CatalogSource::Bootstrap;
+    bootstrap.catalog.source = CatalogSource::Bootstrap;
     assert!(bootstrap.validate().is_err());
-    bootstrap.catalog_state.stale = true;
+    bootstrap.catalog.stale = true;
     assert!(bootstrap.validate().is_ok());
 }
 
+/// The client view carries one opaque revision and client-facing
+/// descriptors only: no internal revisions, counters, schema versions,
+/// recipe identities, or fingerprints.
 #[test]
-fn runtime_change_reasons_are_nonempty_sorted_unique() {
-    let base = json!({"previous_revision":null,"snapshot":runtime(),"reasons":[]});
-    assert!(serde_json::from_value::<RuntimeChangedNotification>(base).is_err());
-    let unsorted = json!({"previous_revision":null,"snapshot":runtime(),"reasons":["provider_store_reloaded","provider_store_changed"]});
-    assert!(serde_json::from_value::<RuntimeChangedNotification>(unsorted).is_err());
-    let valid = json!({"previous_revision":null,"snapshot":runtime(),"reasons":["provider_connected","provider_disconnected","provider_store_changed","provider_store_reloaded"]});
-    assert!(serde_json::from_value::<RuntimeChangedNotification>(valid).is_ok());
+fn the_catalog_view_carries_no_internal_identities() {
+    let schema = serde_json::to_value(schemars::schema_for!(RuntimeSnapshotResult)).unwrap();
+    let text = schema.to_string();
+    for internal in [
+        "snapshot_schema_version",
+        "recipe_registry_revision",
+        "catalog_revision",
+        "provider_state_revision",
+        "provider_store_generation",
+        "model_revision",
+        "agent_revision",
+        "config_revision",
+        "runtime_revision",
+        "quarantine_digest",
+        "behavior_fingerprint",
+        "recipe_fingerprint",
+        "setup_fingerprint",
+        "store_revision",
+    ] {
+        assert!(!text.contains(internal), "{internal}");
+    }
+    let revision = &schema["$defs"]["ModelCatalogView"]["properties"]["revision"];
+    assert_eq!(revision["type"], "string");
+    assert!(revision.get("pattern").is_none(), "{revision}");
+}
+
+#[test]
+fn runtime_change_reasons_read_sorted_unique_and_uncapped() {
+    let unsorted = json!({"previous_revision":null,"snapshot":runtime(),"reasons":["provider_store_reloaded","provider_store_changed","provider_store_reloaded"]});
+    let changed = serde_json::from_value::<RuntimeChangedNotification>(unsorted).unwrap();
+    assert_eq!(
+        changed.reasons,
+        [
+            RuntimeChangeReason::ProviderStoreChanged,
+            RuntimeChangeReason::ProviderStoreReloaded
+        ]
+    );
+    let all = json!({"previous_revision":"view-0","snapshot":runtime(),"reasons":["startup","catalog_refreshed","catalog_fallback","config_reloaded","provider_connected","provider_disconnected","provider_store_changed","provider_store_reloaded","agent_reloaded","resync"]});
+    let changed = serde_json::from_value::<RuntimeChangedNotification>(all).unwrap();
+    assert_eq!(changed.reasons.len(), 10);
+    assert_eq!(changed.previous_revision.unwrap().as_str(), "view-0");
 }
 
 #[test]
 fn provider_connect_is_boundary_only_and_redacted() {
-    let revision = revision::<CatalogRevision>("catalog");
+    let revision = "view-1";
     let json = format!(
-        r#"{{"provider_id":"openai","expected_catalog_revision":"{revision}","setup_values":{{}},"auth_method":"bearer-api-key-v1","auth_values":{{"api_key":"super-secret"}},"client_connect_id":"connect-1"}}"#
+        r#"{{"provider_id":"openai","expected_revision":"{revision}","setup_values":{{}},"auth_method":"bearer-api-key-v1","auth_values":{{"api_key":"super-secret"}},"client_connect_id":"connect-1"}}"#
     );
     let params: ProviderConnectParams = serde_json::from_str(&json).unwrap();
     assert_eq!(
@@ -1897,7 +1921,7 @@ fn provider_connect_is_boundary_only_and_redacted() {
     assert!(!format!("{params:?}").contains("super-secret"));
 
     let duplicate = format!(
-        r#"{{"provider_id":"openai","expected_catalog_revision":"{revision}","setup_values":{{}},"auth_method":"bearer-api-key-v1","auth_values":{{"api_key":"one","api_key":"two"}},"client_connect_id":"connect-1"}}"#
+        r#"{{"provider_id":"openai","expected_revision":"{revision}","setup_values":{{}},"auth_method":"bearer-api-key-v1","auth_values":{{"api_key":"one","api_key":"two"}},"client_connect_id":"connect-1"}}"#
     );
     assert!(serde_json::from_str::<ProviderConnectParams>(&duplicate).is_err());
     let unknown = json.replace(
@@ -1911,8 +1935,7 @@ fn provider_connect_is_boundary_only_and_redacted() {
 fn disconnect_params_and_success_are_exact() {
     let params = ProviderDisconnectParams {
         provider_id: ProviderId::new("openai").unwrap(),
-        expected_runtime_revision: revision("runtime"),
-        expected_provider_state_revision: revision("providers"),
+        expected_revision: ViewRevision::new("view-1").unwrap(),
         expected_connection_generation: None,
         client_request_id: ClientRequestId::new("request-1").unwrap(),
     };
@@ -1921,7 +1944,7 @@ fn disconnect_params_and_success_are_exact() {
     assert!(serde_json::from_value::<ProviderDisconnectParams>(value).is_err());
 
     let invalid_result = json!({
-        "durable_receipt": {"receipt_id":"00000000-0000-0000-0000-000000000001","store_revision":revision::<ProviderStoreRevision>("store"),"provider_state_revision":revision::<ProviderStateRevision>("providers"),"committed_at":"2026-08-04T00:00:00Z"},
+        "durable_receipt": {"receipt_id":"00000000-0000-0000-0000-000000000001","committed_at":"2026-08-04T00:00:00Z"},
         "provider_id":"openai","disconnected":false,"effective_auth_state":"unavailable","runtime":{"snapshot":runtime()},"replayed":false
     });
     assert!(serde_json::from_value::<ProviderDisconnectResult>(invalid_result).is_err());

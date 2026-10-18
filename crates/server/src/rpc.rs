@@ -494,11 +494,7 @@ mod tests {
     fn provider_connect_faults_name_the_failure() {
         let request = ProviderConnectParams {
             provider_id: cookie_agent_protocol::ProviderId::new("openai").unwrap(),
-            expected_catalog_revision: cookie_agent_protocol::CatalogRevision::new(format!(
-                "sha256:{}",
-                "0".repeat(64)
-            ))
-            .unwrap(),
+            expected_revision: cookie_agent_protocol::ViewRevision::new("view-1").unwrap(),
             setup_values: std::collections::BTreeMap::new(),
             auth_method: cookie_agent_protocol::AuthMethodId::new("bearer-api-key-v1").unwrap(),
             auth_values: serde_json::from_value(json!({"api_key": "placeholder"})).unwrap(),

@@ -34,33 +34,90 @@ pub enum CatalogAge {
     OlderThanThirtyDays,
 }
 
+/// Where the daemon's model catalog stands: its source, its age, the records
+/// it quarantined, and its last refresh error.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub struct CatalogRuntimeState {
+pub struct CatalogStatus {
+    pub source: CatalogSource,
     pub stale: bool,
     pub age: CatalogAge,
     pub provider_quarantine_count: u32,
     pub model_quarantine_count: u32,
-    pub quarantine_digest: Sha256Digest,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<CatalogSafeErrorMeta>", required)]
     pub last_error: Option<CatalogSafeErrorMeta>,
 }
 
+/// The revision of a [`ModelCatalogView`]: one opaque string, equal for two
+/// views exactly when they show the same thing. Clients compare it and send
+/// it back, never parse it.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct ViewRevision(String);
+
+impl ViewRevision {
+    pub const MAX_LEN: usize = 256;
+
+    pub fn new(value: impl Into<String>) -> Result<Self, WireStringError> {
+        let value = value.into();
+        if value.is_empty() || value.len() > Self::MAX_LEN || value.chars().any(char::is_control) {
+            Err(WireStringError::Invalid(
+                "a view revision is 1 to 256 bytes without control characters",
+            ))
+        } else {
+            Ok(Self(value))
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ViewRevision {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ViewRevision {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for ViewRevision {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("ViewRevision")
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "An opaque revision: compared and sent back, never parsed."
+        })
+    }
+}
+
+/// What a client sees of the daemon's providers, models, and agents. It
+/// carries only client-facing descriptors: no frozen model bindings, recipe
+/// identities, compiler versions, or internal revisions, which change
+/// without anything a client shows changing.
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-pub struct RuntimeSnapshotV1 {
-    pub snapshot_schema_version: RuntimeSnapshotSchemaVersion,
-    pub recipe_registry_revision: RecipeRegistryRevision,
-    pub catalog_revision: CatalogRevision,
-    pub catalog_source: CatalogSource,
-    pub catalog_state: CatalogRuntimeState,
-    pub provider_state_revision: ProviderStateRevision,
-    pub provider_store_generation: ProviderStoreGeneration,
-    pub model_revision: ModelRevision,
-    pub agent_revision: AgentRevision,
-    /// The revision of the daemon's applied configuration (`config.toml`
-    /// and the agent documents); see `config.get`.
-    pub config_revision: ConfigRevision,
-    pub runtime_revision: RuntimeRevision,
+pub struct ModelCatalogView {
+    /// Changes whenever anything this view shows changes. `provider.connect`
+    /// and `provider.disconnect` send back the revision they were filled
+    /// from.
+    pub revision: ViewRevision,
+    pub catalog: CatalogStatus,
     #[schemars(length(max = 4096))]
     pub providers: Vec<ProviderDescriptor>,
     #[schemars(length(max = 4096))]
@@ -69,12 +126,12 @@ pub struct RuntimeSnapshotV1 {
     pub agents: Vec<AgentDescriptor>,
 }
 
-impl RuntimeSnapshotV1 {
+impl ModelCatalogView {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.catalog_source == CatalogSource::Bootstrap && !self.catalog_state.stale {
+        if self.catalog.source == CatalogSource::Bootstrap && !self.catalog.stale {
             return Err("bootstrap catalog state must be stale");
         }
-        if self.catalog_source == CatalogSource::Network && self.catalog_state.stale {
+        if self.catalog.source == CatalogSource::Network && self.catalog.stale {
             return Err("network catalog state cannot be stale");
         }
         if self.providers.len() > 4096
@@ -108,41 +165,23 @@ impl RuntimeSnapshotV1 {
     }
 }
 
-impl<'de> Deserialize<'de> for RuntimeSnapshotV1 {
+impl<'de> Deserialize<'de> for ModelCatalogView {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
         struct Wire {
-            snapshot_schema_version: RuntimeSnapshotSchemaVersion,
-            recipe_registry_revision: RecipeRegistryRevision,
-            catalog_revision: CatalogRevision,
-            catalog_source: CatalogSource,
-            catalog_state: CatalogRuntimeState,
-            provider_state_revision: ProviderStateRevision,
-            provider_store_generation: ProviderStoreGeneration,
-            model_revision: ModelRevision,
-            agent_revision: AgentRevision,
-            config_revision: ConfigRevision,
-            runtime_revision: RuntimeRevision,
+            revision: ViewRevision,
+            catalog: CatalogStatus,
             providers: Vec<ProviderDescriptor>,
             models: Vec<AvailableModelDescriptor>,
             agents: Vec<AgentDescriptor>,
         }
         let wire = Wire::deserialize(deserializer)?;
         let value = Self {
-            snapshot_schema_version: wire.snapshot_schema_version,
-            recipe_registry_revision: wire.recipe_registry_revision,
-            catalog_revision: wire.catalog_revision,
-            catalog_source: wire.catalog_source,
-            catalog_state: wire.catalog_state,
-            provider_state_revision: wire.provider_state_revision,
-            provider_store_generation: wire.provider_store_generation,
-            model_revision: wire.model_revision,
-            agent_revision: wire.agent_revision,
-            config_revision: wire.config_revision,
-            runtime_revision: wire.runtime_revision,
+            revision: wire.revision,
+            catalog: wire.catalog,
             providers: wire.providers,
             models: wire.models,
             agents: wire.agents,
@@ -152,9 +191,10 @@ impl<'de> Deserialize<'de> for RuntimeSnapshotV1 {
     }
 }
 
+/// `runtime.snapshot.get`: the daemon's current catalog view.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct RuntimeSnapshotResult {
-    pub snapshot: RuntimeSnapshotV1,
+    pub snapshot: ModelCatalogView,
 }
 
 crate::open_enum! {
@@ -178,13 +218,16 @@ crate::open_enum! {
     }
 }
 
+/// `runtime.changed`: the daemon published a new catalog view.
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct RuntimeChangedNotification {
+    /// The revision of the view this one follows; null after a `resync`.
     #[serde(deserialize_with = "crate::deserialize_required_option")]
-    #[schemars(with = "crate::NullableSchema<RuntimeRevision>", required)]
-    pub previous_revision: Option<RuntimeRevision>,
-    pub snapshot: RuntimeSnapshotV1,
-    #[schemars(length(min = 1, max = 9))]
+    #[schemars(with = "crate::NullableSchema<ViewRevision>", required)]
+    pub previous_revision: Option<ViewRevision>,
+    pub snapshot: ModelCatalogView,
+    /// Why, sorted and without repeats.
+    #[schemars(length(min = 1))]
     pub reasons: Vec<RuntimeChangeReason>,
 }
 impl<'de> Deserialize<'de> for RuntimeChangedNotification {
@@ -195,21 +238,16 @@ impl<'de> Deserialize<'de> for RuntimeChangedNotification {
         #[derive(Deserialize)]
         struct Wire {
             #[serde(deserialize_with = "crate::deserialize_required_option")]
-            previous_revision: Option<RuntimeRevision>,
-            snapshot: RuntimeSnapshotV1,
+            previous_revision: Option<ViewRevision>,
+            snapshot: ModelCatalogView,
             reasons: Vec<RuntimeChangeReason>,
         }
         let mut wire = Wire::deserialize(deserializer)?;
-        let empty = wire.reasons.is_empty();
         // Reasons a newer daemon added say nothing this build acts on.
         wire.reasons
             .retain(|reason| *reason != RuntimeChangeReason::Unknown);
-        if empty || wire.reasons.len() > 9 || wire.reasons.windows(2).any(|pair| pair[0] >= pair[1])
-        {
-            return Err(serde::de::Error::custom(
-                "runtime change reasons must be a nonempty strictly sorted unique set",
-            ));
-        }
+        wire.reasons.sort();
+        wire.reasons.dedup();
         Ok(Self {
             previous_revision: wire.previous_revision,
             snapshot: wire.snapshot,

@@ -165,12 +165,6 @@
     },
     "AvailableModelDescriptor": {
       "properties": {
-        "behavior_fingerprint": {
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        },
         "capabilities": {
           "$ref": "#/$defs/ModelCapabilities"
         },
@@ -219,19 +213,12 @@
         "capabilities",
         "variants",
         "variant_order",
-        "default_variant",
-        "behavior_fingerprint"
+        "default_variant"
       ],
       "type": "object"
     },
     "AvailableVariantDescriptor": {
       "properties": {
-        "behavior_fingerprint": {
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        },
         "display_name": {
           "maxLength": 512,
           "minLength": 1,
@@ -251,8 +238,7 @@
       "required": [
         "id",
         "display_name",
-        "origin",
-        "behavior_fingerprint"
+        "origin"
       ],
       "type": "object"
     },
@@ -274,51 +260,6 @@
       ],
       "type": "string",
       "x-open": true
-    },
-    "CatalogRuntimeState": {
-      "properties": {
-        "age": {
-          "$ref": "#/$defs/CatalogAge"
-        },
-        "last_error": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CatalogSafeErrorMeta"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "model_quarantine_count": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "provider_quarantine_count": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "quarantine_digest": {
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "stale": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "stale",
-        "age",
-        "provider_quarantine_count",
-        "model_quarantine_count",
-        "quarantine_digest",
-        "last_error"
-      ],
-      "type": "object"
     },
     "CatalogSafeErrorMeta": {
       "properties": {
@@ -357,6 +298,49 @@
       ],
       "type": "string",
       "x-open": true
+    },
+    "CatalogStatus": {
+      "description": "Where the daemon's model catalog stands: its source, its age, the records\nit quarantined, and its last refresh error.",
+      "properties": {
+        "age": {
+          "$ref": "#/$defs/CatalogAge"
+        },
+        "last_error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CatalogSafeErrorMeta"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model_quarantine_count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "provider_quarantine_count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source": {
+          "$ref": "#/$defs/CatalogSource"
+        },
+        "stale": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source",
+        "stale",
+        "age",
+        "provider_quarantine_count",
+        "model_quarantine_count",
+        "last_error"
+      ],
+      "type": "object"
     },
     "CredentialFieldType": {
       "description": "A value this build does not know reads as `api_key`: a secret like an API\nkey.",
@@ -404,18 +388,6 @@
           "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
           "type": "string"
         },
-        "recipe_fingerprint": {
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "setup_fingerprint": {
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        },
         "setup_values": {
           "additionalProperties": false,
           "patternProperties": {
@@ -429,8 +401,6 @@
       "required": [
         "provider_id",
         "setup_values",
-        "setup_fingerprint",
-        "recipe_fingerprint",
         "auth_method",
         "credential_fields",
         "connection_generation",
@@ -444,27 +414,13 @@
           "format": "date-time",
           "type": "string"
         },
-        "provider_state_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
         "receipt_id": {
           "format": "uuid",
-          "type": "string"
-        },
-        "store_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
           "type": "string"
         }
       },
       "required": [
         "receipt_id",
-        "store_revision",
-        "provider_state_revision",
         "committed_at"
       ],
       "type": "object"
@@ -614,6 +570,49 @@
         "native_replay",
         "cancellation",
         "media"
+      ],
+      "type": "object"
+    },
+    "ModelCatalogView": {
+      "description": "What a client sees of the daemon's providers, models, and agents. It\ncarries only client-facing descriptors: no frozen model bindings, recipe\nidentities, compiler versions, or internal revisions, which change\nwithout anything a client shows changing.",
+      "properties": {
+        "agents": {
+          "items": {
+            "$ref": "#/$defs/AgentDescriptor"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        },
+        "catalog": {
+          "$ref": "#/$defs/CatalogStatus"
+        },
+        "models": {
+          "items": {
+            "$ref": "#/$defs/AvailableModelDescriptor"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        },
+        "providers": {
+          "items": {
+            "$ref": "#/$defs/ProviderDescriptor"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        },
+        "revision": {
+          "description": "Changes whenever anything this view shows changes. `provider.connect`\nand `provider.disconnect` send back the revision they were filled\nfrom.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "revision",
+        "catalog",
+        "providers",
+        "models",
+        "agents"
       ],
       "type": "object"
     },
@@ -878,114 +877,14 @@
       "x-open": true
     },
     "RuntimeSnapshotResult": {
+      "description": "`runtime.snapshot.get`: the daemon's current catalog view.",
       "properties": {
         "snapshot": {
-          "$ref": "#/$defs/RuntimeSnapshotV1"
+          "$ref": "#/$defs/ModelCatalogView"
         }
       },
       "required": [
         "snapshot"
-      ],
-      "type": "object"
-    },
-    "RuntimeSnapshotV1": {
-      "properties": {
-        "agent_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "agents": {
-          "items": {
-            "$ref": "#/$defs/AgentDescriptor"
-          },
-          "maxItems": 4096,
-          "type": "array"
-        },
-        "catalog_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "catalog_source": {
-          "$ref": "#/$defs/CatalogSource"
-        },
-        "catalog_state": {
-          "$ref": "#/$defs/CatalogRuntimeState"
-        },
-        "config_revision": {
-          "description": "The revision of the daemon's applied configuration (`config.toml`\nand the agent documents); see `config.get`.",
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "model_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "models": {
-          "items": {
-            "$ref": "#/$defs/AvailableModelDescriptor"
-          },
-          "maxItems": 4096,
-          "type": "array"
-        },
-        "provider_state_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "provider_store_generation": {
-          "description": "Monotonic provider-store generation.",
-          "maximum": 9007199254740991,
-          "minimum": 1,
-          "type": "integer"
-        },
-        "providers": {
-          "items": {
-            "$ref": "#/$defs/ProviderDescriptor"
-          },
-          "maxItems": 4096,
-          "type": "array"
-        },
-        "recipe_registry_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "runtime_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "snapshot_schema_version": {
-          "const": 6,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "snapshot_schema_version",
-        "recipe_registry_revision",
-        "catalog_revision",
-        "catalog_source",
-        "catalog_state",
-        "provider_state_revision",
-        "provider_store_generation",
-        "model_revision",
-        "agent_revision",
-        "config_revision",
-        "runtime_revision",
-        "providers",
-        "models",
-        "agents"
       ],
       "type": "object"
     },

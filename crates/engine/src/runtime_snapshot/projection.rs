@@ -19,7 +19,7 @@ pub(crate) fn build_runtime_snapshot(
     agents: &AgentRegistry,
     agent_presets: &BTreeMap<String, std::sync::Arc<AgentRegistry>>,
     config_revision: &protocol::ConfigRevision,
-) -> Result<protocol::RuntimeSnapshotV1, EngineError> {
+) -> Result<(protocol::ModelCatalogView, super::SnapshotRevisions), EngineError> {
     let mut compiled_by_provider =
         BTreeMap::<protocol::ProviderId, Vec<&cookie_agent_models::CompiledRuntimeModel>>::new();
     for model in models.models().values() {
@@ -86,11 +86,8 @@ pub(crate) fn build_runtime_snapshot(
             })
         })
         .transpose()?;
-    let snapshot = protocol::RuntimeSnapshotV1 {
-        snapshot_schema_version: protocol::RuntimeSnapshotSchemaVersion::current(),
-        recipe_registry_revision: family_registry().revision(),
-        catalog_revision: catalog.revision.clone(),
-        catalog_source: match catalog.source {
+    let catalog_status = protocol::CatalogStatus {
+        source: match catalog.source {
             cookie_agent_models::catalog::CatalogSource::Network => {
                 protocol::CatalogSource::Network
             }
@@ -99,44 +96,43 @@ pub(crate) fn build_runtime_snapshot(
                 protocol::CatalogSource::Bootstrap
             }
         },
-        catalog_state: protocol::CatalogRuntimeState {
-            stale: !matches!(
-                catalog.state.availability,
-                cookie_agent_models::catalog::CatalogAvailability::Ready
-            ),
-            age: match catalog.state.age {
-                cookie_agent_models::catalog::CatalogAgeState::Current => {
-                    protocol::CatalogAge::Current
-                }
-                cookie_agent_models::catalog::CatalogAgeState::OlderThanSevenDays => {
-                    protocol::CatalogAge::OlderThanSevenDays
-                }
-                cookie_agent_models::catalog::CatalogAgeState::OlderThanThirtyDays => {
-                    protocol::CatalogAge::OlderThanThirtyDays
-                }
-            },
-            provider_quarantine_count: quarantine.provider_count,
-            model_quarantine_count: quarantine.model_count,
-            quarantine_digest: quarantine.digest,
-            last_error,
+        stale: !matches!(
+            catalog.state.availability,
+            cookie_agent_models::catalog::CatalogAvailability::Ready
+        ),
+        age: match catalog.state.age {
+            cookie_agent_models::catalog::CatalogAgeState::Current => protocol::CatalogAge::Current,
+            cookie_agent_models::catalog::CatalogAgeState::OlderThanSevenDays => {
+                protocol::CatalogAge::OlderThanSevenDays
+            }
+            cookie_agent_models::catalog::CatalogAgeState::OlderThanThirtyDays => {
+                protocol::CatalogAge::OlderThanThirtyDays
+            }
         },
-        provider_state_revision: models.provider_state_revision(),
-        provider_store_generation: protocol::ProviderStoreGeneration::new(
-            models.store().generation().get(),
-        )
-        .map_err(|_| EngineError::RuntimeCompileFailed)?,
-        model_revision: models.model_revision().clone(),
-        agent_revision,
-        config_revision: config_revision.clone(),
-        runtime_revision,
+        provider_quarantine_count: quarantine.provider_count,
+        model_quarantine_count: quarantine.model_count,
+        last_error,
+    };
+    let view = protocol::ModelCatalogView {
+        revision: protocol::ViewRevision::new(runtime_revision.to_string())
+            .map_err(|_| EngineError::RuntimeCompileFailed)?,
+        catalog: catalog_status,
         providers,
         models: available_models,
         agents: agent_descriptors,
     };
-    snapshot
-        .validate()
+    view.validate()
         .map_err(|_| EngineError::RuntimeCompileFailed)?;
-    Ok(snapshot)
+    let revisions = super::SnapshotRevisions {
+        runtime_revision,
+        recipe_registry_revision: family_registry().revision(),
+        catalog_revision: catalog.revision.clone(),
+        provider_state_revision: models.provider_state_revision(),
+        model_revision: models.model_revision().clone(),
+        agent_revision,
+        config_revision: config_revision.clone(),
+    };
+    Ok((view, revisions))
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -156,7 +152,6 @@ struct RuntimeQuarantineEntry {
 struct RuntimeQuarantineSummary {
     provider_count: u32,
     model_count: u32,
-    digest: protocol::Sha256Digest,
 }
 
 fn quarantine_summary(
@@ -178,15 +173,9 @@ fn quarantine_summary(
         .filter(|entry| entry.model_id.is_none() && entry.canonical_model_id.is_none())
         .count() as u32;
     let model_count = entries.len() as u32 - provider_count;
-    let digest = protocol::Sha256Digest::new(hash_bytes(
-        "cookie-agent/runtime-quarantine/v1",
-        &serde_json::to_vec(&entries).map_err(|_| EngineError::RuntimeCompileFailed)?,
-    ))
-    .map_err(|_| EngineError::RuntimeCompileFailed)?;
     Ok(RuntimeQuarantineSummary {
         provider_count,
         model_count,
-        digest,
     })
 }
 
@@ -531,16 +520,6 @@ fn model_descriptor(
         .variants
         .values()
         .map(|variant| {
-            let fingerprint = protocol::Sha256Digest::new(hash(
-                "cookie-agent/model-variant/v1",
-                &(
-                    variant.id.clone(),
-                    &variant.defaults,
-                    &variant.options,
-                    &variant.reasoning,
-                ),
-            )?)
-            .map_err(|_| EngineError::RuntimeCompileFailed)?;
             Ok(protocol::AvailableVariantDescriptor {
                 id: variant.id.clone(),
                 display_name: variant.display_name.clone(),
@@ -556,7 +535,6 @@ fn model_descriptor(
                     }
                     CompiledVariantOrigin::Authored => protocol::VariantOrigin::Explicit,
                 },
-                behavior_fingerprint: fingerprint,
             })
         })
         .collect::<Result<Vec<_>, EngineError>>()?;
@@ -567,10 +545,6 @@ fn model_descriptor(
         variants,
         variant_order: model.model.variant_order.clone(),
         default_variant: model.model.default_variant.clone(),
-        behavior_fingerprint: protocol::Sha256Digest::new(
-            model.model.behavior_fingerprint.as_str(),
-        )
-        .map_err(|_| EngineError::RuntimeCompileFailed)?,
     })
 }
 
@@ -590,10 +564,6 @@ pub(crate) fn project_durable_connection(
                 Ok((id.clone(), value))
             })
             .collect::<Result<BTreeMap<_, _>, EngineError>>()?,
-        setup_fingerprint: protocol::Sha256Digest::new(value.setup_fingerprint.as_str())
-            .map_err(|_| EngineError::RuntimeCompileFailed)?,
-        recipe_fingerprint: protocol::Sha256Digest::new(value.recipe_fingerprint.as_str())
-            .map_err(|_| EngineError::RuntimeCompileFailed)?,
         auth_method: value.auth_method.clone(),
         credential_fields: value.credential_fields.clone(),
         connection_generation: protocol::ProviderConnectionGeneration::new(

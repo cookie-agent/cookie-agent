@@ -545,13 +545,11 @@ async fn new_from_delegated_session_renders_and_submits_root_agent_candidates() 
 #[tokio::test]
 async fn descriptor_revisions_are_coherent_and_refresh_revalidates_root_drafts_only() {
     let mut app = test_app().await;
-    // Revision coherence: agent and model snapshot revisions travel
-    // together in selector presentation.
-    app.agent_revision = Some(protocol_revision("1"));
-    app.model_revision = Some(protocol_revision("2"));
+    // The selector names the catalog view the descriptors came from.
+    app.catalog_view_revision =
+        Some(cookie_agent_protocol::ViewRevision::new("view-7").expect("view revision"));
     let label = app.descriptor_revisions_label();
-    assert!(label.contains("agent revision sha256:1111"));
-    assert!(label.contains("model revision sha256:2222"));
+    assert_eq!(label, "catalog revision view-7");
 
     // A root draft pointing at a now-unrunnable agent resets to the
     // default; a delegated session's pin is untouched.
@@ -855,7 +853,6 @@ async fn delegated_variant_cycle_is_immune_to_live_provider_refresh() {
             id: cookie_agent_protocol::VariantId::new("ultra").expect("variant"),
             display_name: "Ultra".into(),
             origin: cookie_agent_protocol::VariantOrigin::Explicit,
-            behavior_fingerprint: Sha256Digest::of_bytes(b"ultra"),
         });
     app.models = vec![refreshed];
     let after = app.draft_variants();

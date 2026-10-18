@@ -57,10 +57,10 @@
       "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
       "type": "string"
     },
-    "expected_catalog_revision": {
-      "maxLength": 71,
-      "minLength": 71,
-      "pattern": "^sha256:[0-9a-f]{64}$",
+    "expected_revision": {
+      "description": "The revision of the catalog view the form was filled from. A daemon\nwhose view has changed since refuses with `catalog_revision_conflict`.",
+      "maxLength": 256,
+      "minLength": 1,
       "type": "string"
     },
     "provider_id": {
@@ -81,7 +81,7 @@
   },
   "required": [
     "provider_id",
-    "expected_catalog_revision",
+    "expected_revision",
     "setup_values",
     "auth_method",
     "auth_values",

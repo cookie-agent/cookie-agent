@@ -571,27 +571,59 @@ struct StoredRuntimeRevisionMapping {
     protocol_version: serde_json::Value,
     runtime_revision: cookie_agent_protocol::RuntimeRevision,
     model_runtime_revision: cookie_agent_protocol::RuntimeRevision,
+    /// The provider state the runtime was compiled from; absent in records
+    /// written before catalog views, which a disconnect cannot resolve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_state_revision: Option<cookie_agent_protocol::ProviderStateRevision>,
+    /// The catalog it was compiled from, absent like `provider_state_revision`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    catalog_revision: Option<cookie_agent_protocol::CatalogRevision>,
+}
+
+/// What a runtime revision, the text of a catalog view's revision, was
+/// compiled from: what a connect or disconnect filled from that view
+/// expects.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RevisionMapping {
+    model_runtime_revision: cookie_agent_protocol::RuntimeRevision,
+    provider_state_revision: Option<cookie_agent_protocol::ProviderStateRevision>,
+    catalog_revision: Option<cookie_agent_protocol::CatalogRevision>,
 }
 
 #[derive(Debug)]
 struct RuntimeRevisionIndex {
     path: PathBuf,
-    mappings:
-        HashMap<cookie_agent_protocol::RuntimeRevision, cookie_agent_protocol::RuntimeRevision>,
+    mappings: HashMap<cookie_agent_protocol::RuntimeRevision, RevisionMapping>,
 }
 
 impl RuntimeRevisionIndex {
     fn open(path: PathBuf) -> Result<Self, EngineError> {
-        let mut mappings = HashMap::new();
+        let mut mappings = HashMap::<_, RevisionMapping>::new();
         for record in events::load_jsonl_shared::<StoredRuntimeRevisionMapping>(&path)? {
-            match mappings.insert(
-                record.runtime_revision.clone(),
-                record.model_runtime_revision.clone(),
-            ) {
-                Some(existing) if existing != record.model_runtime_revision => {
+            match mappings.get_mut(&record.runtime_revision) {
+                Some(existing)
+                    if existing.model_runtime_revision != record.model_runtime_revision =>
+                {
                     return Err(EngineError::RuntimeCompileFailed);
                 }
-                _ => {}
+                Some(existing) => {
+                    if existing.provider_state_revision.is_none() {
+                        existing.provider_state_revision = record.provider_state_revision;
+                    }
+                    if existing.catalog_revision.is_none() {
+                        existing.catalog_revision = record.catalog_revision;
+                    }
+                }
+                None => {
+                    mappings.insert(
+                        record.runtime_revision,
+                        RevisionMapping {
+                            model_runtime_revision: record.model_runtime_revision,
+                            provider_state_revision: record.provider_state_revision,
+                            catalog_revision: record.catalog_revision,
+                        },
+                    );
+                }
             }
         }
         Ok(Self { path, mappings })
@@ -601,13 +633,15 @@ impl RuntimeRevisionIndex {
         &mut self,
         runtime_revision: cookie_agent_protocol::RuntimeRevision,
         model_runtime_revision: cookie_agent_protocol::RuntimeRevision,
+        revisions: &crate::runtime_snapshot::SnapshotRevisions,
     ) -> Result<(), EngineError> {
         if let Some(existing) = self.mappings.get(&runtime_revision) {
-            return if existing == &model_runtime_revision {
-                Ok(())
-            } else {
-                Err(EngineError::RuntimeCompileFailed)
-            };
+            if existing.model_runtime_revision != model_runtime_revision {
+                return Err(EngineError::RuntimeCompileFailed);
+            }
+            if existing.provider_state_revision.is_some() && existing.catalog_revision.is_some() {
+                return Ok(());
+            }
         }
         events::append_jsonl(
             &self.path,
@@ -617,17 +651,25 @@ impl RuntimeRevisionIndex {
                 ),
                 runtime_revision: runtime_revision.clone(),
                 model_runtime_revision: model_runtime_revision.clone(),
+                provider_state_revision: Some(revisions.provider_state_revision.clone()),
+                catalog_revision: Some(revisions.catalog_revision.clone()),
             },
         )?;
-        self.mappings
-            .insert(runtime_revision, model_runtime_revision);
+        self.mappings.insert(
+            runtime_revision,
+            RevisionMapping {
+                model_runtime_revision,
+                provider_state_revision: Some(revisions.provider_state_revision.clone()),
+                catalog_revision: Some(revisions.catalog_revision.clone()),
+            },
+        );
         Ok(())
     }
 
     fn resolve(
         &self,
         runtime_revision: &cookie_agent_protocol::RuntimeRevision,
-    ) -> Option<cookie_agent_protocol::RuntimeRevision> {
+    ) -> Option<RevisionMapping> {
         self.mappings.get(runtime_revision).cloned()
     }
 }
@@ -892,7 +934,7 @@ impl Engine {
         let current_models = options.model_manager.current();
         let (agents, agent_presets) = resolve_agent_registries(&options.config, &current_models)?;
         let current_manifest = prepare_runtime_manifest(&current_models)?;
-        let snapshot = build_runtime_snapshot(
+        let (snapshot, revisions) = build_runtime_snapshot(
             &current_models,
             &agents,
             &agent_presets,
@@ -900,6 +942,7 @@ impl Engine {
         )?;
         let published_runtime = Arc::new(PublishedRuntime {
             result: RuntimeSnapshotResult { snapshot },
+            revisions,
             models: Arc::clone(&current_models),
             agents,
             agent_presets,
@@ -957,8 +1000,9 @@ impl Engine {
             store.workdir_dir_path().join("runtime-revisions-v8.jsonl"),
         )?;
         runtime_revision_index.record(
-            published_runtime.result.snapshot.runtime_revision.clone(),
+            published_runtime.revisions.runtime_revision.clone(),
             current_models.runtime_revision().clone(),
+            &published_runtime.revisions,
         )?;
         let engine = Self {
             inner: Arc::new(Inner {
@@ -1118,9 +1162,29 @@ impl Engine {
                 Ok((field, value))
             })
             .collect::<Result<_, EngineError>>()?;
+        // The form was filled from the view of `expected_revision`, whose
+        // catalog the store checks (and a retry of the same request
+        // replays); a view this daemon never published is a conflict.
+        let conflict = || {
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(
+                cookie_agent_models::provider_store::ProviderStoreError::CatalogRevisionConflict,
+            ))
+        };
+        let expected_catalog_revision =
+            cookie_agent_protocol::RuntimeRevision::new(params.expected_revision.as_str())
+                .ok()
+                .and_then(|revision| {
+                    self.inner
+                        .runtime_revision_index
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .resolve(&revision)
+                })
+                .and_then(|mapping| mapping.catalog_revision)
+                .ok_or_else(conflict)?;
         let request = cookie_agent_models::ProviderConnectRequest {
             provider_id,
-            expected_catalog_revision: params.expected_catalog_revision,
+            expected_catalog_revision,
             setup_values: params
                 .setup_values
                 .into_iter()
@@ -1185,21 +1249,30 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = self.current_runtime();
-        let expected_model_runtime_revision = self
+        let conflict = || {
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(
+                cookie_agent_models::provider_store::ProviderStoreError::RuntimeRevisionConflict,
+            ))
+        };
+        // A view's revision is its runtime revision's text, which the index
+        // maps to the model runtime it was compiled from; the store refuses
+        // a model runtime that is no longer current.
+        let expected_runtime_revision =
+            cookie_agent_protocol::RuntimeRevision::new(params.expected_revision.as_str())
+                .map_err(|_| conflict())?;
+        let expected = self
             .inner
             .runtime_revision_index
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .resolve(&params.expected_runtime_revision)
-            .ok_or({
-                EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(
-                    cookie_agent_models::provider_store::ProviderStoreError::RuntimeRevisionConflict,
-                ))
-            })?;
+            .resolve(&expected_runtime_revision)
+            .ok_or_else(conflict)?;
         let request = cookie_agent_models::ProviderDisconnectRequest {
             provider_id: params.provider_id.clone(),
-            expected_runtime_revision: expected_model_runtime_revision,
-            expected_provider_state_revision: params.expected_provider_state_revision,
+            expected_runtime_revision: expected.model_runtime_revision,
+            expected_provider_state_revision: expected
+                .provider_state_revision
+                .ok_or_else(conflict)?,
             expected_connection_generation: params
                 .expected_connection_generation
                 .map(|value| {
@@ -1239,8 +1312,6 @@ impl Engine {
                     .to_string()
                     .parse()
                     .map_err(|_| EngineError::RuntimeCompileFailed)?,
-                store_revision: receipt.store_revision.clone(),
-                provider_state_revision: receipt.provider_state_revision.clone(),
                 committed_at: receipt.committed_at,
             },
             provider_id: params.provider_id,
@@ -1340,25 +1411,28 @@ impl Engine {
         }
         let (agents, agent_presets) = resolve_agent_registries(config, models)?;
         let current_manifest = prepare_runtime_manifest(models)?;
-        let snapshot = build_runtime_snapshot(models, &agents, &agent_presets, &config.revision)?;
+        let (snapshot, revisions) =
+            build_runtime_snapshot(models, &agents, &agent_presets, &config.revision)?;
         self.inner
             .runtime_revision_index
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .record(
-                snapshot.runtime_revision.clone(),
+                revisions.runtime_revision.clone(),
                 models.runtime_revision().clone(),
+                &revisions,
             )?;
         reasons.sort();
         reasons.dedup();
         let notification = RuntimeChangedNotification {
-            previous_revision: Some(previous.result.snapshot.runtime_revision.clone()),
+            previous_revision: Some(previous.result.snapshot.revision.clone()),
             snapshot: snapshot.clone(),
             reasons,
         };
         Ok(RuntimePublication {
             runtime: Arc::new(PublishedRuntime {
                 result: RuntimeSnapshotResult { snapshot },
+                revisions,
                 models: Arc::clone(models),
                 agents,
                 agent_presets,

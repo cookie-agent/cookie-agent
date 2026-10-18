@@ -313,8 +313,6 @@ pub enum EffectiveAuthState {
 pub struct DurableConnectionDescriptor {
     pub provider_id: ProviderId,
     pub setup_values: BTreeMap<SetupFieldId, SafeSetupValue>,
-    pub setup_fingerprint: Sha256Digest,
-    pub recipe_fingerprint: Sha256Digest,
     pub auth_method: AuthMethodId,
     #[schemars(length(max = 32))]
     pub credential_fields: Vec<AuthFieldName>,
@@ -330,8 +328,6 @@ impl<'de> Deserialize<'de> for DurableConnectionDescriptor {
         struct Wire {
             provider_id: ProviderId,
             setup_values: BTreeMap<SetupFieldId, SafeSetupValue>,
-            setup_fingerprint: Sha256Digest,
-            recipe_fingerprint: Sha256Digest,
             auth_method: AuthMethodId,
             credential_fields: Vec<AuthFieldName>,
             connection_generation: ProviderConnectionGeneration,
@@ -352,8 +348,6 @@ impl<'de> Deserialize<'de> for DurableConnectionDescriptor {
         Ok(Self {
             provider_id: wire.provider_id,
             setup_values: wire.setup_values,
-            setup_fingerprint: wire.setup_fingerprint,
-            recipe_fingerprint: wire.recipe_fingerprint,
             auth_method: wire.auth_method,
             credential_fields: wire.credential_fields,
             connection_generation: wire.connection_generation,
@@ -639,7 +633,9 @@ impl<'de> Deserialize<'de> for ProviderCredentialValues {
 #[schemars(deny_unknown_fields)]
 pub struct ProviderConnectParams {
     pub provider_id: ProviderId,
-    pub expected_catalog_revision: CatalogRevision,
+    /// The revision of the catalog view the form was filled from. A daemon
+    /// whose view has changed since refuses with `catalog_revision_conflict`.
+    pub expected_revision: ViewRevision,
     pub setup_values: BTreeMap<SetupFieldId, SafeSetupValue>,
     pub auth_method: AuthMethodId,
     pub auth_values: ProviderCredentialValues,
@@ -664,7 +660,7 @@ impl<'de> Deserialize<'de> for ProviderConnectParams {
         #[serde(deny_unknown_fields)]
         struct Wire {
             provider_id: ProviderId,
-            expected_catalog_revision: CatalogRevision,
+            expected_revision: ViewRevision,
             #[serde(deserialize_with = "deserialize_setup_values")]
             setup_values: BTreeMap<SetupFieldId, SafeSetupValue>,
             auth_method: AuthMethodId,
@@ -674,7 +670,7 @@ impl<'de> Deserialize<'de> for ProviderConnectParams {
         let w = Wire::deserialize(d)?;
         let value = Self {
             provider_id: w.provider_id,
-            expected_catalog_revision: w.expected_catalog_revision,
+            expected_revision: w.expected_revision,
             setup_values: w.setup_values,
             auth_method: w.auth_method,
             auth_values: w.auth_values,
@@ -719,8 +715,6 @@ where
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct DurableProviderReceipt {
     pub receipt_id: DurableProviderReceiptId,
-    pub store_revision: ProviderStoreRevision,
-    pub provider_state_revision: ProviderStateRevision,
     pub committed_at: Timestamp,
 }
 
@@ -728,7 +722,7 @@ pub struct DurableProviderReceipt {
 pub struct ProviderConnectResult {
     pub durable_connection: DurableConnectionDescriptor,
     pub effective_auth_source: EffectiveAuthSource,
-    pub runtime: RuntimeSnapshotV1,
+    pub runtime: ModelCatalogView,
     pub replayed: bool,
 }
 
@@ -736,8 +730,8 @@ pub struct ProviderConnectResult {
 #[serde(deny_unknown_fields)]
 pub struct ProviderDisconnectParams {
     pub provider_id: ProviderId,
-    pub expected_runtime_revision: RuntimeRevision,
-    pub expected_provider_state_revision: ProviderStateRevision,
+    /// The revision of the catalog view the provider was read from.
+    pub expected_revision: ViewRevision,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<ProviderConnectionGeneration>", required)]
     pub expected_connection_generation: Option<ProviderConnectionGeneration>,

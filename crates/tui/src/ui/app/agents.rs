@@ -853,13 +853,11 @@ impl App {
         });
     }
 
-    /// The coherent descriptor revision label projected from one runtime snapshot.
+    /// The revision label of the catalog view the descriptors came from.
     pub(in crate::ui) fn descriptor_revisions_label(&self) -> String {
-        match (&self.agent_revision, &self.model_revision) {
-            (Some(agents), Some(models)) => {
-                format!("agent revision {agents} · model revision {models}")
-            }
-            _ => "revisions unavailable".into(),
+        match &self.catalog_view_revision {
+            Some(revision) => format!("catalog revision {revision}"),
+            None => "revisions unavailable".into(),
         }
     }
 

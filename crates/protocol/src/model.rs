@@ -1103,7 +1103,6 @@ pub struct AvailableVariantDescriptor {
     #[schemars(with = "ModelDisplayNameSchema")]
     pub display_name: String,
     pub origin: VariantOrigin,
-    pub behavior_fingerprint: Sha256Digest,
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1119,7 +1118,6 @@ pub struct AvailableModelDescriptor {
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<VariantId>", required)]
     pub default_variant: Option<VariantId>,
-    pub behavior_fingerprint: Sha256Digest,
 }
 
 struct ModelDisplayNameSchema;
@@ -1186,7 +1184,6 @@ impl<'de> Deserialize<'de> for AvailableModelDescriptor {
             variant_order: Vec<VariantId>,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             default_variant: Option<VariantId>,
-            behavior_fingerprint: Sha256Digest,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -1196,7 +1193,6 @@ impl<'de> Deserialize<'de> for AvailableModelDescriptor {
             variants: w.variants,
             variant_order: w.variant_order,
             default_variant: w.default_variant,
-            behavior_fingerprint: w.behavior_fingerprint,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

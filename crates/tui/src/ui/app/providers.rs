@@ -282,7 +282,7 @@ impl App {
         // modal and the focus where they are so the user can correct the
         // offending value and press Enter again. Only a failed connect RPC
         // escalates to the persistent full-message error state.
-        let Some(catalog_revision) = self.catalog_revision.clone() else {
+        let Some(catalog_revision) = self.catalog_view_revision.clone() else {
             let error = "Catalog revision is unavailable.".to_owned();
             form.error = Some(error.clone());
             self.status = error;
@@ -324,7 +324,7 @@ impl App {
             client_connect_id: ClientConnectId::new(Uuid::now_v7().to_string())
                 .expect("uuid-derived client connect id"),
             provider_id: provider.id.clone(),
-            expected_catalog_revision: catalog_revision,
+            expected_revision: catalog_revision,
             setup_values,
             auth_method,
             auth_values,
@@ -389,11 +389,10 @@ impl App {
             self.status = "Runtime snapshot unavailable; retry before disconnecting.".into();
             return;
         };
-        let baseline = Some(snapshot.runtime_revision.clone());
+        let baseline = Some(snapshot.revision.clone());
         let params = ProviderDisconnectParams {
             provider_id: provider.id.clone(),
-            expected_runtime_revision: snapshot.runtime_revision.clone(),
-            expected_provider_state_revision: snapshot.provider_state_revision.clone(),
+            expected_revision: snapshot.revision.clone(),
             expected_connection_generation: provider
                 .durable_connection
                 .as_ref()
