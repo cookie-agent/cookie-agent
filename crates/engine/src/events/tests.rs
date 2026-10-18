@@ -4112,3 +4112,109 @@ fn a_rewrite_copies_degraded_and_quarantined_lines_as_they_were_read() {
     let reopened = EventLog::open(fork_path, fork_id).expect("the fork opens");
     assert_eq!(reopened.physical_tip_seq(), 7);
 }
+
+/// Adds a member no build knows to `value` and to every object inside it,
+/// except inside opaque values and maps (`free_form`), whose members are
+/// data.
+fn add_future_members(value: &mut Value, free_form: bool) {
+    match value {
+        Value::Object(members) => {
+            for (key, member) in members.iter_mut() {
+                let map = matches!(
+                    key.as_str(),
+                    "provider_options"
+                        | "response_metadata"
+                        | "provider_metadata"
+                        | "metadata"
+                        | "detail"
+                        | "input"
+                        | "raw_input"
+                        | "payload"
+                        | "frozen"
+                        | "by_model"
+                );
+                add_future_members(member, free_form || map);
+            }
+            if !free_form {
+                members.insert(
+                    "future_member".into(),
+                    serde_json::json!({"from": "a newer build", "nested": [1, 2]}),
+                );
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                add_future_members(item, free_form);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn a_log_a_newer_build_wrote_loads_as_this_build_reads_it() {
+    let records = attribution_records();
+    let session = records[0].session_id;
+    let values = records
+        .iter()
+        .map(|record| {
+            let mut value = serde_json::to_value(record).expect("record");
+            // Unknown members in the envelope, the payload, and every object
+            // nested in it.
+            value["future_envelope"] = serde_json::json!(true);
+            let payload = value.get_mut("payload").expect("payload");
+            add_future_members(payload, false);
+            value
+        })
+        .collect::<Vec<_>>();
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    write_event_values(&path, &values);
+    let log = EventLog::open(path, session).expect("a newer build's log opens");
+    assert!(log.diagnostics().is_empty(), "{:?}", log.diagnostics());
+    for (read, written) in log.events().iter().zip(&records) {
+        assert_eq!(read, written, "unknown members are ignored");
+    }
+    assert_eq!(log.events().len(), records.len());
+    assert!(!log.is_render_only());
+}
+
+#[test]
+fn unknown_open_enum_values_read_as_their_fallbacks() {
+    let records = attribution_records();
+    let session = records[0].session_id;
+    let run = records[1].run_id.expect("run id");
+    let mut values = records
+        .iter()
+        .map(|record| serde_json::to_value(record).expect("record"))
+        .collect::<Vec<_>>();
+    let next = records.last().expect("records").seq + 1;
+    let line = |seq: u64, payload: Value| {
+        serde_json::json!({
+            "session_id": session,
+            "run_id": run,
+            "seq": seq,
+            "timestamp": jiff::Timestamp::new(seq as i64, 0).unwrap(),
+            "payload": payload,
+        })
+    };
+    values.push(line(
+        next,
+        serde_json::json!({
+            "type": "run_finished",
+            "outcome": {"type": "outlived", "reason": "a newer build's outcome"},
+        }),
+    ));
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    write_event_values(&path, &values);
+    let log = EventLog::open(path, session).expect("open");
+    assert!(log.diagnostics().is_empty(), "{:?}", log.diagnostics());
+    let last = log.last_event().expect("last");
+    assert!(matches!(
+        &last.payload,
+        EventPayload::RunFinished {
+            outcome: cookie_agent_protocol::Open::Unknown { .. },
+        }
+    ));
+}
