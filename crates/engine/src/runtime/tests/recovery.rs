@@ -792,8 +792,8 @@ async fn a_runtime_revision_index_from_an_older_protocol_still_opens() {
         .lines()
         .map(|line| {
             let mut record: serde_json::Value = serde_json::from_str(line).expect("record");
-            record["protocol_version"] =
-                serde_json::json!(cookie_agent_protocol::PROTOCOL_VERSION - 1);
+            // Builds before semver versions wrote the exact protocol number.
+            record["protocol_version"] = serde_json::json!(50);
             serde_json::to_string(&record).expect("record JSON") + "\n"
         })
         .collect::<String>();

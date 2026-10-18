@@ -20,7 +20,7 @@ use zeroize::Zeroizing;
 
 use super::{RunningServer, Server, ServerError};
 use cookie_agent_protocol::{
-    MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, MessageStream, TransportError,
+    Authentication, MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, MessageStream, TransportError,
 };
 
 struct WebSocketStream {
@@ -79,14 +79,58 @@ pub fn load_tls(cert: &Path, key: &Path) -> Result<TlsConfig, ServerError> {
         .map_err(|error| failed(cert, error.to_string()))
 }
 
+/// The web origins whose pages may open a client connection
+/// (`[server] allowed_origins`). A request without `Origin` is a native
+/// client and is never refused for it.
+#[derive(Clone, Debug, Default)]
+pub enum AllowedOrigins {
+    /// No web origin: every request with `Origin` is refused.
+    #[default]
+    None,
+    /// Any web origin; the token is the only protection.
+    Any,
+    /// Exactly these origins, as browsers send them.
+    Only(Arc<std::collections::BTreeSet<String>>),
+}
+
+impl AllowedOrigins {
+    /// The origins a validated `[server] allowed_origins` names.
+    #[must_use]
+    pub fn from_config(entries: &[String]) -> Self {
+        if entries
+            .iter()
+            .any(|entry| entry == cookie_agent_config::ANY_ORIGIN)
+        {
+            Self::Any
+        } else if entries.is_empty() {
+            Self::None
+        } else {
+            Self::Only(Arc::new(entries.iter().cloned().collect()))
+        }
+    }
+
+    fn allows(&self, origin: &header::HeaderValue) -> bool {
+        match self {
+            Self::None => false,
+            Self::Any => true,
+            Self::Only(origins) => origin.to_str().is_ok_and(|origin| origins.contains(origin)),
+        }
+    }
+}
+
 impl Server {
-    pub fn router(self: Arc<Self>, token: Arc<Zeroizing<String>>) -> Router {
+    pub fn router(
+        self: Arc<Self>,
+        token: Arc<Zeroizing<String>>,
+        origins: AllowedOrigins,
+    ) -> Router {
         Router::new()
             .route("/ws", get(websocket_upgrade))
             .route("/runtime", get(runtime_upgrade))
             .with_state(WebSocketState {
                 server: self,
                 token,
+                origins,
             })
     }
 
@@ -100,20 +144,23 @@ impl Server {
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
             token,
             None,
+            AllowedOrigins::None,
         )
         .await
     }
 
     /// Serves clients (`/ws`) and dial-in runtimes (`/runtime`) on
     /// `address`, over TLS when `tls` is given. Every connection presents
-    /// `token`.
+    /// `token`: a runtime in `Authorization`, a client there or in its
+    /// handshake. Web pages of `origins` may open client connections.
     pub async fn serve_on(
         self: Arc<Self>,
         address: SocketAddr,
         token: Zeroizing<String>,
         tls: Option<Arc<rustls::ServerConfig>>,
+        origins: AllowedOrigins,
     ) -> Result<RunningServer, ServerError> {
-        let router = self.clone().router(Arc::new(token));
+        let router = self.clone().router(Arc::new(token), origins);
         let listener = TcpListener::bind(address)
             .await
             .map_err(ServerError::Listen)?;
@@ -204,11 +251,12 @@ impl axum::serve::Listener for TlsListener {
 struct WebSocketState {
     server: Arc<Server>,
     token: Arc<Zeroizing<String>>,
+    origins: AllowedOrigins,
 }
 
-/// Refuses a browser's request (it carries `Origin`) and one without the
-/// daemon's token. The token is the only gate: the daemon listens where it is
-/// told to.
+/// Refuses a runtime's request that carries a browser `Origin` or lacks the
+/// daemon's token in `Authorization`. The token is the only gate: the daemon
+/// listens where it is told to.
 fn refused(headers: &HeaderMap, token: &str) -> Option<Response> {
     if headers.contains_key(header::ORIGIN) {
         return Some(StatusCode::FORBIDDEN.into_response());
@@ -216,20 +264,45 @@ fn refused(headers: &HeaderMap, token: &str) -> Option<Response> {
     (!authorized(headers, token)).then(|| StatusCode::UNAUTHORIZED.into_response())
 }
 
+/// How a client's upgrade request authenticates: with the token in
+/// `Authorization`, or, without that header, in its handshake. A page of an
+/// origin `origins` does not allow, and a wrong `Authorization`, are refused.
+fn client_authentication(
+    headers: &HeaderMap,
+    state: &WebSocketState,
+) -> Result<Authentication, StatusCode> {
+    if let Some(origin) = headers.get(header::ORIGIN)
+        && !state.origins.allows(origin)
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    if !headers.contains_key(header::AUTHORIZATION) {
+        return Ok(Authentication::Token(Arc::clone(&state.token)));
+    }
+    if authorized(headers, state.token.as_str()) {
+        Ok(Authentication::Authenticated)
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
 async fn websocket_upgrade(
     State(state): State<WebSocketState>,
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    if let Some(refused) = refused(&headers, state.token.as_str()) {
-        return refused;
-    }
+    let authentication = match client_authentication(&headers, &state) {
+        Ok(authentication) => authentication,
+        Err(refused) => return refused.into_response(),
+    };
     let server = state.server;
     upgrade
         .max_message_size(MAX_WEBSOCKET_MESSAGE_BYTES)
         .max_frame_size(MAX_WEBSOCKET_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
-            let _ = server.serve_stream(WebSocketStream { socket }).await;
+            let _ = server
+                .serve_stream(WebSocketStream { socket }, authentication)
+                .await;
         })
 }
 
@@ -348,7 +421,7 @@ mod tls_tests {
     }
 
     /// A `wss` daemon answers a client that trusts its certificate and
-    /// presents the token, and refuses one without the token.
+    /// presents the token, and refuses one with a wrong token.
     #[tokio::test]
     async fn the_daemon_serves_websocket_clients_over_tls() {
         let (directory, der) = certificate();
@@ -366,6 +439,7 @@ mod tls_tests {
                 std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
                 token.clone(),
                 Some(tls),
+                super::AllowedOrigins::None,
             )
             .await
             .unwrap();
@@ -396,7 +470,7 @@ mod tls_tests {
                 .await
             }
         };
-        let error = connect(None).await.expect_err("no token");
+        let error = connect(Some("wrong")).await.expect_err("wrong token");
         assert!(error.to_string().contains("401"), "{error}");
         let (mut socket, _) = connect(Some(token.as_str())).await.expect("wss client");
         socket
@@ -406,7 +480,7 @@ mod tls_tests {
                     "id": 1,
                     "method": "handshake",
                     "params": {
-                        "protocol_version": cookie_agent_protocol::PROTOCOL_VERSION,
+                        "protocol_version": cookie_agent_protocol::CLIENT_PROTOCOL_VERSION,
                         "client": { "kind": "test", "instance_id": uuid_like() },
                     },
                 })
@@ -424,5 +498,240 @@ mod tls_tests {
 
     fn uuid_like() -> &'static str {
         "0192f3a4-5b6c-7d8e-9f00-112233445566"
+    }
+}
+
+#[cfg(test)]
+mod authentication_tests {
+    use std::sync::Arc;
+
+    use futures_util::{SinkExt as _, StreamExt as _};
+    use serde_json::{Value, json};
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest as _};
+
+    use super::AllowedOrigins;
+
+    type Socket = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    struct Daemon {
+        running: crate::RunningServer,
+        token: zeroize::Zeroizing<String>,
+        fixture: crate::tests::Harness,
+    }
+
+    impl Daemon {
+        async fn start(origins: AllowedOrigins) -> Self {
+            let fixture = crate::tests::harness();
+            let token = crate::generate_token().unwrap();
+            let running = Arc::clone(&fixture.server)
+                .serve_on(
+                    std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+                    token.clone(),
+                    None,
+                    origins,
+                )
+                .await
+                .unwrap();
+            Self {
+                running,
+                token,
+                fixture,
+            }
+        }
+
+        async fn connect(
+            &self,
+            path: &str,
+            authorization: Option<&str>,
+            origin: Option<&str>,
+        ) -> Result<Socket, tokio_tungstenite::tungstenite::Error> {
+            let url = format!("ws://127.0.0.1:{}{path}", self.running.address().port());
+            let mut request = url.into_client_request().unwrap();
+            if let Some(token) = authorization {
+                request
+                    .headers_mut()
+                    .insert("authorization", format!("Bearer {token}").parse().unwrap());
+            }
+            if let Some(origin) = origin {
+                request
+                    .headers_mut()
+                    .insert("origin", origin.parse().unwrap());
+            }
+            tokio_tungstenite::connect_async(request)
+                .await
+                .map(|(socket, _)| socket)
+        }
+
+        async fn stop(self) {
+            self.fixture.server.shutdown();
+            self.running.wait().await;
+            self.fixture.engine.shutdown().await;
+        }
+    }
+
+    async fn call(socket: &mut Socket, id: u64, method: &str, params: Value) -> Value {
+        socket
+            .send(Message::Text(
+                json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        loop {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+                .await
+                .expect("a reply in time")
+                .expect("a frame")
+                .expect("a readable frame");
+            let Message::Text(text) = frame else {
+                continue;
+            };
+            let value: Value = serde_json::from_str(&text).unwrap();
+            if value["id"] == json!(id) {
+                return value;
+            }
+        }
+    }
+
+    fn hello(token: Option<&str>) -> Value {
+        let mut hello = json!({
+            "protocol_version": cookie_agent_protocol::CLIENT_PROTOCOL_VERSION,
+            "client": {"kind": "web", "instance_id": "0192f3a4-5b6c-7d8e-9f00-112233445566"},
+        });
+        if let Some(token) = token {
+            hello["token"] = json!(token);
+        }
+        hello
+    }
+
+    /// The socket's next frame is its close, or it ends.
+    async fn closes(socket: &mut Socket) -> bool {
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), socket.next()).await {
+                Err(_) => return false,
+                Ok(None | Some(Err(_)) | Some(Ok(Message::Close(_)))) => return true,
+                Ok(Some(Ok(_))) => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_authenticates_with_the_header_or_in_its_handshake() {
+        let daemon = Daemon::start(AllowedOrigins::None).await;
+        // With the header, the handshake needs no token.
+        let mut socket = daemon
+            .connect("/ws", Some(daemon.token.as_str()), None)
+            .await
+            .expect("header-authenticated upgrade");
+        let reply = call(&mut socket, 1, "handshake", hello(None)).await;
+        assert!(reply["result"]["origin"].is_string(), "{reply}");
+        let reply = call(&mut socket, 2, "session.list", json!({})).await;
+        assert!(reply["result"]["sessions"].is_array(), "{reply}");
+
+        // Without it, the upgrade succeeds and only `handshake` is answered
+        // until the handshake carries the token.
+        let mut socket = daemon
+            .connect("/ws", None, None)
+            .await
+            .expect("an upgrade without the header");
+        let reply = call(&mut socket, 1, "session.list", json!({})).await;
+        assert_eq!(reply["error"]["code"], -32003, "{reply}");
+        assert_eq!(reply["error"]["data"]["code"], "unauthenticated");
+        let reply = call(
+            &mut socket,
+            2,
+            "handshake",
+            hello(Some(daemon.token.as_str())),
+        )
+        .await;
+        assert!(reply["result"]["origin"].is_string(), "{reply}");
+        let reply = call(&mut socket, 3, "session.list", json!({})).await;
+        assert!(reply["result"]["sessions"].is_array(), "{reply}");
+
+        // A wrong token is answered, then the connection closes.
+        let mut socket = daemon.connect("/ws", None, None).await.unwrap();
+        let reply = call(&mut socket, 1, "handshake", hello(Some("wrong"))).await;
+        assert_eq!(reply["error"]["code"], -32003, "{reply}");
+        assert!(closes(&mut socket).await);
+        // So does a handshake without one.
+        let mut socket = daemon.connect("/ws", None, None).await.unwrap();
+        let reply = call(&mut socket, 1, "handshake", hello(None)).await;
+        assert_eq!(reply["error"]["code"], -32003, "{reply}");
+        assert!(closes(&mut socket).await);
+
+        // A wrong header is refused at the upgrade.
+        let error = daemon
+            .connect("/ws", Some("wrong"), None)
+            .await
+            .expect_err("a wrong header");
+        assert!(error.to_string().contains("401"), "{error}");
+        // Runtimes keep header authentication.
+        let error = daemon
+            .connect("/runtime?id=devbox", None, None)
+            .await
+            .expect_err("a runtime without the header");
+        assert!(error.to_string().contains("401"), "{error}");
+        daemon.stop().await;
+    }
+
+    #[tokio::test]
+    async fn web_origins_connect_only_when_allowed() {
+        let daemon = Daemon::start(AllowedOrigins::None).await;
+        let error = daemon
+            .connect("/ws", None, Some("http://localhost:5173"))
+            .await
+            .expect_err("no origin is allowed by default");
+        assert!(error.to_string().contains("403"), "{error}");
+        daemon.stop().await;
+
+        let daemon = Daemon::start(AllowedOrigins::from_config(&[
+            "http://localhost:5173".to_owned()
+        ]))
+        .await;
+        let mut socket = daemon
+            .connect("/ws", None, Some("http://localhost:5173"))
+            .await
+            .expect("an allowed origin");
+        let reply = call(
+            &mut socket,
+            1,
+            "handshake",
+            hello(Some(daemon.token.as_str())),
+        )
+        .await;
+        assert!(reply["result"]["origin"].is_string(), "{reply}");
+        for refused in ["http://localhost:5174", "https://localhost:5173", "null"] {
+            let error = daemon
+                .connect("/ws", None, Some(refused))
+                .await
+                .expect_err("an origin the list does not name");
+            assert!(error.to_string().contains("403"), "{refused}: {error}");
+        }
+        // Runtimes are never web pages.
+        let error = daemon
+            .connect(
+                "/runtime?id=devbox",
+                Some(daemon.token.as_str()),
+                Some("http://localhost:5173"),
+            )
+            .await
+            .expect_err("a runtime with an origin");
+        assert!(error.to_string().contains("403"), "{error}");
+        daemon.stop().await;
+
+        let daemon = Daemon::start(AllowedOrigins::from_config(&["*".to_owned()])).await;
+        for origin in ["https://anything.example", "null"] {
+            let mut socket = daemon
+                .connect("/ws", None, Some(origin))
+                .await
+                .expect("any origin");
+            // The token stays the only protection.
+            let reply = call(&mut socket, 1, "session.list", json!({})).await;
+            assert_eq!(reply["error"]["code"], -32003, "{reply}");
+        }
+        daemon.stop().await;
     }
 }

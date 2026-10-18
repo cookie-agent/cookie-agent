@@ -1227,7 +1227,10 @@ async fn connect_retries_a_catalog_conflict_when_the_provider_form_is_unchanged(
     );
 
     let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
-    let server_task = tokio::spawn(runtime.server.clone().serve_stream(server_stream));
+    let server_task = tokio::spawn(runtime.server.clone().serve_stream(
+        server_stream,
+        cookie_agent_protocol::Authentication::Authenticated,
+    ));
     let client = Client::connect_stream(client_stream);
     client.handshake().await.unwrap();
     let params = || cookie_agent_protocol::ProviderConnectParams {
@@ -1324,7 +1327,10 @@ async fn cli_reconnects_supported_removed_provider_through_real_server() {
 
     let before_wipe = SECRET_VALUES_WIPED.load(TestOrdering::SeqCst);
     let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
-    let server_task = tokio::spawn(runtime.server.clone().serve_stream(server_stream));
+    let server_task = tokio::spawn(runtime.server.clone().serve_stream(
+        server_stream,
+        cookie_agent_protocol::Authentication::Authenticated,
+    ));
     let client = Client::connect_stream(client_stream);
     let mut io = ScriptedConnectIo {
         public: VecDeque::from(["openai".into(), "yes".into()]),
@@ -1381,7 +1387,10 @@ async fn cli_reconnects_supported_removed_provider_through_real_server() {
             .as_str()
             .to_owned();
         let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
-        let server_task = tokio::spawn(runtime.server.clone().serve_stream(server_stream));
+        let server_task = tokio::spawn(runtime.server.clone().serve_stream(
+            server_stream,
+            cookie_agent_protocol::Authentication::Authenticated,
+        ));
         let client = Client::connect_stream(client_stream);
         let mut io = ScriptedConnectIo::default();
         let error = run_connect_with(&client, Some(provider_id.into()), &mut io)
@@ -1584,7 +1593,10 @@ async fn cookie_config_edits_and_sets_the_daemon_configuration() {
     .await
     .unwrap();
     let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
-    let server_task = tokio::spawn(runtime.server.clone().serve_stream(server_stream));
+    let server_task = tokio::spawn(runtime.server.clone().serve_stream(
+        server_stream,
+        cookie_agent_protocol::Authentication::Authenticated,
+    ));
     let client = Client::connect_stream(client_stream);
     client.handshake().await.unwrap();
     let mut io = ScriptedConfigIo {

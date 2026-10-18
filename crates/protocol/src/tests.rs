@@ -204,34 +204,24 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 50);
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(49)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(48)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(38)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(37)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(36)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(35)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(34)).is_err());
+    // Builds before semver versions sent the exact protocol number.
+    for legacy in [50, 49, 48, 34, 10] {
+        assert!(
+            serde_json::from_value::<ClientHello>(json!({
+                "protocol_version": legacy,
+                "client": {"kind": "tui", "instance_id": ClientInstanceId::new_v7()},
+            }))
+            .is_err()
+        );
+    }
     assert_eq!(
-        serde_json::to_value(ProtocolVersion::current()).unwrap(),
-        json!(PROTOCOL_VERSION)
+        serde_json::to_value(ClientHello::new(ClientIdentity::generate(
+            ClientKind::new("tui").unwrap()
+        )))
+        .unwrap()["protocol_version"],
+        json!(CLIENT_PROTOCOL_VERSION.to_string())
     );
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(33)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(32)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(31)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(30)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(28)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(27)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(26)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(25)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(24)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(23)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(22)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(21)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(20)).is_err());
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(16)).is_err());
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 6);
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(10)).is_err());
     assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(5)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
 }

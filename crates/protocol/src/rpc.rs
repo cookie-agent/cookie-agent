@@ -305,16 +305,79 @@ impl ClientIdentity {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+/// `handshake` params: the client's version and identity, and the daemon's
+/// token when the connection did not present it at the WebSocket upgrade.
+#[derive(Clone, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientHello {
-    pub protocol_version: ProtocolVersion,
+    /// The client's [`crate::CLIENT_PROTOCOL_VERSION`].
+    pub protocol_version: SemVer,
     pub client: ClientIdentity,
+    /// The daemon's bearer token. A browser cannot set `Authorization` on a
+    /// WebSocket, so it authenticates here; a client that sent the header
+    /// may leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<HandshakeToken>,
+    /// What the client's configuration enables. None are defined yet; the
+    /// daemon ignores one it does not know.
+    #[serde(default)]
+    pub features: Vec<String>,
 }
+impl ClientHello {
+    /// The hello of this build's protocol version, without a token or
+    /// features.
+    #[must_use]
+    pub const fn new(client: ClientIdentity) -> Self {
+        Self {
+            protocol_version: CLIENT_PROTOCOL_VERSION,
+            client,
+            token: None,
+            features: Vec::new(),
+        }
+    }
+}
+impl fmt::Debug for ClientHello {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ClientHello")
+            .field("protocol_version", &self.protocol_version)
+            .field("client", &self.client)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("features", &self.features)
+            .finish()
+    }
+}
+
+/// The daemon's bearer token as a handshake carries it. It is wiped when
+/// dropped and never printed.
+#[derive(Clone, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct HandshakeToken(#[schemars(length(max = 256))] String);
+impl HandshakeToken {
+    #[must_use]
+    pub fn new(token: impl Into<String>) -> Self {
+        Self(token.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl Drop for HandshakeToken {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+/// The `handshake` result.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ServerHello {
-    pub protocol_version: ProtocolVersion,
+    /// The daemon's [`crate::CLIENT_PROTOCOL_VERSION`]. The client sends a
+    /// method or member only if this version includes it.
+    pub protocol_version: SemVer,
+    /// The daemon's own version, for display and logs.
+    pub engine_version: String,
     /// The origin the daemon stamps on events this connection causes.
     pub origin: EventOrigin,
     /// An opaque identity of the daemon's machine
@@ -322,6 +385,10 @@ pub struct ServerHello {
     /// same machine; absent when the daemon cannot tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_id: Option<String>,
+    /// What the daemon's configuration enables for clients. None are defined
+    /// yet; a client ignores one it does not know.
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

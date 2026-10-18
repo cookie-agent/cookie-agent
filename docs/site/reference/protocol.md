@@ -1,132 +1,73 @@
 # Protocol Reference
 
-The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 50 is current-only. A client must call `handshake` before any other
-method:
+The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
+client protocol `0.51.0`; the [changelog](protocol-changelog.md) lists what
+each version changed. Until the 1.0 freeze every minor version may break the
+wire, so a client and a daemon connect only when their major and minor
+versions are equal; the patch never matters.
+
+## Handshake and authentication
+
+A client must call `handshake` before any other method:
 
 ```json
-{ "protocol_version": 50, "client": { "kind": "tui", "instance_id": "<uuid>" } }
+{ "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
+    "protocol_version": "0.51.0",
+    "client": { "kind": "web", "instance_id": "<uuid>" },
+    "token": "<the daemon's token>",
+    "features": [] } }
 ```
 
-`client.kind` names the client program: a lowercase letter followed by up to 15
-lowercase letters, digits, or hyphens (the shipped clients use `tui` and `cli`).
-`client.instance_id` is a UUID identifying one running client; a client keeps it
-across reconnects so it can recognize events it caused. Any number of clients
-may connect to one daemon at once.
+The reply:
 
-The response is `{ "protocol_version": 42, "origin": "client:<kind>-<id>" }`,
-where `<id>` is the instance id as 32 lowercase hex digits. The daemon stamps
-that origin on every event the connection's requests cause, so each client can
-tell its own actions from another client's. A repeated handshake on the same
-connection keeps the first identity. Protocol 34 added the required `client`
-member and the `origin` result. Protocol 35 replaced `run.recall_steer` with
-`session.recall_input` and added `session.submit_input` with queued input (see
-[Submitting from several clients](#submitting-from-several-clients)), and
-protocol 36 added the `resync` runtime change reason. Protocol 37 made
-`session.revert` require `expected_last_seq` and `session.fork` require
-`client_fork_id`, and added `session.compact.cancel`. Protocol 38 added
-`session.select_model` and the `session_model_selected` event. Protocol 39
-removed the workspace configuration layer: the `workspace` agent document source
-and the `workspace_file` MCP configuration source and target are gone.
-Protocol 40 added runtime attachments (see [Runtimes](#runtimes)):
-`session.create` takes `runtimes` and `global`, the session create, get, and
-resume results carry the session's `runtimes`, `session.runtime.attach`,
-`session.runtime.detach`, `runtimes.list`, and `runtimes.reconnect` are new,
-`runtimes.changed` is a new notification, permission rules, overlay mutations, approval requests, and
-tree grants carry a runtime selector or runtime ID, and `delegate_subagent`
-accepts `runtimes`. In the same version the `lazy` MCP server setting and the
-`lazy-not-connected` state were removed, MCP servers gained the `reconnecting`
-state and their hosting `runtime_id` and `workspace` in `mcp.server.list`,
-`mcp.server.list` lists the servers coding runtimes host,
-`mcp.server.reconnect` takes an optional `runtime_id` and `workspace`, and
-`mcp.changed` and `runtimes.changed` gained `failures` (see
-[Connection failures](#connection-failures)). Protocol 41 made a runtime's
-`kind` a free-form label the runtime declares instead of `global` or
-`coding`, and made `PermissionAction` a free-form label (`[a-z][a-z0-9_]{0,31}`)
-instead of the nine built-in actions, so permission
-rules, overlays, grants, approval requests, and `session.permission.get` can
-name a runtime's own actions; `session.permission.get` lists the built-in
-actions, then the actions of the session's tools, then any other action a rule
-names. Protocol 42 removed `run.tool_stdin`: tools no longer take input while
-they run. It added background calls: `run.tool_background`,
-`session.background.list`, `session.background.stop`, and the
-`background.changed` notification, and the `subagent { session_id }`
-producer owner of the `<subagent_report>` a subagent sends its parent after
-every turn. It also made tool permissions optional: a tool may declare no
-permission, so it is always published and every call allowed, and the
-`permission_name` the `tool_before_call` plugin hook receives is `null` for
-such a tool. Protocol 43 replaced the `plugin { plugin }` producer owner
-with `external { source, name }`: `source` is `plugin:<name>` or
-`runtime:<attachment name>`, and `name` is the producer's own label, so a
-plugin or runtime may run any number of named producers (see the [external
-producers spec](../specs/external-producers.md)). `session.producers` returns
-`sources` (the recovery state of each producer source) in place of
-`plugin_recovery`, and a source that cannot recover records a
-`producer_diagnostic` event (now a `diagnostic`). Protocol 44 added `plugins.list`,
-`plugins.restart`, and the `plugins.changed` notification (see
-[Plugins](#plugins)), and the `engine_diagnostic` event (now a `diagnostic`), which replaces the
-`plugin_diagnostic` automatic compaction used to record under the name
-`engine:auto-compact`. It removed the built-in `plugin` permission action:
-plugin tools declare their own actions, and a rule naming `plugin` is an
-ordinary label that governs nothing. Protocol 45 added runtime capabilities (see the
-[runtime capabilities spec](../specs/runtime-capabilities.md)): a
-`RuntimeAttachment` and a `runtime_attached` event name the `capability`
-attached; `session.create` runtime entries, `session.runtime.attach`, and
-`runtimes.reconnect` take an optional `capability`; `runtimes.list` returns
-`runtimes` (each runtime's lifetime, connection state, and capabilities) in
-place of `templates`, and its instances and `runtimes.changed` failures name
-their capability; `session.create` takes the client's `cwd`; the
-handshake reply carries the daemon's `machine_id`; and `runtimes.list` shows
-runtimes that dial in (`dial_in`). A runtime now
-produces as `runtime:<runtime ID>` rather
-than `runtime:<attachment name>`. Protocol 46 removed
-`SetupFieldDescriptor.safe_to_project` (every setup value is shown and
-projected), added the `provider.connect` error codes
-`custom_provider_not_store_backed`, and removed the connect code
-`quarantined_provider` and the disconnect code `invalid_provider`, which
-nothing produced. Protocol 47 added `config.reload` and the snapshot's
-`config_revision` (part of `runtime_revision`); a reload publishes
-`runtime.changed` with `config_reloaded`, and `agent_reloaded` when an agent
-document changed. Protocol 48 added `config.get` and `config.apply`, and
-`mcp.server.persist` writes through `config.apply`'s path (persisting a
-runtime removal deletes the server's table). Protocol 49 changed session
-history (see [Events](events.md)): it removed the legacy events
-`session_reverted`, `context_rehydrated`, `plugin_event_added`,
-`tool_stdin_submitted`, `delegate_finished`, and the positional
-`user_input_recalled`; `user_input_recalled_v2` took the plain name
-`user_input_recalled`; `runtime_attached.capability`, the `agent_md_loaded`
-`attachment`, and the runtime ID of approval requests and tree grants became
-required; and the legacy decoders of older logs are gone, so sessions written
-before protocol 49 no longer open. It merged the event set: `diagnostic`
-replaces `plugin_diagnostic`, `producer_diagnostic`, `engine_diagnostic`, and
-`agent_md_skipped`; `run_finished` the four run terminal events;
-`internal_agent_finished` the four internal-agent terminal events;
-`delegation_progressed` `delegation_started`, `delegation_run_started`,
-`delegation_run_attached`, and `delegate_queued`; `delegation_finished`
-absorbs `delegate_finished_v2`; and `approval_step` and `approval_finalized`
-replace the six approval lifecycle events. Every event type is a state or an
-audit event, and stored records of audit events carry `"skippable": true`; a
-session holding a state event this build does not know is render-only, and
-requests that would change it fail with `session_requires_newer_engine`.
-`session_created` carries `history_format`. Tool results lost `truncation`,
-which nothing set. The input-lane events store `content` (user content: text
-and file parts) instead of `input`, `user_input_transformed` stores
-`original_content`, and `message_injected` and producer message bodies are
-text-only user content. A tool result's `display` is a list of display
-blocks, and `tool_call_progress.display` a display delta;
-`tool_call_started.presentation` names the tool and its source, and
-approval requests name their `tool_call_id`; a backgrounded result carries a
-typed `background` state instead of `metadata.background`. Protocol 50
-changed `PluginInfo.hooks` to the names of the hooks a plugin intercepts
-(snake-case strings such as `tool_before_call`) and
-`PluginInfo.subscribe_events` to the event-type patterns it subscribes to
-(such as `run_*`; empty for none), and added the
-`plugin_hook_failed` error, with which a request a plugin's failed hook
-blocked is refused. Older clients are rejected.
+```json
+{ "protocol_version": "0.51.0", "engine_version": "0.3.0",
+  "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [] }
+```
 
-The unreleased MCP approval methods and their `pending_approval` and `rejected`
-server states were removed before any release. They are not compatibility
-members of protocol 50.
+- **`protocol_version`** is the sender's semver version, a
+  `"MAJOR.MINOR.PATCH"` string. The daemon reads it from the raw params before
+  anything else: a client of another major (or, before 1.0, another minor),
+  or a build from before semver versions that sends an integer, is answered
+  with `-32002` `unsupported_protocol`, whose data names both
+  `supported_version` and `peer_version`. A client only sends a method or a
+  member the daemon's version includes.
+- **`client.kind`** names the client program: a lowercase letter followed by
+  up to 15 lowercase letters, digits, or hyphens (the shipped clients use
+  `tui` and `cli`). **`client.instance_id`** is a UUID identifying one running
+  client; a client keeps it across reconnects so it can recognize events it
+  caused. Any number of clients may connect to one daemon at once.
+- **`origin`** is `client:<kind>-<id>`, where `<id>` is the instance id as 32
+  lowercase hex digits. The daemon stamps that origin on every event the
+  connection's requests cause, so each client can tell its own actions from
+  another client's. A repeated handshake on the same connection keeps the
+  first identity.
+- **`engine_version`** is the daemon's own version, for display and logs;
+  **`machine_id`** an opaque identity of the daemon's machine when it has one,
+  so a client can tell whether it runs on the same machine.
+- **`features`** list what each side's configuration enables. None are
+  defined yet; an unknown feature is ignored.
+
+**Authentication.** A client authenticates with the daemon's bearer token
+(`[server] token`) in one of two places:
+
+- the `Authorization: Bearer <token>` header of the WebSocket upgrade, which
+  the native clients send; a wrong header is refused with HTTP 401;
+- or `token` in the handshake, which a browser must use, since it cannot set
+  headers on a WebSocket.
+
+Until a connection without the header has sent the right token, the daemon
+answers only `handshake`; any other request gets `-32003` `unauthenticated`.
+A handshake with a wrong or missing token gets `-32003`, and the connection
+closes. A connection that has not authenticated within 10 seconds is closed.
+A connection that authenticated with the header but has not handshaken gets
+`-32001` `handshake_required` for anything but `handshake`.
+
+**Web origins.** An upgrade request without an `Origin` header (every native
+client) is unaffected. One with an `Origin` header is refused with HTTP 403
+unless [`[server] allowed_origins`](../engine/server.md) allows that origin.
+Dial-in runtimes on `/runtime` always authenticate with the header, and a
+request there with an `Origin` header is refused.
 
 ## Error diagnostics
 
@@ -185,8 +126,9 @@ and the CLI share one implementation of the protocol mechanics.
   accept path in the `server` crate implements the same trait server-side.
 - **ServerProtocol.** The server contract is one async method per RPC plus
   `connected`. The `server` crate implements it over `Engine`. `protocol::serve`
-  drives one complete session over a transport: it rejects every method before
-  the exact-version handshake with error code `-32001`, correlates requests by
+  drives one complete session over a transport: it authenticates the
+  connection (by the transport, or by the handshake's token), rejects every
+  method before the handshake with `-32003` or `-32001`, correlates requests by
   id, dispatches to the implementation, and delivers notifications through a
   `ServerContext`. After the handshake, requests on one connection run
   concurrently (at most 64 in flight) and each response is written when it is
@@ -223,7 +165,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 
 | Method | Parameters | Result summary |
 |---|---|---|
-| `handshake` | `protocol_version`, `client` identity | Server protocol version, the connection's event `origin`, and `machine_id`, an opaque identity of the daemon's machine when it has one |
+| `handshake` | `protocol_version`, `client` identity, optional `token`, `features` | The daemon's `protocol_version` and `engine_version`, the connection's event `origin`, `machine_id` when the daemon has one, and `features` (see [Handshake and authentication](#handshake-and-authentication)) |
 | `runtime.snapshot.get` | Empty object | One coherent runtime snapshot |
 | `provider.connect` | Provider, expected catalog revision, setup/auth values, client ID | Durable connection, effective auth, snapshot, replay state |
 | `provider.disconnect` | Provider, expected revisions/generation, client ID | Disconnect receipt, effective auth, snapshot, replay state |

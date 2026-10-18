@@ -94,7 +94,7 @@ enum Command {
         #[command(flatten)]
         args: Box<run::RunArgs>,
     },
-    /// Serve the exact cookie-agent protocol 50 JSON-RPC WebSocket daemon on localhost.
+    /// Serve the cookie-agent client protocol 0.51 JSON-RPC WebSocket daemon on localhost.
     Daemon {
         /// Localhost port to bind. `0` selects an ephemeral port; the ready line
         /// reports the real one.
@@ -253,6 +253,8 @@ struct Runtime {
     port: u16,
     /// `[server] token`, when the configuration has one.
     token: Option<String>,
+    /// `[server] allowed_origins`.
+    allowed_origins: cookie_agent_server::AllowedOrigins,
     /// The user `config.toml`, where the daemon keeps a token it creates.
     config_path: Option<PathBuf>,
     catalog_refresh_shutdown: CancellationToken,
@@ -690,6 +692,9 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
     }
     let port = configuration.runtime.server.port;
     let token = configuration.runtime.server.token.clone();
+    let allowed_origins = cookie_agent_server::AllowedOrigins::from_config(
+        &configuration.runtime.server.allowed_origins,
+    );
     let config_path = configuration.config_paths.user.clone();
 
     // Startup never waits on the network: it serves the validated cache (or
@@ -732,6 +737,7 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
         server,
         port,
         token,
+        allowed_origins,
         config_path,
         catalog_refresh_shutdown,
         catalog_refresh_task: Some(catalog_refresh_task),
@@ -868,7 +874,10 @@ fn client_directory() -> Option<String> {
 #[cfg(feature = "tui")]
 async fn run_local_frontend(mut runtime: Runtime) -> anyhow::Result<()> {
     let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(128);
-    let server_task = tokio::spawn(runtime.server.clone().serve_stream(server_stream));
+    let server_task = tokio::spawn(runtime.server.clone().serve_stream(
+        server_stream,
+        cookie_agent_protocol::Authentication::Authenticated,
+    ));
     let result = async {
         let client = Client::connect_stream(client_stream);
         client
@@ -1709,7 +1718,7 @@ async fn run_daemon(mut runtime: Runtime, options: DaemonListen) -> anyhow::Resu
         Ok(signals) => runtime
             .server
             .clone()
-            .serve_on(address, token.clone(), tls)
+            .serve_on(address, token.clone(), tls, runtime.allowed_origins.clone())
             .await
             .map(|listener| (signals, listener))
             .map_err(|error| anyhow::Error::new(error).context("start WebSocket daemon")),
@@ -1728,8 +1737,8 @@ async fn run_daemon(mut runtime: Runtime, options: DaemonListen) -> anyhow::Resu
     println!("{}", ready_line(&url, token.as_str()));
     drop(token);
     println!(
-        "cookie daemon listening on {url} (protocol {})",
-        cookie_agent_protocol::PROTOCOL_VERSION
+        "cookie daemon listening on {url} (client protocol {})",
+        cookie_agent_protocol::CLIENT_PROTOCOL_VERSION
     );
     signals.recv().await;
     exit_on_next_stop(signals);

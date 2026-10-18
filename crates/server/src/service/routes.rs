@@ -44,6 +44,10 @@ impl ServerProtocol for Server {
         self.start_engine_event_notifications(context);
     }
 
+    fn engine_version(&self) -> String {
+        env!("CARGO_PKG_VERSION").to_owned()
+    }
+
     async fn create_session(&self, params: SessionCreateParams) -> Result<SessionCreateResult> {
         let runtimes = cookie_agent_engine::SessionRuntimes {
             runtimes: params.runtimes.map(|requests| {

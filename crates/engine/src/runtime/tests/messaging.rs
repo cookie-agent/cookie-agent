@@ -543,7 +543,15 @@ fn ac8_agent_owner_events_are_supported_by_the_protocol_projection() {
 
 #[test]
 fn ac9_protocol_version_and_schema_baselines_are_present() {
-    assert_eq!(cookie_agent_protocol::PROTOCOL_VERSION, 50);
+    let client_baseline = std::fs::read_to_string(format!(
+        "{}/../protocol/compat/client/version",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("client baseline version");
+    assert_eq!(
+        client_baseline.trim(),
+        cookie_agent_protocol::CLIENT_PROTOCOL_VERSION.to_string()
+    );
     for baseline in [
         "/../protocol/compat/events/schemas/EventPayload.schema.json",
         "/../protocol/compat/plugin/methods.json",

@@ -23,7 +23,7 @@ use cookie_agent_models::{
 use cookie_agent_protocol::{
     AuthFieldName, AuthMethodId, CatalogRevision, McpAuthBeginParams, McpAuthCancelParams,
     McpAuthCompleteParams, McpConfigSource, McpServerAddParams, McpServerDefinition,
-    McpServerEditParams, McpServerNameParams, PROTOCOL_VERSION, ProviderId, ProviderSetupRecipeId,
+    McpServerEditParams, McpServerNameParams, ProviderId, ProviderSetupRecipeId,
     RUNTIME_CHANGED_METHOD, RecipeCompilerVersion, SessionListParams,
 };
 use jiff::Timestamp;
@@ -31,7 +31,8 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use cookie_agent_protocol::{
-    ClientDelivery, InProcessStream, MessageFrame, MessageStream, in_process_pair,
+    Authentication, CLIENT_PROTOCOL_VERSION, ClientDelivery, InProcessStream, MessageFrame,
+    MessageStream, in_process_pair,
 };
 
 use crate::Server;
@@ -465,14 +466,17 @@ async fn request(
 async fn connect(server: Arc<Server>) -> InProcessStream {
     let (mut client, service) = in_process_pair(32);
     tokio::spawn(async move {
-        server.serve_stream(service).await.expect("serve stream");
+        server
+            .serve_stream(service, Authentication::Authenticated)
+            .await
+            .expect("serve stream");
     });
     let (hello, _) = request(
         &mut client,
         1,
         "handshake",
         json!({
-            "protocol_version": PROTOCOL_VERSION,
+            "protocol_version": CLIENT_PROTOCOL_VERSION,
             "client": {
                 "kind": "test",
                 "instance_id": "0192f3a4-5b6c-7d8e-9f00-112233445566",
@@ -480,7 +484,11 @@ async fn connect(server: Arc<Server>) -> InProcessStream {
         }),
     )
     .await;
-    assert_eq!(hello["result"]["protocol_version"], PROTOCOL_VERSION);
+    assert_eq!(
+        hello["result"]["protocol_version"],
+        CLIENT_PROTOCOL_VERSION.to_string()
+    );
+    assert_eq!(hello["result"]["engine_version"], env!("CARGO_PKG_VERSION"));
     // The daemon stamps this connection's events with an origin derived
     // from the handshake identity.
     assert_eq!(
@@ -497,10 +505,8 @@ async fn shared_client_handshakes_calls_and_receives_events_in_process() {
     let mut deliveries = client.subscribe_deliveries().expect("delivery stream");
 
     let hello = client.handshake().await.expect("handshake");
-    assert_eq!(
-        hello.protocol_version,
-        cookie_agent_protocol::ProtocolVersion::current()
-    );
+    assert_eq!(hello.protocol_version, CLIENT_PROTOCOL_VERSION);
+    assert_eq!(client.daemon_version(), Some(CLIENT_PROTOCOL_VERSION));
     let sessions = client
         .list_sessions(SessionListParams::default())
         .await
@@ -940,25 +946,85 @@ async fn catalog_shape_is_compiled_without_provider_quarantine() {
     assert!(response.get("result").is_some(), "{response}");
 }
 
+/// A client of another major, of another minor before 1.0, or of a build
+/// from before semver versions is refused with `unsupported_protocol`
+/// naming both versions; another patch connects.
 #[tokio::test]
-async fn protocol_eight_and_unknown_params_are_rejected() {
+async fn version_skew_is_refused_with_both_versions_and_another_patch_connects() {
     let harness = harness();
     let (mut client, service) = in_process_pair(8);
+    let server = Arc::clone(&harness.server);
     tokio::spawn(async move {
-        harness
-            .server
-            .serve_stream(service)
+        server
+            .serve_stream(service, Authentication::Authenticated)
             .await
             .expect("serve stream");
     });
+    let current = CLIENT_PROTOCOL_VERSION;
+    let client_identity = json!({
+        "kind": "test",
+        "instance_id": "0192f3a4-5b6c-7d8e-9f00-112233445566",
+    });
+    for (id, version, named) in [
+        (
+            1,
+            json!(format!("{}.{}.0", current.major(), current.minor() + 1)),
+            format!("{}.{}.0", current.major(), current.minor() + 1),
+        ),
+        (
+            2,
+            json!(format!("{}.{}.0", current.major() + 1, current.minor())),
+            format!("{}.{}.0", current.major() + 1, current.minor()),
+        ),
+        (3, json!(50), "50".to_owned()),
+    ] {
+        let (response, _) = request(
+            &mut client,
+            id,
+            "handshake",
+            json!({ "protocol_version": version, "client": client_identity }),
+        )
+        .await;
+        assert_eq!(response["error"]["code"], -32002, "{response}");
+        let data = &response["error"]["data"];
+        assert_eq!(data["code"], "unsupported_protocol", "{response}");
+        assert_eq!(data["supported_version"], current.to_string());
+        assert_eq!(data["peer_version"], named);
+    }
+    // The rest of a hello is a command: an unknown member is refused.
     let (response, _) = request(
         &mut client,
-        1,
+        4,
         "handshake",
-        json!({ "protocol_version": 8 }),
+        json!({
+            "protocol_version": current,
+            "client": client_identity,
+            "extra": true,
+        }),
     )
     .await;
-    assert_eq!(response["error"]["code"], -32602);
+    assert_eq!(
+        response["error"]["data"]["code"], "unknown_field",
+        "{response}"
+    );
+    let (response, _) = request(
+        &mut client,
+        5,
+        "handshake",
+        json!({
+            "protocol_version": format!("{}.{}.{}", current.major(), current.minor(), current.patch() + 7),
+            "client": client_identity,
+            "features": ["from_the_future"],
+        }),
+    )
+    .await;
+    assert_eq!(
+        response["result"]["protocol_version"],
+        current.to_string(),
+        "{response}"
+    );
+    harness.server.shutdown();
+    harness.engine.shutdown().await;
 }
 
 #[tokio::test]

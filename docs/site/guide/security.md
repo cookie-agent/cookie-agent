@@ -111,13 +111,26 @@ from privileged code such as `root`, `SYSTEM`, or an elevated administrator.
 
 ### Daemon authentication token
 
-The daemon validates every WebSocket handshake, from clients and from
-dial-in runtimes alike, with a constant-time compare of a bearer token, and
-refuses requests that carry a browser `Origin` header. It binds IPv4 loopback
-unless `--listen` names another address; off loopback, serve TLS
+The daemon authenticates every connection, from clients and from dial-in
+runtimes alike, with a constant-time compare of a bearer token. A runtime
+presents it in the `Authorization` header of its WebSocket upgrade; a client
+presents it there or in its `handshake` request, which is how a web page
+authenticates, since browsers cannot set WebSocket headers. A client
+connection that has not authenticated may send only `handshake`, is closed
+after a wrong token, and is closed after 10 seconds without one. It binds IPv4
+loopback unless `--listen` names another address; off loopback, serve TLS
 (`--tls-cert`, `--tls-key`) or keep the listener on a private network, since
 a plaintext `ws://` connection carries the token in the clear. Anyone holding
 the token is a fully trusted client and may also offer a runtime.
+
+**Web pages.** A request with a browser `Origin` header is refused unless
+`[server] allowed_origins` lists that origin (see [Server](../engine/server.md)).
+The default list is empty, so no web page can open a connection. Listing an
+origin lets that site's pages try; they still need the token. With `"*"`, any
+page in any browser on a machine that can reach the daemon can open a
+connection, and the token is the only protection. A page served over HTTPS can
+only connect to a `wss://` daemon. Runtimes never connect from a web page: a
+request to `/runtime` with an `Origin` header is always refused.
 
 The token is durable: it is `[server] token` in the user `config.toml`. When
 the configuration has none, the daemon draws a fresh 32-byte token from the

@@ -36,7 +36,7 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 
 | Key | Canonical settings page |
 |---|---|
-| `server` | [Server](../engine/server.md) |
+| `server` | [Server](../engine/server.md): where the daemon listens, its token, and the web origins (`allowed_origins`) whose pages may connect |
 | `tool_output` | [Tool Output](../engine/tool_output.md) |
 | `subagent_output` | [Subagent Output](../engine/subagent_output.md) |
 | `agent_md` | [AGENTS.md Context](../engine/agent_md.md) |

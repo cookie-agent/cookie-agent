@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 50 transport-neutral JSON-RPC service.
+//! The cookie-agent client protocol 0.51 JSON-RPC service, transport-neutral.
 
 mod config;
 mod providers;
@@ -7,7 +7,7 @@ mod runtimes;
 mod service;
 mod token;
 
-pub use service::{RunningServer, Server, ServerError, TlsConfig, load_tls};
+pub use service::{AllowedOrigins, RunningServer, Server, ServerError, TlsConfig, load_tls};
 pub use token::{READY_LINE_PREFIX, TokenError, generate_token, ready_line};
 
 #[cfg(test)]

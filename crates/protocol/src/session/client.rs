@@ -20,8 +20,8 @@ use crate::{
     McpAuthCompleteParams, McpAuthCompleteResult, McpServerAddParams, McpServerEditParams,
     McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
     McpServerPersistParams, McpServerReconnectParams, McpServerSetEnabledParams, MessageFrame,
-    ProtocolVersion, RunCancelParams, RunCancelResult, RunStartParams, RunStartResult,
-    RunSteerParams, RunSteerResult, ServerHello, SessionChildrenParams, SessionChildrenResult,
+    RunCancelParams, RunCancelResult, RunStartParams, RunStartResult, RunSteerParams,
+    RunSteerResult, ServerHello, SessionChildrenParams, SessionChildrenResult,
     SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
     SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
     SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
@@ -320,6 +320,8 @@ pub struct Client {
     /// The origin the daemon stamps on this connection's events, from the
     /// handshake response.
     origin: Arc<StdMutex<Option<EventOrigin>>>,
+    /// The daemon's client protocol version, from the handshake response.
+    daemon_version: Arc<StdMutex<Option<crate::SemVer>>>,
     #[cfg(test)]
     pending_command_count: Arc<AtomicUsize>,
 }
@@ -372,6 +374,7 @@ impl Client {
             recovery: recovery.clone(),
             shutdown,
             origin: Arc::new(StdMutex::new(None)),
+            daemon_version: Arc::new(StdMutex::new(None)),
             #[cfg(test)]
             pending_command_count,
         };
@@ -396,19 +399,32 @@ impl Client {
         .await
     }
 
-    /// Complete the versioned protocol handshake as `client`.
+    /// Complete the versioned protocol handshake as `client`. The transport
+    /// is expected to have presented the daemon's token (the WebSocket
+    /// transport sends it in `Authorization`); [`Self::handshake_with`]
+    /// sends it in the handshake instead.
     pub async fn handshake_as(&self, client: ClientIdentity) -> Result<ServerHello, ClientError> {
-        let hello: ServerHello = self
-            .call(
-                "handshake",
-                &ClientHello {
-                    protocol_version: ProtocolVersion::current(),
-                    client,
-                },
-            )
-            .await?;
+        self.handshake_with(ClientHello::new(client)).await
+    }
+
+    /// Complete the protocol handshake with `hello`. A daemon of another
+    /// client protocol version refuses it with `unsupported_protocol`, and
+    /// a daemon whose version this build cannot speak with is refused here.
+    pub async fn handshake_with(&self, hello: ClientHello) -> Result<ServerHello, ClientError> {
+        let raw: Value = self.call("handshake", &hello).await?;
+        crate::negotiate_version(crate::CLIENT_PROTOCOL_VERSION, &raw)
+            .map_err(|refusal| ClientError::Rpc(refusal.to_rpc_error()))?;
+        let hello: ServerHello = serde_json::from_value(raw)?;
         *self.origin.lock().expect("client origin lock") = Some(hello.origin.clone());
+        *self.daemon_version.lock().expect("daemon version lock") = Some(hello.protocol_version);
         Ok(hello)
+    }
+
+    /// The daemon's client protocol version, once the handshake has
+    /// completed.
+    #[must_use]
+    pub fn daemon_version(&self) -> Option<crate::SemVer> {
+        *self.daemon_version.lock().expect("daemon version lock")
     }
 
     /// The origin the daemon stamps on events this connection causes, once

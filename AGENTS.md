@@ -53,12 +53,19 @@ the baselines in `crates/protocol/compat/`; after changing a wire type, a
 method, or a protocol version, regenerate them with
 `crates/protocol/scripts/update-compat-baseline.sh` and commit the result.
 
-Bumping `PROTOCOL_VERSION` must also update every human-readable version
-reference in the same commit: `docs/site/reference/protocol.md`,
-`docs/site/architecture.md`, and the crate-level doc strings in
-`crates/protocol/src/lib.rs`, `crates/coding_runtime/src/lib.rs`,
-`crates/server/src/lib.rs`, and `crates/cookie_agent/src/main.rs` (search for
-the old version number; `docs/site/api/**` is generated and excluded).
+The three protocol versions are the semver constants
+`CLIENT_PROTOCOL_VERSION`, `PLUGIN_PROTOCOL_VERSION`, and
+`RUNTIME_PROTOCOL_VERSION` in `crates/protocol/src/semver.rs`. Bumping one
+regenerates its baseline and, in the same commit, updates every
+human-readable reference to it. For the client version: a new entry in
+`docs/site/reference/protocol-changelog.md`, the version in
+`docs/site/reference/protocol.md` and `docs/site/architecture.md`, and the
+crate-level doc strings in `crates/protocol/src/lib.rs`,
+`crates/coding_runtime/src/lib.rs`, `crates/server/src/lib.rs`, and
+`crates/cookie_agent/src/main.rs`. For the plugin and runtime versions:
+`docs/site/reference/runtime-protocol.md` and
+`docs/site/development/plugins.md`. Search for the old version string;
+`docs/site/api/**` is generated and excluded.
 
 Tool-emitted system-role messages must not mutate the initial model-history
 system turn. Materialize them at the emission point as user turns beginning

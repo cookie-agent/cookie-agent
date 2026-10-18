@@ -564,10 +564,11 @@ enum PendingTool {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StoredRuntimeRevisionMapping {
-    /// Protocol the mapping was written under. A record of history, not the
-    /// current wire format, so a protocol bump never makes an existing index
-    /// unreadable.
-    protocol_version: u32,
+    /// Protocol the mapping was written under: the client protocol version
+    /// string, or the exact number builds before semver versions wrote. A
+    /// record of history that nothing reads, so a protocol bump never makes
+    /// an existing index unreadable.
+    protocol_version: serde_json::Value,
     runtime_revision: cookie_agent_protocol::RuntimeRevision,
     model_runtime_revision: cookie_agent_protocol::RuntimeRevision,
 }
@@ -611,7 +612,9 @@ impl RuntimeRevisionIndex {
         events::append_jsonl(
             &self.path,
             &StoredRuntimeRevisionMapping {
-                protocol_version: cookie_agent_protocol::PROTOCOL_VERSION,
+                protocol_version: serde_json::Value::String(
+                    cookie_agent_protocol::CLIENT_PROTOCOL_VERSION.to_string(),
+                ),
                 runtime_revision: runtime_revision.clone(),
                 model_runtime_revision: model_runtime_revision.clone(),
             },

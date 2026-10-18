@@ -9,6 +9,7 @@ host = "127.0.0.1"
 port = 7419
 token = "<43-char base64url>"
 url = "ws://127.0.0.1:7419/ws"
+allowed_origins = []
 ```
 
 Omission keeps the defaults. An authored table replaces them completely;
@@ -34,8 +35,13 @@ For clients and runtimes on other machines, `cookie daemon` takes:
 | `--tls-cert <path>`, `--tls-key <path>` | Serve `wss` with this PEM certificate chain and private key; the ready line then shows a `wss://` URL. Both or neither. |
 
 The daemon serves clients on `/ws` and [dial-in runtimes](../guide/runtimes.md#runtimes-that-dial-in)
-on `/runtime?id=<runtime ID>`. Both present the same bearer token; a request
-carrying a browser `Origin` header is refused.
+on `/runtime?id=<runtime ID>`. Both present the same bearer token: a runtime
+in the `Authorization` header, a client there or in its
+[handshake](../reference/protocol.md#handshake-and-authentication). A request
+carrying a browser `Origin` header is refused unless `allowed_origins` lists
+that origin (on `/runtime`, always).
+
+## Keys
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -43,3 +49,23 @@ carrying a browser `Origin` header is refused.
 | `port` | integer | `7419` | TCP port for the WebSocket daemon. |
 | `token` | string | *(none)* | The daemon's bearer token, exactly 43 base64url characters. The daemon writes a fresh one here when there is none; clients and dial-in runtimes on this machine use it when given no `--token`. |
 | `url` | string | `ws://<host>:<port>/ws` | The daemon clients and dial-in runtimes on this machine connect to when given no `--url` (or URL after `--daemon`): a `ws://` or `wss://` URL whose path is `/ws`. Set it on a machine whose daemon runs elsewhere. The daemon itself ignores it. |
+| `allowed_origins` | array of strings | `[]` | Web origins whose pages may connect to `/ws`: exact `scheme://host[:port]` origins as browsers send them, or the single entry `"*"` for any origin (see [Web clients](#web-clients)). Empty refuses every request with an `Origin` header; a request without one is unaffected. |
+
+## Web clients
+
+A page in a browser connects with the token in its handshake, from an origin
+`allowed_origins` lists:
+
+```toml
+[server]
+allowed_origins = ["https://cookie.example", "http://localhost:5173"]
+# or: allowed_origins = ["*"]
+```
+
+Each entry is an origin exactly as a browser sends it in its `Origin` header:
+a lowercase `scheme://host`, with `:port` only when the port is not the
+scheme's default, and no path or trailing slash. The single entry `"*"` allows
+any origin, and combining it with other entries is a configuration error.
+With `"*"`, any page can open a connection, and the token is the only
+protection. A page served over HTTPS can only connect with `wss://`, so it
+needs the daemon's TLS options. Changing the list takes a daemon restart.

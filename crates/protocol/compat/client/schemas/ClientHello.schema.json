@@ -19,17 +19,43 @@
         "instance_id"
       ],
       "type": "object"
+    },
+    "HandshakeToken": {
+      "description": "The daemon's bearer token as a handshake carries it. It is wiped when\ndropped and never printed.",
+      "maxLength": 256,
+      "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "`handshake` params: the client's version and identity, and the daemon's\ntoken when the connection did not present it at the WebSocket upgrade.",
   "properties": {
     "client": {
       "$ref": "#/$defs/ClientIdentity"
     },
+    "features": {
+      "default": [],
+      "description": "What the client's configuration enables. None are defined yet; the\ndaemon ignores one it does not know.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "protocol_version": {
-      "const": 50,
-      "type": "integer"
+      "description": "The client's [`crate::CLIENT_PROTOCOL_VERSION`].",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "type": "string"
+    },
+    "token": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HandshakeToken"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The daemon's bearer token. A browser cannot set `Authorization` on a\nWebSocket, so it authenticates here; a client that sent the header\nmay leave it out."
     }
   },
   "required": [

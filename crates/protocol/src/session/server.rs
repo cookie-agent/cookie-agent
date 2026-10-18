@@ -56,6 +56,8 @@ pub struct ServerContext {
     connection_id: u64,
     /// The origin derived from the handshake's client identity.
     client_origin: Arc<std::sync::OnceLock<EventOrigin>>,
+    /// The client's protocol version, from the handshake.
+    client_version: Arc<std::sync::OnceLock<crate::SemVer>>,
     /// Serialized frames, written to the transport in queue order.
     notifications: mpsc::Sender<String>,
     shutdown: CancellationToken,
@@ -72,6 +74,7 @@ impl ServerContext {
         Self {
             connection_id: NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed),
             client_origin: Arc::new(std::sync::OnceLock::new()),
+            client_version: Arc::new(std::sync::OnceLock::new()),
             notifications,
             shutdown,
             subscribed_sessions: Arc::new(Mutex::new(HashSet::new())),
@@ -99,17 +102,32 @@ impl ServerContext {
             .expect("requests run only after the handshake set the client origin")
     }
 
-    /// Records the handshake identity. A repeated handshake keeps the first.
-    fn hello(&self, hello: &ClientHello) -> ServerHello {
+    /// Records the handshake identity and version. A repeated handshake
+    /// keeps the first.
+    fn hello(&self, hello: &ClientHello, engine_version: String) -> ServerHello {
         let origin = self
             .client_origin
             .get_or_init(|| hello.client.origin())
             .clone();
+        let _ = self.client_version.set(hello.protocol_version);
         ServerHello {
-            protocol_version: crate::ProtocolVersion::current(),
+            protocol_version: crate::CLIENT_PROTOCOL_VERSION,
+            engine_version,
             origin,
             machine_id: crate::paths::machine_id(),
+            features: Vec::new(),
         }
+    }
+
+    /// The client protocol version the client sent in its handshake: the
+    /// daemon sends only what this version includes. Requests run only after
+    /// the handshake, so it is set whenever a request sees it.
+    #[must_use]
+    pub fn client_version(&self) -> crate::SemVer {
+        self.client_version
+            .get()
+            .copied()
+            .unwrap_or(crate::CLIENT_PROTOCOL_VERSION)
     }
 
     /// Forward a session's live tail to this connection as
@@ -262,8 +280,13 @@ pub fn test_server_context() -> (ServerContext, mpsc::Receiver<String>) {
 /// Server end of the protocol contract after session-level validation.
 #[async_trait]
 pub trait ServerProtocol: Send + Sync + 'static {
-    /// Called after the exact-version handshake response has been sent.
+    /// Called after the handshake response has been sent.
     async fn connected(&self, _context: ServerContext) {}
+
+    /// The daemon's own version, which the handshake reports.
+    fn engine_version(&self) -> String {
+        env!("CARGO_PKG_VERSION").to_owned()
+    }
 
     async fn create_session(
         &self,
@@ -547,7 +570,7 @@ pub trait ServerProtocol: Send + Sync + 'static {
 #[derive(Debug)]
 pub struct ServerFault {
     pub code: i32,
-    pub message: &'static str,
+    pub message: std::borrow::Cow<'static, str>,
     pub data: Option<Value>,
 }
 
@@ -556,8 +579,19 @@ impl ServerFault {
     pub const fn new(code: i32, message: &'static str, data: Option<Value>) -> Self {
         Self {
             code,
-            message,
+            message: std::borrow::Cow::Borrowed(message),
             data,
+        }
+    }
+
+    /// The fault that answers with `error`, such as one built from the
+    /// error registry ([`crate::errors`]).
+    #[must_use]
+    pub fn from_error(error: JsonRpcError) -> Self {
+        Self {
+            code: error.code,
+            message: std::borrow::Cow::Owned(error.message),
+            data: error.data,
         }
     }
 
@@ -585,15 +619,66 @@ impl Drop for ConnectionShutdown {
     }
 }
 
+/// How a connection proves it may use the daemon.
+#[derive(Clone)]
+pub enum Authentication {
+    /// The transport already proved it: an in-process connection, or a
+    /// WebSocket upgrade that presented the token in `Authorization`.
+    Authenticated,
+    /// The connection must send this token in its `handshake`. Until it
+    /// does, only `handshake` is answered, and a connection that has not
+    /// authenticated within [`AUTHENTICATION_DEADLINE`] is closed.
+    Token(Arc<zeroize::Zeroizing<String>>),
+}
+
+impl std::fmt::Debug for Authentication {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Authenticated => formatter.write_str("Authenticated"),
+            Self::Token(_) => formatter.write_str("Token(<redacted>)"),
+        }
+    }
+}
+
+/// How long a connection that must authenticate in its handshake may take.
+pub const AUTHENTICATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Run one complete server-side protocol session over a transport.
 ///
-/// After the handshake, requests run concurrently and each response is
-/// written as soon as it is ready; clients match responses by id. A slow
-/// request, such as a large replay, never holds up the ones behind it.
+/// The connection first authenticates and completes its handshake: before
+/// it has authenticated only `handshake` is answered (anything else gets
+/// `unauthenticated`), a wrong token is answered with `unauthenticated` and
+/// closes the connection, and so does the [`AUTHENTICATION_DEADLINE`]
+/// passing. After the handshake, requests run concurrently and each
+/// response is written as soon as it is ready; clients match responses by
+/// id. A slow request, such as a large replay, never holds up the ones
+/// behind it.
 pub async fn serve<T, S>(
+    server: Arc<S>,
+    transport: T,
+    shutdown: CancellationToken,
+    authentication: Authentication,
+) -> Result<(), TransportError>
+where
+    T: Transport,
+    S: ServerProtocol,
+{
+    serve_within(
+        server,
+        transport,
+        shutdown,
+        authentication,
+        AUTHENTICATION_DEADLINE,
+    )
+    .await
+}
+
+async fn serve_within<T, S>(
     server: Arc<S>,
     mut transport: T,
     shutdown: CancellationToken,
+    authentication: Authentication,
+    deadline: std::time::Duration,
 ) -> Result<(), TransportError>
 where
     T: Transport,
@@ -605,9 +690,14 @@ where
     let in_flight = Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS));
     let mut permit = None;
     let mut handshaken = false;
+    let mut authentication = authentication;
+    let unauthenticated_until = tokio::time::sleep(deadline);
+    tokio::pin!(unauthenticated_until);
     loop {
+        let authenticated = matches!(authentication, Authentication::Authenticated);
         tokio::select! {
             () = context.shutdown.cancelled() => return Ok(()),
+            () = &mut unauthenticated_until, if !authenticated => return Ok(()),
             acquired = in_flight.clone().acquire_owned(), if permit.is_none() => {
                 permit = Some(acquired.expect("the in-flight semaphore is never closed"));
             }
@@ -624,18 +714,32 @@ where
                     let Incoming::Request { id, method, params } = incoming else {
                         continue;
                     };
-                    let response = if method != "handshake" {
-                        error_response(Some(id), handshake_required())?
+                    let (response, close) = if method != "handshake" {
+                        let fault = if authenticated {
+                            handshake_required()
+                        } else {
+                            unauthenticated()
+                        };
+                        (error_response(Some(id), fault)?, false)
                     } else {
                         match decode_handshake(params) {
-                            Ok(hello) => {
-                                handshaken = true;
-                                success_response(&id, &server_hello(&context, &hello))?
-                            }
-                            Err(fault) => error_response(Some(id), fault)?,
+                            Ok(hello) => match authenticate(&authentication, &hello) {
+                                Ok(()) => {
+                                    authentication = Authentication::Authenticated;
+                                    handshaken = true;
+                                    let hello =
+                                        server_hello(&context, &hello, server.engine_version());
+                                    (success_response(&id, &hello)?, false)
+                                }
+                                Err(fault) => (error_response(Some(id), fault)?, true),
+                            },
+                            Err(fault) => (error_response(Some(id), fault)?, false),
                         }
                     };
                     transport.send(MessageFrame::Text(response)).await?;
+                    if close {
+                        return Ok(());
+                    }
                     if handshaken {
                         server.connected(context.clone()).await;
                     }
@@ -665,6 +769,33 @@ where
     }
 }
 
+/// Checks a handshake's token where the transport did not authenticate the
+/// connection. A connection the transport authenticated may send one too;
+/// it is not needed and not checked.
+fn authenticate(authentication: &Authentication, hello: &ClientHello) -> Result<(), ServerFault> {
+    match (authentication, &hello.token) {
+        (Authentication::Authenticated, _) => Ok(()),
+        (Authentication::Token(expected), Some(token))
+            if token_matches(token.as_str(), expected) =>
+        {
+            Ok(())
+        }
+        (Authentication::Token(_), _) => Err(unauthenticated()),
+    }
+}
+
+/// Compares in time that depends only on the lengths.
+fn token_matches(token: &str, expected: &str) -> bool {
+    token.len() == expected.len()
+        && token
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0_u8, |difference, (left, right)| {
+                difference | (left ^ right)
+            })
+            == 0
+}
+
 /// Runs one post-handshake message and builds its response, if it has one.
 async fn handle<S: ServerProtocol>(
     server: &S,
@@ -674,7 +805,8 @@ async fn handle<S: ServerProtocol>(
     match incoming {
         Incoming::Request { id, method, params } => {
             let result = if method == "handshake" {
-                decode_handshake(params).map(|hello| server_hello(context, &hello))
+                decode_handshake(params)
+                    .map(|hello| server_hello(context, &hello, server.engine_version()))
             } else {
                 dispatch(server, &method, params, context, true).await
             };
@@ -698,8 +830,13 @@ async fn handle<S: ServerProtocol>(
     }
 }
 
-fn server_hello(context: &ServerContext, hello: &ClientHello) -> Box<RawValue> {
-    serde_json::value::to_raw_value(&context.hello(hello)).expect("server hello serializes")
+fn server_hello(
+    context: &ServerContext,
+    hello: &ClientHello,
+    engine_version: String,
+) -> Box<RawValue> {
+    serde_json::value::to_raw_value(&context.hello(hello, engine_version))
+        .expect("server hello serializes")
 }
 
 async fn dispatch<S: ServerProtocol>(
@@ -1007,13 +1144,22 @@ fn classify_incoming(value: Value) -> Result<Incoming, ServerFault> {
     }
 }
 
+/// Reads the client's version from the raw params before anything else, so
+/// a client of another version is answered with `unsupported_protocol`
+/// naming both, then decodes the rest as a command.
 fn decode_handshake(params: Option<Value>) -> Result<ClientHello, ServerFault> {
-    serde_json::from_value::<ClientHello>(params.unwrap_or(Value::Null))
-        .map_err(|_| ServerFault::invalid_params())
+    let params = params.unwrap_or(Value::Null);
+    crate::negotiate_version(crate::CLIENT_PROTOCOL_VERSION, &params)
+        .map_err(|refusal| ServerFault::from_error(refusal.to_rpc_error()))?;
+    decode(Some(params))
 }
 
 fn handshake_required() -> ServerFault {
-    ServerFault::new(-32001, "handshake required", None)
+    ServerFault::from_error(crate::errors::HANDSHAKE_FIRST.error().build())
+}
+
+fn unauthenticated() -> ServerFault {
+    ServerFault::from_error(crate::errors::NOT_AUTHENTICATED.error().build())
 }
 
 /// A success response borrowing its id and its already-serialized result.
@@ -1041,7 +1187,7 @@ fn error_response(id: Option<JsonRpcId>, fault: ServerFault) -> Result<String, T
             id,
             error: JsonRpcError {
                 code: fault.code,
-                message: fault.message.into(),
+                message: fault.message.into_owned(),
                 data: fault.data,
             },
         }))?),

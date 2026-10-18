@@ -8,11 +8,10 @@
 //! break the wire, as semver's `0.x` convention allows, so peers must also
 //! agree on the minor.
 //!
-//! The plugin and runtime handshakes send [`PLUGIN_PROTOCOL_VERSION`] and
+//! The client, plugin, and runtime handshakes send
+//! [`CLIENT_PROTOCOL_VERSION`], [`PLUGIN_PROTOCOL_VERSION`], and
 //! [`RUNTIME_PROTOCOL_VERSION`] and read the peer's with
-//! [`negotiate_version`]; the client handshake still sends the exact numeric
-//! [`crate::ProtocolVersion`] until it switches. The constants stay `0.x`
-//! until the freeze.
+//! [`negotiate_version`]. The constants stay `0.x` until the freeze.
 
 use std::{borrow::Cow, fmt, str::FromStr};
 
@@ -21,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The client protocol version this build speaks.
-pub const CLIENT_PROTOCOL_VERSION: SemVer = SemVer::new(0, 50, 0);
+pub const CLIENT_PROTOCOL_VERSION: SemVer = SemVer::new(0, 51, 0);
 /// The plugin protocol version this build speaks.
 pub const PLUGIN_PROTOCOL_VERSION: SemVer = SemVer::new(0, 5, 0);
 /// The runtime protocol version this build speaks.

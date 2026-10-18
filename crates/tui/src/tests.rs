@@ -234,7 +234,10 @@ impl cookie_agent_protocol::Transport for CountingStream {
 /// it sends and can be severed.
 pub(crate) fn connect_counting(server: &Arc<Server>) -> (crate::Client, SubscribeLog, Sever) {
     let (client, service) = cookie_agent_protocol::in_process_pair(128);
-    tokio::spawn(Arc::clone(server).serve_stream(service));
+    tokio::spawn(Arc::clone(server).serve_stream(
+        service,
+        cookie_agent_protocol::Authentication::Authenticated,
+    ));
     let log = SubscribeLog::default();
     let (sever, severed) = tokio::sync::watch::channel(false);
     let client = crate::Client::connect_stream(CountingStream {

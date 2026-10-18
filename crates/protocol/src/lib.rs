@@ -1,4 +1,5 @@
-//! Exact cookie-agent protocol 50 with versionless session events.
+//! cookie-agent client protocol 0.51, plugin and runtime protocols, and
+//! session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders, except
 //! the few that keep versionless session event history readable.
@@ -234,8 +235,6 @@ pub use session_model::*;
 pub use setup_value::*;
 pub use stop::StopSignals;
 
-/// The only protocol version supported by this build.
-pub const PROTOCOL_VERSION: u32 = 50;
 /// The only coherent runtime snapshot schema supported by this build.
 pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 6;
 
@@ -299,7 +298,6 @@ macro_rules! exact_numeric_wire_type {
     };
 }
 
-exact_numeric_wire_type!(ProtocolVersion, 50, "The exact protocol wire version.");
 exact_numeric_wire_type!(
     RuntimeSnapshotSchemaVersion,
     6,

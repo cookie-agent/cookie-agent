@@ -440,18 +440,35 @@ impl Connection {
             server,
             ChannelTransport { incoming, outgoing },
             CancellationToken::new(),
+            Authentication::Authenticated,
         ));
         let mut connection = Self { requests, frames };
-        connection.send(
-            0,
-            "handshake",
-            json!({
-                "protocol_version": crate::PROTOCOL_VERSION,
-                "client": {"kind": "test", "instance_id": crate::ClientInstanceId::new_v7()},
-            }),
-        );
+        connection.send(0, "handshake", hello(None));
         assert_eq!(connection.next().await["id"], 0);
         connection
+    }
+
+    /// A connection that must authenticate in its handshake within
+    /// `deadline`, not yet handshaken.
+    fn unauthenticated(server: Arc<StubServer>, deadline: Duration) -> Self {
+        let (requests, incoming) = mpsc::unbounded_channel();
+        let (outgoing, frames) = mpsc::unbounded_channel();
+        tokio::spawn(serve_within(
+            server,
+            ChannelTransport { incoming, outgoing },
+            CancellationToken::new(),
+            Authentication::Token(Arc::new(zeroize::Zeroizing::new(TOKEN.to_owned()))),
+            deadline,
+        ));
+        Self { requests, frames }
+    }
+
+    /// Whether the server closed the connection.
+    async fn closed(&mut self) -> bool {
+        tokio::time::timeout(Duration::from_secs(2), self.frames.recv())
+            .await
+            .expect("the server acts in time")
+            .is_none()
     }
 
     fn send(&self, id: i64, method: &str, params: Value) {
@@ -472,6 +489,106 @@ impl Connection {
         };
         serde_json::from_str(&text).expect("JSON frame")
     }
+}
+
+const TOKEN: &str = "the-daemon-token";
+
+fn hello(token: Option<&str>) -> Value {
+    let mut hello = json!({
+        "protocol_version": crate::CLIENT_PROTOCOL_VERSION,
+        "client": {"kind": "test", "instance_id": crate::ClientInstanceId::new_v7()},
+    });
+    if let Some(token) = token {
+        hello["token"] = json!(token);
+    }
+    hello
+}
+
+#[tokio::test]
+async fn an_unauthenticated_connection_may_only_handshake_with_the_token() {
+    let mut connection =
+        Connection::unauthenticated(Arc::new(StubServer::default()), Duration::from_secs(60));
+    connection.send(1, "session.list", json!({}));
+    let reply = connection.next().await;
+    assert_eq!(reply["error"]["code"], crate::errors::UNAUTHENTICATED);
+    assert_eq!(reply["error"]["data"]["code"], "unauthenticated");
+    // A handshake of another version is refused before the token is read,
+    // and the connection stays open.
+    connection.send(
+        2,
+        "handshake",
+        json!({"protocol_version": "0.0.1", "client": {"kind": "test", "instance_id": crate::ClientInstanceId::new_v7()}}),
+    );
+    assert_eq!(
+        connection.next().await["error"]["code"],
+        crate::errors::UNSUPPORTED_PROTOCOL
+    );
+    connection.send(3, "handshake", hello(Some(TOKEN)));
+    let reply = connection.next().await;
+    assert_eq!(
+        reply["result"]["protocol_version"],
+        crate::CLIENT_PROTOCOL_VERSION.to_string(),
+        "{reply}"
+    );
+    connection.send(4, "session.list", json!({}));
+    assert_eq!(connection.next().await["result"]["sessions"], json!([]));
+}
+
+#[tokio::test]
+async fn a_wrong_or_missing_token_is_refused_and_closes_the_connection() {
+    for token in [Some("wrong"), Some(""), None] {
+        let mut connection =
+            Connection::unauthenticated(Arc::new(StubServer::default()), Duration::from_secs(60));
+        connection.send(1, "handshake", hello(token));
+        let reply = connection.next().await;
+        assert_eq!(
+            reply["error"]["code"],
+            crate::errors::UNAUTHENTICATED,
+            "{token:?}"
+        );
+        assert!(connection.closed().await, "{token:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_connection_that_does_not_authenticate_in_time_is_closed() {
+    let mut connection =
+        Connection::unauthenticated(Arc::new(StubServer::default()), Duration::from_millis(100));
+    // Being answered does not extend the deadline.
+    connection.send(1, "session.list", json!({}));
+    assert_eq!(
+        connection.next().await["error"]["code"],
+        crate::errors::UNAUTHENTICATED
+    );
+    assert!(connection.closed().await);
+
+    // Authenticating in time keeps it open past the deadline.
+    let mut connection =
+        Connection::unauthenticated(Arc::new(StubServer::default()), Duration::from_millis(100));
+    connection.send(1, "handshake", hello(Some(TOKEN)));
+    assert!(connection.next().await["result"].is_object());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    connection.send(2, "session.list", json!({}));
+    assert_eq!(connection.next().await["id"], 2);
+}
+
+#[tokio::test]
+async fn an_authenticated_connection_must_still_handshake_first() {
+    let (requests, incoming) = mpsc::unbounded_channel();
+    let (outgoing, frames) = mpsc::unbounded_channel();
+    tokio::spawn(serve(
+        Arc::new(StubServer::default()),
+        ChannelTransport { incoming, outgoing },
+        CancellationToken::new(),
+        Authentication::Authenticated,
+    ));
+    let mut connection = Connection { requests, frames };
+    connection.send(1, "session.list", json!({}));
+    let reply = connection.next().await;
+    assert_eq!(reply["error"]["code"], crate::errors::HANDSHAKE_REQUIRED);
+    assert_eq!(reply["error"]["data"]["code"], "handshake_required");
+    connection.send(2, "handshake", hello(None));
+    assert!(connection.next().await["result"].is_object());
 }
 
 #[tokio::test]

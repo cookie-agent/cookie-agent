@@ -1,7 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
+  "description": "The `handshake` result.",
   "properties": {
+    "engine_version": {
+      "description": "The daemon's own version, for display and logs.",
+      "type": "string"
+    },
+    "features": {
+      "default": [],
+      "description": "What the daemon's configuration enables for clients. None are defined\nyet; a client ignores one it does not know.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "machine_id": {
       "description": "An opaque identity of the daemon's machine\n(`paths::machine_id`), so a client can tell whether it runs on the\nsame machine; absent when the daemon cannot tell.",
       "type": [
@@ -15,12 +27,14 @@
       "type": "string"
     },
     "protocol_version": {
-      "const": 50,
-      "type": "integer"
+      "description": "The daemon's [`crate::CLIENT_PROTOCOL_VERSION`]. The client sends a\nmethod or member only if this version includes it.",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "type": "string"
     }
   },
   "required": [
     "protocol_version",
+    "engine_version",
     "origin"
   ],
   "title": "ServerHello",

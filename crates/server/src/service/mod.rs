@@ -1,12 +1,14 @@
 mod routes;
 mod runtime_notifications;
 mod websocket;
-pub use websocket::{TlsConfig, load_tls};
+pub use websocket::{AllowedOrigins, TlsConfig, load_tls};
 
 use std::{io, net::SocketAddr, sync::Arc};
 
 use cookie_agent_engine::Engine;
-use cookie_agent_protocol::{Client, MessageStream, TransportError, in_process_pair};
+use cookie_agent_protocol::{
+    Authentication, Client, MessageStream, TransportError, in_process_pair,
+};
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -31,12 +33,18 @@ impl Server {
         self.shutdown.cancel();
     }
 
-    pub async fn serve_stream<S>(self: Arc<Self>, stream: S) -> Result<(), TransportError>
+    /// Serves one client connection that authenticates as `authentication`
+    /// says.
+    pub async fn serve_stream<S>(
+        self: Arc<Self>,
+        stream: S,
+        authentication: Authentication,
+    ) -> Result<(), TransportError>
     where
         S: MessageStream,
     {
         let connection_shutdown = self.shutdown.child_token();
-        cookie_agent_protocol::serve(self, stream, connection_shutdown).await
+        cookie_agent_protocol::serve(self, stream, connection_shutdown, authentication).await
     }
 
     /// Serves one in-process connection on a spawned task and returns the
@@ -45,7 +53,9 @@ impl Server {
     pub fn connect_in_process(self: Arc<Self>) -> Client {
         let (client, service) = in_process_pair(128);
         tokio::spawn(async move {
-            let _ = self.serve_stream(service).await;
+            let _ = self
+                .serve_stream(service, Authentication::Authenticated)
+                .await;
         });
         Client::connect_stream(client)
     }

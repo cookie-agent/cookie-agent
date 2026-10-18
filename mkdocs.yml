@@ -127,6 +127,7 @@ nav:
       - Goal mode and producers: development/goal-mode.md
       - System prompt: reference/system-prompt.md
       - Protocol: reference/protocol.md
+      - Protocol changelog: reference/protocol-changelog.md
       - Runtime protocol: reference/runtime-protocol.md
       - Events: reference/events.md
       - Tools: reference/tools.md
