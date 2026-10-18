@@ -1521,20 +1521,21 @@ Deviations and choices made while implementing, by phase.
   removed (`wire_resolved`, fingerprint recomputation, built-in agent IDs)
   were confirmed gone from the load path.
 - **Raw lines.** A log keeps the buffer its file was read into (shared, never
-  copied) with each sequenced line's offsets and whether the log holds its
-  record exactly as it reads (`RawLines`); a line skipped, quarantined, or
-  degraded is not. The memory cost is the file's size plus a few words per
-  line for every log read from disk, for as long as the log is in memory; a
-  log built in memory keeps none. A truncation drops the lines past the cut,
-  so a reused sequence never answers with an old line. Rewriting a log whole
-  (`EventLog::write_whole`: a fork, or a buffered session's first
-  persistence, which never has raw lines) serializes each record, as before,
-  and copies each line that is not understood as it was read, with its
-  `session_id` set to the new session's. A record read in full is
-  re-serialized, so a member this build does not know is not kept in a fork;
-  it is still scanned for artifacts. A fork carries its source's raw lines
-  and load damage through the cut, and may cut after a line the source left
-  out (the tip is the physical one).
+  copied) with each sequenced line's offsets (`RawLines`). The memory cost is
+  the file's size plus a few words per line for every log read from disk, for
+  as long as the log is in memory; a log built in memory keeps none. A
+  truncation drops the lines past the cut, so a reused sequence never answers
+  with an old line. Rewriting a log whole (`EventLog::write_whole`: a fork, or
+  a buffered session's first persistence, which never has raw lines) copies
+  every line it read as it was read: a record read in full too, since it may
+  hold members a newer minor added, as well as a skipped, quarantined, or
+  degraded one. The copy is parsed as JSON and only its envelope's
+  `session_id` is set to the new session's (a fork changes nothing else in the
+  records it copies); only records appended since the read are serialized.
+  This replaces the first version of this phase, which re-serialized records
+  read in full and so dropped their unknown members. A fork carries its
+  source's raw lines and load damage through the cut, and may cut after a
+  line the source left out (the tip is the physical one).
 - **Artifact liveness.** One scanner over JSON values
   (`collect_artifact_references`) counts every `artifact://sha256/<digest>`
   in a string, inside longer text too, and every object with a 64-hex

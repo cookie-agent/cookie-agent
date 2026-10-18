@@ -4034,7 +4034,7 @@ fn size_caps_bound_writers_and_not_what_a_log_already_holds() {
 }
 
 #[test]
-fn a_rewrite_copies_degraded_and_quarantined_lines_as_they_were_read() {
+fn a_rewrite_copies_every_line_it_read_as_it_was_read() {
     let (mut records, mut start, termination) = tool_call_records();
     let session = records[0].session_id;
     if let EventPayload::ToolCallStarted { start } = &mut start.payload {
@@ -4100,14 +4100,10 @@ fn a_rewrite_copies_degraded_and_quarantined_lines_as_they_were_read() {
         assert_eq!(line["session_id"], serde_json::json!(fork_id));
         let mut expected = original.clone();
         expected["session_id"] = serde_json::json!(fork_id);
-        match line["seq"].as_u64() {
-            // The degraded turn, the quarantined start, and the skipped event
-            // are copied as they were read.
-            Some(4 | 5 | 7) => assert_eq!(line, &expected),
-            // A record read in full is written as this build serializes it.
-            Some(6) => assert!(line["payload"]["error"].get("future").is_none()),
-            _ => {}
-        }
+        // Every line is copied as it was read: the degraded turn, the
+        // quarantined start, the skipped event, and the record read in full
+        // with a member this build does not know, which it keeps.
+        assert_eq!(line, &expected);
     }
     let reopened = EventLog::open(fork_path, fork_id).expect("the fork opens");
     assert_eq!(reopened.physical_tip_seq(), 7);

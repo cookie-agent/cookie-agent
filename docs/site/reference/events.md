@@ -96,14 +96,16 @@ tree.
 ### What survives a newer build
 
 A loaded log keeps the bytes it was read from. Rewriting a log whole — a
-fork, or a conversion — copies every line it did not fully understand (a
-skipped event, a quarantined record, a degraded one) as it was written, with
-the new session's `session_id` in a fork; a record read in full is written
-as this build serializes it. Artifact liveness (what a revert may delete, and
-what a fork links into its own tree) scans the lines as they were read, so a
-reference inside an unknown event or an unknown member keeps its artifact:
-both an `artifact://sha256/<digest>` anywhere in a string and an
-`ArtifactRef` object (`sha256`, `byte_length`, `media_type`) count.
+fork, or a conversion — copies every line it read as it was written: a record
+this build reads in full keeps the members it does not know, and a skipped
+event, a quarantined record, or a degraded one survives as well. A fork sets
+only each copy's `session_id` to the new session's; records appended since the
+log was read are written as this build serializes them. Artifact liveness
+(what a revert may delete, and what a fork links into its own tree) scans the
+lines as they were read, so a reference inside an unknown event or an unknown
+member keeps its artifact: both an `artifact://sha256/<digest>` anywhere in a
+string and an `ArtifactRef` object (`sha256`, `byte_length`, `media_type`)
+count.
 
 ### History formats
 

@@ -787,6 +787,17 @@ async fn a_fork_keeps_what_a_newer_build_wrote_and_the_artifacts_it_names() {
         copied["payload"]["file"]["sha256"],
         serde_json::json!(part_digest)
     );
+    // A record this build reads in full keeps the member it does not know.
+    let known = fork_log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|line| line["seq"] == serde_json::json!(tip))
+        .expect("the last known record");
+    assert_eq!(
+        known["payload"]["future_note"],
+        serde_json::json!(format!("see artifact://sha256/{uri_digest}"))
+    );
+    assert_eq!(known["session_id"], serde_json::json!(fork));
     for digest in [&part_digest, &uri_digest] {
         reopened
             .read_artifact(fork, digest, None, 0, 1)
