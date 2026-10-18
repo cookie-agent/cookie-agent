@@ -1047,7 +1047,7 @@ impl Engine {
                 .inner
                 .store
                 .log(session)
-                .is_ok_and(|log| log.unknown_state_event().is_some());
+                .is_ok_and(|log| log.is_render_only());
         if write_open == crate::session::WriteOpen::Adopting {
             if !render_only && let Err(error) = self.reconcile_session(session) {
                 self.inner.store.rollback_adoption(session);

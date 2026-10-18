@@ -1,7 +1,7 @@
 //! Durable delegation state projected from parent-session events.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 
@@ -75,6 +75,38 @@ pub enum DelegationEventError {
 struct DelegationState {
     entries: HashMap<InvocationId, DelegationEntry>,
     order: Vec<InvocationId>,
+    /// Delegations whose stored records do not verify. Each is left out
+    /// alone, so it is not recovered, and its later records are ignored.
+    unrecoverable: HashSet<InvocationId>,
+}
+
+impl DelegationState {
+    /// Folds one stored record. A record that does not verify makes its
+    /// delegation unrecoverable instead of failing the fold.
+    fn apply_stored(
+        &mut self,
+        parent_session_id: SessionId,
+        run_id: Option<RunId>,
+        payload: EventPayload,
+    ) {
+        let Some(invocation_id) = delegation_invocation_of(&payload) else {
+            return;
+        };
+        if self.unrecoverable.contains(&invocation_id) {
+            return;
+        }
+        if let Err(DelegationEventError::Corrupt(invocation_id)) =
+            apply_event(self, parent_session_id, run_id, payload)
+        {
+            eprintln!(
+                "delegation {invocation_id} of session {parent_session_id} cannot be recovered: \
+                 its records do not verify"
+            );
+            self.entries.remove(&invocation_id);
+            self.order.retain(|id| *id != invocation_id);
+            self.unrecoverable.insert(invocation_id);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -119,7 +151,7 @@ impl DelegationEventStore {
                 continue;
             };
             let before = state.entries.get(&invocation_id).cloned();
-            apply_event(&mut state, *parent_session_id, *run_id, payload.clone())?;
+            state.apply_stored(*parent_session_id, *run_id, payload.clone());
             match state.entries.get(&invocation_id).cloned() {
                 Some(updated) if Some(&updated) != before.as_ref() => touched.push(updated),
                 _ => {}
@@ -165,6 +197,7 @@ impl DelegationEventStore {
             };
         }
         if !valid_request(&request)
+            || !request_within_caps(&request)
             || child_agent.validate().is_err()
             || !suffix_matches_snapshot(&child_agent, &selected_suffix)
             || !cache_strategies_match_bindings(&selected_suffix, &cache_strategies)
@@ -436,12 +469,11 @@ impl DelegationEventStore {
             if parent.log.delegation_event_tainted(envelope) {
                 continue;
             }
-            apply_event(
-                &mut rebuilt,
+            rebuilt.apply_stored(
                 parent_session_id,
                 envelope.run_id,
                 harvested(&envelope.payload, &revisions),
-            )?;
+            );
         }
 
         let mut state = self
@@ -465,6 +497,7 @@ impl DelegationEventStore {
                 state.order.push(invocation_id);
             }
         }
+        state.unrecoverable.extend(rebuilt.unrecoverable);
         Ok(())
     }
 }
@@ -642,6 +675,9 @@ fn apply_event(
     Ok(())
 }
 
+/// Whether a delegation request is well formed, within its schema's bounds.
+/// Readers check this of stored reservations too; the writer-only size cap
+/// is [`request_within_caps`]'s.
 fn valid_request(request: &DelegateRequestPayload) -> bool {
     if request.description.is_empty() || request.prompt.is_empty() {
         return false;
@@ -667,13 +703,16 @@ fn valid_request(request: &DelegateRequestPayload) -> bool {
     }) {
         return false;
     }
-    if request
+    !request
         .seeded_context
         .iter()
         .any(|turn| turn.text.is_empty())
-    {
-        return false;
-    }
+}
+
+/// The size cap a new reservation keeps to, which no schema states: the
+/// seeded context's text in total. It bounds what a writer records, so a
+/// reader never applies it to stored reservations.
+fn request_within_caps(request: &DelegateRequestPayload) -> bool {
     request
         .seeded_context
         .iter()

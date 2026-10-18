@@ -239,12 +239,13 @@ impl DelegateRequestPayload {
             || (!self.inherit_context && !self.seeded_context.is_empty())
             || self.seeded_context.len() > 65_536
             || self.seeded_context.iter().any(|turn| turn.text.is_empty())
-            || self
-                .seeded_context
-                .iter()
-                .map(|turn| turn.text.len())
-                .sum::<usize>()
-                > 65_536
+            || (writer_size_caps()
+                && self
+                    .seeded_context
+                    .iter()
+                    .map(|turn| turn.text.len())
+                    .sum::<usize>()
+                    > 65_536)
         {
             return Err(EventSchemaError::InvalidDelegationLifecycle);
         }
@@ -614,13 +615,17 @@ impl PersistedToolResult {
     }
 
     pub fn validate(&self) -> Result<(), EventSchemaError> {
-        if self.output.len() > Self::MAX_OUTPUT_BYTES {
+        if writer_size_caps() && self.output.len() > Self::MAX_OUTPUT_BYTES {
             return Err(EventSchemaError::ToolOutputTooLarge);
         }
-        crate::display::validate_display(&self.display).map_err(|error| match error {
-            crate::DisplayBlockError::TooLarge => EventSchemaError::ToolOutputTooLarge,
-            _ => EventSchemaError::InvalidDisplay,
-        })?;
+        match crate::display::validate_display(&self.display) {
+            Ok(()) => {}
+            Err(crate::DisplayBlockError::TooLarge) if !writer_size_caps() => {}
+            Err(crate::DisplayBlockError::TooLarge) => {
+                return Err(EventSchemaError::ToolOutputTooLarge);
+            }
+            Err(_) => return Err(EventSchemaError::InvalidDisplay),
+        }
         if let Some(retained) = &self.retained_output {
             retained.validate()?;
         }
@@ -635,8 +640,9 @@ impl PersistedToolResult {
         }) {
             return Err(EventSchemaError::InvalidToolBackground);
         }
-        if json_len_exceeds(&self.metadata, Self::MAX_METADATA_BYTES)
-            .map_err(|_| EventSchemaError::InvalidJson)?
+        if writer_size_caps()
+            && json_len_exceeds(&self.metadata, Self::MAX_METADATA_BYTES)
+                .map_err(|_| EventSchemaError::InvalidJson)?
         {
             return Err(EventSchemaError::ToolMetadataTooLarge);
         }
@@ -1190,11 +1196,39 @@ impl<'de> Deserialize<'de> for NativeContextWindow {
     }
 }
 fn validate_payload(payload: &Value, maximum: usize) -> Result<(), NativeArtifactError> {
-    if !json_len_exceeds(payload, maximum).map_err(|_| NativeArtifactError::Serialization)? {
+    if !writer_size_caps()
+        || !json_len_exceeds(payload, maximum).map_err(|_| NativeArtifactError::Serialization)?
+    {
         return Ok(());
     }
     let size = json_len(payload).map_err(|_| NativeArtifactError::Serialization)?;
     Err(NativeArtifactError::PayloadTooLarge { size, maximum })
+}
+
+thread_local! {
+    static READING_HISTORY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `read` as a reader of stored history (`docs/site/specs/compatibility-v1.md`
+/// section 8.5): the size caps a writer keeps to are not applied, so a
+/// record reads as its writer bounded it. They are a tool result's output,
+/// metadata, and display budget, a model turn's serialized size, native
+/// replay payloads, and a diagnostic's detail. Every other check runs.
+pub fn read_stored_history<T>(read: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            READING_HISTORY.with(|reading| reading.set(self.0));
+        }
+    }
+    let _restore = Restore(READING_HISTORY.with(|reading| reading.replace(true)));
+    read()
+}
+
+/// Whether the writer-only size caps apply: everywhere but inside
+/// [`read_stored_history`].
+pub(crate) fn writer_size_caps() -> bool {
+    !READING_HISTORY.with(std::cell::Cell::get)
 }
 
 /// Counts serialized bytes instead of buffering them, optionally failing
@@ -1486,8 +1520,9 @@ impl PersistedModelTurn {
         if self.content.len() > 4096 {
             return Err(EventSchemaError::TooManyModelParts);
         }
-        if json_len_exceeds(self, Self::MAX_SERIALIZED_BYTES)
-            .map_err(|_| EventSchemaError::InvalidJson)?
+        if writer_size_caps()
+            && json_len_exceeds(self, Self::MAX_SERIALIZED_BYTES)
+                .map_err(|_| EventSchemaError::InvalidJson)?
         {
             return Err(EventSchemaError::ModelTurnTooLarge);
         }
@@ -3054,7 +3089,8 @@ impl EventPayload {
                 if message.trim().is_empty()
                     || *count == Some(0)
                     || detail.as_ref().is_some_and(|detail| {
-                        json_len_exceeds(detail, MAX_DIAGNOSTIC_DETAIL_BYTES).unwrap_or(true)
+                        writer_size_caps()
+                            && json_len_exceeds(detail, MAX_DIAGNOSTIC_DETAIL_BYTES).unwrap_or(true)
                     })
                 {
                     return Err(EventSchemaError::InvalidDiagnostic);
@@ -3228,7 +3264,8 @@ impl EventPayload {
                 if turns.is_empty()
                     || turns.len() > 65_536
                     || turns.iter().any(|turn| turn.text.is_empty())
-                    || turns.iter().map(|turn| turn.text.len()).sum::<usize>() > 65_536
+                    || (writer_size_caps()
+                        && turns.iter().map(|turn| turn.text.len()).sum::<usize>() > 65_536)
                 {
                     return Err(EventSchemaError::InvalidDelegatedContext);
                 }

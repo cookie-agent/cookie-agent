@@ -1484,3 +1484,39 @@ Deviations and choices made while implementing, by phase.
   payload's size. A failure whose message names no value (a type's own
   validation) is no longer degraded by trial and error: the record is skipped
   with its diagnostic.
+- **Quarantine.** A load validates the records it decoded as before, but a
+  record that fails a check (a cross-event one, a duplicate identity, a
+  record-local run rule, a timestamp going back) is left out instead of
+  failing the open: its identity is tainted exactly as a skipped line's is
+  (`ValidationTaint::mark_event`; a record past the per-run phase-taint bound
+  taints everything after it), so every record whose prerequisite it was is
+  excused by `tainted_prerequisite` like a dependent of a skipped line. The
+  failed check may have changed the validation state, so the state is
+  rebuilt from the records kept so far with the new taint; earlier records
+  validate as they did, since taint only reaches later ones. The log keeps
+  the quarantine taint as its load damage, so appends (still strict),
+  reverts, and forks see it. The first 64 quarantined records each get a
+  `quarantined: …` diagnostic, and one more counts the rest; only
+  `session_created` still fails the open.
+- **A broken sequence.** A record whose sequence does not advance ends the
+  readable log at that line, with a diagnostic. The log is render-only by the
+  same mechanism as an unknown state event (`EventLog::is_render_only`), and
+  every change fails with `EventLogError::SequenceBroken`; the server answers
+  it as an engine error until phase F gives it a code. Nothing is cut from
+  the file.
+- **Delegations.** A stored delegation record the delegation store cannot
+  verify (one the log's validation accepts, such as a reservation resuming a
+  session other than its child) makes that delegation unrecoverable: its
+  entry is dropped, its later records are ignored, and a diagnostic is
+  printed; the tree loads.
+- **Writer-only size caps.** The engine reads a log inside
+  `cookie_agent_protocol::read_stored_history`, which turns off the caps a
+  writer keeps to that no schema states: a tool result's output (2 MiB),
+  metadata (2 MiB), and display budget (64 KiB), a model turn's serialized
+  size (8 MiB), native replay payloads, a diagnostic's detail (16 KiB), and
+  the text total of a delegation's seeded context (64 KiB); the delegation
+  store applies that one only to new reservations. Bounds a
+  schema states (lengths, item counts) are the type's contract and stay in
+  the decoders (7.1). The checks that served only old logs and C2 already
+  removed (`wire_resolved`, fingerprint recomputation, built-in agent IDs)
+  were confirmed gone from the load path.

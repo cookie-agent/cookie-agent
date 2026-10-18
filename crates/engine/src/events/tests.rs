@@ -1977,8 +1977,28 @@ fn assert_log_open(records: &[StoredEvent], expected: bool, label: &str) {
         })
         .collect::<Vec<_>>();
     fs::write(&path, bytes).expect("write event log");
-    let result = EventLog::open(path, records[0].session_id);
-    assert_eq!(result.is_ok(), expected, "{label}: {result:?}");
+    let consistent =
+        quarantined_seqs(path, records[0].session_id).is_ok_and(|seqs| seqs.is_empty());
+    assert_eq!(consistent, expected, "{label}");
+}
+
+/// The records the load of `path` quarantined, or the error of a log that
+/// does not open at all.
+fn quarantined_seqs(path: PathBuf, session: SessionId) -> Result<Vec<u64>, EventLogError> {
+    let log = EventLog::open(path, session)?;
+    Ok(log
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.reason.starts_with("quarantined"))
+        .map(|diagnostic| diagnostic.seq)
+        .collect())
+}
+
+/// Asserts that a load of `path` opens and quarantines a record: a check
+/// that once failed the open now leaves that record out.
+fn assert_quarantines(path: PathBuf, session: SessionId) {
+    let quarantined = quarantined_seqs(path, session).expect("an inconsistent log still opens");
+    assert!(!quarantined.is_empty(), "nothing was quarantined");
 }
 
 #[test]
@@ -2603,7 +2623,7 @@ fn unrelated_skipped_event_does_not_permit_forged_usage_or_orphan_tool_terminati
     lines.push(serde_json::to_string(&unknown).expect("unknown"));
     lines.push(serde_json::to_string(&forged_usage).expect("usage"));
     fs::write(&usage_path, lines.join("\n") + "\n").expect("write usage log");
-    assert!(EventLog::open(usage_path, session).is_err());
+    assert_quarantines(usage_path, session);
 
     let orphan_path = directory.path().join("orphan-tool.jsonl");
     lines.pop();
@@ -2617,7 +2637,7 @@ fn unrelated_skipped_event_does_not_permit_forged_usage_or_orphan_tool_terminati
         .expect("termination"),
     );
     fs::write(&orphan_path, lines.join("\n") + "\n").expect("write orphan log");
-    assert!(EventLog::open(orphan_path, session).is_err());
+    assert_quarantines(orphan_path, session);
 }
 
 #[test]
@@ -2901,7 +2921,7 @@ fn repeated_skipped_internal_fallbacks_refresh_phase_taint_and_no_skip_stays_str
     ];
     let forged_path = directory.path().join("internal-phase-forged.jsonl");
     write_event_values(&forged_path, &forged);
-    assert!(EventLog::open(forged_path, session).is_err());
+    assert_quarantines(forged_path, session);
 }
 
 #[test]
@@ -3105,7 +3125,7 @@ fn skipped_tool_termination_taints_terminal_state_but_no_skip_rejects_elision() 
     ];
     let forged_path = directory.path().join("tool-terminal-forged.jsonl");
     write_event_values(&forged_path, &forged);
-    assert!(EventLog::open(forged_path, session).is_err());
+    assert_quarantines(forged_path, session);
 }
 
 #[test]
@@ -3335,7 +3355,7 @@ fn event_log_rejects_cross_run_approval_lifecycle() {
         })
         .collect::<Vec<_>>();
     fs::write(&path, bytes).expect("write event log");
-    assert!(EventLog::open(path, session).is_err());
+    assert_quarantines(path, session);
 }
 
 #[test]
@@ -3740,4 +3760,278 @@ fn indexed_revert_cuts_match_a_sequence_scan() {
         Some(scanned_cut_length(&bytes, 3))
     );
     assert_eq!(log.physical_tip_seq(), 3);
+}
+
+/// The records of a run whose model turn commits one tool call, `start` and
+/// `termination` of it at sequences 5 and 6.
+fn tool_call_records() -> (Vec<StoredEvent>, StoredEvent, StoredEvent) {
+    let base = attribution_records();
+    let session = base[0].session_id;
+    let run = base[1].run_id.expect("run id");
+    let resolved_model = wire_resolved(&fallback_binding("fallback-zero"));
+    let attempt_id = AttemptId(Uuid::from_u128(910));
+    let tool_call_id = ToolCallId(Uuid::from_u128(911));
+    let owner = AssistantToolCallRef {
+        model_turn_seq: 1,
+        content_index: 0,
+        model_call_id: ModelCallId::new("quarantine-tool").expect("model call id"),
+        provider_item_id: None,
+    };
+    let attempt = event(
+        session,
+        Some(run),
+        3,
+        EventPayload::ModelAttemptStarted {
+            attempt_id,
+            attempt_ordinal: 1,
+            fallback_index: 0,
+            retry_ordinal: 0,
+            resolved_model: resolved_model.clone(),
+            prompt_fingerprint: match &base[1].payload {
+                EventPayload::RunStarted { agent, .. } => agent.prompt_fingerprint.clone(),
+                _ => unreachable!(),
+            },
+        },
+    );
+    let turn = event(
+        session,
+        Some(run),
+        4,
+        EventPayload::ModelTurnCommitted {
+            attempt_id,
+            model_turn_seq: 1,
+            resolved_model,
+            input_through_seq: 1,
+            turn: PersistedModelTurn {
+                content: vec![PersistedAssistantPart::ToolCall {
+                    id: owner.model_call_id.clone(),
+                    provider_item_id: None,
+                    name: SafeCode::new("read").expect("tool name"),
+                    input: serde_json::json!({}),
+                    raw_input: None,
+                    metadata: None,
+                }],
+                provider_options: BTreeMap::new(),
+                finish_reason: ModelFinishReason::ToolCalls,
+                usage: Usage::default(),
+                response_metadata: BTreeMap::new(),
+                provider_metadata: BTreeMap::new(),
+                native_replay: None,
+            },
+            warnings: Vec::new(),
+        },
+    );
+    let start = event(
+        session,
+        Some(run),
+        5,
+        EventPayload::ToolCallStarted {
+            start: ToolCallStart {
+                background: false,
+                output: Default::default(),
+                tool_call_id,
+                owner: owner.clone(),
+                presentation: crate::test_support::base_presentation(ToolCallPresentation {
+                    title: SafeDisplayText::new("Read").expect("title"),
+                    primary_argument: None,
+                }),
+                operation_fingerprint: serde_json::from_value(serde_json::json!({
+                    "digest": Sha256Digest::of_bytes(b"operation")
+                }))
+                .expect("operation fingerprint"),
+            },
+        },
+    );
+    let termination = event(
+        session,
+        Some(run),
+        6,
+        EventPayload::ToolCallTerminated {
+            termination: ToolCallTermination {
+                tool_call_id,
+                owner,
+                outcome: ToolTerminationOutcome::Failed,
+                result: None,
+                error: Some(SafeToolError {
+                    code: SafeCode::new("failed").expect("safe code"),
+                    message: SafeErrorMessage::new("failed").expect("safe error"),
+                }),
+            },
+        },
+    );
+    let records = vec![base[0].clone(), base[1].clone(), attempt, turn];
+    (records, start, termination)
+}
+
+#[test]
+fn an_inconsistent_record_is_quarantined_and_what_depends_on_it_is_excused() {
+    let (mut records, mut start, mut termination) = tool_call_records();
+    let session = records[0].session_id;
+    let run = records[1].run_id.expect("run id");
+    // The start names a part of the turn that is not a tool call: it does
+    // not verify against the turn, and its termination depends on it.
+    for payload in [&mut start.payload, &mut termination.payload] {
+        match payload {
+            EventPayload::ToolCallStarted { start } => start.owner.content_index = 7,
+            EventPayload::ToolCallTerminated { termination } => {
+                termination.owner.content_index = 7;
+            }
+            _ => unreachable!(),
+        }
+    }
+    records.push(start);
+    records.push(termination);
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    write_event_values(
+        &path,
+        &records
+            .iter()
+            .map(|record| serde_json::to_value(record).expect("record"))
+            .collect::<Vec<_>>(),
+    );
+
+    let log = EventLog::open(path.clone(), session).expect("an inconsistent log opens");
+    assert_eq!(
+        log.event_snapshot()
+            .iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 6],
+        "the start is left out, its termination is excused"
+    );
+    let quarantined = log
+        .diagnostics()
+        .iter()
+        .find(|diagnostic| diagnostic.reason.starts_with("quarantined"))
+        .expect("quarantine diagnostic");
+    assert_eq!(quarantined.seq, 5);
+    assert!(quarantined.skipped);
+    assert!(
+        quarantined.reason.contains("tool owner"),
+        "{}",
+        quarantined.reason
+    );
+    // Appends stay strict, and continue after the whole file.
+    let appended = log
+        .append(
+            Some(run),
+            EventOrigin::new("engine:test").unwrap(),
+            EventPayload::UserInputAdmitted {
+                content: "after the quarantine".into(),
+            },
+        )
+        .expect("append after a quarantined record");
+    assert_eq!(appended.seq, 7);
+    assert!(
+        log.append(
+            Some(run),
+            EventOrigin::new("engine:test").unwrap(),
+            orphan_termination(ToolCallId(Uuid::from_u128(999))),
+        )
+        .is_err()
+    );
+    drop(log);
+    let reopened = EventLog::open(path, session).expect("reopen");
+    assert_eq!(reopened.event_snapshot().last().unwrap().seq, 7);
+}
+
+#[test]
+fn a_sequence_that_stops_increasing_ends_the_log_there_and_leaves_it_render_only() {
+    let records = attribution_records();
+    let session = records[0].session_id;
+    let mut values = records[..3]
+        .iter()
+        .map(|record| serde_json::to_value(record).expect("record"))
+        .collect::<Vec<_>>();
+    let mut repeated = serde_json::to_value(&records[3]).expect("record");
+    repeated["seq"] = serde_json::json!(2);
+    values.push(repeated);
+    values.push(serde_json::to_value(&records[4]).expect("record"));
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    write_event_values(&path, &values);
+    let before = fs::read(&path).expect("read log");
+
+    let log = EventLog::open(path.clone(), session).expect("a broken sequence opens");
+    assert_eq!(
+        log.event_snapshot()
+            .iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    assert!(log.is_render_only());
+    assert_eq!(log.unknown_state_event(), None);
+    assert!(log.diagnostics().iter().any(|diagnostic| {
+        diagnostic.seq == 2 && diagnostic.reason.contains("does not follow 3")
+    }));
+    assert!(matches!(
+        log.ensure_appendable(),
+        Err(EventLogError::SequenceBroken { seq: 2, .. })
+    ));
+    assert!(
+        log.append(
+            None,
+            EventOrigin::new("engine:test").unwrap(),
+            EventPayload::UserInputAdmitted {
+                content: "refused".into(),
+            },
+        )
+        .is_err()
+    );
+    drop(log);
+    assert_eq!(fs::read(&path).expect("read log"), before, "nothing is cut");
+}
+
+#[test]
+fn size_caps_bound_writers_and_not_what_a_log_already_holds() {
+    let creation = stored_event();
+    let session = creation.session_id;
+    let diagnostic = |detail: &str| {
+        serde_json::json!({
+            "session_id": session,
+            "run_id": null,
+            "seq": 2,
+            "timestamp": jiff::Timestamp::new(2, 0).unwrap(),
+            "skippable": true,
+            "payload": {
+                "type": "diagnostic",
+                "source": "engine:test",
+                "kind": "large_detail",
+                "message": "a diagnostic with a large detail",
+                "detail": detail,
+            },
+        })
+    };
+    let large = "x".repeat(cookie_agent_protocol::MAX_DIAGNOSTIC_DETAIL_BYTES + 1);
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    write_event_values(
+        &path,
+        &[
+            serde_json::to_value(&creation).expect("creation"),
+            diagnostic(&large),
+        ],
+    );
+    let log = EventLog::open(path, session).expect("open");
+    assert_eq!(log.event_snapshot().len(), 2, "{:?}", log.diagnostics());
+    assert!(log.diagnostics().is_empty());
+    let EventPayload::Diagnostic { source, kind, .. } = &log.event_snapshot()[1].payload else {
+        panic!("diagnostic");
+    };
+    assert!(
+        log.append(
+            None,
+            EventOrigin::new("engine:test").unwrap(),
+            EventPayload::Diagnostic {
+                source: source.clone(),
+                kind: kind.clone(),
+                message: "too large to write".into(),
+                count: None,
+                detail: Some(Value::String(large)),
+            },
+        )
+        .is_err()
+    );
 }

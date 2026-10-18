@@ -2302,18 +2302,11 @@ impl SessionStore {
             // The fork is assembled in memory as a buffered log at its final
             // path, then written whole: one buffered write and one sync
             // instead of a reopened, reparsed file and a sync per record.
-            let copied = prefix
-                .iter()
-                .map(|event| {
-                    let mut copied = event.as_ref().clone();
-                    copied.session_id = session_id;
-                    Arc::new(copied)
-                })
-                .collect::<Vec<_>>();
-            let log = EventLog::from_records_buffered(
+            let log = EventLog::fork_buffered(
                 final_dir.join(EVENTS_FILE),
                 session_id,
-                copied,
+                &source.log,
+                through_seq,
                 capability.clone(),
             )?;
             let mut fork_projection = projection(log.clone())?;

@@ -66,6 +66,23 @@ pub enum EventLogError {
     /// conversion from it exists.
     #[error("{} has history format {history_format}, which this build cannot convert", path.display())]
     UnsupportedHistoryFormat { path: PathBuf, history_format: u32 },
+    /// The log's sequence stops increasing at the record `seq`: that record
+    /// and everything after it is not read, and the session can only be
+    /// viewed.
+    #[error("{} breaks its sequence at {seq}; the session can only be viewed", path.display())]
+    SequenceBroken { path: PathBuf, seq: u64 },
+}
+
+/// Why a log that opened takes no appends: it can be read and followed, but
+/// nothing changes it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RenderOnly {
+    /// The first state event of a type this build does not know: a newer
+    /// build wrote it.
+    UnknownStateEvent(String),
+    /// The sequence stopped increasing at this record; it and what follows
+    /// were not read.
+    SequenceBroken(u64),
 }
 
 #[derive(Debug)]
@@ -84,9 +101,9 @@ pub struct EventLog {
     /// A read-only open found a torn final record and left it in the file;
     /// an owned open cuts it.
     torn_tail_ignored: bool,
-    /// The first state event of an unknown type the load met. Such a log is
-    /// render-only: it can be read and followed, but nothing appends to it.
-    unknown_state_event: Option<String>,
+    /// Why the log is render-only, when it is: it can be read and followed,
+    /// but nothing appends to it.
+    render_only: Option<RenderOnly>,
     write_capability: Option<WriteCapability>,
     #[cfg(test)]
     _test_authority: Option<WriteAuthority>,
@@ -469,7 +486,7 @@ impl EventLog {
             persisted: AtomicBool::new(persisted),
             read_only: false,
             torn_tail_ignored: false,
-            unknown_state_event: None,
+            render_only: None,
             write_capability: Some(capability),
             #[cfg(test)]
             _test_authority,
@@ -567,21 +584,23 @@ impl EventLog {
         ) {
             return Err(EventLogError::MissingCreation(path));
         }
-        let validation =
-            validate_records(&path, session_id, &records, &loaded.validation_taint, None)?;
+        let mut diagnostics = loaded.diagnostics;
+        let mut taint = loaded.validation_taint;
+        let (records, validation) =
+            validate_loaded(&path, session_id, records, &mut taint, &mut diagnostics)?;
         Ok(Arc::new(Self {
             path,
             session_id,
             append: Mutex::new(()),
             events: Mutex::new(EventStorage::with_lines(records, loaded.lines)),
-            diagnostics: loaded.diagnostics,
-            initial_validation_taint: Mutex::new(loaded.validation_taint),
+            diagnostics,
+            initial_validation_taint: Mutex::new(taint),
             validation: Mutex::new(validation),
             next_seq: AtomicU64::new(loaded.next_seq),
             persisted: AtomicBool::new(true),
             read_only,
             torn_tail_ignored: loaded.torn_tail,
-            unknown_state_event: loaded.unknown_state_event,
+            render_only: loaded.render_only,
             write_capability,
             #[cfg(test)]
             _test_authority,
@@ -591,25 +610,39 @@ impl EventLog {
         }))
     }
 
-    /// A buffered log holding `records`, validated in memory, for a session
-    /// whose file is written whole once it is assembled (a fork). It writes
-    /// nothing until [`Self::mark_persisted`].
-    pub(crate) fn from_records_buffered(
+    /// A buffered log holding `source`'s records through `through_seq` under
+    /// `session_id`, validated in memory, for a fork whose file is written
+    /// whole once it is assembled. It writes nothing until
+    /// [`Self::mark_written`]. The damage the source's load found in that
+    /// prefix comes along, so records it excused stay excused.
+    pub(crate) fn fork_buffered(
         path: PathBuf,
         session_id: SessionId,
-        records: Vec<Arc<StoredEvent>>,
+        source: &Self,
+        through_seq: u64,
         capability: WriteCapability,
     ) -> Result<Arc<Self>, EventLogError> {
+        let records = source
+            .event_snapshot()
+            .iter()
+            .filter(|event| event.seq <= through_seq)
+            .map(|event| {
+                let mut copied = event.as_ref().clone();
+                copied.session_id = session_id;
+                Arc::new(copied)
+            })
+            .collect::<Vec<_>>();
         if !matches!(
             records.first().map(|record| &record.payload),
             Some(EventPayload::SessionCreated { .. })
         ) {
             return Err(EventLogError::MissingCreation(path));
         }
+        let mut taint = source.initial_taint();
+        taint.truncate(through_seq);
         // A prefix of a log that validated, so its records hold no
-        // duplicates; the copy is only checked without the source's damage.
-        let validation =
-            rebuild_validation(&path, session_id, &records, &ValidationTaint::default())?;
+        // duplicates and pass again under the same damage.
+        let validation = rebuild_validation(&path, session_id, &records, &taint)?;
         let next_seq = records.last().map_or(1, |record| record.seq + 1);
         Ok(Arc::new(Self {
             path,
@@ -617,13 +650,13 @@ impl EventLog {
             append: Mutex::new(()),
             events: Mutex::new(EventStorage::new(records)),
             diagnostics: Vec::new(),
-            initial_validation_taint: Mutex::default(),
+            initial_validation_taint: Mutex::new(taint),
             validation: Mutex::new(validation),
             next_seq: AtomicU64::new(next_seq),
             persisted: AtomicBool::new(false),
             read_only: false,
             torn_tail_ignored: false,
-            unknown_state_event: None,
+            render_only: None,
             write_capability: Some(capability),
             #[cfg(test)]
             _test_authority: None,
@@ -659,7 +692,7 @@ impl EventLog {
             persisted: AtomicBool::new(true),
             read_only: false,
             torn_tail_ignored: false,
-            unknown_state_event: self.unknown_state_event.clone(),
+            render_only: self.render_only.clone(),
             write_capability: Some(capability),
             #[cfg(test)]
             _test_authority: None,
@@ -818,17 +851,30 @@ impl EventLog {
     /// holds one: the session is render-only.
     #[must_use]
     pub fn unknown_state_event(&self) -> Option<&str> {
-        self.unknown_state_event.as_deref()
+        match &self.render_only {
+            Some(RenderOnly::UnknownStateEvent(event)) => Some(event),
+            _ => None,
+        }
     }
 
-    /// Refuses to change a render-only log: a newer build wrote a state
-    /// event this one cannot continue from.
+    /// Whether the log takes no appends: a newer build wrote a state event
+    /// this one cannot continue from, or its sequence breaks.
+    #[must_use]
+    pub fn is_render_only(&self) -> bool {
+        self.render_only.is_some()
+    }
+
+    /// Refuses to change a render-only log.
     pub fn ensure_appendable(&self) -> Result<(), EventLogError> {
-        match &self.unknown_state_event {
-            Some(event) => Err(EventLogError::RequiresNewerEngine {
+        match &self.render_only {
+            Some(RenderOnly::UnknownStateEvent(event)) => Err(EventLogError::RequiresNewerEngine {
                 path: self.path.clone(),
                 event: Some(event.clone()),
                 history_format: None,
+            }),
+            Some(RenderOnly::SequenceBroken(seq)) => Err(EventLogError::SequenceBroken {
+                path: self.path.clone(),
+                seq: *seq,
             }),
             None => Ok(()),
         }
@@ -1772,10 +1818,11 @@ fn delegation_invocation_from_event(
     }
 }
 
-fn validate_observed_duplicates<E: Borrow<StoredEvent>>(
-    path: &Path,
-    records: &[E],
-) -> Result<(), EventLogError> {
+/// Each record that repeats an identity an earlier record holds, by index,
+/// with what it repeats. Validation skips tainted records, so this pass looks
+/// at every record regardless.
+fn duplicate_records<E: Borrow<StoredEvent>>(records: &[E]) -> Vec<(usize, &'static str)> {
+    let mut duplicates = Vec::new();
     let mut runs = HashSet::new();
     let mut attempts = HashSet::new();
     let mut turns = HashSet::new();
@@ -1786,20 +1833,22 @@ fn validate_observed_duplicates<E: Borrow<StoredEvent>>(
     let mut approvals = HashSet::new();
     let mut model_calls = HashSet::new();
     let mut provider_items = HashSet::new();
-    for record in records {
+    for (index, record) in records.iter().enumerate() {
         let record: &StoredEvent = record.borrow();
+        let mut duplicate = |message| duplicates.push((index, message));
         match &record.payload {
             EventPayload::RunStarted { .. } => {
                 let Some(run_id) = record.run_id else {
-                    return corrupt(path, "RunStarted is missing run_id");
+                    duplicate("RunStarted is missing run_id");
+                    continue;
                 };
                 if !runs.insert(run_id) {
-                    return corrupt(path, "run_id has more than one RunStarted event");
+                    duplicate("run_id has more than one RunStarted event");
                 }
             }
             EventPayload::ModelAttemptStarted { attempt_id, .. } => {
                 if !attempts.insert(*attempt_id) {
-                    return corrupt(path, "attempt_id has more than one ModelAttemptStarted");
+                    duplicate("attempt_id has more than one ModelAttemptStarted");
                 }
             }
             EventPayload::ModelTurnCommitted {
@@ -1808,7 +1857,7 @@ fn validate_observed_duplicates<E: Borrow<StoredEvent>>(
                 ..
             } => {
                 if !turns.insert(*model_turn_seq) {
-                    return corrupt(path, "model turn sequence is duplicated");
+                    duplicate("model turn sequence is duplicated");
                 }
                 if let Some(run_id) = record.run_id {
                     for part in &turn.content {
@@ -1819,12 +1868,12 @@ fn validate_observed_duplicates<E: Borrow<StoredEvent>>(
                         } = part
                         {
                             if !model_calls.insert((run_id, id.clone())) {
-                                return corrupt(path, "model call id is reused within a run");
+                                duplicate("model call id is reused within a run");
                             }
                             if let Some(provider_item_id) = provider_item_id
                                 && !provider_items.insert((run_id, provider_item_id.clone()))
                             {
-                                return corrupt(path, "provider item id is reused within a run");
+                                duplicate("provider item id is reused within a run");
                             }
                         }
                     }
@@ -1832,38 +1881,46 @@ fn validate_observed_duplicates<E: Borrow<StoredEvent>>(
             }
             EventPayload::ModelUsageRecorded { model_turn_seq, .. } => {
                 if !usage_turns.insert(*model_turn_seq) {
-                    return corrupt(path, "usage ownership does not match its model turn");
+                    duplicate("usage ownership does not match its model turn");
                 }
             }
             EventPayload::InternalAgentStarted {
                 internal_run_id, ..
             } => {
                 if !internal_runs.insert(*internal_run_id) {
-                    return corrupt(path, "internal_run_id has more than one start");
+                    duplicate("internal_run_id has more than one start");
                 }
             }
             EventPayload::ToolCallStarted { start } => {
                 if !tool_starts.insert(start.tool_call_id) {
-                    return corrupt(path, "tool_call_id has more than one start");
+                    duplicate("tool_call_id has more than one start");
                 }
             }
             EventPayload::ToolCallTerminated { termination } => {
                 if !tool_terminations.insert(termination.tool_call_id) {
-                    return corrupt(path, "tool call has more than one terminal event");
+                    duplicate("tool call has more than one terminal event");
                 }
             }
             EventPayload::ApprovalRequested { request }
                 if !approvals.insert(request.approval_id()) =>
             {
-                return corrupt(
-                    path,
-                    "approval_id has more than one ApprovalRequested event",
-                );
+                duplicate("approval_id has more than one ApprovalRequested event");
             }
             _ => {}
         }
     }
-    Ok(())
+    duplicates
+}
+
+#[cfg(test)]
+fn validate_observed_duplicates<E: Borrow<StoredEvent>>(
+    path: &Path,
+    records: &[E],
+) -> Result<(), EventLogError> {
+    match duplicate_records(records).first() {
+        Some((_, message)) => corrupt(path, *message),
+        None => Ok(()),
+    }
 }
 
 fn validate_record_local(path: &Path, record: &StoredEvent) -> Result<(), EventLogError> {
@@ -1897,24 +1954,85 @@ fn validate_record_local(path: &Path, record: &StoredEvent) -> Result<(), EventL
     Ok(())
 }
 
-fn validate_records<E: Borrow<StoredEvent>>(
+/// The most records a load reports one by one as quarantined; the rest are
+/// counted in one diagnostic.
+const MAX_QUARANTINE_DIAGNOSTICS: usize = 64;
+
+/// Validates a log as it loads. A record that fails a cross-event check is
+/// *quarantined* instead of failing the open: it is left out, its identity
+/// is tainted as a skipped record's is (so the records that depend on it are
+/// excused the same way), and a diagnostic names it. Only `session_created`
+/// cannot be quarantined. Returns the records kept, their validation state,
+/// and adds the quarantined records' taint to `taint`, which later
+/// validation starts from.
+fn validate_loaded(
     path: &Path,
     session_id: SessionId,
-    records: &[E],
-    initial_taint: &ValidationTaint,
-    strict_from_seq: Option<u64>,
-) -> Result<ValidationState, EventLogError> {
-    validate_observed_duplicates(path, records)?;
-    let mut state = ValidationState::new(initial_taint.clone());
-    for record in records {
-        let record: &StoredEvent = record.borrow();
-        let strict = strict_from_seq.is_some_and(|from| record.seq >= from);
-        validate_record_incremental(path, session_id, record, &mut state, strict)?;
+    records: Vec<Arc<StoredEvent>>,
+    taint: &mut ValidationTaint,
+    diagnostics: &mut Vec<EventLoadDiagnostic>,
+) -> Result<(Vec<Arc<StoredEvent>>, ValidationState), EventLogError> {
+    let mut refused = duplicate_records(&records).into_iter().peekable();
+    let mut accepted: Vec<Arc<StoredEvent>> = Vec::with_capacity(records.len());
+    let mut state = ValidationState::new(taint.clone());
+    let mut quarantined = 0_usize;
+    for (index, record) in records.into_iter().enumerate() {
+        let mut duplicate = None;
+        while let Some((_, message)) = refused.next_if(|(at, _)| *at == index) {
+            duplicate.get_or_insert(message);
+        }
+        let result = match duplicate {
+            Some(message) => corrupt(path, message),
+            None => validate_record_incremental(path, session_id, &record, &mut state, false),
+        };
+        let error = match result {
+            Ok(()) => {
+                accepted.push(record);
+                continue;
+            }
+            Err(error) if accepted.is_empty() => return Err(error),
+            Err(error) => error,
+        };
+        quarantined += 1;
+        if quarantined <= MAX_QUARANTINE_DIAGNOSTICS {
+            diagnostics.push(EventLoadDiagnostic {
+                seq: record.seq,
+                reason: format!(
+                    "quarantined: {}",
+                    match &error {
+                        EventLogError::Corrupt { message, .. } => message.clone(),
+                        error => error.to_string(),
+                    }
+                ),
+                engine_version: record.engine_version.clone(),
+                skipped: true,
+            });
+        }
+        // A record past the per-run phase-taint bound taints everything
+        // after it instead.
+        if taint.mark_event(&record).is_err() {
+            taint.mark_broad(record.seq, record.seq);
+        }
+        // The failed check may have changed the state before it failed; the
+        // records before it validate as they did, since taint only reaches
+        // later records.
+        state = rebuild_validation(path, session_id, &accepted, taint)?;
     }
-    Ok(state)
+    if quarantined > MAX_QUARANTINE_DIAGNOSTICS {
+        diagnostics.push(EventLoadDiagnostic {
+            seq: accepted.last().map_or(1, |record| record.seq),
+            reason: format!(
+                "{} more inconsistent records were quarantined",
+                quarantined - MAX_QUARANTINE_DIAGNOSTICS
+            ),
+            engine_version: None,
+            skipped: false,
+        });
+    }
+    Ok((accepted, state))
 }
 
-/// The validation state of records that already passed [`validate_records`]
+/// The validation state of records that already passed [`validate_loaded`]
 /// as a prefix of the log (what a revert keeps, or what was there before an
 /// append that failed). Duplicates cannot appear in such a prefix, so only
 /// the per-record pass that builds the state runs.
@@ -2847,9 +2965,8 @@ fn validate_record_incremental(
 
 struct LoadedEvents {
     records: Vec<StoredEvent>,
-    /// The first state event of an unknown type (see
-    /// [`EventLog::unknown_state_event`]).
-    unknown_state_event: Option<String>,
+    /// Why the log is render-only, if it is.
+    render_only: Option<RenderOnly>,
     lines: LineIndex,
     /// The file ended in a partial record, cut or ignored per [`TornTail`].
     torn_tail: bool,
@@ -2886,17 +3003,25 @@ fn check_history_format(path: &Path, creation: Option<&Value>) -> Result<(), Eve
     }
 }
 
-/// Checks that a record's sequence advances the log and records any gap
-/// before it.
+/// Whether a record's sequence advances the log, recording any gap before
+/// it. A sequence that does not advance ends the readable log there.
 fn observe_sequence(
-    path: &Path,
     seq: u64,
     last_observed_seq: &mut u64,
     diagnostics: &mut Vec<EventLoadDiagnostic>,
     validation_taint: &mut ValidationTaint,
-) -> Result<(), EventLogError> {
+) -> bool {
     if seq <= *last_observed_seq {
-        return corrupt_value(path, "event sequences are not strictly increasing");
+        diagnostics.push(EventLoadDiagnostic {
+            seq,
+            reason: format!(
+                "event sequence {seq} does not follow {last_observed_seq}; the log is read up \
+                 to it and the session can only be viewed"
+            ),
+            engine_version: None,
+            skipped: true,
+        });
+        return false;
     }
     if *last_observed_seq > 0 && seq > *last_observed_seq + 1 {
         let start = *last_observed_seq + 1;
@@ -2914,7 +3039,7 @@ fn observe_sequence(
         validation_taint.mark_broad(start, end);
     }
     *last_observed_seq = seq;
-    Ok(())
+    true
 }
 
 #[cfg(test)]
@@ -2926,9 +3051,13 @@ thread_local! {
 }
 
 /// Reads and decodes the whole log at `path`. A large log takes a while, so
-/// the work leaves the async worker.
+/// the work leaves the async worker. Records read as their writer bounded
+/// them: the writer-only size caps are off
+/// ([`cookie_agent_protocol::read_stored_history`]).
 fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, EventLogError> {
-    crate::blocking::off_worker(|| load_event_jsonl_in_place(path, torn_tail))
+    crate::blocking::off_worker(|| {
+        cookie_agent_protocol::read_stored_history(|| load_event_jsonl_in_place(path, torn_tail))
+    })
 }
 
 fn load_event_jsonl_in_place(
@@ -2947,7 +3076,7 @@ fn load_event_jsonl_in_place(
     let mut diagnostics = Vec::new();
     let mut validation_taint = ValidationTaint::default();
     let mut last_observed_seq = 0_u64;
-    let mut unknown_state_event = None;
+    let mut render_only = None;
     for (index, line) in bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
@@ -2957,13 +3086,15 @@ fn load_event_jsonl_in_place(
         // Nearly every record is intact: type it straight from the bytes and
         // leave the untyped, repairing reader to the rest.
         if let Some(event) = StoredEvent::decode_strict(line) {
-            observe_sequence(
-                path,
+            if !observe_sequence(
                 event.seq,
                 &mut last_observed_seq,
                 &mut diagnostics,
                 &mut validation_taint,
-            )?;
+            ) {
+                render_only.get_or_insert(RenderOnly::SequenceBroken(event.seq));
+                break;
+            }
             lines.starts.push((event.seq, line_start(line)));
             records.push(event);
             continue;
@@ -3012,13 +3143,15 @@ fn load_event_jsonl_in_place(
             .get("run_id")
             .and_then(|value| RunId::deserialize(value).ok());
         if object.get("seq").and_then(Value::as_u64).is_some() {
-            observe_sequence(
-                path,
+            if !observe_sequence(
                 seq,
                 &mut last_observed_seq,
                 &mut diagnostics,
                 &mut validation_taint,
-            )?;
+            ) {
+                render_only.get_or_insert(RenderOnly::SequenceBroken(seq));
+                break;
+            }
             lines.starts.push((seq, line_start(line)));
         }
         // Envelope members this build does not know are ignored, on the
@@ -3043,7 +3176,7 @@ fn load_event_jsonl_in_place(
                     engine_version,
                     skipped: true,
                 });
-                unknown_state_event.get_or_insert_with(|| tag.to_owned());
+                render_only.get_or_insert_with(|| RenderOnly::UnknownStateEvent(tag.to_owned()));
                 if let Some(payload) = object.get("payload") {
                     validation_taint
                         .mark_record(seq, envelope_run_id, payload)
@@ -3169,7 +3302,7 @@ fn load_event_jsonl_in_place(
     );
     Ok(LoadedEvents {
         records,
-        unknown_state_event,
+        render_only,
         lines,
         torn_tail: torn,
         diagnostics,

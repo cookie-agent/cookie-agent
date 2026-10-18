@@ -647,6 +647,137 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
 }
 
 #[tokio::test]
+async fn a_delegation_whose_records_do_not_verify_is_unrecoverable_alone() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("unrecoverable-delegation").expect("run ID"),
+                selection,
+                input: "scripted root input".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("root run");
+    let parent = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("parent projection");
+    let agent = parent.creation_agent.as_ref().clone();
+    let runtime = fixture.engine.current_runtime();
+    let revisions = cookie_agent_protocol::RuntimeRevisions {
+        runtime_revision: runtime.result.snapshot.runtime_revision.clone(),
+        catalog_revision: runtime.result.snapshot.catalog_revision.clone(),
+        provider_state_revision: runtime.result.snapshot.provider_state_revision.clone(),
+        model_revision: runtime.result.snapshot.model_revision.clone(),
+        agent_revision: runtime.result.snapshot.agent_revision.clone(),
+        recipe_registry_revision: runtime.result.snapshot.recipe_registry_revision.clone(),
+        manifest_revision: crate::test_support::manifest_of(&agent.fallback_chain[0]),
+    };
+    let broken_id = InvocationId::new_v7();
+    let intact_id = InvocationId::new_v7();
+    for (invocation_id, description) in [(broken_id, "broken"), (intact_id, "intact")] {
+        let request = cookie_agent_protocol::DelegateRequestPayload {
+            description: description.into(),
+            prompt: format!("{description} delegated task"),
+            title: SessionTitle::new(description).expect("title"),
+            resume_session_id: None,
+            inherit_context: false,
+            seeded_context: Vec::new(),
+            background: false,
+            staged_skill: None,
+        };
+        let cache_strategies = vec![None; agent.fallback_chain.len()];
+        let fingerprint = crate::delegation_events::delegation_request_fingerprint(
+            &agent,
+            &cache_strategies,
+            &request,
+        )
+        .expect("fingerprint");
+        fixture
+            .engine
+            .inner
+            .delegation_events
+            .reserve(
+                invocation_id,
+                session.session_id,
+                run.run_id,
+                ToolCallId::new_v7(),
+                agent.clone(),
+                revisions.clone(),
+                crate::policy::decode_bindings(&agent.fallback_chain).expect("bindings"),
+                cache_strategies,
+                fingerprint,
+                request,
+            )
+            .expect("reservation event");
+    }
+    for invocation_id in [broken_id, intact_id] {
+        fixture
+            .engine
+            .inner
+            .delegation_events
+            .mark_started(invocation_id)
+            .expect("start");
+        fixture
+            .engine
+            .inner
+            .delegation_events
+            .mark_finished(invocation_id, SessionStatus::Failed, Default::default())
+            .expect("finish");
+    }
+    let event_path = parent.log.path().to_owned();
+    fixture.engine.shutdown().await;
+    drop(fixture.engine);
+
+    // The broken reservation reads, and its ownership checks out, but it
+    // resumes a session other than its child: it does not verify.
+    let source = fs::read_to_string(&event_path)
+        .expect("parent events")
+        .lines()
+        .map(|line| {
+            let mut value: serde_json::Value = serde_json::from_str(line).expect("event JSON");
+            if value["payload"]["type"] == "delegation_reserved"
+                && value["payload"]["reservation"]["invocation_id"] == serde_json::json!(broken_id)
+            {
+                value["payload"]["request"]["resume_session_id"] =
+                    serde_json::json!(cookie_agent_protocol::SessionId::new_v7());
+            }
+            serde_json::to_string(&value).expect("event")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(event_path, source).expect("write broken reservation");
+
+    let reopened = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+    reopened
+        .ensure_tree_loaded(session.session_id)
+        .expect("the tree loads without the broken delegation");
+    assert!(reopened.inner.delegation_events.get(broken_id).is_none());
+    assert_eq!(
+        reopened
+            .inner
+            .delegation_events
+            .get(intact_id)
+            .expect("the intact delegation loads")
+            .terminal_status,
+        Some(SessionStatus::Failed)
+    );
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_runtime_revision_index_from_an_older_protocol_still_opens() {
     let fixture = fixture();
     let index = fixture
