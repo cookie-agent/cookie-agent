@@ -386,7 +386,7 @@ call could not run past, or `completed` with the call's result:
 | Member | Meaning |
 |---|---|
 | `output` | What the model reads, tagged by `kind`: `single` with the whole `text`, `named` with one text per declared stream, or `streamed` when the call's progress already sent it. |
-| `title` | Optional: the result's title, at most 256 bytes; the tool's name when absent. |
+| `title` | Optional: the result's title, at most 1 KiB without control characters; the tool's name when absent. |
 | `display` | Optional: what clients show, a list of display blocks (see [Display blocks](#display-blocks)). A `single` output without one shows its text. |
 | `metadata` | Optional: structured data the model reads with the output. |
 | `attachments` | Optional: files the result carries, each `{ mime_type, filename?, byte_length, sha256, reference }`, at most 256 with the files of `additional_messages`. |

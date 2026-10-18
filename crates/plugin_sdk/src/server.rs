@@ -10,10 +10,10 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    BoundedDisplayText, EventPattern, ExtensionAgentBeforeStartParams,
-    ExtensionAgentBeforeStartResult, ExtensionAllowBlockResult, ExtensionBusEventParams,
-    ExtensionEmitParams, ExtensionEmitResultParams, ExtensionEmitStatus, ExtensionEventParams,
-    ExtensionHookOnError, ExtensionInitializeParams, ExtensionInitializeResult, ExtensionIntercept,
+    DisplayDelta, EventPattern, ExtensionAgentBeforeStartParams, ExtensionAgentBeforeStartResult,
+    ExtensionAllowBlockResult, ExtensionBusEventParams, ExtensionEmitParams,
+    ExtensionEmitResultParams, ExtensionEmitStatus, ExtensionEventParams, ExtensionHookOnError,
+    ExtensionInitializeParams, ExtensionInitializeResult, ExtensionIntercept,
     ExtensionInterceptionHook, ExtensionMessageEndParams, ExtensionMessageEndResult,
     ExtensionModelBeforeRequestParams, ExtensionModelBeforeRequestResult,
     ExtensionModelBeforeSelectParams, ExtensionPluginCapabilities,
@@ -26,17 +26,17 @@ use cookie_agent_protocol::{
     PLUGIN_INITIALIZE_METHOD, PLUGIN_PRODUCER_DISCARD_METHOD, PLUGIN_PRODUCER_REGISTER_METHOD,
     PLUGIN_PRODUCER_SEND_METHOD, PLUGIN_PRODUCER_UNREGISTER_METHOD, PLUGIN_PROTOCOL_VERSION,
     PLUGIN_RECOVERY_COMPLETE_METHOD, PLUGIN_RECOVERY_START_METHOD, PLUGIN_SHUTDOWN_METHOD,
-    PreparedPresentation, ProducerDeliveryMode, ProducerDiscardParams, ProducerDiscardResult,
-    ProducerId, ProducerIdempotencyKey, ProducerMessageId, ProducerName, ProducerRegisterParams,
+    ProducerDeliveryMode, ProducerDiscardParams, ProducerDiscardResult, ProducerId,
+    ProducerIdempotencyKey, ProducerMessageId, ProducerName, ProducerRegisterParams,
     ProducerRegisterResult, ProducerSendParams, ProducerSendResult, ProducerUnregisterParams,
     ProducerUnregisterResult, RecoveryCompleteParams, RecoveryCompleteResult, RecoveryOutcome,
-    RunId, SafeDisplayText, SafeErrorMessage, SemVer, SessionId, ToolCallId, ToolCompletionOutput,
-    ToolOutputChunk, Transport, errors,
+    RunId, SafeDisplayText, SafeErrorMessage, SemVer, SessionId, ToolCallId, ToolOutputChunk,
+    Transport, errors,
     peer::{Incoming, IncomingNotification, IncomingRequest, LineTransport, Peer, RpcError},
     runtime_protocol::{
         DetachableParams, ExecuteOutcome, ExecuteParams, ExecuteResult, Outcome, PrepareOutcome,
         PrepareParams, PrepareResult, PreparedCall, PreparedRef, RuntimeTools, ToolErrorKind,
-        ToolProgressParams, ToolResult, WireProgress, WireToolCall, WireToolError, method,
+        ToolProgressParams, WireProgress, WireToolCall, WireToolError, method,
     },
 };
 use serde::Serialize;
@@ -44,7 +44,10 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use crate::{PluginError, ToolDecl, ToolFailure, ToolOutput};
+use crate::{
+    PluginError, ToolDecl, ToolFailure, ToolOutput,
+    output::{PrepareCall, Presentation},
+};
 
 const NOTIFICATION_CONTEXT_LIFETIME: Duration = Duration::from_secs(4);
 
@@ -52,6 +55,7 @@ type HandlerFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 type ToolHandler =
     Arc<dyn Fn(ToolContext, Value) -> HandlerFuture<Result<ToolOutput, ToolFailure>> + Send + Sync>;
 type ResourceFn = Arc<dyn Fn(&Value) -> Option<String> + Send + Sync>;
+type PresentationFn = Arc<dyn Fn(&PrepareCall<'_>) -> Presentation + Send + Sync>;
 /// Type-erased interception hook. It parses wire params into their typed form and reports the
 /// correlation identity used to scope a context grant; the user handler is deferred until that
 /// grant exists and yields the serialized hook result.
@@ -80,6 +84,9 @@ struct RegisteredTool {
 #[derive(Clone, Default)]
 struct Handlers {
     tools: Vec<RegisteredTool>,
+    /// How each tool's prepared calls are shown, by tool name; the default
+    /// otherwise ([`Presentation::of_call`]).
+    presentations: HashMap<String, PresentationFn>,
     intercepts: HashMap<ExtensionInterceptionHook, InterceptHandler>,
     on_error: HashMap<ExtensionInterceptionHook, ExtensionHookOnError>,
     event: Option<EventHandler>,
@@ -314,6 +321,22 @@ impl PluginServerBuilder {
         self
     }
 
+    /// Sets how clients show the prepared calls of tool `tool`: its title,
+    /// hint, primary argument, and display blocks of its arguments and of
+    /// what it will do. Without it a call is titled with the tool's name and
+    /// shows its permission resource. The build fails when no tool of that
+    /// name is registered.
+    #[must_use]
+    pub fn prepare_presentation<F>(mut self, tool: impl Into<String>, presentation: F) -> Self
+    where
+        F: Fn(&PrepareCall<'_>) -> Presentation + Send + Sync + 'static,
+    {
+        self.handlers
+            .presentations
+            .insert(tool.into(), Arc::new(presentation));
+        self
+    }
+
     fn intercept<P, F, Fut, R>(mut self, handler: F) -> Self
     where
         P: InterceptParams,
@@ -469,6 +492,17 @@ impl PluginServerBuilder {
         {
             return Err(PluginError::Protocol(format!(
                 "on_hook_error names `{hook}`, which has no handler"
+            )));
+        }
+        if let Some(tool) = self.handlers.presentations.keys().find(|name| {
+            !self
+                .handlers
+                .tools
+                .iter()
+                .any(|tool| &tool.declaration.name == *name)
+        }) {
+            return Err(PluginError::Protocol(format!(
+                "prepare_presentation names `{tool}`, which is not a registered tool"
             )));
         }
         if self.handlers.event_patterns.is_some() && self.handlers.event.is_none() {
@@ -779,20 +813,43 @@ impl ToolContext {
         message: impl Into<String>,
         output: Option<String>,
     ) -> Result<(), PluginError> {
+        self.send_progress(WireProgress {
+            tool_call_id: self.tool_call_id,
+            message: message.into(),
+            display: None,
+            output: output
+                .map(|text| vec![ToolOutputChunk { stream: None, text }])
+                .unwrap_or_default(),
+        })
+        .await
+    }
+
+    /// Reports progress with a change to the call's live display: `append`
+    /// adds text to a `text` or `terminal` block (or creates it just past the
+    /// last one), and `replace` sets the whole list. The daemon bounds the
+    /// live display to 64 KiB and drops blocks of a kind it does not know.
+    pub async fn progress_display(
+        &self,
+        message: impl Into<String>,
+        display: DisplayDelta,
+    ) -> Result<(), PluginError> {
+        self.send_progress(WireProgress {
+            tool_call_id: self.tool_call_id,
+            message: message.into(),
+            display: Some(display),
+            output: Vec::new(),
+        })
+        .await
+    }
+
+    async fn send_progress(&self, progress: WireProgress) -> Result<(), PluginError> {
         let outcome: Outcome = self
             .plugin
             .request(
                 method::TOOL_PROGRESS,
                 &ToolProgressParams {
                     prepared_id: self.prepared_id,
-                    progress: WireProgress {
-                        tool_call_id: self.tool_call_id,
-                        message: message.into(),
-                        display: None,
-                        output: output
-                            .map(|text| vec![ToolOutputChunk { stream: None, text }])
-                            .unwrap_or_default(),
-                    },
+                    progress,
                 },
             )
             .await?;
@@ -1187,12 +1244,12 @@ impl Server {
     }
 
     fn prepare_call(&self, call: WireToolCall) -> PrepareOutcome {
-        let failed = |message: String, primary: Option<&str>| PrepareOutcome::Failed {
+        let failed = |message: String| PrepareOutcome::Failed {
             error: WireToolError {
                 kind: ToolErrorKind::Failed,
                 message,
             },
-            presentation: presentation(&call.name, primary),
+            presentation: Presentation::new(call.name.as_str()).into_prepared(),
         };
         let Some(tool) = self
             .handlers
@@ -1201,18 +1258,27 @@ impl Server {
             .find(|tool| tool.declaration.name == call.name)
             .cloned()
         else {
-            return failed(format!("unknown tool `{}`", call.name), None);
+            return failed(format!("unknown tool `{}`", call.name));
         };
         let resource = tool
             .resource
             .as_ref()
             .and_then(|resource| resource(&call.arguments));
         if call.arguments.is_null() {
-            return failed("tool arguments must not be null".into(), None);
+            return failed("tool arguments must not be null".into());
         }
         let prepared_id = self.next_prepared.fetch_add(1, Ordering::Relaxed);
         let permission = tool.declaration.permission.clone();
-        let presentation = presentation(&call.name, resource.as_deref());
+        let view = PrepareCall {
+            name: &call.name,
+            arguments: &call.arguments,
+            resource: resource.as_deref(),
+        };
+        let presentation = match self.handlers.presentations.get(&call.name) {
+            Some(presentation) => presentation(&view),
+            None => Presentation::of_call(&view),
+        }
+        .into_prepared();
         lock(&self.prepared).insert(
             prepared_id,
             Prepared {
@@ -1255,18 +1321,12 @@ impl Server {
         };
         let handler = Arc::clone(&prepared.tool.handler);
         match tokio::spawn(handler(context, prepared.arguments)).await {
-            Ok(Ok(output)) => ExecuteResult {
-                outcome: ExecuteOutcome::Completed(ToolResult {
-                    output: ToolCompletionOutput::Single { text: output.text },
-                    title: Some(safe_title(&prepared.tool.declaration.name)),
-                    // The daemon shows the text when there is no display.
-                    display: Vec::new(),
-                    metadata: None,
-                    attachments: Vec::new(),
-                    additional_messages: Vec::new(),
-                    failed: output.failed,
-                }),
-                media: Vec::new(),
+            Ok(Ok(output)) => match output.into_result(&prepared.tool.declaration.name) {
+                Ok((result, media)) => ExecuteResult {
+                    outcome: ExecuteOutcome::Completed(result),
+                    media,
+                },
+                Err(message) => failed(message),
             },
             Ok(Err(failure)) if failure.message.trim().is_empty() => failed(format!(
                 "plugin tool `{}` failed without saying why",
@@ -1436,29 +1496,6 @@ impl UnknownMessage {
             params: notification.params().unwrap_or(Value::Null),
         }
     }
-}
-
-fn safe_title(name: &str) -> SafeDisplayText {
-    SafeDisplayText::new(name.replace(char::is_control, " "))
-        .unwrap_or_else(|_| SafeDisplayText::new("tool").expect("static title is valid"))
-}
-
-fn presentation(name: &str, primary: Option<&str>) -> PreparedPresentation {
-    PreparedPresentation::new(
-        safe_title(name),
-        primary
-            .map(|primary| truncate(primary.trim(), BoundedDisplayText::MAX_BYTES))
-            .filter(|primary| !primary.is_empty())
-            .and_then(|primary| BoundedDisplayText::new(primary).ok()),
-    )
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    let mut end = text.len().min(max);
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text[..end].to_owned()
 }
 
 /// Reports what the SDK could not do with a message from the daemon. It

@@ -3,20 +3,27 @@
 //! Plugins exchange newline-delimited JSON-RPC 2.0 messages with the engine over standard I/O,
 //! with the same JSON-RPC peer the runtime protocol uses. Build a server by registering tools,
 //! hooks, event handlers, and publishing targets; its capabilities are derived automatically.
-//! Tools run over the runtime protocol's `tool/*` messages: the SDK prepares each call's
-//! approval identity, and a tool handler gets progress, a detach point, and cancellation.
+//! Tools run over the runtime protocol's `tool/*` messages: the SDK reports each call's
+//! permission resource and presentation, from which the daemon builds its approval identity,
+//! and a tool handler gets progress, a detach point, and cancellation, and returns a
+//! [`ToolOutput`].
+//!
+//! The SDK speaks [`PLUGIN_PROTOCOL_VERSION`]; its crate version's major follows that
+//! protocol's major.
 
 #![deny(missing_docs)]
 
 mod error;
+mod output;
 mod server;
 
 pub use cookie_agent_protocol::{
-    ExtensionAgentBeforeStartParams, ExtensionAgentBeforeStartResult, ExtensionAllowBlockAction,
-    ExtensionAllowBlockResult, ExtensionBusEventParams, ExtensionEmitStatus, ExtensionEventParams,
-    ExtensionHookOnError, ExtensionInjectedMessage, ExtensionIntercept, ExtensionInterceptionHook,
-    ExtensionMessageEndAction, ExtensionMessageEndParams, ExtensionMessageEndResult,
-    ExtensionMessageRole, ExtensionModelBeforeRequestAction, ExtensionModelBeforeRequestParams,
+    DisplayBlock, DisplayDelta, ExtensionAgentBeforeStartParams, ExtensionAgentBeforeStartResult,
+    ExtensionAllowBlockAction, ExtensionAllowBlockResult, ExtensionBusEventParams,
+    ExtensionEmitStatus, ExtensionEventParams, ExtensionHookOnError, ExtensionInjectedMessage,
+    ExtensionIntercept, ExtensionInterceptionHook, ExtensionMessageEndAction,
+    ExtensionMessageEndParams, ExtensionMessageEndResult, ExtensionMessageRole,
+    ExtensionModelBeforeRequestAction, ExtensionModelBeforeRequestParams,
     ExtensionModelBeforeRequestResult, ExtensionModelBeforeSelectParams,
     ExtensionModelParamsAdjustments, ExtensionPromptContext, ExtensionSessionBeforeCompactParams,
     ExtensionSessionBeforeCompactResult, ExtensionSessionBeforeForkParams,
@@ -26,12 +33,13 @@ pub use cookie_agent_protocol::{
     ExtensionToolBeforeCallAction, ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult,
     ExtensionToolOrigin, ExtensionUserBeforeInputAction, ExtensionUserBeforeInputParams,
     ExtensionUserBeforeInputResult, HookAssistantPart, HookContentPart, HookHistoryMessage,
-    HookModel, PLUGIN_PROTOCOL_VERSION, PermissionAction, ProducerDeliveryMode, ProducerId,
+    HookModel, Open, PLUGIN_PROTOCOL_VERSION, PermissionAction, ProducerDeliveryMode, ProducerId,
     ProducerIdempotencyKey, ProducerMessageId, ProducerName, RunId, SemVer, SessionId, ToolCallId,
-    ToolOutputDeclaration,
+    ToolOutputDeclaration, UserContent, UserContentPart,
     runtime_protocol::{ToolCollision, ToolConcurrency, ToolResultTruncationPolicy},
 };
 pub use error::{PluginError, ToolFailure};
+pub use output::{PrepareCall, Presentation, ToolOutput};
 pub use server::{
     DaemonInfo, PluginContext, PluginServer, PluginServerBuilder, ProducerHandle, RecoveryFailure,
     RecoveryResult, ToolContext, UnknownMessage,
@@ -40,35 +48,6 @@ pub use server::{
 /// A tool declaration sent to the engine during initialization: the runtime
 /// protocol's tool declaration.
 pub type ToolDecl = cookie_agent_protocol::runtime_protocol::ToolDeclaration;
-
-/// What a plugin tool returns to the model.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ToolOutput {
-    /// The text the model reads.
-    pub text: String,
-    /// The tool reports a failure the model should see as one.
-    pub failed: bool,
-}
-
-impl ToolOutput {
-    /// A successful result.
-    #[must_use]
-    pub fn success(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            failed: false,
-        }
-    }
-
-    /// A result that reports a tool-level failure.
-    #[must_use]
-    pub fn error(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            failed: true,
-        }
-    }
-}
 
 /// A system-prompt or compaction-instruction addendum.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -213,4 +192,125 @@ pub fn override_compaction_instructions(
         reason: None,
         instructions_override: Some(instructions.into()),
     }
+}
+
+/// Transforms user input into `content`. It may change, reorder, or remove
+/// parts, but each file part must be one of the input's, unchanged, and it
+/// must not be blank.
+#[must_use]
+pub fn transform_input(content: UserContent) -> ExtensionUserBeforeInputResult {
+    ExtensionUserBeforeInputResult {
+        action: ExtensionUserBeforeInputAction::Transform,
+        content: Some(content),
+        reason: None,
+    }
+}
+
+/// Transforms user input by rewriting each of its text parts with
+/// `rewrite`; its file parts stay as they are. A part of a type this SDK
+/// does not know is left out, since the daemon refuses one in a transform.
+/// `None` when nothing would be left.
+#[must_use]
+pub fn rewrite_input_text(
+    content: &UserContent,
+    mut rewrite: impl FnMut(&str) -> String,
+) -> Option<ExtensionUserBeforeInputResult> {
+    let parts = content
+        .parts()
+        .iter()
+        .filter_map(|part| match part {
+            Open::Known(UserContentPart::Text { text }) => {
+                Some(Open::Known(UserContentPart::Text {
+                    text: rewrite(text),
+                }))
+            }
+            Open::Known(file @ UserContentPart::File { .. }) => Some(Open::Known(file.clone())),
+            Open::Unknown { .. } => None,
+        })
+        .collect();
+    UserContent::new(parts).ok().map(transform_input)
+}
+
+/// Replaces a model request's messages with `messages`. A message returned
+/// exactly as `model_before_request` sent it keeps what the view leaves out;
+/// any other is built from its parts.
+#[must_use]
+pub fn replace_messages(messages: Vec<HookHistoryMessage>) -> ExtensionModelBeforeRequestResult {
+    ExtensionModelBeforeRequestResult {
+        action: ExtensionModelBeforeRequestAction::Replace,
+        messages: Some(messages),
+        params_adjustments: None,
+    }
+}
+
+/// Replaces a model request's messages with `messages`, each text part
+/// rewritten with `rewrite`. Messages whose text does not change are sent
+/// back exactly, so they keep what the view leaves out; a part of a type
+/// this SDK does not know is left out of a changed message.
+#[must_use]
+pub fn rewrite_history_text(
+    messages: &[HookHistoryMessage],
+    mut rewrite: impl FnMut(&str) -> String,
+) -> ExtensionModelBeforeRequestResult {
+    let messages = messages
+        .iter()
+        .map(|message| {
+            let content = message
+                .content
+                .iter()
+                .filter_map(|part| match part {
+                    Open::Known(HookContentPart::Text { text }) => {
+                        Some(Open::Known(HookContentPart::Text {
+                            text: rewrite(text),
+                        }))
+                    }
+                    Open::Known(other) => Some(Open::Known(other.clone())),
+                    Open::Unknown { .. } => None,
+                })
+                .collect::<Vec<_>>();
+            if content == message.content {
+                message.clone()
+            } else {
+                HookHistoryMessage {
+                    role: message.role,
+                    content,
+                }
+            }
+        })
+        .collect();
+    replace_messages(messages)
+}
+
+/// Replaces an assistant message's content with `content`. A part returned
+/// exactly as `message_end` sent it keeps its metadata.
+#[must_use]
+pub fn replace_message_content(content: Vec<Open<HookAssistantPart>>) -> ExtensionMessageEndResult {
+    ExtensionMessageEndResult {
+        action: ExtensionMessageEndAction::Replace,
+        content: Some(content),
+    }
+}
+
+/// Replaces an assistant message's content with its text parts rewritten
+/// with `rewrite`; every other part is returned as sent, and a part of a
+/// type this SDK does not know is left out.
+#[must_use]
+pub fn rewrite_message_text(
+    content: &[Open<HookAssistantPart>],
+    mut rewrite: impl FnMut(&str) -> String,
+) -> ExtensionMessageEndResult {
+    replace_message_content(
+        content
+            .iter()
+            .filter_map(|part| match part {
+                Open::Known(HookAssistantPart::Text { text }) => {
+                    Some(Open::Known(HookAssistantPart::Text {
+                        text: rewrite(text),
+                    }))
+                }
+                Open::Known(other) => Some(Open::Known(other.clone())),
+                Open::Unknown { .. } => None,
+            })
+            .collect(),
+    )
 }

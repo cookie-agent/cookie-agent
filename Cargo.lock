@@ -748,6 +748,7 @@ dependencies = [
 name = "cookie_agent_plugin_sdk"
 version = "0.3.0"
 dependencies = [
+ "base64 0.22.1",
  "cookie_agent_protocol",
  "jiff",
  "jsonschema",

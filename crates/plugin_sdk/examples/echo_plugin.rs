@@ -1,4 +1,6 @@
-use cookie_agent_plugin_sdk::{PermissionAction, PluginServer, ToolDecl, ToolFailure, ToolOutput};
+use cookie_agent_plugin_sdk::{
+    DisplayBlock, PermissionAction, PluginServer, Presentation, ToolDecl, ToolFailure, ToolOutput,
+};
 use serde_json::json;
 
 #[tokio::main(flavor = "current_thread")]
@@ -27,9 +29,18 @@ async fn main() -> Result<(), cookie_agent_plugin_sdk::PluginError> {
                 let text = arguments["text"]
                     .as_str()
                     .ok_or_else(|| ToolFailure::new("text is required"))?;
-                Ok(ToolOutput::success(text))
+                // The model reads the text; clients show it as a block.
+                Ok(ToolOutput::success(text)
+                    .title("Echoed")
+                    .display(DisplayBlock::text(text)))
             },
         )
+        // Clients show a call as "Echo" with the text it will echo.
+        .prepare_presentation("echo", |call| {
+            Presentation::new("Echo")
+                .hint("message")
+                .primary_argument(call.arguments["text"].as_str().unwrap_or_default())
+        })
         .run_stdio()
         .await
 }

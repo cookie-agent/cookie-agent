@@ -30,7 +30,9 @@ tokio = { version = "1", features = ["macros", "rt"] }
 A plugin with one tool:
 
 ```rust
-use cookie_agent_plugin_sdk::{PermissionAction, PluginServer, ToolDecl, ToolFailure, ToolOutput};
+use cookie_agent_plugin_sdk::{
+    DisplayBlock, PermissionAction, PluginServer, Presentation, ToolDecl, ToolFailure, ToolOutput,
+};
 use serde_json::json;
 
 #[tokio::main(flavor = "current_thread")]
@@ -50,7 +52,11 @@ async fn main() -> Result<(), cookie_agent_plugin_sdk::PluginError> {
             let text = arguments["text"]
                 .as_str()
                 .ok_or_else(|| ToolFailure::new("text is required"))?;
-            Ok(ToolOutput::success(text))
+            Ok(ToolOutput::success(text).display(DisplayBlock::text(text)))
+        })
+        .prepare_presentation("echo", |call| {
+            Presentation::new("Echo")
+                .primary_argument(call.arguments["text"].as_str().unwrap_or_default())
         })
         .run_stdio()
         .await
@@ -65,18 +71,37 @@ tool's name and parameter schema when the server is built.
   approved under its declared permission with no resource;
   `tool_with_resource(declaration, resource, handler)` also derives each
   call's permission resource, such as a path or an issue number, from its
-  arguments. A handler gets a `ToolContext` (the session, run, and call IDs,
-  whether the model asked for the background, cancellation, `progress`, and
-  `detachable`) and the call's arguments, and returns a `ToolOutput` or a
-  `ToolFailure`. `ToolOutput::error` is a result the model should see as a
-  failure. The result's display, which clients show, is the output's text as
-  one `text` display block.
+  arguments. The daemon builds each call's approval identity from them. A
+  handler gets a `ToolContext` (the session, run, and call IDs, whether the
+  model asked for the background, cancellation, `progress`,
+  `progress_display`, and `detachable`) and the call's arguments, and
+  returns a `ToolOutput` or a `ToolFailure`.
+- **Results.** `ToolOutput` is a builder: `ToolOutput::success(text)` or
+  `ToolOutput::error(text)` (a result the model should see as a failure),
+  then `title`, `display` (one display block; `displays` for several),
+  `metadata`, `attachment(mime_type, filename, bytes)`, and `failed`. The
+  model reads the text and the metadata; clients show the display blocks,
+  or the text when there are none. The SDK sends an attachment's bytes with
+  the result.
+- **Presentation.** `prepare_presentation(tool, |call| …)` returns a
+  `Presentation` for each prepared call of `tool`: a title, a `hint` for
+  icons (such as `shell` or `fetch`), a `primary_argument`, and display
+  blocks of its `argument`s and a `preview` of what it will do. Without it a
+  call is titled with the tool's name and shows its permission resource.
+- **Progress.** `progress(message, output)` reports a status line and
+  output text; `progress_display(message, delta)` changes the call's live
+  display with a `DisplayDelta` (`Append { index, text, stream }` or
+  `Replace { blocks }`).
 - **Hooks.** One builder method per hook, named after it, such as
   `tool_before_call`; helpers like `allow()`, `block(reason)`, `modify`,
   `replace`, `append_system_prompt`, `inject_message`, and
-  `cancel_compaction` build results. `on_hook_error(hook,
-  ExtensionHookOnError::Block)` makes a failure of that hook block its
-  operation (see [Hooks](#hooks)).
+  `cancel_compaction` build results, and `transform_input`,
+  `rewrite_input_text`, `replace_messages`, `rewrite_history_text`,
+  `replace_message_content`, and `rewrite_message_text` build the
+  replacements of `user_before_input`, `model_before_request`, and
+  `message_end` (the `rewrite_*` ones change text parts and keep every
+  other part as sent). `on_hook_error(hook, ExtensionHookOnError::Block)`
+  makes a failure of that hook block its operation (see [Hooks](#hooks)).
 - **Events.** `on_event` and `on_bus_event` receive streamed notifications;
   `event_patterns(["run_*", ...])` narrows the event types `on_event` gets.
   A handler may publish one bus event with `context.emit_bus(...)` after
@@ -87,7 +112,9 @@ tool's name and parameter schema when the server is built.
 
 The examples `echo_plugin.rs` and `producer_plugin.rs` in
 `crates/plugin_sdk/examples` build with
-`cargo check -p cookie_agent_plugin_sdk --examples`.
+`cargo check -p cookie_agent_plugin_sdk --examples`. The SDK exposes the
+protocol version it speaks as `PLUGIN_PROTOCOL_VERSION`; its crate version's
+major follows the protocol's major.
 
 ## Handshake
 

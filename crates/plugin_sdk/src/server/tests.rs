@@ -1,6 +1,7 @@
 use cookie_agent_protocol::{
     AdaptorId, AgentId, ExtensionToolBeforeCallAction, ExtensionToolOrigin, PermissionAction,
-    runtime_protocol::{ToolTurn, ToolTurnModel},
+    ToolCompletionOutput,
+    runtime_protocol::{ToolResult, ToolTurn, ToolTurnModel},
 };
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -432,6 +433,228 @@ async fn a_tool_reports_progress_and_stops_when_cancelled() {
         ExecuteOutcome::Failed { error } if error.message == "cancelled"
     ));
     engine.shutdown().await;
+}
+
+/// A tool's presentation, display, progress display, metadata, and
+/// attachments cross the protocol as the builders made them.
+#[tokio::test]
+async fn a_tool_presents_itself_and_returns_what_its_output_builder_holds() {
+    use crate::{DisplayBlock, DisplayDelta, Presentation};
+
+    let mut guarded = declaration("close_issue");
+    guarded.permission = Some(PermissionAction::new("issue_write").expect("action"));
+    let server = PluginServer::builder("issues", "0.1.0")
+        .tool_with_resource(
+            guarded,
+            |arguments| arguments["issue"].as_str().map(str::to_owned),
+            |context, _arguments| async move {
+                context
+                    .progress_display(
+                        "closing",
+                        DisplayDelta::Replace {
+                            blocks: vec![cookie_agent_protocol::Open::Known(DisplayBlock::text(
+                                "closing…",
+                            ))],
+                        },
+                    )
+                    .await
+                    .map_err(|error| ToolFailure::new(error.to_string()))?;
+                Ok(ToolOutput::success("closed #12")
+                    .title("Closed issue #12")
+                    .display(DisplayBlock::text("#12 is closed"))
+                    .metadata(json!({"issue": 12}))
+                    .attachment("image/png", Some("badge.png".into()), b"png bytes".to_vec()))
+            },
+        )
+        .prepare_presentation("close_issue", |call| {
+            Presentation::new(format!("Close issue {}", call.resource.unwrap_or("?")))
+                .hint("generic")
+                .primary_argument(call.resource.unwrap_or_default())
+                .preview(DisplayBlock::text("The issue is closed as completed."))
+        })
+        .tool(declaration("echo"), |_context, arguments| async move {
+            Ok(ToolOutput::error(arguments["text"].as_str().unwrap_or_default()).failed(false))
+        })
+        .build()
+        .expect("server");
+    let mut engine = Engine::connect(server, false).await;
+    let session = SessionId::new_v7();
+    let outcomes = engine
+        .prepare(
+            session,
+            vec![
+                call("close_issue", json!({"issue": "12"})),
+                call("echo", json!({"text": "hi"})),
+            ],
+        )
+        .await;
+    let close = prepared(&outcomes[0]);
+    assert_eq!(
+        serde_json::to_value(&close.presentation).unwrap(),
+        json!({
+            "title": "Close issue 12",
+            "hint": "generic",
+            "primary_argument": "12",
+            "preview": [{"type": "text", "text": "The issue is closed as completed."}],
+        })
+    );
+    // Without a hook the call shows the tool's name and its resource.
+    let echo = prepared(&outcomes[1]);
+    assert_eq!(echo.presentation.title.as_str(), "echo");
+    assert!(echo.presentation.primary_argument.is_none());
+
+    let prepared_id = close.prepared_id;
+    let peer = engine.peer.clone();
+    let execution = tokio::spawn(async move {
+        peer.request::<_, ExecuteResult>(
+            method::TOOL_EXECUTE,
+            &ExecuteParams {
+                prepared_id,
+                session,
+                run: RunId::new_v7(),
+                turn: turn(),
+                background: false,
+            },
+        )
+        .await
+    });
+    let progress = engine.next_request(method::TOOL_PROGRESS).await;
+    let params: ToolProgressParams = progress.params().expect("progress params");
+    assert_eq!(
+        serde_json::to_value(&params.progress.display).unwrap(),
+        json!({"type": "replace", "blocks": [{"type": "text", "text": "closing…"}]})
+    );
+    progress
+        .respond(&Outcome::default())
+        .await
+        .expect("answer progress");
+    let result = tokio::time::timeout(WAIT, execution)
+        .await
+        .expect("the execution ends")
+        .expect("execution task")
+        .expect("execute");
+    let ExecuteOutcome::Completed(completed) = &result.outcome else {
+        panic!("the call completes: {:?}", result.outcome);
+    };
+    assert_eq!(
+        completed.output,
+        ToolCompletionOutput::Single {
+            text: "closed #12".into()
+        }
+    );
+    assert_eq!(
+        completed.title.as_ref().map(|title| title.as_str()),
+        Some("Closed issue #12")
+    );
+    assert_eq!(
+        serde_json::to_value(&completed.display).unwrap(),
+        json!([{"type": "text", "text": "#12 is closed"}])
+    );
+    assert_eq!(completed.metadata, Some(json!({"issue": 12})));
+    assert!(!completed.failed);
+    let attachment = &completed.attachments[0];
+    assert_eq!(attachment.mime_type.as_str(), "image/png");
+    assert_eq!(attachment.byte_length, 9);
+    assert_eq!(result.media[0].sha256, attachment.sha256.as_str());
+    assert_eq!(
+        attachment.reference,
+        cookie_agent_protocol::runtime_protocol::artifact_reference(attachment.sha256.as_str())
+    );
+
+    let result = engine.execute(session, echo.prepared_id).await;
+    assert_eq!(completed_text(&result), ("hi", false));
+    engine.shutdown().await;
+}
+
+#[test]
+fn a_presentation_for_an_unregistered_tool_fails_the_build() {
+    let result = PluginServer::builder("issues", "0.1.0")
+        .tool(declaration("echo"), |_context, _arguments| async {
+            Ok(ToolOutput::success("ok"))
+        })
+        .prepare_presentation("missing", crate::Presentation::of_call)
+        .build();
+    assert!(
+        result
+            .err()
+            .expect("a build error")
+            .to_string()
+            .contains("prepare_presentation names `missing`")
+    );
+}
+
+#[test]
+fn hook_content_helpers_rewrite_text_and_keep_everything_else() {
+    use cookie_agent_protocol::{
+        ArtifactRef, ExtensionMessageRole, HookAssistantPart, HookContentPart, HookHistoryMessage,
+        Open, UserContent, UserContentPart,
+    };
+
+    let file: ArtifactRef = serde_json::from_value(json!({
+        "sha256": "a".repeat(64), "byte_length": 3, "media_type": "image/png",
+    }))
+    .unwrap();
+    let input = UserContent::new(vec![
+        Open::Known(UserContentPart::Text {
+            text: "hello".into(),
+        }),
+        Open::Known(UserContentPart::File {
+            artifact: file.clone(),
+        }),
+    ])
+    .unwrap();
+    let result = crate::rewrite_input_text(&input, str::to_uppercase).expect("content");
+    assert_eq!(
+        result.action,
+        cookie_agent_protocol::ExtensionUserBeforeInputAction::Transform
+    );
+    assert_eq!(
+        serde_json::to_value(result.content.unwrap()).unwrap(),
+        json!([
+            {"type": "text", "text": "HELLO"},
+            {"type": "file", "artifact": file},
+        ])
+    );
+
+    let unchanged = HookHistoryMessage {
+        role: ExtensionMessageRole::Tool,
+        content: vec![Open::Known(HookContentPart::ToolResult {
+            tool_call_id: "c1".into(),
+            content: "secret".into(),
+            is_error: false,
+        })],
+    };
+    let changed = HookHistoryMessage {
+        role: ExtensionMessageRole::User,
+        content: vec![Open::Known(HookContentPart::Text {
+            text: "a secret".into(),
+        })],
+    };
+    let result = crate::rewrite_history_text(&[unchanged.clone(), changed], |text| {
+        text.replace("secret", "[redacted]")
+    });
+    let messages = result.messages.expect("messages");
+    assert_eq!(messages[0], unchanged);
+    assert_eq!(
+        messages[1].content,
+        [Open::Known(HookContentPart::Text {
+            text: "a [redacted]".into()
+        })]
+    );
+
+    let unknown: Open<HookAssistantPart> =
+        serde_json::from_value(json!({"type": "hologram"})).unwrap();
+    let result = crate::rewrite_message_text(
+        &[
+            Open::Known(HookAssistantPart::Text { text: "hi".into() }),
+            unknown,
+        ],
+        |text| format!("{text}!"),
+    );
+    assert_eq!(
+        result.content.unwrap(),
+        [Open::Known(HookAssistantPart::Text { text: "hi!".into() })]
+    );
 }
 
 #[tokio::test]
