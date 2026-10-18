@@ -118,6 +118,7 @@ fn expandable_rows_render_emoji_before_collapsed_and_expanded_chevrons() {
             detail: String::new(),
             operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
+            live_display: Default::default(),
             revision: 0,
         },
     );
@@ -249,6 +250,7 @@ fn tool_children_render_compact_titles_with_status_semantics() {
             detail: String::new(),
             operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
+            live_display: Default::default(),
             revision: 0,
         },
     );
@@ -321,6 +323,7 @@ fn wrapped_tool_arguments_keep_the_assistant_gutter() {
             detail: String::new(),
             operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
+            live_display: Default::default(),
             revision: 0,
         },
     );

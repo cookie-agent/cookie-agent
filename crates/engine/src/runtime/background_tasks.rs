@@ -547,7 +547,7 @@ fn immediate_result(job: &str, by: BackgroundActor, note: Option<&str>) -> Persi
     PersistedToolResult {
         title: cookie_agent_protocol::SafeDisplayText::new("Moved to the background")
             .expect("static title is valid"),
-        display: Some(cookie_agent_runtime_api::bounded_tool_display(&output)),
+        display: cookie_agent_runtime_api::bounded_tool_display(&output),
         output,
         retained_output: None,
         metadata: serde_json::json!({"background": {"job": job, "by": actor_name(by)}}),
@@ -577,7 +577,7 @@ pub(super) fn self_reporting_result(
     PersistedToolResult {
         title: cookie_agent_protocol::SafeDisplayText::new("Moved to the background")
             .expect("static title is valid"),
-        display: Some(cookie_agent_runtime_api::bounded_tool_display(&output)),
+        display: cookie_agent_runtime_api::bounded_tool_display(&output),
         output,
         retained_output: None,
         metadata: serde_json::json!({"background": {"by": actor_name(by)}}),
@@ -820,7 +820,7 @@ mod tests {
         let result = PersistedToolResult {
             title: cookie_agent_protocol::SafeDisplayText::new("Bash").unwrap(),
             output: "[stdout]\nok\n".into(),
-            display: None,
+            display: Vec::new(),
             retained_output: None,
             metadata: serde_json::json!({"status": 0}),
             attachments: Vec::new(),

@@ -441,14 +441,13 @@ impl Engine {
                 if termination.outcome == ToolTerminationOutcome::Cancelled
                     || was_incomplete.is_some_and(|incomplete| {
                         !incomplete
-                            || result
-                                .display
-                                .as_ref()
-                                .is_none_or(|display| display.trim().is_empty())
+                            || cookie_agent_protocol::display_text(&result.display)
+                                .trim()
+                                .is_empty()
                     })
                 {
-                    result.display = Some(
-                        match termination.outcome {
+                    result.display =
+                        cookie_agent_protocol::text_display(match termination.outcome {
                             ToolTerminationOutcome::Cancelled => {
                                 if result.retained_output.is_some() {
                                     "Tool cancelled; retained output is incomplete."
@@ -460,9 +459,7 @@ impl Engine {
                                 "Tool interrupted; retained output is incomplete."
                             }
                             _ => "Tool failed; retained output is incomplete.",
-                        }
-                        .into(),
-                    );
+                        });
                 }
             }
         }

@@ -1389,3 +1389,28 @@ Deviations and choices made while implementing, by phase.
   `artifact://sha256/` URIs, which a file part's `ArtifactRef` does not
   spell out; no writer produces file parts yet, so phase F adds them to the
   scan with uploads.
+- **Display blocks in results.** `PersistedToolResult.display` is a required
+  list of open blocks (the schema leaves it out of `required` because
+  `display_span` stands in for it). The span encoding applies to a whole
+  single `text` block (no `omitted_lines`); terminal spans wait for phase G,
+  which writes the first terminal blocks. The daemon's normalize step
+  (`fit_result_display`) sanitizes blocks from every tool, drops kinds it
+  does not know, without the diagnostic of 12.4 until phase E, and fits the
+  list to 64 KiB serialized. Fitting cuts whole lines, so a single line
+  longer than the budget now shows only its omitted count where it used to
+  show its first 64 KiB; bash fits its own block, escapes counted, so its
+  truncation marker and exit status survive. A result completed with
+  `ToolCompletion::single` and no display shows its output, replacing the
+  old "display absent" default. The TUI's rendering of a result without
+  display (title, output, metadata, and emitted messages) served only that
+  default and is gone; a failure with an empty display shows its error.
+- **Progress deltas.** An `append` to the index just past the live list
+  creates the block (a `text` block, or a `terminal` block when the append
+  names a stream), so today's writers send `append { index: 0, text }`. One
+  append carries at most 1 KiB, as one display delta did. `LiveDisplay` is
+  the one bounding rule for writers and readers: an append costs its text's
+  bytes and a replacement its serialized size against one 64 KiB budget per
+  call. Messages keep their own 64 KiB budget rather than sharing the
+  display's. A late subscriber receives a running call's live display as one
+  `replace`. The plugin SDK's progress sends no display today, so it has
+  nothing to convert.

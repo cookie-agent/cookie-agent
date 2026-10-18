@@ -59,10 +59,12 @@ fn tool_failures_with_output_stay_inline_on_replay() {
                             String::new()
                         },
                         display: match case {
-                            1 => Some("Finished".into()),
-                            3 => Some("File missing".into()),
-                            4 => Some("stdout\nstderr\nExit status: 1".into()),
-                            _ => None,
+                            1 => cookie_agent_protocol::text_display("Finished"),
+                            3 => cookie_agent_protocol::text_display("File missing"),
+                            4 => cookie_agent_protocol::text_display(
+                                "stdout\nstderr\nExit status: 1",
+                            ),
+                            _ => Vec::new(),
                         },
                         metadata: serde_json::json!({"status": 1, "success": false}),
                         retained_output: None,
@@ -88,7 +90,9 @@ fn tool_failures_with_output_stay_inline_on_replay() {
                 EventPayload::ToolCallProgress {
                     tool_call_id: call,
                     message: cookie_agent_protocol::SafeDisplayText::new("output").unwrap(),
-                    display: Some("File missing".into()),
+                    display: Some(
+                        cookie_agent_protocol::DisplayDelta::append(0, "File missing").into(),
+                    ),
                 },
             ));
         }
@@ -2717,6 +2721,7 @@ fn tool_termination_clears_streamed_output_and_sets_detail() {
             )
             .unwrap(),
             has_output_chunks: false,
+            live_display: Default::default(),
             revision: 0,
         },
     );
@@ -2728,7 +2733,9 @@ fn tool_termination_clears_streamed_output_and_sets_detail() {
             tool_call_id: call_id,
             message: cookie_agent_protocol::SafeDisplayText::new("bash stdout")
                 .expect("progress message"),
-            display: Some("streamed preview".into()),
+            display: Some(
+                cookie_agent_protocol::DisplayDelta::append(0, "streamed preview").into(),
+            ),
         },
     );
     assert_eq!(state.tools[&call_id].detail, "streamed preview");
@@ -2746,7 +2753,7 @@ fn tool_termination_clears_streamed_output_and_sets_detail() {
                 owner,
                 outcome: ToolTerminationOutcome::Completed,
                 result: Some(cookie_agent_protocol::PersistedToolResult {
-                    display: None,
+                    display: cookie_agent_protocol::text_display("stdout:\nonce\n"),
                     retained_output: None,
                     title: cookie_agent_protocol::SafeDisplayText::new("Bash")
                         .expect("result title"),
@@ -2793,13 +2800,7 @@ fn tool_termination_clears_streamed_output_and_sets_detail() {
 
     assert_eq!(state.tools[&call_id].status, ToolStatus::Completed);
     assert!(!state.tools[&call_id].has_output_chunks);
-    assert_eq!(
-        state.tools[&call_id].detail,
-        format!(
-            "Bash\nstdout:\nonce\n\nstderr:\n\nemitted user message:\ntext: review this clip\nfile: video/mp4 · 4 bytes · sha256:{digest} · artifact://sha256/{digest}",
-            digest = cookie_agent_protocol::Sha256Digest::of_bytes(b"clip")
-        )
-    );
+    assert_eq!(state.tools[&call_id].detail, "stdout:\nonce\n");
 }
 
 #[test]
@@ -2837,7 +2838,7 @@ fn tool_display_is_bounded_and_final_replacement_matches_replay() {
             result: Some(cookie_agent_protocol::PersistedToolResult {
                 title: cookie_agent_protocol::SafeDisplayText::new("Test").unwrap(),
                 output: "model-only authoritative output".into(),
-                display: Some("final display\nsecond line".into()),
+                display: cookie_agent_protocol::text_display("final display\nsecond line"),
                 retained_output: None,
                 metadata: serde_json::json!({"model_only": true}),
                 attachments: Vec::new(),
@@ -2861,7 +2862,9 @@ fn tool_display_is_bounded_and_final_replacement_matches_replay() {
             EventPayload::ToolCallProgress {
                 tool_call_id: call,
                 message: cookie_agent_protocol::SafeDisplayText::new("status-only").unwrap(),
-                display: Some("\u{20ac}".repeat(100)),
+                display: Some(
+                    cookie_agent_protocol::DisplayDelta::append(0, "\u{20ac}".repeat(100)).into(),
+                ),
             },
         );
     }
@@ -2983,7 +2986,9 @@ fn replay_with_tool_chunks_ends_at_committed_result_only() {
                 tool_call_id: call_id,
                 message: cookie_agent_protocol::SafeDisplayText::new("bash stdout")
                     .expect("message"),
-                display: Some("historical chunk".into()),
+                display: Some(
+                    cookie_agent_protocol::DisplayDelta::append(0, "historical chunk").into(),
+                ),
             },
         ),
         event(
@@ -2994,7 +2999,7 @@ fn replay_with_tool_chunks_ends_at_committed_result_only() {
                     owner,
                     outcome: ToolTerminationOutcome::Completed,
                     result: Some(cookie_agent_protocol::PersistedToolResult {
-                        display: None,
+                        display: cookie_agent_protocol::text_display("committed replacement"),
                         retained_output: None,
                         title: cookie_agent_protocol::SafeDisplayText::new("Bash").expect("title"),
                         output: "committed replacement".into(),
@@ -3009,10 +3014,7 @@ fn replay_with_tool_chunks_ends_at_committed_result_only() {
     ];
 
     let replayed = reduce_session_events(session_id, 0, &events);
-    assert_eq!(
-        replayed.tools[&call_id].detail,
-        "Bash\ncommitted replacement"
-    );
+    assert_eq!(replayed.tools[&call_id].detail, "committed replacement");
     assert!(!replayed.tools[&call_id].detail.contains("historical chunk"));
     assert!(!replayed.tools[&call_id].has_output_chunks);
 }

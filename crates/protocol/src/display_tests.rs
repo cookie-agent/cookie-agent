@@ -549,6 +549,123 @@ fn deltas_append_to_text_and_terminal_blocks_or_replace_the_list() {
 }
 
 #[test]
+fn an_append_just_past_the_list_creates_its_block() {
+    let mut live = Vec::new();
+    DisplayDelta::Append {
+        index: 0,
+        text: "line 1\n".into(),
+        stream: None,
+    }
+    .apply(&mut live)
+    .unwrap();
+    DisplayDelta::Append {
+        index: 1,
+        text: "err".into(),
+        stream: Some(TerminalStream::Stderr),
+    }
+    .apply(&mut live)
+    .unwrap();
+    assert_eq!(live[0].known(), Some(&DisplayBlock::text("line 1\n")));
+    assert!(matches!(
+        live[1].known(),
+        Some(DisplayBlock::Terminal { segments, .. })
+            if segments == &[stream(TerminalStream::Stderr, "err")]
+    ));
+    assert_eq!(
+        DisplayDelta::Append {
+            index: 3,
+            text: "x".into(),
+            stream: None,
+        }
+        .apply(&mut live),
+        Err(DisplayDeltaError::NoSuchBlock(3))
+    );
+}
+
+#[test]
+fn a_live_display_keeps_its_deltas_within_one_budget() {
+    let append = |text: String| DisplayDelta::Append {
+        index: 0,
+        text,
+        stream: None,
+    };
+    let mut live = LiveDisplay::default();
+    let chunk = "é".repeat(DisplayDelta::MAX_APPEND_BYTES / 2);
+    let mut admitted = 0;
+    while let Some(delta) = live.admit(append(chunk.clone())).unwrap() {
+        let DisplayDelta::Append { text, .. } = delta else {
+            panic!("an append stays an append");
+        };
+        admitted += text.len();
+    }
+    // The last append was cut on a character boundary to the budget.
+    assert_eq!(admitted, DISPLAY_BUDGET_BYTES);
+    assert_eq!(display_text(live.blocks()).len(), DISPLAY_BUDGET_BYTES);
+    assert_eq!(live.admit(append("more".into())), Ok(None));
+
+    let mut live = LiveDisplay::default();
+    live.admit(append("a".into())).unwrap();
+    assert_eq!(
+        live.admit(DisplayDelta::Append {
+            index: 4,
+            text: "x".into(),
+            stream: None,
+        }),
+        Err(DisplayDeltaError::NoSuchBlock(4))
+    );
+    let replaced = live
+        .admit(DisplayDelta::Replace {
+            blocks: vec![Open::Known(DisplayBlock::text(
+                "line\n".repeat(DISPLAY_BUDGET_BYTES),
+            ))],
+        })
+        .unwrap()
+        .expect("a cut replacement still fits");
+    let DisplayDelta::Replace { blocks } = replaced else {
+        panic!("a replacement stays a replacement");
+    };
+    assert!(serde_json::to_vec(&blocks).unwrap().len() < DISPLAY_BUDGET_BYTES);
+    assert_eq!(live.blocks(), blocks.as_slice());
+    assert!(matches!(
+        live.blocks()[0].known(),
+        Some(DisplayBlock::Text {
+            omitted_lines: Some(_),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn result_displays_are_sanitized_fit_and_validated() {
+    assert!(text_display("").is_empty());
+    assert_eq!(
+        text_display("ok"),
+        vec![Open::Known(DisplayBlock::text("ok"))]
+    );
+    let unknown: Open<DisplayBlock> =
+        serde_json::from_value(json!({"type": "hologram", "frames": 3})).unwrap();
+    let fitted = fit_result_display(vec![
+        Open::Known(DisplayBlock::text("a\u{1b}[31mb")),
+        unknown.clone(),
+        Open::Known(DisplayBlock::text("line\n".repeat(DISPLAY_BUDGET_BYTES))),
+    ]);
+    assert_eq!(fitted[0].known(), Some(&DisplayBlock::text("ab")));
+    assert_eq!(fitted.len(), 2);
+    assert_eq!(validate_display(&fitted), Ok(()));
+    assert_eq!(validate_display(&[unknown]), Ok(()));
+    assert_eq!(
+        validate_display(&[Open::Known(DisplayBlock::text("a\u{7}"))]),
+        Err(DisplayBlockError::ControlCharacter("text"))
+    );
+    assert_eq!(
+        validate_display(&[Open::Known(DisplayBlock::text(
+            "x".repeat(DISPLAY_BUDGET_BYTES)
+        ))]),
+        Err(DisplayBlockError::TooLarge)
+    );
+}
+
+#[test]
 fn presentations_carry_the_tool_and_open_sources() {
     let prepared: PreparedPresentation = serde_json::from_value(json!({
         "title": "Edit src/main.rs",

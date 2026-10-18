@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    PersistedToolResult as ToolResult, PreparedOperationIdentity, Sha256Digest,
+    DisplayBlock, Open, PersistedToolResult as ToolResult, PreparedOperationIdentity, Sha256Digest,
     ToolCallPresentation,
 };
 
@@ -34,10 +34,12 @@ impl ToolCompletion {
         Ok(result)
     }
 
+    /// A completion of `result`'s output. A result without display shows
+    /// its output.
     pub fn single(mut result: ToolResult) -> Self {
         let text = std::mem::take(&mut result.output);
-        if result.display.is_none() {
-            result.display = Some(bounded_tool_display(&text));
+        if result.display.is_empty() {
+            result.display = bounded_tool_display(&text);
         }
         Self {
             output: cookie_agent_protocol::ToolCompletionOutput::Single { text },
@@ -46,10 +48,7 @@ impl ToolCompletion {
         }
     }
 
-    pub fn streamed(mut result: ToolResult) -> Self {
-        if result.display.is_none() {
-            result.display = Some(String::new());
-        }
+    pub fn streamed(result: ToolResult) -> Self {
         Self {
             output: cookie_agent_protocol::ToolCompletionOutput::Streamed,
             result,
@@ -58,10 +57,14 @@ impl ToolCompletion {
     }
 }
 
-/// `text` sanitized for display and cut to the tool display bound.
+/// `text` as a result's display: one `text` block, sanitized for display and
+/// cut to whole lines within the display budget. An empty text shows
+/// nothing.
 #[must_use]
-pub fn bounded_tool_display(text: &str) -> String {
-    sanitize_tool_display(text, cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES)
+pub fn bounded_tool_display(text: &str) -> Vec<Open<DisplayBlock>> {
+    cookie_agent_protocol::fit_result_display(cookie_agent_protocol::text_display(
+        sanitize_tool_display(text, usize::MAX),
+    ))
 }
 
 /// `text` with control characters other than newline and tab replaced by

@@ -1032,10 +1032,9 @@ impl Server {
                     result: PersistedToolResult {
                         title: safe_title(&prepared.tool.declaration.name),
                         output: String::new(),
-                        display: Some(truncate(
-                            &output.text,
-                            cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES,
-                        )),
+                        display: cookie_agent_protocol::fit_result_display(
+                            cookie_agent_protocol::text_display(output.text.clone()),
+                        ),
                         retained_output: None,
                         metadata: Value::Null,
                         attachments: Vec::new(),

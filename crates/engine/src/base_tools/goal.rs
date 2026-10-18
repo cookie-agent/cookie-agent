@@ -249,7 +249,7 @@ impl PreparedExecutor for GoalExecutor {
 
 fn goal_result(title: &str, result: serde_json::Value) -> Result<ToolResult, ToolError> {
     Ok(ToolResult {
-        display: None,
+        display: Vec::new(),
         retained_output: None,
         title: safe_title(title),
         output: serde_json::to_string_pretty(&result).map_err(tool_error)?,

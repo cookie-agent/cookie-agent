@@ -1988,7 +1988,11 @@ pub(crate) async fn live_progress_chunks(
                     if let Some(last_seq) = last_seq {
                         assert_eq!(event.after_seq, last_seq);
                     }
-                    chunks.push(chunk.clone());
+                    let text = chunk
+                        .known()
+                        .and_then(cookie_agent_protocol::DisplayDelta::append_text)
+                        .expect("an append to the live display");
+                    chunks.push(text.to_owned());
                 }
             }
             EventSubscriptionMessage::Gap { .. } => panic!("unexpected gap"),

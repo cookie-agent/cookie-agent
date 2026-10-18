@@ -1554,7 +1554,7 @@ fn replayed_failure_diagnostic_precedes_output_beyond_the_render_budget() {
             termination.result = Some(cookie_agent_protocol::PersistedToolResult {
                 title: SafeDisplayText::new("Bash").unwrap(),
                 output: output.clone(),
-                display: None,
+                display: Vec::new(),
                 metadata: serde_json::Value::Null,
                 retained_output: None,
                 attachments: Vec::new(),
@@ -1585,7 +1585,13 @@ fn replayed_failure_diagnostic_precedes_output_beyond_the_render_budget() {
                     EventPayload::ToolCallProgress {
                         tool_call_id: call_id,
                         message: SafeDisplayText::new("bash stdout").unwrap(),
-                        display: Some(String::from_utf8(chunk.to_vec()).unwrap()),
+                        display: Some(
+                            cookie_agent_protocol::DisplayDelta::append(
+                                0,
+                                String::from_utf8(chunk.to_vec()).unwrap(),
+                            )
+                            .into(),
+                        ),
                     },
                 ));
             }

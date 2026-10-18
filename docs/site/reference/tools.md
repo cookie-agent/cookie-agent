@@ -267,12 +267,22 @@ reserves 16 KiB for headings/hints inside the existing 2 MiB output bound; when
 necessary, previews are reduced with truthful read hints.
 
 `ToolProgress.output` carries at most 8 typed chunks and 64 KiB of authoritative
-text per delta. Its optional `display` is independent UI text. The `message` and
-`display` fields are each limited to 1 KiB; the runtime caps their cumulative
-live-presentation budget at 64 KiB per call without stopping authoritative output.
-Final `display` replaces live display and has its own 64 KiB bound. Control
-characters are sanitized while newlines and tabs remain usable in display text.
-Display is never included in model history.
+text per delta. Its optional `display` is a delta of the live display, independent
+of the output: `append { index, text, stream? }` appends to a `text` (or, with a
+`stream`, a `terminal`) block, creating it when `index` is just past the list,
+and `replace { blocks }` replaces the list. The `message` and an append's text
+are each limited to 1 KiB; the runtime caps the cumulative live-display budget at
+64 KiB per call, and the messages' at another 64 KiB, without stopping
+authoritative output. Today's tools append to block `0`.
+
+A result's `display` is a list of display blocks; empty means nothing to show,
+and a result a tool completes with `ToolCompletion::single` and no display shows
+its output as one `text` block. Every built-in tool's display is one `text` block
+today. Final `display` replaces live display; the daemon sanitizes its blocks,
+drops kinds it does not know, and fits the list to its own 64 KiB serialized
+budget, cutting a block to whole lines and counting the rest in its
+`omitted_lines`. Control characters are sanitized while newlines and tabs remain
+usable in display text. Display is never included in model history.
 
 Executors return `ToolCompletion`: `Single`/`Named` supplies terminal output once,
 whereas `Streamed` finalizes accepted deltas without resending them. Resupplying

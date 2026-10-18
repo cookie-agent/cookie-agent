@@ -542,18 +542,19 @@ impl<'de> Deserialize<'de> for ToolEmittedMessage {
         Self::new(wire.role, wire.content).map_err(serde::de::Error::custom)
     }
 }
-/// A tool result as sessions store it and clients receive it. When `display`
-/// occurs verbatim in `output`, which is the common case (a single-output tool
-/// shows its output, a shell its only stream), it is written as the byte range
-/// `display_span` into `output` instead of a second copy.
+/// A tool result as sessions store it and clients receive it. `display` is
+/// what clients show, a list of display blocks sharing one 64 KiB budget;
+/// empty means nothing to show. When it is a single `text` block whose text
+/// occurs verbatim in `output`, which is the common case (a single-output
+/// tool shows its output, a shell its only stream), it is written as the byte
+/// range `display_span` into `output` instead of a second copy.
 #[derive(Clone, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 #[schemars(transform = display_span_schema)]
 pub struct PersistedToolResult {
     pub title: SafeDisplayText,
     pub output: String,
-    #[serde(default)]
-    pub display: Option<String>,
+    pub display: Vec<Open<DisplayBlock>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_output: Option<crate::RetainedToolOutput>,
     pub metadata: Value,
@@ -591,11 +592,10 @@ impl PersistedToolResult {
         if self.output.len() > Self::MAX_OUTPUT_BYTES {
             return Err(EventSchemaError::ToolOutputTooLarge);
         }
-        if self.display.as_ref().is_some_and(|display| {
-            !crate::tool_output::validate_display(display, crate::MAX_TOOL_DISPLAY_BYTES)
-        }) {
-            return Err(EventSchemaError::ToolOutputTooLarge);
-        }
+        crate::display::validate_display(&self.display).map_err(|error| match error {
+            crate::DisplayBlockError::TooLarge => EventSchemaError::ToolOutputTooLarge,
+            _ => EventSchemaError::InvalidDisplay,
+        })?;
         if let Some(retained) = &self.retained_output {
             retained.validate()?;
         }
@@ -631,13 +631,16 @@ impl PersistedToolResult {
     }
 }
 /// Documents the `display_span` field the serializer writes in place of
-/// `display`.
+/// `display`, which is then absent.
 fn display_span_schema(schema: &mut Schema) {
+    if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
+        required.retain(|field| field != "display");
+    }
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties.insert(
             "display_span".into(),
             serde_json::json!({
-                "description": "Byte range [start, end) of `output` that is the display text. Present instead of `display` when the display occurs verbatim in `output`.",
+                "description": "Byte range [start, end) of `output` that is the text of the display's only block, a `text` block. Present instead of `display` when that text occurs verbatim in `output`.",
                 "type": "array",
                 "items": {"type": "integer", "format": "uint64", "minimum": 0},
                 "minItems": 2,
@@ -657,7 +660,7 @@ impl Serialize for PersistedToolResult {
             title: &'a SafeDisplayText,
             output: &'a str,
             #[serde(skip_serializing_if = "Option::is_none")]
-            display: Option<&'a str>,
+            display: Option<&'a [Open<DisplayBlock>]>,
             #[serde(skip_serializing_if = "Option::is_none")]
             display_span: Option<[usize; 2]>,
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -667,18 +670,22 @@ impl Serialize for PersistedToolResult {
             #[serde(skip_serializing_if = "<[_]>::is_empty")]
             additional_messages: &'a [ToolEmittedMessage],
         }
-        let display = self.display.as_deref();
-        let display_span = display
-            .filter(|display| !display.is_empty())
-            .and_then(|display| {
-                self.output
-                    .find(display)
-                    .map(|start| [start, start + display.len()])
-            });
+        let display_span = match self.display.as_slice() {
+            [
+                Open::Known(DisplayBlock::Text {
+                    text,
+                    omitted_lines: None,
+                }),
+            ] if !text.is_empty() => self
+                .output
+                .find(text.as_str())
+                .map(|start| [start, start + text.len()]),
+            _ => None,
+        };
         Wire {
             title: &self.title,
             output: &self.output,
-            display: display.filter(|_| display_span.is_none()),
+            display: display_span.is_none().then_some(self.display.as_slice()),
             display_span,
             retained_output: self.retained_output.as_ref(),
             metadata: &self.metadata,
@@ -700,7 +707,7 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
             title: SafeDisplayText,
             output: String,
             #[serde(default)]
-            display: Option<String>,
+            display: Option<Vec<Open<DisplayBlock>>>,
             #[serde(default)]
             display_span: Option<[usize; 2]>,
             #[serde(default)]
@@ -712,15 +719,13 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
         }
         let w = Wire::deserialize(d)?;
         let display = match (w.display, w.display_span) {
-            (display, None) => display,
-            (None, Some([start, end])) => Some(
-                w.output
-                    .get(start..end)
-                    .ok_or_else(|| {
-                        serde::de::Error::custom("display_span is not a range of output")
-                    })?
-                    .to_owned(),
-            ),
+            (Some(display), None) => display,
+            (None, Some([start, end])) => vec![Open::Known(DisplayBlock::text(
+                w.output.get(start..end).ok_or_else(|| {
+                    serde::de::Error::custom("display_span is not a range of output")
+                })?,
+            ))],
+            (None, None) => return Err(serde::de::Error::missing_field("display")),
             (Some(_), Some(_)) => {
                 return Err(serde::de::Error::custom(
                     "display and display_span are mutually exclusive",
@@ -2501,11 +2506,9 @@ pub enum EventPayload {
     ToolCallProgress {
         tool_call_id: ToolCallId,
         message: SafeDisplayText,
-        #[serde(
-            default,
-            deserialize_with = "crate::tool_output::deserialize_delta_display"
-        )]
-        display: Option<String>,
+        /// A change to the call's live display.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display: Option<Open<DisplayDelta>>,
     },
     ToolCallTerminated {
         #[serde(flatten)]
@@ -3092,13 +3095,13 @@ impl EventPayload {
                     return Err(EventSchemaError::ZeroModelTurnSequence);
                 }
             }
-            Self::ToolCallProgress { display, .. } => {
-                if display.as_ref().is_some_and(|text| {
-                    !crate::tool_output::validate_display(text, SafeDisplayText::MAX_BYTES)
-                }) {
-                    return Err(EventSchemaError::ToolOutputTooLarge);
-                }
-            }
+            Self::ToolCallProgress {
+                display: Some(Open::Known(delta)),
+                ..
+            } => delta.validate().map_err(|error| match error {
+                crate::DisplayBlockError::TooLarge => EventSchemaError::ToolOutputTooLarge,
+                _ => EventSchemaError::InvalidDisplay,
+            })?,
             Self::ToolCallTerminated { termination } => termination.validate()?,
             Self::DelegationReserved {
                 child_agent,
@@ -3975,6 +3978,7 @@ pub enum EventSchemaError {
     ToolEmittedTextTooLarge,
     InvalidJson,
     InvalidUserContent,
+    InvalidDisplay,
     ZeroModelTurnSequence,
     InvalidToolTermination,
     InvalidDelegateFinished,
@@ -4040,6 +4044,7 @@ impl fmt::Display for EventSchemaError {
             Self::ToolEmittedTextTooLarge => "tool-emitted message text exceeds 64 KiB",
             Self::InvalidJson => "JSON value could not be serialized",
             Self::InvalidUserContent => "user content names an invalid artifact",
+            Self::InvalidDisplay => "a display block is invalid",
             Self::ZeroModelTurnSequence => "model_turn_seq must be positive",
             Self::InvalidToolTermination => {
                 "tool termination outcome/result/error combination is invalid"

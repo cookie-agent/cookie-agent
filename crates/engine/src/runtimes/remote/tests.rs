@@ -397,7 +397,7 @@ async fn cancellation_reaches_the_call_in_the_runtime() {
         .unwrap();
     assert!(started_at.elapsed() < Duration::from_secs(15));
     match result {
-        Ok(completion) => assert!(completion.failed || completion.result.display.is_some()),
+        Ok(completion) => assert!(completion.failed || !completion.result.display.is_empty()),
         Err(error) => assert!(
             !matches!(error, ToolError::RuntimeUnavailable(_)),
             "{error}"
@@ -499,7 +499,7 @@ impl PreparedExecutor for MediaExecutor {
         Ok(ToolCompletion::single(PersistedToolResult {
             title: cookie_agent_protocol::SafeDisplayText::new("Snapshot").unwrap(),
             output: "Attached a snapshot.".into(),
-            display: None,
+            display: Vec::new(),
             retained_output: None,
             metadata: serde_json::Value::Null,
             attachments: vec![attachment],
@@ -1468,7 +1468,7 @@ impl PreparedExecutor for ReportExecutor {
                 Ok(message) => format!("sent {message}"),
                 Err(error) => format!("error: {error}"),
             },
-            display: None,
+            display: Vec::new(),
             retained_output: None,
             metadata: serde_json::Value::Null,
             attachments: Vec::new(),

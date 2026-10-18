@@ -1,5 +1,43 @@
 {
   "$defs": {
+    "ArtifactRef": {
+      "description": "A content-addressed artifact in a session tree's store: a user upload, a\ntool attachment, or the full content of a truncated display block.",
+      "properties": {
+        "byte_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "filename": {
+          "description": "The name the file was attached under, without a directory.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_type": {
+          "description": "The media type sniffed from the content, such as `image/png`.",
+          "maxLength": 255,
+          "minLength": 3,
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Lowercase hex SHA-256 of the bytes.",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "byte_length",
+        "media_type"
+      ],
+      "type": "object"
+    },
     "ArtifactReference": {
       "additionalProperties": false,
       "properties": {
@@ -11,6 +49,550 @@
         "uri"
       ],
       "type": "object"
+    },
+    "DiffAsOf": {
+      "description": "Whether a diff shows what a call will do (`prepare`) or what it did\n(`execute`); the two differ when the file changed in between.",
+      "enum": [
+        "prepare",
+        "execute"
+      ],
+      "type": "string"
+    },
+    "DiffBlock": {
+      "description": "A change to one file, with real file line numbers.",
+      "properties": {
+        "added": {
+          "description": "Lines added by the whole change, omitted hunks included.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "as_of": {
+          "$ref": "#/$defs/DiffAsOf"
+        },
+        "change": {
+          "$ref": "#/$defs/DiffChange"
+        },
+        "full": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hunks": {
+          "description": "Empty when the change has no line diff, such as a binary or very\nlarge file; `added` and `removed` still count its lines.",
+          "items": {
+            "$ref": "#/$defs/DiffHunk"
+          },
+          "type": "array"
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "old_path": {
+          "description": "The path before a rename.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "omitted": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiffOmitted"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "removed": {
+          "description": "Lines removed by the whole change, omitted hunks included.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "change",
+        "hunks",
+        "added",
+        "removed",
+        "as_of"
+      ],
+      "type": "object"
+    },
+    "DiffChange": {
+      "description": "How a file changed. An unknown change reads as `modified`.",
+      "oneOf": [
+        {
+          "enum": [
+            "created",
+            "modified",
+            "deleted",
+            "renamed"
+          ],
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "DiffHunk": {
+      "description": "A run of changed lines and their context. `old_lines` counts its\n`context` and `remove` lines, `new_lines` its `context` and `add` lines.",
+      "properties": {
+        "lines": {
+          "items": {
+            "$ref": "#/$defs/DiffLine"
+          },
+          "type": "array"
+        },
+        "new_lines": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "new_start": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "old_lines": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "old_start": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "old_start",
+        "old_lines",
+        "new_start",
+        "new_lines",
+        "lines"
+      ],
+      "type": "object"
+    },
+    "DiffLine": {
+      "properties": {
+        "op": {
+          "$ref": "#/$defs/DiffLineOp"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "text"
+      ],
+      "type": "object"
+    },
+    "DiffLineOp": {
+      "enum": [
+        "context",
+        "add",
+        "remove"
+      ],
+      "type": "string"
+    },
+    "DiffOmitted": {
+      "properties": {
+        "hunks": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lines": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hunks",
+        "lines"
+      ],
+      "type": "object"
+    },
+    "DisplayBlock": {
+      "description": "One typed unit of tool presentation.\n\nText fields allow `\\n` and `\\t` as their only control characters;\n`terminal` segment text also allows SGR colour sequences. Every line\nnumber is a 1-based file line number. `full` is present only on a\ntruncated block and names its complete content; the `omitted_*` members\ncount the whole units a cut left out.",
+      "oneOf": [
+        {
+          "properties": {
+            "omitted_lines": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "CommonMark.",
+          "properties": {
+            "omitted_lines": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "markdown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "language": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "omitted_lines": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "start_line": {
+              "format": "uint64",
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "code",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Consecutive lines of a file.",
+          "properties": {
+            "full": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ArtifactRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "language": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "lines": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "omitted_lines": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "path": {
+              "type": "string"
+            },
+            "start_line": {
+              "format": "uint64",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "total_lines": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "file_excerpt",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path",
+            "start_line",
+            "lines"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/DiffBlock",
+          "properties": {
+            "type": {
+              "const": "diff",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Output of a process.",
+          "properties": {
+            "exit_code": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "full": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ArtifactRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "omitted_lines": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "segments": {
+              "items": {
+                "$ref": "#/$defs/TerminalSegment"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "terminal",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "segments"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "entries": {
+              "items": {
+                "$ref": "#/$defs/KeyValueEntry"
+              },
+              "type": "array"
+            },
+            "omitted_entries": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "key_value",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "entries"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Every row has one cell per column.",
+          "properties": {
+            "columns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "omitted_rows": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "rows": {
+              "items": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "table",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "columns",
+            "rows"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "json",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "alt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "artifact": {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            "type": {
+              "const": "media",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "artifact"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "link",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "short_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "session_ref",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "session_id"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
     },
     "ExecuteOutcome": {
       "oneOf": [
@@ -77,9 +659,24 @@
       ],
       "type": "object"
     },
+    "KeyValueEntry": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "type": "object"
+    },
     "PersistedToolResult": {
       "additionalProperties": false,
-      "description": "A tool result as sessions store it and clients receive it. When `display`\noccurs verbatim in `output`, which is the common case (a single-output tool\nshows its output, a shell its only stream), it is written as the byte range\n`display_span` into `output` instead of a second copy.",
+      "description": "A tool result as sessions store it and clients receive it. `display` is\nwhat clients show, a list of display blocks sharing one 64 KiB budget;\nempty means nothing to show. When it is a single `text` block whose text\noccurs verbatim in `output`, which is the common case (a single-output\ntool shows its output, a shell its only stream), it is written as the byte\nrange `display_span` into `output` instead of a second copy.",
       "properties": {
         "additional_messages": {
           "description": "Emitted model-history messages. Their files share the 256-file limit with attachments.",
@@ -98,14 +695,13 @@
           "type": "array"
         },
         "display": {
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
+          "items": {
+            "$ref": "#/$defs/DisplayBlock"
+          },
+          "type": "array"
         },
         "display_span": {
-          "description": "Byte range [start, end) of `output` that is the display text. Present instead of `display` when the display occurs verbatim in `output`.",
+          "description": "Byte range [start, end) of `output` that is the text of the display's only block, a `text` block. Present instead of `display` when that text occurs verbatim in `output`.",
           "items": {
             "format": "uint64",
             "minimum": 0,
@@ -238,6 +834,35 @@
         "truncated"
       ],
       "type": "object"
+    },
+    "TerminalSegment": {
+      "properties": {
+        "stream": {
+          "$ref": "#/$defs/TerminalStream"
+        },
+        "text": {
+          "description": "May contain SGR colour sequences.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stream",
+        "text"
+      ],
+      "type": "object"
+    },
+    "TerminalStream": {
+      "description": "The stream a terminal segment came from. An unknown stream reads as\n`stdout`.",
+      "oneOf": [
+        {
+          "enum": [
+            "stdout",
+            "stderr"
+          ],
+          "type": "string"
+        }
+      ],
+      "x-open": true
     },
     "ToolAttachment": {
       "additionalProperties": false,

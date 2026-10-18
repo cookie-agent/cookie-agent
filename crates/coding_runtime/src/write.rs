@@ -174,7 +174,7 @@ impl PreparedExecutor for WriteExecutor {
         let path = path.display();
         Ok(cookie_agent_runtime_api::ToolCompletion::single(
             ToolResult {
-                display: None,
+                display: Vec::new(),
                 retained_output: None,
                 title: crate::safe_title(format!("Wrote {path}")),
                 output: format!("Wrote {bytes} bytes to {path}"),

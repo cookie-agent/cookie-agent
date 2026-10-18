@@ -35,7 +35,7 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::LoadedMcpServer;
 use cookie_agent_protocol::{
-    ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, PermissionAction,
+    ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, DisplayDelta, PermissionAction,
     PersistedToolResult as ToolResult, PreparedApprovalResource, PreparedBindingLifetime,
     PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
     PreparedResourceIdentity, SafeDisplayText, Sha256Digest, ToolAttachment, ToolCallId,
@@ -470,7 +470,11 @@ impl ClientHandler for McpClientHandler {
                     output: Vec::new(),
                     tool_call_id,
                     message: message.clone(),
-                    display: Some(safe_title(&message).to_string()),
+                    display: Some(DisplayDelta::Append {
+                        index: 0,
+                        text: safe_title(&message).to_string(),
+                        stream: None,
+                    }),
                 })
                 .await;
         }
@@ -2028,7 +2032,7 @@ fn map_tool_result(
         ]
     };
     Ok(ToolResult {
-        display: None,
+        display: Vec::new(),
         retained_output: None,
         title: safe_title(tool_name),
         output: text_output,

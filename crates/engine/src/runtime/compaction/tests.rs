@@ -543,7 +543,7 @@ fn elision_and_estimator_share_emitted_part_byte_accounting() {
         },
     };
     let result = ToolResult {
-        display: None,
+        display: Vec::new(),
         retained_output: None,
         title: SafeDisplayText::new("Video").unwrap(),
         output: "x".repeat(60),

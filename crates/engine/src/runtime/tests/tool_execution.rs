@@ -365,7 +365,10 @@ async fn opt_out_completion_never_allocates_capture_files_or_waits_for_publicati
     );
     let result = terminal.result.as_ref().unwrap();
     assert_eq!(result.output, "page completed");
-    assert_eq!(result.display.as_deref(), Some("page completed"));
+    assert_eq!(
+        cookie_agent_protocol::display_text(&result.display),
+        "page completed"
+    );
     assert!(result.retained_output.is_none());
     assert_eq!(attempted.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(
@@ -497,8 +500,8 @@ async fn cancellation_after_successful_finalization_is_reconciled_at_terminal_co
     let result = terminal.result.as_ref().unwrap();
     assert_eq!(result.output, "race completed");
     assert_eq!(
-        result.display.as_deref(),
-        Some("Tool cancelled; retained output is incomplete.")
+        cookie_agent_protocol::display_text(&result.display),
+        "Tool cancelled; retained output is incomplete."
     );
     let retained = result.retained_output.as_ref().unwrap();
     assert!(retained.incomplete);
@@ -639,7 +642,10 @@ async fn plugin_named_output_contract_reaches_capture_manifest_and_model_history
         terminal.error
     );
     let result = terminal.result.as_ref().unwrap();
-    assert_eq!(result.display.as_deref(), Some("PLUGIN_UI_ONLY"));
+    assert_eq!(
+        cookie_agent_protocol::display_text(&result.display),
+        "PLUGIN_UI_ONLY"
+    );
     let retained = result.retained_output.as_ref().unwrap();
     assert!(!retained.incomplete);
     assert_eq!(
@@ -823,8 +829,8 @@ async fn cancelling_parallel_tools_terminates_every_started_call_once() {
         let result = terminal.result.as_ref().expect("retained cancelled output");
         assert!(result.retained_output.as_ref().unwrap().incomplete);
         assert_eq!(
-            result.display.as_deref(),
-            Some("Tool cancelled; retained output is incomplete.")
+            cookie_agent_protocol::display_text(&result.display),
+            "Tool cancelled; retained output is incomplete."
         );
         let model_result = model_results
             .iter()
@@ -1070,7 +1076,10 @@ async fn named_output_streams_publish_readable_manifests_without_display_leaking
             termination.error
         );
         let result = termination.result.as_ref().unwrap();
-        assert_eq!(result.display.as_deref(), Some("UI_FINAL_ONLY"));
+        assert_eq!(
+            cookie_agent_protocol::display_text(&result.display),
+            "UI_FINAL_ONLY"
+        );
         let retained = result.retained_output.as_ref().unwrap();
         assert_eq!(retained.incomplete, failed);
         assert_eq!(

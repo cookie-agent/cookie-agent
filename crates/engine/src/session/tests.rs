@@ -4119,7 +4119,7 @@ fn append_realistic_run(
                             title: SafeDisplayText::new("Read").expect("title"),
                             output: "    let value = compute(input)?; // a line of source\n"
                                 .repeat(40),
-                            display: None,
+                            display: Vec::new(),
                             retained_output: None,
                             metadata: serde_json::Value::Null,
                             attachments: Vec::new(),

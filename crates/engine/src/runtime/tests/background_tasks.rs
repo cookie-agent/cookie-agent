@@ -207,7 +207,7 @@ impl PreparedExecutor for JobExecutor {
             cookie_agent_protocol::PersistedToolResult {
                 title: SafeDisplayText::new("Job").expect("title"),
                 output: String::new(),
-                display: None,
+                display: Vec::new(),
                 retained_output: None,
                 metadata: serde_json::json!({"status": 0}),
                 attachments: Vec::new(),

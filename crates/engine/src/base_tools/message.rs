@@ -198,7 +198,7 @@ impl PreparedExecutor for MessageExecutor {
             .map_err(|error| ToolError::execution(error.to_string()))?;
         let metadata = serde_json::json!({"message_id": handle.message_id, "mode": handle.mode, "recipient_state": handle.recipient_state.as_str()});
         Ok(ToolCompletion::single(ToolResult {
-            display: None,
+            display: Vec::new(),
             retained_output: None,
             title: safe_title("Message sent"),
             output: format!("Message accepted for {}.", handle.recipient_state.as_str()),

@@ -33,12 +33,12 @@ fn tool_progress_event(progress: &ToolProgress) -> Event {
     Event::ToolCallProgress {
         tool_call_id: progress.tool_call_id,
         message: safe_display(&progress.message),
-        display: progress.display.as_deref().map(|text| {
-            cookie_agent_runtime_api::sanitize_tool_display(
-                text,
-                cookie_agent_protocol::SafeDisplayText::MAX_BYTES,
-            )
-        }),
+        // The progress sink already sanitized and bounded the delta.
+        display: progress
+            .display
+            .clone()
+            .filter(|delta| delta.validate().is_ok())
+            .map(cookie_agent_protocol::Open::Known),
     }
 }
 
@@ -1167,7 +1167,7 @@ pub(super) fn incomplete_completion(message: &str) -> crate::ToolCompletion {
     crate::ToolCompletion::streamed(ToolResult {
         title: safe_display("Incomplete tool output"),
         output: String::new(),
-        display: Some(cookie_agent_runtime_api::bounded_tool_display(message)),
+        display: cookie_agent_runtime_api::bounded_tool_display(message),
         retained_output: None,
         metadata: Value::Null,
         attachments: Vec::new(),

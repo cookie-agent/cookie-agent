@@ -112,7 +112,9 @@ requests that would change it fail with `session_requires_newer_engine`.
 which nothing set. The input-lane events store `content` (user content: text
 and file parts) instead of `input`, `user_input_transformed` stores
 `original_content`, and `message_injected` and producer message bodies are
-text-only user content. Older clients are rejected.
+text-only user content. A tool result's `display` is a list of display
+blocks, and `tool_call_progress.display` a display delta. Older clients are
+rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility

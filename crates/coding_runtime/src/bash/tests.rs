@@ -3,9 +3,9 @@ use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 use cookie_agent_engine::events::OutputHub;
 use cookie_agent_engine::permissions::PermissionPipeline;
 use cookie_agent_protocol::{
-    AgentDocumentSource, AgentId, AgentMode, AgentSnapshot, OutputStream, PermissionAction,
-    PermissionEffect, PermissionRule, RunId, SafeDisplayText, SessionId, Sha256Digest, ToolCallId,
-    WildcardPattern,
+    AgentDocumentSource, AgentId, AgentMode, AgentSnapshot, DisplayDelta, OutputStream,
+    PermissionAction, PermissionEffect, PermissionRule, RunId, SafeDisplayText, SessionId,
+    Sha256Digest, ToolCallId, WildcardPattern,
 };
 use cookie_agent_runtime_api::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
 use tokio::io::AsyncWriteExt;
@@ -291,7 +291,13 @@ async fn output_reader_preserves_utf8_across_pipe_reads_and_flushes() {
     reading.await.unwrap().unwrap();
     assert_eq!(merged.lock().await.text, "€\n");
     assert_eq!(
-        receiver.recv().await.unwrap().display.as_deref(),
+        receiver
+            .recv()
+            .await
+            .unwrap()
+            .display
+            .as_ref()
+            .and_then(DisplayDelta::append_text),
         Some("\u{20ac}\n")
     );
     let (snapshot, _) = hub.subscribe(OutputStream::Stdout, 1);
@@ -328,7 +334,10 @@ async fn output_reader_streams_bounded_display_without_buffering_full_output() {
         .await
         .expect("first chunk timeout")
         .expect("first chunk");
-    assert_eq!(first.display.as_deref(), Some("first\n"));
+    assert_eq!(
+        first.display.as_ref().and_then(DisplayDelta::append_text),
+        Some("first\n")
+    );
     assert!(!read.is_finished());
 
     let overflow = vec![b'x'; cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES * 2 + 1];
@@ -347,13 +356,14 @@ async fn output_reader_streams_bounded_display_without_buffering_full_output() {
         progress
             .display
             .as_ref()
+            .and_then(DisplayDelta::append_text)
             .is_none_or(|chunk| chunk.len() <= SafeDisplayText::MAX_BYTES)
     }));
     assert!(
         chunks
             .iter()
-            .filter_map(|progress| progress.display.as_ref())
-            .map(String::len)
+            .filter_map(|progress| progress.display.as_ref()?.append_text())
+            .map(str::len)
             .sum::<usize>()
             <= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES
     );
@@ -400,8 +410,12 @@ async fn real_bash_completion_keeps_read_order_and_nonzero_exits_are_data() {
         assert_eq!(completion.result.metadata["success"], status == 0);
         let mut previews = String::new();
         while let Some(progress) = receiver.recv().await {
-            if let Some(display) = progress.display {
-                previews.push_str(&display);
+            if let Some(display) = progress
+                .display
+                .as_ref()
+                .and_then(DisplayDelta::append_text)
+            {
+                previews.push_str(display);
             }
         }
         // Writes arrive less than 50 ms apart, so flush-order capture would group them.
@@ -418,8 +432,8 @@ async fn real_bash_completion_keeps_read_order_and_nonzero_exits_are_data() {
             expected.push_str(&format!("\nExit status: {status}"));
         }
         assert_eq!(
-            completion.result.display.as_deref(),
-            Some(expected.as_str())
+            cookie_agent_protocol::display_text(&completion.result.display),
+            expected
         );
     }
 }
@@ -437,6 +451,24 @@ fn merged_display_bounds_unicode_and_keeps_exit_status() {
     let display = super::completed_display(merged, Some(1));
     assert!(display.len() <= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES);
     assert!(display.ends_with("[display truncated]\nExit status: 1"));
+}
+
+#[test]
+fn a_merged_display_of_many_lines_fits_the_budget_as_one_block() {
+    let mut merged = super::MergedOutput::default();
+    merged.append(&"\"\n".repeat(cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES / 2));
+    let display = cookie_agent_protocol::text_display(super::completed_display(merged, Some(2)));
+    assert!(
+        serde_json::to_vec(&display).unwrap().len() <= cookie_agent_protocol::DISPLAY_BUDGET_BYTES
+    );
+    assert_eq!(
+        cookie_agent_protocol::fit_result_display(display.clone()),
+        display
+    );
+    assert!(
+        cookie_agent_protocol::display_text(&display)
+            .ends_with("[display truncated]\nExit status: 2")
+    );
 }
 
 #[tokio::test]
@@ -497,8 +529,8 @@ async fn real_bash_timeout_drains_progress_before_terminal_completion() {
             tokio::select! {
                 progress = progress_rx.recv(), if progress_open => {
                     if let Some(progress) = progress {
-                        if let Some(chunk) = progress.display {
-                            event_order.push(("progress", chunk));
+                        if let Some(chunk) = progress.display.as_ref().and_then(DisplayDelta::append_text) {
+                            event_order.push(("progress", chunk.to_owned()));
                         }
                     } else {
                         progress_open = false;
@@ -506,8 +538,8 @@ async fn real_bash_timeout_drains_progress_before_terminal_completion() {
                 }
                 result = &mut execute => {
                     while let Ok(progress) = progress_rx.try_recv() {
-                        if let Some(chunk) = progress.display {
-                            event_order.push(("progress", chunk));
+                        if let Some(chunk) = progress.display.as_ref().and_then(DisplayDelta::append_text) {
+                            event_order.push(("progress", chunk.to_owned()));
                         }
                     }
                     event_order.push(("terminal", String::new()));

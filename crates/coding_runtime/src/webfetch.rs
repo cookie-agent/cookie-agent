@@ -237,7 +237,7 @@ impl WebfetchArgs {
             "truncated": truncated,
         });
         Ok(PersistedToolResult {
-            display: None,
+            display: Vec::new(),
             retained_output: None,
             title: safe_title(&self.url),
             output: format!(

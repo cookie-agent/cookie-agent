@@ -144,7 +144,8 @@ replayed to. A subscription that resumes from a cursor does not, since its
 reader may already hold part of that output; its later deltas continue it. Each open attempt's text and reasoning arrive as
 one `text_delta` or `reasoning_delta` per uninterrupted run of a kind, in
 order; each running tool as one `tool_call_progress` carrying its latest
-`message` and the display so far (capped at 64 KiB); a running provider-native
+`message` and its live display so far as one `replace` delta (within the
+64 KiB budget); a running provider-native
 compaction as its `native_compaction_started`; and a streaming compaction
 summary as one `internal_agent_text_delta`. Later deltas append as usual, and
 the durable record replaces it all as before. Output a daemon restart cut off
@@ -499,15 +500,30 @@ arbitrary named streams, and `background: true` when the call's tool supports
 the background, so a client may offer to move the running call there
 (`run.tool_background`); the field is absent otherwise.
 `tool_call_progress` is live-only. It contains a control-free status `message`
-and optional UI-only `display`. Display deltas append; terminal `result.display`
-replaces them.
-Each live message/display field is bounded at 1 KiB, their cumulative per-call
-budget is 64 KiB, and final display has an independent 64 KiB bound. TUI state is
+and an optional UI-only `display` delta, tagged by `type`:
+
+- `append { index, text, stream? }` appends `text` to block `index` of the
+  live display, a `text` block, or a `terminal` block when the append names a
+  `stream` (`stdout` or `stderr`), which extends that block's last segment of
+  the stream or starts one. An append to the index just past the list creates
+  the block. Today's tools send `append` to block `0`.
+- `replace { blocks }` replaces the live display.
+
+The terminal `result.display` replaces the live display.
+A live `message` and an append's text are each bounded at 1 KiB. A call's
+deltas share a cumulative 64 KiB budget (an append costs its text, a
+replacement its serialized size), and its messages another. TUI state is
 bounded and never reconstructs display by merging authoritative streams.
-When the final display occurs verbatim in the result `output` (a single-output
-tool's whole output, or a shell's only stream), the result carries
-`display_span`, a `[start, end)` byte range of `output`, instead of a second
-copy in `display`; decoding restores `display` from it.
+
+A result's `display` is a list of display blocks (see the [compatibility
+spec](../specs/compatibility-v1.md#121-display-blocks)), sanitized by the
+daemon and fit to 64 KiB serialized; blocks of a kind the daemon does not know
+are dropped. An empty list shows nothing. Today every tool's display is one
+`text` block. When the display is a single `text` block whose text occurs
+verbatim in the result `output` (a single-output tool's whole output, or a
+shell's only stream), the result carries `display_span`, a `[start, end)`
+byte range of `output`, instead of `display`; decoding restores the block
+from it.
 
 Authoritative output chunks go to runtime capture before completion, not into
 unbounded event records. Terminal `retained_output` contains ordered per-stream

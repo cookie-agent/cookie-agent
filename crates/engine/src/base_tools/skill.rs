@@ -74,7 +74,7 @@ impl PreparedExecutor for SkillExecutor {
                 .await
                 .map_err(tool_error)?;
             Ok(ToolResult {
-                display: None,
+                display: Vec::new(),
                 retained_output: None,
                 title: safe_title(format!("Loaded skill {}", invocation.name)),
                 output: invocation.rendered,

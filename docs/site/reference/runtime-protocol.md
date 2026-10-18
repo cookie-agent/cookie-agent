@@ -285,7 +285,9 @@ a notification.
 
 The result's `outcome` is tagged by `status`: `completed` with the terminal
 `output` (single or streamed), the persisted `result`, and `failed`; or
-`failed` with an `error`. Next to it:
+`failed` with an `error`. The result's `display` is a list of display blocks;
+the daemon sanitizes it, drops block kinds it does not know, and fits it to
+64 KiB. Next to it:
 
 - `media`: the bytes of every attachment the result references, as `sha256`
   and base64 `data`, at most 25 MiB in all. The runtime gives each retained
@@ -294,7 +296,8 @@ The result's `outcome` is tagged by `status`: `completed` with the terminal
   rejects a result that references media it did not receive.
 
 While a call runs, the runtime sends its progress with `tool/progress`
-(`prepared_id`, and `progress`: `tool_call_id`, `message`, `display`, and
+(`prepared_id`, and `progress`: `tool_call_id`, `message`, an optional
+`display` delta, `append { index, text, stream? }` or `replace { blocks }`, and
 `output` chunks, under the 64 KiB and 8-stream delta bounds). It waits for
 each answer, so output reaches the daemon's capture in order, the daemon's
 capture limits reach the tool, and every chunk precedes the execute reply.

@@ -12,28 +12,6 @@ pub const MAX_TOOL_DISPLAY_BYTES: usize = 64 * 1024;
 /// The longest stored subagent report preview, omission marker included.
 pub const MAX_DELEGATE_PREVIEW_BYTES: usize = 64 * 1024;
 
-pub(crate) fn validate_display(text: &str, maximum: usize) -> bool {
-    text.len() <= maximum
-        && text
-            .chars()
-            .all(|character| !character.is_control() || matches!(character, '\n' | '\t'))
-}
-
-pub(crate) fn deserialize_delta_display<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    let display = Option::<String>::deserialize(deserializer)?;
-    if display
-        .as_ref()
-        .is_some_and(|text| !validate_display(text, crate::SafeDisplayText::MAX_BYTES))
-    {
-        return Err(serde::de::Error::custom(
-            "invalid or oversized display delta",
-        ));
-    }
-    Ok(display)
-}
-
 /// The same name grammar is used for declarations, output chunks, and `read_artifact` streams.
 pub fn validate_tool_stream_name(name: &str) -> Result<(), String> {
     if name.is_empty()

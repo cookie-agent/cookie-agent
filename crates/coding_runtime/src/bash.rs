@@ -157,7 +157,11 @@ impl OutputSinks {
                     output: Vec::new(),
                     tool_call_id: self.tool_call_id,
                     message: format!("bash {name}"),
-                    display: Some(chunk),
+                    display: Some(cookie_agent_protocol::DisplayDelta::Append {
+                        index: 0,
+                        text: chunk,
+                        stream: None,
+                    }),
                 })
                 .await?;
         }
@@ -680,7 +684,7 @@ impl BashExecutor {
             )));
         }
         Ok(ToolResult {
-            display: Some(completed_display(
+            display: cookie_agent_protocol::text_display(completed_display(
                 std::mem::take(&mut *merged.lock().await),
                 status.code(),
             )),
@@ -735,17 +739,39 @@ fn completed_display(merged: MergedOutput, status: Option<i32>) -> String {
         String::new()
     };
     const MARKER: &str = "\n[display truncated]";
-    let maximum = cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES - suffix.len();
-    if merged.truncated || output.len() > maximum {
-        let mut end = output.len().min(maximum - MARKER.len());
-        while !output.is_char_boundary(end) {
-            end -= 1;
-        }
+    // The display is one text block, which must fit the display budget as
+    // serialized, escapes included.
+    let overhead = serde_json::to_vec(&cookie_agent_protocol::text_display(" "))
+        .map_or(0, |bytes| bytes.len() - 1);
+    let maximum = cookie_agent_protocol::DISPLAY_BUDGET_BYTES - overhead - escaped_len(&suffix);
+    if merged.truncated || escaped_len(&output) > maximum {
+        let room = maximum - escaped_len(MARKER);
+        let mut used = 0;
+        let end = output
+            .char_indices()
+            .find(|(_, character)| {
+                used += escaped_char_len(*character);
+                used > room
+            })
+            .map_or(output.len(), |(end, _)| end);
         output.truncate(end);
         output.push_str(MARKER);
     }
     output.push_str(&suffix);
     output
+}
+
+/// The bytes `text` takes inside a JSON string.
+fn escaped_len(text: &str) -> usize {
+    text.chars().map(escaped_char_len).sum()
+}
+
+fn escaped_char_len(character: char) -> usize {
+    match character {
+        '"' | '\\' | '\n' | '\t' | '\r' | '\u{8}' | '\u{c}' => 2,
+        character if u32::from(character) < 0x20 => 6,
+        character => character.len_utf8(),
+    }
 }
 
 #[cfg(unix)]

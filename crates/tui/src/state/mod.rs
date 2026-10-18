@@ -30,10 +30,8 @@ use cookie_agent_protocol::{
     PersistedModelTurn, PreparedApprovalResource, PreparedCapabilityLifetime, ProducerDeliveryMode,
     ProducerIdempotencyKey, ProducerMessageId, ProducerOwner, ReplayDecision, ReplayDisposition,
     ResolvedModelRef, RunId, SafeCode, SessionId, SessionTitleChange, Sha256Digest, StoredEvent,
-    StreamedOutputKind, ToolAttachment, ToolCallId, ToolTerminationOutcome, TransientEvent, Usage,
-    VariantId,
+    StreamedOutputKind, ToolCallId, ToolTerminationOutcome, TransientEvent, Usage, VariantId,
 };
-use serde::Serialize;
 
 use crate::{ClientDelivery, markdown::MarkdownDocument};
 
@@ -76,7 +74,10 @@ pub struct ToolCallState {
     pub operation_fingerprint: OperationFingerprint,
     pub status: ToolStatus,
     pub detail: String,
+    /// Whether `detail` shows the live display of the running call.
     pub has_output_chunks: bool,
+    /// The running call's live display, which its progress changes.
+    pub live_display: cookie_agent_protocol::LiveDisplay,
     /// The call's tool supports the background, so a running call can be
     /// moved there.
     pub backgroundable: bool,

@@ -172,7 +172,8 @@ pub struct ArtifactReadPage {
 pub struct ToolProgress {
     pub tool_call_id: ToolCallId,
     pub message: String,
-    pub display: Option<String>,
+    /// A change to the call's live display.
+    pub display: Option<cookie_agent_protocol::DisplayDelta>,
     #[serde(default)]
     pub output: Vec<cookie_agent_protocol::ToolOutputChunk>,
 }
@@ -197,7 +198,15 @@ pub trait ProgressCapture: std::fmt::Debug + Send + Sync {
 pub struct ProgressSink {
     sender: mpsc::Sender<ToolProgress>,
     capture: Option<Arc<dyn ProgressCapture>>,
-    display_used: Arc<std::sync::Mutex<usize>>,
+    budget: Arc<std::sync::Mutex<ProgressBudget>>,
+}
+
+/// What a call's progress has used of its display bounds: the bytes of its
+/// messages, and its live display.
+#[derive(Debug, Default)]
+struct ProgressBudget {
+    message_bytes: usize,
+    display: cookie_agent_protocol::LiveDisplay,
 }
 
 impl ProgressSink {
@@ -207,7 +216,7 @@ impl ProgressSink {
         Self {
             sender,
             capture: None,
-            display_used: Arc::new(std::sync::Mutex::new(0)),
+            budget: Arc::default(),
         }
     }
 
@@ -220,7 +229,7 @@ impl ProgressSink {
         Self {
             sender,
             capture: Some(capture),
-            display_used: Arc::new(std::sync::Mutex::new(0)),
+            budget: Arc::default(),
         }
     }
 
@@ -229,9 +238,15 @@ impl ProgressSink {
             return Err(ToolError::execution("output capture is unavailable"));
         }
         if progress.message.len() > cookie_agent_protocol::SafeDisplayText::MAX_BYTES
-            || progress.display.as_ref().is_some_and(|display| {
-                display.len() > cookie_agent_protocol::SafeDisplayText::MAX_BYTES
-            })
+            || progress
+                .display
+                .as_ref()
+                .is_some_and(|display| match display {
+                    cookie_agent_protocol::DisplayDelta::Append { text, .. } => {
+                        text.len() > cookie_agent_protocol::DisplayDelta::MAX_APPEND_BYTES
+                    }
+                    cookie_agent_protocol::DisplayDelta::Replace { .. } => false,
+                })
         {
             return Err(ToolError::resource_limit(
                 "tool display delta exceeds the display event bound",
@@ -253,21 +268,18 @@ impl ProgressSink {
             }
         }
         {
-            let mut used = self.display_used.lock().unwrap_or_else(|p| p.into_inner());
-            let remaining = cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES.saturating_sub(*used);
+            let mut budget = self.budget.lock().unwrap_or_else(|p| p.into_inner());
+            let remaining =
+                cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES.saturating_sub(budget.message_bytes);
             progress.message = crate::sanitize_tool_display(&progress.message, remaining);
-            *used += progress.message.len();
-            progress.display = progress
-                .display
-                .as_deref()
-                .map(|text| {
-                    crate::sanitize_tool_display(
-                        text,
-                        cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES.saturating_sub(*used),
-                    )
-                })
-                .filter(|text| !text.is_empty());
-            *used += progress.display.as_ref().map_or(0, String::len);
+            budget.message_bytes += progress.message.len();
+            progress.display = match progress.display.take().map(sanitize_delta) {
+                Some(delta) => budget
+                    .display
+                    .admit(delta)
+                    .map_err(|error| ToolError::execution(error.to_string()))?,
+                None => None,
+            };
         }
         let permit = if progress.message.is_empty() && progress.display.is_none() {
             None
@@ -287,6 +299,40 @@ impl ProgressSink {
             permit.send(progress);
         }
         Ok(())
+    }
+}
+
+/// `delta` with the control characters its text may not carry removed: an
+/// append's text as [`crate::sanitize_tool_display`] cleans it (keeping SGR
+/// colour when it names a terminal stream), a replacement's blocks as the
+/// daemon sanitizes blocks it receives.
+fn sanitize_delta(
+    delta: cookie_agent_protocol::DisplayDelta,
+) -> cookie_agent_protocol::DisplayDelta {
+    use cookie_agent_protocol::DisplayDelta;
+    match delta {
+        DisplayDelta::Append {
+            index,
+            text,
+            stream,
+        } => DisplayDelta::Append {
+            index,
+            text: match stream {
+                Some(_) => cookie_agent_protocol::sanitize_terminal_text(&text).into_owned(),
+                None => crate::sanitize_tool_display(&text, usize::MAX),
+            },
+            stream,
+        },
+        DisplayDelta::Replace { blocks } => DisplayDelta::Replace {
+            blocks: blocks
+                .into_iter()
+                .filter_map(cookie_agent_protocol::Open::into_known)
+                .map(|mut block| {
+                    block.sanitize();
+                    cookie_agent_protocol::Open::Known(block)
+                })
+                .collect(),
+        },
     }
 }
 

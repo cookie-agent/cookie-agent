@@ -103,7 +103,7 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
         "content_type": "text/plain", "truncated": false,
     });
     let result = |output: String| PersistedToolResult {
-        display: None,
+        display: Vec::new(),
         retained_output: None,
         title: SafeDisplayText::new("Webfetch output").unwrap(),
         output,
@@ -262,7 +262,7 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
     let artifacts = &fixture.engine.inner.artifacts;
     let result =
         |output: &str, metadata: serde_json::Value| cookie_agent_protocol::PersistedToolResult {
-            display: None,
+            display: Vec::new(),
             retained_output: None,
             title: cookie_agent_protocol::SafeDisplayText::new("Historical output").unwrap(),
             output: output.into(),
@@ -623,7 +623,7 @@ async fn a_forked_tree_keeps_its_artifacts_after_the_source_tree_is_deleted() {
         run.run_id,
         binding,
         cookie_agent_protocol::PersistedToolResult {
-            display: None,
+            display: Vec::new(),
             retained_output: None,
             title: cookie_agent_protocol::SafeDisplayText::new("Historical output").unwrap(),
             output: "zero\n".into(),
@@ -713,7 +713,7 @@ async fn a_revert_deletes_artifacts_only_the_reverted_events_referenced() {
     };
     let truncated = |reference: cookie_agent_protocol::ArtifactReference| {
         cookie_agent_protocol::PersistedToolResult {
-            display: None,
+            display: Vec::new(),
             retained_output: None,
             title: cookie_agent_protocol::SafeDisplayText::new("Historical output").unwrap(),
             output: "head\n".into(),

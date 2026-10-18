@@ -454,7 +454,7 @@ fn assistant_and_tool_result_events_do_not_resort_siblings() {
                 owner,
                 outcome: ToolTerminationOutcome::Completed,
                 result: Some(PersistedToolResult {
-                    display: None,
+                    display: Vec::new(),
                     retained_output: None,
                     title: SafeDisplayText::new("completed").expect("title"),
                     output: "result".into(),

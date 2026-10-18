@@ -765,9 +765,7 @@ fn byte_size(bytes: u64) -> String {
 }
 
 fn normalize_result(result: &mut PersistedToolResult) -> Result<(), ToolError> {
-    result.display = Some(cookie_agent_runtime_api::bounded_tool_display(
-        result.display.as_deref().unwrap_or_default(),
-    ));
+    result.display = cookie_agent_protocol::fit_result_display(std::mem::take(&mut result.display));
     result
         .validate()
         .map_err(|e| ToolError::execution(e.to_string()))?;

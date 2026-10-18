@@ -177,10 +177,9 @@ pub fn tool_result(result: &crate::PersistedToolResult) -> String {
     let used = parts.iter().map(|part| part.len() + 1).sum::<usize>();
     let budget = DiagnosticText::MAX_BYTES.saturating_sub(used);
     if sections.is_empty() {
+        let display = crate::display_text(&result.display);
         parts.push(excerpt(
-            result
-                .display
-                .as_deref()
+            Some(display.as_str())
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or("Tool reported failure without a reason"),
             budget.saturating_sub(1),
@@ -328,7 +327,7 @@ mod tests {
             title: crate::SafeDisplayText::new("Generic tool").unwrap(),
             output: format!("{}\nRequired asset missing é", "é".repeat(6000)),
             metadata: serde_json::json!({"status":23}),
-            display: None,
+            display: Vec::new(),
             retained_output: None,
             attachments: vec![],
             additional_messages: vec![],
@@ -375,7 +374,7 @@ mod tests {
                     "r".repeat(6000),
                     "t".repeat(6000)
                 ),
-                display: Some("Finished".into()),
+                display: crate::text_display("Finished"),
                 metadata: serde_json::json!({"status":23,"source":"/work/input"}),
                 retained_output: named.then(|| crate::RetainedToolOutput {
                     reference: Some(reference.clone()),

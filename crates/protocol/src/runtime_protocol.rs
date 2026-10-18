@@ -569,8 +569,9 @@ pub fn artifact_reference(sha256: &str) -> crate::ArtifactReference {
 pub struct WireProgress {
     pub tool_call_id: ToolCallId,
     pub message: String,
-    #[serde(default)]
-    pub display: Option<String>,
+    /// A change to the call's live display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<crate::DisplayDelta>,
     #[serde(default)]
     pub output: Vec<ToolOutputChunk>,
 }

@@ -205,7 +205,7 @@ impl PreparedExecutor for ReadArtifactExecutor {
             ToolResult {
                 title: safe_title("Artifact page"),
                 output: page.content,
-                display: None,
+                display: Vec::new(),
                 retained_output: None,
                 metadata: serde_json::json!({
                     "artifact": artifact,

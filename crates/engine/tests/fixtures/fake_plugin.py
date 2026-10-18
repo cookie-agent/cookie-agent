@@ -187,7 +187,10 @@ for line in sys.stdin:
                     "result": {
                         "title": call.get("name", "tool"),
                         "output": "",
-                        "display": os.environ.get("FIXTURE_TOOL_DISPLAY", content[:65536]),
+                        "display": [{
+                            "type": "text",
+                            "text": os.environ.get("FIXTURE_TOOL_DISPLAY", content[:60000]),
+                        }],
                         "metadata": None,
                         "attachments": [],
                     },

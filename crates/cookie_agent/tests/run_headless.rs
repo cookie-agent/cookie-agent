@@ -750,8 +750,8 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
         let result = terminal.result.as_ref().unwrap();
         assert_eq!(result.output, page);
         assert_eq!(
-            result.display.as_deref(),
-            Some("Tool cancelled; output is incomplete.")
+            cookie_agent_protocol::display_text(&result.display),
+            "Tool cancelled; output is incomplete."
         );
         assert!(result.retained_output.is_none());
         assert_eq!(result.metadata["offset"], 1);
@@ -1904,7 +1904,7 @@ async fn nonzero_bash_exit_returns_output_without_a_tool_error() {
         assert!(output.output.len() > 4096);
         assert!(output.output.contains("Required asset missing"));
         assert_eq!(output.metadata["status"], 23);
-        let display = output.display.as_ref().unwrap();
+        let display = cookie_agent_protocol::display_text(&output.display);
         assert!(display.contains("Required asset missing"));
         assert!(display.ends_with("Exit status: 23"));
         #[cfg(feature = "tui")]
@@ -1926,7 +1926,7 @@ async fn nonzero_bash_exit_returns_output_without_a_tool_error() {
             )));
             let tool = &state.tools[&termination.tool_call_id];
             assert_eq!(tool.status, cookie_agent_tui::state::ToolStatus::Completed);
-            assert_eq!(&tool.detail, display);
+            assert_eq!(tool.detail, display);
         }
         fixture.shutdown().await;
     }

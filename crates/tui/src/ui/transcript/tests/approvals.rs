@@ -40,6 +40,7 @@ fn link_tool(app: &mut App, approval: &ApprovalState, title: &str, arguments: &s
                 status: ToolStatus::Running,
                 detail: String::new(),
                 has_output_chunks: false,
+                live_display: Default::default(),
                 revision: 0,
             },
         );

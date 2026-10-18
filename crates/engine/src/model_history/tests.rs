@@ -355,7 +355,7 @@ fn tool_result_materializes_output_and_metadata_as_separate_values() {
     let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
     let session_id = SessionId::new_v7();
     let result = PersistedToolResult {
-        display: None,
+        display: Vec::new(),
         retained_output: None,
         title: SafeDisplayText::new("Subagent steered").unwrap(),
         output: format!("Subagent steered. [subagent session {session_id}; running]"),
@@ -402,7 +402,7 @@ fn a_missing_or_damaged_attachment_becomes_a_note_instead_of_an_error() {
     std::fs::remove_file(artifacts.join(lost.sha256.as_str())).unwrap();
     std::fs::write(artifacts.join(damaged.sha256.as_str()), b"other  bytes!").unwrap();
     let result = PersistedToolResult {
-        display: None,
+        display: Vec::new(),
         retained_output: None,
         title: SafeDisplayText::new("Screenshot").unwrap(),
         output: "captured".into(),
@@ -2312,7 +2312,7 @@ fn tail_candidates_stop_at_pending_tool_group_until_late_termination() {
                 owner,
                 outcome: ToolTerminationOutcome::Completed,
                 result: Some(PersistedToolResult {
-                    display: None,
+                    display: Vec::new(),
                     retained_output: None,
                     title: SafeDisplayText::new("late result").unwrap(),
                     output: "late tool output".into(),
@@ -2371,7 +2371,7 @@ fn assembled_tool_transcript_snapshot_is_stable() {
         provider_item_id: None,
     };
     let result = PersistedToolResult {
-        display: None,
+        display: Vec::new(),
         retained_output: None,
         title: SafeDisplayText::new("Read README.md").expect("title"),
         output: "contents".into(),
@@ -2526,7 +2526,8 @@ fn assembled_tool_transcript_snapshot_is_stable() {
                 });
                 let result = termination.result.as_mut().unwrap();
                 assert!(result.retained_output.is_none());
-                result.display = Some("looks successfully completed".into());
+                result.display =
+                    cookie_agent_protocol::text_display("looks successfully completed");
             }
         }
         let history =

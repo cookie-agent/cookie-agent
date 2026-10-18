@@ -2,9 +2,9 @@
 //! `docs/site/specs/compatibility-v1.md` section 12.
 //!
 //! Tools describe what happened as typed [`DisplayBlock`]s and clients choose
-//! how to render them. Display never enters model history. Nothing on the
-//! wire uses these types yet; tool results, progress, and presentations
-//! switch to them in later phases.
+//! how to render them. Display never enters model history. Tool results
+//! carry a block list, live progress carries [`DisplayDelta`]s, and
+//! `tool_call_started` carries a [`ToolPresentation`].
 
 use std::{borrow::Cow, fmt::Write as _};
 
@@ -245,6 +245,8 @@ pub enum DisplayBlockError {
     TableShape,
     #[error("an artifact reference is invalid: {0}")]
     Artifact(crate::ContentError),
+    #[error("the display exceeds its 64 KiB budget")]
+    TooLarge,
 }
 
 impl DisplayBlock {
@@ -805,6 +807,49 @@ pub fn fit_display_budget(blocks: Vec<DisplayBlock>, budget: usize) -> Vec<Displ
     kept
 }
 
+/// The display of a text: one `text` block, or nothing for an empty text.
+#[must_use]
+pub fn text_display(text: impl Into<String>) -> Vec<Open<DisplayBlock>> {
+    let text = text.into();
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![Open::Known(DisplayBlock::text(text))]
+    }
+}
+
+/// A result's display as the daemon stores it: every block sanitized,
+/// blocks of a kind this build does not know dropped, and the list fit to
+/// [`DISPLAY_BUDGET_BYTES`].
+#[must_use]
+pub fn fit_result_display(blocks: Vec<Open<DisplayBlock>>) -> Vec<Open<DisplayBlock>> {
+    let known = blocks
+        .into_iter()
+        .filter_map(Open::into_known)
+        .map(|mut block| {
+            block.sanitize();
+            block
+        })
+        .collect();
+    fit_display_budget(known, DISPLAY_BUDGET_BYTES)
+        .into_iter()
+        .map(Open::Known)
+        .collect()
+}
+
+/// Checks a display block list as a writer must before storing or sending
+/// it: every known block is valid and the list fits [`DISPLAY_BUDGET_BYTES`].
+/// Blocks of a kind this build does not know are passed on as they are.
+pub fn validate_display(blocks: &[Open<DisplayBlock>]) -> Result<(), DisplayBlockError> {
+    for block in blocks.iter().filter_map(Open::known) {
+        block.validate()?;
+    }
+    if serialized_len(blocks) > DISPLAY_BUDGET_BYTES {
+        return Err(DisplayBlockError::TooLarge);
+    }
+    Ok(())
+}
+
 fn serialized_len<T: Serialize + ?Sized>(value: &T) -> usize {
     serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len())
 }
@@ -1053,7 +1098,9 @@ fn is_sgr(sequence: &str) -> bool {
 pub enum DisplayDelta {
     /// Appends `text` to block `index`, which is a `text` or `terminal`
     /// block. A terminal append extends the last segment when it is of
-    /// `stream` (default `stdout`), or starts a new segment.
+    /// `stream` (default `stdout`), or starts a new segment. An append to the
+    /// index just past the list creates the block: a `terminal` block when
+    /// the append names a stream, a `text` block otherwise.
     Append {
         index: u32,
         text: String,
@@ -1091,6 +1138,18 @@ impl DisplayDelta {
                 text,
                 stream,
             } => {
+                if index as usize == blocks.len() {
+                    blocks.push(Open::Known(match stream {
+                        Some(stream) => DisplayBlock::Terminal {
+                            segments: vec![TerminalSegment { stream, text }],
+                            exit_code: None,
+                            omitted_lines: None,
+                            full: None,
+                        },
+                        None => DisplayBlock::text(text),
+                    }));
+                    return Ok(());
+                }
                 let block = blocks
                     .get_mut(index as usize)
                     .ok_or(DisplayDeltaError::NoSuchBlock(index))?;
@@ -1113,6 +1172,138 @@ impl DisplayDelta {
                 Ok(())
             }
         }
+    }
+}
+
+impl DisplayDelta {
+    /// The largest `append` text one delta carries.
+    pub const MAX_APPEND_BYTES: usize = crate::SafeDisplayText::MAX_BYTES;
+
+    /// An append of `text` to the `text` block at `index`.
+    #[must_use]
+    pub fn append(index: u32, text: impl Into<String>) -> Self {
+        Self::Append {
+            index,
+            text: text.into(),
+            stream: None,
+        }
+    }
+
+    /// The text of an append.
+    #[must_use]
+    pub fn append_text(&self) -> Option<&str> {
+        match self {
+            Self::Append { text, .. } => Some(text),
+            Self::Replace { .. } => None,
+        }
+    }
+
+    /// Checks the delta as a writer must before sending it: an append's text
+    /// is display-safe (terminal-safe when it names a stream) and at most
+    /// [`Self::MAX_APPEND_BYTES`], and a replacement is a valid display.
+    pub fn validate(&self) -> Result<(), DisplayBlockError> {
+        match self {
+            Self::Append { text, stream, .. } => {
+                let safe = if stream.is_some() {
+                    is_terminal_safe(text)
+                } else {
+                    is_display_safe(text)
+                };
+                if !safe {
+                    return Err(DisplayBlockError::ControlCharacter("append text"));
+                }
+                if text.len() > Self::MAX_APPEND_BYTES {
+                    return Err(DisplayBlockError::TooLarge);
+                }
+                Ok(())
+            }
+            Self::Replace { blocks } => validate_display(blocks),
+        }
+    }
+}
+
+/// The live display of an executing call, as every reader of its progress
+/// keeps it. Its deltas share one budget of [`DISPLAY_BUDGET_BYTES`]: an
+/// append costs its text's bytes and a replacement its serialized size, so
+/// the live display stays bounded however long the call runs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LiveDisplay {
+    blocks: Vec<Open<DisplayBlock>>,
+    used: usize,
+}
+
+impl LiveDisplay {
+    #[must_use]
+    pub fn blocks(&self) -> &[Open<DisplayBlock>] {
+        &self.blocks
+    }
+
+    #[must_use]
+    pub fn into_blocks(self) -> Vec<Open<DisplayBlock>> {
+        self.blocks
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
+    }
+
+    /// Applies `delta` cut to what remains of the budget, and returns the
+    /// delta as applied: an append keeps the head of its text that fits, on
+    /// a character boundary, and a replacement is fit to the room left.
+    /// `None` when nothing of the delta fits. A delta that does not apply
+    /// changes nothing.
+    pub fn admit(
+        &mut self,
+        delta: DisplayDelta,
+    ) -> Result<Option<DisplayDelta>, DisplayDeltaError> {
+        let room = DISPLAY_BUDGET_BYTES.saturating_sub(self.used);
+        let (delta, cost) = match delta {
+            DisplayDelta::Append {
+                index,
+                mut text,
+                stream,
+            } => {
+                let mut end = text.len().min(room);
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                text.truncate(end);
+                if text.is_empty() {
+                    return Ok(None);
+                }
+                let cost = text.len();
+                (
+                    DisplayDelta::Append {
+                        index,
+                        text,
+                        stream,
+                    },
+                    cost,
+                )
+            }
+            DisplayDelta::Replace { blocks } => {
+                let blocks = if serialized_len(&blocks) <= room {
+                    blocks
+                } else {
+                    fit_display_budget(
+                        blocks.into_iter().filter_map(Open::into_known).collect(),
+                        room,
+                    )
+                    .into_iter()
+                    .map(Open::Known)
+                    .collect()
+                };
+                let cost = serialized_len(&blocks);
+                if cost > room {
+                    return Ok(None);
+                }
+                (DisplayDelta::Replace { blocks }, cost)
+            }
+        };
+        delta.clone().apply(&mut self.blocks)?;
+        self.used += cost;
+        Ok(Some(delta))
     }
 }
 

@@ -893,7 +893,7 @@ pub(crate) fn tool_terminated(
                 owner: owner(turn_seq, call),
                 outcome,
                 result: completed.then(|| cookie_agent_protocol::PersistedToolResult {
-                    display: None,
+                    display: cookie_agent_protocol::text_display("done"),
                     retained_output: None,
                     title: SafeDisplayText::new("ran true").expect("result title"),
                     output: "done".into(),
@@ -2451,6 +2451,7 @@ pub(crate) fn read_tool_state(path: &str, status: ToolStatus, detail: &str) -> S
             detail: detail.into(),
             operation_fingerprint: operation_fingerprint(),
             has_output_chunks: false,
+            live_display: Default::default(),
             revision: 0,
         },
     );

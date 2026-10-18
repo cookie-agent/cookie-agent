@@ -438,19 +438,27 @@ async fn scenario(with_descendants: bool) {
     let samples = (0..repeat)
         .map(|index| {
             let start = Instant::now();
-            assert!(app.store.apply_event(at(
-                event(
-                    root,
-                    seq.0,
-                    run_id,
-                    EventPayload::ToolCallProgress {
-                        tool_call_id: call,
-                        message: SafeDisplayText::new("bash stdout").expect("message"),
-                        display: Some(format!("   Compiling crate-{index} v0.1.0\n")),
-                    },
-                ),
-                base + 12,
-            )));
+            assert!(
+                app.store.apply_event(at(
+                    event(
+                        root,
+                        seq.0,
+                        run_id,
+                        EventPayload::ToolCallProgress {
+                            tool_call_id: call,
+                            message: SafeDisplayText::new("bash stdout").expect("message"),
+                            display: Some(
+                                cookie_agent_protocol::DisplayDelta::append(
+                                    0,
+                                    format!("   Compiling crate-{index} v0.1.0\n")
+                                )
+                                .into()
+                            ),
+                        },
+                    ),
+                    base + 12,
+                ))
+            );
             terminal
                 .draw(|frame| app.draw_for_test(frame))
                 .expect("draw");

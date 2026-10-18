@@ -5,7 +5,7 @@
 //! a finished internal agent, or the run's end.
 
 use cookie_agent_protocol::{
-    AttemptId, EventPayload, InternalAgentInvocationId, MAX_TOOL_DISPLAY_BYTES, RunId,
+    AttemptId, DisplayDelta, EventPayload, InternalAgentInvocationId, LiveDisplay, Open, RunId,
     SafeDisplayText, ToolCallId,
 };
 
@@ -33,8 +33,8 @@ struct InFlightTool {
     run_id: Option<RunId>,
     tool_call_id: ToolCallId,
     message: SafeDisplayText,
-    /// Display chunks so far, capped like a reader caps them.
-    display: Option<String>,
+    /// The live display so far, bounded like a reader bounds it.
+    display: LiveDisplay,
 }
 
 #[derive(Debug)]
@@ -70,20 +70,16 @@ impl InFlightOutput {
                             run_id,
                             tool_call_id: *tool_call_id,
                             message: message.clone(),
-                            display: None,
+                            display: LiveDisplay::default(),
                         });
                         self.tools.last_mut().expect("just pushed")
                     }
                 };
                 tool.message = message.clone();
-                if let Some(chunk) = display {
-                    let shown = tool.display.get_or_insert_with(String::new);
-                    let room = MAX_TOOL_DISPLAY_BYTES.saturating_sub(shown.len());
-                    let mut end = chunk.len().min(room);
-                    while !chunk.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    shown.push_str(&chunk[..end]);
+                // A delta that does not apply, or of a kind this build does
+                // not know, changes nothing, as for any reader.
+                if let Some(Open::Known(delta)) = display {
+                    let _ = tool.display.admit(delta.clone());
                 }
             }
             EventPayload::InternalAgentTextDelta {
@@ -160,7 +156,12 @@ impl InFlightOutput {
                 EventPayload::ToolCallProgress {
                     tool_call_id: tool.tool_call_id,
                     message: tool.message.clone(),
-                    display: tool.display.clone(),
+                    // The whole live display so far, as one replacement.
+                    display: (!tool.display.is_empty()).then(|| {
+                        Open::Known(DisplayDelta::Replace {
+                            blocks: tool.display.blocks().to_vec(),
+                        })
+                    }),
                 },
             ));
         }
@@ -229,7 +230,9 @@ impl InFlightOutput {
 
 #[cfg(test)]
 mod tests {
-    use cookie_agent_protocol::{AttemptId, EventPayload, RunId, SafeDisplayText, ToolCallId};
+    use cookie_agent_protocol::{
+        AttemptId, DisplayDelta, EventPayload, Open, RunId, SafeDisplayText, ToolCallId,
+    };
 
     use super::InFlightOutput;
 
@@ -264,7 +267,11 @@ mod tests {
                 &EventPayload::ToolCallProgress {
                     tool_call_id: tool,
                     message: SafeDisplayText::new("running").unwrap(),
-                    display: Some(chunk.into()),
+                    display: Some(Open::Known(DisplayDelta::Append {
+                        index: 0,
+                        text: chunk.into(),
+                        stream: None,
+                    })),
                 },
             );
         }
@@ -290,7 +297,11 @@ mod tests {
                     EventPayload::ToolCallProgress {
                         tool_call_id: tool,
                         message: SafeDisplayText::new("running").unwrap(),
-                        display: Some("line 1\nline 2\n".into()),
+                        display: Some(Open::Known(DisplayDelta::Replace {
+                            blocks: vec![Open::Known(cookie_agent_protocol::DisplayBlock::text(
+                                "line 1\nline 2\n"
+                            ))],
+                        })),
                     }
                 ),
             ]

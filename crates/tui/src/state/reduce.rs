@@ -27,19 +27,30 @@ pub(super) fn reduce_transient(
             display,
         } => {
             if let Some(tool) = state.tools.get_mut(&tool_call_id)
-                && let Some(display) = display
+                && let Some(cookie_agent_protocol::Open::Known(delta)) = display
+                && let Ok(Some(applied)) = tool.live_display.admit(delta)
             {
-                if !tool.has_output_chunks {
-                    tool.detail.clear();
-                    tool.has_output_chunks = true;
+                use cookie_agent_protocol::{DisplayBlock, DisplayDelta, Open};
+                // An append to the last text block extends the shown text;
+                // anything else renders the live display again.
+                let last = tool.live_display.blocks().len().checked_sub(1);
+                match applied {
+                    DisplayDelta::Append { index, text, .. }
+                        if tool.has_output_chunks
+                            && Some(index as usize) == last
+                            && matches!(
+                                tool.live_display.blocks().last(),
+                                Some(Open::Known(DisplayBlock::Text { .. }))
+                            ) =>
+                    {
+                        tool.detail.push_str(&text);
+                    }
+                    _ => {
+                        tool.detail =
+                            cookie_agent_protocol::display_text(tool.live_display.blocks());
+                    }
                 }
-                let room =
-                    cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES.saturating_sub(tool.detail.len());
-                let mut end = display.as_str().len().min(room);
-                while !display.as_str().is_char_boundary(end) {
-                    end -= 1;
-                }
-                tool.detail.push_str(&display.as_str()[..end]);
+                tool.has_output_chunks = true;
                 tool.revision = next_tool_revision();
             }
             bump_tool_item(state, tool_call_id);
@@ -888,6 +899,7 @@ pub(super) fn reduce_event_from(
                     status: ToolStatus::Running,
                     detail: identities,
                     has_output_chunks: false,
+                    live_display: Default::default(),
                     backgroundable: start.background,
                     backgrounded: false,
                     revision: next_tool_revision(),
@@ -925,34 +937,38 @@ pub(super) fn reduce_event_from(
                         retained.streams.iter().any(|stream| stream.byte_length > 0)
                     })
             });
+            // Blocks render generically: text as it is, any other kind as
+            // its text fallback.
+            let display = termination
+                .result
+                .as_ref()
+                .map(|result| cookie_agent_protocol::display_text(&result.display));
             let has_output = streamed.is_some()
                 || partial_output
-                || termination.result.as_ref().is_some_and(|result| {
-                    result
-                        .display
-                        .as_ref()
-                        .is_some_and(|display| !display.trim().is_empty())
-                });
+                || display
+                    .as_ref()
+                    .is_some_and(|display| !display.trim().is_empty());
             let mut detail = match (termination.result, termination.error) {
                 (Some(result), _) if failed && partial_output => result.output,
-                (Some(result), _)
+                (Some(_), _)
                     if failed
-                        && result
-                            .display
+                        && display
                             .as_ref()
                             .is_none_or(|display| display.trim().is_empty())
                         && streamed.is_some() =>
                 {
                     streamed.unwrap_or_default()
                 }
-                (Some(result), _) if result.display.is_some() => result.display.unwrap_or_default(),
-                (Some(result), _) if !failed => render_tool_result(
-                    result.title.as_str(),
-                    &result.output,
-                    &result.metadata,
-                    &result.attachments,
-                    &result.additional_messages,
-                ),
+                // The final display replaces the live one; a failure without
+                // one shows its error below.
+                (Some(_), _)
+                    if !failed
+                        || display
+                            .as_ref()
+                            .is_some_and(|display| !display.trim().is_empty()) =>
+                {
+                    display.unwrap_or_default()
+                }
                 (_, _) if failed && streamed.is_some() => streamed.unwrap_or_default(),
                 (_, Some(error)) => error.message.to_string(),
                 _ => String::new(),
@@ -969,6 +985,7 @@ pub(super) fn reduce_event_from(
                 tool.status = status;
                 tool.detail = detail;
                 tool.has_output_chunks = false;
+                tool.live_display = Default::default();
                 tool.backgrounded = backgrounded;
                 tool.revision = next_tool_revision();
             }
@@ -2789,53 +2806,6 @@ impl ReplayContextWarningKey {
 
 pub(super) fn render_model_error(error: &ModelErrorSummary) -> String {
     cookie_agent_protocol::diagnostics::model(error)
-}
-
-pub(super) fn wire_enum_label(value: impl Serialize) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".into())
-}
-
-pub(super) fn render_tool_result(
-    title: &str,
-    output: &str,
-    metadata: &serde_json::Value,
-    attachments: &[ToolAttachment],
-    additional_messages: &[cookie_agent_protocol::ToolEmittedMessage],
-) -> String {
-    let mut lines = vec![title.to_owned(), output.to_owned()];
-    if !metadata.is_null() {
-        lines.push(format!("metadata: {metadata}"));
-    }
-    for attachment in attachments {
-        lines.push(render_attachment_summary("attachment", attachment));
-    }
-    for message in additional_messages {
-        lines.push(format!(
-            "emitted {} message:",
-            wire_enum_label(message.role)
-        ));
-        for part in &message.content {
-            match part {
-                cookie_agent_protocol::ToolEmittedContent::Text(text) => {
-                    lines.push(format!("text: {text}"));
-                }
-                cookie_agent_protocol::ToolEmittedContent::File(attachment) => {
-                    lines.push(render_attachment_summary("file", attachment));
-                }
-            }
-        }
-    }
-    lines.join("\n")
-}
-
-pub(super) fn render_attachment_summary(label: &str, attachment: &ToolAttachment) -> String {
-    format!(
-        "{label}: {} · {} bytes · sha256:{} · {}",
-        attachment.mime_type, attachment.byte_length, attachment.sha256, attachment.reference.uri
-    )
 }
 
 /// Locate the durable tool input for an ownership reference from the

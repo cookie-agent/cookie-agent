@@ -24,7 +24,7 @@ fn completion(output: ToolCompletionOutput) -> ToolCompletion {
         result: PersistedToolResult {
             title: SafeDisplayText::new("Test output").unwrap(),
             output: String::new(),
-            display: Some("final UI display".into()),
+            display: cookie_agent_protocol::text_display("final UI display"),
             retained_output: None,
             metadata: serde_json::Value::Null,
             attachments: Vec::new(),
@@ -67,7 +67,10 @@ async fn named_streams_capture_in_declaration_order_with_independent_previews() 
         .finish(completion(ToolCompletionOutput::Streamed), false)
         .await
         .unwrap();
-    assert_eq!(result.display.as_deref(), Some("final UI display"));
+    assert_eq!(
+        cookie_agent_protocol::display_text(&result.display),
+        "final UI display"
+    );
     assert!(!result.output.contains("final UI display"));
     // A one-line limit keeps no tail, so the head gets every byte.
     let digest = result
@@ -367,10 +370,10 @@ async fn absent_final_display_does_not_fall_back_to_authoritative_output() {
     let mut completion = completion(ToolCompletionOutput::Single {
         text: "model-only output".into(),
     });
-    completion.result.display = None;
+    completion.result.display = Vec::new();
     let result = capture.finish(completion, false).await.unwrap();
     assert_eq!(result.output, "model-only output");
-    assert_eq!(result.display.as_deref(), Some(""));
+    assert_eq!(cookie_agent_protocol::display_text(&result.display), "");
 }
 
 #[tokio::test]
@@ -393,7 +396,10 @@ async fn display_budget_does_not_stop_authoritative_capture() {
         sink.send(crate::ToolProgress {
             tool_call_id: id,
             message: String::new(),
-            display: Some("d".repeat(1024)),
+            display: Some(cookie_agent_protocol::DisplayDelta::append(
+                0,
+                "d".repeat(1024),
+            )),
             output: vec![ToolOutputChunk {
                 stream: None,
                 text: "data\n".into(),
@@ -404,7 +410,7 @@ async fn display_budget_does_not_stop_authoritative_capture() {
     }
     let mut display_bytes = 0;
     while let Ok(progress) = receiver.try_recv() {
-        display_bytes += progress.display.unwrap().len();
+        display_bytes += progress.display.unwrap().append_text().unwrap().len();
     }
     assert_eq!(display_bytes, cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES);
     let result = capture
@@ -445,7 +451,7 @@ async fn progress_backpressure_precedes_acceptance_and_never_drops_output() {
     let delta = |text: &str| crate::ToolProgress {
         tool_call_id: id,
         message: String::new(),
-        display: Some(text.into()),
+        display: Some(cookie_agent_protocol::DisplayDelta::append(0, text)),
         output: vec![ToolOutputChunk {
             stream: None,
             text: text.into(),

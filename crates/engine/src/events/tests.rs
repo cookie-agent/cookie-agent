@@ -2096,7 +2096,7 @@ fn live_only_stream_output_is_never_appended() {
         EventPayload::ToolCallProgress {
             tool_call_id,
             message: SafeDisplayText::new("progress").expect("safe progress"),
-            display: Some("chunk".into()),
+            display: Some(cookie_agent_protocol::DisplayDelta::append(0, "chunk").into()),
         },
     ] {
         assert!(payload.is_transient());

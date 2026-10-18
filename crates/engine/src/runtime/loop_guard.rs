@@ -288,7 +288,7 @@ mod tests {
         PersistedToolResult {
             title: SafeDisplayText::new("Bash").unwrap(),
             output: output.to_owned(),
-            display: None,
+            display: Vec::new(),
             retained_output: None,
             metadata: serde_json::Value::Null,
             attachments: Vec::new(),

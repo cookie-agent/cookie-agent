@@ -1049,6 +1049,7 @@ fn cancelled_and_interrupted_tools_render_distinct_concise_markers() {
                 detail: String::new(),
                 operation_fingerprint: operation_fingerprint(),
                 has_output_chunks: false,
+                live_display: Default::default(),
                 revision: 0,
             },
         );
@@ -1109,16 +1110,25 @@ fn running_tool_updates_rerender_only_the_tool_row() {
     assert_eq!(before.len(), 4);
     let part_passes = cache.assistant_part_layout_passes;
 
-    assert!(store.apply_event(event(
-        session,
-        5,
-        run,
-        EventPayload::ToolCallProgress {
-            tool_call_id: call_id,
-            message: cookie_agent_protocol::SafeDisplayText::new("bash stdout").unwrap(),
-            display: Some("compiling\n".into()),
-        },
-    )));
+    assert!(
+        store.apply_event(event(
+            session,
+            5,
+            run,
+            EventPayload::ToolCallProgress {
+                tool_call_id: call_id,
+                message: cookie_agent_protocol::SafeDisplayText::new("bash stdout").unwrap(),
+                display: Some(
+                    cookie_agent_protocol::DisplayDelta::Append {
+                        index: 0,
+                        text: "compiling\n".into(),
+                        stream: None
+                    }
+                    .into()
+                ),
+            },
+        ))
+    );
     layout(&mut cache, &store, 0);
     let progressed = assistant_chunks(&cache);
     assert!(std::sync::Arc::ptr_eq(&progressed[1], &before[1]));

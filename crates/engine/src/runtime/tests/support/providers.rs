@@ -169,11 +169,14 @@ impl PreparedExecutor for TestStreamingBashExecutor {
 output: vec![cookie_agent_protocol::ToolOutputChunk { stream: None, text: "authoritative start\n".into() }],
                 tool_call_id: self.call_id,
                 message: "bash stdout".into(),
-                display: Some(if self.command == "timeout" {
-                    "stdout before internal timeout".into()
-                } else {
-                    "before cancellation".into()
-                }),
+                display: Some(cookie_agent_protocol::DisplayDelta::append(
+                    0,
+                    if self.command == "timeout" {
+                        "stdout before internal timeout"
+                    } else {
+                        "before cancellation"
+                    },
+                )),
             })
             .await?;
         self.output_started.notify_one();
@@ -184,7 +187,7 @@ output: vec![cookie_agent_protocol::ToolOutputChunk { stream: None, text: "autho
 output: vec![cookie_agent_protocol::ToolOutputChunk { stream: None, text: "authoritative error\n".into() }],
                     tool_call_id: self.call_id,
                     message: "bash stderr".into(),
-                    display: Some("stderr before internal timeout".into()),
+                    display: Some(cookie_agent_protocol::DisplayDelta::append(0, "stderr before internal timeout")),
                 })
                 .await?;
             return Err(ToolError::execution("bash timed out"));
@@ -200,7 +203,7 @@ output: vec![cookie_agent_protocol::ToolOutputChunk { stream: None, text: "autho
 output: vec![cookie_agent_protocol::ToolOutputChunk { stream: None, text: "authoritative cleanup\n".into() }],
                 tool_call_id: self.call_id,
                 message: "bash stdout".into(),
-                display: Some("during cancellation cleanup".into()),
+                display: Some(cookie_agent_protocol::DisplayDelta::append(0, "during cancellation cleanup")),
             })
             .await?;
         self.cleanup_progress_sent.notify_one();
@@ -215,7 +218,7 @@ output: vec![cookie_agent_protocol::ToolOutputChunk { stream: None, text: "autho
             "session-shaped" | "null-session-shaped"
         ) {
             return Ok(cookie_agent_protocol::PersistedToolResult {
-display: None,
+display: Vec::new(),
 retained_output: None,
                 title: cookie_agent_protocol::SafeDisplayText::new("External result").unwrap(),
                 output: "external cleanup result".into(),
@@ -533,7 +536,7 @@ impl PreparedExecutor for TestParallelToolExecutor {
                 .expect("parallel completed names lock")
                 .push(self.name.clone());
             Ok(cookie_agent_protocol::PersistedToolResult {
-                display: None,
+                display: Vec::new(),
                 retained_output: None,
                 title: cookie_agent_protocol::SafeDisplayText::new("parallel test result")
                     .expect("result title"),
@@ -767,7 +770,7 @@ impl PreparedExecutor for TestDelegateExecutor {
             if background {
                 let metadata = serde_json::json!({"session_id":handle.child_session_id});
                 Ok(cookie_agent_protocol::PersistedToolResult {
-                    display: None,
+                    display: Vec::new(),
                     retained_output: None,
                     title: cookie_agent_protocol::SafeDisplayText::new("Subagent started")
                         .expect("title"),
@@ -914,7 +917,7 @@ impl PreparedExecutor for TestWriteExecutor {
         let result: Result<cookie_agent_protocol::PersistedToolResult, ToolError> = async move {
             self.executed.set();
             Ok(cookie_agent_protocol::PersistedToolResult {
-                display: None,
+                display: Vec::new(),
                 retained_output: None,
                 title: cookie_agent_protocol::SafeDisplayText::new("approval test write")
                     .expect("result title"),
@@ -1083,7 +1086,7 @@ impl PreparedExecutor for TestAliasExecutor {
         self.executed.set();
         Ok(crate::ToolCompletion::single(
             cookie_agent_protocol::PersistedToolResult {
-                display: None,
+                display: Vec::new(),
                 retained_output: None,
                 title: cookie_agent_protocol::SafeDisplayText::new("aliased tool result")
                     .expect("result title"),
@@ -1232,7 +1235,7 @@ impl PreparedExecutor for TestMediaReadExecutor {
             }
             let attachment = context.retain_attachment(mime, None, &bytes)?;
             Ok(cookie_agent_protocol::PersistedToolResult {
-                display: None,
+                display: Vec::new(),
                 retained_output: None,
                 title: cookie_agent_protocol::SafeDisplayText::new("Read attachment").unwrap(),
                 output: format!("Attached {mime}."),
@@ -1554,7 +1557,8 @@ impl PreparedExecutor for NamedOutputExecutor {
                 .send(ToolProgress {
                     tool_call_id: self.0,
                     message: "output".into(),
-                    display: (index == 0).then(|| "UI_LIVE_ONLY".into()),
+                    display: (index == 0)
+                        .then(|| cookie_agent_protocol::DisplayDelta::append(0, "UI_LIVE_ONLY")),
                     output: vec![cookie_agent_protocol::ToolOutputChunk {
                         stream: Some("results".into()),
                         text: "x".repeat(32 * 1024),
@@ -1580,7 +1584,7 @@ impl PreparedExecutor for NamedOutputExecutor {
             crate::ToolCompletion::streamed(cookie_agent_protocol::PersistedToolResult {
                 title: cookie_agent_protocol::SafeDisplayText::new("Named output").unwrap(),
                 output: String::new(),
-                display: Some("UI_FINAL_ONLY".into()),
+                display: cookie_agent_protocol::text_display("UI_FINAL_ONLY"),
                 retained_output: None,
                 metadata: serde_json::Value::Null,
                 attachments: Vec::new(),

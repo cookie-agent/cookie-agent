@@ -702,11 +702,11 @@ fn tool_result_with_additional_messages(additional_messages: Value) -> Value {
     })
 }
 
-fn display_result(output: &str, display: Option<&str>) -> PersistedToolResult {
+fn display_result(output: &str, display: Vec<Open<DisplayBlock>>) -> PersistedToolResult {
     PersistedToolResult {
         title: SafeDisplayText::new("Bash").unwrap(),
         output: output.into(),
-        display: display.map(Into::into),
+        display,
         retained_output: None,
         metadata: Value::Null,
         attachments: Vec::new(),
@@ -716,26 +716,47 @@ fn display_result(output: &str, display: Option<&str>) -> PersistedToolResult {
 
 #[test]
 fn tool_result_display_found_in_output_is_stored_as_a_span() {
+    let text = |text: &str| vec![Open::Known(DisplayBlock::text(text))];
+    let cut = vec![Open::Known(DisplayBlock::Text {
+        text: "same".into(),
+        omitted_lines: Some(1),
+    })];
+    let two = [text("same"), text("text")].concat();
     let cases = [
         // A single-output tool shows its whole output.
         (
             "same text",
-            Some("same text"),
+            text("same text"),
             json!({"display_span": [0, 9]}),
         ),
         // A shell shows its only stream, past the stream heading.
         (
             "[stdout]\né ok\n\n[stderr]\n",
-            Some("é ok\n"),
+            text("é ok\n"),
             json!({"display_span": [9, 15]}),
         ),
         (
             "[stdout]\nab\n",
-            Some("merged"),
-            json!({"display": "merged"}),
+            text("merged"),
+            json!({"display": [{"type": "text", "text": "merged"}]}),
         ),
-        ("output", Some(""), json!({"display": ""})),
-        ("output", None, json!({})),
+        // Only a whole single text block is a span.
+        (
+            "same text",
+            cut.clone(),
+            json!({"display": [{"type": "text", "text": "same", "omitted_lines": 1}]}),
+        ),
+        (
+            "same text",
+            two.clone(),
+            json!({"display": [{"type": "text", "text": "same"}, {"type": "text", "text": "text"}]}),
+        ),
+        (
+            "output",
+            text(""),
+            json!({"display": [{"type": "text", "text": ""}]}),
+        ),
+        ("output", Vec::new(), json!({"display": []})),
     ];
     for (output, display, expected) in cases {
         let result = display_result(output, display);
@@ -752,7 +773,9 @@ fn tool_result_display_found_in_output_is_stored_as_a_span() {
 
 #[test]
 fn tool_result_display_span_must_be_a_range_of_output() {
-    let mut value = serde_json::to_value(display_result("é ok", None)).unwrap();
+    let mut value = serde_json::to_value(display_result("é ok", Vec::new())).unwrap();
+    value.as_object_mut().unwrap().remove("display");
+    assert!(serde_json::from_value::<PersistedToolResult>(value.clone()).is_err());
     for span in [json!([0, 9]), json!([1, 3]), json!([3, 2])] {
         value["display_span"] = span.clone();
         assert!(
@@ -761,7 +784,13 @@ fn tool_result_display_span_must_be_a_range_of_output() {
         );
     }
     value["display_span"] = json!([0, 2]);
-    value["display"] = json!("é");
+    assert_eq!(
+        serde_json::from_value::<PersistedToolResult>(value.clone())
+            .unwrap()
+            .display,
+        vec![Open::Known(DisplayBlock::text("é"))]
+    );
+    value["display"] = json!([{"type": "text", "text": "é"}]);
     assert!(serde_json::from_value::<PersistedToolResult>(value).is_err());
 }
 
@@ -769,7 +798,7 @@ fn tool_result_display_span_must_be_a_range_of_output() {
 fn tool_emitted_messages_round_trip_and_empty_results_stay_compact() {
     let digest = Sha256Digest::of_bytes(b"emitted file");
     let result = PersistedToolResult {
-        display: None,
+        display: Vec::new(),
         retained_output: None,
         title: SafeDisplayText::new("Tool result").unwrap(),
         output: "done".into(),
@@ -1114,13 +1143,15 @@ fn event_payload_best_effort_defaults_only_optional_fields() {
         "type": "tool_call_progress",
         "tool_call_id": tool_call_id,
         "message": "bash stdout",
-        "display": "partial output"
+        "display": {"type": "append", "index": 0, "text": "partial output"}
     }))
     .expect("optional output chunk parses");
     assert!(matches!(
         chunk_progress.payload,
-        EventPayload::ToolCallProgress { display: Some(chunk), .. }
-            if chunk.as_str() == "partial output"
+        EventPayload::ToolCallProgress {
+            display: Some(Open::Known(DisplayDelta::Append { index: 0, text, stream: None })),
+            ..
+        } if text == "partial output"
     ));
 }
 
