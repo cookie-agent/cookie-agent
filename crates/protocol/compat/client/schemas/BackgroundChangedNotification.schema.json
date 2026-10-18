@@ -1,15 +1,15 @@
 {
   "$defs": {
     "BackgroundActor": {
-      "description": "Who moved a call to the background.",
+      "description": "Who moved a call to the background.\n\nA value this build does not know reads as `model`.",
       "enum": [
-        "model",
-        "user"
+        "user",
+        "model"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "BackgroundCall": {
-      "additionalProperties": false,
       "description": "One call running in the background.",
       "properties": {
         "by": {
@@ -54,7 +54,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "description": "A session's background calls changed.",
   "properties": {
     "calls": {

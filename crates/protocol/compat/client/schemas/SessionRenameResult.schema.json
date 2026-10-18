@@ -239,15 +239,20 @@
       ]
     },
     "SessionStatus": {
-      "enum": [
-        "idle",
-        "running",
-        "completed",
-        "failed",
-        "cancelled",
-        "interrupted"
+      "oneOf": [
+        {
+          "enum": [
+            "idle",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "type": "string"
+        }
       ],
-      "type": "string"
+      "x-open": true
     },
     "SkippedEvent": {
       "properties": {
@@ -268,7 +273,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "client_rename_id": {
       "description": "Bounded title mutation idempotency key.",

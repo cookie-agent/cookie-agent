@@ -1,7 +1,6 @@
 {
   "$defs": {
     "RuntimeAttachment": {
-      "additionalProperties": false,
       "description": "One runtime a session is attached to.",
       "properties": {
         "capability": {
@@ -48,7 +47,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "attachment": {
       "$ref": "#/$defs/RuntimeAttachment",

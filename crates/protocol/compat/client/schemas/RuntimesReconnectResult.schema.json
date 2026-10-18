@@ -1,7 +1,6 @@
 {
   "$defs": {
     "RuntimeInstanceInfo": {
-      "additionalProperties": false,
       "properties": {
         "attachment_name": {
           "description": "The name the instance reports; absent until it has started.",
@@ -64,18 +63,22 @@
       "type": "object"
     },
     "RuntimeInstanceStatus": {
-      "enum": [
-        "starting",
-        "ready",
-        "reconnecting",
-        "failed",
-        "stopped"
+      "oneOf": [
+        {
+          "enum": [
+            "starting",
+            "ready",
+            "reconnecting",
+            "failed",
+            "stopped"
+          ],
+          "type": "string"
+        }
       ],
-      "type": "string"
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "instance": {
       "$ref": "#/$defs/RuntimeInstanceInfo",

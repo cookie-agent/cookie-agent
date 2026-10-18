@@ -3581,3 +3581,77 @@ fn base_presentation(
         },
     )
 }
+
+/// An event a newer daemon wrote changes nothing in the projection but its
+/// sequence, in a replay and live, and shows only as a debug row.
+#[test]
+fn unknown_events_advance_the_sequence_and_show_only_in_the_debug_view() {
+    let session_id = SessionId::new_v7();
+    let unknown = |seq| {
+        Box::new(cookie_agent_protocol::UnknownEvent {
+            session_id,
+            run_id: None,
+            seq,
+            timestamp: jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+            origin: None,
+            tag: "from_the_future".into(),
+        })
+    };
+    let mut store = StateStore::default();
+    let created = stored_event(
+        session_id,
+        Some(RunId::new_v7()),
+        1,
+        EventPayload::UserInputAdmitted {
+            content: "hello".into(),
+        },
+    );
+    for delivery in [
+        ClientDelivery::ReplayStart {
+            session_id,
+            generation: 0,
+            final_seq: 2,
+            rebuild: true,
+        },
+        ClientDelivery::ReplayEvent {
+            session_id,
+            generation: 0,
+            final_seq: 2,
+            event: Box::new(created),
+        },
+        ClientDelivery::UnknownEvent {
+            event: unknown(2),
+            generation: 0,
+            replay_final_seq: Some(2),
+        },
+        ClientDelivery::ReplayEnd {
+            session_id,
+            generation: 0,
+            final_seq: 2,
+        },
+    ] {
+        assert_eq!(store.apply_delivery(delivery), DeliveryOutcome::Applied);
+    }
+    assert_eq!(store.sessions[&session_id].last_seq, 2);
+    assert_eq!(
+        store.apply_delivery(ClientDelivery::UnknownEvent {
+            event: unknown(3),
+            generation: 0,
+            replay_final_seq: None,
+        }),
+        DeliveryOutcome::Applied
+    );
+    let state = &store.sessions[&session_id];
+    assert_eq!(state.last_seq, 3);
+    let rows = state
+        .transcript
+        .iter()
+        .filter_map(|item| match item {
+            TranscriptItem::Event { level, text, .. } if text.contains("from_the_future") => {
+                Some(*level)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rows, [EventLevel::Debug, EventLevel::Debug]);
+}

@@ -1,7 +1,6 @@
 {
   "$defs": {
     "McpServerFailure": {
-      "additionalProperties": false,
       "description": "An MCP server whose tools are unavailable to the sessions using it.",
       "properties": {
         "reason": {
@@ -43,7 +42,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "description": "MCP server configuration or status changed; refetch `mcp.server.list`.",
   "properties": {
     "failures": {

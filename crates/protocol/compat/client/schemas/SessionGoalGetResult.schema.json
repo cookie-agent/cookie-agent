@@ -16,7 +16,6 @@
       "type": "object"
     },
     "GoalState": {
-      "additionalProperties": false,
       "description": "Root-session projection, rebuilt from goal events independently of compaction.\nActivation starts with an empty checklist; each subsequent event advances revision.",
       "properties": {
         "goal_id": {
@@ -51,17 +50,18 @@
       "type": "object"
     },
     "GoalStatus": {
+      "description": "A value this build does not know reads as `cancelled`: a cancelled goal,\nwhich allows no lifecycle change.",
       "enum": [
         "active",
         "paused",
         "completed",
         "cancelled"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "goal": {
       "anyOf": [

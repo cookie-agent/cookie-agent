@@ -8,7 +8,6 @@ use crate::{AttachmentName, CapabilityName, RuntimeId, RuntimeKind};
 
 /// One runtime a session is attached to.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RuntimeAttachment {
     /// Session-unique attachment name; the tool prefix on collisions.
     pub name: AttachmentName,

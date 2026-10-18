@@ -1,7 +1,6 @@
 {
   "$defs": {
     "PluginInfo": {
-      "additionalProperties": false,
       "description": "One configured plugin as clients see it.",
       "properties": {
         "dropped_events": {
@@ -112,11 +111,11 @@
           "description": "Stopped with the daemon.",
           "type": "string"
         }
-      ]
+      ],
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "description": "The configured plugins, in the order their hooks run.",
   "properties": {
     "plugins": {

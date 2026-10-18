@@ -1,7 +1,6 @@
 {
   "$defs": {
     "AgentDescriptor": {
-      "additionalProperties": false,
       "properties": {
         "delegation_targets": {
           "items": {
@@ -85,16 +84,17 @@
       "type": "object"
     },
     "AgentMode": {
+      "description": "A value this build does not know reads as `internal`: an internal agent,\nwhich is neither runnable as a root nor a delegation target.",
       "enum": [
         "primary",
         "subagent",
         "all",
         "internal"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "AuthCredentialDescriptor": {
-      "additionalProperties": false,
       "properties": {
         "credential_type": {
           "$ref": "#/$defs/CredentialFieldType"
@@ -133,7 +133,6 @@
       "type": "object"
     },
     "AuthMethodDescriptor": {
-      "additionalProperties": false,
       "properties": {
         "credentials": {
           "items": {
@@ -165,7 +164,6 @@
       "type": "object"
     },
     "AvailableModelDescriptor": {
-      "additionalProperties": false,
       "properties": {
         "behavior_fingerprint": {
           "maxLength": 64,
@@ -227,7 +225,6 @@
       "type": "object"
     },
     "AvailableVariantDescriptor": {
-      "additionalProperties": false,
       "properties": {
         "behavior_fingerprint": {
           "maxLength": 64,
@@ -260,23 +257,25 @@
       "type": "object"
     },
     "CancellationCapability": {
+      "description": "A value this build does not know reads as `local_only`.",
       "enum": [
-        "local_only",
-        "provider"
+        "provider",
+        "local_only"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "CatalogAge": {
-      "description": "Age of the selected validated catalog body; age never makes it unusable.",
+      "description": "Age of the selected validated catalog body; age never makes it unusable.\n\nA value this build does not know reads as `older_than_thirty_days`.",
       "enum": [
         "current",
         "older_than_seven_days",
         "older_than_thirty_days"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "CatalogRuntimeState": {
-      "additionalProperties": false,
       "properties": {
         "age": {
           "$ref": "#/$defs/CatalogAge"
@@ -322,7 +321,6 @@
       "type": "object"
     },
     "CatalogSafeErrorMeta": {
-      "additionalProperties": false,
       "properties": {
         "code": {
           "description": "Stable lowercase machine-readable code.",
@@ -351,25 +349,28 @@
       "type": "object"
     },
     "CatalogSource": {
+      "description": "A value this build does not know reads as `cache`.",
       "enum": [
         "network",
-        "cache",
-        "bootstrap"
+        "bootstrap",
+        "cache"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "CredentialFieldType": {
+      "description": "A value this build does not know reads as `api_key`: a secret like an API\nkey.",
       "enum": [
-        "api_key",
         "access_token",
         "access_key_id",
         "secret_access_key",
-        "session_token"
+        "session_token",
+        "api_key"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "DurableConnectionDescriptor": {
-      "additionalProperties": false,
       "properties": {
         "auth_method": {
           "maxLength": 128,
@@ -438,7 +439,6 @@
       "type": "object"
     },
     "DurableProviderReceipt": {
-      "additionalProperties": false,
       "properties": {
         "committed_at": {
           "format": "date-time",
@@ -470,6 +470,7 @@
       "type": "object"
     },
     "EffectiveAuthState": {
+      "description": "A value this build does not know reads as `unavailable`.",
       "enum": [
         "authored_api_key",
         "authored_override",
@@ -477,7 +478,8 @@
         "no_auth",
         "unavailable"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "MediaCapability": {
       "properties": {
@@ -616,16 +618,11 @@
       "type": "object"
     },
     "ModelUnavailableKind": {
-      "description": "Why a provider's catalog model is not selectable.",
+      "description": "Why a provider's catalog model is not selectable.\n\nA value this build does not know reads as `unsupported`.",
       "oneOf": [
         {
           "const": "quarantined",
           "description": "The catalog parser quarantined the model record.",
-          "type": "string"
-        },
-        {
-          "const": "unsupported",
-          "description": "The record parsed, but cookie cannot drive the model.",
           "type": "string"
         },
         {
@@ -637,20 +634,27 @@
           "const": "needs_credentials",
           "description": "No usable credentials are configured or stored for the provider.",
           "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "The record parsed, but cookie cannot drive the model.",
+          "type": "string"
         }
-      ]
+      ],
+      "x-open": true
     },
     "ProviderConfigurationState": {
+      "description": "A value this build does not know reads as `unconfigured`.",
       "enum": [
-        "unconfigured",
         "authored",
         "stored",
-        "authored_and_stored"
+        "authored_and_stored",
+        "unconfigured"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ProviderDescriptor": {
-      "additionalProperties": false,
       "properties": {
         "auth_methods": {
           "items": {
@@ -762,7 +766,6 @@
       "type": "object"
     },
     "ProviderModelCounts": {
-      "additionalProperties": false,
       "description": "Per-provider model availability counts over every catalog model row that\nis not deprecated, disabled, or non-text.",
       "properties": {
         "available": {
@@ -801,14 +804,15 @@
       "type": "object"
     },
     "ProviderPresence": {
+      "description": "A value this build does not know reads as `current`.",
       "enum": [
-        "current",
-        "removed"
+        "removed",
+        "current"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ProviderSupport": {
-      "additionalProperties": false,
       "properties": {
         "reason": {
           "description": "Stable lowercase machine-readable code.",
@@ -831,15 +835,16 @@
       "type": "object"
     },
     "ProviderSupportState": {
+      "description": "A value this build does not know reads as `unsupported`: a provider that\ncannot be connected.",
       "enum": [
         "supported",
-        "unsupported",
-        "quarantined"
+        "quarantined",
+        "unsupported"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "QuarantineDiagnostic": {
-      "additionalProperties": false,
       "properties": {
         "code": {
           "description": "Stable lowercase machine-readable code.",
@@ -863,15 +868,16 @@
       "type": "object"
     },
     "ReplayCapability": {
+      "description": "A value this build does not know reads as `unsupported`.",
       "enum": [
-        "unsupported",
         "optional",
-        "required"
+        "required",
+        "unsupported"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "RuntimeSnapshotResult": {
-      "additionalProperties": false,
       "properties": {
         "snapshot": {
           "$ref": "#/$defs/RuntimeSnapshotV1"
@@ -883,7 +889,6 @@
       "type": "object"
     },
     "RuntimeSnapshotV1": {
-      "additionalProperties": false,
       "properties": {
         "agent_revision": {
           "maxLength": 71,
@@ -1009,7 +1014,6 @@
       ]
     },
     "SetupFieldDescriptor": {
-      "additionalProperties": false,
       "properties": {
         "default": {
           "anyOf": [
@@ -1059,16 +1063,17 @@
       "type": "object"
     },
     "SetupFieldType": {
+      "description": "A value this build does not know reads as `string`: a string, which the\ndaemon validates.",
       "enum": [
-        "string",
         "code",
         "integer",
-        "bool"
+        "bool",
+        "string"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "SetupFieldValidation": {
-      "additionalProperties": false,
       "properties": {
         "max_length": {
           "format": "uint32",
@@ -1114,7 +1119,6 @@
       "type": "object"
     },
     "UnavailableModelDescriptor": {
-      "additionalProperties": false,
       "description": "One catalog model that is listed but not selectable, with its reason.",
       "properties": {
         "display_name": {
@@ -1153,17 +1157,18 @@
       "type": "object"
     },
     "VariantOrigin": {
+      "description": "A value this build does not know reads as `explicit`.",
       "enum": [
         "models_dev_effort",
         "models_dev_toggle",
         "models_dev_budget_tokens",
         "explicit"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "disconnected": {
       "type": "boolean"

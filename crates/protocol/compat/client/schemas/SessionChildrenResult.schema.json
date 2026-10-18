@@ -1,7 +1,6 @@
 {
   "$defs": {
     "ChildSummary": {
-      "additionalProperties": false,
       "properties": {
         "agent": {
           "maxLength": 64,
@@ -52,15 +51,20 @@
       "type": "object"
     },
     "SessionStatus": {
-      "enum": [
-        "idle",
-        "running",
-        "completed",
-        "failed",
-        "cancelled",
-        "interrupted"
+      "oneOf": [
+        {
+          "enum": [
+            "idle",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "type": "string"
+        }
       ],
-      "type": "string"
+      "x-open": true
     },
     "Usage": {
       "properties": {
@@ -134,7 +138,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "children": {
       "items": {

@@ -11,7 +11,6 @@ expression: schema_for!(RuntimeSnapshotResult)
       "$ref": "#/$defs/RuntimeSnapshotV1"
     }
   },
-  "additionalProperties": false,
   "required": [
     "snapshot"
   ],
@@ -89,7 +88,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "type": "boolean"
         }
       },
-      "additionalProperties": false,
       "required": [
         "id",
         "description",
@@ -101,13 +99,15 @@ expression: schema_for!(RuntimeSnapshotResult)
       ]
     },
     "AgentMode": {
+      "description": "A value this build does not know reads as `internal`: an internal agent,\nwhich is neither runnable as a root nor a delegation target.",
       "type": "string",
       "enum": [
         "primary",
         "subagent",
         "all",
         "internal"
-      ]
+      ],
+      "x-open": true
     },
     "AuthCredentialDescriptor": {
       "type": "object",
@@ -139,7 +139,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "type": "boolean"
         }
       },
-      "additionalProperties": false,
       "required": [
         "id",
         "display_name",
@@ -173,7 +172,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
         }
       },
-      "additionalProperties": false,
       "required": [
         "id",
         "display_name",
@@ -231,7 +229,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "maxItems": 256
         }
       },
-      "additionalProperties": false,
       "required": [
         "key",
         "display_name",
@@ -267,7 +264,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "$ref": "#/$defs/VariantOrigin"
         }
       },
-      "additionalProperties": false,
       "required": [
         "id",
         "display_name",
@@ -276,20 +272,23 @@ expression: schema_for!(RuntimeSnapshotResult)
       ]
     },
     "CancellationCapability": {
+      "description": "A value this build does not know reads as `local_only`.",
       "type": "string",
       "enum": [
-        "local_only",
-        "provider"
-      ]
+        "provider",
+        "local_only"
+      ],
+      "x-open": true
     },
     "CatalogAge": {
-      "description": "Age of the selected validated catalog body; age never makes it unusable.",
+      "description": "Age of the selected validated catalog body; age never makes it unusable.\n\nA value this build does not know reads as `older_than_thirty_days`.",
       "type": "string",
       "enum": [
         "current",
         "older_than_seven_days",
         "older_than_thirty_days"
-      ]
+      ],
+      "x-open": true
     },
     "CatalogRuntimeState": {
       "type": "object",
@@ -327,7 +326,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "type": "boolean"
         }
       },
-      "additionalProperties": false,
       "required": [
         "stale",
         "age",
@@ -359,7 +357,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "format": "date-time"
         }
       },
-      "additionalProperties": false,
       "required": [
         "code",
         "message",
@@ -367,22 +364,26 @@ expression: schema_for!(RuntimeSnapshotResult)
       ]
     },
     "CatalogSource": {
+      "description": "A value this build does not know reads as `cache`.",
       "type": "string",
       "enum": [
         "network",
-        "cache",
-        "bootstrap"
-      ]
+        "bootstrap",
+        "cache"
+      ],
+      "x-open": true
     },
     "CredentialFieldType": {
+      "description": "A value this build does not know reads as `api_key`: a secret like an API\nkey.",
       "type": "string",
       "enum": [
-        "api_key",
         "access_token",
         "access_key_id",
         "secret_access_key",
-        "session_token"
-      ]
+        "session_token",
+        "api_key"
+      ],
+      "x-open": true
     },
     "DurableConnectionDescriptor": {
       "type": "object",
@@ -441,7 +442,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           }
         }
       },
-      "additionalProperties": false,
       "required": [
         "provider_id",
         "setup_values",
@@ -454,6 +454,7 @@ expression: schema_for!(RuntimeSnapshotResult)
       ]
     },
     "EffectiveAuthState": {
+      "description": "A value this build does not know reads as `unavailable`.",
       "type": "string",
       "enum": [
         "authored_api_key",
@@ -461,7 +462,8 @@ expression: schema_for!(RuntimeSnapshotResult)
         "provider_store",
         "no_auth",
         "unavailable"
-      ]
+      ],
+      "x-open": true
     },
     "MediaCapability": {
       "type": "object",
@@ -600,17 +602,12 @@ expression: schema_for!(RuntimeSnapshotResult)
       ]
     },
     "ModelUnavailableKind": {
-      "description": "Why a provider's catalog model is not selectable.",
+      "description": "Why a provider's catalog model is not selectable.\n\nA value this build does not know reads as `unsupported`.",
       "oneOf": [
         {
           "description": "The catalog parser quarantined the model record.",
           "type": "string",
           "const": "quarantined"
-        },
-        {
-          "description": "The record parsed, but cookie cannot drive the model.",
-          "type": "string",
-          "const": "unsupported"
         },
         {
           "description": "Provider setup values (region, resource, deployment) are missing.",
@@ -621,17 +618,25 @@ expression: schema_for!(RuntimeSnapshotResult)
           "description": "No usable credentials are configured or stored for the provider.",
           "type": "string",
           "const": "needs_credentials"
+        },
+        {
+          "description": "The record parsed, but cookie cannot drive the model.",
+          "type": "string",
+          "const": "unsupported"
         }
-      ]
+      ],
+      "x-open": true
     },
     "ProviderConfigurationState": {
+      "description": "A value this build does not know reads as `unconfigured`.",
       "type": "string",
       "enum": [
-        "unconfigured",
         "authored",
         "stored",
-        "authored_and_stored"
-      ]
+        "authored_and_stored",
+        "unconfigured"
+      ],
+      "x-open": true
     },
     "ProviderDescriptor": {
       "type": "object",
@@ -727,7 +732,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "maxItems": 4096
         }
       },
-      "additionalProperties": false,
       "required": [
         "id",
         "display_name",
@@ -775,7 +779,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "minimum": 0
         }
       },
-      "additionalProperties": false,
       "required": [
         "available",
         "quarantined",
@@ -785,11 +788,13 @@ expression: schema_for!(RuntimeSnapshotResult)
       ]
     },
     "ProviderPresence": {
+      "description": "A value this build does not know reads as `current`.",
       "type": "string",
       "enum": [
-        "current",
-        "removed"
-      ]
+        "removed",
+        "current"
+      ],
+      "x-open": true
     },
     "ProviderSupport": {
       "type": "object",
@@ -808,19 +813,20 @@ expression: schema_for!(RuntimeSnapshotResult)
           "$ref": "#/$defs/ProviderSupportState"
         }
       },
-      "additionalProperties": false,
       "required": [
         "state",
         "reason"
       ]
     },
     "ProviderSupportState": {
+      "description": "A value this build does not know reads as `unsupported`: a provider that\ncannot be connected.",
       "type": "string",
       "enum": [
         "supported",
-        "unsupported",
-        "quarantined"
-      ]
+        "quarantined",
+        "unsupported"
+      ],
+      "x-open": true
     },
     "QuarantineDiagnostic": {
       "type": "object",
@@ -840,19 +846,20 @@ expression: schema_for!(RuntimeSnapshotResult)
           "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
         }
       },
-      "additionalProperties": false,
       "required": [
         "code",
         "message"
       ]
     },
     "ReplayCapability": {
+      "description": "A value this build does not know reads as `unsupported`.",
       "type": "string",
       "enum": [
-        "unsupported",
         "optional",
-        "required"
-      ]
+        "required",
+        "unsupported"
+      ],
+      "x-open": true
     },
     "RuntimeSnapshotV1": {
       "type": "object",
@@ -938,7 +945,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "const": 6
         }
       },
-      "additionalProperties": false,
       "required": [
         "snapshot_schema_version",
         "recipe_registry_revision",
@@ -1020,7 +1026,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "$ref": "#/$defs/SetupFieldValidation"
         }
       },
-      "additionalProperties": false,
       "required": [
         "id",
         "display_name",
@@ -1031,13 +1036,15 @@ expression: schema_for!(RuntimeSnapshotResult)
       ]
     },
     "SetupFieldType": {
+      "description": "A value this build does not know reads as `string`: a string, which the\ndaemon validates.",
       "type": "string",
       "enum": [
-        "string",
         "code",
         "integer",
-        "bool"
-      ]
+        "bool",
+        "string"
+      ],
+      "x-open": true
     },
     "SetupFieldValidation": {
       "type": "object",
@@ -1076,7 +1083,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "$ref": "#/$defs/SetupFieldType"
         }
       },
-      "additionalProperties": false,
       "required": [
         "value_type",
         "min_length",
@@ -1116,7 +1122,6 @@ expression: schema_for!(RuntimeSnapshotResult)
           "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
         }
       },
-      "additionalProperties": false,
       "required": [
         "id",
         "display_name",
@@ -1125,13 +1130,15 @@ expression: schema_for!(RuntimeSnapshotResult)
       ]
     },
     "VariantOrigin": {
+      "description": "A value this build does not know reads as `explicit`.",
       "type": "string",
       "enum": [
         "models_dev_effort",
         "models_dev_toggle",
         "models_dev_budget_tokens",
         "explicit"
-      ]
+      ],
+      "x-open": true
     }
   }
 }

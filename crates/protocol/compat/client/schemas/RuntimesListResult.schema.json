@@ -1,7 +1,6 @@
 {
   "$defs": {
     "RuntimeCapabilityInfo": {
-      "additionalProperties": false,
       "description": "One capability a runtime offers.",
       "properties": {
         "description": {
@@ -31,7 +30,6 @@
       "type": "object"
     },
     "RuntimeInstanceInfo": {
-      "additionalProperties": false,
       "properties": {
         "attachment_name": {
           "description": "The name the instance reports; absent until it has started.",
@@ -94,17 +92,22 @@
       "type": "object"
     },
     "RuntimeInstanceStatus": {
-      "enum": [
-        "starting",
-        "ready",
-        "reconnecting",
-        "failed",
-        "stopped"
+      "oneOf": [
+        {
+          "enum": [
+            "starting",
+            "ready",
+            "reconnecting",
+            "failed",
+            "stopped"
+          ],
+          "type": "string"
+        }
       ],
-      "type": "string"
+      "x-open": true
     },
     "RuntimeLifetime": {
-      "description": "How the daemon reaches a runtime.",
+      "description": "How the daemon reaches a runtime.\n\nA value this build does not know reads as `spawned`.",
       "oneOf": [
         {
           "const": "builtin",
@@ -112,19 +115,19 @@
           "type": "string"
         },
         {
-          "const": "spawned",
-          "description": "Started by the daemon from a `[runtimes.<id>]` template.",
-          "type": "string"
-        },
-        {
           "const": "dial_in",
           "description": "Connected to the daemon on its own: a persistent runtime, or one a\nclient runs for as long as it does.",
           "type": "string"
+        },
+        {
+          "const": "spawned",
+          "description": "Started by the daemon from a `[runtimes.<id>]` template.",
+          "type": "string"
         }
-      ]
+      ],
+      "x-open": true
     },
     "RuntimeListing": {
-      "additionalProperties": false,
       "properties": {
         "capabilities": {
           "description": "What the runtime offers; empty until it has connected once.",
@@ -171,7 +174,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "description": "The runtimes sessions can attach and the capability instances this\ndaemon has opened.",
   "properties": {
     "instances": {

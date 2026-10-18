@@ -14,18 +14,18 @@ use std::{
 
 use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
-    ClientHello, ClientIdentity, ClientKind, EventOrigin, EventSubscriptionMessage,
-    EventsSubscribeParams, EventsSubscribeResult, JsonRpcError, JsonRpcId, JsonRpcVersion,
-    McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult,
-    McpAuthCompleteParams, McpAuthCompleteResult, McpServerAddParams, McpServerEditParams,
-    McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
-    McpServerPersistParams, McpServerReconnectParams, McpServerSetEnabledParams, MessageFrame,
-    RunCancelParams, RunCancelResult, RunStartParams, RunStartResult, RunSteerParams,
-    RunSteerResult, ServerHello, SessionChildrenParams, SessionChildrenResult,
-    SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
-    SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
-    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
-    SessionGoalSetParams, SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
+    ClientEvent, ClientHello, ClientIdentity, ClientKind, ClientSubscriptionMessage, EventOrigin,
+    EventsSubscribeParams, JsonRpcError, JsonRpcId, JsonRpcVersion, McpAuthBeginParams,
+    McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult, McpAuthCompleteParams,
+    McpAuthCompleteResult, McpServerAddParams, McpServerEditParams, McpServerListParams,
+    McpServerListResult, McpServerMutationResult, McpServerNameParams, McpServerPersistParams,
+    McpServerReconnectParams, McpServerSetEnabledParams, MessageFrame, RunCancelParams,
+    RunCancelResult, RunStartParams, RunStartResult, RunSteerParams, RunSteerResult, ServerHello,
+    SessionChildrenParams, SessionChildrenResult, SessionCompactParams, SessionCompactResult,
+    SessionCreateParams, SessionCreateResult, SessionForkParams, SessionForkResult,
+    SessionGetParams, SessionGetResult, SessionGoalGetParams, SessionGoalGetResult,
+    SessionGoalLifecycleParams, SessionGoalLifecycleResult, SessionGoalSetParams,
+    SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
     SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
     SessionPermissionMutationResult, SessionPermissionPreviewParams,
     SessionPermissionPreviewResult, SessionPermissionSetParams, SessionProducersParams,
@@ -33,7 +33,7 @@ use crate::{
     SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
     SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, SessionTreeUsageResult,
     SessionUsageParams, SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams,
-    SkillsListResult, StoredEvent, Transport, TransportError,
+    SkillsListResult, Transport, TransportError,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
@@ -57,10 +57,15 @@ const REPLAY_PAGE_EVENTS: std::num::NonZeroU32 = std::num::NonZeroU32::new(2_000
 ///
 /// The connection task is its only producer. Replays are injected into this
 /// stream before the live notifications buffered while their RPC is in flight.
+///
+/// The client reads events as [`ClientEvent`]s: one this build cannot read is
+/// delivered as [`ClientDelivery::UnknownEvent`] in its place, so that it
+/// still advances the session's sequence, and live-only output it cannot read
+/// is dropped.
 #[derive(Clone, Debug)]
 pub enum ClientDelivery {
     Live {
-        message: Box<EventSubscriptionMessage>,
+        message: Box<crate::EventSubscriptionMessage>,
         generation: u64,
     },
     ReplayStart {
@@ -73,7 +78,15 @@ pub enum ClientDelivery {
         session_id: SessionId,
         generation: u64,
         final_seq: u64,
-        event: Box<StoredEvent>,
+        event: Box<crate::StoredEvent>,
+    },
+    /// A durable event this build could not read, live or in a replay (with
+    /// the replay's `final_seq`). It advances the session's sequence and
+    /// changes nothing else.
+    UnknownEvent {
+        event: Box<crate::UnknownEvent>,
+        generation: u64,
+        replay_final_seq: Option<u64>,
     },
     ReplayEnd {
         session_id: SessionId,
@@ -101,6 +114,11 @@ pub enum ClientDelivery {
     BackgroundChanged(crate::BackgroundChangedNotification),
     /// A plugin's status changed; refetch `plugins.list`.
     PluginsChanged(crate::PluginsChangedNotification),
+    /// A notification this build could not read was dropped. No call fails
+    /// for it; the message says which notification and why.
+    Diagnostic {
+        message: String,
+    },
 }
 
 type Deliveries = mpsc::UnboundedSender<ClientDelivery>;
@@ -122,6 +140,12 @@ pub enum ClientError {
     ReplayInProgress,
     #[error("subscription replay response timed out")]
     ReplayTimedOut,
+    /// The daemon answered with an outcome this build does not know.
+    #[error("the daemon answered {method} with `{outcome}`, which this client does not know")]
+    UnknownOutcome { method: String, outcome: String },
+    /// The daemon does not know a method this client expected it to have.
+    #[error("the daemon is too old for {method}")]
+    DaemonTooOld { method: String },
 }
 
 impl ClientError {
@@ -268,11 +292,13 @@ struct Subscription {
     rebuild: bool,
     final_seq: u64,
     final_timestamp: Option<Timestamp>,
-    buffered: Vec<ClientDelivery>,
+    /// Live messages that arrived while a replay was in flight, with the
+    /// generation they arrived in.
+    buffered: Vec<(ClientSubscriptionMessage, u64)>,
     recovery_requested: Option<bool>,
     /// Earlier pages of the replay attempt `replay_pages_attempt`, held until
     /// its final page arrives and the whole replay is delivered at once.
-    replay_pages: Vec<StoredEvent>,
+    replay_pages: Vec<ClientEvent>,
     replay_pages_attempt: u64,
     /// The view unsubscribed: live messages still in flight for the session
     /// are dropped and recovery leaves it alone until it subscribes again.
@@ -641,7 +667,11 @@ impl Client {
         &self,
         params: crate::SessionSubmitInputParams,
     ) -> Result<crate::SessionSubmitInputResult, ClientError> {
-        self.call(crate::SESSION_SUBMIT_INPUT_METHOD, &params).await
+        known_outcome(
+            crate::SESSION_SUBMIT_INPUT_METHOD,
+            self.call(crate::SESSION_SUBMIT_INPUT_METHOD, &params)
+                .await?,
+        )
     }
 
     /// Take back one of this client's pending or queued inputs
@@ -650,7 +680,11 @@ impl Client {
         &self,
         params: crate::SessionRecallInputParams,
     ) -> Result<crate::SessionRecallInputResult, ClientError> {
-        self.call(crate::SESSION_RECALL_INPUT_METHOD, &params).await
+        known_outcome(
+            crate::SESSION_RECALL_INPUT_METHOD,
+            self.call(crate::SESSION_RECALL_INPUT_METHOD, &params)
+                .await?,
+        )
     }
 
     pub async fn cancel_run(
@@ -927,12 +961,16 @@ impl Client {
         prepare_subscription(&self.subscriptions, session_id, cursor, recovering, rebuild).await
     }
 
+    /// Calls `method`. A daemon that does not know the method fails the call
+    /// with [`ClientError::DaemonTooOld`].
     pub async fn call<P, R>(&self, method: &str, params: &P) -> Result<R, ClientError>
     where
         P: Serialize + ?Sized,
         R: DeserializeOwned,
     {
-        let result = send_command(&self.commands, method, params, None, false).await?;
+        let result = send_command(&self.commands, method, params, None, false)
+            .await
+            .map_err(|error| too_old(method, error))?;
         Ok(serde_json::from_str(result.get())?)
     }
 
@@ -947,13 +985,42 @@ impl Client {
     {
         let value = SensitiveJson(serde_json::to_value(&params)?);
         drop(params);
-        let result = send_sensitive_command(&self.commands, method, value).await?;
+        let result = send_sensitive_command(&self.commands, method, value)
+            .await
+            .map_err(|error| too_old(method, error))?;
         Ok(serde_json::from_str(result.get())?)
     }
 
     #[cfg(test)]
     fn pending_command_count(&self) -> usize {
         self.pending_command_count.load(Ordering::Relaxed)
+    }
+}
+
+/// `-32601` for a method this client calls: the daemon is older than the
+/// version that added it.
+fn too_old(method: &str, error: ClientError) -> ClientError {
+    match error {
+        ClientError::Rpc(rpc) if rpc.code == crate::errors::METHOD_NOT_FOUND => {
+            ClientError::DaemonTooOld {
+                method: method.to_owned(),
+            }
+        }
+        error => error,
+    }
+}
+
+/// The outcome of an open result, or [`ClientError::UnknownOutcome`].
+fn known_outcome<T: crate::OpenTagged>(
+    method: &str,
+    result: crate::Open<T>,
+) -> Result<T, ClientError> {
+    match result {
+        crate::Open::Known(result) => Ok(result),
+        crate::Open::Unknown { tag, .. } => Err(ClientError::UnknownOutcome {
+            method: method.to_owned(),
+            outcome: tag,
+        }),
     }
 }
 
@@ -1341,7 +1408,13 @@ where
                     &task.subscriptions,
                     &task.recovery,
                 ).await {
-                    resolve_malformed_response(error, &mut pending);
+                    // A frame that is not JSON-RPC at all ends the
+                    // connection; an unreadable notification never gets here.
+                    failure = Some(format!(
+                        "the daemon sent a frame that is not JSON-RPC: {}",
+                        crate::diagnostics::error_chain(&error)
+                    ));
+                    break;
                 }
             }
             else => break,
@@ -1429,22 +1502,10 @@ fn prune_cancelled_commands(pending: &mut HashMap<i64, PendingCommand>) {
     pending.retain(|_, command| !command.response.is_closed());
 }
 
-fn resolve_malformed_response(error: ClientError, pending: &mut HashMap<i64, PendingCommand>) {
-    let detail = error.to_string();
-    let mut pending = std::mem::take(pending).into_iter();
-    if let Some((_, command)) = pending.next() {
-        let _ = command.response.send(Err(error));
-    }
-    for (_, command) in pending {
-        let error = serde_json::Error::io(std::io::Error::other(detail.clone()));
-        let _ = command.response.send(Err(ClientError::InvalidFrame(error)));
-    }
-}
-
 /// A JSON-RPC message from the server. Its result or params stay
 /// unparsed text until the receiver decodes them into the type it expects.
+/// The envelope is information: members it does not name are ignored.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct IncomingMessage<'a> {
     /// Checked while parsing; nothing reads it after.
     #[serde(rename = "jsonrpc")]
@@ -1519,7 +1580,7 @@ async fn handle_frame(
         {
             match (command.replay, result) {
                 (Some(replay), Ok(result)) => {
-                    match serde_json::from_str::<EventsSubscribeResult>(result.get()) {
+                    match serde_json::from_str::<ReplayPageWire>(result.get()) {
                         Ok(result) if result.stale_cursor => {
                             // A revert replaced the event at the cursor while
                             // this view was away: what it holds past the cut
@@ -1536,14 +1597,10 @@ async fn handle_frame(
                             let _ = command.response.send(Ok(replay_next(None)));
                         }
                         Ok(result) => {
-                            // Freshly decoded, so each event has one owner.
-                            let events = result
-                                .events
-                                .into_iter()
-                                .map(std::sync::Arc::unwrap_or_clone)
-                                .collect::<Vec<_>>();
-                            let page = if result.has_more {
-                                match hold_replay_page(replay, events, subscriptions).await {
+                            let has_more = result.has_more;
+                            let page = result.read(replay.session_id, deliveries);
+                            let page = if has_more {
+                                match hold_replay_page(replay, page, subscriptions).await {
                                     Ok(next) => {
                                         let _ = command.response.send(Ok(replay_next(Some(next))));
                                         return Ok(());
@@ -1551,7 +1608,7 @@ async fn handle_frame(
                                     Err(page) => page,
                                 }
                             } else {
-                                events
+                                page.events
                             };
                             let mut events = take_replay_pages(replay, subscriptions).await;
                             events.extend(page);
@@ -1573,45 +1630,127 @@ async fn handle_frame(
         }
         return Ok(());
     }
-    let Some(params) = message.params else {
+    let Some(method) = message.method else {
         return Ok(());
     };
-    match message.method.as_deref() {
-        Some("events.subscription") => {
-            let message: EventSubscriptionMessage = serde_json::from_str(params.get())?;
-            route_live(message, deliveries, subscriptions, recovery).await;
+    // A notification that does not decode is dropped and reported: no call
+    // fails for it, and the next one is read as usual.
+    if let Err(error) =
+        route_notification(&method, message.params, deliveries, subscriptions, recovery).await
+    {
+        let _ = deliveries.send(ClientDelivery::Diagnostic {
+            message: format!("dropped a `{method}` notification this client cannot read: {error}"),
+        });
+    }
+    Ok(())
+}
+
+/// Delivers one notification. A method this build does not know, and a
+/// message of an open type with a tag it does not know, are ignored.
+async fn route_notification(
+    method: &str,
+    params: Option<&RawValue>,
+    deliveries: &Deliveries,
+    subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
+    recovery: &Arc<RecoveryQueue>,
+) -> Result<(), serde_json::Error> {
+    let params = params.map_or("null", RawValue::get);
+    match method {
+        "events.subscription" => {
+            if let crate::Open::Known(message) =
+                serde_json::from_str::<crate::Open<ClientSubscriptionMessage>>(params)?
+            {
+                route_live(message, deliveries, subscriptions, recovery).await;
+            }
         }
-        Some("events.plugin") => {
-            let event = serde_json::from_str(params.get())?;
+        "events.plugin" => {
+            let event = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::PluginEvent(event));
         }
-        Some(crate::RUNTIME_CHANGED_METHOD) => {
-            let changed = serde_json::from_str(params.get())?;
+        crate::RUNTIME_CHANGED_METHOD => {
+            let changed = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::RuntimeChanged(Box::new(changed)));
         }
-        Some(crate::SESSIONS_CHANGED_METHOD) => {
-            let changed = serde_json::from_str(params.get())?;
+        crate::SESSIONS_CHANGED_METHOD => {
+            // A change this build does not know may have changed anything
+            // the list shows, so it is read as `resync`.
+            let changed =
+                serde_json::from_str::<crate::Open<crate::SessionsChangedNotification>>(params)?
+                    .into_known()
+                    .unwrap_or(crate::SessionsChangedNotification::Resync);
             let _ = deliveries.send(ClientDelivery::SessionsChanged(Box::new(changed)));
         }
-        Some(crate::MCP_CHANGED_METHOD) => {
-            let changed: crate::McpChangedNotification = serde_json::from_str(params.get())?;
+        crate::MCP_CHANGED_METHOD => {
+            let changed: crate::McpChangedNotification = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::McpChanged(changed));
         }
-        Some(crate::RUNTIMES_CHANGED_METHOD) => {
-            let changed: crate::RuntimesChangedNotification = serde_json::from_str(params.get())?;
+        crate::RUNTIMES_CHANGED_METHOD => {
+            let changed: crate::RuntimesChangedNotification = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::RuntimesChanged(changed));
         }
-        Some(crate::BACKGROUND_CHANGED_METHOD) => {
-            let changed: crate::BackgroundChangedNotification = serde_json::from_str(params.get())?;
+        crate::BACKGROUND_CHANGED_METHOD => {
+            let changed: crate::BackgroundChangedNotification = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::BackgroundChanged(changed));
         }
-        Some(crate::PLUGINS_CHANGED_METHOD) => {
-            let changed: crate::PluginsChangedNotification = serde_json::from_str(params.get())?;
+        crate::PLUGINS_CHANGED_METHOD => {
+            let changed: crate::PluginsChangedNotification = serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::PluginsChanged(changed));
         }
         _ => {}
     }
     Ok(())
+}
+
+/// An `events.subscribe` page as a client reads it. Each event is read on its
+/// own, so one this build cannot read fails neither the page nor the replay.
+#[derive(Deserialize)]
+struct ReplayPageWire {
+    events: Vec<Value>,
+    #[serde(default)]
+    has_more: bool,
+    #[serde(default)]
+    stale_cursor: bool,
+}
+
+/// A page's events and the sequence of its last record, readable or not:
+/// the next page starts after it.
+struct ReplayPage {
+    events: Vec<ClientEvent>,
+    last_seq: Option<u64>,
+}
+
+impl ReplayPageWire {
+    /// The page's events. An event whose type this build does not know, or
+    /// whose payload it cannot read, is a [`ClientEvent`] with an unknown
+    /// payload; one whose envelope it cannot read is dropped with a
+    /// [`ClientDelivery::Diagnostic`].
+    fn read(self, session_id: SessionId, deliveries: &Deliveries) -> ReplayPage {
+        let last_seq = self
+            .events
+            .last()
+            .and_then(|event| event.get("seq"))
+            .and_then(Value::as_u64);
+        let events = self
+            .events
+            .into_iter()
+            .filter_map(|event| {
+                let seq = event.get("seq").cloned();
+                match serde_json::from_value::<ClientEvent>(event) {
+                    Ok(event) => Some(event),
+                    Err(error) => {
+                        let _ = deliveries.send(ClientDelivery::Diagnostic {
+                            message: format!(
+                                "dropped an event of session {session_id} (seq {}) this client cannot read: {error}",
+                                seq.unwrap_or(Value::Null)
+                            ),
+                        });
+                        None
+                    }
+                }
+            })
+            .collect();
+        ReplayPage { events, last_seq }
+    }
 }
 
 /// Checks that a message is exactly a response (an id with one of a result
@@ -1653,10 +1792,11 @@ fn replay_is_current(subscription: &Subscription, replay: &ReplayRequest) -> boo
 /// events back, and the caller ends it as if this were the final page.
 async fn hold_replay_page(
     replay: ReplayRequest,
-    events: Vec<StoredEvent>,
+    page: ReplayPage,
     subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
-) -> Result<u64, Vec<StoredEvent>> {
-    let Some(next) = events.last().map(|event| event.seq) else {
+) -> Result<u64, Vec<ClientEvent>> {
+    let ReplayPage { events, last_seq } = page;
+    let Some(next) = last_seq else {
         return Err(events);
     };
     let mut subscriptions = subscriptions.lock().await;
@@ -1677,7 +1817,7 @@ async fn hold_replay_page(
 async fn take_replay_pages(
     replay: ReplayRequest,
     subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
-) -> Vec<StoredEvent> {
+) -> Vec<ClientEvent> {
     let mut subscriptions = subscriptions.lock().await;
     match subscriptions.get_mut(&replay.session_id) {
         Some(subscription) if subscription.replay_pages_attempt == replay.attempt => {
@@ -1704,7 +1844,7 @@ async fn abort_stale_replay(
 
 async fn begin_replay(
     replay: ReplayRequest,
-    events: Vec<StoredEvent>,
+    events: Vec<ClientEvent>,
     subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
     deliveries: &Deliveries,
     recovery: &Arc<RecoveryQueue>,
@@ -1737,27 +1877,90 @@ async fn begin_replay(
         rebuild: replay.rebuild,
     });
     for event in events {
-        let _ = deliveries.send(ClientDelivery::ReplayEvent {
-            session_id: replay.session_id,
-            generation: replay.generation,
-            final_seq,
-            event: Box::new(event),
+        let _ = deliveries.send(match event.into_known() {
+            Ok(event) => ClientDelivery::ReplayEvent {
+                session_id: replay.session_id,
+                generation: replay.generation,
+                final_seq,
+                event: Box::new(event),
+            },
+            Err(event) => ClientDelivery::UnknownEvent {
+                event: Box::new(event),
+                generation: replay.generation,
+                replay_final_seq: Some(final_seq),
+            },
         });
     }
     finish_ready_replay(replay.session_id, subscriptions, deliveries, recovery).await;
 }
 
+/// Delivers one live message. A durable event this build could not read is
+/// delivered as [`ClientDelivery::UnknownEvent`]; live-only output it could
+/// not read is dropped.
+fn deliver_live(deliveries: &Deliveries, message: ClientSubscriptionMessage, generation: u64) {
+    let message = match message {
+        ClientSubscriptionMessage::Event { event } => {
+            match std::sync::Arc::unwrap_or_clone(event).into_known() {
+                Ok(event) => crate::EventSubscriptionMessage::Event {
+                    event: std::sync::Arc::new(event),
+                },
+                Err(event) => {
+                    let _ = deliveries.send(ClientDelivery::UnknownEvent {
+                        event: Box::new(event),
+                        generation,
+                        replay_final_seq: None,
+                    });
+                    return;
+                }
+            }
+        }
+        ClientSubscriptionMessage::Transient { event } => {
+            let event = std::sync::Arc::unwrap_or_clone(event);
+            let crate::Open::Known(payload) = event.payload else {
+                return;
+            };
+            crate::EventSubscriptionMessage::Transient {
+                event: std::sync::Arc::new(crate::TransientEvent {
+                    session_id: event.session_id,
+                    run_id: event.run_id,
+                    after_seq: event.after_seq,
+                    timestamp: event.timestamp,
+                    payload,
+                }),
+            }
+        }
+        ClientSubscriptionMessage::Gap {
+            session_id,
+            last_delivered_seq,
+        } => crate::EventSubscriptionMessage::Gap {
+            session_id,
+            last_delivered_seq,
+        },
+        ClientSubscriptionMessage::Rewound {
+            session_id,
+            through_seq,
+        } => crate::EventSubscriptionMessage::Rewound {
+            session_id,
+            through_seq,
+        },
+    };
+    let _ = deliveries.send(ClientDelivery::Live {
+        message: Box::new(message),
+        generation,
+    });
+}
+
 async fn route_live(
-    message: EventSubscriptionMessage,
+    message: ClientSubscriptionMessage,
     deliveries: &Deliveries,
     subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
     recovery: &Arc<RecoveryQueue>,
 ) {
     let session_id = match &message {
-        EventSubscriptionMessage::Event { event } => event.session_id,
-        EventSubscriptionMessage::Transient { event } => event.session_id,
-        EventSubscriptionMessage::Gap { session_id, .. }
-        | EventSubscriptionMessage::Rewound { session_id, .. } => *session_id,
+        ClientSubscriptionMessage::Event { event } => event.session_id,
+        ClientSubscriptionMessage::Transient { event } => event.session_id,
+        ClientSubscriptionMessage::Gap { session_id, .. }
+        | ClientSubscriptionMessage::Rewound { session_id, .. } => *session_id,
     };
     let publish;
     let mut recover = None;
@@ -1770,31 +1973,28 @@ async fn route_live(
         let generation = subscription.generation;
         if subscription.fetching {
             match message {
-                EventSubscriptionMessage::Gap { .. } => {
+                ClientSubscriptionMessage::Gap { .. } => {
                     subscription.recovery_requested =
                         Some(subscription.recovery_requested.unwrap_or(false));
                 }
                 // The replay in flight may already hold removed events.
-                EventSubscriptionMessage::Rewound { .. } => {
+                ClientSubscriptionMessage::Rewound { .. } => {
                     subscription.recovery_requested = Some(true);
                 }
                 _ => {}
             }
-            subscription.buffered.push(ClientDelivery::Live {
-                message: Box::new(message),
-                generation,
-            });
+            subscription.buffered.push((message, generation));
             return;
         }
         match &message {
-            EventSubscriptionMessage::Event { event } if event.seq > subscription.cursor + 1 => {
+            ClientSubscriptionMessage::Event { event } if event.seq > subscription.cursor + 1 => {
                 recover = Some((false, Some(session_id)));
             }
-            EventSubscriptionMessage::Event { event } if event.seq == subscription.cursor + 1 => {
+            ClientSubscriptionMessage::Event { event } if event.seq == subscription.cursor + 1 => {
                 subscription.cursor = event.seq;
                 subscription.cursor_timestamp = Some(event.timestamp);
             }
-            EventSubscriptionMessage::Gap {
+            ClientSubscriptionMessage::Gap {
                 last_delivered_seq, ..
             } => {
                 if *last_delivered_seq != subscription.cursor {
@@ -1805,7 +2005,7 @@ async fn route_live(
             }
             // Later appends reuse the removed sequence numbers, so they
             // follow on from the cut while a full replay rebuilds the view.
-            EventSubscriptionMessage::Rewound { through_seq, .. } => {
+            ClientSubscriptionMessage::Rewound { through_seq, .. } => {
                 if *through_seq < subscription.cursor {
                     subscription.cursor = *through_seq;
                     subscription.cursor_timestamp = None;
@@ -1815,19 +2015,16 @@ async fn route_live(
             // Live-only output belongs right after the durable event it
             // follows. Anywhere else it is stale or outruns a durable event
             // this view has not seen yet, and nothing can replay it.
-            EventSubscriptionMessage::Transient { event }
+            ClientSubscriptionMessage::Transient { event }
                 if event.after_seq != subscription.cursor =>
             {
                 return;
             }
             _ => {}
         }
-        publish = ClientDelivery::Live {
-            message: Box::new(message),
-            generation,
-        };
+        publish = (message, generation);
     }
-    let _ = deliveries.send(publish);
+    deliver_live(deliveries, publish.0, publish.1);
     if let Some((full, session)) = recover {
         Client::schedule_recovery_queue(recovery, full, session);
     }
@@ -1855,26 +2052,21 @@ async fn finish_ready_replay(
         let mut cursor_timestamp = subscription.final_timestamp;
         let mut tail_has_gap = false;
         let mut buffered = std::mem::take(&mut subscription.buffered);
-        buffered.retain(|delivery| {
-            let ClientDelivery::Live { message, .. } = delivery else {
-                return true;
-            };
-            match message.as_ref() {
-                EventSubscriptionMessage::Event { event } if event.seq <= cursor => false,
-                EventSubscriptionMessage::Event { event } if event.seq == cursor + 1 => {
-                    cursor = event.seq;
-                    cursor_timestamp = Some(event.timestamp);
-                    true
-                }
-                EventSubscriptionMessage::Transient { event } => {
-                    !tail_has_gap && event.after_seq == cursor
-                }
-                EventSubscriptionMessage::Event { .. }
-                | EventSubscriptionMessage::Gap { .. }
-                | EventSubscriptionMessage::Rewound { .. } => {
-                    tail_has_gap = true;
-                    true
-                }
+        buffered.retain(|(message, _)| match message {
+            ClientSubscriptionMessage::Event { event } if event.seq <= cursor => false,
+            ClientSubscriptionMessage::Event { event } if event.seq == cursor + 1 => {
+                cursor = event.seq;
+                cursor_timestamp = Some(event.timestamp);
+                true
+            }
+            ClientSubscriptionMessage::Transient { event } => {
+                !tail_has_gap && event.after_seq == cursor
+            }
+            ClientSubscriptionMessage::Event { .. }
+            | ClientSubscriptionMessage::Gap { .. }
+            | ClientSubscriptionMessage::Rewound { .. } => {
+                tail_has_gap = true;
+                true
             }
         });
         subscription.cursor = cursor;
@@ -1892,8 +2084,8 @@ async fn finish_ready_replay(
         generation,
         final_seq,
     });
-    for delivery in buffered {
-        let _ = deliveries.send(delivery);
+    for (message, generation) in buffered {
+        deliver_live(deliveries, message, generation);
     }
     if let Some(full) = recovery_requested.or(tail_has_gap.then_some(false)) {
         Client::schedule_recovery_queue(recovery, full, (!full).then_some(session_id));

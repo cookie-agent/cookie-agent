@@ -1856,10 +1856,13 @@ fn yolo_approved_is_coherent_only_for_policy_allow_and_approved() {
 }
 
 #[test]
-fn runtime_snapshot_is_strict_and_source_coherent() {
+fn runtime_snapshot_ignores_unknown_members_and_is_source_coherent() {
     let mut value = serde_json::to_value(runtime()).unwrap();
     value["unknown"] = json!(true);
-    assert!(serde_json::from_value::<RuntimeSnapshotV1>(value).is_err());
+    assert_eq!(
+        serde_json::from_value::<RuntimeSnapshotV1>(value).unwrap(),
+        runtime()
+    );
 
     let mut bootstrap = runtime();
     bootstrap.catalog_source = CatalogSource::Bootstrap;
@@ -2580,5 +2583,79 @@ fn hook_names_and_event_patterns_are_labels() {
     assert!(!pattern("run_finished").matches("run_finished_late"));
     for invalid in ["", "**", "run*_x", "*run", "Run_*", "run-*"] {
         assert!(EventPattern::new(invalid).is_err(), "{invalid}");
+    }
+}
+
+/// Every enum a client reads in a result is open: a value a newer daemon
+/// added reads as its documented fallback, and the schema says so.
+#[test]
+fn result_enums_read_values_a_newer_daemon_added_as_their_fallbacks() {
+    fn read<T: serde::de::DeserializeOwned>(value: &str) -> T {
+        serde_json::from_value(json!(value)).unwrap()
+    }
+    let from_the_future = "from_the_future";
+    assert_eq!(
+        read::<SessionStatus>(from_the_future),
+        SessionStatus::Unknown
+    );
+    assert_eq!(read::<PluginState>(from_the_future), PluginState::Unknown);
+    assert_eq!(
+        read::<McpServerState>(from_the_future),
+        McpServerState::Unknown
+    );
+    assert_eq!(
+        read::<RuntimeInstanceStatus>(from_the_future),
+        RuntimeInstanceStatus::Unknown
+    );
+    assert_eq!(
+        read::<ProducerSourceStatus>(from_the_future),
+        ProducerSourceStatus::Unknown
+    );
+    assert_eq!(
+        read::<ApprovalStatus>(from_the_future),
+        ApprovalStatus::Cancelled
+    );
+    assert_eq!(read::<PermissionMode>(from_the_future), PermissionMode::Ask);
+    assert_eq!(
+        read::<PermissionEffect>(from_the_future),
+        PermissionEffect::Ask
+    );
+    assert_eq!(read::<GoalStatus>(from_the_future), GoalStatus::Cancelled);
+    assert_eq!(read::<AgentMode>(from_the_future), AgentMode::Internal);
+    assert_eq!(
+        read::<ProviderSupportState>(from_the_future),
+        ProviderSupportState::Unsupported
+    );
+    assert_eq!(
+        read::<ConfigRestartPart>(from_the_future),
+        ConfigRestartPart::Server
+    );
+    // Known values still read as themselves.
+    assert_eq!(read::<PermissionEffect>("allow"), PermissionEffect::Allow);
+    assert_eq!(read::<SessionStatus>("running"), SessionStatus::Running);
+
+    let mut changed = serde_json::to_value(RuntimeChangedNotification {
+        previous_revision: None,
+        snapshot: runtime(),
+        reasons: vec![RuntimeChangeReason::Startup],
+    })
+    .unwrap();
+    changed["reasons"] = json!(["startup", "from_the_future", "also_new"]);
+    let changed: RuntimeChangedNotification = serde_json::from_value(changed).unwrap();
+    assert_eq!(changed.reasons, [RuntimeChangeReason::Startup]);
+
+    for schema in [
+        schemars::schema_for!(SessionStatus),
+        schemars::schema_for!(PluginState),
+        schemars::schema_for!(ApprovalStatus),
+        schemars::schema_for!(SessionsChangedNotification),
+        schemars::schema_for!(SessionSubmitInputResult),
+        schemars::schema_for!(EventSubscriptionMessage),
+    ] {
+        assert_eq!(
+            schema.get(OPEN_SCHEMA_KEY),
+            Some(&json!(true)),
+            "{schema:?}"
+        );
     }
 }

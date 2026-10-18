@@ -1,15 +1,16 @@
 {
   "$defs": {
     "PermissionEffect": {
+      "description": "A value this build does not know reads as `ask`: asking, the effect that\nnever runs a call unapproved.",
       "enum": [
         "allow",
-        "ask",
-        "deny"
+        "deny",
+        "ask"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "SkillDescriptor": {
-      "additionalProperties": false,
       "properties": {
         "argument_hint": {
           "type": [
@@ -63,15 +64,16 @@
       "type": "object"
     },
     "SkillSource": {
+      "description": "A value this build does not know reads as `user`.",
       "enum": [
-        "user",
-        "project"
+        "project",
+        "user"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "rendered": {
       "type": "string"

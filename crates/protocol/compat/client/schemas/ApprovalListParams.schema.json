@@ -1,15 +1,17 @@
 {
   "$defs": {
     "ApprovalStatus": {
+      "description": "A value this build does not know reads as `cancelled`: a cancelled approval,\nwhich takes no answer.",
       "enum": [
         "pending",
         "escalated",
         "approved",
         "rejected",
-        "cancelled",
-        "expired"
+        "expired",
+        "cancelled"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

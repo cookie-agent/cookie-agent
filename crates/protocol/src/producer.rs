@@ -80,7 +80,6 @@ pub enum ProducerDeliveryMode {
 /// Read-only runtime record. Never persist or restore a registration ID.
 /// A fresh registration is required on each process start, even for retries.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProducerRegistration {
     pub producer_id: ProducerId,
     pub producer_owner: ProducerOwner,
@@ -88,22 +87,23 @@ pub struct ProducerRegistration {
     pub age_ms: u64,
 }
 
-/// The recovery state of a producer source: whether it has restored the
-/// external work it tracks since it connected.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProducerSourceStatus {
-    Starting,
-    Ready,
-    Failed,
-    Disabled,
+crate::open_enum! {
+    /// The recovery state of a producer source: whether it has restored the
+    /// external work it tracks since it connected.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ProducerSourceStatus {
+        Starting,
+        Ready,
+        Failed,
+        Disabled,
+    }
 }
 
 /// Runtime startup readiness of a producer source (a producer-capable plugin
 /// or runtime), not a durable producer record or recovery blob.
 /// Failed/disabled means external work is unknown, not that work is complete.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProducerSourceState {
     pub source: ProducerSource,
     pub status: ProducerSourceStatus,

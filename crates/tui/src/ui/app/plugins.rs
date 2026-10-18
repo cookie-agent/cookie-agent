@@ -169,6 +169,7 @@ const fn state_label(state: PluginState) -> &'static str {
         PluginState::Reconnecting => "reconnecting",
         PluginState::Failed => "failed",
         PluginState::Stopped => "stopped",
+        PluginState::Unknown => "unknown",
     }
 }
 

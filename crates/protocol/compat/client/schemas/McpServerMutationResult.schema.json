@@ -1,11 +1,13 @@
 {
   "$defs": {
     "McpConfigSource": {
+      "description": "A value this build does not know reads as `runtime`: a server the user file\ndoes not define, which `mcp.server.*` cannot edit.",
       "enum": [
         "user_file",
         "runtime"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "McpOAuthDefinition": {
       "anyOf": [
@@ -18,7 +20,6 @@
       ]
     },
     "McpOAuthSettingsDefinition": {
-      "additionalProperties": false,
       "properties": {
         "client_id": {
           "type": [
@@ -51,7 +52,6 @@
       "type": "object"
     },
     "McpServerDefinition": {
-      "additionalProperties": false,
       "properties": {
         "args": {
           "items": {
@@ -124,7 +124,6 @@
       "type": "object"
     },
     "McpServerInfo": {
-      "additionalProperties": false,
       "properties": {
         "auth_in_progress": {
           "type": [
@@ -199,11 +198,11 @@
           "description": "The connection dropped and is being re-established. The server's\ntools stay published; calls fail with `runtime_unavailable`.",
           "type": "string"
         }
-      ]
+      ],
+      "x-open": true
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "server": {
       "anyOf": [

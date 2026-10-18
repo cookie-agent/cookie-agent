@@ -110,27 +110,34 @@ pub enum SafeSetupValue {
     String(BoundedSetupString),
 }
 
+/// A value this build does not know reads as `string`: a string, which the
+/// daemon validates.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum SetupFieldType {
-    String,
     Code,
     Integer,
     Bool,
+    #[serde(other)]
+    String,
 }
 
+/// A value this build does not know reads as `api_key`: a secret like an API
+/// key.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum CredentialFieldType {
-    ApiKey,
     AccessToken,
     AccessKeyId,
     SecretAccessKey,
     SessionToken,
+    #[serde(other)]
+    ApiKey,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SetupFieldValidation {
     pub value_type: SetupFieldType,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -148,7 +155,6 @@ pub struct SetupFieldValidation {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SetupFieldDescriptor {
     pub id: SetupFieldId,
     pub display_name: SafeDisplayText,
@@ -161,7 +167,6 @@ pub struct SetupFieldDescriptor {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct AuthCredentialDescriptor {
     pub id: AuthFieldName,
     pub display_name: SafeDisplayText,
@@ -171,7 +176,6 @@ pub struct AuthCredentialDescriptor {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct AuthMethodDescriptor {
     pub id: AuthMethodId,
     pub display_name: SafeDisplayText,
@@ -184,7 +188,6 @@ impl<'de> Deserialize<'de> for AuthMethodDescriptor {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             id: AuthMethodId,
             display_name: SafeDisplayText,
@@ -210,23 +213,29 @@ impl<'de> Deserialize<'de> for AuthMethodDescriptor {
     }
 }
 
+/// A value this build does not know reads as `current`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ProviderPresence {
-    Current,
     Removed,
+    #[serde(other)]
+    Current,
 }
 
+/// A value this build does not know reads as `unsupported`: a provider that
+/// cannot be connected.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ProviderSupportState {
     Supported,
-    Unsupported,
     Quarantined,
+    #[serde(other)]
+    Unsupported,
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProviderSupport {
     pub state: ProviderSupportState,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -239,7 +248,6 @@ impl<'de> Deserialize<'de> for ProviderSupport {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             state: ProviderSupportState,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -259,42 +267,49 @@ impl<'de> Deserialize<'de> for ProviderSupport {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct QuarantineDiagnostic {
     pub code: SafeCode,
     pub message: SafeErrorMessage,
 }
 
+/// A value this build does not know reads as `unconfigured`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ProviderConfigurationState {
-    Unconfigured,
     Authored,
     Stored,
     AuthoredAndStored,
+    #[serde(other)]
+    Unconfigured,
 }
 
+/// A value this build does not know reads as `no_auth`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum EffectiveAuthSource {
     AuthoredApiKey,
     AuthoredOverride,
     ProviderStore,
+    #[serde(other)]
     NoAuth,
 }
 
+/// A value this build does not know reads as `unavailable`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum EffectiveAuthState {
     AuthoredApiKey,
     AuthoredOverride,
     ProviderStore,
     NoAuth,
+    #[serde(other)]
     Unavailable,
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct DurableConnectionDescriptor {
     pub provider_id: ProviderId,
     pub setup_values: BTreeMap<SetupFieldId, SafeSetupValue>,
@@ -312,7 +327,6 @@ impl<'de> Deserialize<'de> for DurableConnectionDescriptor {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             provider_id: ProviderId,
             setup_values: BTreeMap<SetupFieldId, SafeSetupValue>,
@@ -349,25 +363,28 @@ impl<'de> Deserialize<'de> for DurableConnectionDescriptor {
 }
 
 /// Why a provider's catalog model is not selectable.
+///
+/// A value this build does not know reads as `unsupported`.
 #[derive(
     Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ModelUnavailableKind {
     /// The catalog parser quarantined the model record.
     Quarantined,
-    /// The record parsed, but cookie cannot drive the model.
-    Unsupported,
     /// Provider setup values (region, resource, deployment) are missing.
     NeedsSetup,
     /// No usable credentials are configured or stored for the provider.
     NeedsCredentials,
+    /// The record parsed, but cookie cannot drive the model.
+    #[serde(other)]
+    Unsupported,
 }
 
 /// Per-provider model availability counts over every catalog model row that
 /// is not deprecated, disabled, or non-text.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProviderModelCounts {
     pub available: u32,
     pub quarantined: u32,
@@ -398,7 +415,6 @@ impl ProviderModelCounts {
 
 /// One catalog model that is listed but not selectable, with its reason.
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct UnavailableModelDescriptor {
     pub id: ProviderModelId,
     pub display_name: SafeDisplayText,
@@ -414,7 +430,6 @@ impl<'de> Deserialize<'de> for UnavailableModelDescriptor {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             id: ProviderModelId,
             display_name: SafeDisplayText,
@@ -433,7 +448,6 @@ impl<'de> Deserialize<'de> for UnavailableModelDescriptor {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProviderDescriptor {
     pub id: ProviderId,
     pub display_name: SafeDisplayText,
@@ -470,7 +484,6 @@ impl<'de> Deserialize<'de> for ProviderDescriptor {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             id: ProviderId,
             display_name: SafeDisplayText,
@@ -704,7 +717,6 @@ where
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct DurableProviderReceipt {
     pub receipt_id: DurableProviderReceiptId,
     pub store_revision: ProviderStoreRevision,
@@ -713,7 +725,6 @@ pub struct DurableProviderReceipt {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProviderConnectResult {
     pub durable_connection: DurableConnectionDescriptor,
     pub effective_auth_source: EffectiveAuthSource,
@@ -734,7 +745,6 @@ pub struct ProviderDisconnectParams {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProviderDisconnectResult {
     pub durable_receipt: DurableProviderReceipt,
     pub provider_id: ProviderId,
@@ -749,7 +759,6 @@ impl<'de> Deserialize<'de> for ProviderDisconnectResult {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             durable_receipt: DurableProviderReceipt,
             provider_id: ProviderId,

@@ -120,19 +120,25 @@ pub enum MediaKind {
     Video,
 }
 
+/// A value this build does not know reads as `unsupported`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ReplayCapability {
-    Unsupported,
     Optional,
     Required,
+    #[serde(other)]
+    Unsupported,
 }
 
+/// A value this build does not know reads as `local_only`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum CancellationCapability {
-    LocalOnly,
     Provider,
+    #[serde(other)]
+    LocalOnly,
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1079,17 +1085,19 @@ where
     Ok(values)
 }
 
+/// A value this build does not know reads as `explicit`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum VariantOrigin {
     ModelsDevEffort,
     ModelsDevToggle,
     ModelsDevBudgetTokens,
+    #[serde(other)]
     Explicit,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct AvailableVariantDescriptor {
     pub id: VariantId,
     #[schemars(with = "ModelDisplayNameSchema")]
@@ -1099,7 +1107,6 @@ pub struct AvailableVariantDescriptor {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct AvailableModelDescriptor {
     pub key: ModelKey,
     #[schemars(with = "ModelDisplayNameSchema")]
@@ -1171,7 +1178,6 @@ impl<'de> Deserialize<'de> for AvailableModelDescriptor {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             key: ModelKey,
             display_name: String,

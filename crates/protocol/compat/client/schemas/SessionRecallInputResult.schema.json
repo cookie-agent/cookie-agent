@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What `session.recall_input` did. A client reads it open: an outcome it\ndoes not know fails the call with [`crate::ClientError::UnknownOutcome`].",
   "oneOf": [
     {
-      "additionalProperties": false,
       "description": "The input was withdrawn; its text is returned for editing.",
       "properties": {
         "input": {
@@ -20,7 +20,6 @@
       "type": "object"
     },
     {
-      "additionalProperties": false,
       "description": "The input is no longer pending or queued: the model already saw it,\na run started with it, or it was voided.",
       "properties": {
         "outcome": {
@@ -34,7 +33,6 @@
       "type": "object"
     },
     {
-      "additionalProperties": false,
       "description": "Another client submitted the input; only its author can recall it.",
       "properties": {
         "outcome": {
@@ -48,5 +46,6 @@
       "type": "object"
     }
   ],
-  "title": "SessionRecallInputResult"
+  "title": "SessionRecallInputResult",
+  "x-open": true
 }

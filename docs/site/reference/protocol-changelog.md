@@ -16,6 +16,10 @@ section 3).
   requires `Authorization`: a connection without it authenticates with the
   handshake's `token`, and gets `-32003` for anything else until it does.
 - `[server] allowed_origins` lets web pages of listed origins connect.
+- Results, notifications, and the JSON-RPC envelope are information: a
+  reader ignores members it does not know, and every enum in them is open,
+  read as a documented fallback or as `unknown` (see
+  [Decoding](protocol.md#decoding)). Params stay strict.
 
 ## Before semver versions
 

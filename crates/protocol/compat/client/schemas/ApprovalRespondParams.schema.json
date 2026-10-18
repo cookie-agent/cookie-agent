@@ -16,13 +16,15 @@
       "type": "object"
     },
     "ApprovalUserDecision": {
+      "description": "A value this build does not know reads as `cancel`.",
       "enum": [
         "approve_once",
         "approve_tree",
         "reject",
         "cancel"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "OperationFingerprint": {
       "properties": {

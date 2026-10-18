@@ -145,19 +145,26 @@ pub enum ApprovalBoundary {
     DelegationTree { root_session_id: SessionId },
 }
 
+/// A value this build does not know reads as `primary_operation`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ApprovalResourceSource {
-    PrimaryOperation,
     SecondaryOperation,
     ModelRequest,
     DoomLoopGuard,
+    #[serde(other)]
+    PrimaryOperation,
 }
+/// A value this build does not know reads as `process_local`: a binding that is
+/// never restart-stable.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum PreparedBindingLifetime {
-    ProcessLocal,
     RestartStable,
+    #[serde(other)]
+    ProcessLocal,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -195,24 +202,30 @@ pub struct ApprovalEvaluation {
     pub trace: DecisionTrace,
 }
 
+/// A value this build does not know reads as `permission_policy`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ApprovalTrigger {
-    PermissionPolicy,
     ModelToolApproval,
     InternalAgent,
     DoomLoop,
+    #[serde(other)]
+    PermissionPolicy,
 }
 
+/// A value this build does not know reads as `ask`: asking.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum PermissionMode {
     #[default]
     AutoApprove,
     AutoApproveN,
     AutoApproveY,
-    Ask,
     Yolo,
+    #[serde(other)]
+    Ask,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct ApprovalCapability {
@@ -346,8 +359,10 @@ pub struct ApprovalConstraints {
     pub expires_at: Option<Timestamp>,
 }
 
+/// A value this build does not know reads as `system_error`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ApprovalReasonCode {
     PolicyAllowed,
     PolicyDenied,
@@ -372,10 +387,13 @@ pub enum ApprovalReasonCode {
     ApprovalExpired,
     Escalated,
     Unattended,
+    #[serde(other)]
     SystemError,
 }
+/// A value this build does not know reads as `system`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ApprovalDecisionSource {
     Policy,
     Model,
@@ -384,30 +402,38 @@ pub enum ApprovalDecisionSource {
     TreeGrant,
     User,
     DoomLoopGuard,
+    #[serde(other)]
     System,
 }
+/// A value this build does not know reads as `cancelled`: a cancelled approval,
+/// which takes no answer.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ApprovalStatus {
     Pending,
     Escalated,
     Approved,
     Rejected,
-    Cancelled,
     Expired,
+    #[serde(other)]
+    Cancelled,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct ApprovalFeedback {
     pub message: SafeErrorMessage,
 }
+/// A value this build does not know reads as `ask`: asking the user.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ApprovalInternalDecisionKind {
     Allow,
     Deny,
-    Ask,
     Escalate,
+    #[serde(other)]
+    Ask,
 }
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct ApprovalInternalDecision {
@@ -507,21 +533,27 @@ impl<'de> Deserialize<'de> for ApprovalInternalDecision {
         Ok(value)
     }
 }
+/// A value this build does not know reads as `cancel`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ApprovalUserDecision {
     ApproveOnce,
     ApproveTree,
     Reject,
+    #[serde(other)]
     Cancel,
 }
+/// A value this build does not know reads as `cancelled`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ApprovalFinalOutcome {
     Approved,
     Rejected,
-    Cancelled,
     Expired,
+    #[serde(other)]
+    Cancelled,
 }
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct ApprovalFinalDecision {
@@ -894,7 +926,6 @@ impl<'de> Deserialize<'de> for TreeApprovalGrant {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ApprovalRecord {
     pub session_id: SessionId,
     pub request: ApprovalRequest,
@@ -1023,7 +1054,6 @@ impl<'de> Deserialize<'de> for ApprovalRecord {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             session_id: SessionId,
             request: ApprovalRequest,

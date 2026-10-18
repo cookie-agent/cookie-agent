@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What `session.submit_input` did. A client reads it open: an outcome it\ndoes not know fails the call with [`crate::ClientError::UnknownOutcome`].",
   "oneOf": [
     {
-      "additionalProperties": false,
       "description": "The session was idle; the input started this run.",
       "properties": {
         "outcome": {
@@ -21,7 +21,6 @@
       "type": "object"
     },
     {
-      "additionalProperties": false,
       "description": "Admitted into the running run's pending lane.",
       "properties": {
         "outcome": {
@@ -46,7 +45,6 @@
       "type": "object"
     },
     {
-      "additionalProperties": false,
       "description": "Queued behind the running run as the `user_input_queued` event at\n`queued_seq`.",
       "properties": {
         "outcome": {
@@ -66,7 +64,6 @@
       "type": "object"
     },
     {
-      "additionalProperties": false,
       "description": "A plugin handled the input; nothing was submitted.",
       "properties": {
         "outcome": {
@@ -84,5 +81,6 @@
       "type": "object"
     }
   ],
-  "title": "SessionSubmitInputResult"
+  "title": "SessionSubmitInputResult",
+  "x-open": true
 }

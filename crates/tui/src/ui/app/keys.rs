@@ -269,6 +269,7 @@ impl App {
                         }
                         cookie_agent_protocol::RuntimeInstanceStatus::Failed => "failed",
                         cookie_agent_protocol::RuntimeInstanceStatus::Stopped => "stopped",
+                        cookie_agent_protocol::RuntimeInstanceStatus::Unknown => "unknown",
                     };
                     format!("runtime `{runtime_id}` is {status}")
                 })

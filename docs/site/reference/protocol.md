@@ -69,6 +69,37 @@ unless [`[server] allowed_origins`](../engine/server.md) allows that origin.
 Dial-in runtimes on `/runtime` always authenticate with the header, and a
 request there with an `Origin` header is refused.
 
+## Decoding
+
+The daemon and its clients read what they receive by its role (see the
+[compatibility spec](../specs/compatibility-v1.md) section 4):
+
+- **Results, notifications, and the JSON-RPC envelope are information.** A
+  reader ignores members it does not know, and request IDs may be integers or
+  strings. Every enum in them is open: a value a newer daemon added reads as
+  the fallback its type documents (for example an unknown permission effect as
+  `ask`, an unknown approval status as `cancelled`), or as `unknown` for
+  states a client only shows (session status, plugin state, MCP server state,
+  runtime instance status, producer source status, runtime change reasons).
+  An unknown `sessions.changed` change reads as `resync`, an unknown
+  `events.subscription` message type is ignored, and an unknown
+  `session.submit_input` or `session.recall_input` outcome fails that call
+  with a readable error.
+- **A notification a client cannot read is dropped.** The shared client
+  reports it as `ClientDelivery::Diagnostic`, and no call in flight fails. A
+  response it cannot read fails only its own call. A frame that is not JSON,
+  or not a request, notification, or reply, ends the connection.
+- **Events.** A client reads stored events with an open payload: an event of
+  a type this build does not know, or one it cannot read, is delivered in its
+  place as `ClientDelivery::UnknownEvent`, which advances the session's
+  sequence and changes nothing else (the TUI shows a dim row in its debug
+  view). A replay page does not fail for it.
+- **Params are commands.** An unknown or mistyped member fails with `-32602`
+  and `data.code` `unknown_field` (or `unknown_variant` for a value or tag),
+  with `data.field` naming the JSON path. A client sends a method or member
+  only if the daemon's version includes it; `-32601` for a method the client
+  expected reads as "the daemon is too old for" that method.
+
 ## Error diagnostics
 
 `ModelErrorSummary.response_body` is an optional `DiagnosticText` that preserves

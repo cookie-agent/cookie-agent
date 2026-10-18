@@ -50,7 +50,6 @@
       "type": "object"
     },
     "RuntimeAttachment": {
-      "additionalProperties": false,
       "description": "One runtime a session is attached to.",
       "properties": {
         "capability": {
@@ -285,15 +284,20 @@
       ]
     },
     "SessionStatus": {
-      "enum": [
-        "idle",
-        "running",
-        "completed",
-        "failed",
-        "cancelled",
-        "interrupted"
+      "oneOf": [
+        {
+          "enum": [
+            "idle",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "type": "string"
+        }
       ],
-      "type": "string"
+      "x-open": true
     },
     "SkippedEvent": {
       "properties": {
@@ -314,7 +318,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "runtimes": {
       "description": "The session's runtime attachments, in attach order.",

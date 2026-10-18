@@ -1,12 +1,14 @@
 {
   "$defs": {
     "PermissionEffect": {
+      "description": "A value this build does not know reads as `ask`: asking, the effect that\nnever runs a call unapproved.",
       "enum": [
         "allow",
-        "ask",
-        "deny"
+        "deny",
+        "ask"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "PermissionRule": {
       "properties": {

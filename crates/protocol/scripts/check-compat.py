@@ -355,7 +355,9 @@ def closed_information_types(name, surface):
                 if target not in seen and target in defs:
                     seen.add(target)
                     pending.append((defs[target], target))
-            if node.get("additionalProperties") is False:
+            # A map with typed keys (`patternProperties`) states its key
+            # grammar with `additionalProperties: false`; it has no fields.
+            if node.get("additionalProperties") is False and "patternProperties" not in node:
                 findings.append(
                     Finding(
                         MAJOR,

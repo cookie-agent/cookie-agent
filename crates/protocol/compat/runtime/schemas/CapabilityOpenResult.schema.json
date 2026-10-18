@@ -173,11 +173,13 @@
       "type": "object"
     },
     "SkillSource": {
+      "description": "A value this build does not know reads as `user`.",
       "enum": [
-        "user",
-        "project"
+        "project",
+        "user"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ToolCollision": {
       "description": "How a tool behaves when another source offers the same name.\n\nOpen: a mode this build does not know reads as `prefix`.",

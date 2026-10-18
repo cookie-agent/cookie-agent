@@ -1,7 +1,6 @@
 {
   "$defs": {
     "ConfigDocument": {
-      "additionalProperties": false,
       "description": "One configuration document: `config.toml`, `agents/<id>.md`, or\n`agents/<preset>/<id>.md`.",
       "properties": {
         "fingerprint": {
@@ -23,16 +22,16 @@
       "type": "object"
     },
     "ConfigRestartPart": {
-      "description": "A configuration part that takes effect only when the daemon restarts.",
+      "description": "A configuration part that takes effect only when the daemon restarts.\n\nA value this build does not know reads as `server`: a restart of the whole\ndaemon.",
       "enum": [
-        "server",
         "plugins",
-        "runtimes"
+        "runtimes",
+        "server"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ConfigStatus": {
-      "additionalProperties": false,
       "description": "Where the daemon's configuration stands.",
       "properties": {
         "applied_revision": {
@@ -64,7 +63,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "description": "The configuration on disk, which differs from the applied one until it is\nreloaded when it was edited by hand.",
   "properties": {
     "documents": {

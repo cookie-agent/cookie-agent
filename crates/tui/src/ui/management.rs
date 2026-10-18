@@ -1075,6 +1075,7 @@ fn mcp_state_label(state: cookie_agent_protocol::McpServerState) -> &'static str
         cookie_agent_protocol::McpServerState::NeedsAuth => "needs_auth",
         cookie_agent_protocol::McpServerState::Disabled => "disabled",
         cookie_agent_protocol::McpServerState::Disconnected => "disconnected",
+        cookie_agent_protocol::McpServerState::Unknown => "unknown",
     }
 }
 

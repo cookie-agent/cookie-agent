@@ -726,7 +726,8 @@ impl App {
             | SessionStatus::Completed
             | SessionStatus::Failed
             | SessionStatus::Cancelled
-            | SessionStatus::Interrupted => "   ",
+            | SessionStatus::Interrupted
+            | SessionStatus::Unknown => "   ",
         };
         let title = session
             .title

@@ -1126,10 +1126,16 @@ impl Engine {
                     ));
                 }
             };
-            let status = handle
+            let status = match handle
                 .child_run_id
                 .and_then(|run_id| child.runs.get(&run_id).map(|run| run.status))
-                .unwrap_or(child.status);
+                .unwrap_or(child.status)
+            {
+                // A status a newer build wrote: the child is not running
+                // here, so its delegation ends as interrupted.
+                SessionStatus::Unknown => SessionStatus::Interrupted,
+                status => status,
+            };
             match status {
                 SessionStatus::Running | SessionStatus::Idle => {
                     let active = {
@@ -1158,7 +1164,8 @@ impl Engine {
                 SessionStatus::Completed
                 | SessionStatus::Cancelled
                 | SessionStatus::Failed
-                | SessionStatus::Interrupted => {
+                | SessionStatus::Interrupted
+                | SessionStatus::Unknown => {
                     self.mark_delegation_finished(handle.invocation_id, status)
                         .await?;
                     let result = terminal_delegate_result(
@@ -3753,6 +3760,7 @@ pub(super) const fn session_status_name(status: SessionStatus) -> &'static str {
         SessionStatus::Failed => "failed",
         SessionStatus::Cancelled => "cancelled",
         SessionStatus::Interrupted => "interrupted",
+        SessionStatus::Unknown => "unknown",
     }
 }
 

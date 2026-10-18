@@ -8,14 +8,18 @@ use crate::{
     WildcardPattern,
 };
 
+/// A value this build does not know reads as `internal`: an internal agent,
+/// which is neither runnable as a root nor a delegation target.
 #[derive(
     Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum AgentMode {
     Primary,
     Subagent,
     All,
+    #[serde(other)]
     Internal,
 }
 
@@ -155,12 +159,16 @@ impl JsonSchema for PermissionAction {
     }
 }
 
+/// A value this build does not know reads as `ask`: asking, the effect that
+/// never runs a call unapproved.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum PermissionEffect {
     Allow,
-    Ask,
     Deny,
+    #[serde(other)]
+    Ask,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -441,7 +449,6 @@ pub struct RunSelection {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct AgentDescriptor {
     pub id: AgentId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -569,7 +576,6 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             id: AgentId,
             #[serde(default)]

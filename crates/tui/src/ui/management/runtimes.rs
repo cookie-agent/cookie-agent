@@ -441,6 +441,7 @@ const fn status_label(status: Option<RuntimeInstanceStatus>) -> &'static str {
         Some(RuntimeInstanceStatus::Reconnecting) => "reconnecting",
         Some(RuntimeInstanceStatus::Failed) => "failed",
         Some(RuntimeInstanceStatus::Stopped) => "stopped",
+        Some(RuntimeInstanceStatus::Unknown) => "unknown",
         None => "not running",
     }
 }

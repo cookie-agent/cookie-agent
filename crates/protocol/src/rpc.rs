@@ -63,8 +63,9 @@ pub enum JsonRpcId {
     Number(i64),
     String(String),
 }
+/// A JSON-RPC request. The envelope is information on both sides: members
+/// it does not name are ignored.
 #[derive(Clone, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Request {
     pub jsonrpc: JsonRpcVersion,
     pub id: JsonRpcId,
@@ -94,7 +95,6 @@ impl fmt::Debug for Request {
     }
 }
 #[derive(Clone, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SuccessResponse {
     pub jsonrpc: JsonRpcVersion,
     pub id: JsonRpcId,
@@ -110,7 +110,6 @@ impl fmt::Debug for SuccessResponse {
     }
 }
 #[derive(Clone, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct JsonRpcError {
     pub code: i32,
     pub message: String,
@@ -127,7 +126,6 @@ impl fmt::Debug for JsonRpcError {
     }
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ErrorResponse {
     pub jsonrpc: JsonRpcVersion,
     pub id: JsonRpcId,
@@ -140,7 +138,6 @@ pub enum Response {
     Error(ErrorResponse),
 }
 #[derive(Clone, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Notification {
     pub jsonrpc: JsonRpcVersion,
     pub method: String,
@@ -460,7 +457,6 @@ pub struct RuntimeAttachRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionCreateResult {
     pub session: SessionMeta,
     /// The session's runtime attachments, in attach order.
@@ -491,7 +487,6 @@ pub struct RunToolBackgroundParams {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RunToolBackgroundResult {
     /// False when the call is not an executing call of a background-capable
     /// tool.
@@ -505,7 +500,6 @@ pub struct SessionBackgroundListParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionBackgroundListResult {
     pub calls: Vec<BackgroundCall>,
 }
@@ -519,12 +513,10 @@ pub struct SessionBackgroundStopParams {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionBackgroundStopResult {}
 
 /// A session's background calls changed.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct BackgroundChangedNotification {
     pub session_id: SessionId,
     /// The session's background calls now.
@@ -533,7 +525,6 @@ pub struct BackgroundChangedNotification {
 
 /// One call running in the background.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct BackgroundCall {
     pub job: String,
     /// The tool's name as the model called it.
@@ -548,11 +539,15 @@ pub struct BackgroundCall {
 }
 
 /// Who moved a call to the background.
+///
+/// A value this build does not know reads as `model`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum BackgroundActor {
-    Model,
     User,
+    #[serde(other)]
+    Model,
 }
 
 /// Attach a runtime to a session that has no active run. The instance is
@@ -572,7 +567,6 @@ pub struct SessionRuntimeAttachParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionRuntimeAttachResult {
     /// The new attachment, under the name the session gave it.
     pub attachment: RuntimeAttachment,
@@ -589,7 +583,6 @@ pub struct SessionRuntimeDetachParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionRuntimeDetachResult {
     /// Every attachment of the session afterwards, in attach order.
     pub runtimes: Vec<RuntimeAttachment>,
@@ -602,7 +595,6 @@ pub struct RuntimesListParams {}
 /// The runtimes sessions can attach and the capability instances this
 /// daemon has opened.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RuntimesListResult {
     pub runtimes: Vec<RuntimeListing>,
     pub instances: Vec<RuntimeInstanceInfo>,
@@ -626,14 +618,12 @@ pub struct RuntimesReconnectParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RuntimesReconnectResult {
     /// The instance afterwards.
     pub instance: RuntimeInstanceInfo,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RuntimeListing {
     pub runtime_id: RuntimeId,
     pub lifetime: RuntimeLifetime,
@@ -650,21 +640,24 @@ pub struct RuntimeListing {
 }
 
 /// How the daemon reaches a runtime.
+///
+/// A value this build does not know reads as `spawned`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum RuntimeLifetime {
     /// Built into the daemon: `global` and `local`.
     Builtin,
-    /// Started by the daemon from a `[runtimes.<id>]` template.
-    Spawned,
     /// Connected to the daemon on its own: a persistent runtime, or one a
     /// client runs for as long as it does.
     DialIn,
+    /// Started by the daemon from a `[runtimes.<id>]` template.
+    #[serde(other)]
+    Spawned,
 }
 
 /// One capability a runtime offers.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RuntimeCapabilityInfo {
     pub name: CapabilityName,
     /// The capability's self-declared kind label.
@@ -676,7 +669,6 @@ pub struct RuntimeCapabilityInfo {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RuntimeInstanceInfo {
     pub runtime_id: RuntimeId,
     pub capability: CapabilityName,
@@ -696,14 +688,16 @@ pub struct RuntimeInstanceInfo {
     pub message: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeInstanceStatus {
-    Starting,
-    Ready,
-    Reconnecting,
-    Failed,
-    Stopped,
+crate::open_enum! {
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum RuntimeInstanceStatus {
+        Starting,
+        Ready,
+        Reconnecting,
+        Failed,
+        Stopped,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -712,7 +706,6 @@ pub struct PluginsListParams {}
 
 /// The configured plugins, in the order their hooks run.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct PluginsListResult {
     pub plugins: Vec<PluginInfo>,
 }
@@ -726,17 +719,14 @@ pub struct PluginsRestartParams {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct PluginsRestartResult {}
 
 /// A plugin's status changed; refetch `plugins.list`.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct PluginsChangedNotification {}
 
 /// One configured plugin as clients see it.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct PluginInfo {
     pub name: String,
     pub state: PluginState,
@@ -761,25 +751,26 @@ pub struct PluginInfo {
     pub stderr: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PluginState {
-    /// Configured with `enabled = false`.
-    Disabled,
-    Starting,
-    Connected,
-    /// The connection dropped and the daemon is restarting it.
-    Reconnecting,
-    /// Every start attempt failed; `plugins.restart` tries again.
-    Failed,
-    /// Stopped with the daemon.
-    Stopped,
+crate::open_enum! {
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum PluginState {
+        /// Configured with `enabled = false`.
+        Disabled,
+        Starting,
+        Connected,
+        /// The connection dropped and the daemon is restarting it.
+        Reconnecting,
+        /// Every start attempt failed; `plugins.restart` tries again.
+        Failed,
+        /// Stopped with the daemon.
+        Stopped,
+    }
 }
 
 /// A runtime template was registered or an instance's status changed;
 /// refetch `runtimes.list`.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RuntimesChangedNotification {
     /// Instances that failed to start, or dropped and did not reconnect,
     /// that sessions this connection subscribes to are attached to. Absent
@@ -790,7 +781,6 @@ pub struct RuntimesChangedNotification {
 
 /// A runtime instance that is unavailable to the sessions attached to it.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RuntimeFailure {
     pub runtime_id: RuntimeId,
     pub capability: CapabilityName,
@@ -808,7 +798,6 @@ pub struct SessionListParams {
     pub cwd_identity: Option<CwdIdentity>,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionListResult {
     pub sessions: Vec<SessionMeta>,
 }
@@ -818,7 +807,6 @@ pub struct SessionGetParams {
     pub session_id: SessionId,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionGetResult {
     pub session: SessionMeta,
     /// The session's runtime attachments, in attach order.
@@ -832,7 +820,6 @@ pub struct SessionGoalGetParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionGoalGetResult {
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<GoalState>", required)]
@@ -849,7 +836,6 @@ pub struct SessionGoalSetParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionGoalSetResult {
     pub goal: GoalState,
 }
@@ -866,7 +852,6 @@ pub struct SessionGoalLifecycleParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionGoalLifecycleResult {
     pub goal: GoalState,
 }
@@ -878,7 +863,6 @@ pub struct SessionProducersParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionProducersResult {
     pub producers: Vec<ProducerRegistration>,
     /// The recovery state of every producer source the session can hear from.
@@ -886,7 +870,6 @@ pub struct SessionProducersResult {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct UsageRollup {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -907,7 +890,6 @@ pub struct UsageRollup {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ModelUsageRollup {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -945,14 +927,12 @@ pub struct SessionUsageParams {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionUsageResult {
     pub session_id: SessionId,
     pub usage: UsageRollup,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionTreeUsageResult {
     pub session_id: SessionId,
     pub usage: UsageRollup,
@@ -960,7 +940,6 @@ pub struct SessionTreeUsageResult {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ChildSummary {
     pub session_id: SessionId,
     pub agent: AgentId,
@@ -986,7 +965,6 @@ where
     Option::deserialize(d)
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionTree {
     pub session: SessionMeta,
     pub children: Vec<SessionTree>,
@@ -997,7 +975,6 @@ pub struct SessionChildrenParams {
     pub session_id: SessionId,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionChildrenResult {
     pub children: Vec<ChildSummary>,
 }
@@ -1007,7 +984,6 @@ pub struct SessionTreeParams {
     pub session_id: SessionId,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionTreeResult {
     pub tree: SessionTree,
 }
@@ -1017,7 +993,6 @@ pub struct SessionResumeParams {
     pub session_id: SessionId,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionResumeResult {
     pub session: SessionMeta,
     /// The session's runtime attachments, in attach order.
@@ -1031,19 +1006,20 @@ pub struct SessionSetPermissionModeParams {
     pub mode: PermissionMode,
 }
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionSetPermissionModeResult {}
 
+/// A value this build does not know reads as `default`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum PermissionRuleSource {
     SessionOverlay,
     AgentDocument,
+    #[serde(other)]
     Default,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct EffectivePermissionRule {
     /// The rule's runtime selector, when it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1054,7 +1030,6 @@ pub struct EffectivePermissionRule {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct EffectivePermissionAction {
     pub action: PermissionAction,
     pub effect: PermissionEffect,
@@ -1069,7 +1044,6 @@ pub struct SessionPermissionGetParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionPermissionGetResult {
     pub permissions: Vec<EffectivePermissionAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1100,7 +1074,6 @@ pub struct SessionPermissionClearParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionPermissionMutationResult {
     pub permissions: Vec<EffectivePermissionAction>,
 }
@@ -1117,20 +1090,21 @@ pub struct SessionPermissionPreviewParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionPermissionPreviewResult {
     pub permissions: Vec<EffectivePermissionAction>,
 }
 
+/// A value this build does not know reads as `user`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum SkillSource {
-    User,
     Project,
+    #[serde(other)]
+    User,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SkillDescriptor {
     pub name: String,
     pub description: String,
@@ -1155,7 +1129,6 @@ pub struct SkillsListParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SkillsListResult {
     pub skills: Vec<SkillDescriptor>,
 }
@@ -1170,7 +1143,6 @@ pub struct SkillsGetParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SkillsGetResult {
     pub skill: SkillDescriptor,
     pub rendered: String,
@@ -1214,7 +1186,6 @@ pub struct SessionCompactParams {
     pub focus: Option<SafeDisplayText>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionCompactResult {
     pub compacted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1227,7 +1198,6 @@ pub struct SessionCompactCancelParams {
     pub session_id: SessionId,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionCompactCancelResult {
     /// Whether a manual compaction was running and is now cancelled; its
     /// `session.compact` returns without a checkpoint.
@@ -1255,7 +1225,6 @@ pub struct SessionRevertConflict {
     pub current_last_seq: u64,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionRevertResult {
     pub session: SessionMeta,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1273,7 +1242,6 @@ pub struct SessionForkParams {
     pub client_fork_id: ClientForkId,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionForkResult {
     pub session_id: SessionId,
 }
@@ -1293,7 +1261,6 @@ pub struct SessionRenameParams {
     pub change: SessionRenameChange,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionRenameResult {
     pub client_rename_id: ClientRenameId,
     pub session: SessionMeta,
@@ -1360,7 +1327,6 @@ pub struct RunStartConflict {
     pub client_run_id: ClientRunId,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RunStartResult {
     pub run_id: RunId,
 }
@@ -1371,7 +1337,6 @@ pub struct RunSteerParams {
     pub input: String,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RunSteerResult {
     pub accepted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1390,7 +1355,6 @@ pub struct SessionSelectModelParams {
     pub selection: RunSelection,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionSelectModelResult {
     /// False when the session already had this selection.
     pub changed: bool,
@@ -1404,7 +1368,6 @@ pub struct EventsUnsubscribeParams {
     pub session_id: SessionId,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct EventsUnsubscribeResult {
     /// Whether this connection had a live tail for the session.
     pub unsubscribed: bool,
@@ -1415,9 +1378,11 @@ pub const MCP_CHANGED_METHOD: &str = "mcp.changed";
 
 /// A daemon-wide change to the session index, sent to every connection
 /// whether or not it subscribed to the session. Clients keep a session list,
-/// approval prompts, and permission modes current from it.
+/// approval prompts, and permission modes current from it. A client reads it
+/// open: a change it does not know is treated as `resync`.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "change", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "change", rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum SessionsChangedNotification {
     /// A session was created, persisted, or reverted, or its status or
     /// title changed. Delegated sessions are included; `session.list` shows
@@ -1442,10 +1407,10 @@ pub enum SessionsChangedNotification {
     /// refetch `session.list`, approvals, and permission modes.
     Resync,
 }
+crate::open_enum!(tagged SessionsChangedNotification, tag = "change");
 
 /// MCP server configuration or status changed; refetch `mcp.server.list`.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct McpChangedNotification {
     /// Servers that failed to connect, or dropped and did not reconnect, in
     /// runtimes that sessions this connection subscribes to are attached
@@ -1456,7 +1421,6 @@ pub struct McpChangedNotification {
 
 /// An MCP server whose tools are unavailable to the sessions using it.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct McpServerFailure {
     /// The runtime hosting the server; `global` for top-level `[mcp]`.
     pub runtime_id: RuntimeId,
@@ -1500,8 +1464,11 @@ pub struct SessionSubmitInputParams {
     #[serde(default, skip_serializing_if = "is_false")]
     pub reset_fallback: bool,
 }
+/// What `session.submit_input` did. A client reads it open: an outcome it
+/// does not know fails the call with [`crate::ClientError::UnknownOutcome`].
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum SessionSubmitInputResult {
     /// The session was idle; the input started this run.
     Started { run_id: RunId },
@@ -1513,6 +1480,7 @@ pub enum SessionSubmitInputResult {
     /// A plugin handled the input; nothing was submitted.
     Handled { reason: String },
 }
+crate::open_enum!(tagged SessionSubmitInputResult, tag = "outcome");
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRecallInputParams {
@@ -1522,8 +1490,11 @@ pub struct SessionRecallInputParams {
     #[schemars(range(min = 1))]
     pub seq: u64,
 }
+/// What `session.recall_input` did. A client reads it open: an outcome it
+/// does not know fails the call with [`crate::ClientError::UnknownOutcome`].
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum SessionRecallInputResult {
     /// The input was withdrawn; its text is returned for editing.
     Recalled { input: String },
@@ -1533,13 +1504,13 @@ pub enum SessionRecallInputResult {
     /// Another client submitted the input; only its author can recall it.
     NotOwner,
 }
+crate::open_enum!(tagged SessionRecallInputResult, tag = "outcome");
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunCancelParams {
     pub run_id: RunId,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RunCancelResult {
     pub cancelled: bool,
 }
@@ -1564,7 +1535,6 @@ pub struct EventsSubscribeParams {
     pub limit: Option<std::num::NonZeroU32>,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct EventsSubscribeResult {
     /// Shared with the log that holds them, so a page copies no event.
     pub events: Vec<std::sync::Arc<StoredEvent>>,
@@ -1644,7 +1614,6 @@ impl<'de> Deserialize<'de> for ApprovalRespondParams {
     }
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ApprovalRespondResult {
     pub client_response_id: ClientResponseId,
     pub approval: ApprovalRecord,
@@ -1680,16 +1649,19 @@ pub struct ApprovalListParams {
     pub status: Option<ApprovalStatus>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ApprovalListResult {
     pub approvals: Vec<ApprovalRecord>,
     pub tree_grants: Vec<TreeApprovalGrant>,
 }
 
+/// A value this build does not know reads as `runtime`: a server the user file
+/// does not define, which `mcp.server.*` cannot edit.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum McpConfigSource {
     UserFile,
+    #[serde(other)]
     Runtime,
 }
 
@@ -1699,22 +1671,23 @@ pub enum McpConfigTarget {
     UserFile,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum McpServerState {
-    Connected,
-    Connecting,
-    /// The connection dropped and is being re-established. The server's
-    /// tools stay published; calls fail with `runtime_unavailable`.
-    Reconnecting,
-    Failed,
-    NeedsAuth,
-    Disabled,
-    Disconnected,
+crate::open_enum! {
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum McpServerState {
+        Connected,
+        Connecting,
+        /// The connection dropped and is being re-established. The server's
+        /// tools stay published; calls fail with `runtime_unavailable`.
+        Reconnecting,
+        Failed,
+        NeedsAuth,
+        Disabled,
+        Disconnected,
+    }
 }
 
 #[derive(Clone, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct McpOAuthSettingsDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
@@ -1749,7 +1722,6 @@ pub enum McpOAuthDefinition {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct McpServerDefinition {
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<String>", required)]
@@ -1772,7 +1744,6 @@ pub struct McpServerDefinition {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct McpServerInfo {
     /// The runtime hosting the server; `global` for top-level `[mcp]`
     /// servers, the only ones `mcp.server.*` mutations edit.
@@ -1798,7 +1769,6 @@ pub struct McpServerInfo {
 pub struct McpServerListParams {}
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct McpServerListResult {
     pub servers: Vec<McpServerInfo>,
 }
@@ -1853,7 +1823,6 @@ pub struct McpServerPersistParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct McpServerMutationResult {
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<McpServerInfo>", required)]
@@ -1871,7 +1840,6 @@ pub struct McpAuthBeginParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct McpAuthBeginResult {
     pub server: String,
     pub authorization_url: String,
@@ -1898,7 +1866,6 @@ impl std::fmt::Debug for McpAuthCompleteParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct McpAuthCompleteResult {
     pub server: String,
 }
@@ -1910,7 +1877,6 @@ pub struct McpAuthCancelParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct McpAuthCancelResult {
     pub server: String,
 }

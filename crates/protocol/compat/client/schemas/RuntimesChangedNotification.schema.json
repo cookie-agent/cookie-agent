@@ -1,7 +1,6 @@
 {
   "$defs": {
     "RuntimeFailure": {
-      "additionalProperties": false,
       "description": "A runtime instance that is unavailable to the sessions attached to it.",
       "properties": {
         "capability": {
@@ -45,7 +44,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "description": "A runtime template was registered or an instance's status changed;\nrefetch `runtimes.list`.",
   "properties": {
     "failures": {

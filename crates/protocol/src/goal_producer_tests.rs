@@ -63,14 +63,14 @@ fn session_goal_and_inspection_rpcs_reject_unknown_missing_and_wrong_fields() {
     let session_id = SessionId::new_v7();
     let goal_id = GoalId::new_v7();
     strict::<SessionGoalGetParams>(json!({"session_id": session_id}));
-    strict::<SessionGoalGetResult>(json!({"goal": null}));
+    tolerant::<SessionGoalGetResult>(json!({"goal": null}));
     strict::<SessionGoalSetParams>(
         json!({"session_id": session_id, "objective": "Verify release"}),
     );
     let state = json!({"goal_id": goal_id, "objective": "Verify release", "status": "active", "items": [], "revision": 0});
-    strict::<GoalState>(state.clone());
-    strict::<SessionGoalSetResult>(json!({"goal": state}));
-    strict::<SessionGoalLifecycleResult>(json!({"goal": state}));
+    tolerant::<GoalState>(state.clone());
+    tolerant::<SessionGoalSetResult>(json!({"goal": state}));
+    tolerant::<SessionGoalLifecycleResult>(json!({"goal": state}));
     strict::<GoalUpdateResult>(json!({"goal": state}));
     for action in ["pause", "resume", "cancel"] {
         strict::<SessionGoalLifecycleParams>(
@@ -78,7 +78,7 @@ fn session_goal_and_inspection_rpcs_reject_unknown_missing_and_wrong_fields() {
         );
     }
     strict::<SessionProducersParams>(json!({"session_id": session_id}));
-    strict::<SessionProducersResult>(json!({"producers": [], "sources": []}));
+    tolerant::<SessionProducersResult>(json!({"producers": [], "sources": []}));
     assert!(serde_json::from_value::<SessionGoalLifecycleParams>(json!({"session_id": session_id, "goal_id": goal_id, "expected_revision": -1, "action": "pause"})).is_err());
     assert!(
         serde_json::from_value::<SessionGoalSetParams>(
@@ -270,7 +270,11 @@ fn goal_contracts_round_trip_and_preserve_empty_bootstrap() {
         serde_json::from_value::<GoalUpdateParams>(json!({"items":[],"status":"cancelled"}))
             .is_err()
     );
-    assert!(serde_json::from_value::<GoalStatus>(json!("blocked")).is_err());
+    // A status from a newer build reads as cancelled, which allows no change.
+    assert_eq!(
+        serde_json::from_value::<GoalStatus>(json!("blocked")).unwrap(),
+        GoalStatus::Cancelled
+    );
 }
 
 #[test]

@@ -3,7 +3,7 @@ use jiff::Timestamp;
 
 use super::*;
 use crate as cookie_agent_protocol;
-use crate::{EventPayload, MessageStream};
+use crate::{ClientSubscriptionMessage as EventSubscriptionMessage, EventPayload, MessageStream};
 
 fn delivery_channel() -> (
     mpsc::UnboundedSender<ClientDelivery>,
@@ -58,8 +58,8 @@ fn credential_values(secret: &str) -> crate::ProviderCredentialValues {
     serde_json::from_slice(&serialized).expect("credential values")
 }
 
-fn event(session_id: SessionId, seq: u64) -> StoredEvent {
-    StoredEvent {
+fn event(session_id: SessionId, seq: u64) -> ClientEvent {
+    crate::StoredEvent {
         engine_version: None,
         origin: None,
         session_id,
@@ -70,6 +70,7 @@ fn event(session_id: SessionId, seq: u64) -> StoredEvent {
             content: seq.to_string().into(),
         },
     }
+    .into()
 }
 
 struct ClosingStream;
@@ -358,7 +359,7 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
         Some(ClientDelivery::ReplayEnd { .. })
     ));
     assert!(
-        matches!(receiver.recv().await, Some(ClientDelivery::Live { message, .. }) if matches!(message.as_ref(), EventSubscriptionMessage::Event { event } if event.seq == 2))
+        matches!(receiver.recv().await, Some(ClientDelivery::Live { message, .. }) if matches!(message.as_ref(), crate::EventSubscriptionMessage::Event { event } if event.seq == 2))
     );
     route_live(
         EventSubscriptionMessage::Event {
@@ -372,7 +373,7 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
     assert!(matches!(
         receiver.recv().await,
         Some(ClientDelivery::Live { message, .. })
-            if matches!(message.as_ref(), EventSubscriptionMessage::Event { event } if event.seq == 3)
+            if matches!(message.as_ref(), crate::EventSubscriptionMessage::Event { event } if event.seq == 3)
     ));
     assert!(
         tokio::time::timeout(Duration::from_millis(10), recovery_receiver.recv())
@@ -391,7 +392,8 @@ fn transient(session_id: SessionId, after_seq: u64, text: &str) -> EventSubscrip
             payload: EventPayload::TextDelta {
                 attempt_id: crate::AttemptId::new_v7(),
                 text: text.into(),
-            },
+            }
+            .into(),
         }),
     }
 }
@@ -399,14 +401,17 @@ fn transient(session_id: SessionId, after_seq: u64, text: &str) -> EventSubscrip
 fn delivered_text(delivery: Option<ClientDelivery>) -> Option<String> {
     match delivery? {
         ClientDelivery::Live { message, .. } => match *message {
-            EventSubscriptionMessage::Transient { event } => {
+            crate::EventSubscriptionMessage::Transient { event } => {
                 match std::sync::Arc::unwrap_or_clone(event).payload {
                     EventPayload::TextDelta { text, .. } => Some(text),
                     _ => None,
                 }
             }
-            EventSubscriptionMessage::Event { event } => Some(format!("event {}", event.seq)),
-            EventSubscriptionMessage::Gap { .. } | EventSubscriptionMessage::Rewound { .. } => None,
+            crate::EventSubscriptionMessage::Event { event } => {
+                Some(format!("event {}", event.seq))
+            }
+            crate::EventSubscriptionMessage::Gap { .. }
+            | crate::EventSubscriptionMessage::Rewound { .. } => None,
         },
         _ => None,
     }
@@ -962,7 +967,7 @@ async fn rewound_pulls_the_cursor_back_and_queues_one_full_replay() {
     assert!(matches!(
         last,
         Some(ClientDelivery::Live { message, .. })
-            if matches!(*message, EventSubscriptionMessage::Rewound { through_seq: 3, .. })
+            if matches!(*message, crate::EventSubscriptionMessage::Rewound { through_seq: 3, .. })
     ));
     // Appends after the cut reuse its sequences and follow on from it.
     route_live(
@@ -1402,4 +1407,269 @@ async fn a_malformed_response_fails_only_the_call_it_answers() {
         .expect("delivery in time")
         .expect("delivery");
     assert!(matches!(delivery, ClientDelivery::PluginEvent(event) if event == plugin_event));
+}
+
+fn notification(method: &str, params: Value) -> MessageFrame {
+    MessageFrame::Value(serde_json::json!({
+        "jsonrpc": "2.0", "method": method, "params": params,
+    }))
+}
+
+async fn next_delivery(deliveries: &mut mpsc::UnboundedReceiver<ClientDelivery>) -> ClientDelivery {
+    tokio::time::timeout(Duration::from_secs(1), deliveries.recv())
+        .await
+        .expect("delivery in time")
+        .expect("delivery")
+}
+
+/// A notification this build cannot read is dropped and reported; the call
+/// in flight still gets its answer, and the connection carries on.
+#[tokio::test]
+async fn an_unreadable_notification_is_reported_and_fails_no_call() {
+    let session_id = SessionId::new_v7();
+    let (incoming, incoming_rx) = mpsc::unbounded_channel();
+    let (sent, mut sent_rx) = mpsc::unbounded_channel();
+    let client = Client::connect_stream(ScriptedStream {
+        incoming: incoming_rx,
+        sent,
+    });
+    let mut deliveries = client.subscribe_deliveries().expect("deliveries");
+    let call = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .get_session_goal(SessionGoalGetParams { session_id })
+                .await
+        }
+    });
+    let request = next_request(&mut sent_rx).await;
+    for frame in [
+        // Known types that do not decode.
+        notification(
+            "sessions.changed",
+            serde_json::json!({"change": "upserted"}),
+        ),
+        notification("runtime.changed", serde_json::json!({"snapshot": 7})),
+        // Open types with tags this build does not know, and a method it
+        // does not know.
+        notification(
+            "events.subscription",
+            serde_json::json!({"type": "from_the_future", "session_id": session_id}),
+        ),
+        notification(
+            "sessions.changed",
+            serde_json::json!({"change": "archived"}),
+        ),
+        notification("from.the_future", serde_json::json!({})),
+    ] {
+        incoming.send(frame).expect("notification");
+    }
+    // Envelope members this build does not know are ignored.
+    incoming
+        .send(MessageFrame::Value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": { "goal": null, "added_later": true },
+            "trace": "abc",
+        })))
+        .expect("response");
+    assert_eq!(call.await.expect("call task").expect("call").goal, None);
+
+    for method in ["sessions.changed", "runtime.changed"] {
+        let delivery = next_delivery(&mut deliveries).await;
+        assert!(
+            matches!(&delivery, ClientDelivery::Diagnostic { message } if message.contains(method)),
+            "{delivery:?}"
+        );
+    }
+    // A change of a kind this build does not know reads as a resync.
+    assert!(matches!(
+        next_delivery(&mut deliveries).await,
+        ClientDelivery::SessionsChanged(changed)
+            if *changed == crate::SessionsChangedNotification::Resync
+    ));
+    assert!(deliveries.try_recv().is_err());
+}
+
+/// A frame that is not JSON-RPC at all ends the connection.
+#[tokio::test]
+async fn a_frame_that_is_not_json_rpc_closes_the_connection() {
+    let session_id = SessionId::new_v7();
+    let (incoming, incoming_rx) = mpsc::unbounded_channel();
+    let (sent, mut sent_rx) = mpsc::unbounded_channel();
+    let client = Client::connect_stream(ScriptedStream {
+        incoming: incoming_rx,
+        sent,
+    });
+    let mut deliveries = client.subscribe_deliveries().expect("deliveries");
+    let call = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .get_session_goal(SessionGoalGetParams { session_id })
+                .await
+        }
+    });
+    next_request(&mut sent_rx).await;
+    incoming
+        .send(MessageFrame::Text("not json".into()))
+        .expect("frame");
+    assert!(matches!(
+        call.await.expect("call task"),
+        Err(ClientError::Transport(_))
+    ));
+    assert!(matches!(
+        next_delivery(&mut deliveries).await,
+        ClientDelivery::Disconnected { .. }
+    ));
+}
+
+/// Events a newer daemon wrote take their place in a replay and a live tail
+/// as unknown events; one whose envelope cannot be read is dropped and
+/// reported, and the replay still completes.
+#[tokio::test]
+async fn events_this_build_cannot_read_take_their_place_in_the_replay() {
+    let session_id = SessionId::new_v7();
+    let (incoming, incoming_rx) = mpsc::unbounded_channel();
+    let (sent, mut sent_rx) = mpsc::unbounded_channel();
+    let client = Client::connect_stream(ScriptedStream {
+        incoming: incoming_rx,
+        sent,
+    });
+    let mut deliveries = client.subscribe_deliveries().expect("deliveries");
+    let subscribe = tokio::spawn({
+        let client = client.clone();
+        async move { client.subscribe_events(session_id, None).await }
+    });
+    let request = next_request(&mut sent_rx).await;
+    let envelope = |seq: u64, payload: Value| {
+        let mut event = serde_json::to_value(event(session_id, seq)).unwrap();
+        event["payload"] = payload;
+        event
+    };
+    let mut broken_envelope = serde_json::to_value(event(session_id, 5)).unwrap();
+    broken_envelope
+        .as_object_mut()
+        .unwrap()
+        .remove("session_id");
+    incoming
+        .send(MessageFrame::Value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": {
+                "events": [
+                    event(session_id, 1),
+                    envelope(2, serde_json::json!({"type": "from_the_future", "x": 1})),
+                    envelope(3, serde_json::json!({"type": "run_finished", "outcome": 7})),
+                    event(session_id, 4),
+                    broken_envelope,
+                ],
+            },
+        })))
+        .expect("page");
+    subscribe.await.expect("task").expect("subscribe");
+
+    let delivery = next_delivery(&mut deliveries).await;
+    assert!(
+        matches!(&delivery, ClientDelivery::Diagnostic { message } if message.contains("seq 5")),
+        "{delivery:?}"
+    );
+    assert!(matches!(
+        next_delivery(&mut deliveries).await,
+        ClientDelivery::ReplayStart { final_seq: 4, .. }
+    ));
+    assert!(matches!(
+        next_delivery(&mut deliveries).await,
+        ClientDelivery::ReplayEvent { event, .. } if event.seq == 1
+    ));
+    for (seq, tag) in [(2, "from_the_future"), (3, "run_finished")] {
+        let delivery = next_delivery(&mut deliveries).await;
+        assert!(
+            matches!(&delivery, ClientDelivery::UnknownEvent { event, replay_final_seq: Some(4), .. }
+                if event.seq == seq && event.tag == tag),
+            "{delivery:?}"
+        );
+    }
+    assert!(matches!(
+        next_delivery(&mut deliveries).await,
+        ClientDelivery::ReplayEvent { event, .. } if event.seq == 4
+    ));
+    assert!(matches!(
+        next_delivery(&mut deliveries).await,
+        ClientDelivery::ReplayEnd { final_seq: 4, .. }
+    ));
+
+    // Live, the same holds, and the cursor moves past the unknown event.
+    incoming
+        .send(notification(
+            "events.subscription",
+            serde_json::json!({
+                "type": "event",
+                "event": envelope(5, serde_json::json!({"type": "from_the_future"})),
+            }),
+        ))
+        .expect("live event");
+    incoming
+        .send(notification(
+            "events.subscription",
+            serde_json::json!({"type": "event", "event": event(session_id, 6)}),
+        ))
+        .expect("live event");
+    assert!(matches!(
+        next_delivery(&mut deliveries).await,
+        ClientDelivery::UnknownEvent { event, replay_final_seq: None, .. } if event.seq == 5
+    ));
+    assert!(matches!(
+        next_delivery(&mut deliveries).await,
+        ClientDelivery::Live { message, .. }
+            if matches!(message.as_ref(), crate::EventSubscriptionMessage::Event { event } if event.seq == 6)
+    ));
+}
+
+/// A result with an outcome this build does not know fails that call with
+/// a readable error, and so does a method the daemon does not know.
+#[tokio::test]
+async fn unknown_outcomes_and_methods_fail_only_their_call() {
+    let session_id = SessionId::new_v7();
+    let (incoming, incoming_rx) = mpsc::unbounded_channel();
+    let (sent, mut sent_rx) = mpsc::unbounded_channel();
+    let client = Client::connect_stream(ScriptedStream {
+        incoming: incoming_rx,
+        sent,
+    });
+    let recall = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .recall_input(crate::SessionRecallInputParams { session_id, seq: 3 })
+                .await
+        }
+    });
+    let request = next_request(&mut sent_rx).await;
+    incoming
+        .send(MessageFrame::Value(serde_json::json!({
+            "jsonrpc": "2.0", "id": request["id"], "result": {"outcome": "archived"},
+        })))
+        .expect("response");
+    let error = recall.await.expect("task").expect_err("unknown outcome");
+    assert!(
+        matches!(&error, ClientError::UnknownOutcome { method, outcome }
+            if method == "session.recall_input" && outcome == "archived"),
+        "{error:?}"
+    );
+
+    let list = tokio::spawn({
+        let client = client.clone();
+        async move { client.list_plugins().await }
+    });
+    let request = next_request(&mut sent_rx).await;
+    incoming
+        .send(MessageFrame::Value(serde_json::json!({
+            "jsonrpc": "2.0", "id": request["id"],
+            "error": {"code": -32601, "message": "The other side does not know the method plugins.list.",
+                      "data": {"code": "method_not_found", "method": "plugins.list"}},
+        })))
+        .expect("response");
+    let error = list.await.expect("task").expect_err("unknown method");
+    assert_eq!(error.to_string(), "the daemon is too old for plugins.list");
 }

@@ -97,6 +97,7 @@
       "type": "object"
     },
     "ApprovalDecisionSource": {
+      "description": "A value this build does not know reads as `system`.",
       "enum": [
         "policy",
         "model",
@@ -107,7 +108,8 @@
         "doom_loop_guard",
         "system"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ApprovalEvaluation": {
       "properties": {
@@ -182,13 +184,15 @@
       "type": "object"
     },
     "ApprovalFinalOutcome": {
+      "description": "A value this build does not know reads as `cancelled`.",
       "enum": [
         "approved",
         "rejected",
-        "cancelled",
-        "expired"
+        "expired",
+        "cancelled"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ApprovalInternalDecision": {
       "properties": {
@@ -219,15 +223,18 @@
       "type": "object"
     },
     "ApprovalInternalDecisionKind": {
+      "description": "A value this build does not know reads as `ask`: asking the user.",
       "enum": [
         "allow",
         "deny",
-        "ask",
-        "escalate"
+        "escalate",
+        "ask"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ApprovalReasonCode": {
+      "description": "A value this build does not know reads as `system_error`.",
       "enum": [
         "policy_allowed",
         "policy_denied",
@@ -254,10 +261,10 @@
         "unattended",
         "system_error"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ApprovalRecord": {
-      "additionalProperties": false,
       "properties": {
         "final_decision": {
           "anyOf": [
@@ -371,42 +378,50 @@
       "type": "object"
     },
     "ApprovalResourceSource": {
+      "description": "A value this build does not know reads as `primary_operation`.",
       "enum": [
-        "primary_operation",
         "secondary_operation",
         "model_request",
-        "doom_loop_guard"
+        "doom_loop_guard",
+        "primary_operation"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ApprovalStatus": {
+      "description": "A value this build does not know reads as `cancelled`: a cancelled approval,\nwhich takes no answer.",
       "enum": [
         "pending",
         "escalated",
         "approved",
         "rejected",
-        "cancelled",
-        "expired"
+        "expired",
+        "cancelled"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ApprovalTrigger": {
+      "description": "A value this build does not know reads as `permission_policy`.",
       "enum": [
-        "permission_policy",
         "model_tool_approval",
         "internal_agent",
-        "doom_loop"
+        "doom_loop",
+        "permission_policy"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ApprovalUserDecision": {
+      "description": "A value this build does not know reads as `cancel`.",
       "enum": [
         "approve_once",
         "approve_tree",
         "reject",
         "cancel"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "DecisionTrace": {
       "properties": {
@@ -498,12 +513,14 @@
       "type": "object"
     },
     "PermissionEffect": {
+      "description": "A value this build does not know reads as `ask`: asking, the effect that\nnever runs a call unapproved.",
       "enum": [
         "allow",
-        "ask",
-        "deny"
+        "deny",
+        "ask"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "PreparedApprovalResource": {
       "properties": {
@@ -542,11 +559,13 @@
       "type": "object"
     },
     "PreparedBindingLifetime": {
+      "description": "A value this build does not know reads as `process_local`: a binding that is\nnever restart-stable.",
       "enum": [
-        "process_local",
-        "restart_stable"
+        "restart_stable",
+        "process_local"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "PreparedCapabilityLifetime": {
       "enum": [
@@ -613,7 +632,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "approval": {
       "$ref": "#/$defs/ApprovalRecord"

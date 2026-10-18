@@ -14,19 +14,23 @@ pub const CONFIG_RELOAD_METHOD: &str = "config.reload";
 pub const CONFIG_APPLY_ERROR_CODE: i32 = -32040;
 
 /// A configuration part that takes effect only when the daemon restarts.
+///
+/// A value this build does not know reads as `server`: a restart of the whole
+/// daemon.
 #[derive(
     Clone, Copy, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum ConfigRestartPart {
-    Server,
     Plugins,
     Runtimes,
+    #[serde(other)]
+    Server,
 }
 
 /// Where the daemon's configuration stands.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ConfigStatus {
     /// The revision of the configuration the daemon runs on.
     pub applied_revision: ConfigRevision,
@@ -48,7 +52,6 @@ pub struct ConfigReloadParams {}
 /// The status afterwards; a configuration that failed validation is not
 /// applied and its error is in `status.error`.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ConfigReloadResult {
     pub status: ConfigStatus,
 }
@@ -61,7 +64,6 @@ pub struct ConfigGetParams {}
 /// One configuration document: `config.toml`, `agents/<id>.md`, or
 /// `agents/<preset>/<id>.md`.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ConfigDocument {
     pub path: String,
     pub text: String,
@@ -72,7 +74,6 @@ pub struct ConfigDocument {
 /// The configuration on disk, which differs from the applied one until it is
 /// reloaded when it was edited by hand.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ConfigGetResult {
     /// The revision of the documents on disk, for `config.apply`.
     pub revision: ConfigRevision,
@@ -120,7 +121,6 @@ pub struct ConfigApplyParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ConfigApplyResult {
     /// The revision of the documents now on disk.
     pub revision: ConfigRevision,

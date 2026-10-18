@@ -3,16 +3,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::*;
 
+/// A value this build does not know reads as `cache`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum CatalogSource {
     Network,
-    Cache,
     Bootstrap,
+    #[serde(other)]
+    Cache,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct CatalogSafeErrorMeta {
     pub code: SafeCode,
     pub message: SafeErrorMessage,
@@ -20,16 +22,19 @@ pub struct CatalogSafeErrorMeta {
 }
 
 /// Age of the selected validated catalog body; age never makes it unusable.
+///
+/// A value this build does not know reads as `older_than_thirty_days`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum CatalogAge {
     Current,
     OlderThanSevenDays,
+    #[serde(other)]
     OlderThanThirtyDays,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct CatalogRuntimeState {
     pub stale: bool,
     pub age: CatalogAge,
@@ -42,7 +47,6 @@ pub struct CatalogRuntimeState {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RuntimeSnapshotV1 {
     pub snapshot_schema_version: RuntimeSnapshotSchemaVersion,
     pub recipe_registry_revision: RecipeRegistryRevision,
@@ -110,7 +114,6 @@ impl<'de> Deserialize<'de> for RuntimeSnapshotV1 {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             snapshot_schema_version: RuntimeSnapshotSchemaVersion,
             recipe_registry_revision: RecipeRegistryRevision,
@@ -150,32 +153,32 @@ impl<'de> Deserialize<'de> for RuntimeSnapshotV1 {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RuntimeSnapshotResult {
     pub snapshot: RuntimeSnapshotV1,
 }
 
-#[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeChangeReason {
-    Startup,
-    CatalogRefreshed,
-    CatalogFallback,
-    ConfigReloaded,
-    ProviderConnected,
-    ProviderDisconnected,
-    ProviderStoreChanged,
-    ProviderStoreReloaded,
-    AgentReloaded,
-    /// The daemon dropped notifications this connection was too slow to
-    /// take; the snapshot is current and `previous_revision` is null.
-    Resync,
+crate::open_enum! {
+    #[derive(
+        Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
+    )]
+    #[serde(rename_all = "snake_case")]
+    pub enum RuntimeChangeReason {
+        Startup,
+        CatalogRefreshed,
+        CatalogFallback,
+        ConfigReloaded,
+        ProviderConnected,
+        ProviderDisconnected,
+        ProviderStoreChanged,
+        ProviderStoreReloaded,
+        AgentReloaded,
+        /// The daemon dropped notifications this connection was too slow to
+        /// take; the snapshot is current and `previous_revision` is null.
+        Resync,
+    }
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RuntimeChangedNotification {
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<RuntimeRevision>", required)]
@@ -190,17 +193,18 @@ impl<'de> Deserialize<'de> for RuntimeChangedNotification {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             previous_revision: Option<RuntimeRevision>,
             snapshot: RuntimeSnapshotV1,
             reasons: Vec<RuntimeChangeReason>,
         }
-        let wire = Wire::deserialize(deserializer)?;
-        if wire.reasons.is_empty()
-            || wire.reasons.len() > 9
-            || wire.reasons.windows(2).any(|pair| pair[0] >= pair[1])
+        let mut wire = Wire::deserialize(deserializer)?;
+        let empty = wire.reasons.is_empty();
+        // Reasons a newer daemon added say nothing this build acts on.
+        wire.reasons
+            .retain(|reason| *reason != RuntimeChangeReason::Unknown);
+        if empty || wire.reasons.len() > 9 || wire.reasons.windows(2).any(|pair| pair[0] >= pair[1])
         {
             return Err(serde::de::Error::custom(
                 "runtime change reasons must be a nonempty strictly sorted unique set",

@@ -931,6 +931,20 @@ impl SessionState {
     }
 }
 
+/// An event a newer daemon wrote that this build cannot read changes
+/// nothing; the debug view shows a dim row naming its type.
+fn push_unknown_event_row(state: &mut SessionState, event: &cookie_agent_protocol::UnknownEvent) {
+    push_event(
+        state,
+        EventLevel::Debug,
+        format!(
+            "event `{}` (seq {}) is from a newer cookie and is not shown",
+            event.tag, event.seq
+        ),
+        event.timestamp,
+    );
+}
+
 /// All currently observed session projections.
 #[derive(Clone, Debug, Default)]
 pub struct StateStore {
@@ -1118,6 +1132,52 @@ impl StateStore {
                     }
                     _ => DeliveryOutcome::ReplayFailed { session_id },
                 }
+            }
+            ClientDelivery::UnknownEvent {
+                event,
+                generation,
+                replay_final_seq: Some(final_seq),
+            } => {
+                let session_id = event.session_id;
+                let valid = self.replays.get_mut(&session_id).is_some_and(|replay| {
+                    if replay.generation != generation || replay.final_seq != final_seq {
+                        return false;
+                    }
+                    if event.seq > replay.scratch.last_seq {
+                        replay.scratch.last_seq = event.seq;
+                        push_unknown_event_row(&mut replay.scratch, &event);
+                        replay.scratch.version = replay.scratch.version.wrapping_add(1);
+                    }
+                    true
+                });
+                if valid {
+                    DeliveryOutcome::Applied
+                } else {
+                    self.abandon_replay(session_id);
+                    DeliveryOutcome::ReplayFailed { session_id }
+                }
+            }
+            ClientDelivery::UnknownEvent {
+                event,
+                generation,
+                replay_final_seq: None,
+            } => {
+                if !self.quarantined_sessions.contains(&event.session_id) {
+                    let state = self.sessions.entry(event.session_id).or_default();
+                    if state.generation == generation && event.seq > state.last_seq {
+                        state.last_seq = event.seq;
+                        push_unknown_event_row(state, &event);
+                        state.version = state.version.wrapping_add(1);
+                    }
+                }
+                DeliveryOutcome::Applied
+            }
+            ClientDelivery::Diagnostic { message } => {
+                let timestamp = jiff::Timestamp::now();
+                for state in self.sessions.values_mut() {
+                    push_event(state, EventLevel::Debug, message.clone(), timestamp);
+                }
+                DeliveryOutcome::Applied
             }
             ClientDelivery::RecoveryFailed { .. } => DeliveryOutcome::Applied,
             ClientDelivery::Disconnected { error } => {

@@ -1,7 +1,6 @@
 {
   "$defs": {
     "ModelUsageRollup": {
-      "additionalProperties": false,
       "properties": {
         "cache_hit_rate": {
           "format": "double",
@@ -61,7 +60,6 @@
       "type": "object"
     },
     "UsageRollup": {
-      "additionalProperties": false,
       "properties": {
         "by_model": {
           "additionalProperties": false,
@@ -132,7 +130,6 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "properties": {
     "session_id": {
       "format": "uuid",

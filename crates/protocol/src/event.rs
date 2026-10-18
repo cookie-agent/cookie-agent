@@ -155,15 +155,17 @@ pub enum SessionOrigin {
     },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionStatus {
-    Idle,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-    Interrupted,
+crate::open_enum! {
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum SessionStatus {
+        Idle,
+        Running,
+        Completed,
+        Failed,
+        Cancelled,
+        Interrupted,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -3493,9 +3495,14 @@ pub fn diagnostic_subject(source: &DiagnosticSource, kind: &DiagnosticKind) -> O
 /// The envelope's `skippable` is not a field: it is derived from the
 /// payload's class ([`EventPayload::is_audit`]), written only when true, and
 /// checked against the payload when read.
+///
+/// The payload is an [`EventPayload`] wherever this build reads its own
+/// logs. A client reads a daemon's events as [`ClientEvent`], whose payload
+/// is open: an event of a type this build does not know, or one it cannot
+/// read, is [`Open::Unknown`].
 #[derive(Clone, Debug, JsonSchema, PartialEq)]
-#[schemars(transform = stored_event_schema)]
-pub struct StoredEvent {
+#[schemars(rename = "StoredEvent", transform = stored_event_schema)]
+pub struct StoredEvent<P = EventPayload> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3507,8 +3514,131 @@ pub struct StoredEvent {
     #[schemars(range(min = 1))]
     pub seq: u64,
     pub timestamp: Timestamp,
-    pub payload: EventPayload,
+    /// The event. Readers accept event types they do not know.
+    #[schemars(with = "Open<EventPayload>")]
+    pub payload: P,
 }
+
+/// A session event as a client reads it from the daemon.
+pub type ClientEvent = StoredEvent<Open<EventPayload>>;
+/// Live-only stream output as a client reads it from the daemon.
+pub type ClientTransientEvent = TransientEvent<Open<EventPayload>>;
+/// An `events.subscription` message as a client reads it from the daemon.
+pub type ClientSubscriptionMessage = EventSubscriptionMessage<Open<EventPayload>>;
+
+/// What a stored event's envelope derives from its payload.
+pub trait EventPayloadClass {
+    /// Whether the envelope carries `"skippable": true`.
+    fn skippable(&self) -> bool;
+}
+
+impl EventPayloadClass for EventPayload {
+    fn skippable(&self) -> bool {
+        self.is_audit()
+    }
+}
+
+impl EventPayloadClass for Open<EventPayload> {
+    /// An event of a type this build does not know is written without
+    /// `skippable`: only its payload was kept.
+    fn skippable(&self) -> bool {
+        self.known().is_some_and(EventPayload::is_audit)
+    }
+}
+
+/// A durable event a client could not read: of a type this build does not
+/// know, or one it cannot decode. It still takes its place in the session's
+/// sequence; a client shows nothing of it beyond, at most, its type.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnknownEvent {
+    pub session_id: SessionId,
+    pub run_id: Option<RunId>,
+    pub seq: u64,
+    pub timestamp: Timestamp,
+    pub origin: Option<EventOrigin>,
+    /// The payload's `type`.
+    pub tag: String,
+}
+
+impl ClientEvent {
+    /// The event, when this build knows its type and could read it, or what
+    /// a client keeps of it otherwise.
+    pub fn into_known(self) -> Result<StoredEvent, UnknownEvent> {
+        match self.payload {
+            Open::Known(payload) => Ok(StoredEvent {
+                engine_version: self.engine_version,
+                origin: self.origin,
+                session_id: self.session_id,
+                run_id: self.run_id,
+                seq: self.seq,
+                timestamp: self.timestamp,
+                payload,
+            }),
+            Open::Unknown { tag, .. } => Err(UnknownEvent {
+                session_id: self.session_id,
+                run_id: self.run_id,
+                seq: self.seq,
+                timestamp: self.timestamp,
+                origin: self.origin,
+                tag,
+            }),
+        }
+    }
+}
+
+impl From<StoredEvent> for ClientEvent {
+    fn from(event: StoredEvent) -> Self {
+        Self {
+            engine_version: event.engine_version,
+            origin: event.origin,
+            session_id: event.session_id,
+            run_id: event.run_id,
+            seq: event.seq,
+            timestamp: event.timestamp,
+            payload: Open::Known(event.payload),
+        }
+    }
+}
+
+impl From<TransientEvent> for ClientTransientEvent {
+    fn from(event: TransientEvent) -> Self {
+        Self {
+            session_id: event.session_id,
+            run_id: event.run_id,
+            after_seq: event.after_seq,
+            timestamp: event.timestamp,
+            payload: Open::Known(event.payload),
+        }
+    }
+}
+
+impl From<EventSubscriptionMessage> for ClientSubscriptionMessage {
+    fn from(message: EventSubscriptionMessage) -> Self {
+        match message {
+            EventSubscriptionMessage::Event { event } => Self::Event {
+                event: std::sync::Arc::new(std::sync::Arc::unwrap_or_clone(event).into()),
+            },
+            EventSubscriptionMessage::Transient { event } => Self::Transient {
+                event: std::sync::Arc::new(std::sync::Arc::unwrap_or_clone(event).into()),
+            },
+            EventSubscriptionMessage::Gap {
+                session_id,
+                last_delivered_seq,
+            } => Self::Gap {
+                session_id,
+                last_delivered_seq,
+            },
+            EventSubscriptionMessage::Rewound {
+                session_id,
+                through_seq,
+            } => Self::Rewound {
+                session_id,
+                through_seq,
+            },
+        }
+    }
+}
+
 fn stored_event_schema(schema: &mut Schema) {
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties.insert(
@@ -3521,13 +3651,13 @@ fn stored_event_schema(schema: &mut Schema) {
     }
 }
 
-impl Serialize for StoredEvent {
+impl<P: Serialize + EventPayloadClass> Serialize for StoredEvent<P> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         #[derive(Serialize)]
-        struct Wire<'a> {
+        struct Wire<'a, P> {
             #[serde(skip_serializing_if = "Option::is_none")]
             engine_version: Option<&'a String>,
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -3538,7 +3668,7 @@ impl Serialize for StoredEvent {
             timestamp: Timestamp,
             #[serde(skip_serializing_if = "std::ops::Not::not")]
             skippable: bool,
-            payload: &'a EventPayload,
+            payload: &'a P,
         }
         Wire {
             engine_version: self.engine_version.as_ref(),
@@ -3547,7 +3677,7 @@ impl Serialize for StoredEvent {
             run_id: self.run_id,
             seq: self.seq,
             timestamp: self.timestamp,
-            skippable: self.payload.is_audit(),
+            skippable: self.payload.skippable(),
             payload: &self.payload,
         }
         .serialize(serializer)
@@ -3603,8 +3733,8 @@ pub enum StreamedOutputKind {
 /// `after_seq` and precedes the next one. Durable sequences stay gap-free and
 /// replay cursors never point at it.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct TransientEvent {
+#[schemars(rename = "TransientEvent")]
+pub struct TransientEvent<P = EventPayload> {
     pub session_id: SessionId,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<RunId>", required)]
@@ -3613,7 +3743,8 @@ pub struct TransientEvent {
     #[schemars(range(min = 1))]
     pub after_seq: u64,
     pub timestamp: Timestamp,
-    pub payload: EventPayload,
+    #[schemars(with = "Open<EventPayload>")]
+    pub payload: P,
 }
 impl TransientEvent {
     pub fn validate(&self) -> Result<(), EventSchemaError> {
@@ -3753,6 +3884,62 @@ impl<'de> Deserialize<'de> for StoredEvent {
         Ok(value)
     }
 }
+
+/// A client's read of a daemon's event: the envelope must decode, and a
+/// payload of a type this build does not know, or one it cannot read even
+/// best-effort, is kept as [`Open::Unknown`] with its raw JSON. The daemon
+/// already validated what it sends, so a client does not validate again.
+impl<'de> Deserialize<'de> for ClientEvent {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            #[serde(default)]
+            engine_version: Option<String>,
+            #[serde(default)]
+            origin: Option<EventOrigin>,
+            session_id: SessionId,
+            #[serde(deserialize_with = "crate::deserialize_required_option")]
+            run_id: Option<RunId>,
+            seq: u64,
+            timestamp: Timestamp,
+            payload: Value,
+        }
+        let w = Wire::deserialize(d)?;
+        let tag = match w.payload.get("type") {
+            Some(Value::String(tag)) => tag.clone(),
+            _ => return Err(serde::de::Error::missing_field("type")),
+        };
+        let payload = if EventPayload::is_known_tag(&tag) {
+            match deserialize_event_payload_best_effort(&w.payload) {
+                Ok(read) => Open::Known(read.payload),
+                Err(_) => Open::Unknown {
+                    tag,
+                    raw: w.payload,
+                },
+            }
+        } else {
+            Open::Unknown {
+                tag,
+                raw: w.payload,
+            }
+        };
+        Ok(Self {
+            engine_version: w.engine_version,
+            origin: w.origin,
+            session_id: w.session_id,
+            run_id: w.run_id,
+            seq: w.seq,
+            timestamp: w.timestamp,
+            payload,
+        })
+    }
+}
+
+crate::open_enum!(tagged EventSubscriptionMessage, tag = "type");
+crate::open_enum!(tagged ClientSubscriptionMessage, tag = "type");
 
 const MAX_DEGRADED_FIELDS: usize = 8;
 
@@ -4088,15 +4275,24 @@ fn replace_path_with_null(value: &mut Value, path: &serde_path_to_error::Path) -
     }
 }
 
+/// One `events.subscription` notification. A client reads it open: a
+/// message type it does not know is ignored.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum EventSubscriptionMessage {
+#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(bound(
+    serialize = "P: Serialize + EventPayloadClass",
+    deserialize = "StoredEvent<P>: Deserialize<'de>, TransientEvent<P>: Deserialize<'de>"
+))]
+#[schemars(rename = "EventSubscriptionMessage", extend("x-open" = true))]
+pub enum EventSubscriptionMessage<P = EventPayload> {
     /// A durable event, shared with the log and every other tail.
-    Event { event: std::sync::Arc<StoredEvent> },
+    Event {
+        event: std::sync::Arc<StoredEvent<P>>,
+    },
     /// Live-only stream output. It does not advance the subscription cursor
     /// and is never replayed.
     Transient {
-        event: std::sync::Arc<TransientEvent>,
+        event: std::sync::Arc<TransientEvent<P>>,
     },
     Gap {
         session_id: SessionId,

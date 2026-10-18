@@ -3,12 +3,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::GoalId;
 
+/// A value this build does not know reads as `cancelled`: a cancelled goal,
+/// which allows no lifecycle change.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum GoalStatus {
     Active,
     Paused,
     Completed,
+    #[serde(other)]
     Cancelled,
 }
 
@@ -30,7 +34,6 @@ pub struct GoalItem {
 /// Root-session projection, rebuilt from goal events independently of compaction.
 /// Activation starts with an empty checklist; each subsequent event advances revision.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct GoalState {
     pub goal_id: GoalId,
     pub objective: String,

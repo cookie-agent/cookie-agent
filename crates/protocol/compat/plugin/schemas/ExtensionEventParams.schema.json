@@ -33,13 +33,15 @@
       "type": "object"
     },
     "AgentMode": {
+      "description": "A value this build does not know reads as `internal`: an internal agent,\nwhich is neither runnable as a root nor a delegation target.",
       "enum": [
         "primary",
         "subagent",
         "all",
         "internal"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "AgentSnapshot": {
       "properties": {
@@ -229,6 +231,7 @@
       "type": "object"
     },
     "ApprovalDecisionSource": {
+      "description": "A value this build does not know reads as `system`.",
       "enum": [
         "policy",
         "model",
@@ -239,7 +242,8 @@
         "doom_loop_guard",
         "system"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ApprovalEvaluation": {
       "properties": {
@@ -314,13 +318,15 @@
       "type": "object"
     },
     "ApprovalFinalOutcome": {
+      "description": "A value this build does not know reads as `cancelled`.",
       "enum": [
         "approved",
         "rejected",
-        "cancelled",
-        "expired"
+        "expired",
+        "cancelled"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ApprovalFinalization": {
       "description": "How an approval ended: the `outcome` of\n[`EventPayload::ApprovalFinalized`].\n\nOpen: an outcome this build does not know reads as cancelled, so the\noperation is not approved.",
@@ -391,15 +397,18 @@
       "type": "object"
     },
     "ApprovalInternalDecisionKind": {
+      "description": "A value this build does not know reads as `ask`: asking the user.",
       "enum": [
         "allow",
         "deny",
-        "ask",
-        "escalate"
+        "escalate",
+        "ask"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ApprovalReasonCode": {
+      "description": "A value this build does not know reads as `system_error`.",
       "enum": [
         "policy_allowed",
         "policy_denied",
@@ -426,7 +435,8 @@
         "unattended",
         "system_error"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ApprovalRequest": {
       "properties": {
@@ -489,13 +499,15 @@
       "type": "object"
     },
     "ApprovalResourceSource": {
+      "description": "A value this build does not know reads as `primary_operation`.",
       "enum": [
-        "primary_operation",
         "secondary_operation",
         "model_request",
-        "doom_loop_guard"
+        "doom_loop_guard",
+        "primary_operation"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ApprovalStep": {
       "description": "One step of an approval before its finalization: the `step` of\n[`EventPayload::ApprovalStep`].\n\nOpen: a step this build does not know changes nothing it reads.",
@@ -596,22 +608,26 @@
       "x-open": true
     },
     "ApprovalTrigger": {
+      "description": "A value this build does not know reads as `permission_policy`.",
       "enum": [
-        "permission_policy",
         "model_tool_approval",
         "internal_agent",
-        "doom_loop"
+        "doom_loop",
+        "permission_policy"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ApprovalUserDecision": {
+      "description": "A value this build does not know reads as `cancel`.",
       "enum": [
         "approve_once",
         "approve_tree",
         "reject",
         "cancel"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ArtifactRef": {
       "description": "A content-addressed artifact in a session tree's store: a user upload, a\ntool attachment, or the full content of a truncated display block.",
@@ -701,12 +717,13 @@
       "type": "object"
     },
     "BackgroundActor": {
-      "description": "Who moved a call to the background.",
+      "description": "Who moved a call to the background.\n\nA value this build does not know reads as `model`.",
       "enum": [
-        "model",
-        "user"
+        "user",
+        "model"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ContextCheckpoint": {
       "oneOf": [
@@ -3940,13 +3957,15 @@
       "type": "string"
     },
     "GoalStatus": {
+      "description": "A value this build does not know reads as `cancelled`: a cancelled goal,\nwhich allows no lifecycle change.",
       "enum": [
         "active",
         "paused",
         "completed",
         "cancelled"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "InternalAgentBackend": {
       "oneOf": [
@@ -4446,12 +4465,14 @@
       "type": "object"
     },
     "PermissionEffect": {
+      "description": "A value this build does not know reads as `ask`: asking, the effect that\nnever runs a call unapproved.",
       "enum": [
         "allow",
-        "ask",
-        "deny"
+        "deny",
+        "ask"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "PermissionRule": {
       "properties": {
@@ -5240,11 +5261,13 @@
       "type": "object"
     },
     "PreparedBindingLifetime": {
+      "description": "A value this build does not know reads as `process_local`: a binding that is\nnever restart-stable.",
       "enum": [
-        "process_local",
-        "restart_stable"
+        "restart_stable",
+        "process_local"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "PreparedCapabilityLifetime": {
       "enum": [
@@ -6171,15 +6194,20 @@
       "type": "object"
     },
     "SessionStatus": {
-      "enum": [
-        "idle",
-        "running",
-        "completed",
-        "failed",
-        "cancelled",
-        "interrupted"
+      "oneOf": [
+        {
+          "enum": [
+            "idle",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "type": "string"
+        }
       ],
-      "type": "string"
+      "x-open": true
     },
     "SessionTitleChange": {
       "oneOf": [
