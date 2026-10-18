@@ -4,7 +4,7 @@
 use std::os::unix::fs::PermissionsExt as _;
 
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     fs,
     ops::Deref,
     sync::{

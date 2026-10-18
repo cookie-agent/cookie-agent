@@ -253,8 +253,7 @@ retained_output: None,
         if let Some(mime) = sniff_media_type(path, head, len)? {
             // Gate on the file size before reading the whole file.
             let gate = gate_attachment(
-                context.turn_context.adapter_family,
-                &context.turn_context.capabilities,
+                &context.turn_context.input_media,
                 mime,
                 len,
             );

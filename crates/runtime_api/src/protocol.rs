@@ -81,26 +81,26 @@ impl From<PromptSectionDeclaration> for PromptSection {
     }
 }
 
-impl From<&TurnAgentContext> for WireTurnContext {
+impl From<&TurnAgentContext> for ToolTurn {
     fn from(context: &TurnAgentContext) -> Self {
         Self {
             agent: context.agent.clone(),
-            model: context.model.clone(),
-            adapter: context.adapter.clone(),
-            adapter_family: context.adapter_family,
-            capabilities: context.capabilities.clone(),
+            model: ToolTurnModel {
+                model: context.model.clone(),
+                adapter: context.adapter.clone(),
+                input_media: context.input_media.clone(),
+            },
         }
     }
 }
 
-impl From<WireTurnContext> for TurnAgentContext {
-    fn from(context: WireTurnContext) -> Self {
+impl From<ToolTurn> for TurnAgentContext {
+    fn from(turn: ToolTurn) -> Self {
         Self {
-            agent: context.agent,
-            model: context.model,
-            adapter: context.adapter.clone(),
-            adapter_family: context.adapter_family,
-            capabilities: context.capabilities,
+            agent: turn.agent,
+            model: turn.model.model,
+            adapter: turn.model.adapter,
+            input_media: turn.model.input_media,
         }
     }
 }

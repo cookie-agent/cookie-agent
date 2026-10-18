@@ -46,7 +46,7 @@ fn turn_context(
     media: Option<(MediaKind, Modality, &str, u64)>,
 ) -> Arc<TurnAgentContext> {
     let base = crate::test_turn_context();
-    let mut capabilities = base.capabilities.clone();
+    let mut capabilities = crate::test_capabilities();
     if let Some((kind, modality, mime_type, max_bytes)) = media {
         capabilities.input.insert(modality);
         capabilities.media = BTreeMap::from([(
@@ -61,16 +61,22 @@ fn turn_context(
     Arc::new(TurnAgentContext {
         agent: base.agent.clone(),
         model: base.model.clone(),
-        adapter_family: match adapter.as_str() {
-            "anthropic" => cookie_agent_runtime_api::AdapterFamily::AnthropicCompatible,
-            "openai-compatible" => cookie_agent_runtime_api::AdapterFamily::OpenaiCompatible,
-            "aws-bedrock-converse" => cookie_agent_runtime_api::AdapterFamily::AwsBedrockConverse,
-            "google-gemini" => cookie_agent_runtime_api::AdapterFamily::GoogleGemini,
-            "google-vertex-gemini" => cookie_agent_runtime_api::AdapterFamily::GoogleVertexGemini,
-            _ => cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
-        },
+        input_media: cookie_agent_runtime_api::media::tool_input_media(
+            match adapter.as_str() {
+                "anthropic" => cookie_agent_runtime_api::AdapterFamily::AnthropicCompatible,
+                "openai-compatible" => cookie_agent_runtime_api::AdapterFamily::OpenaiCompatible,
+                "aws-bedrock-converse" => {
+                    cookie_agent_runtime_api::AdapterFamily::AwsBedrockConverse
+                }
+                "google-gemini" => cookie_agent_runtime_api::AdapterFamily::GoogleGemini,
+                "google-vertex-gemini" => {
+                    cookie_agent_runtime_api::AdapterFamily::GoogleVertexGemini
+                }
+                _ => cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
+            },
+            &capabilities,
+        ),
         adapter,
-        capabilities,
     })
 }
 

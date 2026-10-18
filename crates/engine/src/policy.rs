@@ -1061,8 +1061,18 @@ pub(crate) fn wire_adapter(value: &str) -> protocol::AdaptorId {
     }
 }
 
-/// The adapter family tools see for a frozen binding's protocol adapter.
-pub(crate) fn tool_adapter_family(value: &str) -> cookie_agent_runtime_api::AdapterFamily {
+/// The media tools may return to a model of `capabilities` behind a frozen
+/// binding's protocol adapter `adapter`.
+pub(crate) fn tool_input_media(
+    adapter: &str,
+    capabilities: &protocol::ModelCapabilities,
+) -> Vec<protocol::runtime_protocol::ToolInputMedia> {
+    cookie_agent_runtime_api::media::tool_input_media(tool_adapter_family(adapter), capabilities)
+}
+
+/// The adapter family of a frozen binding's protocol adapter, for media
+/// delivery.
+fn tool_adapter_family(value: &str) -> cookie_agent_runtime_api::AdapterFamily {
     use cookie_agent_models::adapters::OvenAdapterFamily as Oven;
     use cookie_agent_runtime_api::AdapterFamily as Tool;
     match adapter_family(value) {

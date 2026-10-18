@@ -41,10 +41,12 @@ fn test_turn_context(policy: &FrozenRunPolicy) -> Arc<TurnAgentContext> {
         agent: policy.agent.agent.clone(),
         model: binding.selection.model.clone(),
         adapter: crate::policy::wire_adapter(binding.descriptor.adapter_id.as_str()),
-        adapter_family: crate::policy::tool_adapter_family(binding.descriptor.adapter_id.as_str()),
-        capabilities: policy
-            .model_capabilities(&binding)
-            .expect("model capabilities"),
+        input_media: crate::policy::tool_input_media(
+            binding.descriptor.adapter_id.as_str(),
+            &policy
+                .model_capabilities(&binding)
+                .expect("model capabilities"),
+        ),
     })
 }
 
@@ -207,10 +209,12 @@ async fn global_fallback_is_published_alone_and_hidden_behind_the_local_tool() {
         agent: policy.agent.agent.clone(),
         model: binding.selection.model.clone(),
         adapter: crate::policy::wire_adapter(binding.descriptor.adapter_id.as_str()),
-        adapter_family: crate::policy::tool_adapter_family(binding.descriptor.adapter_id.as_str()),
-        capabilities: policy
-            .model_capabilities(&binding)
-            .expect("model capabilities"),
+        input_media: crate::policy::tool_input_media(
+            binding.descriptor.adapter_id.as_str(),
+            &policy
+                .model_capabilities(&binding)
+                .expect("model capabilities"),
+        ),
     });
     let prepared = fixture
         .engine

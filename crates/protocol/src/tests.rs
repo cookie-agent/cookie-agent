@@ -2103,21 +2103,6 @@ fn adapter_labels_accept_unknown_adapters_and_reject_malformed_ones() {
             "{malformed:?}"
         );
     }
-
-    use crate::runtime_protocol::AdapterFamily;
-    assert_eq!(
-        serde_json::from_value::<AdapterFamily>(json!("anthropic-compatible")).unwrap(),
-        AdapterFamily::AnthropicCompatible
-    );
-    assert_eq!(
-        serde_json::from_value::<AdapterFamily>(json!("acme-messages-v2")).unwrap(),
-        AdapterFamily::Unknown
-    );
-    assert_eq!(
-        serde_json::to_value(AdapterFamily::GoogleVertexGemini).unwrap(),
-        json!("google-vertex-gemini")
-    );
-    assert!(serde_json::from_value::<AdapterFamily>(json!("Anthropic")).is_err());
 }
 
 #[test]

@@ -207,6 +207,21 @@ fn make_turn_context(
     adapter: cookie_agent_protocol::AdaptorId,
     with_image: bool,
 ) -> TurnAgentContext {
+    let image = with_image.then_some((
+        cookie_agent_protocol::MediaKind::Image,
+        Modality::Image,
+        "image/png",
+        20 * 1024 * 1024,
+    ));
+    make_turn_context_with(adapter, image.into_iter().collect())
+}
+
+/// A turn whose model accepts `media`: each a kind, its modality, one media
+/// type, and its byte limit.
+fn make_turn_context_with(
+    adapter: cookie_agent_protocol::AdaptorId,
+    media: Vec<(cookie_agent_protocol::MediaKind, Modality, &str, u64)>,
+) -> TurnAgentContext {
     let mut capabilities = ModelCapabilities {
         input: [Modality::Text].into_iter().collect(),
         output: [Modality::Text].into_iter().collect(),
@@ -223,30 +238,32 @@ fn make_turn_context(
         cancellation: CancellationCapability::LocalOnly,
         media: BTreeMap::new(),
     };
-    if with_image {
-        capabilities.input.insert(Modality::Image);
-        capabilities.media = BTreeMap::from([(
-            cookie_agent_protocol::MediaKind::Image,
+    for (kind, modality, mime_type, max_bytes) in media {
+        capabilities.input.insert(modality);
+        capabilities.media.insert(
+            kind,
             cookie_agent_protocol::MediaCapability {
-                mime_types: [cookie_agent_protocol::MimeType::new("image/png").expect("mime")]
+                mime_types: [cookie_agent_protocol::MimeType::new(mime_type).expect("mime")]
                     .into_iter()
                     .collect(),
-                max_bytes: 20 * 1024 * 1024,
+                max_bytes,
                 max_count: 1,
             },
-        )]);
+        );
     }
     TurnAgentContext {
         agent: AgentId::new("test").expect("agent"),
         model: "test/model".parse().expect("model key"),
-        adapter_family: match adapter.as_str() {
-            "anthropic" => cookie_agent_runtime_api::AdapterFamily::AnthropicCompatible,
-            "openai-compatible" => cookie_agent_runtime_api::AdapterFamily::OpenaiCompatible,
-            "google-gemini" => cookie_agent_runtime_api::AdapterFamily::GoogleGemini,
-            _ => cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
-        },
+        input_media: cookie_agent_runtime_api::media::tool_input_media(
+            match adapter.as_str() {
+                "anthropic" => cookie_agent_runtime_api::AdapterFamily::AnthropicCompatible,
+                "openai-compatible" => cookie_agent_runtime_api::AdapterFamily::OpenaiCompatible,
+                "google-gemini" => cookie_agent_runtime_api::AdapterFamily::GoogleGemini,
+                _ => cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
+            },
+            &capabilities,
+        ),
         adapter,
-        capabilities,
     }
 }
 
@@ -433,19 +450,15 @@ fn base64_attachments_follow_the_media_gate() {
     );
 
     let video_turn = |adapter| {
-        let mut turn = make_turn_context(adapter, false);
-        turn.capabilities.input.insert(Modality::Video);
-        turn.capabilities.media.insert(
-            cookie_agent_protocol::MediaKind::Video,
-            cookie_agent_protocol::MediaCapability {
-                mime_types: [cookie_agent_protocol::MimeType::new("video/mp4").unwrap()]
-                    .into_iter()
-                    .collect(),
-                max_bytes: 1024,
-                max_count: 1,
-            },
-        );
-        turn
+        make_turn_context_with(
+            adapter,
+            vec![(
+                cookie_agent_protocol::MediaKind::Video,
+                Modality::Video,
+                "video/mp4",
+                1024,
+            )],
+        )
     };
     let mut video = 16_u32.to_be_bytes().to_vec();
     video.extend_from_slice(b"ftypisom");
@@ -459,7 +472,7 @@ fn base64_attachments_follow_the_media_gate() {
     )
     .expect_err("undeliverable family must reject");
     assert!(
-        matches!(&rejected, super::McpAttachmentError::Gated(message) if message.contains("not deliverable in tool results or user messages")),
+        matches!(&rejected, super::McpAttachmentError::Gated(message) if message.contains("does not accept video inputs")),
         "unexpected error: {rejected:?}"
     );
 
@@ -501,17 +514,14 @@ fn base64_attachments_follow_the_media_gate() {
     .expect("map ordinary MCP result");
     assert!(ordinary.additional_messages.is_empty());
 
-    let mut audio_turn = make_turn_context(AdaptorId::GOOGLE_GEMINI, false);
-    audio_turn.capabilities.input.insert(Modality::Audio);
-    audio_turn.capabilities.media.insert(
-        cookie_agent_protocol::MediaKind::Audio,
-        cookie_agent_protocol::MediaCapability {
-            mime_types: [cookie_agent_protocol::MimeType::new("audio/mpeg").unwrap()]
-                .into_iter()
-                .collect(),
-            max_bytes: 1024,
-            max_count: 1,
-        },
+    let audio_turn = make_turn_context_with(
+        AdaptorId::GOOGLE_GEMINI,
+        vec![(
+            cookie_agent_protocol::MediaKind::Audio,
+            Modality::Audio,
+            "audio/mpeg",
+            1024,
+        )],
     );
     let audio_context = context(audio_turn);
     let encoded_audio = base64::engine::general_purpose::STANDARD.encode(b"ID3payload");

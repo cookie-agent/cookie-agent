@@ -32,10 +32,10 @@ mod runtime;
 
 pub use error::ToolError;
 pub use execution::{
-    AdapterFamily, ArtifactReadPage, DetachPoint, DetachWatch, Detachable, ProgressCapture,
-    ProgressSink, ToolArtifacts, ToolExecutionContext, ToolPreparationContext, ToolProgress,
-    TurnAgentContext,
+    ArtifactReadPage, DetachPoint, DetachWatch, Detachable, ProgressCapture, ProgressSink,
+    ToolArtifacts, ToolExecutionContext, ToolPreparationContext, ToolProgress, TurnAgentContext,
 };
+pub use media::AdapterFamily;
 pub use prepared::{
     PreparedDeclaration, PreparedExecutor, PreparedExecutorCell, PreparedSerializationKey,
     PreparedTool, ToolCompletion, bounded_tool_display, sanitize_tool_display,

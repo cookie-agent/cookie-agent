@@ -1752,22 +1752,23 @@ impl Engine {
                     composed_prompt,
                 )?;
                 let replay_preflight = context.replay_decisions;
+                let capabilities = policy
+                    .model_capabilities(binding)
+                    .ok_or(EngineError::NoRunnableModel)?;
                 let turn_context = Arc::new(TurnAgentContext {
                     agent: policy.agent.agent.clone(),
                     model: binding.selection.model.clone(),
                     adapter: policy::wire_adapter(binding.descriptor.adapter_id.as_str()),
-                    adapter_family: policy::tool_adapter_family(
+                    input_media: policy::tool_input_media(
                         binding.descriptor.adapter_id.as_str(),
+                        &capabilities,
                     ),
-                    capabilities: policy
-                        .model_capabilities(binding)
-                        .ok_or(EngineError::NoRunnableModel)?,
                 });
                 let mut request = ModelRequest::new(context.history)
                     .with_tools(tools.clone())
                     .with_header_context(self.model_header_context(session)?);
                 // Elide before plugins and prompt-cache placement see the request.
-                crate::media::elide_excess_media(&mut request.history, &turn_context.capabilities)
+                crate::media::elide_excess_media(&mut request.history, &capabilities)
                     .map_err(ModelError::invalid_request)?;
                 request.inference.max_output_tokens =
                     policy::effective_max_output_tokens(binding, policy.agent.max_output_tokens);
@@ -1881,7 +1882,7 @@ impl Engine {
                 request = model.apply_prompt_cache_strategy(request, cache_strategy.as_ref());
                 request.header_context = self.model_header_context(session)?;
                 // Re-applied after interception in case a plugin added media; a no-op otherwise.
-                crate::media::elide_excess_media(&mut request.history, &turn_context.capabilities)
+                crate::media::elide_excess_media(&mut request.history, &capabilities)
                     .map_err(ModelError::invalid_request)?;
                 let prompt_fingerprint = request_fingerprint(&request)?;
                 self.record_model_tools(session, run, attempt_id, &request.tools)

@@ -31,23 +31,7 @@ fn turn_context() -> Arc<TurnAgentContext> {
         agent: cookie_agent_protocol::AgentId::new("test").expect("agent ID"),
         model: "test/model".parse().expect("model key"),
         adapter: cookie_agent_protocol::AdaptorId::OPENAI_CHAT,
-        adapter_family: cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
-        capabilities: cookie_agent_protocol::ModelCapabilities {
-            input: std::collections::BTreeSet::from([cookie_agent_protocol::Modality::Text]),
-            output: std::collections::BTreeSet::from([cookie_agent_protocol::Modality::Text]),
-            context_tokens: 8_192,
-            output_tokens: 2_048,
-            tool_calling: true,
-            parallel_tool_calls: true,
-            structured_output: false,
-            reasoning: false,
-            temperature: true,
-            top_p: true,
-            seed: false,
-            native_replay: cookie_agent_protocol::ReplayCapability::Optional,
-            cancellation: cookie_agent_protocol::CancellationCapability::LocalOnly,
-            media: std::collections::BTreeMap::new(),
-        },
+        input_media: Vec::new(),
     })
 }
 

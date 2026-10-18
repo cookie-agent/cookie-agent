@@ -3,9 +3,10 @@
 
 use std::path::Path;
 
-use crate::{AdapterFamily, ToolError};
+use crate::ToolError;
 use cookie_agent_protocol::{
-    AdaptorId, MediaKind as CapabilityMediaKind, ModelCapabilities, ModelKey,
+    AdaptorId, MediaKind as CapabilityMediaKind, MediaKindLabel, ModelCapabilities, ModelKey,
+    runtime_protocol::{MediaDelivery, ToolInputMedia},
 };
 
 const MAX_ENCODED_BYTES: usize = 20 * 1024 * 1024;
@@ -87,72 +88,93 @@ fn format_mib(bytes: u64) -> String {
     value
 }
 
+/// Exact model adapter family of a turn. Unlike [`AdaptorId`] it keeps
+/// compatible families apart, because their media delivery differs. It never
+/// leaves the daemon: tools see what it implies as [`ToolInputMedia`].
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum AdapterFamily {
+    Anthropic,
+    AnthropicCompatible,
+    OpenaiChat,
+    OpenaiResponses,
+    OpenaiCompatible,
+    GoogleGemini,
+    GoogleVertexGemini,
+    AwsBedrockConverse,
+    AzureOpenaiChat,
+    AzureOpenaiResponses,
+    CohereV2Chat,
+}
+
+/// The media a model accepts from a tool: every kind of `capabilities` that
+/// `family` can deliver, with the lower of the model's and the family's byte
+/// limit, and how it is delivered.
 #[must_use]
-pub fn gate_attachment(
+pub fn tool_input_media(
     family: AdapterFamily,
     capabilities: &ModelCapabilities,
-    mime_type: &str,
-    size: u64,
-) -> AttachmentGate {
-    let kind = if mime_type.starts_with("image/") {
-        CapabilityMediaKind::Image
-    } else if mime_type == "application/pdf" {
-        CapabilityMediaKind::Pdf
-    } else if mime_type.starts_with("audio/") {
-        CapabilityMediaKind::Audio
-    } else if mime_type.starts_with("video/") {
-        CapabilityMediaKind::Video
-    } else {
-        return AttachmentGate::RejectUnsupportedModel;
-    };
-    let Some(capability) = capabilities.media.get(&kind) else {
-        return AttachmentGate::RejectUnsupportedModel;
-    };
-    let accepted = capability.mime_types.iter().any(|accepted| {
-        if kind == CapabilityMediaKind::Video {
-            canonical_video_mime_type(accepted.as_str()) == canonical_video_mime_type(mime_type)
-        } else {
-            accepted.as_str() == mime_type
-        }
-    });
-    if !accepted {
-        return AttachmentGate::RejectUnsupportedModel;
-    }
-    if size > capability.max_bytes {
-        return AttachmentGate::RejectTooLarge {
-            max_bytes: capability.max_bytes,
-        };
-    }
+) -> Vec<ToolInputMedia> {
+    capabilities
+        .media
+        .iter()
+        .filter_map(|(kind, capability)| {
+            let (delivery, family_limit) = family_delivery(family, *kind)?;
+            Some(ToolInputMedia {
+                kind: MediaKindLabel::new(media_kind_label(*kind)).expect("static media kind"),
+                mime_types: capability
+                    .mime_types
+                    .iter()
+                    .map(|mime_type| mime_type.as_str().to_owned())
+                    .collect(),
+                max_bytes: capability.max_bytes.min(family_limit),
+                delivery,
+            })
+        })
+        .collect()
+}
 
-    let (delivery, family_limit) = match (family, kind) {
+const fn media_kind_label(kind: CapabilityMediaKind) -> &'static str {
+    match kind {
+        CapabilityMediaKind::Image => MediaKindLabel::IMAGE,
+        CapabilityMediaKind::Pdf => MediaKindLabel::PDF,
+        CapabilityMediaKind::Audio => MediaKindLabel::AUDIO,
+        CapabilityMediaKind::Video => MediaKindLabel::VIDEO,
+    }
+}
+
+/// How `family` delivers a tool's attachment of `kind`, and its byte limit;
+/// `None` when it cannot.
+fn family_delivery(
+    family: AdapterFamily,
+    kind: CapabilityMediaKind,
+) -> Option<(MediaDelivery, u64)> {
+    Some(match (family, kind) {
         (
             AdapterFamily::Anthropic | AdapterFamily::AnthropicCompatible,
             CapabilityMediaKind::Image,
-        ) => (AttachmentGate::AttachToolResult, ANTHROPIC_IMAGE_BYTES),
+        ) => (MediaDelivery::ToolResult, ANTHROPIC_IMAGE_BYTES),
         (
             AdapterFamily::Anthropic | AdapterFamily::AnthropicCompatible,
             CapabilityMediaKind::Pdf,
-        ) => (AttachmentGate::AttachToolResult, MAX_ENCODED_BYTES as u64),
+        ) => (MediaDelivery::ToolResult, MAX_ENCODED_BYTES as u64),
         (AdapterFamily::AwsBedrockConverse, CapabilityMediaKind::Image) => {
-            (AttachmentGate::AttachToolResult, BEDROCK_IMAGE_BYTES)
+            (MediaDelivery::ToolResult, BEDROCK_IMAGE_BYTES)
         }
         (AdapterFamily::AwsBedrockConverse, CapabilityMediaKind::Pdf) => {
-            (AttachmentGate::AttachToolResult, BEDROCK_PDF_BYTES)
+            (MediaDelivery::ToolResult, BEDROCK_PDF_BYTES)
         }
         (AdapterFamily::AwsBedrockConverse, CapabilityMediaKind::Video) => {
-            (AttachmentGate::AttachToolResult, BEDROCK_VIDEO_BYTES)
+            (MediaDelivery::ToolResult, BEDROCK_VIDEO_BYTES)
         }
         (
             AdapterFamily::OpenaiResponses | AdapterFamily::AzureOpenaiResponses,
             CapabilityMediaKind::Image | CapabilityMediaKind::Pdf,
-        ) => (AttachmentGate::AttachToolResult, MAX_ENCODED_BYTES as u64),
+        ) => (MediaDelivery::ToolResult, MAX_ENCODED_BYTES as u64),
         // Families that cannot carry the kind in tool results fall back to a follow-up
         // user message whenever their adapter accepts that kind in user turns.
-        (AdapterFamily::GoogleGemini, _) => {
-            (AttachmentGate::DeliverViaUserTurn, GEMINI_INLINE_BYTES)
-        }
+        (AdapterFamily::GoogleGemini, _) => (MediaDelivery::UserMessage, GEMINI_INLINE_BYTES),
         (AdapterFamily::GoogleVertexGemini, CapabilityMediaKind::Image) => {
-            (AttachmentGate::DeliverViaUserTurn, VERTEX_IMAGE_BYTES)
+            (MediaDelivery::UserMessage, VERTEX_IMAGE_BYTES)
         }
         (
             AdapterFamily::OpenaiChat
@@ -168,24 +190,59 @@ pub fn gate_attachment(
             CapabilityMediaKind::Pdf,
         )
         | (AdapterFamily::GoogleVertexGemini, CapabilityMediaKind::Audio) => {
-            (AttachmentGate::DeliverViaUserTurn, MAX_ENCODED_BYTES as u64)
+            (MediaDelivery::UserMessage, MAX_ENCODED_BYTES as u64)
         }
         (
             AdapterFamily::OpenaiCompatible
             | AdapterFamily::AnthropicCompatible
             | AdapterFamily::GoogleVertexGemini,
             CapabilityMediaKind::Video,
-        ) => (
-            AttachmentGate::DeliverViaUserTurn,
-            MAX_VIDEO_ENCODED_BYTES as u64,
-        ),
-        _ => return AttachmentGate::RejectUnsupportedFamily,
-    };
-    let max_bytes = capability.max_bytes.min(family_limit);
-    if size > max_bytes {
-        AttachmentGate::RejectTooLarge { max_bytes }
+        ) => (MediaDelivery::UserMessage, MAX_VIDEO_ENCODED_BYTES as u64),
+        _ => return None,
+    })
+}
+
+/// How a tool's attachment of `mime_type` and `size` bytes reaches the
+/// turn's model, whose accepted media are `input_media`.
+#[must_use]
+pub fn gate_attachment(
+    input_media: &[ToolInputMedia],
+    mime_type: &str,
+    size: u64,
+) -> AttachmentGate {
+    let kind = if mime_type.starts_with("image/") {
+        MediaKindLabel::IMAGE
+    } else if mime_type == "application/pdf" {
+        MediaKindLabel::PDF
+    } else if mime_type.starts_with("audio/") {
+        MediaKindLabel::AUDIO
+    } else if mime_type.starts_with("video/") {
+        MediaKindLabel::VIDEO
     } else {
-        delivery
+        return AttachmentGate::RejectUnsupportedModel;
+    };
+    let Some(accepted) = input_media.iter().find(|media| media.kind.as_str() == kind) else {
+        return AttachmentGate::RejectUnsupportedModel;
+    };
+    let listed = accepted.mime_types.iter().any(|accepted| {
+        if kind == MediaKindLabel::VIDEO {
+            canonical_video_mime_type(accepted) == canonical_video_mime_type(mime_type)
+        } else {
+            accepted == mime_type
+        }
+    });
+    if !listed {
+        return AttachmentGate::RejectUnsupportedModel;
+    }
+    if size > accepted.max_bytes {
+        return AttachmentGate::RejectTooLarge {
+            max_bytes: accepted.max_bytes,
+        };
+    }
+    match accepted.delivery {
+        MediaDelivery::ToolResult => AttachmentGate::AttachToolResult,
+        MediaDelivery::UserMessage => AttachmentGate::DeliverViaUserTurn,
+        MediaDelivery::Unknown => AttachmentGate::RejectUnsupportedFamily,
     }
 }
 
@@ -848,14 +905,24 @@ mod tests {
 
     use cookie_agent_protocol::{
         AdaptorId, CancellationCapability, MediaCapability, MediaKind, MimeType, Modality,
-        ModelCapabilities, ReplayCapability,
+        ModelCapabilities, ReplayCapability, runtime_protocol::MediaDelivery,
     };
 
     use super::{
         AttachmentGate, BEDROCK_IMAGE_BYTES, BEDROCK_PDF_BYTES, MAX_VIDEO_ATTACHMENT_BYTES,
-        approved_media_type, attachment_gate_error, gate_attachment, validate_attachment,
+        approved_media_type, attachment_gate_error, tool_input_media, validate_attachment,
     };
     use crate::AdapterFamily;
+
+    /// The gate of an attachment for a model of `family` with `capabilities`.
+    fn gate_attachment(
+        family: AdapterFamily,
+        capabilities: &ModelCapabilities,
+        mime_type: &str,
+        size: u64,
+    ) -> AttachmentGate {
+        super::gate_attachment(&tool_input_media(family, capabilities), mime_type, size)
+    }
 
     fn capabilities(kind: Option<(MediaKind, &str, u64)>) -> ModelCapabilities {
         let mut media = BTreeMap::new();
@@ -1180,7 +1247,9 @@ mod tests {
     #[test]
     fn attachment_gate_is_exhaustive_across_adapters_media_and_capability() {
         use AttachmentGate::{AttachToolResult as Tool, DeliverViaUserTurn as User};
-        let reject = AttachmentGate::RejectUnsupportedFamily;
+        // A kind the family cannot deliver is not among the model's input
+        // media at all.
+        let reject = AttachmentGate::RejectUnsupportedModel;
         let families = [
             (AdapterFamily::Anthropic, Tool, Tool),
             (AdapterFamily::AnthropicCompatible, Tool, Tool),
@@ -1227,12 +1296,12 @@ mod tests {
         ] {
             assert_eq!(
                 gate_attachment(
-                    AdapterFamily::OpenaiChat,
+                    AdapterFamily::OpenaiCompatible,
                     &capabilities(Some((MediaKind::Video, advertised, 1024))),
                     observed,
                     5,
                 ),
-                AttachmentGate::RejectUnsupportedFamily
+                AttachmentGate::DeliverViaUserTurn
             );
         }
         let image = capabilities(Some((MediaKind::Image, "image/png", u64::MAX)));
@@ -1271,6 +1340,33 @@ mod tests {
             .unwrap(),
             "Cannot attach image/png: exceeds the 3.75 MiB inline limit for this provider"
         );
+    }
+
+    #[test]
+    fn tool_input_media_lists_what_the_family_delivers_with_effective_limits() {
+        let mut model = capabilities(Some((MediaKind::Image, "image/png", u64::MAX)));
+        model.media.insert(
+            MediaKind::Video,
+            MediaCapability {
+                mime_types: [MimeType::new("video/mp4").unwrap()].into_iter().collect(),
+                max_bytes: 1024,
+                max_count: 1,
+            },
+        );
+        let media = tool_input_media(AdapterFamily::Anthropic, &model);
+        // Anthropic carries images in tool results and no video at all.
+        assert_eq!(media.len(), 1);
+        assert_eq!(media[0].kind.as_str(), "image");
+        assert_eq!(media[0].mime_types, ["image/png"]);
+        assert_eq!(media[0].max_bytes, super::ANTHROPIC_IMAGE_BYTES);
+        assert_eq!(media[0].delivery, MediaDelivery::ToolResult);
+
+        let media = tool_input_media(AdapterFamily::AnthropicCompatible, &model);
+        assert_eq!(media.len(), 2);
+        assert_eq!(media[1].kind.as_str(), "video");
+        assert_eq!(media[1].max_bytes, 1024, "the model's lower limit wins");
+        assert_eq!(media[1].delivery, MediaDelivery::UserMessage);
+        assert!(tool_input_media(AdapterFamily::Anthropic, &capabilities(None)).is_empty());
     }
 
     #[test]
@@ -1399,10 +1495,13 @@ mod tests {
         );
         assert_eq!(
             gate_attachment(AdapterFamily::Anthropic, &video, "video/mp4", 5),
-            AttachmentGate::RejectUnsupportedFamily
+            AttachmentGate::RejectUnsupportedModel
         );
+        // A delivery this build does not know is one a tool cannot use.
+        let mut unknown = tool_input_media(AdapterFamily::OpenaiCompatible, &video);
+        unknown[0].delivery = MediaDelivery::Unknown;
         assert_eq!(
-            gate_attachment(AdapterFamily::Unknown, &video, "video/mp4", 5),
+            super::gate_attachment(&unknown, "video/mp4", 5),
             AttachmentGate::RejectUnsupportedFamily
         );
     }

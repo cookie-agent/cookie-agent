@@ -1520,12 +1520,12 @@ mod tests {
             agent: policy.agent.agent.clone(),
             model: binding.selection.model.clone(),
             adapter: crate::policy::wire_adapter(binding.descriptor.adapter_id.as_str()),
-            adapter_family: crate::policy::tool_adapter_family(
+            input_media: crate::policy::tool_input_media(
                 binding.descriptor.adapter_id.as_str(),
+                &policy
+                    .model_capabilities(&binding)
+                    .expect("model capabilities"),
             ),
-            capabilities: policy
-                .model_capabilities(&binding)
-                .expect("model capabilities"),
         });
         let prepared = fixture
             .engine

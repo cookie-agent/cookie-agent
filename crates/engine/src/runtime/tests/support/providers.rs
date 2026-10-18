@@ -7,23 +7,7 @@ pub(crate) fn test_turn_context() -> Arc<TurnAgentContext> {
         agent: AgentId::new("test").expect("test agent ID"),
         model: "test/model".parse().expect("test model key"),
         adapter: cookie_agent_protocol::AdaptorId::OPENAI_CHAT,
-        adapter_family: cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
-        capabilities: cookie_agent_protocol::ModelCapabilities {
-            input: BTreeSet::from([cookie_agent_protocol::Modality::Text]),
-            output: BTreeSet::from([cookie_agent_protocol::Modality::Text]),
-            context_tokens: 8_192,
-            output_tokens: 2_048,
-            tool_calling: true,
-            parallel_tool_calls: true,
-            structured_output: false,
-            reasoning: false,
-            temperature: true,
-            top_p: true,
-            seed: false,
-            native_replay: cookie_agent_protocol::ReplayCapability::Optional,
-            cancellation: cookie_agent_protocol::CancellationCapability::LocalOnly,
-            media: BTreeMap::new(),
-        },
+        input_media: Vec::new(),
     })
 }
 
@@ -1225,8 +1209,7 @@ impl PreparedExecutor for TestMediaReadExecutor {
             let mime = cookie_agent_runtime_api::media::approved_media_type(&self.path, &bytes)?
                 .ok_or_else(|| ToolError::execution("test read expected media"))?;
             let gate = cookie_agent_runtime_api::media::gate_attachment(
-                context.turn_context.adapter_family,
-                &context.turn_context.capabilities,
+                &context.turn_context.input_media,
                 mime,
                 bytes.len() as u64,
             );

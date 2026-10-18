@@ -23,9 +23,9 @@ use serde_json::Value;
 /// The client protocol version this build speaks.
 pub const CLIENT_PROTOCOL_VERSION: SemVer = SemVer::new(0, 50, 0);
 /// The plugin protocol version this build speaks.
-pub const PLUGIN_PROTOCOL_VERSION: SemVer = SemVer::new(0, 4, 0);
+pub const PLUGIN_PROTOCOL_VERSION: SemVer = SemVer::new(0, 5, 0);
 /// The runtime protocol version this build speaks.
-pub const RUNTIME_PROTOCOL_VERSION: SemVer = SemVer::new(0, 7, 0);
+pub const RUNTIME_PROTOCOL_VERSION: SemVer = SemVer::new(0, 8, 0);
 
 /// The handshake member that carries a peer's version.
 pub const PROTOCOL_VERSION_MEMBER: &str = "protocol_version";

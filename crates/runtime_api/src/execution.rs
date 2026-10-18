@@ -6,8 +6,8 @@ use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    AdaptorId, AgentId, ArtifactReadTarget, ArtifactReference, ModelCapabilities, ModelKey, RunId,
-    SessionId, Sha256Digest, ToolAttachment, ToolCallId,
+    AdaptorId, AgentId, ArtifactReadTarget, ArtifactReference, ModelKey, RunId, SessionId,
+    Sha256Digest, ToolAttachment, ToolCallId, runtime_protocol::ToolInputMedia,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -15,9 +15,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{ToolError, ToolOrigin, WorkspaceContext, media::validate_attachment};
 
-pub use cookie_agent_protocol::runtime_protocol::AdapterFamily;
-
-/// Immutable harness context captured for one tool preparation/execution batch.
+/// Immutable harness context captured for one tool preparation/execution batch:
+/// what a tool knows about the turn, the same on either side of the runtime
+/// protocol (its `turn`).
 ///
 /// This is tool-facing but harness-private metadata. Tool providers must not forward it to
 /// external systems, including MCP wrappers. Compaction rehydration uses the context of the owner
@@ -30,10 +30,9 @@ pub struct TurnAgentContext {
     pub model: ModelKey,
     /// Frozen wire adapter family used to deliver tool results.
     pub adapter: AdaptorId,
-    /// Exact adapter family, preserving compatible-family distinctions.
-    pub adapter_family: AdapterFamily,
-    /// Public capabilities of the exact model binding that produced the tool call.
-    pub capabilities: ModelCapabilities,
+    /// The media the model accepts from a tool, with effective limits and
+    /// delivery; see [`crate::media::tool_input_media`].
+    pub input_media: Vec<ToolInputMedia>,
 }
 
 #[derive(Clone, Debug)]

@@ -18,10 +18,9 @@
 //! themselves.
 
 use crate::{
-    AdaptorId, AgentId, AgentMdEntry, AgentMdSkipped, ModelCapabilities, ModelKey,
-    PermissionAction, PersistedToolResult, PreparedOperationIdentity, RunId, RuntimeKind,
-    SessionId, SkillSource, ToolCallId, ToolCallPresentation, ToolCompletionOutput,
-    ToolOutputChunk, ToolOutputDeclaration,
+    AdaptorId, AgentId, AgentMdEntry, AgentMdSkipped, MediaKindLabel, ModelKey, PermissionAction,
+    PersistedToolResult, PreparedOperationIdentity, RunId, RuntimeKind, SessionId, SkillSource,
+    ToolCallId, ToolCallPresentation, ToolCompletionOutput, ToolOutputChunk, ToolOutputDeclaration,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -384,14 +383,56 @@ pub struct ContextResult {
 
 // --- tool/prepare -------------------------------------------------------------
 
-/// The agent and model context of one tool batch.
+/// The agent and model of one tool batch, as a runtime or plugin sees them.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
-pub struct WireTurnContext {
+pub struct ToolTurn {
     pub agent: AgentId,
+    pub model: ToolTurnModel,
+}
+
+/// The model of a tool batch: what a tool needs to word its results and to
+/// decide which media it may return. Nothing about the model's provider
+/// beyond its adapter label.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct ToolTurnModel {
     pub model: ModelKey,
+    /// The adapter label, such as `openai-responses`.
     pub adapter: AdaptorId,
-    pub adapter_family: AdapterFamily,
-    pub capabilities: ModelCapabilities,
+    /// The media kinds the model accepts from a tool, with their effective
+    /// limits and how each reaches the model; a kind not listed is not
+    /// accepted. Empty for a model that takes text only.
+    #[serde(default)]
+    pub input_media: Vec<ToolInputMedia>,
+}
+
+/// One media kind a tool may return to the turn's model. The limits are
+/// effective: the lowest of the model's capability, its adapter family's
+/// delivery limit, and the attachment caps.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct ToolInputMedia {
+    pub kind: MediaKindLabel,
+    /// The media types accepted, such as `image/png`.
+    pub mime_types: Vec<String>,
+    /// The largest accepted file.
+    pub max_bytes: u64,
+    pub delivery: MediaDelivery,
+}
+
+/// How an attachment of a kind reaches the model.
+///
+/// Open: a delivery this build does not know reads as `unknown`, which a
+/// tool cannot use: it does not attach the kind.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum MediaDelivery {
+    /// As an attachment of the tool result.
+    ToolResult,
+    /// As a user message after the tool result, for an adapter whose tool
+    /// results cannot carry the kind.
+    UserMessage,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
@@ -412,7 +453,7 @@ pub struct PrepareParams {
     pub instance: Option<String>,
     pub session: SessionId,
     pub run: RunId,
-    pub turn: WireTurnContext,
+    pub turn: ToolTurn,
     pub calls: Vec<WireToolCall>,
 }
 
@@ -475,7 +516,7 @@ pub struct ExecuteParams {
     pub prepared_id: u64,
     pub session: SessionId,
     pub run: RunId,
-    pub turn: WireTurnContext,
+    pub turn: ToolTurn,
     /// The model asked to run the call in the background.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub background: bool,
@@ -674,109 +715,4 @@ pub enum ToolResultTruncationPolicy {
     #[default]
     #[serde(other)]
     Bounded,
-}
-
-/// Exact model adapter family of a turn. Unlike [`AdaptorId`] it keeps
-/// compatible families apart, because their media delivery differs.
-///
-/// On the wire it is a label (`[a-z][a-z0-9-]{0,31}`); a family this build
-/// does not know reads as [`Self::Unknown`], which delivers no media.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum AdapterFamily {
-    Anthropic,
-    AnthropicCompatible,
-    OpenaiChat,
-    OpenaiResponses,
-    OpenaiCompatible,
-    GoogleGemini,
-    GoogleVertexGemini,
-    AwsBedrockConverse,
-    AzureOpenaiChat,
-    AzureOpenaiResponses,
-    CohereV2Chat,
-    /// A family newer than this build.
-    Unknown,
-}
-
-impl AdapterFamily {
-    const KNOWN: [Self; 11] = [
-        Self::Anthropic,
-        Self::AnthropicCompatible,
-        Self::OpenaiChat,
-        Self::OpenaiResponses,
-        Self::OpenaiCompatible,
-        Self::GoogleGemini,
-        Self::GoogleVertexGemini,
-        Self::AwsBedrockConverse,
-        Self::AzureOpenaiChat,
-        Self::AzureOpenaiResponses,
-        Self::CohereV2Chat,
-    ];
-
-    /// The family's label; `unknown` for [`Self::Unknown`].
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Anthropic => "anthropic",
-            Self::AnthropicCompatible => "anthropic-compatible",
-            Self::OpenaiChat => "openai-chat",
-            Self::OpenaiResponses => "openai-responses",
-            Self::OpenaiCompatible => "openai-compatible",
-            Self::GoogleGemini => "google-gemini",
-            Self::GoogleVertexGemini => "google-vertex-gemini",
-            Self::AwsBedrockConverse => "aws-bedrock-converse",
-            Self::AzureOpenaiChat => "azure-openai-chat",
-            Self::AzureOpenaiResponses => "azure-openai-responses",
-            Self::CohereV2Chat => "cohere-v2-chat",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    /// The family a label names, [`Self::Unknown`] for one this build does
-    /// not know.
-    #[must_use]
-    pub fn from_label(label: &str) -> Self {
-        Self::KNOWN
-            .into_iter()
-            .find(|family| family.as_str() == label)
-            .unwrap_or(Self::Unknown)
-    }
-}
-
-impl Serialize for AdapterFamily {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for AdapterFamily {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let label = String::deserialize(deserializer)?;
-        if !crate::model::adapter_label_valid(&label) {
-            return Err(serde::de::Error::custom("invalid adapter family label"));
-        }
-        Ok(Self::from_label(&label))
-    }
-}
-
-impl schemars::JsonSchema for AdapterFamily {
-    fn inline_schema() -> bool {
-        true
-    }
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed("AdapterFamily")
-    }
-    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({
-            "type": "string",
-            "pattern": "^[a-z][a-z0-9-]{0,31}$",
-            "description": "Exact adapter family of the turn's model, such as `anthropic-compatible` or `openai-responses`."
-        })
-    }
 }

@@ -8,7 +8,7 @@ use cookie_agent_runtime_api::{
         AgentMdLimits, CapabilityOpenParams, CapabilityOpenResult, ContextParams, ContextResult,
         Empty, ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams, InitializeResult,
         Outcome, PrepareOutcome, PrepareParams, PrepareResult, PreparedRef, RuntimeSettings,
-        ToolOutputLimits, ToolProgressParams, WireToolCall, WireTurnContext, method,
+        ToolOutputLimits, ToolProgressParams, ToolTurn, WireToolCall, method,
     },
     rpc::{Incoming, Peer, RpcError},
 };
@@ -114,8 +114,8 @@ fn remote_code(error: RpcError) -> (String, String) {
     }
 }
 
-fn turn() -> WireTurnContext {
-    WireTurnContext::from(crate::test_turn_context().as_ref())
+fn turn() -> ToolTurn {
+    ToolTurn::from(crate::test_turn_context().as_ref())
 }
 
 #[tokio::test]

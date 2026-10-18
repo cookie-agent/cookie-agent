@@ -1785,7 +1785,7 @@ impl ToolProvider for RemoteToolProvider {
     ) -> Vec<Result<PreparedTool, ToolError>> {
         let client = &self.client.inner;
         let mut prepared = Vec::with_capacity(calls.len());
-        let turn: protocol::WireTurnContext = ctx.turn_context.as_ref().into();
+        let turn: protocol::ToolTurn = ctx.turn_context.as_ref().into();
         for batch in calls.chunks(protocol::MAX_PREPARE_BATCH) {
             let reply: Result<PrepareResult, RpcError> = client
                 .peer

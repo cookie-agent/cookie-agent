@@ -2114,8 +2114,7 @@ fn retain_base64_attachment(
             )));
         }
         let gate = cookie_agent_runtime_api::media::gate_attachment(
-            context.turn_context.adapter_family,
-            &context.turn_context.capabilities,
+            &context.turn_context.input_media,
             mime,
             bytes.len() as u64,
         );

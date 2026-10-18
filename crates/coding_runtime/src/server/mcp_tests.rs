@@ -13,7 +13,7 @@ use cookie_agent_runtime_api::{
         ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams, InitializeResult,
         McpChangedParams, McpReconnectParams, McpServerSettings, McpServerState, Outcome,
         PrepareOutcome, PrepareParams, PrepareResult, RuntimeSettings, RuntimeTools,
-        ToolOutputLimits, WireToolCall, WireTurnContext, method,
+        ToolOutputLimits, ToolTurn, WireToolCall, method,
     },
     reconnect::ReconnectPolicy,
     rpc::{Incoming, Peer},
@@ -148,13 +148,14 @@ fn tool_names(tools: &RuntimeTools) -> Vec<&str> {
     tools.tools.iter().map(|tool| tool.name.as_str()).collect()
 }
 
-fn turn(with_image: bool) -> WireTurnContext {
-    let mut turn = WireTurnContext::from(crate::test_turn_context().as_ref());
+fn turn(with_image: bool) -> ToolTurn {
+    let mut turn = ToolTurn::from(crate::test_turn_context().as_ref());
     if with_image {
-        turn.capabilities
+        let mut capabilities = crate::test_capabilities();
+        capabilities
             .input
             .insert(cookie_agent_protocol::Modality::Image);
-        turn.capabilities.media = BTreeMap::from([(
+        capabilities.media = BTreeMap::from([(
             cookie_agent_protocol::MediaKind::Image,
             cookie_agent_protocol::MediaCapability {
                 mime_types: [cookie_agent_protocol::MimeType::new("image/png").unwrap()]
@@ -164,6 +165,10 @@ fn turn(with_image: bool) -> WireTurnContext {
                 max_count: 1,
             },
         )]);
+        turn.model.input_media = cookie_agent_runtime_api::media::tool_input_media(
+            cookie_agent_runtime_api::AdapterFamily::OpenaiChat,
+            &capabilities,
+        );
     }
     turn
 }

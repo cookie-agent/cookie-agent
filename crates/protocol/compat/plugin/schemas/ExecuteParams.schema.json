@@ -1,177 +1,94 @@
 {
   "$defs": {
-    "CancellationCapability": {
-      "enum": [
-        "local_only",
-        "provider"
-      ],
-      "type": "string"
-    },
-    "MediaCapability": {
-      "properties": {
-        "max_bytes": {
-          "format": "uint64",
-          "minimum": 1,
-          "type": "integer"
+    "MediaDelivery": {
+      "description": "How an attachment of a kind reaches the model.\n\nOpen: a delivery this build does not know reads as `unknown`, which a\ntool cannot use: it does not attach the kind.",
+      "oneOf": [
+        {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
         },
-        "max_count": {
-          "format": "uint32",
-          "minimum": 1,
+        {
+          "const": "tool_result",
+          "description": "As an attachment of the tool result.",
+          "type": "string"
+        },
+        {
+          "const": "user_message",
+          "description": "As a user message after the tool result, for an adapter whose tool\nresults cannot carry the kind.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "ToolInputMedia": {
+      "description": "One media kind a tool may return to the turn's model. The limits are\neffective: the lowest of the model's capability, its adapter family's\ndelivery limit, and the attachment caps.",
+      "properties": {
+        "delivery": {
+          "$ref": "#/$defs/MediaDelivery"
+        },
+        "kind": {
+          "description": "A media kind, such as `image`.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "max_bytes": {
+          "description": "The largest accepted file.",
+          "format": "uint64",
+          "minimum": 0,
           "type": "integer"
         },
         "mime_types": {
+          "description": "The media types accepted, such as `image/png`.",
           "items": {
-            "maxLength": 255,
-            "minLength": 3,
-            "pattern": "^[^/\\s]+/[^/\\s]+$",
             "type": "string"
           },
-          "minItems": 1,
-          "type": "array",
-          "uniqueItems": true
+          "type": "array"
         }
       },
       "required": [
+        "kind",
         "mime_types",
         "max_bytes",
-        "max_count"
+        "delivery"
       ],
       "type": "object"
     },
-    "Modality": {
-      "enum": [
-        "text",
-        "image",
-        "audio",
-        "pdf",
-        "video"
-      ],
-      "type": "string"
-    },
-    "ModelCapabilities": {
+    "ToolTurn": {
+      "description": "The agent and model of one tool batch, as a runtime or plugin sees them.",
       "properties": {
-        "cancellation": {
-          "$ref": "#/$defs/CancellationCapability"
-        },
-        "context_tokens": {
-          "format": "uint64",
-          "minimum": 1,
-          "type": "integer"
-        },
-        "input": {
-          "items": {
-            "$ref": "#/$defs/Modality"
-          },
-          "minItems": 1,
-          "type": "array",
-          "uniqueItems": true
-        },
-        "media": {
-          "additionalProperties": {
-            "$ref": "#/$defs/MediaCapability"
-          },
-          "description": "Per media kind. A reader drops a kind it does not know.",
-          "properties": {
-            "audio": {
-              "$ref": "#/$defs/MediaCapability"
-            },
-            "image": {
-              "$ref": "#/$defs/MediaCapability"
-            },
-            "pdf": {
-              "$ref": "#/$defs/MediaCapability"
-            },
-            "video": {
-              "$ref": "#/$defs/MediaCapability"
-            }
-          },
-          "type": "object"
-        },
-        "native_replay": {
-          "$ref": "#/$defs/ReplayCapability"
-        },
-        "output": {
-          "items": {
-            "$ref": "#/$defs/Modality"
-          },
-          "minItems": 1,
-          "type": "array",
-          "uniqueItems": true
-        },
-        "output_tokens": {
-          "format": "uint64",
-          "minimum": 1,
-          "type": "integer"
-        },
-        "parallel_tool_calls": {
-          "type": "boolean"
-        },
-        "reasoning": {
-          "type": "boolean"
-        },
-        "seed": {
-          "type": "boolean"
-        },
-        "structured_output": {
-          "type": "boolean"
-        },
-        "temperature": {
-          "type": "boolean"
-        },
-        "tool_calling": {
-          "type": "boolean"
-        },
-        "top_p": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "input",
-        "output",
-        "context_tokens",
-        "output_tokens",
-        "tool_calling",
-        "parallel_tool_calls",
-        "structured_output",
-        "reasoning",
-        "temperature",
-        "top_p",
-        "seed",
-        "native_replay",
-        "cancellation",
-        "media"
-      ],
-      "type": "object"
-    },
-    "ReplayCapability": {
-      "enum": [
-        "unsupported",
-        "optional",
-        "required"
-      ],
-      "type": "string"
-    },
-    "WireTurnContext": {
-      "description": "The agent and model context of one tool batch.",
-      "properties": {
-        "adapter": {
-          "description": "Wire adapter a model is reached through, such as `anthropic` or `openai-responses`.",
-          "pattern": "^[a-z][a-z0-9-]{0,31}$",
-          "type": "string"
-        },
-        "adapter_family": {
-          "description": "Exact adapter family of the turn's model, such as `anthropic-compatible` or `openai-responses`.",
-          "pattern": "^[a-z][a-z0-9-]{0,31}$",
-          "type": "string"
-        },
         "agent": {
           "maxLength": 64,
           "minLength": 1,
           "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
           "type": "string"
         },
-        "capabilities": {
-          "$ref": "#/$defs/ModelCapabilities"
+        "model": {
+          "$ref": "#/$defs/ToolTurnModel"
+        }
+      },
+      "required": [
+        "agent",
+        "model"
+      ],
+      "type": "object"
+    },
+    "ToolTurnModel": {
+      "description": "The model of a tool batch: what a tool needs to word its results and to\ndecide which media it may return. Nothing about the model's provider\nbeyond its adapter label.",
+      "properties": {
+        "adapter": {
+          "description": "The adapter label, such as `openai-responses`.",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$",
+          "type": "string"
+        },
+        "input_media": {
+          "default": [],
+          "description": "The media kinds the model accepts from a tool, with their effective\nlimits and how each reaches the model; a kind not listed is not\naccepted. Empty for a model that takes text only.",
+          "items": {
+            "$ref": "#/$defs/ToolInputMedia"
+          },
+          "type": "array"
         },
         "model": {
           "maxLength": 512,
@@ -181,11 +98,8 @@
         }
       },
       "required": [
-        "agent",
         "model",
-        "adapter",
-        "adapter_family",
-        "capabilities"
+        "adapter"
       ],
       "type": "object"
     }
@@ -210,7 +124,7 @@
       "type": "string"
     },
     "turn": {
-      "$ref": "#/$defs/WireTurnContext"
+      "$ref": "#/$defs/ToolTurn"
     }
   },
   "required": [

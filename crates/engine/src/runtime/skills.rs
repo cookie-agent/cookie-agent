@@ -679,13 +679,13 @@ impl Engine {
             agent: active.policy.agent.agent.clone(),
             model: binding.selection.model.clone(),
             adapter: crate::policy::wire_adapter(binding.descriptor.adapter_id.as_str()),
-            adapter_family: crate::policy::tool_adapter_family(
+            input_media: crate::policy::tool_input_media(
                 binding.descriptor.adapter_id.as_str(),
+                &active
+                    .policy
+                    .model_capabilities(binding)
+                    .ok_or(EngineError::NoRunnableModel)?,
             ),
-            capabilities: active
-                .policy
-                .model_capabilities(binding)
-                .ok_or(EngineError::NoRunnableModel)?,
         });
         let prepared = self
             .prepare_tool_call(

@@ -79,21 +79,20 @@ fallbacks are chosen so that an older reader stays safe:
 | `result_truncation` | tool declarations | `bounded`: the daemon still bounds the result |
 | tool error `kind` | prepare, revalidate, and execute results; `mcp/reconnect` | `failed`, a generic tool failure |
 | MCP server `state` | `capability/open` results, `mcp/changed` | `disconnected`: no tools, and no retry as a failure |
-| `adapter_family` | `tool/prepare` and `tool/execute` turns | `unknown`, which delivers no media |
+| media `delivery` | `tool/prepare` and `tool/execute` turns | `unknown`: the tool does not attach that kind |
 | display block `type` | execute results | dropped, as the daemon drops a block kind it does not know |
-| media kind | the model capabilities' `media` in the turn context | left out of the map |
+| media `kind` | `tool/prepare` and `tool/execute` turns | a label: a tool does not attach a kind it does not know |
 
 These are closed by design, since every reader must understand each value: a
 prepare result's and an execute outcome's `status`, an output's and an
-output declaration's `kind`, a skill's `source`, and the model capabilities'
-modalities in the turn context. The commands `producer/send`'s `mode` and
+output declaration's `kind`, and a skill's `source`. The commands `producer/send`'s `mode` and
 `producer/recovery/complete`'s outcome are closed as every command is. The
 plugin protocol adds its own (see
 [Plugin development](../development/plugins.md#compatibility)).
 
 ## Version
 
-The protocol version is a semver string, currently **0.7.0**
+The protocol version is a semver string, currently **0.8.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -126,7 +125,9 @@ their `instance` (see the [runtime capabilities spec](../specs/runtime-capabilit
 6 removed the tool result's `truncation`, which nothing set: a result's
 retained output is `retained_output`. 0.7.0 made the version a semver string,
 added `engine_version` and `features` to the handshake, and moved errors to
-the registry's codes (see [Errors](#errors)).
+the registry's codes (see [Errors](#errors)). 0.8.0 replaced the turn's
+adapter family and model capabilities with `turn.model` (see
+[`tool/prepare`](#toolprepare)).
 
 ## Capabilities and instances
 
@@ -310,11 +311,17 @@ exists but cannot be read fails the request with `context_failed` and
 ### `tool/prepare`
 
 Params: `instance`, the instance whose tools the calls name; `session`,
-`run`, `turn` (the agent, model, adapter, adapter family, and model
-capabilities of the turn; the adapter and its family are labels such as
-`openai-responses` and `anthropic-compatible`, and a family the runtime does
-not know delivers no media); and `calls` (`id`, `name`, `arguments`; at most
-256). A plugin's prepare carries no `instance`. The runtime prepares a turn's calls together, so calls on one
+`run`, `turn`; and `calls` (`id`, `name`, `arguments`; at most 256). `turn`
+is `{ agent, model }`, where `model` is `{ model, adapter, input_media }`:
+the model's key, its adapter label (such as `openai-responses`), and the
+media kinds a tool may return to it. Each `input_media` entry is
+`{ kind, mime_types, max_bytes, delivery }`: `kind` is `image`, `pdf`,
+`audio`, or `video`; the limits are effective, already the lowest of the
+model's capability and its adapter's delivery limit; and `delivery` is
+`tool_result` (an attachment of the result) or `user_message` (a user message
+after the result, for an adapter whose tool results cannot carry the kind). A
+kind not listed is not accepted: a tool reports that it cannot attach the
+file. A plugin's prepare carries no `instance`. The runtime prepares a turn's calls together, so calls on one
 target chain. The result has one entry per call, tagged by `status`:
 
 - `prepared`: `prepared_id`; `operation`, the prepared operation identity;

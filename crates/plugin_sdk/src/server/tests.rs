@@ -1,9 +1,6 @@
-use std::collections::BTreeMap;
-
 use cookie_agent_protocol::{
-    AdaptorId, AgentId, CancellationCapability, ExtensionToolBeforeCallAction, ExtensionToolOrigin,
-    Modality, ModelCapabilities, ReplayCapability, runtime_protocol::AdapterFamily,
-    runtime_protocol::WireTurnContext,
+    AdaptorId, AgentId, ExtensionToolBeforeCallAction, ExtensionToolOrigin,
+    runtime_protocol::{ToolTurn, ToolTurnModel},
 };
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -159,27 +156,13 @@ impl Engine {
     }
 }
 
-fn turn() -> WireTurnContext {
-    WireTurnContext {
+fn turn() -> ToolTurn {
+    ToolTurn {
         agent: AgentId::new("test").expect("agent ID"),
-        model: "test/model".parse().expect("model key"),
-        adapter: AdaptorId::OPENAI_CHAT,
-        adapter_family: AdapterFamily::OpenaiChat,
-        capabilities: ModelCapabilities {
-            input: [Modality::Text].into_iter().collect(),
-            output: [Modality::Text].into_iter().collect(),
-            context_tokens: 8_192,
-            output_tokens: 2_048,
-            tool_calling: true,
-            parallel_tool_calls: true,
-            structured_output: false,
-            reasoning: false,
-            temperature: true,
-            top_p: true,
-            seed: false,
-            native_replay: ReplayCapability::Optional,
-            cancellation: CancellationCapability::LocalOnly,
-            media: BTreeMap::new(),
+        model: ToolTurnModel {
+            model: "test/model".parse().expect("model key"),
+            adapter: AdaptorId::OPENAI_CHAT,
+            input_media: Vec::new(),
         },
     }
 }
