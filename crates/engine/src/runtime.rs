@@ -17,7 +17,6 @@ use cookie_agent_protocol::{
     ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
     ProviderDisconnectResult, RunId, RunStartParams, RunStartResult, RuntimeChangeReason,
     RuntimeChangedNotification, RuntimeSnapshotResult, SafeCode, SessionId, SessionMeta,
-    ToolCallPresentation,
 };
 use oven_sdk::{ModelError, ToolDefinition};
 use serde::{Deserialize, Serialize};
@@ -387,7 +386,7 @@ pub(super) enum UserInputInterception {
 struct PreparedToolCall {
     call: ToolCall,
     permission_name: Option<String>,
-    presentation: ToolCallPresentation,
+    presentation: cookie_agent_protocol::ToolPresentation,
     prepared: Result<PreparedTool, ToolFailure>,
     interception: Option<ToolInterceptionContext>,
     intercepted_arguments: Arc<Mutex<Value>>,

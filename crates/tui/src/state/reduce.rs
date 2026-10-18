@@ -2666,6 +2666,7 @@ pub(super) fn approval_state_from_request(
         session_id,
         approval_id: request.approval_id(),
         request_revision,
+        tool_call_id: request.tool_call_id(),
         operation_fingerprint: request.operation_fingerprint().clone(),
         trigger,
         normalized_arguments_digest,

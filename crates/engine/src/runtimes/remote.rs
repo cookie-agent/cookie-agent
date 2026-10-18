@@ -1557,6 +1557,21 @@ impl ToolProvider for RemoteToolProvider {
             .unwrap_or_default())
     }
 
+    /// An MCP server's tool, by the instance's last MCP report.
+    fn tool_source(&self, tool_name: &str) -> Option<cookie_agent_runtime_api::ProvidedToolSource> {
+        let instance = self.instance.as_deref()?;
+        let mcp = lock(&self.client.inner.mcp);
+        mcp.instances
+            .get(instance)?
+            .servers
+            .iter()
+            .flatten()
+            .find(|server| server.tools.iter().any(|tool| tool == tool_name))
+            .map(|server| cookie_agent_runtime_api::ProvidedToolSource::Mcp {
+                server: server.name.clone(),
+            })
+    }
+
     fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError>
     where
         Self: Sized,

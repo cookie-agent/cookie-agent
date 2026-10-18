@@ -674,7 +674,7 @@ fn presentations_carry_the_tool_and_open_sources() {
         "preview": [{"type": "text", "text": "x"}]
     }))
     .unwrap();
-    assert_eq!(prepared.arguments, None);
+    assert!(prepared.arguments.is_empty());
     let source: Open<ToolSource> = serde_json::from_value(json!({
         "type": "runtime", "runtime_id": "labpc", "attachment": "labpc_repo", "capability": "coding"
     }))
@@ -684,7 +684,7 @@ fn presentations_carry_the_tool_and_open_sources() {
         ToolIdentity {
             name: "edit".into(),
             published_name: "labpc_edit".into(),
-            source,
+            source: Some(source),
         },
     );
     let wire = serde_json::to_value(&presentation).unwrap();

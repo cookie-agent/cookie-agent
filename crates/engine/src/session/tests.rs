@@ -3611,10 +3611,12 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                                 output: Default::default(),
                                 tool_call_id,
                                 owner: owner.clone(),
-                                presentation: cookie_agent_protocol::ToolCallPresentation {
-                                    title: SafeDisplayText::new("fuzz tool").expect("title"),
-                                    primary_argument: None,
-                                },
+                                presentation: crate::test_support::base_presentation(
+                                    cookie_agent_protocol::ToolCallPresentation {
+                                        title: SafeDisplayText::new("fuzz tool").expect("title"),
+                                        primary_argument: None,
+                                    },
+                                ),
                                 operation_fingerprint: serde_json::from_value(serde_json::json!({
                                     "digest": Sha256Digest::of_bytes(b"fuzz operation")
                                 }))
@@ -4097,10 +4099,12 @@ fn append_realistic_run(
                         output: Default::default(),
                         tool_call_id,
                         owner: owner.clone(),
-                        presentation: cookie_agent_protocol::ToolCallPresentation {
-                            title: SafeDisplayText::new("Read").expect("title"),
-                            primary_argument: None,
-                        },
+                        presentation: crate::test_support::base_presentation(
+                            cookie_agent_protocol::ToolCallPresentation {
+                                title: SafeDisplayText::new("Read").expect("title"),
+                                primary_argument: None,
+                            },
+                        ),
                         operation_fingerprint: serde_json::from_value(serde_json::json!({
                             "digest": Sha256Digest::of_bytes(b"read operation")
                         }))

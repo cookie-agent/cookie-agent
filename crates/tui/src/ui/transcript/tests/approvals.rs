@@ -4,7 +4,7 @@ use cookie_agent_protocol::{
     ApprovalUserDecision, DecisionTrace, MatchedPermissionRule, PermissionAction, PermissionEffect,
     PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
     PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, SafeCode,
-    SessionId, Sha256Digest, ToolCallId, WildcardPattern,
+    SessionId, Sha256Digest, WildcardPattern,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 
@@ -18,10 +18,10 @@ fn key(code: KeyCode) -> KeyEvent {
 }
 
 /// Link a running tool call to `approval` the way the engine does: the
-/// call's prepared operation carries the approval's fingerprint.
+/// approval names the call, whose prepared operation carries its fingerprint.
 fn link_tool(app: &mut App, approval: &ApprovalState, title: &str, arguments: &str) {
     let primary = (title != "bash").then_some("src/lib.rs");
-    let call_id = ToolCallId::new_v7();
+    let call_id = approval.tool_call_id;
     app.store
         .sessions
         .entry(approval.session_id)
@@ -77,6 +77,7 @@ fn edit_approval(session_id: SessionId) -> ApprovalState {
     let request = ApprovalRequest::new(
         ApprovalId::new_v7(),
         1,
+        cookie_agent_protocol::ToolCallId::new_v7(),
         ApprovalTrigger::PermissionPolicy,
         operation,
         vec![ApprovalEvaluation {

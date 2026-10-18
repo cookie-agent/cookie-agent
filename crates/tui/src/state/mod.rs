@@ -59,14 +59,14 @@ pub enum CompactingSource {
 }
 
 /// A tool invocation displayed inside its owning assistant item. The compact
-/// title uses only the persisted `ToolCallPresentation`; raw arguments appear
+/// title uses only the persisted `ToolPresentation`; raw arguments appear
 /// only in the expanded detail. The persisted display argument is byte-capped
 /// but may still carry control characters, so render sites flatten it.
 #[derive(Clone, Debug)]
 pub struct ToolCallState {
     pub id: ToolCallId,
     pub owner: AssistantToolCallRef,
-    pub presentation: cookie_agent_protocol::ToolCallPresentation,
+    pub presentation: cookie_agent_protocol::ToolPresentation,
     /// Durable tool input from the owning committed turn, shown expanded.
     pub arguments: String,
     /// The prepared operation this call runs; an approval request carries
@@ -116,6 +116,8 @@ pub struct ApprovalState {
     pub session_id: SessionId,
     pub approval_id: ApprovalId,
     pub request_revision: u64,
+    /// The tool call the approval gates.
+    pub tool_call_id: ToolCallId,
     pub operation_fingerprint: OperationFingerprint,
     pub trigger: ApprovalTrigger,
     pub normalized_arguments_digest: Sha256Digest,

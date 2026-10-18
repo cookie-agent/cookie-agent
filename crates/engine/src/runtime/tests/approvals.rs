@@ -302,6 +302,12 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
         .expect("approval projection")
         .log
         .events();
+    // The request names the call it gates.
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::ToolCallStarted { start }
+            if start.tool_call_id == approval.request.tool_call_id()
+    )));
     let lifecycle =
         events
             .iter()

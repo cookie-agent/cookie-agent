@@ -22,7 +22,7 @@ fn tool_failures_with_output_stay_inline_on_replay() {
                     tool_call_id: call,
                     owner: owner.clone(),
                     output: Default::default(),
-                    presentation: cookie_agent_protocol::ToolCallPresentation {
+                    presentation: base_presentation(cookie_agent_protocol::ToolCallPresentation {
                         title: cookie_agent_protocol::SafeDisplayText::new(if case == 4 {
                             "bash"
                         } else {
@@ -30,7 +30,7 @@ fn tool_failures_with_output_stay_inline_on_replay() {
                         })
                         .unwrap(),
                         primary_argument: None,
-                    },
+                    }),
                     operation_fingerprint: serde_json::from_value(
                         serde_json::json!({"digest": "1".repeat(64)}),
                     )
@@ -2708,11 +2708,11 @@ fn tool_termination_clears_streamed_output_and_sets_detail() {
             backgrounded: false,
             id: call_id,
             owner: owner.clone(),
-            presentation: cookie_agent_protocol::ToolCallPresentation {
+            presentation: base_presentation(cookie_agent_protocol::ToolCallPresentation {
                 title: cookie_agent_protocol::SafeDisplayText::new("Bash")
                     .expect("presentation title"),
                 primary_argument: None,
-            },
+            }),
             arguments: "{}".into(),
             status: ToolStatus::Running,
             detail: String::new(),
@@ -2819,10 +2819,10 @@ fn tool_display_is_bounded_and_final_replacement_matches_replay() {
             tool_call_id: call,
             output: Default::default(),
             owner: owner.clone(),
-            presentation: cookie_agent_protocol::ToolCallPresentation {
+            presentation: base_presentation(cookie_agent_protocol::ToolCallPresentation {
                 title: cookie_agent_protocol::SafeDisplayText::new("Test").unwrap(),
                 primary_argument: None,
-            },
+            }),
             operation_fingerprint: serde_json::from_value(
                 serde_json::json!({"digest": "1".repeat(64)}),
             )
@@ -2969,10 +2969,10 @@ fn replay_with_tool_chunks_ends_at_committed_result_only() {
                     output: Default::default(),
                     tool_call_id: call_id,
                     owner: owner.clone(),
-                    presentation: cookie_agent_protocol::ToolCallPresentation {
+                    presentation: base_presentation(cookie_agent_protocol::ToolCallPresentation {
                         title: cookie_agent_protocol::SafeDisplayText::new("Bash").expect("title"),
                         primary_argument: None,
-                    },
+                    }),
                     operation_fingerprint: serde_json::from_value(serde_json::json!({
                         "digest": "1".repeat(64)
                     }))
@@ -3297,10 +3297,10 @@ fn delegate_tool_starts_update_agent_activity() {
                 model_call_id,
                 provider_item_id: None,
             },
-            presentation: cookie_agent_protocol::ToolCallPresentation {
+            presentation: base_presentation(cookie_agent_protocol::ToolCallPresentation {
                 title: cookie_agent_protocol::SafeDisplayText::new("activity tool").expect("title"),
                 primary_argument: None,
-            },
+            }),
             operation_fingerprint: fingerprint(),
         }
     };
@@ -3555,4 +3555,22 @@ fn user_file_parts_render_as_attachment_chips() {
         markdown.as_str(),
         "What is wrong with this *layout*?\n📎 my\\_screenshot\\.png · image\\/png · 471 KB"
     );
+}
+
+/// `presentation` as `tool_call_started` stores it for base-layer tool
+/// `presentation.title`.
+fn base_presentation(
+    presentation: cookie_agent_protocol::ToolCallPresentation,
+) -> cookie_agent_protocol::ToolPresentation {
+    let name = presentation.title.to_string();
+    cookie_agent_protocol::ToolPresentation::from_call(
+        presentation,
+        cookie_agent_protocol::ToolIdentity {
+            name: name.clone(),
+            published_name: name,
+            source: Some(cookie_agent_protocol::Open::Known(
+                cookie_agent_protocol::ToolSource::Base,
+            )),
+        },
+    )
 }

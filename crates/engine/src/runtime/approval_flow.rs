@@ -89,6 +89,8 @@ pub(crate) enum ApprovalEvaluationTransition {
 }
 
 pub(crate) struct ApprovalToolInput<'a> {
+    /// The call the approval is for.
+    pub(crate) tool_call_id: cookie_agent_protocol::ToolCallId,
     pub(crate) name: &'a str,
     /// Layer or runtime that owns the tool; the reviewer sees its workspace.
     pub(crate) origin: Option<&'a crate::ToolOrigin>,
@@ -132,6 +134,7 @@ impl Engine {
         input: ModelApprovalInput<'_>,
     ) -> Result<ApprovalOutcome, EngineError> {
         let request = approval_request_for_operation(
+            input.tool.tool_call_id,
             ApprovalTrigger::ModelToolApproval,
             input.operation.clone(),
             input
@@ -706,6 +709,7 @@ pub(super) fn approval_constraints(request: &ApprovalRequest) -> ApprovalConstra
 }
 
 pub(super) fn approval_request_for_operation(
+    tool_call_id: cookie_agent_protocol::ToolCallId,
     trigger: ApprovalTrigger,
     operation: PreparedOperationIdentity,
     traces: Vec<cookie_agent_protocol::DecisionTrace>,
@@ -725,6 +729,7 @@ pub(super) fn approval_request_for_operation(
     ApprovalRequest::new(
         ApprovalId::new_v7(),
         1,
+        tool_call_id,
         trigger,
         operation,
         evaluations,
@@ -824,6 +829,7 @@ mod tests {
         let request = ApprovalRequest::new(
             approval_id,
             1,
+            cookie_agent_protocol::ToolCallId::new_v7(),
             ApprovalTrigger::PermissionPolicy,
             operation,
             vec![ApprovalEvaluation {
@@ -1046,6 +1052,7 @@ mod tests {
         let model = runtime.resolve(&binding.selection).expect("resolved model");
         let first = approval_stateless_input(
             ApprovalToolInput {
+                tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
                 name: "write",
                 origin: None,
                 normalized_parameters: &serde_json::json!({"filePath":"a"}),
@@ -1055,6 +1062,7 @@ mod tests {
         );
         let second = approval_stateless_input(
             ApprovalToolInput {
+                tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
                 name: "write",
                 origin: None,
                 normalized_parameters: &serde_json::json!({"filePath":"b"}),
@@ -1102,6 +1110,7 @@ mod tests {
                 "system".into(),
                 approval_stateless_input(
                     ApprovalToolInput {
+                        tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
                         name: "write",
                         origin: None,
                         normalized_parameters: &serde_json::json!({"filePath":"same"}),
@@ -1124,6 +1133,7 @@ mod tests {
     fn approval_without_user_message_uses_fixed_fallback() {
         let input = approval_stateless_input(
             ApprovalToolInput {
+                tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
                 name: "delegate_subagent",
                 origin: None,
                 normalized_parameters: &serde_json::json!({"agent_type":"worker"}),
@@ -1162,6 +1172,7 @@ mod tests {
         ] {
             let input = approval_stateless_input(
                 ApprovalToolInput {
+                    tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
                     name: "bash",
                     origin: Some(origin),
                     normalized_parameters: &serde_json::json!({"command":"ls"}),
@@ -1181,6 +1192,7 @@ mod tests {
     fn approval_parameters_are_canonicalized_recursively() {
         let first = approval_stateless_input(
             ApprovalToolInput {
+                tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
                 name: "write",
                 origin: None,
                 normalized_parameters: &serde_json::json!({"z":1,"nested":{"b":2,"a":1}}),
@@ -1190,6 +1202,7 @@ mod tests {
         );
         let second = approval_stateless_input(
             ApprovalToolInput {
+                tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
                 name: "write",
                 origin: None,
                 normalized_parameters: &serde_json::json!({"nested":{"a":1,"b":2},"z":1}),

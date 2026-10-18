@@ -2292,10 +2292,10 @@ fn tail_candidates_stop_at_pending_tool_group_until_late_termination() {
                 output: Default::default(),
                 tool_call_id,
                 owner: owner.clone(),
-                presentation: ToolCallPresentation {
+                presentation: crate::test_support::base_presentation(ToolCallPresentation {
                     title: SafeDisplayText::new("pending").unwrap(),
                     primary_argument: None,
-                },
+                }),
                 operation_fingerprint: OperationFingerprint::from_prepared_operation(&operation()),
             },
         },
@@ -2444,12 +2444,12 @@ fn assembled_tool_transcript_snapshot_is_stable() {
                     output: Default::default(),
                     tool_call_id: call,
                     owner: owner.clone(),
-                    presentation: ToolCallPresentation {
+                    presentation: crate::test_support::base_presentation(ToolCallPresentation {
                         title: SafeDisplayText::new("Read README.md").expect("title"),
                         primary_argument: Some(
                             BoundedDisplayText::new("README.md").expect("argument"),
                         ),
-                    },
+                    }),
                     operation_fingerprint: OperationFingerprint::from_prepared_operation(
                         &operation(),
                     ),

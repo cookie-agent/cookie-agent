@@ -1274,6 +1274,7 @@ impl Engine {
                                     .clone(),
                                 message: Some(message),
                                 tool: ApprovalToolInput {
+                                    tool_call_id: prepared.call.id,
                                     name: &prepared.call.name,
                                     origin: prepared.origin(),
                                     normalized_parameters: prepared

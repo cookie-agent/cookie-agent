@@ -1805,11 +1805,13 @@ pub(crate) fn append_named_compaction_tool_history(
                     output: Default::default(),
                     tool_call_id,
                     owner: owner.clone(),
-                    presentation: cookie_agent_protocol::ToolCallPresentation {
-                        title: cookie_agent_protocol::SafeDisplayText::new("Historical output")
-                            .unwrap(),
-                        primary_argument: None,
-                    },
+                    presentation: crate::test_support::base_presentation(
+                        cookie_agent_protocol::ToolCallPresentation {
+                            title: cookie_agent_protocol::SafeDisplayText::new("Historical output")
+                                .unwrap(),
+                            primary_argument: None,
+                        },
+                    ),
                     operation_fingerprint: serde_json::from_value(serde_json::json!({
                         "digest": Sha256Digest::of_bytes(b"compaction-history-tool")
                     }))
@@ -2250,6 +2252,7 @@ pub(crate) fn resume_sweep_test_request() -> cookie_agent_protocol::ApprovalRequ
     cookie_agent_protocol::ApprovalRequest::new(
         ApprovalId::new_v7(),
         1,
+        cookie_agent_protocol::ToolCallId::new_v7(),
         cookie_agent_protocol::ApprovalTrigger::PermissionPolicy,
         operation,
         vec![cookie_agent_protocol::ApprovalEvaluation {

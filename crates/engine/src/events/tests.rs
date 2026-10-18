@@ -3033,10 +3033,10 @@ fn skipped_tool_termination_taints_terminal_state_but_no_skip_rejects_elision() 
                 output: Default::default(),
                 tool_call_id,
                 owner: owner.clone(),
-                presentation: ToolCallPresentation {
+                presentation: crate::test_support::base_presentation(ToolCallPresentation {
                     title: SafeDisplayText::new("Read").expect("title"),
                     primary_argument: None,
-                },
+                }),
                 operation_fingerprint: serde_json::from_value(serde_json::json!({
                     "digest": Sha256Digest::of_bytes(b"operation")
                 }))
@@ -3271,6 +3271,7 @@ fn event_log_rejects_cross_run_approval_lifecycle() {
     let request = cookie_agent_protocol::ApprovalRequest::new(
         cookie_agent_protocol::ApprovalId::new_v7(),
         1,
+        cookie_agent_protocol::ToolCallId::new_v7(),
         ApprovalTrigger::PermissionPolicy,
         operation,
         vec![cookie_agent_protocol::ApprovalEvaluation {

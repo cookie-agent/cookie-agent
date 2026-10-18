@@ -373,6 +373,18 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
         .await;
     assert!(prepared[0].prepared.is_ok(), "the labpc tool prepares");
     assert_eq!(prepared[0].call.name, "write");
+    let runtime_tool = cookie_agent_protocol::ToolIdentity {
+        name: "write".into(),
+        published_name: "labpc_api_write".into(),
+        source: Some(cookie_agent_protocol::Open::Known(
+            cookie_agent_protocol::ToolSource::Runtime {
+                runtime_id: cookie_agent_protocol::RuntimeId::new("labpc").unwrap(),
+                attachment: cookie_agent_protocol::AttachmentName::new("labpc_api").unwrap(),
+                capability: cookie_agent_protocol::CapabilityName::new("coding").unwrap(),
+            },
+        )),
+    };
+    assert_eq!(prepared[0].presentation.tool, runtime_tool);
     assert_eq!(
         prepared[0].attachment().map(|name| name.as_str()),
         Some("labpc_api")
@@ -414,6 +426,9 @@ async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
             ..
         })
     ));
+    // The failure still names the tool the model was offered.
+    assert_eq!(stale[0].presentation.title.as_str(), "labpc_api_write");
+    assert_eq!(stale[0].presentation.tool, runtime_tool);
     fixture.engine.shutdown().await;
 }
 

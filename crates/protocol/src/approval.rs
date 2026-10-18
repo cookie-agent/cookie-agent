@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ApprovalId, PermissionAction, PermissionEffect, RuntimeId, SafeCode, SafeErrorMessage,
-    SessionId, Sha256Digest, TreeApprovalGrantId, WildcardPattern,
+    SessionId, Sha256Digest, ToolCallId, TreeApprovalGrantId, WildcardPattern,
 };
 
 #[derive(Clone, Debug, Eq, Hash, JsonSchema, PartialEq, Serialize)]
@@ -656,6 +656,9 @@ pub struct ApprovalRequest {
     approval_id: ApprovalId,
     #[schemars(range(min = 1))]
     revision: u64,
+    /// The tool call the request is for, whose `tool_call_started` carries
+    /// the call's presentation.
+    tool_call_id: ToolCallId,
     trigger: ApprovalTrigger,
     operation_fingerprint: OperationFingerprint,
     operation: PreparedOperationIdentity,
@@ -668,10 +671,12 @@ pub struct ApprovalRequest {
     runtime_id: Option<RuntimeId>,
 }
 impl ApprovalRequest {
-    /// A request for `operation`, whose fingerprint it computes.
+    /// A request for `operation` of call `tool_call_id`, whose fingerprint
+    /// it computes.
     pub fn new(
         approval_id: ApprovalId,
         revision: u64,
+        tool_call_id: ToolCallId,
         trigger: ApprovalTrigger,
         operation: PreparedOperationIdentity,
         evaluations: Vec<ApprovalEvaluation>,
@@ -681,6 +686,7 @@ impl ApprovalRequest {
         Self::with_fingerprint(
             approval_id,
             revision,
+            tool_call_id,
             trigger,
             operation_fingerprint,
             operation,
@@ -691,9 +697,11 @@ impl ApprovalRequest {
 
     /// A request carrying an operation fingerprint computed when it was
     /// written, which a reader trusts rather than computing it again.
+    #[allow(clippy::too_many_arguments)]
     fn with_fingerprint(
         approval_id: ApprovalId,
         revision: u64,
+        tool_call_id: ToolCallId,
         trigger: ApprovalTrigger,
         operation_fingerprint: OperationFingerprint,
         operation: PreparedOperationIdentity,
@@ -734,6 +742,7 @@ impl ApprovalRequest {
         Ok(Self {
             approval_id,
             revision,
+            tool_call_id,
             trigger,
             operation_fingerprint,
             operation,
@@ -757,6 +766,11 @@ impl ApprovalRequest {
     #[must_use]
     pub const fn approval_id(&self) -> ApprovalId {
         self.approval_id
+    }
+    /// The tool call the request is for.
+    #[must_use]
+    pub const fn tool_call_id(&self) -> ToolCallId {
+        self.tool_call_id
     }
     #[must_use]
     pub const fn operation_fingerprint(&self) -> &OperationFingerprint {
@@ -789,6 +803,7 @@ impl<'de> Deserialize<'de> for ApprovalRequest {
         struct Wire {
             approval_id: ApprovalId,
             revision: u64,
+            tool_call_id: ToolCallId,
             trigger: ApprovalTrigger,
             operation_fingerprint: OperationFingerprint,
             operation: PreparedOperationIdentity,
@@ -801,6 +816,7 @@ impl<'de> Deserialize<'de> for ApprovalRequest {
         Ok(Self::with_fingerprint(
             w.approval_id,
             w.revision,
+            w.tool_call_id,
             w.trigger,
             w.operation_fingerprint,
             w.operation,

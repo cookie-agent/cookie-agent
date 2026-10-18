@@ -358,6 +358,11 @@
             "null"
           ]
         },
+        "tool_call_id": {
+          "description": "The tool call the request is for, whose `tool_call_started` carries\nthe call's presentation.",
+          "format": "uuid",
+          "type": "string"
+        },
         "trigger": {
           "$ref": "#/$defs/ApprovalTrigger"
         }
@@ -365,6 +370,7 @@
       "required": [
         "approval_id",
         "revision",
+        "tool_call_id",
         "trigger",
         "operation_fingerprint",
         "operation",

@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalDecisionSource, ApprovalId, ApprovalRequest, ApprovalTrigger,
-    ExtensionToolBeforeCallAction, ExtensionToolBeforeCallParams, OperationFingerprint,
+    ExtensionToolBeforeCallAction, ExtensionToolBeforeCallParams, Open, OperationFingerprint,
     PersistedToolResult as ToolResult, PluginDiagnosticKind, PreparedOperationIdentity, RunId,
-    SessionId, Sha256Digest,
+    RuntimeId, SessionId, Sha256Digest, ToolIdentity, ToolPresentation, ToolSource,
 };
+use cookie_agent_runtime_api::ProvidedToolSource;
 use futures_util::FutureExt as _;
 use oven_sdk::{JsonSchema, ToolDefinition};
 use serde_json::Value;
@@ -110,6 +111,7 @@ impl Engine {
                 let request = ApprovalRequest::new(
                     ApprovalId::new_v7(),
                     1,
+                    prepared_call.call.id,
                     ApprovalTrigger::PermissionPolicy,
                     prepared.operation().clone(),
                     permission.evaluations.clone(),
@@ -138,6 +140,7 @@ impl Engine {
                         prepared.executor().clone(),
                         true,
                         ApprovalToolInput {
+                            tool_call_id: prepared_call.call.id,
                             name: &prepared_call.call.name,
                             origin: prepared_call.origin(),
                             normalized_parameters: prepared.normalized_arguments(),
@@ -272,7 +275,17 @@ impl Engine {
         published: Option<Option<&PublishedTool>>,
         prepared_override: Option<Result<PreparedTool, ToolError>>,
     ) -> PreparedToolCall {
-        let fallback_presentation = cookie_agent_runtime_api::tool_title_only(&call.name);
+        // A call that fails before it prepares shows the name the model
+        // called, and the tool's source when its publication names it.
+        let mut fallback_presentation = ToolPresentation::from_call(
+            cookie_agent_runtime_api::tool_title_only(&call.name),
+            tool_identity(
+                &call.name,
+                published
+                    .flatten()
+                    .map(|published| (&published.source, &published.spec)),
+            ),
+        );
         if call.arguments.is_null() {
             // A null argument object is the marked-invalid convention for
             // provider argument text that could not be parsed. Refuse before
@@ -418,6 +431,8 @@ impl Engine {
                 background: None,
             };
         };
+        fallback_presentation.tool = tool_identity(&call.name, Some((&source, &tool_spec)));
+        let tool = fallback_presentation.tool.clone();
         let SourcedProvider {
             attachment,
             origin,
@@ -503,13 +518,16 @@ impl Engine {
         };
         // A provider that reports its metadata at preparation (a runtime
         // behind the runtime protocol) also reports how the call is shown.
-        let presentation = match &prepared {
-            Ok(prepared) => prepared
-                .declaration()
-                .map(|declaration| declaration.presentation.clone()),
-            Err(_) => None,
-        }
-        .unwrap_or_else(|| provider.presentation(&call));
+        let presentation = ToolPresentation::from_call(
+            match &prepared {
+                Ok(prepared) => prepared
+                    .declaration()
+                    .map(|declaration| declaration.presentation.clone()),
+                Err(_) => None,
+            }
+            .unwrap_or_else(|| provider.presentation(&call)),
+            tool,
+        );
         PreparedToolCall {
             intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
             call,
@@ -1163,6 +1181,45 @@ pub(super) async fn finalize_output(
     Ok(result)
 }
 
+/// The tool a call goes to as clients see it: the name its source knows it
+/// by, the name the model called it by, and where it comes from. `source`
+/// is the composed tool, when the call names one.
+fn tool_identity(
+    published_name: &str,
+    source: Option<(&SourcedProvider, &crate::ToolSpec)>,
+) -> ToolIdentity {
+    ToolIdentity {
+        name: source
+            .map_or(published_name, |(_, spec)| spec.name.as_str())
+            .to_owned(),
+        published_name: published_name.to_owned(),
+        source: source.map(|(source, spec)| Open::Known(tool_source(source, &spec.name))),
+    }
+}
+
+/// Where `source`'s tool `name` comes from: the plugin or MCP server its
+/// provider names, else the runtime attachment that offers it, else the base
+/// layer.
+fn tool_source(source: &SourcedProvider, name: &str) -> ToolSource {
+    let runtime = source.origin.runtime();
+    let runtime_id = || runtime.and_then(|runtime| RuntimeId::new(runtime.id()).ok());
+    match source.provider.tool_source(name) {
+        Some(ProvidedToolSource::Plugin { plugin }) => ToolSource::Plugin { plugin },
+        Some(ProvidedToolSource::Mcp { server }) => ToolSource::Mcp {
+            server,
+            runtime_id: runtime_id(),
+        },
+        None => match (&source.attachment, runtime, runtime_id()) {
+            (Some(attachment), Some(runtime), Some(runtime_id)) => ToolSource::Runtime {
+                runtime_id,
+                attachment: attachment.clone(),
+                capability: runtime.capability().clone(),
+            },
+            _ => ToolSource::Base,
+        },
+    }
+}
+
 pub(super) fn incomplete_completion(message: &str) -> crate::ToolCompletion {
     crate::ToolCompletion::streamed(ToolResult {
         title: safe_display("Incomplete tool output"),
@@ -1301,6 +1358,116 @@ mod tests {
     use cookie_agent_protocol::ToolCallId;
 
     use super::{ToolCall, fallback_operation_fingerprint};
+
+    /// A provider whose tools come from `source`.
+    struct Sourced(Option<cookie_agent_runtime_api::ProvidedToolSource>);
+
+    #[async_trait::async_trait]
+    impl crate::ToolProvider for Sourced {
+        fn provider_id(&self) -> &'static str {
+            "test.sourced"
+        }
+        fn tools_for_session(
+            &self,
+            _: &crate::SessionToolContext,
+        ) -> Result<Vec<crate::ToolSpec>, crate::ToolError> {
+            Ok(Vec::new())
+        }
+        fn tool_source(&self, _: &str) -> Option<cookie_agent_runtime_api::ProvidedToolSource> {
+            self.0.clone()
+        }
+        fn get_permission_name(_: &str) -> Result<Option<&'static str>, crate::ToolError> {
+            Ok(None)
+        }
+        fn get_permission_resource(
+            &self,
+            _: &str,
+            _: &serde_json::Value,
+        ) -> Result<(Option<&'static str>, Option<String>), crate::ToolError> {
+            Ok((None, None))
+        }
+        fn get_display_argument(
+            &self,
+            _: &str,
+            _: &serde_json::Value,
+        ) -> Result<String, crate::ToolError> {
+            Ok(String::new())
+        }
+        async fn prepare(
+            &self,
+            _: crate::ToolPreparationContext,
+            _: ToolCall,
+        ) -> Result<crate::PreparedTool, crate::ToolError> {
+            Err(crate::ToolError::execution("unused"))
+        }
+    }
+
+    #[test]
+    fn the_daemon_names_each_tools_source() {
+        use cookie_agent_protocol::{AttachmentName, CapabilityName, RuntimeId, ToolSource};
+        use cookie_agent_runtime_api::ProvidedToolSource;
+
+        let runtime = crate::ToolOrigin::Runtime(std::sync::Arc::new(
+            cookie_agent_runtime_api::RuntimeInfo::new(
+                "labpc",
+                CapabilityName::new("coding").unwrap(),
+                cookie_agent_protocol::RuntimeKind::new("coding").unwrap(),
+                "labpc_repo",
+                None,
+            ),
+        ));
+        let source = |origin: &crate::ToolOrigin, attachment: Option<&str>, provided| {
+            crate::runtimes::SourcedProvider {
+                attachment: attachment.map(|name| AttachmentName::new(name).unwrap()),
+                generation: 0,
+                origin: origin.clone(),
+                provider: std::sync::Arc::new(Sourced(provided)),
+            }
+        };
+        let base = crate::ToolOrigin::Base;
+        for (source, expected) in [
+            (source(&base, None, None), ToolSource::Base),
+            (
+                source(&runtime, Some("labpc_repo"), None),
+                ToolSource::Runtime {
+                    runtime_id: RuntimeId::new("labpc").unwrap(),
+                    attachment: AttachmentName::new("labpc_repo").unwrap(),
+                    capability: CapabilityName::new("coding").unwrap(),
+                },
+            ),
+            (
+                source(
+                    &runtime,
+                    Some("global"),
+                    Some(ProvidedToolSource::Plugin {
+                        plugin: "issues".into(),
+                    }),
+                ),
+                ToolSource::Plugin {
+                    plugin: "issues".into(),
+                },
+            ),
+            (
+                source(
+                    &runtime,
+                    Some("labpc_repo"),
+                    Some(ProvidedToolSource::Mcp {
+                        server: "docs".into(),
+                    }),
+                ),
+                ToolSource::Mcp {
+                    server: "docs".into(),
+                    runtime_id: Some(RuntimeId::new("labpc").unwrap()),
+                },
+            ),
+        ] {
+            assert_eq!(super::tool_source(&source, "edit"), expected);
+        }
+        let unknown = super::tool_identity("missing_tool", None);
+        assert_eq!(unknown.name, "missing_tool");
+        assert_eq!(unknown.published_name, "missing_tool");
+        assert_eq!(unknown.source, None);
+    }
 
     #[test]
     fn discovery_failure_fingerprints_keep_known_tool_actions() {

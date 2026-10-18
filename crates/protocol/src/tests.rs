@@ -1331,6 +1331,7 @@ fn approval_wire_requires_nonempty_evaluations_and_accepts_multiple() {
     let request = ApprovalRequest::new(
         ApprovalId::new_v7(),
         1,
+        crate::ToolCallId::new_v7(),
         ApprovalTrigger::PermissionPolicy,
         operation,
         vec![test_evaluation(first), test_evaluation(second)],

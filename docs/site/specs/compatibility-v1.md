@@ -1414,3 +1414,18 @@ Deviations and choices made while implementing, by phase.
   display's. A late subscriber receives a running call's live display as one
   `replace`. The plugin SDK's progress sends no display today, so it has
   nothing to convert.
+- **Presentation v2.** `hint` is optional and `arguments` an empty-means-
+  absent list, since today's prepare (`ToolCallPresentation`) reports
+  neither; `title` and `primary_argument` keep their bounded types
+  (`SafeDisplayText`, `BoundedDisplayText`), and `PreparedPresentation`
+  follows the same shape for phase E. `tool.source` is absent for a call
+  that names no tool the session offers (a call that fails before the
+  daemon finds its tool). A provider names a plugin or MCP source through
+  `ToolProvider::tool_source`: the plugin provider names its plugin, and a
+  runtime's provider looks the tool up in the instance's last MCP report;
+  everything else is the runtime attachment that offers it, or the base
+  layer. Failure fallbacks keep today's title (the name the model called)
+  and fill `tool` from the publication when there is one.
+- **Approval requests** carry a required `tool_call_id`, which
+  `ApprovalRequest::new` takes. The TUI finds an approval's call by it
+  instead of matching operation fingerprints.

@@ -480,6 +480,11 @@
             "null"
           ]
         },
+        "tool_call_id": {
+          "description": "The tool call the request is for, whose `tool_call_started` carries\nthe call's presentation.",
+          "format": "uuid",
+          "type": "string"
+        },
         "trigger": {
           "$ref": "#/$defs/ApprovalTrigger"
         }
@@ -487,6 +492,7 @@
       "required": [
         "approval_id",
         "revision",
+        "tool_call_id",
         "trigger",
         "operation_fingerprint",
         "operation",
@@ -4685,33 +4691,6 @@
       ],
       "type": "object"
     },
-    "ToolCallPresentation": {
-      "additionalProperties": false,
-      "properties": {
-        "primary_argument": {
-          "description": "Bounded presentation text; byte-capped only, clients sanitize control characters.",
-          "maxLength": 1024,
-          "minLength": 1,
-          "pattern": "^[\\s\\S]+$",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "title": {
-          "description": "Control-free bounded presentation text.",
-          "maxLength": 1024,
-          "minLength": 1,
-          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-          "type": "string"
-        }
-      },
-      "required": [
-        "title",
-        "primary_argument"
-      ],
-      "type": "object"
-    },
     "ToolEmittedContent": {
       "oneOf": [
         {
@@ -4767,6 +4746,35 @@
       ],
       "type": "string"
     },
+    "ToolIdentity": {
+      "description": "The tool a call goes to, as the daemon knows it.",
+      "properties": {
+        "name": {
+          "description": "The name its source knows the tool by.",
+          "type": "string"
+        },
+        "published_name": {
+          "description": "The name the model sees.",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Absent when the call names no tool the session offers."
+        }
+      },
+      "required": [
+        "name",
+        "published_name"
+      ],
+      "type": "object"
+    },
     "ToolOutputDeclaration": {
       "oneOf": [
         {
@@ -4805,6 +4813,151 @@
           "type": "object"
         }
       ]
+    },
+    "ToolPresentation": {
+      "description": "How clients show a tool call: the prepared presentation and the tool the\ndaemon resolved.",
+      "properties": {
+        "arguments": {
+          "description": "The call's arguments; clients fall back to the raw model arguments\nwhen it is empty.",
+          "items": {
+            "$ref": "#/$defs/DisplayBlock"
+          },
+          "type": "array"
+        },
+        "hint": {
+          "description": "What the tool is for, for icons and grouping.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "preview": {
+          "description": "What the call will do, such as a diff as of prepare.",
+          "items": {
+            "$ref": "#/$defs/DisplayBlock"
+          },
+          "type": "array"
+        },
+        "primary_argument": {
+          "description": "Bounded presentation text; byte-capped only, clients sanitize control characters.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[\\s\\S]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "tool": {
+          "$ref": "#/$defs/ToolIdentity"
+        }
+      },
+      "required": [
+        "title",
+        "tool"
+      ],
+      "type": "object"
+    },
+    "ToolSource": {
+      "description": "Where a published tool comes from.",
+      "oneOf": [
+        {
+          "description": "The daemon's base layer.",
+          "properties": {
+            "type": {
+              "const": "base",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "attachment": {
+              "maxLength": 40,
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_]{0,39}$",
+              "type": "string"
+            },
+            "capability": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_]{0,31}$",
+              "type": "string"
+            },
+            "runtime_id": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_]{0,31}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "runtime",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "runtime_id",
+            "attachment",
+            "capability"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "plugin": {
+              "type": "string"
+            },
+            "type": {
+              "const": "plugin",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "plugin"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "runtime_id": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_]{0,31}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "server": {
+              "type": "string"
+            },
+            "type": {
+              "const": "mcp",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "server"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
     },
     "ToolTerminationOutcome": {
       "enum": [
@@ -6273,7 +6426,7 @@
           "$ref": "#/$defs/AssistantToolCallRef"
         },
         "presentation": {
-          "$ref": "#/$defs/ToolCallPresentation"
+          "$ref": "#/$defs/ToolPresentation"
         },
         "tool_call_id": {
           "format": "uuid",

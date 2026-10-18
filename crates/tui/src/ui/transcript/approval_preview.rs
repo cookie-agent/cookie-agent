@@ -38,7 +38,7 @@ pub(in crate::ui) fn approval_operation_preview(
         return None;
     }
     let arguments = ParsedToolArguments::parse(&tool.arguments);
-    match tool.presentation.title.as_str() {
+    match tool.presentation.tool.name.as_str() {
         "bash" => arguments
             .as_ref()
             .and_then(|arguments| arguments.command.as_deref())

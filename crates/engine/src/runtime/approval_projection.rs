@@ -927,6 +927,7 @@ mod tests {
         let request = ApprovalRequest::new(
             ApprovalId::new_v7(),
             1,
+            cookie_agent_protocol::ToolCallId::new_v7(),
             ApprovalTrigger::PermissionPolicy,
             operation,
             vec![ApprovalEvaluation {
@@ -1135,7 +1136,9 @@ mod tests {
                                     tool_call_id: id,
                                     output: Default::default(),
                                     owner: owner.clone(),
-                                    presentation: cookie_agent_runtime_api::tool_title_only("bash"),
+                                    presentation: crate::test_support::base_presentation(
+                                        cookie_agent_runtime_api::tool_title_only("bash"),
+                                    ),
                                     operation_fingerprint: operation,
                                 },
                             },

@@ -37,7 +37,7 @@ pub(super) fn tool_diff<'a>(
     if is_unified_diff(&tool.detail) {
         return Some(ToolDiff::Unified(&tool.detail));
     }
-    match tool.presentation.title.as_str() {
+    match tool.presentation.tool.name.as_str() {
         "edit" => {
             let arguments = arguments?;
             Some(ToolDiff::Edit {

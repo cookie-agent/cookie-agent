@@ -141,7 +141,11 @@ pub(super) fn tool_header_row(
     suffix: &str,
     width: u16,
 ) -> (String, String) {
-    let chrome = tool_header_chrome(tool_icon(tool.presentation.title.as_str()), chevron, width);
+    let chrome = tool_header_chrome(
+        tool_icon(tool.presentation.tool.name.as_str()),
+        chevron,
+        width,
+    );
     let content =
         tool_header_content_width(width).saturating_sub(UnicodeWidthStr::width(chrome.as_str()));
     let (budget, suffix) = if UnicodeWidthStr::width(suffix) <= content {
@@ -211,7 +215,11 @@ pub(super) fn tool_header_title(tool: &crate::state::ToolCallState, budget: usiz
     }
     format!(
         "{title} {}",
-        abbreviate_tool_argument(title, argument.as_str(), argument_width)
+        abbreviate_tool_argument(
+            &tool.presentation.tool.name,
+            argument.as_str(),
+            argument_width
+        )
     )
 }
 
@@ -493,7 +501,7 @@ pub(super) fn display_tool_arguments(
     tool: &crate::state::ToolCallState,
     arguments: Option<&ParsedToolArguments<'_>>,
 ) -> String {
-    if matches!(tool.presentation.title.as_str(), "edit" | "write")
+    if matches!(tool.presentation.tool.name.as_str(), "edit" | "write")
         && let Some(path) = arguments.and_then(ParsedToolArguments::file_path)
     {
         return format!("filePath: {path} (content shown below)");
@@ -580,9 +588,13 @@ fn expanded_title_lines(
     width: u16,
 ) -> Vec<ToolBodyLine> {
     let name = tool.presentation.title.as_str();
-    let chrome = tool_header_chrome(tool_icon(name), header.chevron, width);
+    let chrome = tool_header_chrome(
+        tool_icon(tool.presentation.tool.name.as_str()),
+        header.chevron,
+        width,
+    );
     let indent = UnicodeWidthStr::width(chrome.as_str()) + UnicodeWidthStr::width(name) + 1;
-    let full = if name == "bash" {
+    let full = if tool.presentation.tool.name == "bash" {
         arguments
             .and_then(|arguments| arguments.command.as_deref())
             .map(bash_command_lines)
@@ -902,7 +914,7 @@ pub(super) fn tool_body_lines(
     if tool.status == ToolStatus::Completed {
         let path = arguments.and_then(ParsedToolArguments::file_path);
         let language = path.and_then(path_extension);
-        if tool.presentation.title.as_str() == "read"
+        if tool.presentation.tool.name.as_str() == "read"
             && let Some(read) = parse_read_output(&tool.detail)
         {
             return render_read_output(
@@ -915,7 +927,7 @@ pub(super) fn tool_body_lines(
                 context,
             );
         }
-        if matches!(tool.presentation.title.as_str(), "edit" | "write")
+        if matches!(tool.presentation.tool.name.as_str(), "edit" | "write")
             && let Some(diff) = tool_diff(tool, arguments)
         {
             return render_diff_output(

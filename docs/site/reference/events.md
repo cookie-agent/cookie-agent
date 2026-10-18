@@ -427,8 +427,10 @@ kind.
 
 ### Approvals
 
-`approval_requested` stores the request's `operation_fingerprint`, which the
-writer computes from the prepared operation and readers trust as written.
+`approval_requested` stores the request's `tool_call_id`, the call it gates,
+whose `tool_call_started` carries the call's presentation, and its
+`operation_fingerprint`, which the writer computes from the prepared operation
+and readers trust as written.
 An approval's lifecycle after its `approval_requested` is a series of
 `approval_step { approval_id, step }` records and one
 `approval_finalized { approval_id, outcome }`. `step` is
@@ -495,7 +497,16 @@ control characters; a request whose names do not fit is still sent, without
 a record. The TUI shows the latest record as a collapsible tools block under
 the system prompt.
 
-`tool_call_started` records the single/named output declaration, including
+`tool_call_started` records the call's `presentation`: its `title`, an
+optional `hint` label (for icons and grouping), an optional
+`primary_argument`, `arguments` and `preview` display blocks (absent when
+empty; clients then show the raw model arguments), and `tool`, which the
+daemon fills: `name` (the name the tool's source knows it by),
+`published_name` (the name the model called), and `source`, tagged by `type`:
+`base`, `runtime { runtime_id, attachment, capability }`, `plugin { plugin }`,
+or `mcp { server, runtime_id? }`. `source` is absent for a call that names no
+tool the session offers. Today's runtimes report only the title and display
+argument. It also records the single/named output declaration, including
 arbitrary named streams, and `background: true` when the call's tool supports
 the background, so a client may offer to move the running call there
 (`run.tool_background`); the field is absent otherwise.

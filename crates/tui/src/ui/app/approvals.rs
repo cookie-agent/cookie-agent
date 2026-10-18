@@ -469,13 +469,14 @@ fn approval_body(
         || crate::ui::management::action_label(first_action).to_owned(),
         |tool| tool.presentation.title.as_str().to_owned(),
     );
+    let name = tool.map_or(title.as_str(), |tool| tool.presentation.tool.name.as_str());
     let mut hero = vec![
-        Span::raw(approval_tool_icon(&title)),
+        Span::raw(approval_tool_icon(name)),
         Span::raw(" "),
         Span::styled(title.clone(), theme.heading()),
     ];
     // Bash's argument is its command, which the preview shows in full.
-    if title != "bash"
+    if name != "bash"
         && let Some(argument) = tool.and_then(|tool| tool.presentation.primary_argument.as_ref())
     {
         hero.push(Span::raw("  "));
@@ -1174,24 +1175,14 @@ impl App {
         });
     }
 
-    /// The tool call an approval gates: the call whose prepared operation
-    /// carries the same fingerprint, preferring one still running when an
-    /// identical call repeated.
+    /// The tool call an approval gates.
     fn approval_tool(&self, approval: &ApprovalState) -> Option<crate::state::ToolCallState> {
-        let tools = &self.store.sessions.get(&approval.session_id)?.tools;
-        let mut matching = tools
-            .values()
-            .filter(|tool| tool.operation_fingerprint == approval.operation_fingerprint);
-        let first = matching.next()?;
-        if first.status == ToolStatus::Running {
-            return Some(first.clone());
-        }
-        Some(
-            matching
-                .find(|tool| tool.status == ToolStatus::Running)
-                .unwrap_or(first)
-                .clone(),
-        )
+        self.store
+            .sessions
+            .get(&approval.session_id)?
+            .tools
+            .get(&approval.tool_call_id)
+            .cloned()
     }
 
     /// Draw the approval panel docked with its bottom edge at `dock_bottom`

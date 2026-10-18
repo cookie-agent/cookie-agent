@@ -92,7 +92,7 @@ use crate::{
     markdown::{Highlighter, SyntectHighlighter},
     state::{
         ApprovalState, DeliveryOutcome, EMPTY_RUNTIME_GUIDANCE, EventLevel, RuntimePhase,
-        RuntimeState, StateStore, ToolStatus, TranscriptItem, approval_state_from_record,
+        RuntimeState, StateStore, TranscriptItem, approval_state_from_record,
     },
     theme::{DecisionTone, Theme},
 };

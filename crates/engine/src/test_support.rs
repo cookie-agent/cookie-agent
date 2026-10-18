@@ -203,3 +203,21 @@ pub(crate) fn internal_agent_definitions()
     )
     .collect()
 }
+
+/// `presentation` as `tool_call_started` stores it for base-layer tool
+/// `presentation.title`.
+pub(crate) fn base_presentation(
+    presentation: cookie_agent_protocol::ToolCallPresentation,
+) -> cookie_agent_protocol::ToolPresentation {
+    let name = presentation.title.to_string();
+    cookie_agent_protocol::ToolPresentation::from_call(
+        presentation,
+        cookie_agent_protocol::ToolIdentity {
+            name: name.clone(),
+            published_name: name,
+            source: Some(cookie_agent_protocol::Open::Known(
+                cookie_agent_protocol::ToolSource::Base,
+            )),
+        },
+    )
+}

@@ -12,7 +12,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ArtifactRef, AttachmentName, CapabilityName, Open, RuntimeId, SessionId, human_bytes};
+use crate::{
+    ArtifactRef, AttachmentName, BoundedDisplayText, CapabilityName, Open, RuntimeId,
+    SafeDisplayText, SessionId, human_bytes,
+};
 
 /// The serialized size all display blocks of one result share.
 pub const DISPLAY_BUDGET_BYTES: usize = 64 * 1024;
@@ -1385,20 +1388,23 @@ pub struct ToolIdentity {
     pub name: String,
     /// The name the model sees.
     pub published_name: String,
-    pub source: Open<ToolSource>,
+    /// Absent when the call names no tool the session offers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Open<ToolSource>>,
 }
 
 /// The presentation a runtime or plugin supplies from prepare.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct PreparedPresentation {
-    pub title: String,
-    pub hint: ToolHint,
+    pub title: SafeDisplayText,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub primary_argument: Option<String>,
+    pub hint: Option<ToolHint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_argument: Option<BoundedDisplayText>,
     /// The call's arguments; clients fall back to the raw model arguments
-    /// when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub arguments: Option<Vec<Open<DisplayBlock>>>,
+    /// when it is empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<Open<DisplayBlock>>,
     /// What the call will do, such as a diff as of prepare.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preview: Vec<Open<DisplayBlock>>,
@@ -1408,13 +1414,18 @@ pub struct PreparedPresentation {
 /// daemon resolved.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct ToolPresentation {
-    pub title: String,
-    pub hint: ToolHint,
+    pub title: SafeDisplayText,
+    /// What the tool is for, for icons and grouping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<ToolHint>,
     pub tool: ToolIdentity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub primary_argument: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub arguments: Option<Vec<Open<DisplayBlock>>>,
+    pub primary_argument: Option<BoundedDisplayText>,
+    /// The call's arguments; clients fall back to the raw model arguments
+    /// when it is empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<Open<DisplayBlock>>,
+    /// What the call will do, such as a diff as of prepare.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preview: Vec<Open<DisplayBlock>>,
 }
@@ -1437,6 +1448,26 @@ impl ToolPresentation {
             arguments,
             preview,
         }
+    }
+
+    /// The presentation of a title and display argument, as prepare reports
+    /// them today: no hint, arguments, or preview.
+    #[must_use]
+    pub fn from_call(presentation: crate::ToolCallPresentation, tool: ToolIdentity) -> Self {
+        Self {
+            title: presentation.title,
+            hint: None,
+            tool,
+            primary_argument: presentation.primary_argument,
+            arguments: Vec::new(),
+            preview: Vec::new(),
+        }
+    }
+
+    /// Checks the presentation as a writer must before storing it.
+    pub fn validate(&self) -> Result<(), DisplayBlockError> {
+        validate_display(&self.arguments)?;
+        validate_display(&self.preview)
     }
 }
 

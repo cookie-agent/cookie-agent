@@ -774,13 +774,13 @@ pub struct ToolCallPresentation {
     pub primary_argument: Option<BoundedDisplayText>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolCallStart {
     pub tool_call_id: ToolCallId,
     pub output: crate::ToolOutputDeclaration,
     pub owner: AssistantToolCallRef,
-    pub presentation: ToolCallPresentation,
+    pub presentation: ToolPresentation,
     pub operation_fingerprint: OperationFingerprint,
     /// Whether the call's tool supports the background, so a client may
     /// offer to move the call there.
@@ -3094,6 +3094,10 @@ impl EventPayload {
                 if start.owner.model_turn_seq == 0 {
                     return Err(EventSchemaError::ZeroModelTurnSequence);
                 }
+                start
+                    .presentation
+                    .validate()
+                    .map_err(|_| EventSchemaError::InvalidDisplay)?;
             }
             Self::ToolCallProgress {
                 display: Some(Open::Known(delta)),

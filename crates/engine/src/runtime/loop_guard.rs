@@ -239,7 +239,9 @@ mod tests {
                     tool_call_id: id,
                     output: Default::default(),
                     owner: owner(),
-                    presentation: cookie_agent_runtime_api::tool_title_only("bash"),
+                    presentation: crate::test_support::base_presentation(
+                        cookie_agent_runtime_api::tool_title_only("bash"),
+                    ),
                     operation_fingerprint: fingerprint(operation),
                 },
             });

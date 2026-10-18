@@ -113,8 +113,9 @@ which nothing set. The input-lane events store `content` (user content: text
 and file parts) instead of `input`, `user_input_transformed` stores
 `original_content`, and `message_injected` and producer message bodies are
 text-only user content. A tool result's `display` is a list of display
-blocks, and `tool_call_progress.display` a display delta. Older clients are
-rejected.
+blocks, and `tool_call_progress.display` a display delta;
+`tool_call_started.presentation` names the tool and its source, and
+approval requests name their `tool_call_id`. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility

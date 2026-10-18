@@ -1195,6 +1195,15 @@ impl ToolProvider for PluginToolProvider {
         Some(self.plugin.name.clone())
     }
 
+    fn tool_source(
+        &self,
+        _tool_name: &str,
+    ) -> Option<cookie_agent_runtime_api::ProvidedToolSource> {
+        Some(cookie_agent_runtime_api::ProvidedToolSource::Plugin {
+            plugin: self.plugin.name.clone(),
+        })
+    }
+
     fn get_permission_name(_tool_name: &str) -> Result<Option<&'static str>, ToolError>
     where
         Self: Sized,

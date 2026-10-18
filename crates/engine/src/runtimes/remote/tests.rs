@@ -1111,6 +1111,13 @@ async fn the_local_runtime_hosts_its_template_mcp_servers() {
         echo.source.origin.runtime().map(|runtime| runtime.id()),
         Some("local")
     );
+    // Its calls' presentations name the MCP server.
+    assert_eq!(
+        echo.source.provider.tool_source(&echo.spec.name),
+        Some(cookie_agent_runtime_api::ProvidedToolSource::Mcp {
+            server: "fixture".into()
+        })
+    );
 
     // A reconnect is routed to the local runtime; a failed one reaches
     // clients with the runtime and workspace.

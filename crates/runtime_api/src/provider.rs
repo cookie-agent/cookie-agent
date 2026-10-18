@@ -117,6 +117,13 @@ pub trait ToolProvider: Send + Sync {
     fn composition_source(&self) -> Option<String> {
         None
     }
+
+    /// Where `tool_name` comes from when it is not this provider's layer or
+    /// runtime itself: a plugin's tool, or one an MCP server publishes
+    /// through the provider. Clients see it on the call's presentation.
+    fn tool_source(&self, _tool_name: &str) -> Option<ProvidedToolSource> {
+        None
+    }
     /// Claims a currently undiscovered dynamic tool, allowing preparation to make it available.
     fn permission_for_unlisted_tool(
         &self,
@@ -168,6 +175,16 @@ pub trait ToolProvider: Send + Sync {
         }
         prepared
     }
+}
+
+/// The source a provider names for one of its tools
+/// ([`ToolProvider::tool_source`]).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProvidedToolSource {
+    /// A tool of plugin `plugin`.
+    Plugin { plugin: String },
+    /// A tool of MCP server `server`.
+    Mcp { server: String },
 }
 
 /// A call's presentation with only its tool name as the title.

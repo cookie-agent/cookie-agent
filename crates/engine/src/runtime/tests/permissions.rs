@@ -536,6 +536,7 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
                     request: ApprovalRequest::new(
                         approval_id,
                         1,
+                        cookie_agent_protocol::ToolCallId::new_v7(),
                         ApprovalTrigger::PermissionPolicy,
                         operation.clone(),
                         vec![ApprovalEvaluation {

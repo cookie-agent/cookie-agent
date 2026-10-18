@@ -401,6 +401,7 @@ fn approval_request() -> ApprovalRequest {
     ApprovalRequest::new(
         ApprovalId::new_v7(),
         7,
+        cookie_agent_protocol::ToolCallId::new_v7(),
         ApprovalTrigger::PermissionPolicy,
         operation,
         vec![ApprovalEvaluation {
