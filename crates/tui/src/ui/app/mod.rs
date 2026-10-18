@@ -1795,10 +1795,12 @@ async fn event_loop(
             suspend_terminal();
             let edited = edit_blocking(&request);
             let resumed = resume_terminal().context("resume the terminal");
-            events = EventStream::new();
+            // Clear before the event stream reads stdin again, so it cannot
+            // take the terminal's answer to the clear's cursor query.
             if let Err(error) = resumed.and_then(|()| terminal.clear().context("redraw")) {
                 return (Err(error), app.session_errors.clone());
             }
+            events = EventStream::new();
             app.finish_config_edit(request, edited);
             render.mark_immediate();
         }

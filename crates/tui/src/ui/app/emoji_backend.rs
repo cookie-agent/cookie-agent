@@ -108,8 +108,15 @@ impl<B: Backend> Backend for EmojiBackend<B> {
         self.inner.show_cursor()
     }
 
+    /// The cursor position, or the origin when the terminal does not answer.
+    ///
+    /// Ratatui reads it only to put the cursor back after `clear`, and the
+    /// full-screen TUI places the cursor itself on every frame. The answer
+    /// arrives on stdin, so it can be lost or late right after a child that
+    /// owned the terminal (the `/config` editor) exits; that must not end
+    /// the TUI.
     fn get_cursor_position(&mut self) -> Result<Position, Self::Error> {
-        self.inner.get_cursor_position()
+        Ok(self.inner.get_cursor_position().unwrap_or(Position::ORIGIN))
     }
 
     fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> Result<(), Self::Error> {
@@ -205,6 +212,72 @@ mod tests {
     #[test]
     fn unchanged_emoji_and_shadow_are_not_resent() {
         assert!(!drawn("a❤️b", "a❤️b").contains('❤'));
+    }
+
+    /// A terminal that never answers the cursor-position query.
+    struct Mute(ratatui::backend::TestBackend);
+
+    impl Backend for Mute {
+        type Error = std::io::Error;
+
+        fn draw<'a, I>(&mut self, content: I) -> std::io::Result<()>
+        where
+            I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+        {
+            self.0.draw(content).map_err(|never| match never {})
+        }
+
+        fn hide_cursor(&mut self) -> std::io::Result<()> {
+            self.0.hide_cursor().map_err(|never| match never {})
+        }
+
+        fn show_cursor(&mut self) -> std::io::Result<()> {
+            self.0.show_cursor().map_err(|never| match never {})
+        }
+
+        fn get_cursor_position(&mut self) -> std::io::Result<ratatui::layout::Position> {
+            Err(std::io::Error::other(
+                "The cursor position could not be read within a normal duration",
+            ))
+        }
+
+        fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+            &mut self,
+            position: P,
+        ) -> std::io::Result<()> {
+            self.0
+                .set_cursor_position(position)
+                .map_err(|never| match never {})
+        }
+
+        fn clear(&mut self) -> std::io::Result<()> {
+            self.0.clear().map_err(|never| match never {})
+        }
+
+        fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> std::io::Result<()> {
+            self.0
+                .clear_region(clear_type)
+                .map_err(|never| match never {})
+        }
+
+        fn size(&self) -> std::io::Result<ratatui::layout::Size> {
+            self.0.size().map_err(|never| match never {})
+        }
+
+        fn window_size(&mut self) -> std::io::Result<ratatui::backend::WindowSize> {
+            self.0.window_size().map_err(|never| match never {})
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0.flush().map_err(|never| match never {})
+        }
+    }
+
+    #[test]
+    fn clear_survives_a_terminal_that_does_not_report_the_cursor() {
+        let backend = EmojiBackend::new(Mute(ratatui::backend::TestBackend::new(6, 2)));
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal.clear().expect("clear without a cursor answer");
     }
 
     #[test]
