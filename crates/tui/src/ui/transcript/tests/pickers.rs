@@ -986,9 +986,10 @@ async fn committed_fallback_updates_next_draft_but_preserves_explicit_picker_res
     assert_eq!(app.draft.as_ref().unwrap().model, b.selection);
     assert_eq!(
         app.store.sessions[&session]
-            .run_selected_suffix
+            .run_snapshot
             .as_ref()
-            .unwrap()[0]
+            .unwrap()
+            .selected_suffix()[0]
             .selection,
         a.selection,
         "frozen run history is unchanged"

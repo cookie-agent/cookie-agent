@@ -404,6 +404,22 @@ pub(crate) fn frozen_binding(
     }
 }
 
+/// The form session history stores `binding` in.
+pub(crate) fn persisted_binding(
+    binding: cookie_agent_protocol::FrozenModelBinding,
+) -> cookie_agent_protocol::PersistedModelBinding {
+    let resolved = cookie_agent_protocol::ResolvedModelRef {
+        selection: binding.selection.clone(),
+        provider_id: binding.selection.model.provider_id(),
+        model_id: binding.selection.model.model_id(),
+        adapter_id: cookie_agent_protocol::AdaptorId::new(binding.descriptor.adapter_id.as_str())
+            .expect("adapter label"),
+        selection_fingerprint: binding.selection_fingerprint.clone(),
+    };
+    cookie_agent_protocol::PersistedModelBinding::new(&binding, resolved)
+        .expect("persisted binding")
+}
+
 pub(crate) fn attribution(variant: Option<&str>) -> FrozenAssistantAttribution {
     FrozenAssistantAttribution {
         agent: agent_id(),
@@ -538,7 +554,6 @@ pub(crate) fn session_created_from_bindings(
             creation_selection: selection.clone(),
             creation_agent: Box::new(cookie_agent_protocol::AgentSnapshot {
                 agent: selection.agent.clone(),
-                schema: cookie_agent_protocol::AgentSchemaVersion::current(),
                 mode: cookie_agent_protocol::AgentMode::Primary,
                 description: "Test primary agent".into(),
                 document_source: cookie_agent_protocol::AgentDocumentSource::User,
@@ -548,7 +563,7 @@ pub(crate) fn session_created_from_bindings(
                 max_output_tokens: 0,
                 permissions: Vec::new(),
                 delegation: None,
-                fallback_chain: chain,
+                fallback_chain: chain.into_iter().map(persisted_binding).collect(),
                 selected_suffix_start: suffix_start,
             }),
             runtime_revision: protocol_revision("1"),
@@ -1975,6 +1990,7 @@ pub(crate) fn run_started_with_suffix(
         .iter()
         .cloned()
         .map(frozen_binding)
+        .map(persisted_binding)
         .collect::<Vec<_>>();
     let selection = RunSelection {
         agent: agent_id(),
@@ -1990,7 +2006,6 @@ pub(crate) fn run_started_with_suffix(
             selection: selection.clone(),
             agent: Box::new(cookie_agent_protocol::AgentSnapshot {
                 agent: agent_id(),
-                schema: cookie_agent_protocol::AgentSchemaVersion::current(),
                 mode: cookie_agent_protocol::AgentMode::Primary,
                 description: "Test primary agent".into(),
                 document_source: cookie_agent_protocol::AgentDocumentSource::User,
@@ -2010,7 +2025,6 @@ pub(crate) fn run_started_with_suffix(
             agent_revision: protocol_revision("5"),
             recipe_registry_revision: protocol_revision("6"),
             manifest_revision: protocol_revision("7"),
-            selected_suffix: snapshot_chain,
             internal_agents: Vec::new(),
             input_through_seq: seq,
         },

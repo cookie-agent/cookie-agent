@@ -12,8 +12,8 @@ use cookie_agent_models::{
     provider_store::ProviderStore,
 };
 use cookie_agent_protocol::{
-    AgentDocumentSource, AgentId, AgentMode, AgentSchemaVersion, AgentSnapshot, CatalogRevision,
-    FrozenModelBinding, ModelSelection, ProviderModelId, RunSelection, Sha256Digest, VariantId,
+    AgentDocumentSource, AgentId, AgentMode, AgentSnapshot, CatalogRevision, FrozenModelBinding,
+    ModelSelection, PersistedModelBinding, ProviderModelId, RunSelection, Sha256Digest, VariantId,
 };
 use jiff::Timestamp;
 use tempfile::TempDir;
@@ -142,11 +142,15 @@ pub(crate) fn run_selection(agent: &str) -> RunSelection {
     }
 }
 
+/// The form session history stores `binding` in.
+pub(crate) fn persisted(binding: &FrozenModelBinding) -> PersistedModelBinding {
+    crate::policy::persisted_binding(binding).expect("persisted test binding")
+}
+
 pub(crate) fn agent_snapshot(agent: &str, mode: AgentMode) -> AgentSnapshot {
     let binding = model_binding();
     AgentSnapshot {
         agent: AgentId::new(agent).expect("agent ID"),
-        schema: AgentSchemaVersion::current(),
         mode,
         description: format!("Test {agent} agent"),
         document_source: AgentDocumentSource::User,
@@ -156,7 +160,17 @@ pub(crate) fn agent_snapshot(agent: &str, mode: AgentMode) -> AgentSnapshot {
         max_output_tokens: 0,
         permissions: Vec::new(),
         delegation: None,
-        fallback_chain: vec![binding],
+        fallback_chain: vec![persisted(&binding)],
         selected_suffix_start: 0,
     }
+}
+
+/// The manifest revision of a stored test binding.
+pub(crate) fn manifest_of(
+    binding: &PersistedModelBinding,
+) -> cookie_agent_protocol::ModelSnapshotRevision {
+    binding
+        .decode()
+        .expect("test binding decodes")
+        .manifest_revision
 }

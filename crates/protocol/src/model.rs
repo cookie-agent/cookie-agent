@@ -97,87 +97,6 @@ impl JsonSchema for AdaptorId {
     }
 }
 
-pub(crate) struct LanguageModelDescriptorSchema;
-
-impl JsonSchema for LanguageModelDescriptorSchema {
-    fn inline_schema() -> bool {
-        true
-    }
-
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("LanguageModelDescriptor")
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type":"object",
-            "additionalProperties":false,
-            "properties":{
-                "identity":{
-                    "type":"object","additionalProperties":false,
-                    "properties":{
-                        "provider_id":{"type":"string","minLength":1},
-                        "model_id":{"type":"string","minLength":1}
-                    },
-                    "required":["provider_id","model_id"]
-                },
-                "adapter_id":{"type":"string","minLength":1},
-                "capabilities":{
-                    "type":"object","additionalProperties":false,
-                    "properties":{
-                        "features":{"type":"array","uniqueItems":true,"items":{"type":"string","enum":["tool_calling","parallel_tools","tool_input_deltas","reasoning","structured_output","temperature","top_p","max_output_tokens","prompt_caching","usage","provider_tools","sources"]}},
-                        "limits":{
-                            "type":"object","additionalProperties":false,
-                            "properties":{
-                                "context":{"type":["integer","null"],"minimum":0},
-                                "input":{"type":["integer","null"],"minimum":0},
-                                "output":{"type":["integer","null"],"minimum":0}
-                            },
-                            "required":["context","input","output"]
-                        },
-                        "modalities":{
-                            "type":"object","additionalProperties":false,
-                            "properties":{
-                                "input":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"string","minLength":1}},
-                                "output":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"string","minLength":1}}
-                            },
-                            "required":["input","output"]
-                        },
-                        "media":{
-                            "type":"object","additionalProperties":false,
-                            "properties":{
-                                "input":{"type":"object","additionalProperties":{
-                                    "type":"object","additionalProperties":false,
-                                    "properties":{
-                                        "media_types":{"type":"array","minItems":1,"items":{"type":"string","minLength":3}},
-                                        "sources":{"type":"array","minItems":1,"uniqueItems":true,"items":{"type":"string","enum":["inline_bytes","inline_text","url","provider_reference"]}}
-                                    },
-                                    "required":["media_types","sources"]
-                                }}
-                            },
-                            "required":["input"]
-                        },
-                        "cancellation":{"type":"string","enum":["local_only","remote_best_effort","unsupported"]},
-                        "compaction":{"type":"string","const":"unsupported"},
-                        "replay":{
-                            "type":"object","additionalProperties":false,
-                            "properties":{
-                                "policy":{"type":"string","enum":["never","if_valid","always"]},
-                                "capability":{"type":"string","enum":["required","optional","unsupported"]},
-                                "reasoning":{"type":"boolean"}
-                            },
-                            "required":["policy","capability","reasoning"]
-                        }
-                    },
-                    "required":["features","limits","modalities","media","cancellation","compaction","replay"]
-                },
-                "provider_metadata":{"type":"object"}
-            },
-            "required":["identity","adapter_id","capabilities","provider_metadata"]
-        })
-    }
-}
-
 #[derive(
     Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
@@ -1285,7 +1204,10 @@ impl<'de> Deserialize<'de> for ResolvedModelRef {
     }
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
+/// A model binding frozen for a run: everything the engine needs to send the
+/// run's requests the same way again. It is an engine type and never crosses
+/// a surface; session history stores it as [`PersistedModelBinding`].
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenModelBinding {
     pub manifest_revision: ModelSnapshotRevision,
@@ -1300,7 +1222,6 @@ pub struct FrozenModelBinding {
     pub protocol_recipe: ProtocolRecipeId,
     pub setup_recipe: ProviderSetupRecipeId,
     pub compiler_version: RecipeCompilerVersion,
-    #[schemars(with = "LanguageModelDescriptorSchema")]
     pub descriptor: oven_sdk::LanguageModelDescriptor,
     pub defaults: FrozenResolvedRequestDefaults,
     pub options: FrozenProviderOptions,
@@ -1445,6 +1366,122 @@ impl<'de> Deserialize<'de> for FrozenModelBinding {
     }
 }
 
+/// A frozen model binding as session history stores it: the identity a
+/// reader needs to attribute and validate records, and the complete binding
+/// as an opaque value.
+///
+/// `frozen` is today's [`FrozenModelBinding`] (descriptor, request defaults,
+/// provider options, credential and setup bindings, static headers). Nothing
+/// decodes it when a log loads; [`Self::decode`] does, best-effort, only
+/// where the engine runs the binding again.
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
+pub struct PersistedModelBinding {
+    #[schemars(with = "crate::RequiredModelSelectionSchema")]
+    pub selection: ModelSelection,
+    pub provider_id: ProviderId,
+    pub provider_model_id: ProviderModelId,
+    /// The protocol adapter the binding speaks, such as
+    /// `oven.openai.responses`.
+    #[schemars(length(min = 1, max = 256))]
+    pub adapter: String,
+    /// The model reference attempts made with this binding record.
+    pub resolved: ResolvedModelRef,
+    pub selection_fingerprint: Sha256Digest,
+    pub blueprint_fingerprint: Sha256Digest,
+    /// The complete binding, opaque to readers.
+    pub frozen: serde_json::Value,
+}
+
+impl PersistedModelBinding {
+    pub const MAX_ADAPTER_BYTES: usize = 256;
+
+    /// The stored form of `binding`, whose attempts record `resolved`.
+    pub fn new(
+        binding: &FrozenModelBinding,
+        resolved: ResolvedModelRef,
+    ) -> Result<Self, ModelSchemaError> {
+        let value = Self {
+            selection: binding.selection.clone(),
+            provider_id: binding.selection.model.provider_id(),
+            provider_model_id: binding.selection.model.model_id(),
+            adapter: binding.descriptor.adapter_id.as_str().to_owned(),
+            resolved,
+            selection_fingerprint: binding.selection_fingerprint.clone(),
+            blueprint_fingerprint: binding.blueprint_fingerprint.clone(),
+            frozen: serde_json::to_value(binding)
+                .map_err(|_| ModelSchemaError::FingerprintEncoding)?,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    /// Checks that the stored identity agrees with itself. `frozen` is not
+    /// looked at.
+    pub fn validate(&self) -> Result<(), ModelSchemaError> {
+        if self.selection.model.provider_id() != self.provider_id
+            || self.selection.model.model_id() != self.provider_model_id
+            || self.resolved.selection != self.selection
+            || self.resolved.selection_fingerprint != self.selection_fingerprint
+        {
+            return Err(ModelSchemaError::ResolvedIdentityMismatch);
+        }
+        if self.adapter.is_empty()
+            || self.adapter.len() > Self::MAX_ADAPTER_BYTES
+            || self.adapter.chars().any(char::is_control)
+        {
+            return Err(ModelSchemaError::InvalidAdapter);
+        }
+        self.resolved.validate()
+    }
+
+    /// The complete binding, when this build can read it and it is the
+    /// binding the stored identity names.
+    pub fn decode(&self) -> Result<FrozenModelBinding, ModelSchemaError> {
+        let binding = FrozenModelBinding::deserialize(&self.frozen)
+            .map_err(|_| ModelSchemaError::UnreadableFrozenBinding)?;
+        if binding.selection != self.selection
+            || binding.selection_fingerprint != self.selection_fingerprint
+            || binding.blueprint_fingerprint != self.blueprint_fingerprint
+            || binding.descriptor.adapter_id.as_str() != self.adapter
+        {
+            return Err(ModelSchemaError::UnreadableFrozenBinding);
+        }
+        Ok(binding)
+    }
+}
+impl<'de> Deserialize<'de> for PersistedModelBinding {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            #[serde(deserialize_with = "crate::deserialize_required_model_selection")]
+            selection: ModelSelection,
+            provider_id: ProviderId,
+            provider_model_id: ProviderModelId,
+            adapter: String,
+            resolved: ResolvedModelRef,
+            selection_fingerprint: Sha256Digest,
+            blueprint_fingerprint: Sha256Digest,
+            frozen: serde_json::Value,
+        }
+        let w = Wire::deserialize(d)?;
+        let value = Self {
+            selection: w.selection,
+            provider_id: w.provider_id,
+            provider_model_id: w.provider_model_id,
+            adapter: w.adapter,
+            resolved: w.resolved,
+            selection_fingerprint: w.selection_fingerprint,
+            blueprint_fingerprint: w.blueprint_fingerprint,
+            frozen: w.frozen,
+        };
+        value.validate().map_err(serde::de::Error::custom)?;
+        Ok(value)
+    }
+}
+
 fn validate_display_name(value: &str) -> Result<(), ModelSchemaError> {
     if value.trim().is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
         Err(ModelSchemaError::InvalidDisplayName)
@@ -1480,6 +1517,8 @@ pub enum ModelSchemaError {
     FingerprintEncoding,
     SelectionFingerprintMismatch,
     InvalidFrozenDefaults,
+    InvalidAdapter,
+    UnreadableFrozenBinding,
 }
 impl fmt::Display for ModelSchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1529,6 +1568,12 @@ impl fmt::Display for ModelSchemaError {
                 "selection fingerprint does not match the complete frozen model binding"
             }
             Self::InvalidFrozenDefaults => "invalid frozen request defaults",
+            Self::InvalidAdapter => {
+                "binding adapter must be nonempty, control-free, and at most 256 bytes"
+            }
+            Self::UnreadableFrozenBinding => {
+                "stored model binding is not a binding this build can run"
+            }
         })
     }
 }

@@ -642,7 +642,6 @@ fn run_started_event(seq: u64, run: RunId, binding: &FrozenModelBinding) -> Stor
             recipe_registry_revision: cookie_agent_protocol::RecipeRegistryRevision::new(revision)
                 .unwrap(),
             manifest_revision: binding.manifest_revision.clone(),
-            selected_suffix: agent.fallback_chain.clone(),
             internal_agents: Vec::new(),
             agent: Box::new(agent),
             input_through_seq: seq,

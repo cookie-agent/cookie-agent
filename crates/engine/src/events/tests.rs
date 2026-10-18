@@ -63,7 +63,7 @@ fn stored_event() -> StoredEvent {
             origin: SessionOrigin::Root,
             cwd_identity: CwdIdentity::new("workspace:test").expect("cwd identity"),
             creation_selection: run_selection("test"),
-            manifest_revision: agent.fallback_chain[0].manifest_revision.clone(),
+            manifest_revision: crate::test_support::manifest_of(&agent.fallback_chain[0]),
             creation_agent: Box::new(agent),
             runtime_revision: runtime_revision(),
             catalog_revision: catalog_revision(),
@@ -195,7 +195,7 @@ fn attribution_records() -> Vec<StoredEvent> {
         fallback_binding("fallback-two"),
     ];
     let mut agent = agent_snapshot("test", AgentMode::Primary);
-    agent.fallback_chain = suffix.to_vec();
+    agent.fallback_chain = suffix.iter().map(crate::test_support::persisted).collect();
     let selection = RunSelection {
         agent: agent.agent.clone(),
         model: suffix[0].selection.clone(),
@@ -219,7 +219,6 @@ fn attribution_records() -> Vec<StoredEvent> {
                 agent_revision: agent_revision(),
                 recipe_registry_revision: registry_revision(),
                 manifest_revision: suffix[0].manifest_revision.clone(),
-                selected_suffix: suffix.to_vec(),
                 internal_agents: Vec::new(),
                 input_through_seq: 1,
             },
@@ -679,11 +678,7 @@ fn reference_validate_records(
                     );
                 }
             }
-            EventPayload::RunStarted {
-                agent,
-                selected_suffix,
-                ..
-            } => {
+            EventPayload::RunStarted { agent, .. } => {
                 let Some(run_id) = record.run_id else {
                     return corrupt(path, "RunStarted is missing run_id");
                 };
@@ -691,9 +686,10 @@ fn reference_validate_records(
                     start_seq: record.seq,
                     agent_id: agent.agent.clone(),
                     prompt_fingerprint: agent.prompt_fingerprint.clone(),
-                    selected_suffix: selected_suffix
+                    selected_suffix: agent
+                        .selected_suffix()
                         .iter()
-                        .map(crate::policy::wire_resolved)
+                        .map(|binding| binding.resolved.clone())
                         .collect(),
                     active_fallback_index: 0,
                     next_attempt_ordinal: 1,
@@ -1753,26 +1749,20 @@ fn current_delegation_records() -> Vec<StoredEvent> {
     records.truncate(2);
     let session_id = records[0].session_id;
     let parent_run_id = records[1].run_id.expect("parent run");
-    let EventPayload::RunStarted {
-        agent,
-        selected_suffix,
-        ..
-    } = &records[1].payload
-    else {
+    let EventPayload::RunStarted { agent, .. } = &records[1].payload else {
         unreachable!("second fixture event starts the run");
     };
     let child_agent = agent.as_ref().clone();
-    let selected_suffix = selected_suffix.clone();
+    let suffix_len = child_agent.selected_suffix().len();
     let append_lifecycle = |records: &mut Vec<StoredEvent>,
                             invocation_id: InvocationId,
                             child_session_id: SessionId,
                             child_run_id: RunId,
                             request: DelegateRequestPayload,
                             attached: bool| {
-        let cache_strategies = vec![None; selected_suffix.len()];
+        let cache_strategies = vec![None; suffix_len];
         let request_fingerprint = crate::delegation_events::delegation_request_fingerprint(
             &child_agent,
-            &selected_suffix,
             &cache_strategies,
             &request,
         )
@@ -1791,14 +1781,15 @@ fn current_delegation_records() -> Vec<StoredEvent> {
             EventPayload::DelegationReserved {
                 reservation,
                 child_agent: Box::new(child_agent.clone()),
-                manifest_revision: selected_suffix[0].manifest_revision.clone(),
+                manifest_revision: crate::test_support::manifest_of(
+                    &child_agent.selected_suffix()[0],
+                ),
                 runtime_revision: runtime_revision(),
                 catalog_revision: catalog_revision(),
                 provider_state_revision: provider_revision(),
                 model_revision: model_revision(),
                 agent_revision: agent_revision(),
                 recipe_registry_revision: registry_revision(),
-                selected_suffix: selected_suffix.clone(),
                 cache_strategies,
                 request_fingerprint,
                 request,
@@ -2296,7 +2287,9 @@ fn event_log_best_effort_reader_applies_all_three_tiers() {
     crate::model_history::assemble_full_history(
         &events,
         &artifacts,
-        &creation_agent.fallback_chain[0],
+        &creation_agent.fallback_chain[0]
+            .decode()
+            .expect("creation binding"),
         "system",
     )
     .expect("model history tolerates skipped records");
@@ -3068,8 +3061,7 @@ fn event_log_rejects_cross_run_approval_lifecycle() {
                 model_revision: model_revision(),
                 agent_revision: agent_revision(),
                 recipe_registry_revision: registry_revision(),
-                manifest_revision: agent.fallback_chain[0].manifest_revision.clone(),
-                selected_suffix: agent.fallback_chain.clone(),
+                manifest_revision: crate::test_support::manifest_of(&agent.fallback_chain[0]),
                 internal_agents: Vec::new(),
                 agent: Box::new(agent),
                 input_through_seq: 1,
@@ -3243,11 +3235,10 @@ fn event_log_accepts_abandoned_attempt_after_its_committed_partial_turn() {
 fn event_log_rejects_forged_attempt_attribution() {
     let records = attribution_records();
     let suffix = match &records[1].payload {
-        EventPayload::RunStarted {
-            selected_suffix, ..
-        } => selected_suffix
+        EventPayload::RunStarted { agent, .. } => agent
+            .selected_suffix()
             .iter()
-            .map(wire_resolved)
+            .map(|binding| binding.resolved.clone())
             .collect::<Vec<_>>(),
         _ => unreachable!(),
     };
@@ -3317,11 +3308,10 @@ fn event_log_rejects_forged_attempt_attribution() {
 fn event_log_rejects_inconsistent_fallback_transitions() {
     let records = attribution_records();
     let suffix = match &records[1].payload {
-        EventPayload::RunStarted {
-            selected_suffix, ..
-        } => selected_suffix
+        EventPayload::RunStarted { agent, .. } => agent
+            .selected_suffix()
             .iter()
-            .map(wire_resolved)
+            .map(|binding| binding.resolved.clone())
             .collect::<Vec<_>>(),
         _ => unreachable!(),
     };

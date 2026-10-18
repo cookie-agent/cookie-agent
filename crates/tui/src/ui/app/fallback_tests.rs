@@ -1,6 +1,6 @@
 use super::*;
 use cookie_agent_protocol::{
-    EventSubscriptionMessage, FrozenModelBinding, MessageFrame, Transport, TransportError,
+    EventSubscriptionMessage, MessageFrame, PersistedModelBinding, Transport, TransportError,
 };
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -26,8 +26,8 @@ struct Harness {
     responses: mpsc::UnboundedSender<MessageFrame>,
     template: StoredEvent,
     history: Vec<StoredEvent>,
-    a: FrozenModelBinding,
-    b: FrozenModelBinding,
+    a: PersistedModelBinding,
+    b: PersistedModelBinding,
 }
 
 impl Harness {
@@ -44,13 +44,12 @@ impl Harness {
         )
         .unwrap();
         let EventPayload::RunStarted {
-            selected_suffix,
-            selection,
-            ..
+            agent, selection, ..
         } = &template.payload
         else {
             unreachable!()
         };
+        let selected_suffix = agent.selected_suffix();
         let a = selected_suffix[0].clone();
         let b = selected_suffix[1].clone();
         let digest = cookie_agent_protocol::Sha256Digest::of_bytes(b"fallback test");

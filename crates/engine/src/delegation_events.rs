@@ -18,40 +18,22 @@ use crate::session::{SessionError, SessionStore};
 
 pub(crate) fn delegation_request_fingerprint(
     child_agent: &AgentSnapshot,
-    selected_suffix: &[FrozenModelBinding],
     cache_strategies: &[Option<FrozenCacheStrategy>],
     request: &DelegateRequestPayload,
 ) -> Result<Sha256Digest, ()> {
-    let payload = if cache_strategies.is_empty() {
-        serde_json::to_vec(&(
-            &child_agent.agent,
-            &request.description,
-            &request.prompt,
-            &request.title,
-            &request.resume_session_id,
-            request.inherit_context,
-            request.background,
-            &request.seeded_context,
-            child_agent,
-            selected_suffix,
-            &request.staged_skill,
-        ))
-    } else {
-        serde_json::to_vec(&(
-            &child_agent.agent,
-            &request.description,
-            &request.prompt,
-            &request.title,
-            &request.resume_session_id,
-            request.inherit_context,
-            request.background,
-            &request.seeded_context,
-            child_agent,
-            selected_suffix,
-            cache_strategies,
-            &request.staged_skill,
-        ))
-    }
+    let payload = serde_json::to_vec(&(
+        &child_agent.agent,
+        &request.description,
+        &request.prompt,
+        &request.title,
+        &request.resume_session_id,
+        request.inherit_context,
+        request.background,
+        &request.seeded_context,
+        child_agent,
+        cache_strategies,
+        &request.staged_skill,
+    ))
     .map_err(|_| ())?;
     Sha256Digest::new(format!("{:x}", Sha256::digest(payload))).map_err(|_| ())
 }
@@ -72,7 +54,6 @@ pub struct DelegationEntry {
     pub reservation: DelegationReservation,
     pub child_agent: AgentSnapshot,
     pub revisions: DelegationRuntimeRevisions,
-    pub selected_suffix: Vec<FrozenModelBinding>,
     pub cache_strategies: Vec<Option<FrozenCacheStrategy>>,
     pub request_fingerprint: Sha256Digest,
     pub request: DelegateRequestPayload,
@@ -157,6 +138,9 @@ impl DelegationEventStore {
         Ok(touched)
     }
 
+    /// Records a delegation reservation. `selected_suffix` holds the
+    /// complete bindings of `child_agent`'s selected suffix; they are checked
+    /// against it and not stored.
     #[allow(clippy::too_many_arguments)]
     pub fn reserve(
         &self,
@@ -182,7 +166,6 @@ impl DelegationEventStore {
                 && entry.request_fingerprint == request_fingerprint
                 && entry.child_agent == child_agent
                 && entry.revisions == revisions
-                && entry.selected_suffix == selected_suffix
                 && entry.cache_strategies == cache_strategies
                 && entry.request == request;
             return if same_request {
@@ -192,21 +175,12 @@ impl DelegationEventStore {
             };
         }
         if !valid_request(&request)
-            || selected_suffix.is_empty()
+            || child_agent.validate().is_err()
+            || !suffix_matches_snapshot(&child_agent, &selected_suffix)
             || !cache_strategies_match_bindings(&selected_suffix, &cache_strategies)
             || selected_suffix
                 .iter()
                 .any(|binding| binding.manifest_revision != revisions.manifest_revision)
-            || child_agent
-                .validate_selected_suffix(
-                    &cookie_agent_protocol::RunSelection {
-                        agent: child_agent.agent.clone(),
-                        model: selected_suffix[0].selection.clone(),
-                        preset: None,
-                    },
-                    &selected_suffix,
-                )
-                .is_err()
         {
             return Err(DelegationEventError::Corrupt(invocation_id));
         }
@@ -222,7 +196,6 @@ impl DelegationEventStore {
             reservation: reservation.clone(),
             child_agent: child_agent.clone(),
             revisions: revisions.clone(),
-            selected_suffix: selected_suffix.clone(),
             cache_strategies: cache_strategies.clone(),
             request_fingerprint: request_fingerprint.clone(),
             request: request.clone(),
@@ -247,7 +220,6 @@ impl DelegationEventStore {
                 model_revision: revisions.model_revision,
                 agent_revision: revisions.agent_revision,
                 recipe_registry_revision: revisions.recipe_registry_revision,
-                selected_suffix,
                 cache_strategies,
                 request_fingerprint,
                 request,
@@ -551,7 +523,6 @@ fn apply_event(
             model_revision,
             agent_revision,
             recipe_registry_revision,
-            selected_suffix,
             cache_strategies,
             request_fingerprint,
             request,
@@ -566,13 +537,9 @@ fn apply_event(
                 agent_revision,
                 recipe_registry_revision,
             };
-            let fingerprint_valid = delegation_request_fingerprint(
-                &child_agent,
-                &selected_suffix,
-                &cache_strategies,
-                &request,
-            )
-            .is_ok_and(|computed| computed == request_fingerprint);
+            let fingerprint_valid =
+                delegation_request_fingerprint(&child_agent, &cache_strategies, &request)
+                    .is_ok_and(|computed| computed == request_fingerprint);
             if parent_session_id != reservation.parent_session_id
                 || run_id != Some(reservation.parent_run_id)
                 || state.entries.contains_key(&invocation_id)
@@ -581,22 +548,9 @@ fn apply_event(
                     .is_some_and(|id| id != reservation.child_session_id)
                 || !valid_request(&request)
                 || !fingerprint_valid
-                || selected_suffix.is_empty()
+                || child_agent.validate().is_err()
                 || (!cache_strategies.is_empty()
-                    && !cache_strategies_match_bindings(&selected_suffix, &cache_strategies))
-                || selected_suffix
-                    .iter()
-                    .any(|binding| binding.manifest_revision != revisions.manifest_revision)
-                || child_agent
-                    .validate_selected_suffix(
-                        &cookie_agent_protocol::RunSelection {
-                            agent: child_agent.agent.clone(),
-                            model: selected_suffix[0].selection.clone(),
-                            preset: None,
-                        },
-                        &selected_suffix,
-                    )
-                    .is_err()
+                    && cache_strategies.len() != child_agent.selected_suffix().len())
             {
                 return Err(DelegationEventError::Corrupt(invocation_id));
             }
@@ -606,7 +560,6 @@ fn apply_event(
                     reservation,
                     child_agent: *child_agent,
                     revisions,
-                    selected_suffix,
                     cache_strategies,
                     request_fingerprint,
                     request,
@@ -738,6 +691,18 @@ fn valid_request(request: &DelegateRequestPayload) -> bool {
         .map(|turn| turn.text.len())
         .sum::<usize>()
         <= 65_536
+}
+
+/// Whether `bindings` are the complete bindings of the snapshot's selected
+/// suffix, in order.
+fn suffix_matches_snapshot(snapshot: &AgentSnapshot, bindings: &[FrozenModelBinding]) -> bool {
+    let suffix = snapshot.selected_suffix();
+    suffix.len() == bindings.len()
+        && suffix.iter().zip(bindings).all(|(stored, binding)| {
+            stored.selection == binding.selection
+                && stored.selection_fingerprint == binding.selection_fingerprint
+                && stored.blueprint_fingerprint == binding.blueprint_fingerprint
+        })
 }
 
 fn cache_strategies_match_bindings(

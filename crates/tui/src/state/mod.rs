@@ -651,11 +651,6 @@ pub struct SessionState {
     /// Tool names of the latest `ModelToolsPublished`: what the model was
     /// last offered.
     pub model_tools: Option<std::sync::Arc<[String]>>,
-    /// The authoritative exact suffix from the latest accepted `RunStarted`:
-    /// after any run-selection variant override, this vector — never a
-    /// reconstruction from the agent fallback chain — is what attempts and
-    /// delegated pickers use.
-    pub run_selected_suffix: Option<Vec<cookie_agent_protocol::FrozenModelBinding>>,
     pub model_selection: cookie_agent_protocol::SessionModelState,
     /// The session's runtime attachments, folded from its events. A log with
     /// no attach or detach event is attached to `global` and `local`.

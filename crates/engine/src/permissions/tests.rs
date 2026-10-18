@@ -1,6 +1,6 @@
 use cookie_agent_protocol::{
-    AgentDocumentSource, AgentId, AgentMode, AgentSchemaVersion, AgentSnapshot, ApprovalBoundary,
-    ApprovalCapability, ApprovalResourceSource, PermissionAction, PermissionEffect, PermissionRule,
+    AgentDocumentSource, AgentId, AgentMode, AgentSnapshot, ApprovalBoundary, ApprovalCapability,
+    ApprovalResourceSource, PermissionAction, PermissionEffect, PermissionRule,
     PermissionRuleSource, PreparedApprovalResource, PreparedBindingLifetime,
     PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
     PreparedResourceIdentity, SafeCode, SessionPermissionOverlay, Sha256Digest, WildcardPattern,
@@ -11,7 +11,6 @@ use super::{PermissionPipeline, select_governing_agent, tool_visible};
 fn policy(rules: Vec<PermissionRule>) -> AgentSnapshot {
     AgentSnapshot {
         agent: AgentId::new("test").expect("agent id"),
-        schema: AgentSchemaVersion::current(),
         mode: AgentMode::Primary,
         description: "Test agent".into(),
         document_source: AgentDocumentSource::User,

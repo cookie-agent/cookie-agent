@@ -554,8 +554,8 @@ mod tests {
     #[tokio::test]
     async fn one_initial_url_resource_includes_query_and_defaults_to_deny() {
         use cookie_agent_protocol::{
-            AgentDocumentSource, AgentId, AgentMode, AgentSchemaVersion, AgentSnapshot,
-            PermissionRule, Sha256Digest, WildcardPattern,
+            AgentDocumentSource, AgentId, AgentMode, AgentSnapshot, PermissionRule, Sha256Digest,
+            WildcardPattern,
         };
         let server = HttpFixture::start();
         let url = format!("{}/html?token=given", server.url());
@@ -570,7 +570,6 @@ mod tests {
         );
         let mut policy = AgentSnapshot {
             agent: AgentId::new("test").unwrap(),
-            schema: AgentSchemaVersion::current(),
             mode: AgentMode::Primary,
             description: "Test".into(),
             document_source: AgentDocumentSource::User,

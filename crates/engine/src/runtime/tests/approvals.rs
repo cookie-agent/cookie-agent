@@ -1711,7 +1711,6 @@ async fn resume_sweep_finalizes_interrupted_run_approvals_and_preserves_live_one
         .store
         .get(session.session_id)
         .expect("projection");
-    let selected_suffix = projection.creation_agent.fallback_chain.clone();
     let run_started =
         |label: &str, agent: Box<cookie_agent_protocol::AgentSnapshot>| EventPayload::RunStarted {
             client_run_id: ClientRunId::new(label).expect("client run ID"),
@@ -1724,7 +1723,6 @@ async fn resume_sweep_finalizes_interrupted_run_approvals_and_preserves_live_one
             agent_revision: projection.meta.agent_revision.clone(),
             recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
             manifest_revision: projection.meta.manifest_revision.clone(),
-            selected_suffix: selected_suffix.clone(),
             internal_agents: Vec::new(),
             input_through_seq: 1,
         };

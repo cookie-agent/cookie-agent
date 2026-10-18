@@ -571,7 +571,6 @@ impl Engine {
         let cache_strategies = policy::wire_cache_strategies(&child_policy.cache_strategies)?;
         let fingerprint = delegation_events::delegation_request_fingerprint(
             &child_policy.agent,
-            &child_policy.selected_suffix,
             &cache_strategies,
             &request,
         )

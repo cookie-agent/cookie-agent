@@ -385,32 +385,24 @@ impl App {
     }
 
     /// The authoritative exact selections for the watched delegated
-    /// session: the retained `RunStarted.selected_suffix` directly (after
-    /// any run-selection head-variant override), falling back to the
-    /// creation snapshot's resolved suffix only before any run. Empty-chain
-    /// inherited children carry the inherited exact suffix frozen at
-    /// delegation admission. Live descriptors are never consulted.
+    /// session: the selected suffix of the latest `RunStarted` snapshot
+    /// (after any run-selection head-variant override), falling back to the
+    /// creation snapshot's suffix only before any run. Empty-chain inherited
+    /// children carry the inherited exact suffix frozen at delegation
+    /// admission. Live descriptors are never consulted.
     pub(super) fn persisted_chain(&self) -> Option<Vec<ModelSelection>> {
         if self.watching_root_session() {
             return None;
         }
         let session_id = self.selected?;
         let state = self.store.sessions.get(&session_id)?;
-        if let Some(suffix) = &state.run_selected_suffix {
-            return Some(
-                suffix
-                    .iter()
-                    .map(|binding| binding.selection.clone())
-                    .collect(),
-            );
-        }
-        let snapshot = state.creation_agent.as_ref()?;
-        let start = snapshot.selected_suffix_start as usize;
+        let snapshot = state
+            .run_snapshot
+            .as_ref()
+            .or(state.creation_agent.as_ref())?;
         Some(
             snapshot
-                .fallback_chain
-                .get(start..)
-                .unwrap_or(&snapshot.fallback_chain)
+                .selected_suffix()
                 .iter()
                 .map(|binding| binding.selection.clone())
                 .collect(),

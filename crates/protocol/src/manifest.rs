@@ -401,11 +401,10 @@ impl FrozenResolvedRequestDefaults {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenVariantBlueprint {
     pub id: VariantId,
-    #[schemars(with = "crate::LanguageModelDescriptorSchema")]
     pub descriptor: oven_sdk::LanguageModelDescriptor,
     pub defaults: FrozenResolvedRequestDefaults,
     pub options: FrozenProviderOptions,
@@ -415,7 +414,7 @@ pub struct FrozenVariantBlueprint {
     pub selection_fingerprint: Sha256Digest,
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompiledSafeModelBlueprint {
     pub blueprint_fingerprint: Sha256Digest,
@@ -430,12 +429,10 @@ pub struct CompiledSafeModelBlueprint {
     pub setup_recipe: ProviderSetupRecipeId,
     pub auth_method: AuthMethodId,
     pub compiler_version: RecipeCompilerVersion,
-    #[schemars(with = "crate::LanguageModelDescriptorSchema")]
     pub descriptor: oven_sdk::LanguageModelDescriptor,
     pub defaults: FrozenResolvedRequestDefaults,
     pub options: FrozenProviderOptions,
     pub static_headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
-    #[schemars(length(max = 256))]
     pub variants: Vec<FrozenVariantBlueprint>,
     pub behavior_fingerprint: Sha256Digest,
     pub selection_fingerprint: Sha256Digest,
@@ -506,14 +503,13 @@ impl<'de> Deserialize<'de> for CompiledSafeModelBlueprint {
     }
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSnapshotPayloadV1 {
     pub catalog_revision: CatalogRevision,
     pub recipe_registry_revision: RecipeRegistryRevision,
     pub provider_state_revision: ProviderStateRevision,
     pub model_revision: ModelRevision,
-    #[schemars(length(max = 4096))]
     pub blueprints: Vec<CompiledSafeModelBlueprint>,
 }
 impl<'de> Deserialize<'de> for ModelSnapshotPayloadV1 {
@@ -581,19 +577,8 @@ impl<'de> Deserialize<'de> for ModelSnapshotManifestSchemaVersion {
         }
     }
 }
-impl JsonSchema for ModelSnapshotManifestSchemaVersion {
-    fn inline_schema() -> bool {
-        true
-    }
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("ModelSnapshotManifestSchemaVersion")
-    }
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"integer","const":1})
-    }
-}
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSnapshotManifestV1 {
     pub schema_version: ModelSnapshotManifestSchemaVersion,

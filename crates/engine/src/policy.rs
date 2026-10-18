@@ -444,7 +444,6 @@ fn freeze_with_bindings(
     });
     let snapshot = protocol::AgentSnapshot {
         agent: document.id.clone(),
-        schema: protocol::AgentSchemaVersion::current(),
         mode: document.frontmatter.mode,
         description: document.frontmatter.description.clone(),
         document_source: document.source,
@@ -459,7 +458,10 @@ fn freeze_with_bindings(
             .flat_map(|(key, value)| value.rules(key))
             .collect(),
         delegation,
-        fallback_chain: bindings.clone(),
+        fallback_chain: bindings
+            .iter()
+            .map(persisted_binding)
+            .collect::<Result<_, _>>()?,
         selected_suffix_start: 0,
     };
     let run_selection = protocol::RunSelection {
@@ -468,7 +470,7 @@ fn freeze_with_bindings(
         preset: registry.preset().map(str::to_owned),
     };
     snapshot
-        .validate_selected_suffix(&run_selection, &bindings)
+        .validate_selection(&run_selection)
         .map_err(|_| EngineError::NoRunnableModel)?;
     let cache_strategies = if agent.resolved_fallback.is_empty() {
         if let Some(strategies) = options
@@ -535,6 +537,29 @@ pub(crate) fn policy_from_snapshot(
         model_retry,
         cache_strategies,
     })
+}
+
+/// The form session history stores `binding` in.
+pub(crate) fn persisted_binding(
+    binding: &protocol::FrozenModelBinding,
+) -> Result<protocol::PersistedModelBinding, EngineError> {
+    protocol::PersistedModelBinding::new(binding, wire_resolved(binding))
+        .map_err(|_| EngineError::RuntimeCompileFailed)
+}
+
+/// Decodes the complete bindings of stored fallback entries, failing when
+/// any one is not a binding this build can run.
+pub(crate) fn decode_bindings(
+    bindings: &[protocol::PersistedModelBinding],
+) -> Result<Vec<protocol::FrozenModelBinding>, EngineError> {
+    bindings
+        .iter()
+        .map(|binding| {
+            binding
+                .decode()
+                .map_err(|_| EngineError::UnreadableModelBinding(binding.selection.model.clone()))
+        })
+        .collect()
 }
 
 pub(crate) fn wire_resolved(binding: &protocol::FrozenModelBinding) -> protocol::ResolvedModelRef {

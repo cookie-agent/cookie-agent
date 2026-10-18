@@ -117,7 +117,7 @@ fn persist_test_session_with_origin(store: &SessionStore, origin: SessionOrigin)
     let session_id = SessionId::new_v7();
     let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
     let selection = crate::test_support::run_selection("test");
-    let binding = agent.fallback_chain[0].clone();
+    let binding = agent.fallback_chain[0].decode().expect("test binding");
     let revision = |label: char| format!("sha256:{}", label.to_string().repeat(64));
     let runtime_revision = RuntimeRevision::new(revision('1')).unwrap();
     let catalog_revision = CatalogRevision::new(revision('2')).unwrap();
@@ -163,7 +163,6 @@ fn persist_test_session_with_origin(store: &SessionStore, origin: SessionOrigin)
                 agent_revision,
                 recipe_registry_revision,
                 manifest_revision: binding.manifest_revision.clone(),
-                selected_suffix: vec![binding],
                 internal_agents: Vec::new(),
                 input_through_seq: 1,
             },
@@ -186,7 +185,7 @@ fn create_buffered_test_session(store: &SessionStore) -> SessionId {
     let session_id = SessionId::new_v7();
     let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
     let selection = crate::test_support::run_selection("test");
-    let binding = agent.fallback_chain[0].clone();
+    let binding = agent.fallback_chain[0].decode().expect("test binding");
     let revision = |label: char| format!("sha256:{}", label.to_string().repeat(64));
     store
         .create(
@@ -2353,13 +2352,9 @@ fn start_test_attempt(store: &SessionStore, session_id: SessionId) -> TestAttemp
         .events()
         .iter()
         .find_map(|event| match &event.payload {
-            EventPayload::RunStarted {
-                agent,
-                selected_suffix,
-                ..
-            } => Some((
+            EventPayload::RunStarted { agent, .. } => Some((
                 event.run_id.expect("run id"),
-                crate::model_history::wire_model(selected_suffix.first().expect("selected model")),
+                agent.selected_suffix()[0].resolved.clone(),
                 agent.prompt_fingerprint.clone(),
             )),
             _ => None,
@@ -2819,7 +2814,7 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
     let attempt_id = AttemptId::new_v7();
     let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
     let selection = crate::test_support::run_selection("test");
-    let binding = agent.fallback_chain[0].clone();
+    let binding = agent.fallback_chain[0].decode().expect("test binding");
     let resolved_model = crate::model_history::wire_model(&binding);
     let model_key = resolved_model.selection.model.clone();
     let runtime_revision = RuntimeRevision::new(format!("sha256:{}", "1".repeat(64))).unwrap();
@@ -2865,7 +2860,6 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
             agent_revision,
             recipe_registry_revision,
             manifest_revision: binding.manifest_revision.clone(),
-            selected_suffix: vec![binding],
             internal_agents: Vec::new(),
             input_through_seq: 1,
         },
@@ -3064,7 +3058,7 @@ fn internal_usage_is_once_per_fallback_phase_and_all_kinds_survive_reopen() {
     let run_id = RunId::new_v7();
     let owner = crate::test_support::agent_snapshot("test", AgentMode::Primary);
     let selection = crate::test_support::run_selection("test");
-    let binding = owner.fallback_chain[0].clone();
+    let binding = owner.fallback_chain[0].decode().expect("test binding");
     let resolved_model = crate::model_history::wire_model(&binding);
     let fallback_model =
         crate::model_history::wire_model(&crate::test_support::model_binding_named("fallback-one"));
@@ -3110,7 +3104,6 @@ fn internal_usage_is_once_per_fallback_phase_and_all_kinds_survive_reopen() {
             agent_revision,
             recipe_registry_revision,
             manifest_revision: binding.manifest_revision.clone(),
-            selected_suffix: vec![binding],
             internal_agents: Vec::new(),
             input_through_seq: 1,
         },
@@ -3360,13 +3353,9 @@ fn fuzz_scaffolding(
         .event_snapshot()
         .iter()
         .find_map(|event| match &event.payload {
-            EventPayload::RunStarted {
-                agent,
-                selected_suffix,
-                ..
-            } => Some((
+            EventPayload::RunStarted { agent, .. } => Some((
                 event.run_id.expect("run id"),
-                crate::model_history::wire_model(selected_suffix.first().expect("model")),
+                agent.selected_suffix()[0].resolved.clone(),
                 agent.agent.clone(),
                 agent.prompt_fingerprint.clone(),
                 event.payload.clone(),
@@ -3752,7 +3741,7 @@ fn usage_rollup_after_a_usage_less_commit(
     let run_id = RunId::new_v7();
     let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
     let selection = crate::test_support::run_selection("test");
-    let binding = agent.fallback_chain[0].clone();
+    let binding = agent.fallback_chain[0].decode().expect("test binding");
     let resolved_model = crate::model_history::wire_model(&binding);
     let revision = |value: char| format!("sha256:{}", value.to_string().repeat(64));
     let runtime_revision = RuntimeRevision::new(revision('1')).unwrap();
@@ -3796,7 +3785,6 @@ fn usage_rollup_after_a_usage_less_commit(
             agent_revision,
             recipe_registry_revision,
             manifest_revision: binding.manifest_revision.clone(),
-            selected_suffix: vec![binding],
             internal_agents: Vec::new(),
             input_through_seq: 1,
         },

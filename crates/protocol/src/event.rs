@@ -1539,7 +1539,7 @@ pub enum InternalAgentKind {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FrozenInternalAgentFallback {
     ParentModel,
-    Model { binding: Box<FrozenModelBinding> },
+    Model { binding: Box<PersistedModelBinding> },
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
@@ -2279,8 +2279,6 @@ pub enum EventPayload {
         agent_revision: AgentRevision,
         recipe_registry_revision: RecipeRegistryRevision,
         manifest_revision: ModelSnapshotRevision,
-        #[schemars(length(min = 1, max = 256))]
-        selected_suffix: Vec<FrozenModelBinding>,
         #[serde(default)]
         #[schemars(length(max = 3))]
         internal_agents: Vec<FrozenInternalAgentDefinition>,
@@ -2479,8 +2477,7 @@ pub enum EventPayload {
         model_revision: ModelRevision,
         agent_revision: AgentRevision,
         recipe_registry_revision: RecipeRegistryRevision,
-        #[schemars(length(min = 1, max = 256))]
-        selected_suffix: Vec<FrozenModelBinding>,
+        /// One cache strategy per entry of the child's selected suffix.
         #[serde(default)]
         #[schemars(length(max = 256))]
         cache_strategies: Vec<Option<FrozenCacheStrategy>>,
@@ -2917,12 +2914,11 @@ impl EventPayload {
             Self::RunStarted {
                 selection,
                 agent,
-                selected_suffix,
                 internal_agents,
                 ..
             } => {
                 agent
-                    .validate_selected_suffix(selection, selected_suffix)
+                    .validate_selection(selection)
                     .map_err(|_| EventSchemaError::InvalidSelectedSuffix)?;
                 if !matches!(internal_agents.len(), 0 | 3)
                     || internal_agents
@@ -3049,13 +3045,16 @@ impl EventPayload {
             Self::ToolCallTerminated { termination } => termination.validate()?,
             Self::DelegationReserved {
                 child_agent,
-                selected_suffix,
                 cache_strategies,
                 request,
                 ..
             } => {
                 request.validate()?;
-                if (!cache_strategies.is_empty() && cache_strategies.len() != selected_suffix.len())
+                child_agent
+                    .validate()
+                    .map_err(|_| EventSchemaError::InvalidDelegationLifecycle)?;
+                if (!cache_strategies.is_empty()
+                    && cache_strategies.len() != child_agent.selected_suffix().len())
                     || cache_strategies
                         .iter()
                         .flatten()
@@ -3063,20 +3062,6 @@ impl EventPayload {
                 {
                     return Err(EventSchemaError::InvalidDelegationLifecycle);
                 }
-                child_agent
-                    .validate_selected_suffix(
-                        &RunSelection {
-                            agent: child_agent.agent.clone(),
-                            model: selected_suffix
-                                .first()
-                                .ok_or(EventSchemaError::InvalidDelegationLifecycle)?
-                                .selection
-                                .clone(),
-                            preset: None,
-                        },
-                        selected_suffix,
-                    )
-                    .map_err(|_| EventSchemaError::InvalidDelegationLifecycle)?;
             }
             Self::DelegatedContextSeeded { turns, .. } => {
                 if turns.is_empty()

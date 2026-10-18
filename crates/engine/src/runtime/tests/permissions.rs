@@ -465,7 +465,6 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
                         agent_revision: projection.meta.agent_revision.clone(),
                         recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
                         manifest_revision: projection.meta.manifest_revision.clone(),
-                        selected_suffix: projection.creation_agent.fallback_chain.clone(),
                         internal_agents: Vec::new(),
                         input_through_seq: 1,
                     },

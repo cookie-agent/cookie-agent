@@ -2251,11 +2251,7 @@ fn validate_record_incremental(
                 );
             }
         }
-        EventPayload::RunStarted {
-            agent,
-            selected_suffix,
-            ..
-        } => {
+        EventPayload::RunStarted { agent, .. } => {
             let Some(run_id) = record.run_id else {
                 return corrupt(path, "RunStarted is missing run_id");
             };
@@ -2263,9 +2259,10 @@ fn validate_record_incremental(
                 start_seq: record.seq,
                 agent_id: agent.agent.clone(),
                 prompt_fingerprint: agent.prompt_fingerprint.clone(),
-                selected_suffix: selected_suffix
+                selected_suffix: agent
+                    .selected_suffix()
                     .iter()
-                    .map(crate::policy::wire_resolved)
+                    .map(|binding| binding.resolved.clone())
                     .collect(),
                 active_fallback_index: 0,
                 next_attempt_ordinal: 1,

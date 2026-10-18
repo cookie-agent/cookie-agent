@@ -526,7 +526,6 @@ impl Engine {
                 .recipe_registry_revision
                 .clone(),
             manifest_revision: run_policy.selected_suffix[0].manifest_revision.clone(),
-            selected_suffix: run_policy.selected_suffix.clone(),
             internal_agents: run_policy.internal_agents.clone(),
             input_through_seq,
         };

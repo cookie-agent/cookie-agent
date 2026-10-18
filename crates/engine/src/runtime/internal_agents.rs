@@ -456,6 +456,7 @@ impl Engine {
                                 &owner.runtime.models,
                                 selection,
                             )
+                            .and_then(|binding| policy::persisted_binding(&binding))
                             .map(|binding| {
                                 FrozenInternalAgentFallback::Model {
                                     binding: Box::new(binding),
@@ -544,7 +545,6 @@ impl Engine {
         let document = &resolved.document;
         let snapshot = cookie_agent_protocol::AgentSnapshot {
             agent: document.id.clone(),
-            schema: cookie_agent_protocol::AgentSchemaVersion::current(),
             mode: AgentMode::Internal,
             description: document.frontmatter.description.clone(),
             document_source: document.source,
@@ -556,7 +556,10 @@ impl Engine {
             max_output_tokens: document.frontmatter.limits.max_output_tokens,
             permissions: Vec::new(),
             delegation: None,
-            fallback_chain: models.clone(),
+            fallback_chain: models
+                .iter()
+                .map(policy::persisted_binding)
+                .collect::<Result<_, _>>()?,
             selected_suffix_start: 0,
         };
         let limits = &document.frontmatter.limits;
@@ -602,21 +605,26 @@ fn frozen_internal_policy_from_definition(
     owner: &FrozenRunPolicy,
     parent_binding: Option<&cookie_agent_protocol::FrozenModelBinding>,
 ) -> Result<FrozenInternalAgentPolicy, EngineError> {
+    // A frozen fallback this build cannot read fails the internal agent, as
+    // the run's own unreadable binding would fail the run.
     let models = if definition.enabled {
         definition
             .fallbacks
             .iter()
             .filter_map(|fallback| match fallback {
-                FrozenInternalAgentFallback::ParentModel => parent_binding.cloned(),
-                FrozenInternalAgentFallback::Model { binding } => Some(binding.as_ref().clone()),
+                FrozenInternalAgentFallback::ParentModel => parent_binding.cloned().map(Ok),
+                FrozenInternalAgentFallback::Model { binding } => {
+                    Some(binding.decode().map_err(|_| {
+                        EngineError::UnreadableModelBinding(binding.selection.model.clone())
+                    }))
+                }
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?
     } else {
         Vec::new()
     };
     let agent = cookie_agent_protocol::AgentSnapshot {
         agent: definition.agent.clone(),
-        schema: cookie_agent_protocol::AgentSchemaVersion::current(),
         mode: AgentMode::Internal,
         description: definition.description.clone(),
         document_source: definition.document_source,
@@ -626,7 +634,10 @@ fn frozen_internal_policy_from_definition(
         max_output_tokens: definition.max_output_tokens,
         permissions: Vec::new(),
         delegation: None,
-        fallback_chain: models.clone(),
+        fallback_chain: models
+            .iter()
+            .map(policy::persisted_binding)
+            .collect::<Result<_, _>>()?,
         selected_suffix_start: 0,
     };
     let resolved = owner.registry.get(&definition.agent);

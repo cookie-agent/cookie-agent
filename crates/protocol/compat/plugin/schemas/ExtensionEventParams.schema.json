@@ -84,7 +84,7 @@
         },
         "fallback_chain": {
           "items": {
-            "$ref": "#/$defs/FrozenModelBinding"
+            "$ref": "#/$defs/PersistedModelBinding"
           },
           "maxItems": 256,
           "minItems": 1,
@@ -111,11 +111,8 @@
           "pattern": "^[0-9a-f]{64}$",
           "type": "string"
         },
-        "schema": {
-          "const": 7,
-          "type": "integer"
-        },
         "selected_suffix_start": {
+          "description": "Where the run's fallback starts in `fallback_chain`: the run's model\nis that entry, and its fallbacks are the entries after it.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -123,7 +120,6 @@
       },
       "required": [
         "agent",
-        "schema",
         "mode",
         "description",
         "document_source",
@@ -679,63 +675,6 @@
         "provider_item_id"
       ],
       "type": "object"
-    },
-    "CompiledReasoningBehavior": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "type": {
-              "const": "effort",
-              "type": "string"
-            },
-            "value": {
-              "$ref": "#/$defs/ReasoningEffort"
-            }
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "type": {
-              "const": "toggle",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "enabled"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "type": {
-              "const": "budget_tokens",
-              "type": "string"
-            },
-            "value": {
-              "format": "int64",
-              "minimum": -1,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "type",
-            "value"
-          ],
-          "type": "object"
-        }
-      ]
     },
     "ContextCheckpoint": {
       "oneOf": [
@@ -1793,14 +1732,6 @@
               "pattern": "^sha256:[0-9a-f]{64}$",
               "type": "string"
             },
-            "selected_suffix": {
-              "items": {
-                "$ref": "#/$defs/FrozenModelBinding"
-              },
-              "maxItems": 256,
-              "minItems": 1,
-              "type": "array"
-            },
             "selection": {
               "$ref": "#/$defs/RunSelection"
             },
@@ -1821,7 +1752,6 @@
             "agent_revision",
             "recipe_registry_revision",
             "manifest_revision",
-            "selected_suffix",
             "input_through_seq"
           ],
           "type": "object"
@@ -2653,6 +2583,7 @@
             },
             "cache_strategies": {
               "default": [],
+              "description": "One cache strategy per entry of the child's selected suffix.",
               "items": {
                 "anyOf": [
                   {
@@ -2717,14 +2648,6 @@
               "pattern": "^sha256:[0-9a-f]{64}$",
               "type": "string"
             },
-            "selected_suffix": {
-              "items": {
-                "$ref": "#/$defs/FrozenModelBinding"
-              },
-              "maxItems": 256,
-              "minItems": 1,
-              "type": "array"
-            },
             "type": {
               "const": "delegation_reserved",
               "type": "string"
@@ -2741,7 +2664,6 @@
             "model_revision",
             "agent_revision",
             "recipe_registry_revision",
-            "selected_suffix",
             "request_fingerprint",
             "request"
           ],
@@ -3312,67 +3234,6 @@
       ],
       "type": "string"
     },
-    "FrozenCredentialBinding": {
-      "additionalProperties": false,
-      "properties": {
-        "auth_method": {
-          "maxLength": 128,
-          "minLength": 1,
-          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
-          "type": "string"
-        },
-        "fields": {
-          "items": {
-            "maxLength": 128,
-            "minLength": 1,
-            "pattern": "^[a-z][a-z0-9_]{0,127}$",
-            "type": "string"
-          },
-          "maxItems": 32,
-          "type": "array"
-        },
-        "owned_headers": {
-          "items": {
-            "maxLength": 128,
-            "minLength": 1,
-            "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$",
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "parameters": {
-          "additionalProperties": false,
-          "patternProperties": {
-            "^[a-z][a-z0-9_]{0,127}$": {
-              "maxLength": 512,
-              "minLength": 1,
-              "type": "string"
-            }
-          },
-          "type": "object"
-        },
-        "source": {
-          "$ref": "#/$defs/FrozenCredentialSource"
-        }
-      },
-      "required": [
-        "source",
-        "auth_method",
-        "fields",
-        "parameters",
-        "owned_headers"
-      ],
-      "type": "object"
-    },
-    "FrozenCredentialSource": {
-      "enum": [
-        "authored_api_key",
-        "authored_override",
-        "provider_store",
-        "no_auth"
-      ],
-      "type": "string"
-    },
     "FrozenDelegationPolicy": {
       "additionalProperties": false,
       "properties": {
@@ -3499,7 +3360,7 @@
           "additionalProperties": false,
           "properties": {
             "binding": {
-              "$ref": "#/$defs/FrozenModelBinding"
+              "$ref": "#/$defs/PersistedModelBinding"
             },
             "type": {
               "const": "model",
@@ -3513,338 +3374,6 @@
           "type": "object"
         }
       ]
-    },
-    "FrozenModelBinding": {
-      "additionalProperties": false,
-      "properties": {
-        "behavior_fingerprint": {
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "blueprint_fingerprint": {
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "compiler_version": {
-          "maxLength": 128,
-          "minLength": 1,
-          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
-          "type": "string"
-        },
-        "config_override_fingerprint": {
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "credential_binding": {
-          "$ref": "#/$defs/FrozenCredentialBinding"
-        },
-        "defaults": {
-          "$ref": "#/$defs/FrozenResolvedRequestDefaults"
-        },
-        "descriptor": {
-          "additionalProperties": false,
-          "properties": {
-            "adapter_id": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "capabilities": {
-              "additionalProperties": false,
-              "properties": {
-                "cancellation": {
-                  "enum": [
-                    "local_only",
-                    "remote_best_effort",
-                    "unsupported"
-                  ],
-                  "type": "string"
-                },
-                "compaction": {
-                  "const": "unsupported",
-                  "type": "string"
-                },
-                "features": {
-                  "items": {
-                    "enum": [
-                      "tool_calling",
-                      "parallel_tools",
-                      "tool_input_deltas",
-                      "reasoning",
-                      "structured_output",
-                      "temperature",
-                      "top_p",
-                      "max_output_tokens",
-                      "prompt_caching",
-                      "usage",
-                      "provider_tools",
-                      "sources"
-                    ],
-                    "type": "string"
-                  },
-                  "type": "array",
-                  "uniqueItems": true
-                },
-                "limits": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "context": {
-                      "minimum": 0,
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
-                    },
-                    "input": {
-                      "minimum": 0,
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
-                    },
-                    "output": {
-                      "minimum": 0,
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "context",
-                    "input",
-                    "output"
-                  ],
-                  "type": "object"
-                },
-                "media": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "input": {
-                      "additionalProperties": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "media_types": {
-                            "items": {
-                              "minLength": 3,
-                              "type": "string"
-                            },
-                            "minItems": 1,
-                            "type": "array"
-                          },
-                          "sources": {
-                            "items": {
-                              "enum": [
-                                "inline_bytes",
-                                "inline_text",
-                                "url",
-                                "provider_reference"
-                              ],
-                              "type": "string"
-                            },
-                            "minItems": 1,
-                            "type": "array",
-                            "uniqueItems": true
-                          }
-                        },
-                        "required": [
-                          "media_types",
-                          "sources"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "input"
-                  ],
-                  "type": "object"
-                },
-                "modalities": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "input": {
-                      "items": {
-                        "minLength": 1,
-                        "type": "string"
-                      },
-                      "minItems": 1,
-                      "type": "array",
-                      "uniqueItems": true
-                    },
-                    "output": {
-                      "items": {
-                        "minLength": 1,
-                        "type": "string"
-                      },
-                      "minItems": 1,
-                      "type": "array",
-                      "uniqueItems": true
-                    }
-                  },
-                  "required": [
-                    "input",
-                    "output"
-                  ],
-                  "type": "object"
-                },
-                "replay": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "capability": {
-                      "enum": [
-                        "required",
-                        "optional",
-                        "unsupported"
-                      ],
-                      "type": "string"
-                    },
-                    "policy": {
-                      "enum": [
-                        "never",
-                        "if_valid",
-                        "always"
-                      ],
-                      "type": "string"
-                    },
-                    "reasoning": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "policy",
-                    "capability",
-                    "reasoning"
-                  ],
-                  "type": "object"
-                }
-              },
-              "required": [
-                "features",
-                "limits",
-                "modalities",
-                "media",
-                "cancellation",
-                "compaction",
-                "replay"
-              ],
-              "type": "object"
-            },
-            "identity": {
-              "additionalProperties": false,
-              "properties": {
-                "model_id": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "provider_id": {
-                  "minLength": 1,
-                  "type": "string"
-                }
-              },
-              "required": [
-                "provider_id",
-                "model_id"
-              ],
-              "type": "object"
-            },
-            "provider_metadata": {
-              "type": "object"
-            }
-          },
-          "required": [
-            "identity",
-            "adapter_id",
-            "capabilities",
-            "provider_metadata"
-          ],
-          "type": "object"
-        },
-        "endpoint_identity": {
-          "maxLength": 2048,
-          "minLength": 1,
-          "type": "string"
-        },
-        "manifest_revision": {
-          "maxLength": 71,
-          "minLength": 71,
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "options": {
-          "$ref": "#/$defs/ProviderOptions"
-        },
-        "protocol_recipe": {
-          "maxLength": 128,
-          "minLength": 1,
-          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
-          "type": "string"
-        },
-        "provider_recipe": {
-          "maxLength": 128,
-          "minLength": 1,
-          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
-          "type": "string"
-        },
-        "selection": {
-          "$ref": "#/$defs/ModelSelection"
-        },
-        "selection_fingerprint": {
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "setup_binding": {
-          "$ref": "#/$defs/FrozenSetupBinding"
-        },
-        "setup_recipe": {
-          "maxLength": 128,
-          "minLength": 1,
-          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
-          "type": "string"
-        },
-        "source": {
-          "$ref": "#/$defs/FrozenProviderSource"
-        },
-        "static_headers": {
-          "additionalProperties": false,
-          "patternProperties": {
-            "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$": {
-              "maxLength": 8192,
-              "type": "string"
-            }
-          },
-          "type": "object"
-        }
-      },
-      "required": [
-        "manifest_revision",
-        "blueprint_fingerprint",
-        "selection",
-        "source",
-        "config_override_fingerprint",
-        "credential_binding",
-        "setup_binding",
-        "endpoint_identity",
-        "provider_recipe",
-        "protocol_recipe",
-        "setup_recipe",
-        "compiler_version",
-        "descriptor",
-        "defaults",
-        "options",
-        "static_headers",
-        "behavior_fingerprint",
-        "selection_fingerprint"
-      ],
-      "type": "object"
     },
     "FrozenOpenAiCacheMode": {
       "enum": [
@@ -3865,178 +3394,6 @@
         "30m"
       ],
       "type": "string"
-    },
-    "FrozenProviderSource": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "package_claim": {
-              "type": "string"
-            },
-            "provider_recipe": {
-              "maxLength": 128,
-              "minLength": 1,
-              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
-              "type": "string"
-            },
-            "recipe_fingerprint": {
-              "maxLength": 64,
-              "minLength": 64,
-              "pattern": "^[0-9a-f]{64}$",
-              "type": "string"
-            },
-            "source_record_digest": {
-              "maxLength": 64,
-              "minLength": 64,
-              "pattern": "^[0-9a-f]{64}$",
-              "type": "string"
-            },
-            "type": {
-              "const": "managed",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "provider_recipe",
-            "source_record_digest",
-            "recipe_fingerprint",
-            "package_claim"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "safe_definition_fingerprint": {
-              "maxLength": 64,
-              "minLength": 64,
-              "pattern": "^[0-9a-f]{64}$",
-              "type": "string"
-            },
-            "type": {
-              "const": "custom",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "safe_definition_fingerprint"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "FrozenRequestDefaults": {
-      "additionalProperties": false,
-      "properties": {
-        "max_output_tokens": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "seed": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "stop": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "temperature": {
-          "maxLength": 32,
-          "minLength": 1,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "tool_choice": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ToolChoice"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "top_p": {
-          "maxLength": 32,
-          "minLength": 1,
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "stop"
-      ],
-      "type": "object"
-    },
-    "FrozenResolvedRequestDefaults": {
-      "additionalProperties": false,
-      "properties": {
-        "reasoning": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CompiledReasoningBehavior"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "request": {
-          "$ref": "#/$defs/FrozenRequestDefaults"
-        }
-      },
-      "required": [
-        "request"
-      ],
-      "type": "object"
-    },
-    "FrozenSetupBinding": {
-      "additionalProperties": false,
-      "properties": {
-        "setup_fingerprint": {
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$",
-          "type": "string"
-        },
-        "setup_recipe": {
-          "maxLength": 128,
-          "minLength": 1,
-          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
-          "type": "string"
-        },
-        "values": {
-          "additionalProperties": false,
-          "patternProperties": {
-            "^[a-z][a-z0-9_]{0,127}$": {
-              "$ref": "#/$defs/SafeSetupValue"
-            }
-          },
-          "type": "object"
-        }
-      },
-      "required": [
-        "setup_recipe",
-        "values",
-        "setup_fingerprint"
-      ],
-      "type": "object"
     },
     "GoalItem": {
       "additionalProperties": false,
@@ -4482,31 +3839,6 @@
           "type": "object"
         }
       ]
-    },
-    "ModelSelection": {
-      "additionalProperties": false,
-      "description": "One exact base or named-variant model selection.",
-      "properties": {
-        "model": {
-          "maxLength": 512,
-          "minLength": 3,
-          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
-          "type": "string"
-        },
-        "variant": {
-          "maxLength": 64,
-          "minLength": 1,
-          "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "model"
-      ],
-      "type": "object"
     },
     "NativeContextScope": {
       "additionalProperties": false,
@@ -5113,6 +4445,85 @@
         }
       ]
     },
+    "PersistedModelBinding": {
+      "description": "A frozen model binding as session history stores it: the identity a\nreader needs to attribute and validate records, and the complete binding\nas an opaque value.\n\n`frozen` is today's [`FrozenModelBinding`] (descriptor, request defaults,\nprovider options, credential and setup bindings, static headers). Nothing\ndecodes it when a log loads; [`Self::decode`] does, best-effort, only\nwhere the engine runs the binding again.",
+      "properties": {
+        "adapter": {
+          "description": "The protocol adapter the binding speaks, such as\n`oven.openai.responses`.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "blueprint_fingerprint": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "frozen": {
+          "description": "The complete binding, opaque to readers."
+        },
+        "provider_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "type": "string"
+        },
+        "provider_model_id": {
+          "maxLength": 384,
+          "minLength": 1,
+          "pattern": "^[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+          "type": "string"
+        },
+        "resolved": {
+          "$ref": "#/$defs/ResolvedModelRef",
+          "description": "The model reference attempts made with this binding record."
+        },
+        "selection": {
+          "additionalProperties": false,
+          "description": "One exact base or named-variant model selection.",
+          "properties": {
+            "model": {
+              "maxLength": 512,
+              "minLength": 3,
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+              "type": "string"
+            },
+            "variant": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "model",
+            "variant"
+          ],
+          "type": "object"
+        },
+        "selection_fingerprint": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "selection",
+        "provider_id",
+        "provider_model_id",
+        "adapter",
+        "resolved",
+        "selection_fingerprint",
+        "blueprint_fingerprint",
+        "frozen"
+      ],
+      "type": "object"
+    },
     "PersistedModelTurn": {
       "additionalProperties": false,
       "properties": {
@@ -5567,301 +4978,6 @@
           "type": "object"
         }
       ]
-    },
-    "ProviderOptions": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "api_version": {
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "beta": {
-              "items": {
-                "maxLength": 512,
-                "minLength": 1,
-                "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-                "type": "string"
-              },
-              "maxItems": 32,
-              "type": "array",
-              "uniqueItems": true
-            },
-            "type": {
-              "const": "anthropic",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "api_version",
-            "beta"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "organization": {
-              "maxLength": 512,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "project": {
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "openai-chat",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "organization",
-            "project"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "organization": {
-              "maxLength": 512,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "project": {
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "store": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "openai-responses",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "organization",
-            "project",
-            "store"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "api_path": {
-              "maxLength": 512,
-              "minLength": 1,
-              "pattern": "^/[^?#]*$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "openai-compatible",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "api_path"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "api_version": {
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "google-gemini",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "api_version"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "location": {
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": "string"
-            },
-            "project": {
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": "string"
-            },
-            "type": {
-              "const": "google-vertex-gemini",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "project",
-            "location"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "region": {
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": "string"
-            },
-            "type": {
-              "const": "aws-bedrock-converse",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "region"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "api_version": {
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": "string"
-            },
-            "deployment": {
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": "string"
-            },
-            "type": {
-              "const": "azure-openai-chat",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "deployment",
-            "api_version"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "api_version": {
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": "string"
-            },
-            "deployment": {
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": "string"
-            },
-            "type": {
-              "const": "azure-openai-responses",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "deployment",
-            "api_version"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "api_version": {
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "cohere-v2-chat",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "api_version"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "ReasoningEffort": {
-      "enum": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max",
-        "default"
-      ],
-      "type": "string"
     },
     "ReplayDecision": {
       "additionalProperties": false,
@@ -6447,30 +5563,6 @@
       ],
       "type": "object"
     },
-    "SafeSetupValue": {
-      "anyOf": [
-        {
-          "type": "boolean"
-        },
-        {
-          "format": "int64",
-          "type": "integer"
-        },
-        {
-          "description": "Stable lowercase machine-readable code.",
-          "maxLength": 128,
-          "minLength": 1,
-          "pattern": "^[a-z0-9][a-z0-9._-]*$",
-          "type": "string"
-        },
-        {
-          "maxLength": 2048,
-          "minLength": 1,
-          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-          "type": "string"
-        }
-      ]
-    },
     "SafeToolError": {
       "additionalProperties": false,
       "properties": {
@@ -6874,33 +5966,6 @@
         "primary_argument"
       ],
       "type": "object"
-    },
-    "ToolChoice": {
-      "oneOf": [
-        {
-          "enum": [
-            "auto",
-            "none",
-            "required"
-          ],
-          "type": "string"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "named": {
-              "maxLength": 64,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": "string"
-            }
-          },
-          "required": [
-            "named"
-          ],
-          "type": "object"
-        }
-      ]
     },
     "ToolEmittedContent": {
       "oneOf": [

@@ -1689,13 +1689,12 @@ async fn successful_fallback_suffix_survives_runs_restart_and_explicit_resets() 
         .iter()
         .find_map(|event| match &event.payload {
             EventPayload::RunStarted {
-                selection,
-                selected_suffix,
-                ..
+                selection, agent, ..
             } if event.run_id == Some(second) => {
                 assert_eq!(selection.model.model.as_str(), "custom.local/alternate");
                 Some(
-                    selected_suffix
+                    agent
+                        .selected_suffix()
                         .iter()
                         .map(|binding| binding.selection.model.to_string())
                         .collect::<Vec<_>>(),

@@ -3,9 +3,9 @@ use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 use cookie_agent_engine::events::OutputHub;
 use cookie_agent_engine::permissions::PermissionPipeline;
 use cookie_agent_protocol::{
-    AgentDocumentSource, AgentId, AgentMode, AgentSchemaVersion, AgentSnapshot, OutputStream,
-    PermissionAction, PermissionEffect, PermissionRule, RunId, SafeDisplayText, SessionId,
-    Sha256Digest, ToolCallId, WildcardPattern,
+    AgentDocumentSource, AgentId, AgentMode, AgentSnapshot, OutputStream, PermissionAction,
+    PermissionEffect, PermissionRule, RunId, SafeDisplayText, SessionId, Sha256Digest, ToolCallId,
+    WildcardPattern,
 };
 use cookie_agent_runtime_api::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
 use tokio::io::AsyncWriteExt;
@@ -75,7 +75,6 @@ async fn prepare(root: &Path, command: &str) -> cookie_agent_runtime_api::Prepar
 fn policy(rules: Vec<PermissionRule>) -> AgentSnapshot {
     AgentSnapshot {
         agent: AgentId::new("test").expect("agent id"),
-        schema: AgentSchemaVersion::current(),
         mode: AgentMode::Primary,
         description: "Test agent".into(),
         document_source: AgentDocumentSource::User,

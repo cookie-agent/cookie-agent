@@ -151,10 +151,23 @@ fn frozen_binding() -> FrozenModelBinding {
     }
 }
 
+fn persisted(binding: &FrozenModelBinding) -> PersistedModelBinding {
+    PersistedModelBinding::new(
+        binding,
+        ResolvedModelRef {
+            selection: binding.selection.clone(),
+            provider_id: binding.selection.model.provider_id(),
+            model_id: binding.selection.model.model_id(),
+            adapter_id: AdaptorId::OPENAI_RESPONSES,
+            selection_fingerprint: binding.selection_fingerprint.clone(),
+        },
+    )
+    .unwrap()
+}
+
 fn child_agent(binding: FrozenModelBinding) -> AgentSnapshot {
     AgentSnapshot {
         agent: AgentId::new("worker").unwrap(),
-        schema: AgentSchemaVersion::current(),
         mode: AgentMode::Subagent,
         description: "Delegated worker".into(),
         document_source: AgentDocumentSource::User,
@@ -164,7 +177,7 @@ fn child_agent(binding: FrozenModelBinding) -> AgentSnapshot {
         max_output_tokens: 0,
         permissions: Vec::new(),
         delegation: None,
-        fallback_chain: vec![binding],
+        fallback_chain: vec![persisted(&binding)],
         selected_suffix_start: 0,
     }
 }
@@ -224,7 +237,6 @@ fn wire_versions_accept_only_documented_history() {
     assert!(serde_json::from_value::<ProtocolVersion>(json!(16)).is_err());
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 6);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(10)).is_err());
-    assert!(serde_json::from_value::<AgentSchemaVersion>(json!(4)).is_err());
     assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(5)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
 }
@@ -1766,6 +1778,39 @@ fn frozen_sources_and_credentials_are_strict() {
 }
 
 #[test]
+fn persisted_model_bindings_decode_their_frozen_binding_only_on_demand() {
+    let binding = frozen_binding();
+    let stored = persisted(&binding);
+    assert_eq!(stored.adapter, "openai-responses");
+    assert_eq!(stored.provider_model_id.as_str(), "gpt-5.6-sol");
+    assert_eq!(stored.decode().unwrap(), binding);
+
+    // A frozen value this build cannot read still loads; only decoding fails.
+    let mut encoded = serde_json::to_value(child_agent(binding.clone())).unwrap();
+    encoded["fallback_chain"][0]["frozen"] = json!({"descriptor": "from a newer build"});
+    let snapshot = serde_json::from_value::<AgentSnapshot>(encoded).unwrap();
+    assert_eq!(
+        snapshot.fallback_chain[0].decode(),
+        Err(ModelSchemaError::UnreadableFrozenBinding)
+    );
+
+    // A frozen binding for another model is not the binding the entry names.
+    let mut other = binding.clone();
+    other.selection_fingerprint = Sha256Digest::of_bytes(b"other selection");
+    let mut mismatched = stored.clone();
+    mismatched.frozen = serde_json::to_value(&other).unwrap();
+    assert_eq!(
+        mismatched.decode(),
+        Err(ModelSchemaError::UnreadableFrozenBinding)
+    );
+
+    // The stored identity must agree with itself.
+    let mut encoded = serde_json::to_value(&stored).unwrap();
+    encoded["provider_model_id"] = json!("another-model");
+    assert!(serde_json::from_value::<PersistedModelBinding>(encoded).is_err());
+}
+
+#[test]
 fn delegation_reserved_event_roundtrips_current_request() {
     let binding = frozen_binding();
     let manifest_revision = binding.manifest_revision.clone();
@@ -1785,7 +1830,6 @@ fn delegation_reserved_event_roundtrips_current_request() {
         model_revision: revision("models"),
         agent_revision: revision("agents"),
         recipe_registry_revision: revision("recipes"),
-        selected_suffix: vec![binding],
         cache_strategies: vec![Some(FrozenCacheStrategy::OpenAi {
             prompt_cache_key: Some("delegated-${session_id}".into()),
             prompt_cache_retention: Some(FrozenOpenAiCacheRetention::TwentyFourHours),

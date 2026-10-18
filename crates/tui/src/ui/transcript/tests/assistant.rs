@@ -305,7 +305,6 @@ async fn replayed_footer_cost_matches_engine_session_usage() {
             agent_revision: agent_revision.clone(),
             recipe_registry_revision: recipe_registry_revision.clone(),
             manifest_revision: manifest_revision.clone(),
-            selected_suffix: vec![binding],
             internal_agents: Vec::new(),
             input_through_seq: 1,
         },

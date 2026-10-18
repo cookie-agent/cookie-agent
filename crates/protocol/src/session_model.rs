@@ -37,13 +37,12 @@ impl SessionModelState {
                 self.successful_fallback = false;
             }
             EventPayload::RunStarted {
-                selection,
-                selected_suffix,
-                ..
+                selection, agent, ..
             } => {
                 self.successful_fallback &= self.selection.as_ref() == Some(selection);
                 self.selection = Some(selection.clone());
-                self.chain = selected_suffix
+                self.chain = agent
+                    .selected_suffix()
                     .iter()
                     .map(|binding| binding.selection.clone())
                     .collect();

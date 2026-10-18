@@ -53,7 +53,6 @@ async fn adopting_a_session_reconciles_its_dead_run_before_resume() {
         .get(session.session_id)
         .expect("created projection");
     let run_id = cookie_agent_protocol::RunId::new_v7();
-    let selected_suffix = projection.creation_agent.fallback_chain.clone();
     fixture
         .engine
         .inner
@@ -73,7 +72,6 @@ async fn adopting_a_session_reconciles_its_dead_run_before_resume() {
                 agent_revision: projection.meta.agent_revision.clone(),
                 recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
                 manifest_revision: projection.meta.manifest_revision.clone(),
-                selected_suffix,
                 internal_agents: Vec::new(),
                 input_through_seq: 1,
             },
@@ -280,7 +278,7 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
     let agent = parent.creation_agent.as_ref().clone();
     let runtime = fixture.engine.current_runtime();
     let revisions = crate::delegation_events::DelegationRuntimeRevisions {
-        manifest_revision: agent.fallback_chain[0].manifest_revision.clone(),
+        manifest_revision: crate::test_support::manifest_of(&agent.fallback_chain[0]),
         runtime_revision: runtime.result.snapshot.runtime_revision.clone(),
         catalog_revision: runtime.result.snapshot.catalog_revision.clone(),
         provider_state_revision: runtime.result.snapshot.provider_state_revision.clone(),
@@ -311,7 +309,6 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
     ];
     let fingerprint = crate::delegation_events::delegation_request_fingerprint(
         &agent,
-        &agent.fallback_chain,
         &cache_strategies,
         &request,
     )
@@ -328,7 +325,7 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
             ToolCallId::new_v7(),
             agent.clone(),
             revisions,
-            agent.fallback_chain.clone(),
+            crate::policy::decode_bindings(&agent.fallback_chain).expect("bindings"),
             cache_strategies.clone(),
             fingerprint,
             request,
@@ -441,7 +438,7 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
     let agent = parent.creation_agent.as_ref().clone();
     let runtime = fixture.engine.current_runtime();
     let revisions = crate::delegation_events::DelegationRuntimeRevisions {
-        manifest_revision: agent.fallback_chain[0].manifest_revision.clone(),
+        manifest_revision: crate::test_support::manifest_of(&agent.fallback_chain[0]),
         runtime_revision: runtime.result.snapshot.runtime_revision.clone(),
         catalog_revision: runtime.result.snapshot.catalog_revision.clone(),
         provider_state_revision: runtime.result.snapshot.provider_state_revision.clone(),
@@ -470,7 +467,6 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
         let cache_strategies = vec![None; agent.fallback_chain.len()];
         let fingerprint = crate::delegation_events::delegation_request_fingerprint(
             &agent,
-            &agent.fallback_chain,
             &cache_strategies,
             &request,
         )
@@ -486,7 +482,7 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
                 ToolCallId::new_v7(),
                 agent.clone(),
                 revisions.clone(),
-                agent.fallback_chain.clone(),
+                crate::policy::decode_bindings(&agent.fallback_chain).expect("bindings"),
                 cache_strategies,
                 fingerprint,
                 request,
@@ -763,5 +759,76 @@ async fn a_crash_mid_stream_recovers_without_the_live_only_partial_output() {
             .unwrap()
             .contains("partial answer")
     );
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_unreadable_frozen_binding_fails_only_what_runs_it_again() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    let projection = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("created projection");
+    // A binding written by a build whose frozen shape this one cannot read.
+    let mut agent = projection.creation_agent.as_ref().clone();
+    agent.fallback_chain[0].frozen = serde_json::json!({"descriptor": "from a newer build"});
+    let run_id = cookie_agent_protocol::RunId::new_v7();
+    fixture
+        .engine
+        .inner
+        .store
+        .append(
+            session.session_id,
+            Some(run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+            EventPayload::RunStarted {
+                client_run_id: ClientRunId::new("unreadable-binding").expect("client run ID"),
+                selection,
+                agent: Box::new(agent),
+                runtime_revision: projection.meta.runtime_revision.clone(),
+                catalog_revision: projection.meta.catalog_revision.clone(),
+                provider_state_revision: projection.meta.provider_state_revision.clone(),
+                model_revision: projection.meta.model_revision.clone(),
+                agent_revision: projection.meta.agent_revision.clone(),
+                recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
+                manifest_revision: projection.meta.manifest_revision.clone(),
+                internal_agents: Vec::new(),
+                input_through_seq: 1,
+            },
+        )
+        .expect("start run");
+    fixture
+        .engine
+        .inner
+        .store
+        .append(
+            session.session_id,
+            Some(run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+            EventPayload::UserInputSubmitted {
+                input: "persist the run".into(),
+            },
+        )
+        .expect("persist the run");
+    fixture.engine.shutdown().await;
+    drop(fixture.engine);
+
+    let reopened = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+    reopened
+        .resume(session.session_id)
+        .await
+        .expect("the session opens");
+    assert!(matches!(
+        reopened
+            .get_history(session.session_id, crate::EngineHistoryView::Full)
+            .await,
+        Err(EngineError::UnreadableModelBinding(model)) if model == session.creation_selection.model.model
+    ));
     reopened.shutdown().await;
 }

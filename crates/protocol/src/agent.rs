@@ -4,55 +4,9 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, FrozenModelBinding, ModelKey, ModelSelection, RuntimeId, Sha256Digest, WildcardPattern,
+    AgentId, ModelKey, ModelSelection, PersistedModelBinding, RuntimeId, Sha256Digest,
+    WildcardPattern,
 };
-
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct AgentSchemaVersion(());
-impl AgentSchemaVersion {
-    #[must_use]
-    pub const fn current() -> Self {
-        Self(())
-    }
-    #[must_use]
-    pub const fn value(self) -> u32 {
-        7
-    }
-}
-impl Serialize for AgentSchemaVersion {
-    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        s.serialize_u32(7)
-    }
-}
-impl<'de> Deserialize<'de> for AgentSchemaVersion {
-    fn deserialize<D>(d: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let v = u32::deserialize(d)?;
-        if v == 7 {
-            Ok(Self::current())
-        } else {
-            Err(serde::de::Error::custom(format!(
-                "unsupported exact agent schema {v}; expected 7"
-            )))
-        }
-    }
-}
-impl JsonSchema for AgentSchemaVersion {
-    fn inline_schema() -> bool {
-        true
-    }
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("AgentSchemaVersion")
-    }
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"integer","const":7})
-    }
-}
 
 #[derive(
     Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
@@ -344,7 +298,6 @@ impl<'de> Deserialize<'de> for FrozenDelegationPolicy {
 #[serde(deny_unknown_fields)]
 pub struct AgentSnapshot {
     pub agent: AgentId,
-    pub schema: AgentSchemaVersion,
     pub mode: AgentMode,
     #[schemars(with = "AgentDescriptionSchema")]
     pub description: String,
@@ -360,7 +313,9 @@ pub struct AgentSnapshot {
     #[schemars(with = "crate::NullableSchema<FrozenDelegationPolicy>", required)]
     pub delegation: Option<FrozenDelegationPolicy>,
     #[schemars(length(min = 1, max = 256))]
-    pub fallback_chain: Vec<FrozenModelBinding>,
+    pub fallback_chain: Vec<PersistedModelBinding>,
+    /// Where the run's fallback starts in `fallback_chain`: the run's model
+    /// is that entry, and its fallbacks are the entries after it.
     pub selected_suffix_start: u32,
 }
 
@@ -406,44 +361,23 @@ impl AgentSnapshot {
         Ok(())
     }
 
+    /// Checks that `selection` is the run this snapshot was frozen for: its
+    /// agent, and exactly the fallback entry the run starts at.
     pub fn validate_selection(&self, selection: &RunSelection) -> Result<(), AgentSchemaError> {
         self.validate()?;
-        let start = self.selected_suffix_start as usize;
-        if selection.agent != self.agent
-            || self.fallback_chain[start].selection.model != selection.model.model
-        {
+        if selection.agent != self.agent || self.selected_suffix()[0].selection != selection.model {
             return Err(AgentSchemaError::SelectionMismatch);
         }
         Ok(())
     }
 
-    pub fn validate_selected_suffix(
-        &self,
-        selection: &RunSelection,
-        selected_suffix: &[FrozenModelBinding],
-    ) -> Result<(), AgentSchemaError> {
-        self.validate_selection(selection)?;
-        let start = self.selected_suffix_start as usize;
-        let expected = &self.fallback_chain[start..];
-        if selected_suffix.len() != expected.len() || selected_suffix.is_empty() {
-            return Err(AgentSchemaError::SelectedSuffixMismatch);
-        }
-        let selected_head = &selected_suffix[0];
-        let fallback_head = &expected[0];
-        if selected_head.selection != selection.model
-            || selected_head.descriptor != fallback_head.descriptor
-        {
-            return Err(AgentSchemaError::SelectedSuffixMismatch);
-        }
-        if selection.model.variant == fallback_head.selection.variant
-            && selected_head != fallback_head
-        {
-            return Err(AgentSchemaError::SelectedSuffixMismatch);
-        }
-        if selected_suffix[1..] != expected[1..] {
-            return Err(AgentSchemaError::SelectedSuffixMismatch);
-        }
-        Ok(())
+    /// The run's model and its fallbacks, in order. Nonempty for a valid
+    /// snapshot.
+    #[must_use]
+    pub fn selected_suffix(&self) -> &[PersistedModelBinding] {
+        self.fallback_chain
+            .get(self.selected_suffix_start as usize..)
+            .unwrap_or_default()
     }
 }
 impl<'de> Deserialize<'de> for AgentSnapshot {
@@ -455,7 +389,6 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
         #[serde(deny_unknown_fields)]
         struct Wire {
             agent: AgentId,
-            schema: AgentSchemaVersion,
             mode: AgentMode,
             description: String,
             document_source: AgentDocumentSource,
@@ -466,14 +399,13 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
             permissions: Vec<PermissionRule>,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             delegation: Option<FrozenDelegationPolicy>,
-            fallback_chain: Vec<FrozenModelBinding>,
+            fallback_chain: Vec<PersistedModelBinding>,
             selected_suffix_start: u32,
         }
 
         let w = Wire::deserialize(d)?;
         let value = Self {
             agent: w.agent,
-            schema: w.schema,
             mode: w.mode,
             description: w.description,
             document_source: w.document_source,
@@ -677,12 +609,11 @@ pub enum AgentSchemaError {
     InvalidModelBinding,
     InvalidSuffixStart,
     SelectionMismatch,
-    SelectedSuffixMismatch,
     InvalidRootRunnable,
 }
 impl fmt::Display for AgentSchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self{Self::InvalidDelegationTargets=>"delegation targets must be a nonempty, strictly sorted unique list of at most 256 IDs",Self::InvalidDescription=>"agent description must be nonblank, control-free, and 1..=512 bytes",Self::InvalidPreset=>"agent preset must use lowercase alphanumeric segments separated by hyphens and contain at most 64 bytes",Self::InvalidPrompt=>"composed prompt must be nonblank and at most 128 KiB",Self::InvalidListBounds=>"agent list exceeds bounds or frozen fallback is empty",Self::DuplicatePermissionRule=>"session permission overlay rules must be unique by action and resource",Self::DuplicateFallbackModel=>"fallback chains may contain each model key at most once",Self::InvalidModelBinding=>"agent snapshot contains an invalid frozen model binding",Self::InvalidSuffixStart=>"selected_suffix_start must index the frozen fallback chain",Self::SelectionMismatch=>"run selection does not match the snapshot agent and selected fallback start",Self::SelectedSuffixMismatch=>"selected suffix does not exactly match the frozen fallback order and selected head",Self::InvalidRootRunnable=>"runnable_as_root contradicts enabled mode or fallback state"})
+        f.write_str(match self{Self::InvalidDelegationTargets=>"delegation targets must be a nonempty, strictly sorted unique list of at most 256 IDs",Self::InvalidDescription=>"agent description must be nonblank, control-free, and 1..=512 bytes",Self::InvalidPreset=>"agent preset must use lowercase alphanumeric segments separated by hyphens and contain at most 64 bytes",Self::InvalidPrompt=>"composed prompt must be nonblank and at most 128 KiB",Self::InvalidListBounds=>"agent list exceeds bounds or frozen fallback is empty",Self::DuplicatePermissionRule=>"session permission overlay rules must be unique by action and resource",Self::DuplicateFallbackModel=>"fallback chains may contain each model key at most once",Self::InvalidModelBinding=>"agent snapshot contains an invalid frozen model binding",Self::InvalidSuffixStart=>"selected_suffix_start must index the frozen fallback chain",Self::SelectionMismatch=>"run selection does not match the snapshot agent and selected fallback start",Self::InvalidRootRunnable=>"runnable_as_root contradicts enabled mode or fallback state"})
     }
 }
 impl std::error::Error for AgentSchemaError {}

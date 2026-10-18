@@ -3520,7 +3520,7 @@ mod windows_tests {
         let session_id = SessionId::new_v7();
         let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
         let selection = crate::test_support::run_selection("test");
-        let binding = agent.fallback_chain[0].clone();
+        let binding = agent.fallback_chain[0].decode().expect("test binding");
         let runtime_revision = RuntimeRevision::new(revision('1')).unwrap();
         let catalog_revision = CatalogRevision::new(revision('2')).unwrap();
         let provider_state_revision = ProviderStateRevision::new(revision('3')).unwrap();
@@ -3565,7 +3565,6 @@ mod windows_tests {
                     agent_revision,
                     recipe_registry_revision,
                     manifest_revision: binding.manifest_revision.clone(),
-                    selected_suffix: vec![binding],
                     internal_agents: Vec::new(),
                     input_through_seq: 1,
                 },

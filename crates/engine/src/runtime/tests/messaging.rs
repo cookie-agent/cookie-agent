@@ -367,7 +367,6 @@ async fn agent_message_hop_is_inherited_by_the_send_path() {
                 agent_revision: projection.meta.agent_revision.clone(),
                 recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
                 manifest_revision: projection.meta.manifest_revision.clone(),
-                selected_suffix: projection.creation_agent.fallback_chain.clone(),
                 internal_agents: Vec::new(),
                 input_through_seq: 2,
             },

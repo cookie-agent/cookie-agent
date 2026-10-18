@@ -1306,3 +1306,27 @@ Deviations and choices made while implementing, by phase.
   `AdapterFamily` stays an enum, since media delivery branches on it, but
   reads and writes the same label grammar, and a family this build does not
   know reads as `Unknown`, which delivers no media.
+- **Persisted bindings.** `PersistedModelBinding` has the shape of section
+  5; `adapter` is the binding's protocol adapter (the descriptor's, such as
+  `oven.openai.responses`), and the stored identity must agree with itself
+  (selection, provider and model, `resolved`) when read. `decode` returns the
+  frozen binding only when it reads and names the same selection,
+  fingerprints, and adapter. It is called where the engine runs a stored
+  binding again: the latest run's policy for manual compaction, title
+  regeneration, and `get_history`, and a frozen internal agent's model
+  fallbacks. A failure fails that operation with `unreadable_model_binding`
+  and never the open. A restart never resumes a run with its frozen bindings:
+  runs left running are interrupted, and a new run resolves its models from
+  the live runtime as before. A delegation reservation's bindings are never
+  decoded on read either, since recovery does not rebuild a child from them.
+  `FrozenModelBinding` and the model-snapshot manifest types are no longer on
+  any surface, so they lose their schemas and `LanguageModelDescriptorSchema`
+  is gone; no protocol type reachable from `EventPayload` names an oven-sdk
+  type.
+- **Selected suffix.** The snapshot's existing `selected_suffix_start` is the
+  fallback start index, so `run_started` and also `delegation_reserved`
+  (which carried the same copy) drop `selected_suffix`. The run's model is
+  exactly the chain entry at the start, variant included: the engine always
+  froze the chain with the selection's own variant, so the old exception for
+  a head of another variant never applied. Attempt and fallback validation
+  compares `resolved_model` with the stored `resolved` of the entries.

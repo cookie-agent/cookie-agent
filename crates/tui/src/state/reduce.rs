@@ -460,18 +460,13 @@ pub(super) fn reduce_event_from(
                 }
             }
         }
-        EventPayload::RunStarted {
-            agent,
-            selected_suffix,
-            ..
-        } => {
+        EventPayload::RunStarted { agent, .. } => {
             close_open_assistant(state, timestamp);
             state.open_run_assistant = None;
             state.pending_attempt = None;
             state.active_run = run_id;
             state.run_agent = Some(agent.agent.clone());
             state.run_snapshot = Some(agent);
-            state.run_selected_suffix = Some(selected_suffix);
             state.agent_md_previous_run = std::mem::take(&mut state.agent_md_latest_run);
         }
         EventPayload::UserInputAdmitted { input } => {

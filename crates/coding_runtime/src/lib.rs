@@ -80,13 +80,12 @@ pub(crate) fn assert_workspace_rule_allows(
     resource: &str,
 ) {
     use cookie_agent_protocol::{
-        AgentDocumentSource, AgentId, AgentMode, AgentSchemaVersion, AgentSnapshot,
-        PermissionEffect, PermissionRule, Sha256Digest, WildcardPattern,
+        AgentDocumentSource, AgentId, AgentMode, AgentSnapshot, PermissionEffect, PermissionRule,
+        Sha256Digest, WildcardPattern,
     };
 
     let policy = AgentSnapshot {
         agent: AgentId::new("test").expect("agent id"),
-        schema: AgentSchemaVersion::current(),
         mode: AgentMode::Primary,
         description: "Test agent".into(),
         document_source: AgentDocumentSource::User,

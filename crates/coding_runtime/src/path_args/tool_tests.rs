@@ -2,8 +2,8 @@ use std::{fs, path::Path, process::Command};
 
 use cookie_agent_engine::permissions::PermissionPipeline;
 use cookie_agent_protocol::{
-    AgentDocumentSource, AgentId, AgentMode, AgentSchemaVersion, AgentSnapshot, PermissionAction,
-    PermissionEffect, PermissionRule, RunId, SessionId, Sha256Digest, ToolCallId, WildcardPattern,
+    AgentDocumentSource, AgentId, AgentMode, AgentSnapshot, PermissionAction, PermissionEffect,
+    PermissionRule, RunId, SessionId, Sha256Digest, ToolCallId, WildcardPattern,
 };
 use cookie_agent_runtime_api::{PreparedTool, ToolCall, ToolPreparationContext, ToolProvider};
 
@@ -65,7 +65,6 @@ fn assert_permission(
     let action = prepared.operation().capabilities()[0].action.clone();
     let policy = AgentSnapshot {
         agent: AgentId::new("test").unwrap(),
-        schema: AgentSchemaVersion::current(),
         mode: AgentMode::Primary,
         description: "Test agent".into(),
         document_source: AgentDocumentSource::User,

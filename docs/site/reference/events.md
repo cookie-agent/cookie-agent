@@ -343,7 +343,8 @@ after restart.
 
 The `delegation_*` records are durable control events on the parent session,
 in the parent run. `delegation_reserved` contains the complete current delegate
-request, child agent snapshot, selected model suffix, runtime revisions,
+request, the child agent snapshot (whose selected suffix is the child's
+models), one cache strategy per entry of that suffix, runtime revisions, the
 request fingerprint, and optional typed staged-skill provenance. The child
 records its attachments, the root session's, with `runtime_attached` events at
 creation. `delegation_progressed { invocation_id, stage }` records how far the
@@ -379,6 +380,30 @@ delegation event, that delegation is not recovered, the parent session records
 the diagnostic, and unrelated delegations remain recoverable.
 
 ### Runs and internal agents
+
+`run_started` freezes the run's agent snapshot. The snapshot's
+`fallback_chain` lists the agent's models in fallback order, and
+`selected_suffix_start` is where the run starts in it: the run's model is
+that entry (its exact selection, variant included, equals the run
+selection's), and its fallbacks are the entries after it. `session_created`
+and `delegation_reserved` carry snapshots of the same shape, and the snapshot
+has no schema version.
+
+Each chain entry, like a model fallback of a frozen internal agent, is a
+stored model binding `{ selection, provider_id, provider_model_id, adapter,
+resolved, selection_fingerprint, blueprint_fingerprint, frozen }`. `adapter`
+is the protocol adapter the binding speaks (such as `oven.openai.responses`),
+and `resolved` is the model reference the run's attempts record:
+`model_attempt_started` and `model_fallback` must name the `resolved` of the
+entry at their fallback index, counted from `selected_suffix_start`.
+`frozen` holds the complete binding (descriptor, request defaults, provider
+options, credential and setup bindings, static headers) as an opaque value.
+Loading a log never decodes it. The engine decodes it only to run the
+binding again: manual compaction, title generation, and the history view of
+the latest run, and the model fallbacks of that run's internal agents. When
+this build cannot read it, that operation fails with
+`unreadable_model_binding`; the session still opens, and a new run resolves
+its models afresh as always.
 
 `run_finished { outcome }` ends a run. `outcome` is `completed { final_text? }`,
 `failed { error, model_error?, resolved_model? }`, `cancelled { reason? }`, or

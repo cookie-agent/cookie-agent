@@ -317,9 +317,9 @@ async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_prese
         .events()
         .into_iter()
         .find_map(|event| match event.payload {
-            EventPayload::RunStarted {
-                selected_suffix, ..
-            } if event.run_id == Some(run.run_id) => Some(selected_suffix),
+            EventPayload::RunStarted { agent, .. } if event.run_id == Some(run.run_id) => {
+                Some(agent.selected_suffix().to_vec())
+            }
             _ => None,
         })
         .expect("frozen suffix");
@@ -355,7 +355,10 @@ async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_prese
     let readable = engine_two
         .get_session(session.session_id)
         .expect("readable session");
-    assert_eq!(readable.manifest_revision, frozen[0].manifest_revision);
+    assert_eq!(
+        readable.manifest_revision,
+        crate::test_support::manifest_of(&frozen[0])
+    );
     let still_frozen = engine_two
         .inner
         .store
@@ -365,9 +368,9 @@ async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_prese
         .events()
         .into_iter()
         .find_map(|event| match event.payload {
-            EventPayload::RunStarted {
-                selected_suffix, ..
-            } if event.run_id == Some(run.run_id) => Some(selected_suffix),
+            EventPayload::RunStarted { agent, .. } if event.run_id == Some(run.run_id) => {
+                Some(agent.selected_suffix().to_vec())
+            }
             _ => None,
         })
         .expect("frozen suffix after disconnect");
@@ -878,9 +881,11 @@ async fn accepted_root_run_keeps_its_exact_manifest_binding_after_runtime_change
         .events
         .iter()
         .find_map(|event| match &event.payload {
-            cookie_agent_protocol::EventPayload::RunStarted {
-                selected_suffix, ..
-            } if event.run_id == Some(run.run_id) => Some(selected_suffix.clone()),
+            cookie_agent_protocol::EventPayload::RunStarted { agent, .. }
+                if event.run_id == Some(run.run_id) =>
+            {
+                Some(agent.selected_suffix().to_vec())
+            }
             _ => None,
         })
         .expect("frozen suffix");
@@ -904,14 +909,19 @@ async fn accepted_root_run_keeps_its_exact_manifest_binding_after_runtime_change
         .events
         .iter()
         .find_map(|event| match &event.payload {
-            cookie_agent_protocol::EventPayload::RunStarted {
-                selected_suffix, ..
-            } if event.run_id == Some(run.run_id) => Some(selected_suffix.clone()),
+            cookie_agent_protocol::EventPayload::RunStarted { agent, .. }
+                if event.run_id == Some(run.run_id) =>
+            {
+                Some(agent.selected_suffix().to_vec())
+            }
             _ => None,
         })
         .expect("frozen suffix after change");
     assert_eq!(frozen, still_frozen);
-    assert_eq!(frozen[0].manifest_revision, session.manifest_revision);
+    assert_eq!(
+        crate::test_support::manifest_of(&frozen[0]),
+        session.manifest_revision
+    );
 }
 
 /// Bedrock catalog with one usable model, one parser-quarantined row, and one

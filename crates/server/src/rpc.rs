@@ -384,6 +384,7 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::SessionOwnedByAnotherProcess(_) => "session_owned_by_another_process",
         EngineError::ActorStopped => "actor_stopped",
         EngineError::NoRunnableModel => "no_runnable_model",
+        EngineError::UnreadableModelBinding(_) => "unreadable_model_binding",
         EngineError::UnknownAgentPreset(_) => "unknown_agent_preset",
         EngineError::ProviderStoreReloadFailed => "provider_store_reload_failed",
         EngineError::RuntimeCompileFailed => "runtime_compile_failed",

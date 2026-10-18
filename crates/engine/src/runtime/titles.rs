@@ -227,19 +227,21 @@ pub(super) fn latest_run_policy(
         .find_map(|event| match &event.payload {
             Event::RunStarted {
                 agent,
-                selected_suffix,
                 internal_agents,
                 selection,
                 ..
-            } if event.run_id == Some(run_id) => Some((
-                agent.as_ref().clone(),
-                selected_suffix.clone(),
-                internal_agents.clone(),
-                selection.preset.clone(),
-            )),
+            } if event.run_id == Some(run_id) => Some((agent, internal_agents, selection)),
             _ => None,
         })
         .ok_or(EngineError::MissingRun(run_id))
+        .and_then(|(agent, internal_agents, selection)| {
+            Ok((
+                agent.as_ref().clone(),
+                crate::policy::decode_bindings(agent.selected_suffix())?,
+                internal_agents.clone(),
+                selection.preset.clone(),
+            ))
+        })
 }
 
 pub(crate) fn title_regeneration_target(events: &[Arc<StoredEvent>]) -> Option<(RunId, u64)> {

@@ -212,7 +212,12 @@ async fn goal_activation_keeps_run_a_frozen_until_modeled_run_b_events_arrive() 
         resolved_b.selection
     );
     assert_eq!(
-        state.run_selected_suffix.as_ref().expect("run B suffix")[0].selection,
+        state
+            .run_snapshot
+            .as_ref()
+            .expect("run B snapshot")
+            .selected_suffix()[0]
+            .selection,
         resolved_b.selection
     );
 
@@ -790,9 +795,10 @@ async fn selected_suffix_head_variant_override_persists_through_replay() {
         vec![resolved_model(Some("high")), resolved_model(Some("fast"))],
     )));
     let suffix = store.sessions[&child]
-        .run_selected_suffix
+        .run_snapshot
         .as_ref()
-        .expect("persisted selected suffix");
+        .expect("persisted run snapshot")
+        .selected_suffix();
     assert_eq!(
         suffix[0]
             .selection

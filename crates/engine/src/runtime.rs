@@ -243,6 +243,10 @@ pub enum EngineError {
     ActorStopped,
     #[error("no_runnable_model")]
     NoRunnableModel,
+    /// A stored model binding is not one this build can run, so the run it
+    /// belongs to cannot be continued with it.
+    #[error("the stored binding of model `{0}` cannot be read by this build")]
+    UnreadableModelBinding(ModelKey),
     #[error("unknown agent preset `{0}`")]
     UnknownAgentPreset(String),
     #[error("provider_store_reload_failed")]
