@@ -10,7 +10,6 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct OperationFingerprint {
     digest: Sha256Digest,
 }
@@ -36,7 +35,6 @@ impl<'de> Deserialize<'de> for OperationFingerprint {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             digest: Sha256Digest,
         }
@@ -47,7 +45,6 @@ impl<'de> Deserialize<'de> for OperationFingerprint {
 }
 
 #[derive(Clone, Debug, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct PreparedResourceDigest {
     digest: Sha256Digest,
 }
@@ -70,7 +67,6 @@ impl<'de> Deserialize<'de> for PreparedResourceDigest {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             digest: Sha256Digest,
         }
@@ -142,7 +138,7 @@ impl JsonSchema for PreparedResourceIdentity {
 pub type PreparedCapabilityOperation = PreparedResourceIdentity;
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ApprovalBoundary {
     Exact,
     CommandPrefix { prefix: String },
@@ -165,7 +161,6 @@ pub enum PreparedBindingLifetime {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct PreparedApprovalResource {
     pub capability: PermissionAction,
     pub canonical: PreparedResourceIdentity,
@@ -176,7 +171,6 @@ pub struct PreparedApprovalResource {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct MatchedPermissionRule {
     pub source_layer: SafeCode,
     pub action: PermissionAction,
@@ -187,7 +181,6 @@ pub struct MatchedPermissionRule {
     pub effect: PermissionEffect,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct DecisionTrace {
     pub action: PermissionAction,
     pub normalized_resource: String,
@@ -196,7 +189,6 @@ pub struct DecisionTrace {
     pub precedence_reason: String,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ApprovalEvaluation {
     pub resource_digest: PreparedResourceDigest,
     pub effect: PermissionEffect,
@@ -223,7 +215,6 @@ pub enum PermissionMode {
     Yolo,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ApprovalCapability {
     pub action: PermissionAction,
     pub operation: PreparedCapabilityOperation,
@@ -235,7 +226,6 @@ pub enum PreparedCapabilityLifetime {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct PreparedOperationIdentity {
     normalized_arguments_digest: Sha256Digest,
     #[schemars(length(min = 1, max = 256))]
@@ -322,7 +312,6 @@ impl<'de> Deserialize<'de> for PreparedOperationIdentity {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             normalized_arguments_digest: Sha256Digest,
             capabilities: Vec<ApprovalCapability>,
@@ -348,7 +337,6 @@ impl<'de> Deserialize<'de> for PreparedOperationIdentity {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ApprovalConstraints {
     pub allow_once: bool,
     pub allow_tree_grant: bool,
@@ -410,7 +398,6 @@ pub enum ApprovalStatus {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ApprovalFeedback {
     pub message: SafeErrorMessage,
 }
@@ -423,7 +410,6 @@ pub enum ApprovalInternalDecisionKind {
     Escalate,
 }
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ApprovalInternalDecision {
     pub decision: ApprovalInternalDecisionKind,
     pub source: ApprovalDecisionSource,
@@ -504,7 +490,6 @@ impl<'de> Deserialize<'de> for ApprovalInternalDecision {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             decision: ApprovalInternalDecisionKind,
             source: ApprovalDecisionSource,
@@ -539,7 +524,6 @@ pub enum ApprovalFinalOutcome {
     Expired,
 }
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ApprovalFinalDecision {
     pub outcome: ApprovalFinalOutcome,
     pub source: ApprovalDecisionSource,
@@ -627,7 +611,6 @@ impl<'de> Deserialize<'de> for ApprovalFinalDecision {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             outcome: ApprovalFinalOutcome,
             source: ApprovalDecisionSource,
@@ -651,7 +634,6 @@ impl<'de> Deserialize<'de> for ApprovalFinalDecision {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ApprovalRequest {
     approval_id: ApprovalId,
     #[schemars(range(min = 1))]
@@ -799,7 +781,6 @@ impl<'de> Deserialize<'de> for ApprovalRequest {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             approval_id: ApprovalId,
             revision: u64,
@@ -829,7 +810,6 @@ impl<'de> Deserialize<'de> for ApprovalRequest {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct TreeApprovalGrant {
     pub grant_id: TreeApprovalGrantId,
     pub root_session_id: SessionId,
@@ -886,7 +866,6 @@ impl<'de> Deserialize<'de> for TreeApprovalGrant {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             grant_id: TreeApprovalGrantId,
             root_session_id: SessionId,

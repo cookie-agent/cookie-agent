@@ -3,7 +3,6 @@
     "ApprovalBoundary": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "exact",
@@ -16,7 +15,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "prefix": {
               "type": "string"
@@ -33,7 +31,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "root_session_id": {
               "format": "uuid",
@@ -53,7 +50,6 @@
       ]
     },
     "ApprovalCapability": {
-      "additionalProperties": false,
       "properties": {
         "action": {
           "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
@@ -74,7 +70,6 @@
       "type": "object"
     },
     "ApprovalConstraints": {
-      "additionalProperties": false,
       "properties": {
         "allow_once": {
           "type": "boolean"
@@ -115,7 +110,6 @@
       "type": "string"
     },
     "ApprovalEvaluation": {
-      "additionalProperties": false,
       "properties": {
         "effect": {
           "$ref": "#/$defs/PermissionEffect"
@@ -135,7 +129,6 @@
       "type": "object"
     },
     "ApprovalFeedback": {
-      "additionalProperties": false,
       "properties": {
         "message": {
           "description": "Control-free bounded safe error text.",
@@ -151,7 +144,6 @@
       "type": "object"
     },
     "ApprovalFinalDecision": {
-      "additionalProperties": false,
       "properties": {
         "feedback": {
           "anyOf": [
@@ -199,7 +191,6 @@
       "type": "string"
     },
     "ApprovalInternalDecision": {
-      "additionalProperties": false,
       "properties": {
         "decision": {
           "$ref": "#/$defs/ApprovalInternalDecisionKind"
@@ -320,7 +311,6 @@
       "type": "object"
     },
     "ApprovalRequest": {
-      "additionalProperties": false,
       "properties": {
         "approval_id": {
           "format": "uuid",
@@ -419,7 +409,6 @@
       "type": "string"
     },
     "DecisionTrace": {
-      "additionalProperties": false,
       "properties": {
         "action": {
           "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
@@ -452,7 +441,6 @@
       "type": "object"
     },
     "MatchedPermissionRule": {
-      "additionalProperties": false,
       "properties": {
         "action": {
           "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
@@ -496,7 +484,6 @@
       "type": "object"
     },
     "OperationFingerprint": {
-      "additionalProperties": false,
       "properties": {
         "digest": {
           "maxLength": 64,
@@ -519,7 +506,6 @@
       "type": "string"
     },
     "PreparedApprovalResource": {
-      "additionalProperties": false,
       "properties": {
         "binding_digest": {
           "$ref": "#/$defs/PreparedResourceDigest"
@@ -569,7 +555,6 @@
       "type": "string"
     },
     "PreparedOperationIdentity": {
-      "additionalProperties": false,
       "properties": {
         "capabilities": {
           "items": {
@@ -613,7 +598,6 @@
       "type": "object"
     },
     "PreparedResourceDigest": {
-      "additionalProperties": false,
       "properties": {
         "digest": {
           "maxLength": 64,

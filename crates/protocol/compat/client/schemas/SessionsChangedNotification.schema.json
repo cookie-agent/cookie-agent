@@ -11,7 +11,6 @@
       "type": "string"
     },
     "RunSelection": {
-      "additionalProperties": false,
       "properties": {
         "agent": {
           "maxLength": 64,
@@ -20,7 +19,6 @@
           "type": "string"
         },
         "model": {
-          "additionalProperties": false,
           "description": "One exact base or named-variant model selection.",
           "properties": {
             "model": {
@@ -194,7 +192,6 @@
     "SessionOrigin": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "root",
@@ -207,7 +204,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "depth": {
               "format": "uint32",

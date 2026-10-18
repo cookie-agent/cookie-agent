@@ -10,7 +10,10 @@ use cookie_agent_runtime_api::{
     ToolPreparationContext, ToolProvider, ToolSpec,
 };
 
-use super::{parse_args, prepared_operation, prepared_resource, safe_title, schema, tool_error};
+use super::{
+    parse_args, parse_args_strict, prepared_operation, prepared_resource, safe_title, schema,
+    strict_schema, tool_error,
+};
 
 pub struct GoalTools {
     engine: Engine,
@@ -60,7 +63,7 @@ output: Default::default(),
             name: "goal_update".into(),
             permission_name: Some("write".into()),
             description: "Replace the current root goal's full checklist. The current active or paused goal is selected when this update executes, even if the goal changed since this run started. The last accepted replacement wins. This cannot change the objective or issue lifecycle commands; a nonempty all-finished checklist completes the goal. Verify evidence directly or through subagents before marking items finished; the root checklist is authoritative over subagent self-reports.".into(),
-            parameters: schema::<GoalUpdateParams>(),
+            parameters: strict_schema::<GoalUpdateParams>(),
         }
     }
 
@@ -116,7 +119,7 @@ impl ToolProvider for GoalTools {
                 Ok((Some("read"), Some("goal:current".into())))
             }
             "goal_update" => {
-                let _: GoalUpdateParams = parse_args(name, arguments.clone())?;
+                let _: GoalUpdateParams = parse_args_strict(name, arguments.clone())?;
                 Ok((Some("write"), Some("goal:current".into())))
             }
             _ => Err(ToolError::execution("goal provider received another tool")),
@@ -134,7 +137,7 @@ impl ToolProvider for GoalTools {
                 Ok("current goal".into())
             }
             "goal_update" => {
-                let _: GoalUpdateParams = parse_args(name, arguments.clone())?;
+                let _: GoalUpdateParams = parse_args_strict(name, arguments.clone())?;
                 Ok("current goal".into())
             }
             _ => Err(ToolError::execution("goal provider received another tool")),
@@ -176,7 +179,7 @@ impl ToolProvider for GoalTools {
                 )
             }
             "goal_update" => {
-                let params: GoalUpdateParams = parse_args(&call.name, call.arguments)?;
+                let params: GoalUpdateParams = parse_args_strict(&call.name, call.arguments)?;
                 let label = "goal:current".to_owned();
                 let normalized = serde_json::to_value(&params).map_err(tool_error)?;
                 let operation = Self::update_operation(ctx.session, &params)?;
@@ -335,7 +338,7 @@ mod tests {
             serde_json::json!({"items":[{"id":"old-item","description":"Verify","finished":false}]}),
         ] {
             assert!(
-                crate::base_tools::parse_args::<cookie_agent_protocol::GoalUpdateParams>(
+                crate::base_tools::parse_args_strict::<cookie_agent_protocol::GoalUpdateParams>(
                     "goal_update",
                     arguments
                 )

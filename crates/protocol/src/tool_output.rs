@@ -29,7 +29,7 @@ pub fn validate_tool_stream_name(name: &str) -> Result<(), String> {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolOutputDeclaration {
     #[default]
     Single,
@@ -102,7 +102,6 @@ pub enum ToolCompletionOutput {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RetainedToolStream {
     pub name: Option<String>,
     /// The stream's full content. Absent, with `sha256`, when the stream fit
@@ -141,7 +140,6 @@ impl RetainedToolStream {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RetainedToolOutput {
     /// The one stream's artifact, or the named-stream manifest. Absent when
     /// every stream fit inline.

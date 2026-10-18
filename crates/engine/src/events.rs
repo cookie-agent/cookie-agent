@@ -3021,51 +3021,8 @@ fn load_event_jsonl_in_place(
             )?;
             lines.starts.push((seq, line_start(line)));
         }
-        let unknown = object
-            .keys()
-            .filter(|key| {
-                !matches!(
-                    key.as_str(),
-                    "engine_version"
-                        | "origin"
-                        | "skippable"
-                        | "session_id"
-                        | "run_id"
-                        | "seq"
-                        | "timestamp"
-                        | "payload"
-                )
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        if !unknown.is_empty() {
-            if index == 0 {
-                return corrupt_value(
-                    path,
-                    format!(
-                        "SessionCreated envelope has unknown fields: {}",
-                        unknown.join(", ")
-                    ),
-                );
-            }
-            diagnostics.push(EventLoadDiagnostic {
-                seq,
-                reason: format!("unknown envelope fields: {}", unknown.join(", ")),
-                engine_version,
-                skipped: true,
-            });
-            if let Some(payload) = object.get("payload") {
-                validation_taint
-                    .mark_record(seq, envelope_run_id, payload)
-                    .map_err(|message| EventLogError::Corrupt {
-                        path: path.to_owned(),
-                        message: message.into(),
-                    })?;
-            } else {
-                validation_taint.mark_broad(seq, seq);
-            }
-            continue;
-        }
+        // Envelope members this build does not know are ignored, on the
+        // first line too: they carry what a newer build added.
         if index == 0 {
             check_history_format(path, object.get("payload"))?;
         }

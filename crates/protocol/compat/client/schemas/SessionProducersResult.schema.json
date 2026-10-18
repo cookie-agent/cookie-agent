@@ -4,7 +4,6 @@
       "description": "Stable identity used with session + idempotency key for durable deduplication.\nExternal identifies a producer outside the daemon, a plugin or a runtime:\nthe engine derives `source` from the authenticated connection, never from\nsend parameters, and the sender chooses `name` when it registers. The\nconnection epoch that authorizes live sends is runtime-only and never part\nof this durable owner or the deduplication key.\nGoalControl identifies engine-authored lifecycle steering, not a continuation\nreminder; its accepted messages survive goal-controller teardown.\nAgent identifies an in-tree agent mail sender; the session identity is\nengine-derived from the executing tool context, never from model arguments.\nTool identifies the background result of one tool call that ran in the\nbackground; the call identity is engine-derived from the executing tool\ncontext, never from model arguments.\nSubagent identifies a delegated session reporting its finished turns to\nits parent.\nThe owner is durable and participates in `(session, owner, key)` dedup.",
       "oneOf": [
         {
-          "additionalProperties": false,
           "description": "A plugin's or a runtime's named producer.",
           "properties": {
             "name": {
@@ -34,7 +33,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "invocation_id": {
               "format": "uuid",
@@ -52,7 +50,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "goal_id": {
               "format": "uuid",
@@ -70,7 +67,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "goal_id": {
               "format": "uuid",
@@ -88,7 +84,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "session_id": {
               "format": "uuid",
@@ -106,7 +101,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "tool_call_id": {
               "format": "uuid",
@@ -124,7 +118,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "description": "A delegated session reporting a finished turn to its parent.",
           "properties": {
             "session_id": {

@@ -143,7 +143,7 @@ impl JsonSchema for EventOrigin {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionOrigin {
     Root,
     Delegated {
@@ -168,7 +168,6 @@ pub enum SessionStatus {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct DelegationReservation {
     pub invocation_id: InvocationId,
     pub parent_session_id: SessionId,
@@ -185,7 +184,6 @@ pub enum DelegatedContextRole {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct DelegatedContextTurn {
     pub role: DelegatedContextRole,
     pub text: String,
@@ -198,7 +196,6 @@ pub enum StagedSkillProvenance {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct StagedSkillPayload {
     pub provenance: StagedSkillProvenance,
     pub name: String,
@@ -220,7 +217,6 @@ pub struct StagedSkillPayload {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct DelegateRequestPayload {
     pub description: String,
     pub prompt: String,
@@ -374,7 +370,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionTitleChange {
     UserSet {
         title: SessionTitle,
@@ -427,7 +423,6 @@ impl SessionTitleChange {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ArtifactReference {
     pub uri: String,
 }
@@ -447,7 +442,6 @@ impl ArtifactReference {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ToolAttachment {
     pub mime_type: MimeType,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -476,15 +470,45 @@ pub enum ToolEmittedMessageRole {
     User,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
+/// One part of a tool-emitted message: `{"text": …}` or `{"file": …}`. Other
+/// members are ignored.
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(transform = open_object_schema)]
 pub enum ToolEmittedContent {
     Text(String),
     File(ToolAttachment),
 }
 
+impl<'de> Deserialize<'de> for ToolEmittedContent {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            #[serde(default)]
+            text: Option<String>,
+            #[serde(default)]
+            file: Option<ToolAttachment>,
+        }
+        match Wire::deserialize(d)? {
+            Wire {
+                text: Some(text),
+                file: None,
+            } => Ok(Self::Text(text)),
+            Wire {
+                text: None,
+                file: Some(file),
+            } => Ok(Self::File(file)),
+            _ => Err(serde::de::Error::custom(
+                "tool-emitted content holds exactly one of `text` and `file`",
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ToolEmittedMessage {
     pub role: ToolEmittedMessageRole,
     #[schemars(length(min = 1))]
@@ -532,7 +556,6 @@ impl<'de> Deserialize<'de> for ToolEmittedMessage {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             role: ToolEmittedMessageRole,
             content: Vec<ToolEmittedContent>,
@@ -549,7 +572,6 @@ impl<'de> Deserialize<'de> for ToolEmittedMessage {
 /// tool shows its output, a shell its only stream), it is written as the byte
 /// range `display_span` into `output` instead of a second copy.
 #[derive(Clone, Debug, JsonSchema, PartialEq)]
-#[serde(deny_unknown_fields)]
 #[schemars(transform = display_span_schema)]
 pub struct PersistedToolResult {
     pub title: SafeDisplayText,
@@ -720,7 +742,6 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             title: SafeDisplayText,
             output: String,
@@ -770,7 +791,6 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
 /// What became of a call that moved to the background: its work goes on and
 /// reports its result later.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ToolBackground {
     pub state: ToolBackgroundState,
     /// Who moved the call there.
@@ -796,14 +816,12 @@ crate::open_enum! {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SafeToolError {
     pub code: SafeCode,
     pub message: SafeErrorMessage,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct AssistantToolCallRef {
     #[schemars(range(min = 1))]
     pub model_turn_seq: u64,
@@ -824,7 +842,6 @@ pub struct ToolCallPresentation {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ToolCallStart {
     pub tool_call_id: ToolCallId,
     pub output: crate::ToolOutputDeclaration,
@@ -847,7 +864,6 @@ pub enum ToolTerminationOutcome {
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ToolCallTermination {
     pub tool_call_id: ToolCallId,
     pub owner: AssistantToolCallRef,
@@ -888,7 +904,6 @@ impl<'de> Deserialize<'de> for ToolCallTermination {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             tool_call_id: ToolCallId,
             owner: AssistantToolCallRef,
@@ -912,7 +927,6 @@ impl<'de> Deserialize<'de> for ToolCallTermination {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Usage {
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<u64>", required)]
@@ -940,7 +954,6 @@ pub struct Usage {
 pub type SafeModelMetadata = BTreeMap<String, Value>;
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct NativeContextScope {
     pub provider_id: ProviderId,
     pub model_id: ProviderModelId,
@@ -968,7 +981,6 @@ impl fmt::Display for NativeArtifactError {
 impl std::error::Error for NativeArtifactError {}
 
 #[derive(Clone, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct NativeReplayArtifact {
     adapter_id: SafeCode,
     selection_fingerprint: Sha256Digest,
@@ -1065,7 +1077,6 @@ impl<'de> Deserialize<'de> for NativeReplayArtifact {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             adapter_id: SafeCode,
             selection_fingerprint: Sha256Digest,
@@ -1079,7 +1090,6 @@ impl<'de> Deserialize<'de> for NativeReplayArtifact {
 }
 
 #[derive(Clone, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct NativeContextWindow {
     adapter_id: SafeCode,
     selection_fingerprint: Sha256Digest,
@@ -1169,7 +1179,6 @@ impl<'de> Deserialize<'de> for NativeContextWindow {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             adapter_id: SafeCode,
             selection_fingerprint: Sha256Digest,
@@ -1257,8 +1266,12 @@ fn validate_native_identity(
     Ok(())
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+/// Why a model turn ended. A reason this build does not know reads as
+/// [`Self::Other`] with its name, and an `other` object's unknown members are
+/// ignored.
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[schemars(transform = open_object_schema)]
 pub enum ModelFinishReason {
     Stop,
     ToolCalls,
@@ -1272,8 +1285,61 @@ pub enum ModelFinishReason {
     Unknown,
     Other(String),
 }
+
+impl<'de> Deserialize<'de> for ModelFinishReason {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Name(String),
+            Other { other: String },
+        }
+        Ok(match Wire::deserialize(d)? {
+            Wire::Name(name) => match name.as_str() {
+                "stop" => Self::Stop,
+                "tool_calls" => Self::ToolCalls,
+                "length" => Self::Length,
+                "content_filter" => Self::ContentFilter,
+                "cancelled" => Self::Cancelled,
+                "error" => Self::Error,
+                "aborted" => Self::Aborted,
+                "timeout" => Self::Timeout,
+                "refused" => Self::Refused,
+                "unknown" => Self::Unknown,
+                _ => Self::Other(name),
+            },
+            Wire::Other { other } => Self::Other(other),
+        })
+    }
+}
+
+/// Drops `additionalProperties: false` wherever schemars put it, for an
+/// information type whose readers ignore unknown members.
+pub(crate) fn open_object_schema(schema: &mut Schema) {
+    fn open(value: &mut Value) {
+        match value {
+            Value::Object(object) => {
+                if object.get("additionalProperties") == Some(&Value::Bool(false)) {
+                    object.remove("additionalProperties");
+                }
+                object.values_mut().for_each(open);
+            }
+            Value::Array(values) => values.iter_mut().for_each(open),
+            _ => {}
+        }
+    }
+    if let Some(object) = schema.as_object_mut() {
+        if object.get("additionalProperties") == Some(&Value::Bool(false)) {
+            object.remove("additionalProperties");
+        }
+        object.values_mut().for_each(open);
+    }
+}
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum PersistedFileSource {
     Artifact {
         byte_length: u64,
@@ -1289,7 +1355,6 @@ pub enum PersistedFileSource {
     },
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct PersistedFilePart {
     pub media_type: MimeType,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -1301,14 +1366,14 @@ pub struct PersistedFilePart {
     pub metadata: Option<SafeModelMetadata>,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum PersistedContentValue {
     Text { text: String },
     File { file: PersistedFilePart },
     Json { value: Value },
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum PersistedToolContent {
     Text {
         text: String,
@@ -1326,7 +1391,7 @@ pub enum PersistedToolContent {
     },
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum PersistedAssistantPart {
     Text {
         text: String,
@@ -1404,7 +1469,6 @@ pub enum PersistedAssistantPart {
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct PersistedModelTurn {
     #[schemars(length(max = 4096))]
     pub content: Vec<PersistedAssistantPart>,
@@ -1447,7 +1511,6 @@ impl<'de> Deserialize<'de> for PersistedModelTurn {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             content: Vec<PersistedAssistantPart>,
             provider_options: BTreeMap<String, Value>,
@@ -1474,7 +1537,7 @@ impl<'de> Deserialize<'de> for PersistedModelTurn {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReplayDisposition {
     Replayed,
     NoArtifact,
@@ -1504,7 +1567,6 @@ pub enum ReplayDisposition {
     ReconstructedNormalizedHistory,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReplayDecision {
     pub history_index: u64,
     pub disposition: ReplayDisposition,
@@ -1555,7 +1617,6 @@ pub enum ModelErrorKind {
     Unknown,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ModelErrorSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_body: Option<DiagnosticText>,
@@ -1589,14 +1650,13 @@ pub enum InternalAgentKind {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum FrozenInternalAgentFallback {
     ParentModel,
     Model { binding: Box<PersistedModelBinding> },
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct FrozenInternalAgentDefinition {
     pub kind: InternalAgentKind,
     pub agent: AgentId,
@@ -1636,7 +1696,7 @@ impl FrozenInternalAgentDefinition {
     }
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum InternalAgentBackend {
     Model {
         resolved_model: ResolvedModelRef,
@@ -1647,20 +1707,17 @@ pub enum InternalAgentBackend {
     },
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SafeInternalAgentCall {
     pub name: SafeCode,
     pub input_summary: SafeDisplayText,
     pub input_digest: Sha256Digest,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SafeInternalAgentResult {
     pub output_summary: SafeDisplayText,
     pub output_digest: Sha256Digest,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct InternalAgentFailure {
     pub code: SafeCode,
     pub message: SafeErrorMessage,
@@ -1692,7 +1749,6 @@ fn validate_internal_failure(failure: &InternalAgentFailure) -> Result<(), Event
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ContextCheckpointBoundaries {
     #[schemars(range(min = 1))]
     pub source_from_seq: u64,
@@ -1752,7 +1808,6 @@ impl JsonSchema for SummaryByteLimit {
     }
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ContextCheckpointBudgets {
     #[schemars(range(min = 1))]
     pub context_limit_tokens: u64,
@@ -1783,7 +1838,6 @@ pub fn valid_model_tool_names(names: &[String]) -> bool {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct AgentMdEntry {
     pub source: SafeDisplayText,
     pub content: String,
@@ -1820,7 +1874,6 @@ impl AgentMdSkipped {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct InternalSummaryCheckpoint {
     summary: String,
     byte_length: u64,
@@ -1863,7 +1916,6 @@ impl<'de> Deserialize<'de> for InternalSummaryCheckpoint {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             summary: String,
             byte_length: u64,
@@ -1891,7 +1943,7 @@ impl<'de> Deserialize<'de> for InternalSummaryCheckpoint {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContextCheckpoint {
     InternalSummary {
         #[serde(flatten)]
@@ -1902,7 +1954,6 @@ pub enum ContextCheckpoint {
     },
 }
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ContextCheckpointCommit {
     pub checkpoint: ContextCheckpoint,
     pub boundaries: ContextCheckpointBoundaries,
@@ -1961,7 +2012,6 @@ impl<'de> Deserialize<'de> for ContextCheckpointCommit {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             checkpoint: ContextCheckpoint,
             boundaries: ContextCheckpointBoundaries,
@@ -1983,7 +2033,7 @@ impl<'de> Deserialize<'de> for ContextCheckpointCommit {
 /// Open: an outcome this build does not know reads as interrupted, a run
 /// that ended without this build being able to say how.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
 pub enum RunOutcome {
     Completed {
@@ -2042,7 +2092,7 @@ impl Open<RunOutcome> {
 /// Open: an outcome this build does not know reads as interrupted, with no
 /// result.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum InternalAgentOutcome {
     Completed {
         result: SafeInternalAgentResult,
@@ -2071,7 +2121,7 @@ crate::open_enum!(tagged InternalAgentOutcome, tag = "type", {
 ///
 /// Open: a stage this build does not know changes nothing it reads.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum DelegationStage {
     /// The child session was published.
     Started { child_session_id: SessionId },
@@ -2098,7 +2148,7 @@ crate::open_enum!(tagged DelegationStage, tag = "type", {
 ///
 /// Open: a step this build does not know changes nothing it reads.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ApprovalStep {
     /// The internal decision pipeline decided.
     Evaluated { decision: ApprovalInternalDecision },
@@ -2131,7 +2181,7 @@ crate::open_enum!(tagged ApprovalStep, tag = "type", {
 /// Open: an outcome this build does not know reads as cancelled, so the
 /// operation is not approved.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ApprovalFinalization {
     /// A decision by policy, a grant, the reviewer, or the user.
     Decided { decision: ApprovalFinalDecision },
@@ -3402,7 +3452,6 @@ pub fn diagnostic_subject(source: &DiagnosticSource, kind: &DiagnosticKind) -> O
 /// payload's class ([`EventPayload::is_audit`]), written only when true, and
 /// checked against the payload when read.
 #[derive(Clone, Debug, JsonSchema, PartialEq)]
-#[serde(deny_unknown_fields)]
 #[schemars(transform = stored_event_schema)]
 pub struct StoredEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3541,12 +3590,12 @@ impl TransientEvent {
 
 impl StoredEvent {
     /// Decodes one JSONL record that needs no repair, typed in a single pass
-    /// over its bytes. `None` means the record has to go through the tolerant
-    /// reader, which reports what it repaired or skipped.
+    /// over its bytes. Members this build does not know are ignored, as for
+    /// any information. `None` means the record has to go through the
+    /// tolerant reader, which reports what it repaired or skipped.
     #[must_use]
     pub fn decode_strict(line: &[u8]) -> Option<Self> {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Strict {
             #[serde(default)]
             engine_version: Option<String>,
@@ -3582,7 +3631,6 @@ impl StoredEvent {
 /// A stored event's envelope, decoded apart from its payload so a tolerant
 /// reader can pair it with a payload it already decoded.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct StoredEventEnvelope {
     #[serde(default)]
     engine_version: Option<String>,
@@ -3627,7 +3675,6 @@ impl<'de> Deserialize<'de> for StoredEvent {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             #[serde(default)]
             engine_version: Option<String>,

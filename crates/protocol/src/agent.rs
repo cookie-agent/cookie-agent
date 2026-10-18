@@ -155,7 +155,6 @@ pub enum PermissionEffect {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct PermissionRule {
     pub action: PermissionAction,
     /// Runtime selector (`bash@labpc`): the rule applies only to tools of
@@ -194,7 +193,6 @@ impl PermissionRule {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SessionPermissionOverlay {
     #[schemars(length(max = 256))]
     pub rules: Vec<PermissionRule>,
@@ -236,7 +234,6 @@ impl<'de> Deserialize<'de> for SessionPermissionOverlay {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             rules: Vec<PermissionRule>,
         }
@@ -256,7 +253,6 @@ pub enum AgentDocumentSource {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct FrozenDelegationPolicy {
     #[schemars(length(min = 1, max = 256))]
     pub targets: Vec<AgentId>,
@@ -279,7 +275,6 @@ impl<'de> Deserialize<'de> for FrozenDelegationPolicy {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             targets: Vec<AgentId>,
             effective_depth_ceiling: u32,
@@ -295,7 +290,6 @@ impl<'de> Deserialize<'de> for FrozenDelegationPolicy {
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct AgentSnapshot {
     pub agent: AgentId,
     pub mode: AgentMode,
@@ -386,7 +380,6 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             agent: AgentId,
             mode: AgentMode,
@@ -424,7 +417,6 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct RunSelection {
     pub agent: AgentId,
     #[serde(deserialize_with = "crate::deserialize_required_model_selection")]

@@ -463,13 +463,15 @@ fn session_tree_usage_result_round_trips() {
 }
 
 #[test]
-fn agent_snapshots_of_earlier_schemas_are_rejected() {
-    let current = serde_json::to_value(child_agent(frozen_binding())).unwrap();
-    for schema in [5, 6] {
-        let mut previous = current.clone();
-        previous["schema"] = json!(schema);
-        assert!(serde_json::from_value::<AgentSnapshot>(previous).is_err());
-    }
+fn agent_snapshots_are_information_and_ignore_unknown_members() {
+    let snapshot = child_agent(frozen_binding());
+    let mut newer = serde_json::to_value(&snapshot).unwrap();
+    newer["schema"] = json!(8);
+    newer["future_member"] = json!({"nested": true});
+    assert_eq!(
+        serde_json::from_value::<AgentSnapshot>(newer).unwrap(),
+        snapshot
+    );
 }
 
 #[test]
@@ -971,7 +973,7 @@ fn tool_emitted_files_share_the_result_attachment_count_limit() {
 }
 
 #[test]
-fn stored_event_origin_is_additive_strict_and_not_payload_degraded() {
+fn stored_event_origin_is_additive_and_not_payload_degraded() {
     let base = json!({
         "session_id": SessionId::new_v7(),
         "run_id": null,
@@ -988,9 +990,14 @@ fn stored_event_origin_is_additive_strict_and_not_payload_degraded() {
         legacy
     );
 
+    // Stored events are information: a newer build's envelope members are
+    // ignored.
     let mut unknown = base.clone();
     unknown["future_envelope_field"] = json!(true);
-    assert!(serde_json::from_value::<StoredEvent>(unknown).is_err());
+    assert_eq!(
+        serde_json::from_value::<StoredEvent>(unknown).expect("unknown envelope member"),
+        legacy
+    );
 
     let mut invalid_origin = base;
     invalid_origin["origin"] = json!("engine:Bad");

@@ -1,6 +1,5 @@
 ---
 source: crates/protocol/src/tests.rs
-assertion_line: 2053
 expression: schema_for!(RuntimeSnapshotResult)
 ---
 {
@@ -79,7 +78,6 @@ expression: schema_for!(RuntimeSnapshotResult)
                 "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
               }
             },
-            "additionalProperties": false,
             "required": [
               "model",
               "variant"

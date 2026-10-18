@@ -9,7 +9,6 @@
       "type": "string"
     },
     "PermissionRule": {
-      "additionalProperties": false,
       "properties": {
         "action": {
           "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
@@ -45,7 +44,6 @@
       "type": "object"
     },
     "RunSelection": {
-      "additionalProperties": false,
       "properties": {
         "agent": {
           "maxLength": 64,
@@ -54,7 +52,6 @@
           "type": "string"
         },
         "model": {
-          "additionalProperties": false,
           "description": "One exact base or named-variant model selection.",
           "properties": {
             "model": {

@@ -3,7 +3,6 @@
     "ApprovalBoundary": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "exact",
@@ -16,7 +15,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "prefix": {
               "type": "string"
@@ -33,7 +31,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "root_session_id": {
               "format": "uuid",
@@ -53,7 +50,6 @@
       ]
     },
     "ApprovalCapability": {
-      "additionalProperties": false,
       "properties": {
         "action": {
           "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
@@ -174,7 +170,6 @@
       ]
     },
     "PreparedApprovalResource": {
-      "additionalProperties": false,
       "properties": {
         "binding_digest": {
           "$ref": "#/$defs/PreparedResourceDigest"
@@ -224,7 +219,6 @@
       "type": "string"
     },
     "PreparedOperationIdentity": {
-      "additionalProperties": false,
       "properties": {
         "capabilities": {
           "items": {
@@ -268,7 +262,6 @@
       "type": "object"
     },
     "PreparedResourceDigest": {
-      "additionalProperties": false,
       "properties": {
         "digest": {
           "maxLength": 64,

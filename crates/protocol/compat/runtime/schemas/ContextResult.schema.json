@@ -1,7 +1,6 @@
 {
   "$defs": {
     "AgentMdEntry": {
-      "additionalProperties": false,
       "properties": {
         "byte_length": {
           "format": "uint64",

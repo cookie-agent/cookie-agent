@@ -39,7 +39,6 @@
       "type": "object"
     },
     "ArtifactReference": {
-      "additionalProperties": false,
       "properties": {
         "uri": {
           "type": "string"
@@ -683,7 +682,6 @@
       "type": "object"
     },
     "PersistedToolResult": {
-      "additionalProperties": false,
       "description": "A tool result as sessions store it and clients receive it. `display` is\nwhat clients show, a list of display blocks sharing one 64 KiB budget;\nempty means nothing to show. When it is a single `text` block whose text\noccurs verbatim in `output`, which is the common case (a single-output\ntool shows its output, a shell its only stream), it is written as the byte\nrange `display_span` into `output` instead of a second copy.",
       "properties": {
         "additional_messages": {
@@ -761,7 +759,6 @@
       "type": "object"
     },
     "RetainedToolOutput": {
-      "additionalProperties": false,
       "properties": {
         "incomplete": {
           "type": "boolean"
@@ -791,7 +788,6 @@
       "type": "object"
     },
     "RetainedToolStream": {
-      "additionalProperties": false,
       "properties": {
         "byte_length": {
           "format": "uint64",
@@ -884,7 +880,6 @@
       "x-open": true
     },
     "ToolAttachment": {
-      "additionalProperties": false,
       "properties": {
         "byte_length": {
           "format": "uint64",
@@ -923,7 +918,6 @@
       "type": "object"
     },
     "ToolBackground": {
-      "additionalProperties": false,
       "description": "What became of a call that moved to the background: its work goes on and\nreports its result later.",
       "properties": {
         "by": {
@@ -1020,9 +1014,9 @@
       ]
     },
     "ToolEmittedContent": {
+      "description": "One part of a tool-emitted message: `{\"text\": …}` or `{\"file\": …}`. Other\nmembers are ignored.",
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "text": {
               "type": "string"
@@ -1034,7 +1028,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "file": {
               "$ref": "#/$defs/ToolAttachment"
@@ -1048,7 +1041,6 @@
       ]
     },
     "ToolEmittedMessage": {
-      "additionalProperties": false,
       "properties": {
         "content": {
           "items": {

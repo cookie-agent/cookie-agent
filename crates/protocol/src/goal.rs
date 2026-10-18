@@ -22,7 +22,6 @@ pub enum GoalLifecycleAction {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct GoalItem {
     pub description: String,
     pub finished: bool,
@@ -82,7 +81,6 @@ pub enum GoalReminderKind {
 /// Coalescing uses the goal ID and revision, independently of the presentation kind.
 /// After consumption another continuation at the same revision uses a fresh send.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct GoalReminderIdentity {
     pub goal_id: GoalId,
     pub revision: u64,

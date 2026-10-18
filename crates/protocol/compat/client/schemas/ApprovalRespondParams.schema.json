@@ -1,7 +1,6 @@
 {
   "$defs": {
     "ApprovalFeedback": {
-      "additionalProperties": false,
       "properties": {
         "message": {
           "description": "Control-free bounded safe error text.",
@@ -26,7 +25,6 @@
       "type": "string"
     },
     "OperationFingerprint": {
-      "additionalProperties": false,
       "properties": {
         "digest": {
           "maxLength": 64,

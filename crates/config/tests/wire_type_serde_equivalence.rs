@@ -67,8 +67,15 @@ fn config_agent_wire_types_match_protocol() {
 }
 
 #[test]
-fn permission_rules_reject_unknown_fields_in_both_crates() {
-    let json = r#"{"action":"read","resource":"*","effect":"allow","extra":true}"#;
-    assert!(serde_json::from_str::<ConfigPermissionRule>(json).is_err());
-    assert!(serde_json::from_str::<PermissionRule>(json).is_err());
+fn permission_rules_reject_unknown_fields_in_commands() {
+    let json = serde_json::json!({"action":"read","resource":"*","effect":"allow","extra":true});
+    // Configuration builds its rules rather than decoding them. The rule is
+    // also stored in session history, which ignores unknown members; a
+    // command that carries one refuses them.
+    assert!(serde_json::from_value::<ConfigPermissionRule>(json.clone()).is_ok());
+    assert!(matches!(
+        cookie_agent_protocol::strict::decode_command::<PermissionRule>(json),
+        Err(cookie_agent_protocol::strict::CommandDecodeError::UnknownField { field })
+            if field == "extra"
+    ));
 }

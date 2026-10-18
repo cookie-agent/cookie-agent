@@ -836,14 +836,13 @@ pub enum FrozenOpenAiPromptCacheTtl {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct FrozenBedrockMessageCachePoint {
     pub history_index: u64,
     pub ttl: FrozenCacheTtl,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "provider", rename_all = "snake_case")]
 pub enum FrozenCacheStrategy {
     Anthropic {
         system: FrozenCacheTtl,
@@ -1155,7 +1154,6 @@ impl<'de> Deserialize<'de> for AvailableModelDescriptor {
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ResolvedModelRef {
     #[serde(deserialize_with = "crate::deserialize_required_model_selection")]
     #[schemars(with = "crate::RequiredModelSelectionSchema")]
@@ -1182,7 +1180,6 @@ impl<'de> Deserialize<'de> for ResolvedModelRef {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct Wire {
             #[serde(deserialize_with = "crate::deserialize_required_model_selection")]
             selection: ModelSelection,

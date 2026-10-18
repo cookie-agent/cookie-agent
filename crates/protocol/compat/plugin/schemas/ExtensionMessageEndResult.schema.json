@@ -1,7 +1,6 @@
 {
   "$defs": {
     "ArtifactReference": {
-      "additionalProperties": false,
       "properties": {
         "uri": {
           "type": "string"
@@ -22,7 +21,6 @@
     "PersistedAssistantPart": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "metadata": {
               "additionalProperties": true,
@@ -47,7 +45,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "metadata": {
               "additionalProperties": true,
@@ -72,7 +69,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "id": {
               "description": "Bounded semantic model tool-call identity.",
@@ -129,7 +125,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "content": {
               "$ref": "#/$defs/PersistedToolContent"
@@ -166,7 +161,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "file": {
               "$ref": "#/$defs/PersistedFilePart"
@@ -183,7 +177,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "excerpt": {
               "type": [
@@ -239,7 +232,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "message": {
               "type": [
@@ -275,7 +267,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "data": true,
             "kind": {
@@ -310,7 +301,6 @@
     "PersistedContentValue": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "text": {
               "type": "string"
@@ -327,7 +317,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "file": {
               "$ref": "#/$defs/PersistedFilePart"
@@ -344,7 +333,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "json",
@@ -361,7 +349,6 @@
       ]
     },
     "PersistedFilePart": {
-      "additionalProperties": false,
       "properties": {
         "filename": {
           "type": [
@@ -397,7 +384,6 @@
     "PersistedFileSource": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "byte_length": {
               "format": "uint64",
@@ -427,7 +413,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "url",
@@ -444,7 +429,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "id": {
               "description": "Control-free bounded presentation text.",
@@ -476,7 +460,6 @@
     "PersistedToolContent": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "text": {
               "type": "string"
@@ -493,7 +476,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "json",
@@ -508,7 +490,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "mixed",
@@ -528,7 +509,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "reason": {
               "type": [

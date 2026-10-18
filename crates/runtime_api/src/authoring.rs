@@ -22,6 +22,42 @@ pub fn schema<T: JsonSchema>() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(T)).expect("tool schemas serialize")
 }
 
+/// The schema of arguments [`parse_args_strict`] reads: every object that
+/// lists its properties refuses others, including types history also stores,
+/// which ignore them there.
+pub fn strict_schema<T: JsonSchema>() -> serde_json::Value {
+    let mut schema = schema::<T>();
+    close_objects(&mut schema);
+    schema
+}
+fn close_objects(schema: &mut serde_json::Value) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+    if object.contains_key("properties") && !object.contains_key("additionalProperties") {
+        object.insert(
+            "additionalProperties".into(),
+            serde_json::Value::Bool(false),
+        );
+    }
+    for (keyword, value) in object {
+        match keyword.as_str() {
+            "properties" | "$defs" | "definitions" => {
+                if let Some(schemas) = value.as_object_mut() {
+                    schemas.values_mut().for_each(close_objects);
+                }
+            }
+            "oneOf" | "anyOf" | "allOf" | "prefixItems" => {
+                if let Some(schemas) = value.as_array_mut() {
+                    schemas.iter_mut().for_each(close_objects);
+                }
+            }
+            "items" | "additionalProperties" | "not" => close_objects(value),
+            _ => {}
+        }
+    }
+}
+
 /// A tool result title: control characters replaced, cut to the display
 /// bound, `Tool result` when nothing is left.
 #[must_use]
@@ -56,6 +92,28 @@ pub fn parse_args<T: DeserializeOwned>(
             "The {tool} tool was called with invalid arguments: {error}.\nPlease rewrite the input so it satisfies the expected schema."
         ))
     })
+}
+
+/// Like [`parse_args`], for arguments that embed a type history also stores:
+/// such a type ignores unknown members, so they are refused here against the
+/// arguments' schema instead.
+pub fn parse_args_strict<T>(tool: &str, value: serde_json::Value) -> Result<T, ToolError>
+where
+    T: DeserializeOwned + schemars::JsonSchema + 'static,
+{
+    match cookie_agent_protocol::strict::decode_command(value) {
+        Ok(arguments) => Ok(arguments),
+        Err(cookie_agent_protocol::strict::CommandDecodeError::UnknownField { field }) => {
+            Err(tool_error(format!(
+                "The {tool} tool was called with invalid arguments: unknown field `{field}`.\nPlease rewrite the input so it satisfies the expected schema."
+            )))
+        }
+        Err(cookie_agent_protocol::strict::CommandDecodeError::Invalid(error)) => {
+            Err(tool_error(format!(
+                "The {tool} tool was called with invalid arguments: {error}.\nPlease rewrite the input so it satisfies the expected schema."
+            )))
+        }
+    }
 }
 
 /// The identity of a prepared operation of `tool`: its normalized

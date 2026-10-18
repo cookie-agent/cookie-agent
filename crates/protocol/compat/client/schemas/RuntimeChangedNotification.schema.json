@@ -42,7 +42,6 @@
         },
         "resolved_fallback": {
           "items": {
-            "additionalProperties": false,
             "description": "One exact base or named-variant model selection.",
             "properties": {
               "model": {

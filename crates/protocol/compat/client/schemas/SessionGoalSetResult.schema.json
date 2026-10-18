@@ -1,7 +1,6 @@
 {
   "$defs": {
     "GoalItem": {
-      "additionalProperties": false,
       "properties": {
         "description": {
           "type": "string"

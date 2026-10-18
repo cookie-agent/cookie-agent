@@ -535,3 +535,61 @@ async fn a_replacement_session_tail_forwards_after_the_tail_it_replaces() {
     drop(replaced_sender);
     assert_eq!(next_gap(&mut outbound).await, 3);
 }
+
+#[tokio::test]
+async fn params_refuse_unknown_members_inside_types_history_reads_tolerantly() {
+    let mut connection = Connection::open(Arc::new(StubServer::default())).await;
+    let session_id = crate::SessionId::new_v7();
+    let selection = json!({
+        "agent": "build",
+        "model": {"model": "openai/gpt-5", "variant": null},
+    });
+    let mut nested = selection.clone();
+    nested["model"]["extra"] = json!(true);
+    let rule = json!({"action": "bash", "resource": "*", "effect": "allow", "note": "x"});
+    for (id, method, params, field) in [
+        (
+            1,
+            "run.start",
+            json!({
+                "session_id": session_id,
+                "client_run_id": "run-1",
+                "selection": {"agent": "build", "model": selection["model"], "extra": 1},
+                "input": "hi",
+            }),
+            "selection.extra",
+        ),
+        (
+            2,
+            "session.select_model",
+            json!({"session_id": session_id, "selection": nested}),
+            "selection.model.extra",
+        ),
+        (
+            3,
+            "session.create",
+            json!({"selection": selection, "permission_rules": [rule]}),
+            "permission_rules[0].note",
+        ),
+        (
+            4,
+            "approval.respond",
+            json!({
+                "session_id": session_id,
+                "approval_id": crate::ApprovalId::new_v7(),
+                "request_revision": 1,
+                "operation_fingerprint": {"digest": "a".repeat(64), "extra": 1},
+                "client_response_id": "response-1",
+                "decision": "reject",
+            }),
+            "operation_fingerprint.extra",
+        ),
+    ] {
+        connection.send(id, method, params);
+        let reply = connection.next().await;
+        assert_eq!(reply["id"], id, "{reply}");
+        assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        assert_eq!(reply["error"]["data"]["code"], "unknown_field", "{reply}");
+        assert_eq!(reply["error"]["data"]["field"], field, "{reply}");
+    }
+}

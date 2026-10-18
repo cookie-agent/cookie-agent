@@ -23,7 +23,7 @@ use crate::{
 /// its parent.
 /// The owner is durable and participates in `(session, owner, key)` dedup.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProducerOwner {
     /// A plugin's or a runtime's named producer.
     External {

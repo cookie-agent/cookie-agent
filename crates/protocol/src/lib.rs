@@ -34,7 +34,6 @@ where
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RequiredModelSelectionWire {
     model: ModelKey,
     #[serde(deserialize_with = "deserialize_required_option")]
@@ -84,9 +83,11 @@ impl JsonSchema for RequiredModelSelectionSchema {
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let mut schema = ModelSelection::json_schema(generator);
-        schema
-            .ensure_object()
-            .insert("required".into(), serde_json::json!(["model", "variant"]));
+        let object = schema.ensure_object();
+        object.insert("required".into(), serde_json::json!(["model", "variant"]));
+        // Stored events and results carry it as information, which readers
+        // decode without rejecting unknown members.
+        object.remove("additionalProperties");
         schema
     }
 }
@@ -197,6 +198,7 @@ mod session;
 mod session_model;
 mod setup_value;
 mod stop;
+pub mod strict;
 
 pub use agent::*;
 pub use approval::*;

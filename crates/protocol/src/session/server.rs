@@ -826,17 +826,38 @@ async fn dispatch<S: ServerProtocol>(
     }
 }
 
-fn decode<T: serde::de::DeserializeOwned>(params: Option<Value>) -> Result<T, ServerFault> {
-    serde_json::from_value(params.unwrap_or(Value::Null)).map_err(|_| ServerFault::invalid_params())
+/// Params are commands: a member the method's schema does not list is
+/// refused with its JSON path, even inside a type that also flows as
+/// information and ignores unknown members there ([`crate::strict`]).
+fn decode<T>(params: Option<Value>) -> Result<T, ServerFault>
+where
+    T: serde::de::DeserializeOwned + schemars::JsonSchema + 'static,
+{
+    crate::strict::decode_command(params.unwrap_or(Value::Null)).map_err(command_fault)
 }
 
 fn decode_default<T>(params: Option<Value>) -> Result<T, ServerFault>
 where
-    T: serde::de::DeserializeOwned + Default,
+    T: serde::de::DeserializeOwned + schemars::JsonSchema + Default + 'static,
 {
     match params {
-        Some(params) => serde_json::from_value(params).map_err(|_| ServerFault::invalid_params()),
+        Some(params) => decode(Some(params)),
         None => Ok(T::default()),
+    }
+}
+
+fn command_fault(error: crate::strict::CommandDecodeError) -> ServerFault {
+    match error {
+        crate::strict::CommandDecodeError::UnknownField { field } => ServerFault::new(
+            crate::errors::INVALID_PARAMS,
+            "invalid params",
+            crate::errors::UNKNOWN_FIELD
+                .error()
+                .field("field", field)
+                .build()
+                .data,
+        ),
+        crate::strict::CommandDecodeError::Invalid(_) => ServerFault::invalid_params(),
     }
 }
 
@@ -858,6 +879,13 @@ enum RawSessionRenameChange {
 
 fn decode_rename(params: Option<Value>) -> Result<SessionRenameParams, ServerFault> {
     let params = params.unwrap_or(Value::Null);
+    if let Some(field) =
+        crate::strict::unknown_member(&schemars::schema_for!(SessionRenameParams), &params)
+    {
+        return Err(command_fault(
+            crate::strict::CommandDecodeError::UnknownField { field },
+        ));
+    }
     if let Ok(request) = serde_json::from_value::<SessionRenameParams>(params.clone()) {
         return Ok(request);
     }

@@ -8,7 +8,6 @@
       "type": "string"
     },
     "AgentMdEntry": {
-      "additionalProperties": false,
       "properties": {
         "byte_length": {
           "format": "uint64",
@@ -43,7 +42,6 @@
       "type": "string"
     },
     "AgentSnapshot": {
-      "additionalProperties": false,
       "properties": {
         "agent": {
           "maxLength": 64,
@@ -137,7 +135,6 @@
     "ApprovalBoundary": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "exact",
@@ -150,7 +147,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "prefix": {
               "type": "string"
@@ -167,7 +163,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "root_session_id": {
               "format": "uuid",
@@ -187,7 +182,6 @@
       ]
     },
     "ApprovalCapability": {
-      "additionalProperties": false,
       "properties": {
         "action": {
           "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
@@ -208,7 +202,6 @@
       "type": "object"
     },
     "ApprovalConstraints": {
-      "additionalProperties": false,
       "properties": {
         "allow_once": {
           "type": "boolean"
@@ -249,7 +242,6 @@
       "type": "string"
     },
     "ApprovalEvaluation": {
-      "additionalProperties": false,
       "properties": {
         "effect": {
           "$ref": "#/$defs/PermissionEffect"
@@ -269,7 +261,6 @@
       "type": "object"
     },
     "ApprovalFeedback": {
-      "additionalProperties": false,
       "properties": {
         "message": {
           "description": "Control-free bounded safe error text.",
@@ -285,7 +276,6 @@
       "type": "object"
     },
     "ApprovalFinalDecision": {
-      "additionalProperties": false,
       "properties": {
         "feedback": {
           "anyOf": [
@@ -336,7 +326,6 @@
       "description": "How an approval ended: the `outcome` of\n[`EventPayload::ApprovalFinalized`].\n\nOpen: an outcome this build does not know reads as cancelled, so the\noperation is not approved.",
       "oneOf": [
         {
-          "additionalProperties": false,
           "description": "A decision by policy, a grant, the reviewer, or the user.",
           "properties": {
             "decision": {
@@ -354,7 +343,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "description": "The engine withdrew the approval: the request was cancelled, expired,\nor its prepared operation changed or was lost.",
           "properties": {
             "reason_code": {
@@ -375,7 +363,6 @@
       "x-open": true
     },
     "ApprovalInternalDecision": {
-      "additionalProperties": false,
       "properties": {
         "decision": {
           "$ref": "#/$defs/ApprovalInternalDecisionKind"
@@ -442,7 +429,6 @@
       "type": "string"
     },
     "ApprovalRequest": {
-      "additionalProperties": false,
       "properties": {
         "approval_id": {
           "format": "uuid",
@@ -515,7 +501,6 @@
       "description": "One step of an approval before its finalization: the `step` of\n[`EventPayload::ApprovalStep`].\n\nOpen: a step this build does not know changes nothing it reads.",
       "oneOf": [
         {
-          "additionalProperties": false,
           "description": "The internal decision pipeline decided.",
           "properties": {
             "decision": {
@@ -533,7 +518,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "description": "The approval waits for the user.",
           "properties": {
             "reason_code": {
@@ -551,7 +535,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "description": "A client answered for the user.",
           "properties": {
             "client_response_id": {
@@ -587,7 +570,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "description": "The same operation was requested too often in a row.",
           "properties": {
             "operation_fingerprint": {
@@ -670,7 +652,6 @@
       "type": "object"
     },
     "ArtifactReference": {
-      "additionalProperties": false,
       "properties": {
         "uri": {
           "type": "string"
@@ -682,7 +663,6 @@
       "type": "object"
     },
     "AssistantToolCallRef": {
-      "additionalProperties": false,
       "properties": {
         "content_index": {
           "format": "uint32",
@@ -731,7 +711,6 @@
     "ContextCheckpoint": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "byte_length": {
               "format": "uint64",
@@ -771,7 +750,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "native_window",
@@ -790,7 +768,6 @@
       ]
     },
     "ContextCheckpointBoundaries": {
-      "additionalProperties": false,
       "properties": {
         "input_through_seq": {
           "format": "uint64",
@@ -835,7 +812,6 @@
       "type": "object"
     },
     "ContextCheckpointBudgets": {
-      "additionalProperties": false,
       "properties": {
         "context_limit_tokens": {
           "format": "uint64",
@@ -879,7 +855,6 @@
       "type": "object"
     },
     "DecisionTrace": {
-      "additionalProperties": false,
       "properties": {
         "action": {
           "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
@@ -912,7 +887,6 @@
       "type": "object"
     },
     "DelegateRequestPayload": {
-      "additionalProperties": false,
       "properties": {
         "background": {
           "type": "boolean"
@@ -977,7 +951,6 @@
       "type": "string"
     },
     "DelegatedContextTurn": {
-      "additionalProperties": false,
       "properties": {
         "role": {
           "$ref": "#/$defs/DelegatedContextRole"
@@ -993,7 +966,6 @@
       "type": "object"
     },
     "DelegationReservation": {
-      "additionalProperties": false,
       "properties": {
         "child_session_id": {
           "format": "uuid",
@@ -1029,7 +1001,6 @@
       "description": "How far a delegation got: the `stage` of\n[`EventPayload::DelegationProgressed`].\n\nOpen: a stage this build does not know changes nothing it reads.",
       "oneOf": [
         {
-          "additionalProperties": false,
           "description": "The child session was published.",
           "properties": {
             "child_session_id": {
@@ -1048,7 +1019,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "description": "A new child run started.",
           "properties": {
             "child_run_id": {
@@ -1067,7 +1037,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "description": "The delegation attached to the already-running run of a resumed\nchild.",
           "properties": {
             "child_run_id": {
@@ -1086,7 +1055,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "description": "The child waits for a background slot.",
           "properties": {
             "position": {
@@ -1723,7 +1691,6 @@
       "type": "string"
     },
     "FrozenBedrockMessageCachePoint": {
-      "additionalProperties": false,
       "properties": {
         "history_index": {
           "format": "uint64",
@@ -1743,7 +1710,6 @@
     "FrozenCacheStrategy": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "provider": {
               "const": "anthropic",
@@ -1768,7 +1734,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "messages": {
               "items": {
@@ -1797,7 +1762,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "cached_content": {
               "type": [
@@ -1821,7 +1785,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "mode": {
               "anyOf": [
@@ -1894,7 +1857,6 @@
       "type": "string"
     },
     "FrozenDelegationPolicy": {
-      "additionalProperties": false,
       "properties": {
         "effective_depth_ceiling": {
           "format": "uint32",
@@ -1928,7 +1890,6 @@
       "type": "string"
     },
     "FrozenInternalAgentDefinition": {
-      "additionalProperties": false,
       "properties": {
         "agent": {
           "maxLength": 64,
@@ -2003,7 +1964,6 @@
     "FrozenInternalAgentFallback": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "parent_model",
@@ -2016,7 +1976,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "binding": {
               "$ref": "#/$defs/PersistedModelBinding"
@@ -2055,7 +2014,6 @@
       "type": "string"
     },
     "GoalItem": {
-      "additionalProperties": false,
       "properties": {
         "description": {
           "type": "string"
@@ -2071,7 +2029,6 @@
       "type": "object"
     },
     "GoalReminderIdentity": {
-      "additionalProperties": false,
       "description": "Pending reminder metadata, NOT a durable send idempotency key.\nCoalescing uses the goal ID and revision, independently of the presentation kind.\nAfter consumption another continuation at the same revision uses a fresh send.",
       "properties": {
         "goal_id": {
@@ -2114,7 +2071,6 @@
     "InternalAgentBackend": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "resolved_model": {
               "$ref": "#/$defs/ResolvedModelRef"
@@ -2131,7 +2087,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "name": {
               "description": "Stable lowercase machine-readable code.",
@@ -2162,7 +2117,6 @@
       ]
     },
     "InternalAgentFailure": {
-      "additionalProperties": false,
       "properties": {
         "code": {
           "description": "Stable lowercase machine-readable code.",
@@ -2212,7 +2166,6 @@
       "description": "How an internal agent invocation ended: the `outcome` of\n[`EventPayload::InternalAgentFinished`].\n\nOpen: an outcome this build does not know reads as interrupted, with no\nresult.",
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "result": {
               "$ref": "#/$defs/SafeInternalAgentResult"
@@ -2229,7 +2182,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "failure": {
               "$ref": "#/$defs/InternalAgentFailure"
@@ -2246,7 +2198,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "reason": {
               "description": "Control-free bounded safe error text.",
@@ -2269,7 +2220,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "reason": {
               "description": "Control-free bounded safe error text.",
@@ -2310,7 +2260,6 @@
       "type": "object"
     },
     "MatchedPermissionRule": {
-      "additionalProperties": false,
       "properties": {
         "action": {
           "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
@@ -2399,7 +2348,6 @@
       "type": "string"
     },
     "ModelErrorSummary": {
-      "additionalProperties": false,
       "properties": {
         "bytes_received": {
           "format": "uint64",
@@ -2484,6 +2432,7 @@
       "type": "object"
     },
     "ModelFinishReason": {
+      "description": "Why a model turn ended. A reason this build does not know reads as\n[`Self::Other`] with its name, and an `other` object's unknown members are\nignored.",
       "oneOf": [
         {
           "enum": [
@@ -2501,7 +2450,6 @@
           "type": "string"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "other": {
               "type": "string"
@@ -2515,7 +2463,6 @@
       ]
     },
     "NativeContextScope": {
-      "additionalProperties": false,
       "properties": {
         "model_id": {
           "maxLength": 384,
@@ -2545,7 +2492,6 @@
       "type": "object"
     },
     "NativeContextWindow": {
-      "additionalProperties": false,
       "properties": {
         "adapter_id": {
           "description": "Stable lowercase machine-readable code.",
@@ -2576,7 +2522,6 @@
       "type": "object"
     },
     "NativeReplayArtifact": {
-      "additionalProperties": false,
       "properties": {
         "adapter_id": {
           "description": "Stable lowercase machine-readable code.",
@@ -2607,7 +2552,6 @@
       "type": "object"
     },
     "OperationFingerprint": {
-      "additionalProperties": false,
       "properties": {
         "digest": {
           "maxLength": 64,
@@ -2630,7 +2574,6 @@
       "type": "string"
     },
     "PermissionRule": {
-      "additionalProperties": false,
       "properties": {
         "action": {
           "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
@@ -2668,7 +2611,6 @@
     "PersistedAssistantPart": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "metadata": {
               "additionalProperties": true,
@@ -2693,7 +2635,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "metadata": {
               "additionalProperties": true,
@@ -2718,7 +2659,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "id": {
               "description": "Bounded semantic model tool-call identity.",
@@ -2775,7 +2715,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "content": {
               "$ref": "#/$defs/PersistedToolContent"
@@ -2812,7 +2751,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "file": {
               "$ref": "#/$defs/PersistedFilePart"
@@ -2829,7 +2767,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "excerpt": {
               "type": [
@@ -2885,7 +2822,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "message": {
               "type": [
@@ -2921,7 +2857,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "data": true,
             "kind": {
@@ -2956,7 +2891,6 @@
     "PersistedContentValue": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "text": {
               "type": "string"
@@ -2973,7 +2907,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "file": {
               "$ref": "#/$defs/PersistedFilePart"
@@ -2990,7 +2923,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "json",
@@ -3007,7 +2939,6 @@
       ]
     },
     "PersistedFilePart": {
-      "additionalProperties": false,
       "properties": {
         "filename": {
           "type": [
@@ -3043,7 +2974,6 @@
     "PersistedFileSource": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "byte_length": {
               "format": "uint64",
@@ -3073,7 +3003,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "url",
@@ -3090,7 +3019,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "id": {
               "description": "Control-free bounded presentation text.",
@@ -3154,7 +3082,6 @@
           "description": "The model reference attempts made with this binding record."
         },
         "selection": {
-          "additionalProperties": false,
           "description": "One exact base or named-variant model selection.",
           "properties": {
             "model": {
@@ -3199,7 +3126,6 @@
       "type": "object"
     },
     "PersistedModelTurn": {
-      "additionalProperties": false,
       "properties": {
         "content": {
           "items": {
@@ -3251,7 +3177,6 @@
     "PersistedToolContent": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "text": {
               "type": "string"
@@ -3268,7 +3193,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "json",
@@ -3283,7 +3207,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "mixed",
@@ -3303,7 +3226,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "reason": {
               "type": [
@@ -3325,7 +3247,6 @@
       ]
     },
     "PersistedToolResult": {
-      "additionalProperties": false,
       "description": "A tool result as sessions store it and clients receive it. `display` is\nwhat clients show, a list of display blocks sharing one 64 KiB budget;\nempty means nothing to show. When it is a single `text` block whose text\noccurs verbatim in `output`, which is the common case (a single-output\ntool shows its output, a shell its only stream), it is written as the byte\nrange `display_span` into `output` instead of a second copy.",
       "properties": {
         "additional_messages": {
@@ -3403,7 +3324,6 @@
       "type": "object"
     },
     "PreparedApprovalResource": {
-      "additionalProperties": false,
       "properties": {
         "binding_digest": {
           "$ref": "#/$defs/PreparedResourceDigest"
@@ -3453,7 +3373,6 @@
       "type": "string"
     },
     "PreparedOperationIdentity": {
-      "additionalProperties": false,
       "properties": {
         "capabilities": {
           "items": {
@@ -3497,7 +3416,6 @@
       "type": "object"
     },
     "PreparedResourceDigest": {
-      "additionalProperties": false,
       "properties": {
         "digest": {
           "maxLength": 64,
@@ -3523,7 +3441,6 @@
       "description": "Stable identity used with session + idempotency key for durable deduplication.\nExternal identifies a producer outside the daemon, a plugin or a runtime:\nthe engine derives `source` from the authenticated connection, never from\nsend parameters, and the sender chooses `name` when it registers. The\nconnection epoch that authorizes live sends is runtime-only and never part\nof this durable owner or the deduplication key.\nGoalControl identifies engine-authored lifecycle steering, not a continuation\nreminder; its accepted messages survive goal-controller teardown.\nAgent identifies an in-tree agent mail sender; the session identity is\nengine-derived from the executing tool context, never from model arguments.\nTool identifies the background result of one tool call that ran in the\nbackground; the call identity is engine-derived from the executing tool\ncontext, never from model arguments.\nSubagent identifies a delegated session reporting its finished turns to\nits parent.\nThe owner is durable and participates in `(session, owner, key)` dedup.",
       "oneOf": [
         {
-          "additionalProperties": false,
           "description": "A plugin's or a runtime's named producer.",
           "properties": {
             "name": {
@@ -3553,7 +3470,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "invocation_id": {
               "format": "uuid",
@@ -3571,7 +3487,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "goal_id": {
               "format": "uuid",
@@ -3589,7 +3504,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "goal_id": {
               "format": "uuid",
@@ -3607,7 +3521,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "session_id": {
               "format": "uuid",
@@ -3625,7 +3538,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "tool_call_id": {
               "format": "uuid",
@@ -3643,7 +3555,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "description": "A delegated session reporting a finished turn to its parent.",
           "properties": {
             "session_id": {
@@ -3664,7 +3575,6 @@
       ]
     },
     "ReplayDecision": {
-      "additionalProperties": false,
       "properties": {
         "disposition": {
           "$ref": "#/$defs/ReplayDisposition"
@@ -3684,7 +3594,6 @@
     "ReplayDisposition": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "replayed",
@@ -3697,7 +3606,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "no_artifact",
@@ -3710,7 +3618,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "expected": {
               "description": "Stable lowercase machine-readable code.",
@@ -3739,10 +3646,8 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "expected": {
-              "additionalProperties": false,
               "description": "One exact base or named-variant model selection.",
               "properties": {
                 "model": {
@@ -3768,7 +3673,6 @@
               "type": "object"
             },
             "found": {
-              "additionalProperties": false,
               "description": "One exact base or named-variant model selection.",
               "properties": {
                 "model": {
@@ -3806,7 +3710,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "expected": {
               "maxLength": 64,
@@ -3839,7 +3742,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "reason": {
               "description": "Control-free bounded safe error text.",
@@ -3860,7 +3762,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "reconstructed_normalized_history",
@@ -3875,7 +3776,6 @@
       ]
     },
     "ResolvedModelRef": {
-      "additionalProperties": false,
       "properties": {
         "adapter_id": {
           "description": "Wire adapter a model is reached through, such as `anthropic` or `openai-responses`.",
@@ -3895,7 +3795,6 @@
           "type": "string"
         },
         "selection": {
-          "additionalProperties": false,
           "description": "One exact base or named-variant model selection.",
           "properties": {
             "model": {
@@ -3937,7 +3836,6 @@
       "type": "object"
     },
     "RetainedToolOutput": {
-      "additionalProperties": false,
       "properties": {
         "incomplete": {
           "type": "boolean"
@@ -3967,7 +3865,6 @@
       "type": "object"
     },
     "RetainedToolStream": {
-      "additionalProperties": false,
       "properties": {
         "byte_length": {
           "format": "uint64",
@@ -4034,7 +3931,6 @@
       "description": "How a run ended: the `outcome` of [`EventPayload::RunFinished`].\n\nOpen: an outcome this build does not know reads as interrupted, a run\nthat ended without this build being able to say how.",
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "final_text": {
               "type": [
@@ -4053,7 +3949,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "error": {
               "description": "Control-free bounded safe error text.",
@@ -4094,7 +3989,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "reason": {
               "description": "Control-free bounded safe error text.",
@@ -4117,7 +4011,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "reason": {
               "description": "Control-free bounded safe error text.",
@@ -4143,7 +4036,6 @@
       "x-open": true
     },
     "RunSelection": {
-      "additionalProperties": false,
       "properties": {
         "agent": {
           "maxLength": 64,
@@ -4152,7 +4044,6 @@
           "type": "string"
         },
         "model": {
-          "additionalProperties": false,
           "description": "One exact base or named-variant model selection.",
           "properties": {
             "model": {
@@ -4251,7 +4142,6 @@
       "type": "object"
     },
     "SafeInternalAgentCall": {
-      "additionalProperties": false,
       "properties": {
         "input_digest": {
           "maxLength": 64,
@@ -4282,7 +4172,6 @@
       "type": "object"
     },
     "SafeInternalAgentResult": {
-      "additionalProperties": false,
       "properties": {
         "output_digest": {
           "maxLength": 64,
@@ -4305,7 +4194,6 @@
       "type": "object"
     },
     "SafeToolError": {
-      "additionalProperties": false,
       "properties": {
         "code": {
           "description": "Stable lowercase machine-readable code.",
@@ -4331,7 +4219,6 @@
     "SessionOrigin": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "type": {
               "const": "root",
@@ -4344,7 +4231,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "depth": {
               "format": "uint32",
@@ -4390,7 +4276,6 @@
       ]
     },
     "SessionPermissionOverlay": {
-      "additionalProperties": false,
       "properties": {
         "rules": {
           "items": {
@@ -4419,7 +4304,6 @@
     "SessionTitleChange": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "client_rename_id": {
               "description": "Bounded title mutation idempotency key.",
@@ -4447,7 +4331,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "client_rename_id": {
               "description": "Bounded title mutation idempotency key.",
@@ -4468,7 +4351,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "client_rename_id": {
               "description": "Bounded title mutation idempotency key.",
@@ -4489,7 +4371,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "invocation_id": {
               "format": "uuid",
@@ -4514,7 +4395,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "invocation_id": {
               "format": "uuid",
@@ -4539,7 +4419,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "title": {
               "description": "Nonblank control-free UTF-8 session title.",
@@ -4561,7 +4440,6 @@
       ]
     },
     "StagedSkillPayload": {
-      "additionalProperties": false,
       "properties": {
         "args": {
           "type": "string"
@@ -4672,7 +4550,6 @@
       "x-open": true
     },
     "ToolAttachment": {
-      "additionalProperties": false,
       "properties": {
         "byte_length": {
           "format": "uint64",
@@ -4711,7 +4588,6 @@
       "type": "object"
     },
     "ToolBackground": {
-      "additionalProperties": false,
       "description": "What became of a call that moved to the background: its work goes on and\nreports its result later.",
       "properties": {
         "by": {
@@ -4754,9 +4630,9 @@
       "x-open": true
     },
     "ToolEmittedContent": {
+      "description": "One part of a tool-emitted message: `{\"text\": …}` or `{\"file\": …}`. Other\nmembers are ignored.",
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "text": {
               "type": "string"
@@ -4768,7 +4644,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "file": {
               "$ref": "#/$defs/ToolAttachment"
@@ -4782,7 +4657,6 @@
       ]
     },
     "ToolEmittedMessage": {
-      "additionalProperties": false,
       "properties": {
         "content": {
           "items": {
@@ -4840,7 +4714,6 @@
     "ToolOutputDeclaration": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "kind": {
               "const": "single",
@@ -4853,7 +4726,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "kind": {
               "const": "named",
@@ -5031,7 +4903,6 @@
       "type": "string"
     },
     "TreeApprovalGrant": {
-      "additionalProperties": false,
       "properties": {
         "approval_id": {
           "format": "uuid",
@@ -5092,7 +4963,6 @@
       "type": "object"
     },
     "Usage": {
-      "additionalProperties": false,
       "properties": {
         "input_tokens": {
           "format": "uint64",

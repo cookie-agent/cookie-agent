@@ -52,7 +52,6 @@
       "type": "object"
     },
     "ResolvedModelRef": {
-      "additionalProperties": false,
       "properties": {
         "adapter_id": {
           "description": "Wire adapter a model is reached through, such as `anthropic` or `openai-responses`.",
@@ -72,7 +71,6 @@
           "type": "string"
         },
         "selection": {
-          "additionalProperties": false,
           "description": "One exact base or named-variant model selection.",
           "properties": {
             "model": {

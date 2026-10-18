@@ -23,6 +23,22 @@ fn strict<T: DeserializeOwned>(value: Value) {
     }
 }
 
+/// Like [`strict`], for information: an unknown member is ignored.
+fn tolerant<T: DeserializeOwned + PartialEq + std::fmt::Debug>(value: Value) {
+    let decoded = serde_json::from_value::<T>(value.clone()).unwrap();
+    let mut unknown = value.clone();
+    unknown["unexpected"] = json!(true);
+    assert_eq!(serde_json::from_value::<T>(unknown).unwrap(), decoded);
+    for key in value.as_object().unwrap().keys() {
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove(key);
+        assert!(
+            serde_json::from_value::<T>(missing).is_err(),
+            "missing {key}"
+        );
+    }
+}
+
 fn stored(payload: EventPayload, run_id: Option<RunId>) -> StoredEvent {
     StoredEvent {
         engine_version: None,
@@ -227,7 +243,7 @@ fn goal_contracts_round_trip_and_preserve_empty_bootstrap() {
     }
     strict::<GoalGetParams>(json!({}));
     strict::<GoalGetResult>(json!({"goal": null}));
-    strict::<GoalItem>(serde_json::to_value(item()).unwrap());
+    tolerant::<GoalItem>(serde_json::to_value(item()).unwrap());
     round_trip(GoalUpdateParams {
         items: vec![item(), item()],
     });
@@ -423,24 +439,37 @@ fn goal_update_schema_and_arguments_have_only_the_current_fields() {
     let item_schema = &schema["$defs"]["GoalItem"];
     assert_eq!(item_schema["properties"].as_object().unwrap().len(), 2);
     assert_eq!(item_schema["required"], json!(["description", "finished"]));
-    assert_eq!(item_schema["additionalProperties"], false);
+    // A checklist item is information in history, so it ignores unknown
+    // members; the tool's arguments are a command and refuse them.
+    assert!(item_schema.get("additionalProperties").is_none());
     for id in [json!("verify"), json!(GoalId::new_v7()), json!(null)] {
         let legacy_item = json!({"id":id,"description":"Verify","finished":false});
-        assert!(serde_json::from_value::<GoalItem>(legacy_item.clone()).is_err());
-        assert!(
-            serde_json::from_value::<GoalUpdateParams>(json!({"items":[legacy_item]})).is_err()
-        );
+        assert!(serde_json::from_value::<GoalItem>(legacy_item.clone()).is_ok());
+        assert!(matches!(
+            crate::strict::decode_command::<GoalUpdateParams>(json!({"items":[legacy_item]})),
+            Err(crate::strict::CommandDecodeError::UnknownField { field }) if field == "items[0].id"
+        ));
     }
 }
 
 #[test]
-fn checklist_item_ids_are_rejected_in_event_history() {
+fn unknown_checklist_item_members_are_ignored_in_event_history() {
     let goal_id = GoalId::new_v7();
     let item = json!({"id":GoalId::new_v7(),"description":"Verify","finished":false});
     let revised =
         json!({"type":"goal_checklist_revised","goal_id":goal_id,"revision":7,"items":[item]});
-    assert!(serde_json::from_value::<EventPayload>(revised.clone()).is_err());
-    assert!(deserialize_event_payload_best_effort(&revised).is_err());
+    let EventPayload::GoalChecklistRevised { items, .. } =
+        serde_json::from_value::<EventPayload>(revised.clone()).unwrap()
+    else {
+        panic!("checklist revision");
+    };
+    assert_eq!(items[0].description, "Verify");
+    assert!(
+        deserialize_event_payload_best_effort(&revised)
+            .unwrap()
+            .degraded_fields
+            .is_empty()
+    );
 }
 
 #[test]
@@ -524,7 +553,7 @@ fn producer_identity_and_send_contracts_are_strict() {
             session_id: SessionId::new_v7(),
         },
     ] {
-        strict::<ProducerOwner>(serde_json::to_value(&owner).unwrap());
+        tolerant::<ProducerOwner>(serde_json::to_value(&owner).unwrap());
         round_trip(ProducerRegistration {
             producer_id,
             producer_owner: owner,
@@ -542,7 +571,6 @@ fn producer_identity_and_send_contracts_are_strict() {
     for malformed in [
         serde_json::json!({"type": "agent"}),
         serde_json::json!({"type": "agent", "session_id": "not-a-uuid"}),
-        serde_json::json!({"type": "agent", "session_id": session_id, "extra": true}),
     ] {
         assert!(serde_json::from_value::<ProducerOwner>(malformed).is_err());
     }

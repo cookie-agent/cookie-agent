@@ -269,7 +269,6 @@
     "ToolOutputDeclaration": {
       "oneOf": [
         {
-          "additionalProperties": false,
           "properties": {
             "kind": {
               "const": "single",
@@ -282,7 +281,6 @@
           "type": "object"
         },
         {
-          "additionalProperties": false,
           "properties": {
             "kind": {
               "const": "named",

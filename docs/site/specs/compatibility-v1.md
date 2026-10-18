@@ -1446,3 +1446,31 @@ Deviations and choices made while implementing, by phase.
   logs held; a few tests that fed it mixed streams now filter them first.
   The CLI prints no tool display; its diagnostics read results through
   `display_text`. `SessionMeta`'s client-type defaults stay for phase F.
+
+### Phase D
+
+- **Stored events are information.** No type reachable from `StoredEvent`
+  denies unknown fields any more, the envelope and the loader's first line
+  included, and the events surface reports no `additionalProperties: false`.
+  `ModelFinishReason` reads a reason it does not know as `other`, and
+  `ToolEmittedContent` and the required model selection ignore extra members;
+  their schemas drop `additionalProperties: false` with them. The flattened
+  tool-call start and termination, the internal-summary checkpoint, and the
+  checkpoint commit lose it too, though the checker saw them only inlined.
+  Client notification types (`TransientEvent`, `EventSubscriptionMessage`,
+  output deltas) are left to phase F.
+- **Strict commands.** The server checks params against the method's
+  published schema before decoding them (`cookie_agent_protocol::strict`):
+  every member of an object must be a property the schema lists for it,
+  through `$ref`, `allOf`, and the `oneOf`/`anyOf` branch a value fits (by
+  type, required members, and `const` tags); an object that lists no
+  properties is free-form. A refusal is `-32602` with the registry's
+  `unknown_field` data and the JSON path in `field`, so `RunSelection`,
+  `PermissionRule`, `OperationFingerprint`, and `ApprovalFeedback` stay strict
+  in `run.start`, `session.create`, `approval.respond`, and the rest. Unlike a
+  deserializer wrapper (`serde_ignored`), it sees through internally tagged
+  enums, which serde buffers. The `goal_update` tool reads its arguments the
+  same way (`parse_args_strict`), and its model-facing schema stays closed
+  (`strict_schema`), since `GoalItem` is also history. `ToolOutputDeclaration`
+  in a runtime's or plugin's tool list is information per 9.1 and is not
+  checked.

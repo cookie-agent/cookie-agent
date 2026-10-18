@@ -6,7 +6,8 @@
 use std::sync::Arc;
 
 use cookie_agent_runtime_api::authoring::{
-    parse_args, prepared_operation, prepared_resource, safe_title, schema,
+    parse_args, parse_args_strict, prepared_operation, prepared_resource, safe_title, schema,
+    strict_schema,
 };
 
 use crate::{Engine, EngineError, ToolLayer, ToolProvider, ToolSpec};

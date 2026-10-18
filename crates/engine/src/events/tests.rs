@@ -2170,14 +2170,17 @@ fn barrier_sync_precedes_publication_without_holding_snapshot_lock() {
 }
 
 #[test]
-fn stored_event_rejects_unknown_envelope_fields() {
+fn stored_event_ignores_unknown_envelope_fields() {
     for field in ["legacy", "event_schema_version"] {
         let mut value = serde_json::to_value(stored_event()).expect("serialize record");
         value
             .as_object_mut()
             .expect("record object")
             .insert(field.into(), Value::from(3));
-        assert!(serde_json::from_value::<StoredEvent>(value).is_err());
+        assert_eq!(
+            serde_json::from_value::<StoredEvent>(value).expect("newer envelope"),
+            stored_event()
+        );
     }
 }
 
@@ -2187,13 +2190,19 @@ fn strict_record_decoder_agrees_with_the_tolerant_reader_or_defers_to_it() {
         let line = serde_json::to_vec(&record).expect("serialize record");
         assert_eq!(StoredEvent::decode_strict(&line), Some(record));
     }
+    // Members a newer build added are information: ignored, not repaired.
+    for field in ["legacy", "event_schema_version"] {
+        let mut value = serde_json::to_value(stored_event()).expect("serialize record");
+        value[field] = Value::Bool(true);
+        let line = serde_json::to_vec(&value).expect("serialize variant");
+        assert_eq!(
+            StoredEvent::decode_strict(&line),
+            Some(stored_event()),
+            "{field}"
+        );
+    }
     // Anything the tolerant reader would repair, report, or skip is left to it.
-    for (field, replacement) in [
-        ("legacy", Value::Bool(true)),
-        ("event_schema_version", Value::from(3)),
-        ("engine_version", Value::from(7)),
-        ("seq", Value::from(0)),
-    ] {
+    for (field, replacement) in [("engine_version", Value::from(7)), ("seq", Value::from(0))] {
         let mut value = serde_json::to_value(stored_event()).expect("serialize record");
         value[field] = replacement;
         let line = serde_json::to_vec(&value).expect("serialize variant");
@@ -2340,6 +2349,7 @@ fn event_log_best_effort_reader_applies_all_three_tiers() {
         },
     ))
     .expect("unknown envelope");
+    // A newer build's envelope member is ignored.
     unknown_envelope["future_envelope"] = serde_json::json!(true);
     values.push(unknown_envelope);
 
@@ -2357,7 +2367,7 @@ fn event_log_best_effort_reader_applies_all_three_tiers() {
             .iter()
             .map(|event| event.seq)
             .collect::<Vec<_>>(),
-        vec![1, 2, 5],
+        vec![1, 2, 5, 6],
         "diagnostics: {:?}",
         log.diagnostics()
     );
@@ -2370,7 +2380,7 @@ fn event_log_best_effort_reader_applies_all_three_tiers() {
             .filter(|diagnostic| diagnostic.skipped)
             .map(|diagnostic| diagnostic.seq)
             .collect::<Vec<_>>(),
-        vec![4, 6]
+        vec![4]
     );
     let events = log.events();
     let EventPayload::SessionCreated { creation_agent, .. } = &events[0].payload else {

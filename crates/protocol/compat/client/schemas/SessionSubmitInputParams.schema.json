@@ -16,7 +16,6 @@
       ]
     },
     "RunSelection": {
-      "additionalProperties": false,
       "properties": {
         "agent": {
           "maxLength": 64,
@@ -25,7 +24,6 @@
           "type": "string"
         },
         "model": {
-          "additionalProperties": false,
           "description": "One exact base or named-variant model selection.",
           "properties": {
             "model": {
