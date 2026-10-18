@@ -35,6 +35,21 @@ Agent snapshots embedded in events are read in their current shape only
 ordinary parent session events; the removed `delegations.jsonl` surface and its
 schema versions are not read.
 
+## Published schemas
+
+The plugin and runtime protocols' schemas are published with this
+documentation, exactly as `crates/protocol/compat/` commits them (see below):
+
+| Surface | Methods | Schemas | Version |
+|---|---|---|---|
+| Plugin protocol | [`methods.json`](../schemas/plugin/methods.json) | `schemas/plugin/schemas/<Root>.schema.json`, such as [`PrepareResult`](../schemas/plugin/schemas/PrepareResult.schema.json) | [`version`](../schemas/plugin/version) |
+| Runtime protocol | [`methods.json`](../schemas/runtime/methods.json) | `schemas/runtime/schemas/<Root>.schema.json`, such as [`ExecuteResult`](../schemas/runtime/schemas/ExecuteResult.schema.json) | [`version`](../schemas/runtime/version) |
+
+`methods.json` names each method's params and result roots; each root's file
+holds its schema and its definitions (`$defs`). A plugin or runtime written
+in any language can validate what it sends against them. The
+[reference plugin](../development/plugins.md#reference-plugin) does so in CI.
+
 ## Baselines and the checker
 
 `crates/protocol/compat/` holds one baseline per surface: `client`, `plugin`,

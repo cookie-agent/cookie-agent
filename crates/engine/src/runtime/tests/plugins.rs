@@ -852,3 +852,203 @@ async fn immediate_first_run_waits_for_mcp_listing_without_separate_approval() {
     captured.abort();
     fixture.engine.shutdown().await;
 }
+
+/// The reference plugin of `examples/plugins/python` against the daemon: its
+/// tool's presentation, progress, and result, its blocking hook, its event
+/// subscription by pattern, and its producer.
+#[tokio::test]
+async fn the_reference_plugin_runs_against_the_daemon() {
+    const REFERENCE_PLUGIN: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/plugins/python/reference_plugin.py"
+    );
+
+    let tool_call = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"reference-call\",\"type\":\"function\",\"function\":{\"name\":\"word_count\",\"arguments\":\"{\\\"text\\\":\\\"one two\\\\nthree\\\",\\\"label\\\":\\\"notes.txt\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n".to_owned();
+    let text = |text: &str| {
+        format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n"
+        )
+    };
+    // The tool call; then, in whichever order they ask, the session title,
+    // the run's answer, and the run the producer's queued message wakes.
+    let (endpoint, server, reached, release) = scripted_server_with_delayed_response(
+        vec![
+            tool_call,
+            text("Counting words"),
+            text("done"),
+            text("noted"),
+        ],
+        0,
+    )
+    .await;
+    let markers = tempfile::tempdir().expect("plugin log directory");
+    let log = markers.path().join("reference.jsonl");
+    let toml_string = |value: &str| toml::Value::String(value.to_owned()).to_string();
+    let extra_config = format!(
+        r#"
+[plugins.reference]
+command = [{}, {}]
+env = {{ REFERENCE_PLUGIN_LOG = {} }}
+producer_messaging = true
+"#,
+        toml_string(python_command()),
+        toml_string(REFERENCE_PLUGIN),
+        toml_string(&log.display().to_string()),
+    );
+    let agent = "---\ndescription: Reference plugin test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/a-model\", variant: null }]\npermissions:\n  text_read:\n    \"*.txt\": allow\n---\nCount words.\n";
+    let fixture = synthetic_default_fixture_with_config(Some(agent), &endpoint, &extra_config)
+        .expect("engine");
+    fixture.engine.inner.plugins.await_eager_ready().await;
+    let status = fixture
+        .engine
+        .plugin_statuses()
+        .into_iter()
+        .find(|status| status.name == "reference")
+        .expect("reference plugin status");
+    assert_eq!(status.state, cookie_agent_protocol::PluginState::Connected);
+    assert_eq!(status.tools, ["word_count"]);
+    let snapshot = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
+    let agent = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.id.as_str() == "primary")
+        .expect("primary agent");
+    let selection = RunSelection {
+        agent: agent.id.clone(),
+        model: agent.resolved_fallback[0].clone(),
+        preset: None,
+    };
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("reference-plugin").expect("run ID"),
+                selection,
+                input: "count the words".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("run accepted");
+    tokio::time::timeout(test_timeout(3), reached)
+        .await
+        .expect("model request reached")
+        .expect("model reach signal");
+    release.notify_one();
+
+    // The producer's message, queued once the call finished, wakes a run of
+    // its own.
+    let accepted = await_event(
+        &fixture.engine,
+        session.session_id,
+        "the reference plugin's producer message",
+        |event| matches!(event.payload, EventPayload::ProducerMessageAccepted { .. }),
+    )
+    .await;
+    let EventPayload::ProducerMessageAccepted {
+        message_id,
+        producer_owner,
+        mode,
+        body,
+        ..
+    } = accepted.payload
+    else {
+        unreachable!("matched above");
+    };
+    assert_eq!(
+        producer_owner,
+        cookie_agent_protocol::ProducerOwner::external(
+            cookie_agent_protocol::ProducerSource::plugin("reference").unwrap(),
+            cookie_agent_protocol::ProducerName::default_name()
+        )
+    );
+    assert_eq!(mode, cookie_agent_protocol::ProducerDeliveryMode::Queue);
+    assert_eq!(body, "The word count you asked for found 3 words.");
+    await_event(
+        &fixture.engine,
+        session.session_id,
+        "the woken run's admission of the message",
+        |event| matches!(&event.payload, EventPayload::ProducerMessageAdmitted { message_id: admitted } if *admitted == message_id),
+    )
+    .await;
+    let requests = with_watchdog("server fixture completion", server)
+        .await
+        .expect("model server");
+    assert_eq!(requests.len(), 4);
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("session projection")
+        .log
+        .events();
+    let start = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallStarted { start } => Some(start),
+            _ => None,
+        })
+        .expect("tool start");
+    // The plugin's presentation, with the tool the daemon resolved.
+    let presentation = serde_json::to_value(&start.presentation).unwrap();
+    assert_eq!(presentation["title"], "Count words");
+    assert_eq!(presentation["hint"], "search");
+    assert_eq!(presentation["primary_argument"], "notes.txt");
+    assert_eq!(presentation["tool"]["source"]["type"], "plugin");
+    assert_eq!(presentation["arguments"][0]["type"], "code");
+    assert_eq!(presentation["preview"][0]["type"], "text");
+    let termination = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination } => Some(termination),
+            _ => None,
+        })
+        .expect("tool termination");
+    assert_eq!(termination.outcome, ToolTerminationOutcome::Completed);
+    let result = termination.result.as_ref().expect("tool result");
+    assert_eq!(result.title.as_str(), "Counted 3 words");
+    assert_eq!(result.metadata, serde_json::json!({"words": 3, "lines": 2}));
+    assert_eq!(
+        serde_json::to_value(&result.display).unwrap(),
+        serde_json::json!([{"type": "key_value", "entries": [
+            {"key": "words", "value": "3"},
+            {"key": "lines", "value": "2"},
+        ]}])
+    );
+    assert!(
+        result.output.contains("3 words, 2 lines"),
+        "{}",
+        result.output
+    );
+    fixture.engine.shutdown().await;
+
+    // The hook saw the call, and the events the plugin received are the
+    // ones its patterns select, live tool progress included.
+    let log: Vec<serde_json::Value> = fs::read_to_string(&log)
+        .expect("plugin log")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("log line"))
+        .collect();
+    assert!(log.contains(&serde_json::json!({"hook": "tool_before_call", "tool": "word_count"})));
+    let types = log
+        .iter()
+        .filter_map(|entry| entry["event"].as_str())
+        .collect::<Vec<_>>();
+    assert!(types.contains(&"tool_call_progress"), "{types:?}");
+    assert!(types.contains(&"run_finished"), "{types:?}");
+    assert!(
+        types
+            .iter()
+            .all(|kind| kind.starts_with("run_") || kind.starts_with("tool_call_")),
+        "{types:?}"
+    );
+}

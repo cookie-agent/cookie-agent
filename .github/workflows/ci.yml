@@ -33,6 +33,8 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - name: Check the protocol compatibility baselines
         run: crates/protocol/scripts/check-schema-additive.sh
+      - name: Check the reference plugin's messages against the plugin protocol schemas
+        run: python3 examples/plugins/python/check_reference_plugin.py
       - name: Enforce release metadata and provenance
         run: cargo test --locked -p cookie_agent_models --test release_integrity
       - name: Build the locked release binary

@@ -116,6 +116,36 @@ The examples `echo_plugin.rs` and `producer_plugin.rs` in
 protocol version it speaks as `PLUGIN_PROTOCOL_VERSION`; its crate version's
 major follows the protocol's major.
 
+## Reference plugin
+
+`examples/plugins/python/` holds a plugin in plain Python with no
+dependencies, written against the protocol rather than the SDK:
+
+- `cookie_plugin.py` is a small helper for any Python plugin: framing, the
+  handshake and its version check, tool preparation and execution, hooks,
+  events, and producer requests, single-threaded, keeping what the daemon
+  sends while a handler waits for an answer.
+- `reference_plugin.py` uses it: a tool, `word_count`, with a presentation, a
+  live display, and a result of display blocks and metadata; a
+  `tool_before_call` hook with `on_error = "block"`; an event subscription
+  by pattern (`run_*`, `tool_call_*`); and a producer that queues a message
+  once a call has finished.
+- `check_reference_plugin.py` plays the daemon through a scripted
+  conversation and validates every message both sides send against the
+  [published schemas](../reference/schemas.md#published-schemas), with a
+  standard-library validator for the subset of JSON Schema they use. CI runs
+  it, and an engine test runs the plugin against the daemon.
+
+To try it, add it to `config.toml`:
+
+```toml
+[plugins.reference]
+command = ["python3", "/path/to/cookie-agent/examples/plugins/python/reference_plugin.py"]
+producer_messaging = true
+```
+
+and allow its permission action in an agent (`text_read: allow`).
+
 ## Handshake
 
 The daemon starts the plugin's `command` in its own process group (a job
