@@ -848,16 +848,12 @@ where
 
 fn command_fault(error: crate::strict::CommandDecodeError) -> ServerFault {
     match error {
-        crate::strict::CommandDecodeError::UnknownField { field } => ServerFault::new(
+        crate::strict::CommandDecodeError::Invalid(_) => ServerFault::invalid_params(),
+        refusal => ServerFault::new(
             crate::errors::INVALID_PARAMS,
             "invalid params",
-            crate::errors::UNKNOWN_FIELD
-                .error()
-                .field("field", field)
-                .build()
-                .data,
+            refusal.to_rpc_error().data,
         ),
-        crate::strict::CommandDecodeError::Invalid(_) => ServerFault::invalid_params(),
     }
 }
 
@@ -879,13 +875,8 @@ enum RawSessionRenameChange {
 
 fn decode_rename(params: Option<Value>) -> Result<SessionRenameParams, ServerFault> {
     let params = params.unwrap_or(Value::Null);
-    if let Some(field) =
-        crate::strict::unknown_member(&schemars::schema_for!(SessionRenameParams), &params)
-    {
-        return Err(command_fault(
-            crate::strict::CommandDecodeError::UnknownField { field },
-        ));
-    }
+    crate::strict::check_command(&schemars::schema_for!(SessionRenameParams), &params)
+        .map_err(command_fault)?;
     if let Ok(request) = serde_json::from_value::<SessionRenameParams>(params.clone()) {
         return Ok(request);
     }

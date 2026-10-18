@@ -103,16 +103,9 @@ where
 {
     match cookie_agent_protocol::strict::decode_command(value) {
         Ok(arguments) => Ok(arguments),
-        Err(cookie_agent_protocol::strict::CommandDecodeError::UnknownField { field }) => {
-            Err(tool_error(format!(
-                "The {tool} tool was called with invalid arguments: unknown field `{field}`.\nPlease rewrite the input so it satisfies the expected schema."
-            )))
-        }
-        Err(cookie_agent_protocol::strict::CommandDecodeError::Invalid(error)) => {
-            Err(tool_error(format!(
-                "The {tool} tool was called with invalid arguments: {error}.\nPlease rewrite the input so it satisfies the expected schema."
-            )))
-        }
+        Err(error) => Err(tool_error(format!(
+            "The {tool} tool was called with invalid arguments: {error}.\nPlease rewrite the input so it satisfies the expected schema."
+        ))),
     }
 }
 

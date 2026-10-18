@@ -6,8 +6,11 @@
 //! [`crate::PermissionRule`] in `session.create`) cannot reject them itself.
 //! A command's receiver therefore checks the params against the command's
 //! published JSON Schema first: every member of an object must be one of the
-//! properties the schema lists for it, wherever it is in the params. Serde
-//! then decodes the params as usual.
+//! properties the schema lists for it, and every enum value or tag one the
+//! schema lists, wherever it is in the params. Serde then decodes the params
+//! as usual. Open enums are no exception: a command never carries a value its
+//! receiver does not know, since its sender gates new values on the
+//! receiver's version.
 
 use std::{
     any::TypeId,
@@ -27,31 +30,76 @@ pub enum CommandDecodeError {
     UnknownField {
         field: String,
     },
+    /// An enum value or tag the command's schema does not list, at this JSON
+    /// path: the value itself for a plain enum (`mode`), or its tag member for
+    /// a tagged one (`outcome.status`).
+    UnknownVariant {
+        field: String,
+        value: String,
+    },
     Invalid(serde_json::Error),
 }
 
+impl CommandDecodeError {
+    /// The error a receiver answers with: `-32602` with the registry's
+    /// `unknown_field` or `unknown_variant` data naming the path, or plain
+    /// `invalid_params` with serde's message as its detail.
+    #[must_use]
+    pub fn to_rpc_error(&self) -> crate::JsonRpcError {
+        match self {
+            Self::UnknownField { field } => crate::errors::UNKNOWN_FIELD
+                .error()
+                .field("field", field)
+                .build(),
+            Self::UnknownVariant { field, value } => crate::errors::UNKNOWN_VARIANT
+                .error()
+                .field("field", field)
+                .field("value", value)
+                .build(),
+            Self::Invalid(error) => crate::errors::BAD_PARAMS
+                .error()
+                .detail(error.to_string())
+                .build(),
+        }
+    }
+}
+
+impl std::fmt::Display for CommandDecodeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownField { field } => write!(formatter, "unknown field `{field}`"),
+            Self::UnknownVariant { field, value } => {
+                write!(formatter, "unknown value `{value}` at `{field}`")
+            }
+            Self::Invalid(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for CommandDecodeError {}
+
 /// Decodes `value` as the params of a command of type `T`, refusing any
-/// member `T`'s schema does not list.
+/// member or enum value `T`'s schema does not list.
 pub fn decode_command<T>(value: Value) -> Result<T, CommandDecodeError>
 where
     T: DeserializeOwned + JsonSchema + 'static,
 {
-    let schema = command_schema::<T>();
-    if let Some(field) = unknown_member(&schema, &value) {
-        return Err(CommandDecodeError::UnknownField { field });
-    }
+    check_command(&command_schema::<T>(), &value)?;
     serde_json::from_value(value).map_err(CommandDecodeError::Invalid)
 }
 
-/// The JSON path of the first member of `value` that `schema` does not list,
-/// or `None` when every member is listed. Members are checked only where the
-/// schema lists properties; a free-form object (one that lists none) takes any.
-#[must_use]
-pub fn unknown_member(schema: &Schema, value: &Value) -> Option<String> {
+/// Checks `value` against a command's `schema`: the first member the schema
+/// does not list, or enum value it does not list, is refused with its JSON
+/// path. Members are checked only where the schema lists properties; a
+/// free-form object (one that lists none) takes any.
+pub fn check_command(schema: &Schema, value: &Value) -> Result<(), CommandDecodeError> {
     let root = schema.as_value();
     let definitions = root.get("$defs").and_then(Value::as_object);
     let mut path = String::new();
-    Walker { definitions }.unknown(root, value, &mut path)
+    match (Walker { definitions }).unknown(root, value, &mut path) {
+        Some(refusal) => Err(refusal),
+        None => Ok(()),
+    }
 }
 
 fn command_schema<T: JsonSchema + 'static>() -> Arc<Schema> {
@@ -102,23 +150,39 @@ impl<'a> Walker<'a> {
         &Value::Bool(true)
     }
 
-    fn unknown(&self, schema: &'a Value, value: &Value, path: &mut String) -> Option<String> {
+    fn unknown(
+        &self,
+        schema: &'a Value,
+        value: &Value,
+        path: &mut String,
+    ) -> Option<CommandDecodeError> {
         let schema = self.resolve(schema);
-        let branches = ["oneOf", "anyOf"]
-            .iter()
-            .filter_map(|keyword| schema.get(*keyword).and_then(Value::as_array))
-            .flatten()
+        let alternatives = alternatives(schema)
             .map(|branch| self.resolve(branch))
+            .collect::<Vec<_>>();
+        if alternatives.is_empty() {
+            return self.unknown_in(&[schema], value, path);
+        }
+        let branches = alternatives
+            .iter()
+            .copied()
             .filter(|branch| admits(branch, value))
             .collect::<Vec<_>>();
         if branches.is_empty() {
-            return self.unknown_in(&[schema], value, path);
+            return unknown_variant(&alternatives, value, path)
+                .or_else(|| self.unknown_in(&[schema], value, path));
         }
         // One branch the value fits is enough; otherwise report the first.
         let mut first = None;
         for branch in branches {
-            let field = self.unknown_in(&[branch, schema], value, path)?;
-            first.get_or_insert(field);
+            // A branch that is itself a choice, such as the enum of an
+            // optional tagged value, is checked as one.
+            let found = if alternatives_of(branch) {
+                self.unknown(branch, value, path)
+            } else {
+                self.unknown_in(&[branch, schema], value, path)
+            }?;
+            first.get_or_insert(found);
         }
         first
     }
@@ -130,7 +194,7 @@ impl<'a> Walker<'a> {
         schemas: &[&'a Value],
         value: &Value,
         path: &mut String,
-    ) -> Option<String> {
+    ) -> Option<CommandDecodeError> {
         let keyword = |name: &str| schemas.iter().find_map(|schema| schema.get(name));
         match value {
             Value::Object(members) => {
@@ -150,7 +214,9 @@ impl<'a> Walker<'a> {
                         (Some(property), _) => self.unknown(property, member, path),
                         (None, Some(additional)) => self.unknown(additional, member, path),
                         (None, None) if free_form => None,
-                        (None, None) => Some(path.clone()),
+                        (None, None) => Some(CommandDecodeError::UnknownField {
+                            field: path.clone(),
+                        }),
                     };
                     path.truncate(length);
                     if found.is_some() {
@@ -177,7 +243,13 @@ impl<'a> Walker<'a> {
                 }
                 None
             }
-            _ => None,
+            scalar => {
+                let listed = keyword("enum").and_then(Value::as_array)?;
+                (!listed.contains(scalar)).then(|| CommandDecodeError::UnknownVariant {
+                    field: path.clone(),
+                    value: variant_text(scalar),
+                })
+            }
         }
     }
 
@@ -201,9 +273,89 @@ impl<'a> Walker<'a> {
     }
 }
 
+/// The `oneOf` and `anyOf` branches of `schema`.
+fn alternatives(schema: &Value) -> impl Iterator<Item = &Value> {
+    ["oneOf", "anyOf"]
+        .into_iter()
+        .filter_map(|keyword| schema.get(keyword).and_then(Value::as_array))
+        .flatten()
+}
+
+fn alternatives_of(schema: &Value) -> bool {
+    alternatives(schema).next().is_some()
+}
+
+/// The refusal of a value that fits none of a choice's `alternatives`, when
+/// the choice is a closed set of values: a string none of its `const` or
+/// `enum` branches lists, or an object whose tag (a member every object
+/// branch fixes with a `const`) names none of them. `None` when the value is
+/// simply malformed, which serde reports.
+fn unknown_variant(
+    alternatives: &[&Value],
+    value: &Value,
+    path: &str,
+) -> Option<CommandDecodeError> {
+    let is_null = |branch: &&Value| branch.get("type").and_then(Value::as_str) == Some("null");
+    match value {
+        Value::String(text) => alternatives
+            .iter()
+            .all(|branch| {
+                branch.get("const").is_some() || branch.get("enum").is_some() || is_null(branch)
+            })
+            .then(|| CommandDecodeError::UnknownVariant {
+                field: path.to_owned(),
+                value: text.clone(),
+            }),
+        Value::Object(members) => {
+            let objects = alternatives
+                .iter()
+                .filter(|branch| !is_null(branch))
+                .collect::<Vec<_>>();
+            let tag_of = |branch: &Value, name: &str| {
+                branch
+                    .get("properties")
+                    .and_then(|properties| properties.get(name))
+                    .and_then(|property| property.get("const"))
+                    .cloned()
+            };
+            let first = objects.first()?;
+            let tag = first
+                .get("properties")
+                .and_then(Value::as_object)?
+                .keys()
+                .find(|name| objects.iter().all(|branch| tag_of(branch, name).is_some()))?;
+            let found = members.get(tag)?;
+            if !found.is_string()
+                || objects
+                    .iter()
+                    .any(|branch| tag_of(branch, tag).as_ref() == Some(found))
+            {
+                return None;
+            }
+            Some(CommandDecodeError::UnknownVariant {
+                field: if path.is_empty() {
+                    tag.clone()
+                } else {
+                    format!("{path}.{tag}")
+                },
+                value: variant_text(found),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn variant_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
 /// Whether a branch of a `oneOf` or `anyOf` can describe `value` at all: its
-/// type allows the value's, and an object has every required member, with
-/// each `const` member (a tag) equal to the branch's.
+/// type allows the value's, a `const` or `enum` lists it, and an object has
+/// every required member, with each `const` member (a tag) equal to the
+/// branch's.
 fn admits(branch: &Value, value: &Value) -> bool {
     if let Some(types) = branch.get("type") {
         let name = match value {
@@ -224,6 +376,16 @@ fn admits(branch: &Value, value: &Value) -> bool {
         if !fits {
             return false;
         }
+    }
+    if branch
+        .get("const")
+        .is_some_and(|constant| constant != value)
+        || branch
+            .get("enum")
+            .and_then(Value::as_array)
+            .is_some_and(|listed| !listed.contains(value))
+    {
+        return false;
     }
     let Value::Object(members) = value else {
         return true;
@@ -271,8 +433,32 @@ mod tests {
 
     #[allow(dead_code)]
     #[derive(Debug, Deserialize, JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    enum Mode {
+        Steer,
+        Queue,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Debug, Deserialize, JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    enum Documented {
+        /// First.
+        First,
+        /// Second.
+        Second,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Debug, Deserialize, JsonSchema)]
     struct Command {
         shared: Shared,
+        #[serde(default)]
+        mode: Option<Mode>,
+        #[serde(default)]
+        documented: Vec<Documented>,
+        #[serde(default)]
+        part: Option<Part>,
         #[serde(default)]
         optional: Option<Shared>,
         #[serde(default)]
@@ -286,9 +472,66 @@ mod tests {
     fn unknown(value: Value) -> Option<String> {
         match decode_command::<Command>(value) {
             Err(CommandDecodeError::UnknownField { field }) => Some(field),
-            Err(CommandDecodeError::Invalid(error)) => panic!("invalid params: {error}"),
+            Err(error) => panic!("not an unknown field: {error}"),
             Ok(_) => None,
         }
+    }
+
+    fn unknown_variant(value: Value) -> Option<(String, String)> {
+        match decode_command::<Command>(value) {
+            Err(CommandDecodeError::UnknownVariant { field, value }) => Some((field, value)),
+            Err(error) => panic!("not an unknown variant: {error}"),
+            Ok(_) => None,
+        }
+    }
+
+    #[test]
+    fn commands_name_the_path_of_an_unknown_enum_value_or_tag() {
+        let shared = json!({"name": "a"});
+        assert_eq!(
+            unknown_variant(json!({"shared": shared, "mode": "queue", "documented": ["second"]})),
+            None
+        );
+        assert_eq!(
+            unknown_variant(json!({"shared": shared, "mode": "later"})),
+            Some(("mode".into(), "later".into()))
+        );
+        assert_eq!(
+            unknown_variant(json!({"shared": shared, "documented": ["first", "third"]})),
+            Some(("documented[1]".into(), "third".into()))
+        );
+        assert_eq!(
+            unknown_variant(json!({"shared": shared, "parts": [{"type": "chart"}]})),
+            Some(("parts[0].type".into(), "chart".into()))
+        );
+        assert_eq!(
+            unknown_variant(json!({"shared": shared, "part": {"type": "chart", "x": 1}})),
+            Some(("part.type".into(), "chart".into()))
+        );
+        // A known tag with a missing member is malformed, not unknown.
+        assert!(matches!(
+            decode_command::<Command>(json!({"shared": shared, "parts": [{"type": "text"}]})),
+            Err(CommandDecodeError::Invalid(_))
+        ));
+        // An unknown member inside an optional tagged value is still found.
+        assert_eq!(
+            unknown(json!({"shared": shared, "part": {"type": "text", "text": "t", "x": 1}}))
+                .as_deref(),
+            Some("part.x")
+        );
+        let error = decode_command::<Command>(json!({"shared": shared, "mode": "later"}))
+            .unwrap_err()
+            .to_rpc_error();
+        assert_eq!(error.code, crate::errors::INVALID_PARAMS);
+        assert_eq!(
+            error.data,
+            Some(json!({
+                "code": "unknown_variant",
+                "hint": "Update the older of the two programs.",
+                "field": "mode",
+                "value": "later"
+            }))
+        );
     }
 
     #[test]
