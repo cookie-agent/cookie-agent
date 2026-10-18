@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::{LoadedMcpServer, McpOAuthConfig, McpServerConfig, McpServerSource};
 use cookie_agent_mcp::{McpRegistry, McpRegistryOptions, McpServerFailure, McpServerStatus};
-use cookie_agent_protocol::{SessionId, Transport};
+use cookie_agent_protocol::{SessionId, Transport, errors};
 use cookie_agent_runtime_api::{
     CodingToolsFactory, DetachPoint, ProgressCapture, ProgressSink, RuntimeConnection,
     RuntimeConnector, RuntimeInfo, RuntimeKind, SessionToolContext, ToolArtifacts, ToolCall,
@@ -48,8 +48,7 @@ use cookie_agent_runtime_api::{
         McpServerSettings, Outcome, OutcomeExt as _, PrepareOutcome, PrepareParams, PrepareResult,
         PreparedCall, PreparedRef, PromptSectionDeclaration, RUNTIME_PROTOCOL_VERSION,
         RuntimeSettings, RuntimeSkills, RuntimeTools, SkillDeclaration, SkillDiscoveryDeclaration,
-        ToolDeclaration, ToolDeclarationExt as _, ToolProgressParams, WireToolError, error_code,
-        method,
+        ToolDeclaration, ToolDeclarationExt as _, ToolProgressParams, WireToolError, method,
     },
     reconnect::ReconnectPolicy,
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
@@ -289,7 +288,10 @@ struct AdmittedExecution {
 }
 
 fn unknown_handle(what: &str, id: u64) -> RpcError {
-    RpcError::remote(error_code::UNKNOWN_HANDLE, format!("unknown {what} {id}"))
+    errors::UNKNOWN_HANDLE
+        .error()
+        .detail(format!("unknown {what} {id}"))
+        .into()
 }
 
 impl Server {
@@ -324,10 +326,12 @@ impl Server {
                 lock(&self.executions).remove(&admitted.params.prepared_id);
             }
             let _ = request
-                .fail(RpcError::remote(
-                    error_code::NOT_INITIALIZED,
-                    format!("`{method}` before `{}`", method::INITIALIZE),
-                ))
+                .fail(
+                    errors::NOT_INITIALIZED
+                        .error()
+                        .detail(format!("`{method}` before `{}`", method::INITIALIZE))
+                        .into(),
+                )
                 .await;
             return;
         };
@@ -372,7 +376,10 @@ impl Server {
                     // Only a request whose params do not parse is not
                     // admitted.
                     None => Err(request.params::<ExecuteParams>().err().unwrap_or_else(|| {
-                        RpcError::remote(-32603, "the execution was not admitted")
+                        errors::INTERNAL
+                            .error()
+                            .detail("the execution was not admitted")
+                            .into()
                     })),
                 };
                 reply(request, result).await;
@@ -382,10 +389,8 @@ impl Server {
                 reply(request, result).await;
             }
             other => {
-                let message = format!("unknown method `{other}`");
-                let _ = request
-                    .fail(RpcError::remote(error_code::METHOD_NOT_FOUND, message))
-                    .await;
+                let error = errors::UNKNOWN_METHOD.error().field("method", other);
+                let _ = request.fail(error.into()).await;
             }
         }
     }
@@ -425,13 +430,18 @@ impl Server {
     /// The open instance `id` names.
     fn instance(&self, id: Option<&str>) -> Result<Arc<Instance>, RpcError> {
         let id = id.ok_or_else(|| {
-            RpcError::remote(error_code::INVALID_PARAMS, "the request names no instance")
+            RpcError::from(
+                errors::BAD_PARAMS
+                    .error()
+                    .field("field", "instance")
+                    .detail("the request names no instance"),
+            )
         })?;
         lock(&self.instances).get(id).cloned().ok_or_else(|| {
-            RpcError::remote(
-                error_code::UNKNOWN_HANDLE,
-                format!("unknown instance `{id}`"),
-            )
+            errors::UNKNOWN_HANDLE
+                .error()
+                .detail(format!("unknown instance `{id}`"))
+                .into()
         })
     }
 
@@ -441,20 +451,18 @@ impl Server {
     fn initialize(&self, request: &IncomingRequest) -> Result<InitializeResult, RpcError> {
         let params: InitializeParams = request.params()?;
         if params.version != RUNTIME_PROTOCOL_VERSION {
-            return Err(RpcError::remote(
-                error_code::VERSION_MISMATCH,
-                format!(
-                    "runtime protocol version mismatch: the daemon speaks version {}, this \
-                     runtime speaks version {RUNTIME_PROTOCOL_VERSION}",
-                    params.version
-                ),
-            ));
+            return Err(errors::PROTOCOL_UNSUPPORTED
+                .error()
+                .field("supported_version", RUNTIME_PROTOCOL_VERSION.to_string())
+                .field("peer_version", params.version.to_string())
+                .into());
         }
-        let rejected = |message: String| RpcError::remote(error_code::INITIALIZE_REJECTED, message);
         if self.initializing.swap(true, Ordering::AcqRel) {
-            return Err(rejected("the runtime is already initialized".into()));
+            return Err(errors::ALREADY_INITIALIZED.error().into());
         }
-        let result = self.initialize_once(params).map_err(rejected);
+        let result = self
+            .initialize_once(params)
+            .map_err(|reason| errors::INITIALIZE_REJECTED.error().detail(reason).into());
         if result.is_err() {
             self.initializing.store(false, Ordering::Release);
         }
@@ -505,7 +513,15 @@ impl Server {
         request: &IncomingRequest,
     ) -> Result<(CapabilityOpenResult, Option<(Arc<Instance>, McpWatch)>), RpcError> {
         let params: CapabilityOpenParams = request.params()?;
-        let rejected = |message: String| RpcError::remote(error_code::INITIALIZE_REJECTED, message);
+        let (capability, asked) = (params.capability.clone(), params.workspace.clone());
+        let rejected = |reason: String| -> RpcError {
+            errors::CAPABILITY_OPEN_FAILED
+                .error()
+                .field("capability", capability.as_str())
+                .field("workspace", asked.as_deref())
+                .detail(reason)
+                .into()
+        };
         if params.capability.as_str() != cookie_agent_protocol::CapabilityName::CODING {
             return Err(rejected(format!(
                 "this runtime offers no capability `{}`",
@@ -703,9 +719,11 @@ impl Server {
         let instance = self.instance(Some(&params.instance))?;
         if let Some(preset) = &params.preset {
             cookie_agent_protocol::AgentId::new(preset.as_str()).map_err(|_| {
-                RpcError::remote(
-                    error_code::INVALID_PARAMS,
-                    format!("invalid agent preset `{preset}`"),
+                RpcError::from(
+                    errors::BAD_PARAMS
+                        .error()
+                        .field("field", "preset")
+                        .detail(format!("invalid agent preset `{preset}`")),
                 )
             })?;
         }
@@ -720,13 +738,20 @@ impl Server {
             load_agent_md(&workspace, params.preset.as_deref(), max_bytes)
         })
         .await
-        .map_err(|error| RpcError::remote(-32603, format!("AGENTS.md lookup failed: {error}")))?
-        .map_err(|error| RpcError::Remote {
-            code: error_code::CONTEXT_FAILED,
-            message: error.to_string(),
-            data: Some(serde_json::json!({
-                "path": error.path.to_string_lossy(),
-            })),
+        .map_err(|error| {
+            RpcError::from(
+                errors::INTERNAL
+                    .error()
+                    .detail(format!("AGENTS.md lookup failed: {error}")),
+            )
+        })?
+        .map_err(|error| {
+            RpcError::from(
+                errors::CONTEXT_FAILED
+                    .error()
+                    .field("path", error.path.to_string_lossy())
+                    .detail(error.to_string()),
+            )
         })?;
         Ok(ContextResult {
             agent_md: context.entries,
@@ -738,13 +763,14 @@ impl Server {
         let params: PrepareParams = request.params()?;
         let state = self.instance(params.instance.as_deref())?;
         if params.calls.len() > protocol::MAX_PREPARE_BATCH {
-            return Err(RpcError::remote(
-                error_code::INVALID_PARAMS,
-                format!(
+            return Err(errors::BAD_PARAMS
+                .error()
+                .field("field", "calls")
+                .detail(format!(
                     "at most {} calls are prepared at once",
                     protocol::MAX_PREPARE_BATCH
-                ),
-            ));
+                ))
+                .into());
         }
         let context = ToolPreparationContext {
             session: params.session,

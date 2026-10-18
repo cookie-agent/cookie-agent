@@ -35,28 +35,44 @@ use tokio_util::{
     sync::CancellationToken,
 };
 
-use crate::runtime_protocol::{MAX_FRAME_BYTES, error_code};
+use crate::{errors, runtime_protocol::MAX_FRAME_BYTES};
 
 /// Why a request failed.
-#[derive(Clone, Debug, thiserror::Error)]
+#[derive(Clone, Debug)]
 pub enum RpcError {
     /// The connection ended; carries why.
-    #[error("connection closed: {0}")]
     Closed(String),
-    /// The other end answered with an error.
-    #[error("{message}")]
+    /// The other end answered with an error: a standard JSON-RPC code, or
+    /// `-32000` with the registry's `data.code`, and a `message` a user can
+    /// understand (`docs/site/specs/compatibility-v1.md` section 6).
     Remote {
         code: i32,
         message: String,
         data: Option<Value>,
     },
     /// A message could not be built or read.
-    #[error("invalid runtime protocol message: {0}")]
     Protocol(String),
 }
 
+impl std::fmt::Display for RpcError {
+    /// A remote error shows its message, then its `data.detail` in
+    /// parentheses when it has one.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed(reason) => write!(formatter, "connection closed: {reason}"),
+            Self::Remote { message, .. } => match self.detail() {
+                Some(detail) => write!(formatter, "{message} ({detail})"),
+                None => formatter.write_str(message),
+            },
+            Self::Protocol(reason) => write!(formatter, "invalid protocol message: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for RpcError {}
+
 impl RpcError {
-    /// An error answer with `code` and `message`.
+    /// An error answer with `code` and `message` and no data.
     #[must_use]
     pub fn remote(code: i32, message: impl Into<String>) -> Self {
         Self::Remote {
@@ -64,6 +80,45 @@ impl RpcError {
             message: message.into(),
             data: None,
         }
+    }
+
+    /// The registry's `data.code` of a remote error.
+    #[must_use]
+    pub fn data_code(&self) -> Option<&str> {
+        self.data_member("code")
+    }
+
+    /// The technical detail of a remote error.
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        self.data_member("detail")
+    }
+
+    /// A string member of a remote error's `data`, such as `path`.
+    #[must_use]
+    pub fn data_member(&self, name: &str) -> Option<&str> {
+        match self {
+            Self::Remote {
+                data: Some(data), ..
+            } => data.get(name).and_then(Value::as_str),
+            _ => None,
+        }
+    }
+}
+
+impl From<crate::JsonRpcError> for RpcError {
+    fn from(error: crate::JsonRpcError) -> Self {
+        Self::Remote {
+            code: error.code,
+            message: error.message,
+            data: error.data,
+        }
+    }
+}
+
+impl From<errors::ErrorBuilder> for RpcError {
+    fn from(builder: errors::ErrorBuilder) -> Self {
+        builder.build().into()
     }
 }
 
@@ -134,12 +189,8 @@ pub struct IncomingNotification {
 
 fn parse_params<T: DeserializeOwned>(params: Option<&RawValue>) -> Result<T, RpcError> {
     let text = params.map_or("null", RawValue::get);
-    serde_json::from_str(text).map_err(|error| {
-        RpcError::remote(
-            error_code::INVALID_PARAMS,
-            format!("invalid params: {error}"),
-        )
-    })
+    serde_json::from_str(text)
+        .map_err(|error| errors::BAD_PARAMS.error().detail(error.to_string()).into())
 }
 
 impl IncomingNotification {
@@ -166,10 +217,12 @@ impl IncomingRequest {
             Ok(text) => text,
             Err(error) => {
                 return self
-                    .fail(RpcError::remote(
-                        error_code::REPLY_TOO_LARGE,
-                        error.to_string(),
-                    ))
+                    .fail(
+                        errors::REPLY_TOO_LARGE
+                            .error()
+                            .detail(error.to_string())
+                            .into(),
+                    )
                     .await;
             }
         };
@@ -177,7 +230,7 @@ impl IncomingRequest {
     }
 
     /// Answers with an error. A non-[`RpcError::Remote`] error is sent as an
-    /// internal error.
+    /// `internal_error` whose detail says what failed.
     pub async fn fail(self, error: RpcError) -> Result<(), RpcError> {
         let (code, message, data) = match error {
             RpcError::Remote {
@@ -185,7 +238,10 @@ impl IncomingRequest {
                 message,
                 data,
             } => (code, message, data),
-            other => (-32603, other.to_string(), None),
+            other => {
+                let error = errors::INTERNAL.error().detail(other.to_string()).build();
+                (error.code, error.message, error.data)
+            }
         };
         let text = encode(&ErrorResponseRef {
             jsonrpc: JsonRpcVersion::current(),
@@ -515,7 +571,12 @@ async fn dispatch(
                 incoming.send(Incoming::Request(request)).await
             {
                 let _ = request
-                    .fail(RpcError::remote(-32603, "the receiver is shutting down"))
+                    .fail(
+                        errors::INTERNAL
+                            .error()
+                            .detail("the receiver is shutting down")
+                            .into(),
+                    )
                     .await;
             }
             Ok(())

@@ -88,30 +88,6 @@ pub mod method {
     pub const PRODUCER_RECOVERY_COMPLETE: &str = "producer/recovery/complete";
 }
 
-/// JSON-RPC error codes the runtime protocol uses besides the standard ones.
-pub mod error_code {
-    /// The params do not match the method.
-    pub const INVALID_PARAMS: i32 = -32602;
-    /// No such method.
-    pub const METHOD_NOT_FOUND: i32 = -32601;
-    /// The versions of the two ends differ.
-    pub const VERSION_MISMATCH: i32 = -32010;
-    /// The runtime rejects the initialize request or settings.
-    pub const INITIALIZE_REJECTED: i32 = -32011;
-    /// A request other than initialize arrived before initialize.
-    pub const NOT_INITIALIZED: i32 = -32012;
-    /// The prepared call or job the request names is unknown.
-    pub const UNKNOWN_HANDLE: i32 = -32013;
-    /// Reading the runtime's context failed; `data.path` names the file.
-    pub const CONTEXT_FAILED: i32 = -32014;
-    /// The reply would exceed the frame bound.
-    pub const REPLY_TOO_LARGE: i32 = -32015;
-    /// The daemon rejected a producer operation: messaging is not open on
-    /// the connection, the session is not attached to the runtime, or the
-    /// operation itself failed.
-    pub const PRODUCER_REJECTED: i32 = -32016;
-}
-
 /// An empty params or result object.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema,

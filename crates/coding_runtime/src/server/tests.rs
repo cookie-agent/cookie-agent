@@ -1,13 +1,13 @@
 use std::time::Duration;
 
-use cookie_agent_protocol::{RunId, SessionId, ToolCallId, in_process_pair};
+use cookie_agent_protocol::{RunId, SessionId, ToolCallId, errors, in_process_pair};
 use cookie_agent_runtime_api::{
     protocol::{
         AgentMdLimits, CapabilityOpenParams, CapabilityOpenResult, ContextParams, ContextResult,
         Empty, ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams, InitializeResult,
         Outcome, PrepareOutcome, PrepareParams, PrepareResult, PreparedRef,
         RUNTIME_PROTOCOL_VERSION, RuntimeSettings, ToolOutputLimits, ToolProgressParams,
-        WireToolCall, WireTurnContext, error_code, method,
+        WireToolCall, WireTurnContext, method,
     },
     rpc::{Incoming, Peer, RpcError},
 };
@@ -82,7 +82,12 @@ fn start(options: ServeOptions) -> Harness {
                 } else {
                     let method = request.method.clone();
                     request
-                        .fail(RpcError::remote(error_code::METHOD_NOT_FOUND, method))
+                        .fail(
+                            errors::UNKNOWN_METHOD
+                                .error()
+                                .field("method", method)
+                                .into(),
+                        )
                         .await
                         .unwrap();
                 }
@@ -96,10 +101,13 @@ fn start(options: ServeOptions) -> Harness {
     }
 }
 
-fn remote_code(error: RpcError) -> (i32, String) {
-    match error {
-        RpcError::Remote { code, message, .. } => (code, message),
-        other => panic!("remote error expected, got {other:?}"),
+/// The registry code of a remote error and its text, detail included.
+fn remote_code(error: RpcError) -> (String, String) {
+    match error.data_code() {
+        Some(code) if matches!(error, RpcError::Remote { .. }) => {
+            (code.to_owned(), error.to_string())
+        }
+        _ => panic!("remote error with a registry code expected, got {error:?}"),
     }
 }
 
@@ -118,10 +126,12 @@ async fn a_version_mismatch_fails_initialize_with_both_versions() {
         .await
         .expect_err("version mismatch");
     let (code, message) = remote_code(error);
-    assert_eq!(code, error_code::VERSION_MISMATCH);
+    assert_eq!(code, "unsupported_protocol");
     assert!(
-        message.contains(&format!("version {}", RUNTIME_PROTOCOL_VERSION + 1))
-            && message.contains(&format!("version {RUNTIME_PROTOCOL_VERSION}")),
+        message.contains(&format!(
+            "{RUNTIME_PROTOCOL_VERSION} here and {}",
+            RUNTIME_PROTOCOL_VERSION + 1
+        )),
         "{message}"
     );
 }
@@ -134,7 +144,7 @@ async fn requests_before_initialize_and_unsupported_settings_are_refused() {
         .request::<_, ContextResult>(method::CONTEXT, &ContextParams::default())
         .await
         .expect_err("not initialized");
-    assert_eq!(remote_code(error).0, error_code::NOT_INITIALIZED);
+    assert_eq!(remote_code(error).0, "not_initialized");
 
     let mut params = initialize_params();
     params.settings.agent_md.max_bytes = cookie_agent_runtime_api::context::AGENT_MD_MAX_BYTES + 1;
@@ -143,7 +153,7 @@ async fn requests_before_initialize_and_unsupported_settings_are_refused() {
         .request::<_, InitializeResult>(method::INITIALIZE, &params)
         .await
         .expect_err("agent_md limit above the bound");
-    assert_eq!(remote_code(error).0, error_code::INITIALIZE_REJECTED);
+    assert_eq!(remote_code(error).0, "initialize_rejected");
 
     let _: InitializeResult = harness
         .daemon
@@ -155,7 +165,7 @@ async fn requests_before_initialize_and_unsupported_settings_are_refused() {
         .request::<_, CapabilityOpenResult>(method::CAPABILITY_OPEN, &open_params(None))
         .await
         .expect_err("no workspace");
-    assert_eq!(remote_code(error).0, error_code::INITIALIZE_REJECTED);
+    assert_eq!(remote_code(error).0, "capability_open_failed");
     let error = harness
         .daemon
         .request::<_, CapabilityOpenResult>(
@@ -167,13 +177,13 @@ async fn requests_before_initialize_and_unsupported_settings_are_refused() {
         )
         .await
         .expect_err("no such capability");
-    assert_eq!(remote_code(error).0, error_code::INITIALIZE_REJECTED);
+    assert_eq!(remote_code(error).0, "capability_open_failed");
     let error = harness
         .daemon
         .request::<_, ContextResult>(method::CONTEXT, &ContextParams::default())
         .await
         .expect_err("no such instance");
-    assert_eq!(remote_code(error).0, error_code::UNKNOWN_HANDLE);
+    assert_eq!(remote_code(error).0, "unknown_handle");
 
     // Unknown params fields are invalid params.
     let error = harness
@@ -189,7 +199,7 @@ async fn requests_before_initialize_and_unsupported_settings_are_refused() {
         )
         .await
         .expect_err("unknown field");
-    assert_eq!(remote_code(error).0, error_code::INVALID_PARAMS);
+    assert_eq!(remote_code(error).0, "invalid_params");
 }
 
 #[tokio::test]
@@ -287,13 +297,13 @@ async fn opening_reports_identity_tools_and_project_skills_then_shuts_down() {
         .request::<_, InitializeResult>(method::INITIALIZE, &initialize_params())
         .await
         .expect_err("already initialized");
-    assert_eq!(remote_code(error).0, error_code::INITIALIZE_REJECTED);
+    assert_eq!(remote_code(error).0, "already_initialized");
     let error = harness
         .daemon
         .request::<_, Empty>("tool/list", &Empty {})
         .await
         .expect_err("unknown method");
-    assert_eq!(remote_code(error).0, error_code::METHOD_NOT_FOUND);
+    assert_eq!(remote_code(error).0, "method_not_found");
 
     let _: Empty = harness
         .daemon
@@ -352,7 +362,7 @@ async fn context_applies_the_agent_md_lookup_and_names_unreadable_files() {
         .request::<_, ContextResult>(method::CONTEXT, &context_params(Some("../escape")))
         .await
         .expect_err("invalid preset");
-    assert_eq!(remote_code(error).0, error_code::INVALID_PARAMS);
+    assert_eq!(remote_code(error).0, "invalid_params");
 
     #[cfg(unix)]
     {
@@ -363,16 +373,8 @@ async fn context_applies_the_agent_md_lookup_and_names_unreadable_files() {
             .request::<_, ContextResult>(method::CONTEXT, &context_params(None))
             .await
             .expect_err("a directory is not readable as AGENTS.md");
-        let RpcError::Remote { code, data, .. } = error else {
-            panic!("remote error expected");
-        };
-        assert_eq!(code, error_code::CONTEXT_FAILED);
-        assert!(
-            data.unwrap()["path"]
-                .as_str()
-                .unwrap()
-                .ends_with("AGENTS.md")
-        );
+        assert_eq!(error.data_code(), Some("context_failed"));
+        assert!(error.data_member("path").unwrap().ends_with("AGENTS.md"));
     }
 }
 
@@ -479,7 +481,7 @@ async fn calls_are_prepared_executed_and_released_by_prepared_id() {
         .request::<_, ExecuteResult>(method::TOOL_EXECUTE, &execute(read.prepared_id))
         .await
         .expect_err("consumed");
-    assert_eq!(remote_code(error).0, error_code::UNKNOWN_HANDLE);
+    assert_eq!(remote_code(error).0, "unknown_handle");
 
     let result: ExecuteResult = harness
         .daemon
@@ -544,7 +546,7 @@ async fn calls_are_prepared_executed_and_released_by_prepared_id() {
         )
         .await
         .expect_err("released");
-    assert_eq!(remote_code(error).0, error_code::UNKNOWN_HANDLE);
+    assert_eq!(remote_code(error).0, "unknown_handle");
 
     // Transport EOF stops the server.
     harness.daemon.close();

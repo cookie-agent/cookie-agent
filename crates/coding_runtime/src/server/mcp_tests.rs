@@ -11,10 +11,10 @@ use cookie_agent_runtime_api::{
         ExecuteOutcome, ExecuteParams, ExecuteResult, InitializeParams, InitializeResult,
         McpChangedParams, McpReconnectParams, McpServerSettings, McpServerState, Outcome,
         PrepareOutcome, PrepareParams, PrepareResult, RUNTIME_PROTOCOL_VERSION, RuntimeSettings,
-        RuntimeTools, ToolOutputLimits, WireToolCall, WireTurnContext, error_code, method,
+        RuntimeTools, ToolOutputLimits, WireToolCall, WireTurnContext, method,
     },
     reconnect::ReconnectPolicy,
-    rpc::{Incoming, Peer, RpcError},
+    rpc::{Incoming, Peer},
 };
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -574,10 +574,12 @@ async fn template_servers_that_enable_oauth_or_do_not_parse_are_refused() {
             )
             .await
             .expect_err("refused");
-        let RpcError::Remote { code, message, .. } = error else {
-            panic!("remote error expected");
-        };
-        assert_eq!(code, error_code::INITIALIZE_REJECTED, "{config}: {message}");
+        let message = error.to_string();
+        assert_eq!(
+            error.data_code(),
+            Some("initialize_rejected"),
+            "{config}: {message}"
+        );
         assert!(message.contains("`docs`"), "{config}: {message}");
     }
 }

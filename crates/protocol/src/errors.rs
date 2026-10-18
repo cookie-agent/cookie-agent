@@ -21,9 +21,10 @@
 //! ```
 //!
 //! Clients branch only on `data.code`, show `message`, then `hint` when
-//! present, and `detail` on request. The daemon sends
-//! `session_requires_newer_engine`; the rest of the daemon, the SDK, and the
-//! runtimes switch to these errors in later phases.
+//! present, and `detail` on request. The plugin and runtime protocols send
+//! only these errors, both ways; the client protocol sends
+//! `session_requires_newer_engine` and the command refusals, and switches the
+//! rest in a later phase.
 
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -659,24 +660,13 @@ error_codes! {
     }
 
     // --- runtime and plugin protocols ------------------------------------------
-    VERSION_MISMATCH {
-        code: "version_mismatch",
-        rpc: APPLICATION_ERROR,
-        fields: [
-            required("supported_version", "The version the receiver speaks."),
-            required("peer_version", "The version the peer sent."),
-        ],
-        message: "The runtime speaks protocol version {peer_version}, but {supported_version} is needed.",
-        hint: Some("Update cookie or the runtime so that their versions match."),
-        description: "The runtime protocol's exact-version check failed; replaced by `unsupported_protocol` once handshakes use semver.",
-    }
     ALREADY_INITIALIZED {
         code: "already_initialized",
         rpc: APPLICATION_ERROR,
         fields: [],
-        message: "The runtime was already started.",
+        message: "The connection was already initialized.",
         hint: None,
-        description: "A second `runtime/initialize` on one connection.",
+        description: "A second `runtime/initialize` or `plugin/initialize` on one connection.",
     }
     INITIALIZE_REJECTED {
         code: "initialize_rejected",
@@ -686,13 +676,24 @@ error_codes! {
         hint: Some("See the details, then fix the runtime's configuration."),
         description: "A runtime rejected `runtime/initialize`, such as settings it does not support.",
     }
+    CAPABILITY_OPEN_FAILED {
+        code: "capability_open_failed",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            optional("capability", "The capability the daemon asked for."),
+            optional("workspace", "The workspace it asked for."),
+        ],
+        message: "The runtime could not open the capability for this workspace.",
+        hint: Some("See the details, then check the attachment's workspace."),
+        description: "`capability/open` for a capability the runtime does not offer or a workspace it cannot open.",
+    }
     NOT_INITIALIZED {
         code: "not_initialized",
         rpc: APPLICATION_ERROR,
         fields: [],
-        message: "The runtime has not been started yet.",
+        message: "The connection has not been initialized yet.",
         hint: None,
-        description: "A request before `runtime/initialize`.",
+        description: "A request before `runtime/initialize` or `plugin/initialize`.",
     }
     UNKNOWN_HANDLE {
         code: "unknown_handle",
@@ -987,7 +988,6 @@ mod tests {
             "tree_usage_session_missing",
             "tree_usage_delegation_corrupt",
             "config_apply_refused",
-            "version_mismatch",
             "already_initialized",
             "not_initialized",
             "unsupported_protocol",

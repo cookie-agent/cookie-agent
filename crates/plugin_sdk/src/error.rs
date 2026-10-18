@@ -42,7 +42,9 @@ pub enum PluginError {
     TransportClosed,
 }
 
-/// A tool handler's failure: the call fails with `message`.
+/// A tool handler's failure: the call fails with `message`, which the model
+/// and the user read. It must not be blank: the SDK sends a blank message as
+/// one saying that the tool failed without saying why.
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
 pub struct ToolFailure {

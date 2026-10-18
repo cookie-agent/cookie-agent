@@ -430,7 +430,7 @@ async fn hooks_answer_their_registered_method_only() {
     assert!(matches!(
         unregistered,
         RpcError::Remote {
-            code: METHOD_NOT_FOUND,
+            code: errors::METHOD_NOT_FOUND,
             ..
         }
     ));
@@ -445,7 +445,7 @@ async fn hooks_answer_their_registered_method_only() {
     assert!(matches!(
         malformed,
         RpcError::Remote {
-            code: INVALID_PARAMS,
+            code: errors::INVALID_PARAMS,
             ..
         }
     ));

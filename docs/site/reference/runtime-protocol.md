@@ -59,7 +59,7 @@ protocol over either:
 The protocol version is an integer, currently **6**
 (`runtime_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its version in
 `runtime/initialize`; a runtime that speaks another version fails the request
-with code `-32010` and a message naming both versions, and the daemon checks
+with `unsupported_protocol` naming both versions, and the daemon checks
 the version in the reply the same way. There is no negotiation.
 Version 3 removed `tool/stdin` and the `stdin` flag of `tool/execute`: tools
 no longer take input while they run. It also replaced the `job/*` messages and
@@ -98,7 +98,7 @@ about one prepared call need no instance.
    and sends `runtime/initialize`, all within the template's
    `startup_timeout_ms`. It connects once per runtime, when a session first
    needs one of its capabilities. Every other request before it is answered
-   with `-32012`; a second initialize with `-32011`. A child's stderr is kept
+   with `not_initialized`; a second initialize with `already_initialized`. A child's stderr is kept
    as a bounded tail (the last 32 lines, at most 4 KiB) that failure reasons
    end with; nothing but protocol messages may appear on its stdout.
 2. The daemon opens an instance with `capability/open` for each capability
@@ -167,7 +167,7 @@ ignored.
 | `settings.agent_md` | `max_bytes`: files larger than this are skipped. At most the `AGENTS.md` event bound. |
 | `settings.mcp_servers` | The template's MCP servers: `name` and `config`, the server's table as the [`[mcp.servers.<name>]` schema](../guide/mcp.md#accepted-fields) reads it. Each instance of a capability that hosts MCP servers runs them in its workspace. |
 
-A runtime rejects settings it does not support with `-32011`; a runtime that
+A runtime rejects settings it does not support with `initialize_rejected`; a runtime that
 hosts no MCP servers rejects a nonempty `mcp_servers`. A coding runtime
 parses each server strictly and rejects the request when one does not parse
 or enables OAuth, which stays with the daemon's global runtime.
@@ -186,8 +186,8 @@ or enables OAuth, which stays with the daemon's global runtime.
 | `capability` | One of the runtime's capabilities. |
 | `workspace` | The workspace path, exactly as a session gave it, required exactly when the capability takes one: the runtime expands a leading `~` and resolves it on its own machine. A runtime started with `--root` refuses one outside its roots. |
 
-The runtime answers `-32011` for a capability it does not offer or a
-workspace it cannot open. Opening an instance that is already open (the same
+The runtime answers `capability_open_failed` for a capability it does not
+offer or a workspace it cannot open. Opening an instance that is already open (the same
 capability and canonical workspace) returns it. A coding instance connects
 every enabled MCP server before it answers: the reply comes once each
 server's first connection attempt and tool listing have finished,
@@ -251,7 +251,8 @@ files over the size limit. The runtime applies the lookup to the instance's
 workspace:
 the preset's `.cookie-agent/agents/<preset>/AGENTS.md`, else
 `.cookie-agent/agents/AGENTS.md`, then `<workspace>/AGENTS.md`. A file that
-exists but cannot be read fails the request with `-32014` and `data.path`.
+exists but cannot be read fails the request with `context_failed` and
+`data.path`.
 
 ### `tool/prepare`
 
@@ -359,7 +360,7 @@ producer it registers.
    `{}`. The params and results are the protocol crate's `Producer*` and
    `Recovery*` types, which the plugin protocol shares.
 3. Every request may only address a session attached to one of the
-   runtime's instances; any other fails with `-32016`. The body must be non-empty and at
+   runtime's instances; any other fails with `producer_rejected`. The body must be non-empty and at
    most [`[producers] max_body_bytes`](../engine/producers.md).
 4. Registrations belong to the connection. They end when it does or when the
    session detaches the runtime; a reconnected runtime registers again, and
@@ -371,18 +372,32 @@ through `ToolExecutionContext::producers`.
 
 ## Errors
 
-| Code | Meaning |
-|---|---|
-| `-32601` | Unknown method. |
-| `-32602` | Params do not match the method. |
-| `-32603` | Internal error. |
-| `-32010` | Protocol version mismatch. |
-| `-32011` | The runtime rejects the initialize request or its settings. |
-| `-32012` | A request before `runtime/initialize`. |
-| `-32013` | Unknown prepared call or job. |
-| `-32014` | Reading the runtime's context failed; `data.path` names the file. |
-| `-32015` | The reply would exceed the frame bound. |
-| `-32016` | The daemon rejected a producer request: messaging is not open on the connection, the session is not attached to the runtime, or the operation failed. |
+Errors follow the scheme of the [compatibility spec](../specs/compatibility-v1.md#6-errors),
+in both directions. A protocol error uses a standard JSON-RPC code; every
+other error is `-32000` with a stable snake-case `data.code`. Each carries a
+`message` a user can understand, and in `data` an optional `hint` (what to
+do next) and `detail` (technical detail, such as a serde error or a path).
+Receivers branch on `data.code`, never on `message`. The codes come from the
+protocol crate's registry (`cookie_agent_protocol::errors`):
+
+| Code | `data.code` | Meaning |
+|---|---|---|
+| `-32601` | `method_not_found` | Unknown method; `data.method` names it. |
+| `-32602` | `invalid_params` | Params do not match the method; `detail` says why. |
+| `-32603` | `internal_error` | The receiver failed in a way it cannot describe further. |
+| `-32002` | `unsupported_protocol` | The peer speaks an incompatible version; `data.supported_version` and `data.peer_version` name both (see [Version](#version)). |
+| `-32000` | `already_initialized` | A second `runtime/initialize`. |
+| `-32000` | `initialize_rejected` | The runtime rejects the initialize request or its settings. |
+| `-32000` | `not_initialized` | A request before `runtime/initialize`. |
+| `-32000` | `capability_open_failed` | `capability/open` for a capability the runtime does not offer or a workspace it cannot open; `data.capability` and `data.workspace` name what was asked. |
+| `-32000` | `unknown_handle` | Unknown prepared call or instance. |
+| `-32000` | `context_failed` | Reading the runtime's context failed; `data.path` names the file. |
+| `-32000` | `reply_too_large` | The reply would exceed the frame bound. |
+| `-32000` | `producer_rejected` | The daemon rejected a producer request: messaging is not open on the connection, the session is not attached to the runtime, or the operation failed. |
+
+When the daemon shows a runtime's error to a user, such as a runtime that
+fails to start or a call whose `tool/execute` request fails, it keeps the
+runtime's `message` (and `detail`) and names the runtime.
 
 Tool-level failures travel inside results as `{"kind": …, "message": …}`, where
 `kind` is the tool error kind (`failed`, `operation_changed`,

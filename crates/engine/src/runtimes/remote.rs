@@ -32,7 +32,7 @@ use base64::Engine as _;
 use cookie_agent_config::{McpServerConfig, SkillDiscovery, SkillRegistry};
 use cookie_agent_protocol::{
     CapabilityName, ProducerSourceStatus, RecoveryCompleteParams, RecoveryOutcome,
-    RuntimeCapabilityInfo, SessionId, ToolCallId, ToolCallPresentation,
+    RuntimeCapabilityInfo, SessionId, ToolCallId, ToolCallPresentation, errors,
 };
 use cookie_agent_runtime_api::{
     DetachPoint, DiagnosticTail, PreparedDeclaration, PreparedExecutor, PreparedSerializationKey,
@@ -47,7 +47,7 @@ use cookie_agent_runtime_api::{
         McpReconnectParams, McpServerReport, Outcome, OutcomeExt as _, PrepareOutcome,
         PrepareParams, PrepareResult, PreparedCall, PreparedRef, RUNTIME_PROTOCOL_VERSION,
         RuntimeSettings, RuntimeSkills, RuntimeTools, ToolDeclarationExt as _, ToolProgressParams,
-        WireToolCall, error_code, method,
+        WireToolCall, method,
     },
     rpc::{Incoming, IncomingNotification, IncomingRequest, Peer, RpcError},
 };
@@ -617,7 +617,7 @@ impl RuntimeClient {
                 },
             )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("runtime `{runtime_id}`: {error}"))?;
         if result.version != RUNTIME_PROTOCOL_VERSION {
             return Err(format!(
                 "runtime protocol version mismatch: the daemon speaks version \
@@ -702,7 +702,11 @@ impl RuntimeClient {
                 },
             )
             .await
-            .map_err(|error| client.inner.annotate(&format!("handshake failed: {error}")))?;
+            .map_err(|error| {
+                client
+                    .inner
+                    .annotate(&format!("plugin `{name}`: handshake failed: {error}"))
+            })?;
         if result.name != name {
             return Err(format!(
                 "plugin name mismatch: configured `{name}`, reported `{}`",
@@ -771,7 +775,7 @@ impl RuntimeClient {
                 },
             )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("{}: {error}", self.inner.peer_name()))?;
         let attachment_name = cookie_agent_protocol::AttachmentName::new(
             result.attachment_name.as_str(),
         )
@@ -942,9 +946,7 @@ impl RuntimeClient {
                 },
             )
             .await
-            .map_err(|error| {
-                EngineError::Mcp(format!("runtime `{}`: {error}", self.inner.runtime_id))
-            })?;
+            .map_err(|error| EngineError::Mcp(format!("{}: {error}", self.inner.peer_name())))?;
         outcome
             .into_result()
             .map_err(|error| EngineError::Mcp(error.to_string()))
@@ -1052,24 +1054,19 @@ impl RuntimeClient {
             })),
             // A runtime that is gone publishes nothing, its context included.
             Err(RpcError::Closed(_)) => Ok(None),
-            Err(RpcError::Remote {
-                code: error_code::CONTEXT_FAILED,
-                message,
-                data,
-            }) => match data
-                .as_ref()
-                .and_then(|data| data.get("path"))
-                .and_then(serde_json::Value::as_str)
-            {
-                Some(path) => Err(EngineError::AgentMdIo {
-                    path: PathBuf::from(path),
-                    source: std::io::Error::other(message),
-                }),
-                None => Err(EngineError::Runtime(message)),
-            },
+            Err(error) if error.data_code() == Some(errors::CONTEXT_FAILED.code) => {
+                let reason = format!("{}: {error}", self.inner.peer_name());
+                match error.data_member("path") {
+                    Some(path) => Err(EngineError::AgentMdIo {
+                        path: PathBuf::from(path),
+                        source: std::io::Error::other(reason),
+                    }),
+                    None => Err(EngineError::Runtime(reason)),
+                }
+            }
             Err(error) => Err(EngineError::Runtime(format!(
-                "runtime `{}` context: {error}",
-                self.inner.runtime_id
+                "{} context: {error}",
+                self.inner.peer_name()
             ))),
         }
     }
@@ -1140,6 +1137,15 @@ async fn handle_incoming(
 }
 
 impl ClientInner {
+    /// How errors name the peer: `runtime `<id>`` or `plugin `<name>``.
+    fn peer_name(&self) -> String {
+        if self.extension.get().is_some() {
+            format!("plugin `{}`", self.runtime_id)
+        } else {
+            format!("runtime `{}`", self.runtime_id)
+        }
+    }
+
     /// `reason` followed by what the process last wrote outside the protocol.
     fn annotate(&self, reason: &str) -> String {
         match &self.diagnostics {
@@ -1163,10 +1169,10 @@ impl ClientInner {
     fn unavailable(&self, error: &RpcError) -> ToolError {
         match error {
             RpcError::Closed(reason) => ToolError::runtime_unavailable(format!(
-                "runtime `{}` is unavailable: {reason}",
-                self.runtime_id
+                "{} is unavailable: {reason}",
+                self.peer_name()
             )),
-            other => ToolError::execution(format!("runtime `{}`: {other}", self.runtime_id)),
+            other => ToolError::execution(format!("{}: {other}", self.peer_name())),
         }
     }
 
@@ -1174,7 +1180,7 @@ impl ClientInner {
         let result = match request.method.as_str() {
             method::TOOL_PROGRESS => self.call_progress(&request).await.and_then(|outcome| {
                 serde_json::to_value(outcome)
-                    .map_err(|error| RpcError::remote(-32603, error.to_string()))
+                    .map_err(|error| errors::INTERNAL.error().detail(error.to_string()).into())
             }),
             method::PRODUCER_REGISTER
             | method::PRODUCER_SEND
@@ -1183,10 +1189,7 @@ impl ClientInner {
             method::PRODUCER_RECOVERY_COMPLETE => self
                 .complete_producer_recovery(&request)
                 .map(|()| serde_json::json!({})),
-            other => Err(RpcError::remote(
-                error_code::METHOD_NOT_FOUND,
-                format!("unknown method `{other}`"),
-            )),
+            other => Err(errors::UNKNOWN_METHOD.error().field("method", other).into()),
         };
         let _ = match result {
             Ok(outcome) => request.respond(&outcome).await,
@@ -1257,17 +1260,13 @@ impl ClientInner {
         request: &IncomingRequest,
     ) -> Result<serde_json::Value, RpcError> {
         let host = lock(&self.producers).host.clone().ok_or_else(|| {
-            RpcError::remote(
-                error_code::PRODUCER_REJECTED,
-                "producer messaging has not started on this connection",
-            )
+            producer_rejected("producer messaging has not started on this connection")
         })?;
-        let source = self.producer_source.get().cloned().ok_or_else(|| {
-            RpcError::remote(
-                error_code::NOT_INITIALIZED,
-                "the runtime is not initialized",
-            )
-        })?;
+        let source = self
+            .producer_source
+            .get()
+            .cloned()
+            .ok_or_else(|| RpcError::from(errors::NOT_INITIALIZED.error()))?;
         (host.call)(RuntimeProducerCall {
             source,
             epoch: self.epoch,
@@ -1275,7 +1274,7 @@ impl ClientInner {
             params: request.params()?,
         })
         .await
-        .map_err(|message| RpcError::remote(error_code::PRODUCER_REJECTED, message))
+        .map_err(producer_rejected)
     }
 
     /// Records the runtime's recovery outcome. A repeat of the same outcome
@@ -1285,8 +1284,7 @@ impl ClientInner {
         let host = {
             let mut state = lock(&self.producers);
             let Some(host) = state.host.clone() else {
-                return Err(RpcError::remote(
-                    error_code::PRODUCER_REJECTED,
+                return Err(producer_rejected(
                     "producer recovery has not started on this connection",
                 ));
             };
@@ -1294,10 +1292,7 @@ impl ClientInner {
                 return if *previous == outcome {
                     Ok(())
                 } else {
-                    Err(RpcError::remote(
-                        error_code::PRODUCER_REJECTED,
-                        "recovery outcome already reported",
-                    ))
+                    Err(producer_rejected("recovery outcome already reported"))
                 };
             }
             state.status = Some(match outcome {
@@ -1412,6 +1407,11 @@ impl ClientInner {
         retain_media(artifacts.as_ref(), session, reply.media, &completion)?;
         Ok(completion)
     }
+}
+
+/// The registry's `producer_rejected`, with `reason` as its detail.
+fn producer_rejected(reason: impl Into<String>) -> RpcError {
+    errors::PRODUCER_REJECTED.error().detail(reason).into()
 }
 
 /// Unregisters an execution; one dropped before its reply also cancels the

@@ -8,9 +8,10 @@ use super::{Incoming, LineTransport, Peer, RpcError};
 use crate::protocol::ToolDeclarationExt as _;
 use crate::protocol::{
     self, Empty, ExecuteOutcome, ExecuteResult, MAX_FRAME_BYTES, Outcome, PrepareOutcome,
-    PrepareResult, RuntimeSettings, ToolDeclaration, WireToolError, error_code,
+    PrepareResult, RuntimeSettings, ToolDeclaration, WireToolError,
 };
 use crate::{ToolCollision, ToolError, ToolSpec};
+use cookie_agent_protocol::errors;
 
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -65,13 +66,18 @@ async fn requests_and_notifications_round_trip_both_ways() {
         panic!("request expected");
     };
     request
-        .fail(RpcError::remote(error_code::UNKNOWN_HANDLE, "no such call"))
+        .fail(errors::UNKNOWN_HANDLE.error().detail("no such call").into())
         .await
         .unwrap();
     match ask.await.unwrap() {
-        Err(RpcError::Remote { code, message, .. }) => {
-            assert_eq!(code, error_code::UNKNOWN_HANDLE);
-            assert_eq!(message, "no such call");
+        Err(error @ RpcError::Remote { code, .. }) => {
+            assert_eq!(code, errors::APPLICATION_ERROR);
+            assert_eq!(error.data_code(), Some("unknown_handle"));
+            assert_eq!(error.detail(), Some("no such call"));
+            assert_eq!(
+                error.to_string(),
+                "The tool call or workspace the request names is no longer open. (no such call)"
+            );
         }
         other => panic!("unexpected reply {other:?}"),
     }
@@ -95,11 +101,18 @@ async fn unknown_params_fields_are_invalid_params() {
     let RpcError::Remote { code, .. } = &error else {
         panic!("remote error expected");
     };
-    assert_eq!(*code, error_code::INVALID_PARAMS);
+    assert_eq!(*code, errors::INVALID_PARAMS);
+    assert_eq!(error.data_code(), Some("invalid_params"));
     request.fail(error).await.unwrap();
     let reply: serde_json::Value = serde_json::from_str(&recv_text(&mut raw).await).unwrap();
     assert_eq!(reply["id"], 7);
-    assert_eq!(reply["error"]["code"], error_code::INVALID_PARAMS);
+    assert_eq!(reply["error"]["code"], errors::INVALID_PARAMS);
+    assert!(
+        reply["error"]["data"]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("extra")),
+        "{reply}"
+    );
     assert!(!peer.is_closed());
 }
 

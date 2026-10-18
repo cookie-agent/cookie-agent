@@ -42,7 +42,7 @@ use cookie_agent_protocol::{
     ProducerRegisterResult, ProducerSendParams, ProducerSendResult, ProducerUnregisterParams,
     ProducerUnregisterResult, RecoveryCompleteParams, RecoveryCompleteResult, RecoveryOutcome,
     RunId, SafeDisplayText, SafeErrorMessage, SessionId, Sha256Digest, ToolCallId,
-    ToolCallPresentation, ToolCompletionOutput, ToolOutputChunk, Transport,
+    ToolCallPresentation, ToolCompletionOutput, ToolOutputChunk, Transport, errors,
     peer::{Incoming, IncomingNotification, IncomingRequest, LineTransport, Peer, RpcError},
     runtime_protocol::{
         DetachableParams, ExecuteOutcome, ExecuteParams, ExecuteResult, Outcome, PrepareOutcome,
@@ -58,9 +58,6 @@ use tokio_util::sync::CancellationToken;
 use crate::{PluginError, ToolDecl, ToolFailure, ToolOutput};
 
 const NOTIFICATION_CONTEXT_LIFETIME: Duration = Duration::from_secs(4);
-const INTERNAL_ERROR: i32 = -32603;
-const INVALID_PARAMS: i32 = -32602;
-const METHOD_NOT_FOUND: i32 = -32601;
 
 type HandlerFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 type ToolHandler =
@@ -903,16 +900,14 @@ impl Server {
                     lock(&self.executions).remove(&prepared_id);
                     Ok(to_value(result))
                 }
-                None => Err(request.params::<ExecuteParams>().err().unwrap_or_else(|| {
-                    RpcError::remote(INTERNAL_ERROR, "the execution was not admitted")
-                })),
+                None => Err(request
+                    .params::<ExecuteParams>()
+                    .err()
+                    .unwrap_or_else(|| internal("the execution was not admitted"))),
             },
             other => match interception_hook(other) {
                 Some(hook) => self.intercept(hook, &request).await,
-                None => Err(RpcError::remote(
-                    METHOD_NOT_FOUND,
-                    "plugin method is not supported",
-                )),
+                None => Err(errors::UNKNOWN_METHOD.error().field("method", other).into()),
             },
         };
         let _ = match result {
@@ -1046,6 +1041,10 @@ impl Server {
                 },
                 media: Vec::new(),
             },
+            Ok(Err(failure)) if failure.message.trim().is_empty() => failed(format!(
+                "plugin tool `{}` failed without saying why",
+                prepared.tool.declaration.name
+            )),
             Ok(Err(failure)) => failed(failure.message),
             Err(_) => failed("plugin tool handler panicked".into()),
         }
@@ -1057,14 +1056,15 @@ impl Server {
         request: &IncomingRequest,
     ) -> Result<Value, RpcError> {
         let Some(handler) = self.handlers.intercepts.get(&hook).cloned() else {
-            return Err(RpcError::remote(
-                METHOD_NOT_FOUND,
-                "interception hook is not registered",
-            ));
+            return Err(errors::UNKNOWN_METHOD
+                .error()
+                .field("method", request.method.as_str())
+                .detail("the plugin does not intercept this hook")
+                .into());
         };
         let params: Value = request.params()?;
-        let prepared =
-            handler(params).map_err(|error| RpcError::remote(INVALID_PARAMS, error.to_string()))?;
+        let prepared = handler(params)
+            .map_err(|error| errors::BAD_PARAMS.error().detail(error.to_string()))?;
         let context = self.context().with_grant(
             prepared.session_id,
             prepared.context_id.clone(),
@@ -1072,7 +1072,7 @@ impl Server {
         );
         let joined = tokio::spawn((prepared.call)(context.clone())).await;
         context.revoke(&prepared.context_id);
-        joined.map_err(|_| RpcError::remote(INTERNAL_ERROR, "plugin handler panicked"))
+        joined.map_err(|_| internal("plugin handler panicked"))
     }
 
     fn handle_notification(&self, notification: &IncomingNotification) {
@@ -1227,6 +1227,13 @@ fn truncate(text: &str, max: usize) -> String {
         end -= 1;
     }
     text[..end].to_owned()
+}
+
+/// An `internal_error` whose detail says what failed. Every error the SDK
+/// sends carries a registry code and a nonempty message
+/// (`docs/site/specs/compatibility-v1.md` section 6).
+fn internal(detail: &str) -> RpcError {
+    errors::INTERNAL.error().detail(detail).into()
 }
 
 fn to_value(value: impl Serialize) -> Value {
