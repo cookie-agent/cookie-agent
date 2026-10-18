@@ -4,9 +4,11 @@
 //! Both ends of the runtime protocol send requests and notifications, so one
 //! [`Peer`] type serves the daemon's client and the runtime's server. It runs
 //! over any frame [`Transport`]: an in-memory pair, or [`LineTransport`] over
-//! a child's stdio. Every frame is bounded by
-//! [`MAX_FRAME_BYTES`] and parsed strictly;
-//! a malformed frame ends the connection.
+//! a child's stdio. Every frame is bounded by [`MAX_FRAME_BYTES`]. The
+//! envelope is information: members JSON-RPC does not define are ignored, and
+//! a request ID may be an integer or a string (this peer sends integers). A
+//! frame that is not JSON, or not a request, notification, or reply, ends the
+//! connection.
 //!
 //! The transport's `recv` must be cancel-safe: the peer's I/O task selects
 //! between receiving and sending.
@@ -111,8 +113,18 @@ pub enum Incoming {
 pub struct IncomingRequest {
     pub method: String,
     params: Option<Box<RawValue>>,
-    id: u64,
+    id: RequestId,
     shared: Arc<Shared>,
+}
+
+/// A request ID as JSON-RPC 2.0 allows it: an integer or a string. A reply
+/// echoes it exactly.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+enum RequestId {
+    Unsigned(u64),
+    Signed(i64),
+    Text(String),
 }
 
 pub struct IncomingNotification {
@@ -148,7 +160,7 @@ impl IncomingRequest {
     pub async fn respond<T: Serialize>(self, result: &T) -> Result<(), RpcError> {
         let text = match encode(&ResponseRef {
             jsonrpc: JsonRpcVersion::current(),
-            id: self.id,
+            id: &self.id,
             result,
         }) {
             Ok(text) => text,
@@ -177,7 +189,7 @@ impl IncomingRequest {
         };
         let text = encode(&ErrorResponseRef {
             jsonrpc: JsonRpcVersion::current(),
-            id: self.id,
+            id: &self.id,
             error: WireRpcError {
                 code,
                 message,
@@ -206,19 +218,18 @@ struct NotificationRef<'a, P: ?Sized> {
 #[derive(Serialize)]
 struct ResponseRef<'a, R: ?Sized> {
     jsonrpc: JsonRpcVersion,
-    id: u64,
+    id: &'a RequestId,
     result: &'a R,
 }
 
 #[derive(Serialize)]
-struct ErrorResponseRef {
+struct ErrorResponseRef<'a> {
     jsonrpc: JsonRpcVersion,
-    id: u64,
+    id: &'a RequestId,
     error: WireRpcError,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 struct WireRpcError {
     code: i32,
     message: String,
@@ -228,14 +239,13 @@ struct WireRpcError {
 
 /// Any message, before it is classified. Exactly one shape is valid: a
 /// request (`id`, `method`), a notification (`method`), or a reply (`id`
-/// with `result` or `error`).
+/// with `result` or `error`). Other members are ignored.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Envelope {
     #[allow(dead_code)]
     jsonrpc: JsonRpcVersion,
     #[serde(default)]
-    id: Option<u64>,
+    id: Option<RequestId>,
     #[serde(default)]
     method: Option<String>,
     #[serde(default)]
@@ -543,12 +553,17 @@ async fn dispatch(
                 }),
                 _ => return Err("a reply needs exactly one of result and error".to_owned()),
             };
-            let sender = shared
-                .pending
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .replies
-                .remove(&id);
+            // This peer's requests have unsigned IDs; a reply with another
+            // ID answers nothing it sent.
+            let sender = match id {
+                RequestId::Unsigned(id) => shared
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .replies
+                    .remove(&id),
+                RequestId::Signed(_) | RequestId::Text(_) => None,
+            };
             // A reply to a request whose caller gave up is dropped.
             if let Some(sender) = sender {
                 let _ = sender.send(reply);

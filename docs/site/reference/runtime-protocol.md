@@ -39,8 +39,11 @@ protocol over either:
   or one line of newline-delimited JSON over a byte stream such as a child's
   stdio (`peer::LineTransport`).
 - **Both ends send requests.** The daemon drives tools; a runtime reports
-  progress back while a call runs. Request IDs are
-  unsigned integers chosen by the sender.
+  progress back while a call runs. Request IDs are chosen by the sender and
+  may be integers or strings, as JSON-RPC 2.0 allows; a reply echoes its
+  request's ID. Both ends of this repository send integers.
+- **The envelope is information.** Members JSON-RPC does not define are
+  ignored.
 - **Bounded.** No frame exceeds 48 MiB (`runtime_protocol::MAX_FRAME_BYTES`), which fits
   an execute reply carrying the largest attachment as base64 next to a full
   tool result. A sender refuses to send a larger message; a receiver that gets

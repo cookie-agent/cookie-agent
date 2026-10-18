@@ -104,10 +104,58 @@ async fn unknown_params_fields_are_invalid_params() {
 }
 
 #[tokio::test]
+async fn the_envelope_ignores_unknown_members_and_takes_string_ids() {
+    let (peer, mut incoming, mut raw) = peer_and_raw();
+    let pending = tokio::spawn({
+        let peer = peer.clone();
+        async move { peer.request::<_, Empty>("runtime/context", &Empty {}).await }
+    });
+    let request: serde_json::Value = serde_json::from_str(&recv_text(&mut raw).await).unwrap();
+    let id = request["id"].as_u64().expect("this peer sends integer IDs");
+    raw.send(MessageFrame::Text(format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"result":{{}},"extra":true}}"#
+    )))
+    .await
+    .unwrap();
+    assert!(matches!(
+        tokio::time::timeout(WAIT, pending).await.unwrap().unwrap(),
+        Ok(Empty {})
+    ));
+    for (id, text) in [(json!("call-1"), r#""call-1""#), (json!(-4), "-4")] {
+        raw.send(MessageFrame::Text(format!(
+            r#"{{"jsonrpc":"2.0","id":{text},"method":"echo","params":{{}},"trace":"x"}}"#
+        )))
+        .await
+        .unwrap();
+        let Some(Incoming::Request(request)) = incoming.recv().await else {
+            panic!("request expected");
+        };
+        request.respond(&json!({"ok": true})).await.unwrap();
+        let reply: serde_json::Value = serde_json::from_str(&recv_text(&mut raw).await).unwrap();
+        assert_eq!(reply["id"], id);
+        assert_eq!(reply["result"], json!({"ok": true}));
+    }
+    // A reply to an ID this peer never sent is dropped.
+    raw.send(MessageFrame::Text(
+        r#"{"jsonrpc":"2.0","id":"call-9","result":{}}"#.into(),
+    ))
+    .await
+    .unwrap();
+    raw.send(MessageFrame::Text(
+        r#"{"jsonrpc":"2.0","method":"note","params":{},"extra":[1]}"#.into(),
+    ))
+    .await
+    .unwrap();
+    let Some(Incoming::Notification(notification)) = incoming.recv().await else {
+        panic!("notification expected");
+    };
+    assert_eq!(notification.method, "note");
+    assert!(!peer.is_closed());
+}
+
+#[tokio::test]
 async fn a_malformed_envelope_ends_the_connection_and_fails_pending_requests() {
     for frame in [
-        // Unknown envelope field.
-        r#"{"jsonrpc":"2.0","id":1,"result":{},"extra":true}"#,
         // Wrong JSON-RPC version.
         r#"{"jsonrpc":"1.0","id":1,"result":{}}"#,
         // A reply with both result and error.
