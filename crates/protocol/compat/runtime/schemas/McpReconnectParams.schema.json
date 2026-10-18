@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "instance": {
+      "type": "string"
+    },
+    "server": {
+      "default": null,
+      "description": "The server to reconnect now; absent to retry every failed server.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "instance"
+  ],
+  "title": "McpReconnectParams",
+  "type": "object"
+}

@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "AgentMdEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "content": {
+          "type": "string"
+        },
+        "source": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "content",
+        "byte_length"
+      ],
+      "type": "object"
+    },
+    "AgentMdSkipped": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "byte_length"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agent_md": {
+      "items": {
+        "$ref": "#/$defs/AgentMdEntry"
+      },
+      "type": "array"
+    },
+    "skipped": {
+      "items": {
+        "$ref": "#/$defs/AgentMdSkipped"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "agent_md",
+    "skipped"
+  ],
+  "title": "ContextResult",
+  "type": "object"
+}

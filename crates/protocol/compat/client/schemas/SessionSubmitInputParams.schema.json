@@ -1,0 +1,114 @@
+{
+  "$defs": {
+    "InputDelivery": {
+      "description": "How `session.submit_input` delivers input to a session that is running.\nAn idle session starts a run either way.",
+      "oneOf": [
+        {
+          "const": "steer",
+          "description": "Admit into the running run's pending lane; the model sees it at the\nnext tool or completion boundary.",
+          "type": "string"
+        },
+        {
+          "const": "queue",
+          "description": "Wait for the running run to complete, then start a new run with it.",
+          "type": "string"
+        }
+      ]
+    },
+    "RunSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "model": {
+          "additionalProperties": false,
+          "description": "One exact base or named-variant model selection.",
+          "properties": {
+            "model": {
+              "maxLength": 512,
+              "minLength": 3,
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+              "type": "string"
+            },
+            "variant": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "model",
+            "variant"
+          ],
+          "type": "object"
+        },
+        "preset": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "agent",
+        "model"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "client_run_id": {
+      "description": "The run idempotency key of a run this input starts. A queued input\nkeeps it, and the run it later starts carries it.",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+      "type": "string"
+    },
+    "delivery": {
+      "$ref": "#/$defs/InputDelivery"
+    },
+    "input": {
+      "type": "string"
+    },
+    "reset_fallback": {
+      "description": "As in `run.start`, for a run this input starts immediately.",
+      "type": "boolean"
+    },
+    "selection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunSelection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The selection for a run this input starts, now or after the queue\ndrains. Omitted means the session's current selection."
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "input",
+    "delivery",
+    "client_run_id"
+  ],
+  "title": "SessionSubmitInputParams",
+  "type": "object"
+}

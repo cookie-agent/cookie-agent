@@ -1,0 +1,278 @@
+{
+  "$defs": {
+    "AdapterFamily": {
+      "description": "Exact model adapter family of a turn. Unlike [`AdaptorId`] it keeps\ncompatible families apart, because their media delivery differs.",
+      "enum": [
+        "anthropic",
+        "anthropic-compatible",
+        "openai-chat",
+        "openai-responses",
+        "openai-compatible",
+        "google-gemini",
+        "google-vertex-gemini",
+        "aws-bedrock-converse",
+        "azure-openai-chat",
+        "azure-openai-responses",
+        "cohere-v2-chat"
+      ],
+      "type": "string"
+    },
+    "AdaptorId": {
+      "enum": [
+        "anthropic",
+        "openai-chat",
+        "openai-responses",
+        "openai-compatible",
+        "google-gemini",
+        "google-vertex-gemini",
+        "aws-bedrock-converse",
+        "azure-openai-chat",
+        "azure-openai-responses",
+        "cohere-v2-chat"
+      ],
+      "type": "string"
+    },
+    "CancellationCapability": {
+      "enum": [
+        "local_only",
+        "provider"
+      ],
+      "type": "string"
+    },
+    "MediaCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "max_bytes": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_count": {
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "mime_types": {
+          "items": {
+            "maxLength": 255,
+            "minLength": 3,
+            "pattern": "^[^/\\s]+/[^/\\s]+$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "mime_types",
+        "max_bytes",
+        "max_count"
+      ],
+      "type": "object"
+    },
+    "Modality": {
+      "enum": [
+        "text",
+        "image",
+        "audio",
+        "pdf",
+        "video"
+      ],
+      "type": "string"
+    },
+    "ModelCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "cancellation": {
+          "$ref": "#/$defs/CancellationCapability"
+        },
+        "context_tokens": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "input": {
+          "items": {
+            "$ref": "#/$defs/Modality"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "media": {
+          "additionalProperties": false,
+          "properties": {
+            "audio": {
+              "$ref": "#/$defs/MediaCapability"
+            },
+            "image": {
+              "$ref": "#/$defs/MediaCapability"
+            },
+            "pdf": {
+              "$ref": "#/$defs/MediaCapability"
+            },
+            "video": {
+              "$ref": "#/$defs/MediaCapability"
+            }
+          },
+          "type": "object"
+        },
+        "native_replay": {
+          "$ref": "#/$defs/ReplayCapability"
+        },
+        "output": {
+          "items": {
+            "$ref": "#/$defs/Modality"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "output_tokens": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "parallel_tool_calls": {
+          "type": "boolean"
+        },
+        "reasoning": {
+          "type": "boolean"
+        },
+        "seed": {
+          "type": "boolean"
+        },
+        "structured_output": {
+          "type": "boolean"
+        },
+        "temperature": {
+          "type": "boolean"
+        },
+        "tool_calling": {
+          "type": "boolean"
+        },
+        "top_p": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "context_tokens",
+        "output_tokens",
+        "tool_calling",
+        "parallel_tool_calls",
+        "structured_output",
+        "reasoning",
+        "temperature",
+        "top_p",
+        "seed",
+        "native_replay",
+        "cancellation",
+        "media"
+      ],
+      "type": "object"
+    },
+    "ReplayCapability": {
+      "enum": [
+        "unsupported",
+        "optional",
+        "required"
+      ],
+      "type": "string"
+    },
+    "WireToolCall": {
+      "additionalProperties": false,
+      "properties": {
+        "arguments": true,
+        "id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "name": {
+          "description": "The name the runtime knows the tool by.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "arguments"
+      ],
+      "type": "object"
+    },
+    "WireTurnContext": {
+      "additionalProperties": false,
+      "description": "The agent and model context of one tool batch.",
+      "properties": {
+        "adapter": {
+          "$ref": "#/$defs/AdaptorId"
+        },
+        "adapter_family": {
+          "$ref": "#/$defs/AdapterFamily"
+        },
+        "agent": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/ModelCapabilities"
+        },
+        "model": {
+          "maxLength": 512,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent",
+        "model",
+        "adapter",
+        "adapter_family",
+        "capabilities"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One turn's calls to one runtime, prepared together so calls on the same\ntarget chain.",
+  "properties": {
+    "calls": {
+      "items": {
+        "$ref": "#/$defs/WireToolCall"
+      },
+      "type": "array"
+    },
+    "instance": {
+      "description": "The capability instance the calls go to; absent for a plugin, whose\nconnection has one implicit instance.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "run": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "session": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "turn": {
+      "$ref": "#/$defs/WireTurnContext"
+    }
+  },
+  "required": [
+    "session",
+    "run",
+    "turn",
+    "calls"
+  ],
+  "title": "PrepareParams",
+  "type": "object"
+}

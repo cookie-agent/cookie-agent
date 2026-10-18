@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The browser's redirect to the client's callback, carried back to the daemon\nthat holds the PKCE verifier. Only the single-use authorization code\ncrosses the connection; tokens stay in the daemon.",
+  "properties": {
+    "callback_url": {
+      "type": "string"
+    },
+    "server": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "server",
+    "callback_url"
+  ],
+  "title": "McpAuthCompleteParams",
+  "type": "object"
+}

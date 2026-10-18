@@ -1,0 +1,364 @@
+{
+  "$defs": {
+    "ApprovalBoundary": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "exact",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "prefix": {
+              "type": "string"
+            },
+            "type": {
+              "const": "command_prefix",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "prefix"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "root_session_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "delegation_tree",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "root_session_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ApprovalCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "operation": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._:-]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "operation"
+      ],
+      "type": "object"
+    },
+    "ApprovalResourceSource": {
+      "enum": [
+        "primary_operation",
+        "secondary_operation",
+        "model_request",
+        "doom_loop_guard"
+      ],
+      "type": "string"
+    },
+    "PrepareOutcome": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A prepared call. The runtime keeps its executor under `prepared_id`\nuntil it is executed or released.",
+          "properties": {
+            "normalized_arguments": true,
+            "operation": {
+              "$ref": "#/$defs/PreparedOperationIdentity"
+            },
+            "permission": {
+              "description": "The permission action the call is checked under; absent for a tool\nthat needs no permission.",
+              "pattern": "^[a-z][a-z0-9_]{0,31}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "permission_resource": {
+              "default": null,
+              "description": "The permission resource of the normalized arguments.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "policy_labels": {
+              "description": "The policy labels the tool set, one per operation resource.",
+              "items": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": "array"
+            },
+            "prepared_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "presentation": {
+              "$ref": "#/$defs/ToolCallPresentation"
+            },
+            "serialization_key": {
+              "default": null,
+              "description": "Calls with one key run one at a time; lowercase hex.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "const": "prepared",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "prepared_id",
+            "operation",
+            "policy_labels",
+            "normalized_arguments",
+            "presentation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/WireToolError"
+            },
+            "presentation": {
+              "$ref": "#/$defs/ToolCallPresentation",
+              "description": "How clients show the call that failed to prepare."
+            },
+            "status": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "error",
+            "presentation"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PreparedApprovalResource": {
+      "additionalProperties": false,
+      "properties": {
+        "binding_digest": {
+          "$ref": "#/$defs/PreparedResourceDigest"
+        },
+        "binding_lifetime": {
+          "$ref": "#/$defs/PreparedBindingLifetime"
+        },
+        "boundary": {
+          "$ref": "#/$defs/ApprovalBoundary"
+        },
+        "canonical": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._:-]*$",
+          "type": "string"
+        },
+        "capability": {
+          "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/ApprovalResourceSource"
+        }
+      },
+      "required": [
+        "capability",
+        "canonical",
+        "binding_digest",
+        "binding_lifetime",
+        "boundary",
+        "source"
+      ],
+      "type": "object"
+    },
+    "PreparedBindingLifetime": {
+      "enum": [
+        "process_local",
+        "restart_stable"
+      ],
+      "type": "string"
+    },
+    "PreparedCapabilityLifetime": {
+      "enum": [
+        "process_local"
+      ],
+      "type": "string"
+    },
+    "PreparedOperationIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/ApprovalCapability"
+          },
+          "maxItems": 256,
+          "minItems": 1,
+          "type": "array"
+        },
+        "capability_lifetime": {
+          "$ref": "#/$defs/PreparedCapabilityLifetime"
+        },
+        "execution_context_digest": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "normalized_arguments_digest": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "resources": {
+          "items": {
+            "$ref": "#/$defs/PreparedApprovalResource"
+          },
+          "maxItems": 256,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "normalized_arguments_digest",
+        "capabilities",
+        "resources",
+        "execution_context_digest",
+        "capability_lifetime"
+      ],
+      "type": "object"
+    },
+    "PreparedResourceDigest": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest"
+      ],
+      "type": "object"
+    },
+    "ToolCallPresentation": {
+      "additionalProperties": false,
+      "properties": {
+        "primary_argument": {
+          "description": "Bounded presentation text; byte-capped only, clients sanitize control characters.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[\\s\\S]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "primary_argument"
+      ],
+      "type": "object"
+    },
+    "ToolErrorKind": {
+      "enum": [
+        "progress_sink_closed",
+        "failed",
+        "operation_changed",
+        "unsupported_security",
+        "unsupported_platform",
+        "resource_limit",
+        "invalid_url",
+        "permission_denied",
+        "redirect_error",
+        "timeout",
+        "transport_error",
+        "unsupported_content_type",
+        "runtime_unavailable"
+      ],
+      "type": "string"
+    },
+    "WireToolError": {
+      "additionalProperties": false,
+      "description": "A runtime API `ToolError` on the wire.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ToolErrorKind"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "message"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "results": {
+      "description": "One outcome per call, in order.",
+      "items": {
+        "$ref": "#/$defs/PrepareOutcome"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "results"
+  ],
+  "title": "PrepareResult",
+  "type": "object"
+}

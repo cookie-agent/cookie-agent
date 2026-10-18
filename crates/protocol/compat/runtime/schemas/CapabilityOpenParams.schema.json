@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "capability": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": "string"
+    },
+    "workspace": {
+      "default": null,
+      "description": "The workspace, exactly as a session gave it: the runtime expands a\nleading `~` and resolves it on its own machine. Required exactly\nwhen the capability takes one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "capability"
+  ],
+  "title": "CapabilityOpenParams",
+  "type": "object"
+}

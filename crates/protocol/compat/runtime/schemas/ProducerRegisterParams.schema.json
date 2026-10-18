@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Sender-to-engine request; the connection supplies the producer's source,\nand `name` labels this producer among the source's others. Registration is\nallowed during recovery and does not wait for goal readiness.",
+  "properties": {
+    "name": {
+      "description": "A producer's label, chosen by its sender at registration.",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "name"
+  ],
+  "title": "ProducerRegisterParams",
+  "type": "object"
+}

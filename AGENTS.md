@@ -39,7 +39,7 @@ cargo +stable clippy --locked --workspace --all-targets -- -D warnings
 cargo +1.88.0 clippy --locked --workspace --all-targets -- -D warnings
 ```
 
-Check the additive protocol schema contract, documentation, and dependency policy:
+Check the protocol compatibility baselines, documentation, and dependency policy:
 
 ```sh
 crates/protocol/scripts/check-schema-additive.sh
@@ -48,7 +48,10 @@ cargo deny --locked check advisories licenses sources
 ```
 
 `./scripts/build-docs.sh` builds workspace rustdoc and runs MkDocs in strict
-mode.
+mode. `check-schema-additive.sh` compares the generated protocol schemas with
+the baselines in `crates/protocol/compat/`; after changing a wire type, a
+method, or a protocol version, regenerate them with
+`crates/protocol/scripts/update-compat-baseline.sh` and commit the result.
 
 Bumping `PROTOCOL_VERSION` must also update every human-readable version
 reference in the same commit: `docs/site/reference/protocol.md`,

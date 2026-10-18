@@ -1,0 +1,220 @@
+{
+  "$defs": {
+    "McpConfigSource": {
+      "enum": [
+        "user_file",
+        "runtime"
+      ],
+      "type": "string"
+    },
+    "McpOAuthDefinition": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/$defs/McpOAuthSettingsDefinition"
+        }
+      ]
+    },
+    "McpOAuthSettingsDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "client_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_metadata_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_secret": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "McpServerDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "oauth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpOAuthDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "command",
+        "args",
+        "env",
+        "cwd",
+        "url",
+        "headers",
+        "enabled",
+        "timeout_ms"
+      ],
+      "type": "object"
+    },
+    "McpServerInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "auth_in_progress": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "definition": {
+          "$ref": "#/$defs/McpServerDefinition"
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "runtime_id": {
+          "description": "The runtime hosting the server; `global` for top-level `[mcp]`\nservers, the only ones `mcp.server.*` mutations edit.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/McpConfigSource"
+        },
+        "state": {
+          "$ref": "#/$defs/McpServerState"
+        },
+        "tool_count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "workspace": {
+          "description": "The hosting instance's canonical workspace, when its runtime has one;\nit tells instances of one runtime apart.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runtime_id",
+        "name",
+        "source",
+        "definition",
+        "state",
+        "tool_count",
+        "message"
+      ],
+      "type": "object"
+    },
+    "McpServerState": {
+      "oneOf": [
+        {
+          "enum": [
+            "connected",
+            "connecting",
+            "failed",
+            "needs_auth",
+            "disabled",
+            "disconnected"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "reconnecting",
+          "description": "The connection dropped and is being re-established. The server's\ntools stay published; calls fail with `runtime_unavailable`.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "servers": {
+      "items": {
+        "$ref": "#/$defs/McpServerInfo"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "servers"
+  ],
+  "title": "McpServerListResult",
+  "type": "object"
+}

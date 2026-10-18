@@ -1,0 +1,139 @@
+{
+  "$defs": {
+    "ExtensionInterceptionHook": {
+      "enum": [
+        "tool_before_call",
+        "tool_after_result",
+        "agent_before_start",
+        "session_before_compact",
+        "user_before_input",
+        "model_before_request",
+        "provider_before_request",
+        "provider_after_response",
+        "message_end",
+        "model_before_select",
+        "session_before_fork",
+        "session_before_revert"
+      ],
+      "type": "string"
+    },
+    "PluginInfo": {
+      "additionalProperties": false,
+      "description": "One configured plugin as clients see it.",
+      "properties": {
+        "dropped_events": {
+          "description": "Events and bus notifications dropped because it fell behind.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hooks": {
+          "description": "The hooks it intercepts, in no particular order.",
+          "items": {
+            "$ref": "#/$defs/ExtensionInterceptionHook"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "producer_messaging": {
+          "description": "Its producer messaging is open: the plugin declares it and its\nconfiguration enables it.",
+          "type": "boolean"
+        },
+        "publish_bus": {
+          "type": "boolean"
+        },
+        "reason": {
+          "description": "Why the plugin failed or last disconnected, or what it could not do.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/PluginState"
+        },
+        "stderr": {
+          "description": "What the plugin last wrote to standard error.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subscribe_bus": {
+          "type": "boolean"
+        },
+        "subscribe_events": {
+          "type": "boolean"
+        },
+        "tools": {
+          "description": "The names its tools are declared under.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "state",
+        "tools",
+        "hooks",
+        "subscribe_events",
+        "subscribe_bus",
+        "publish_bus",
+        "producer_messaging",
+        "dropped_events"
+      ],
+      "type": "object"
+    },
+    "PluginState": {
+      "oneOf": [
+        {
+          "enum": [
+            "starting",
+            "connected"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "disabled",
+          "description": "Configured with `enabled = false`.",
+          "type": "string"
+        },
+        {
+          "const": "reconnecting",
+          "description": "The connection dropped and the daemon is restarting it.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Every start attempt failed; `plugins.restart` tries again.",
+          "type": "string"
+        },
+        {
+          "const": "stopped",
+          "description": "Stopped with the daemon.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The configured plugins, in the order their hooks run.",
+  "properties": {
+    "plugins": {
+      "items": {
+        "$ref": "#/$defs/PluginInfo"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "plugins"
+  ],
+  "title": "PluginsListResult",
+  "type": "object"
+}

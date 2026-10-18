@@ -1,0 +1,490 @@
+{
+  "information": [
+    "RunStartConflict",
+    "SessionRenameError",
+    "SessionRevertConflict",
+    "ApprovalRespondError",
+    "ProviderConnectError",
+    "ProviderDisconnectError",
+    "ConfigApplyError"
+  ],
+  "methods": [
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "approval.list",
+      "params": "ApprovalListParams",
+      "result": "ApprovalListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "approval.respond",
+      "params": "ApprovalRespondParams",
+      "result": "ApprovalRespondResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "background.changed",
+      "params": "BackgroundChangedNotification",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "config.apply",
+      "params": "ConfigApplyParams",
+      "result": "ConfigApplyResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "config.get",
+      "params": "ConfigGetParams",
+      "result": "ConfigGetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "config.reload",
+      "params": "ConfigReloadParams",
+      "result": "ConfigReloadResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "events.plugin",
+      "params": "ExtensionBusEventParams",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "events.subscribe",
+      "params": "EventsSubscribeParams",
+      "result": "EventsSubscribeResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "events.subscription",
+      "params": "EventSubscriptionMessage",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "events.unsubscribe",
+      "params": "EventsUnsubscribeParams",
+      "result": "EventsUnsubscribeResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "handshake",
+      "params": "ClientHello",
+      "result": "ServerHello"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "mcp.auth.begin",
+      "params": "McpAuthBeginParams",
+      "result": "McpAuthBeginResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "mcp.auth.cancel",
+      "params": "McpAuthCancelParams",
+      "result": "McpAuthCancelResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "mcp.auth.complete",
+      "params": "McpAuthCompleteParams",
+      "result": "McpAuthCompleteResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "mcp.changed",
+      "params": "McpChangedNotification",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "mcp.server.add",
+      "params": "McpServerAddParams",
+      "result": "McpServerMutationResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "mcp.server.edit",
+      "params": "McpServerEditParams",
+      "result": "McpServerMutationResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "mcp.server.list",
+      "params": "McpServerListParams",
+      "result": "McpServerListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "mcp.server.persist",
+      "params": "McpServerPersistParams",
+      "result": "McpServerMutationResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "mcp.server.reconnect",
+      "params": "McpServerReconnectParams",
+      "result": "McpServerMutationResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "mcp.server.remove",
+      "params": "McpServerNameParams",
+      "result": "McpServerMutationResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "mcp.server.set_enabled",
+      "params": "McpServerSetEnabledParams",
+      "result": "McpServerMutationResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "plugins.changed",
+      "params": "PluginsChangedNotification",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "plugins.list",
+      "params": "PluginsListParams",
+      "result": "PluginsListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "plugins.restart",
+      "params": "PluginsRestartParams",
+      "result": "PluginsRestartResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "provider.connect",
+      "params": "ProviderConnectParams",
+      "result": "ProviderConnectResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "provider.disconnect",
+      "params": "ProviderDisconnectParams",
+      "result": "ProviderDisconnectResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "run.cancel",
+      "params": "RunCancelParams",
+      "result": "RunCancelResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "run.start",
+      "params": "RunStartParams",
+      "result": "RunStartResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "run.steer",
+      "params": "RunSteerParams",
+      "result": "RunSteerResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "run.tool_background",
+      "params": "RunToolBackgroundParams",
+      "result": "RunToolBackgroundResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "runtime.changed",
+      "params": "RuntimeChangedNotification",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "runtime.snapshot.get",
+      "params": "RuntimeSnapshotGetParams",
+      "result": "RuntimeSnapshotResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "runtimes.changed",
+      "params": "RuntimesChangedNotification",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "runtimes.list",
+      "params": "RuntimesListParams",
+      "result": "RuntimesListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "runtimes.reconnect",
+      "params": "RuntimesReconnectParams",
+      "result": "RuntimesReconnectResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.background.list",
+      "params": "SessionBackgroundListParams",
+      "result": "SessionBackgroundListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.background.stop",
+      "params": "SessionBackgroundStopParams",
+      "result": "SessionBackgroundStopResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.children",
+      "params": "SessionChildrenParams",
+      "result": "SessionChildrenResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.compact",
+      "params": "SessionCompactParams",
+      "result": "SessionCompactResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.compact.cancel",
+      "params": "SessionCompactCancelParams",
+      "result": "SessionCompactCancelResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.create",
+      "params": "SessionCreateParams",
+      "result": "SessionCreateResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.fork",
+      "params": "SessionForkParams",
+      "result": "SessionForkResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.get",
+      "params": "SessionGetParams",
+      "result": "SessionGetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.goal.get",
+      "params": "SessionGoalGetParams",
+      "result": "SessionGoalGetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.goal.lifecycle",
+      "params": "SessionGoalLifecycleParams",
+      "result": "SessionGoalLifecycleResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.goal.set",
+      "params": "SessionGoalSetParams",
+      "result": "SessionGoalSetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.list",
+      "params": "SessionListParams",
+      "result": "SessionListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.permission.clear",
+      "params": "SessionPermissionClearParams",
+      "result": "SessionPermissionMutationResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.permission.get",
+      "params": "SessionPermissionGetParams",
+      "result": "SessionPermissionGetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.permission.preview",
+      "params": "SessionPermissionPreviewParams",
+      "result": "SessionPermissionPreviewResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.permission.set",
+      "params": "SessionPermissionSetParams",
+      "result": "SessionPermissionMutationResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.producers",
+      "params": "SessionProducersParams",
+      "result": "SessionProducersResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.recall_input",
+      "params": "SessionRecallInputParams",
+      "result": "SessionRecallInputResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.rename",
+      "params": "SessionRenameParams",
+      "result": "SessionRenameResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.resume",
+      "params": "SessionResumeParams",
+      "result": "SessionResumeResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.revert",
+      "params": "SessionRevertParams",
+      "result": "SessionRevertResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.runtime.attach",
+      "params": "SessionRuntimeAttachParams",
+      "result": "SessionRuntimeAttachResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.runtime.detach",
+      "params": "SessionRuntimeDetachParams",
+      "result": "SessionRuntimeDetachResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.select_model",
+      "params": "SessionSelectModelParams",
+      "result": "SessionSelectModelResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.set_permission_mode",
+      "params": "SessionSetPermissionModeParams",
+      "result": "SessionSetPermissionModeResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.submit_input",
+      "params": "SessionSubmitInputParams",
+      "result": "SessionSubmitInputResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.tree",
+      "params": "SessionTreeParams",
+      "result": "SessionTreeResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.tree_usage",
+      "params": "SessionUsageParams",
+      "result": "SessionTreeUsageResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.usage",
+      "params": "SessionUsageParams",
+      "result": "SessionUsageResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "sessions.changed",
+      "params": "SessionsChangedNotification",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "skills.get",
+      "params": "SkillsGetParams",
+      "result": "SkillsGetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "skills.list",
+      "params": "SkillsListParams",
+      "result": "SkillsListResult"
+    }
+  ],
+  "surface": "client"
+}

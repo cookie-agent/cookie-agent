@@ -1,0 +1,152 @@
+{
+  "$defs": {
+    "ChildSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "session_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        },
+        "title": {
+          "description": "Nonblank control-free UTF-8 session title.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title_updated_seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "agent",
+        "title",
+        "title_updated_seq",
+        "status",
+        "usage"
+      ],
+      "type": "object"
+    },
+    "SessionStatus": {
+      "enum": [
+        "idle",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "Usage": {
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens_cache_read": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens_cache_write": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens_no_cache": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_tokens_reasoning": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_tokens_text": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "input_tokens",
+        "input_tokens_no_cache",
+        "input_tokens_cache_read",
+        "input_tokens_cache_write",
+        "output_tokens",
+        "output_tokens_text",
+        "output_tokens_reasoning"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "children": {
+      "items": {
+        "$ref": "#/$defs/ChildSummary"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "children"
+  ],
+  "title": "SessionChildrenResult",
+  "type": "object"
+}

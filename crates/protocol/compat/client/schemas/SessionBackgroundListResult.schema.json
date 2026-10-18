@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "BackgroundActor": {
+      "description": "Who moved a call to the background.",
+      "enum": [
+        "model",
+        "user"
+      ],
+      "type": "string"
+    },
+    "BackgroundCall": {
+      "additionalProperties": false,
+      "description": "One call running in the background.",
+      "properties": {
+        "by": {
+          "$ref": "#/$defs/BackgroundActor"
+        },
+        "detached_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "display": {
+          "description": "The call's display argument.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "job": {
+          "type": "string"
+        },
+        "started_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "tool": {
+          "description": "The tool's name as the model called it.",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job",
+        "tool",
+        "tool_call_id",
+        "started_at",
+        "detached_at",
+        "by"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "calls": {
+      "items": {
+        "$ref": "#/$defs/BackgroundCall"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "calls"
+  ],
+  "title": "SessionBackgroundListResult",
+  "type": "object"
+}

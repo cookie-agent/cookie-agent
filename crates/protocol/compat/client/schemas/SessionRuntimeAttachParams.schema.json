@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Attach a runtime to a session that has no active run. The instance is\nstarted first when it is not running; a failure records nothing.",
+  "properties": {
+    "capability": {
+      "description": "The capability to attach; the runtime's only capability when\nomitted.",
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "runtime_id": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "workspace": {
+      "description": "Required exactly when the capability takes a workspace.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "session_id",
+    "runtime_id"
+  ],
+  "title": "SessionRuntimeAttachParams",
+  "type": "object"
+}

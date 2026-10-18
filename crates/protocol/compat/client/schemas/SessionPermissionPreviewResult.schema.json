@@ -1,0 +1,98 @@
+{
+  "$defs": {
+    "EffectivePermissionAction": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "patterns": {
+          "items": {
+            "$ref": "#/$defs/EffectivePermissionRule"
+          },
+          "type": "array"
+        },
+        "source": {
+          "$ref": "#/$defs/PermissionRuleSource"
+        }
+      },
+      "required": [
+        "action",
+        "effect",
+        "source",
+        "patterns"
+      ],
+      "type": "object"
+    },
+    "EffectivePermissionRule": {
+      "additionalProperties": false,
+      "properties": {
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "resource": {
+          "description": "Current wildcard grammar: '*' matches any characters, '?' matches one character, and the exact '${workspace_dir}' expression is allowed; controls, globstar, escapes, classes, and every other brace form are forbidden. Runtime deserialization additionally enforces a maximum of 4096 UTF-8 bytes; x-cookie-agent-maxUtf8Bytes records that byte limit because JSON Schema maxLength counts Unicode code points.",
+          "minLength": 1,
+          "pattern": "^(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$",
+          "type": "string",
+          "x-cookie-agent-maxUtf8Bytes": 4096
+        },
+        "runtime": {
+          "description": "The rule's runtime selector, when it has one.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/PermissionRuleSource"
+        }
+      },
+      "required": [
+        "resource",
+        "effect",
+        "source"
+      ],
+      "type": "object"
+    },
+    "PermissionEffect": {
+      "enum": [
+        "allow",
+        "ask",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "PermissionRuleSource": {
+      "enum": [
+        "session_overlay",
+        "agent_document",
+        "default"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "permissions": {
+      "items": {
+        "$ref": "#/$defs/EffectivePermissionAction"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "permissions"
+  ],
+  "title": "SessionPermissionPreviewResult",
+  "type": "object"
+}

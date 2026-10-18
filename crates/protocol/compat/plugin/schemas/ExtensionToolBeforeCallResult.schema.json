@@ -1,0 +1,36 @@
+{
+  "$defs": {
+    "ExtensionToolBeforeCallAction": {
+      "enum": [
+        "allow",
+        "block"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/ExtensionToolBeforeCallAction"
+    },
+    "message_to_model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "modified_arguments": true,
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "action"
+  ],
+  "title": "ExtensionToolBeforeCallResult",
+  "type": "object"
+}

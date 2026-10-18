@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "The input was withdrawn; its text is returned for editing.",
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "outcome": {
+          "const": "recalled",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "input"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "The input is no longer pending or queued: the model already saw it,\na run started with it, or it was voided.",
+      "properties": {
+        "outcome": {
+          "const": "gone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Another client submitted the input; only its author can recall it.",
+      "properties": {
+        "outcome": {
+          "const": "not_owner",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "SessionRecallInputResult"
+}

@@ -25,6 +25,6 @@ fn main() -> Result<(), cookie_agent_protocol::BindingExportError> {
             "only one --output <directory> pair is accepted".into(),
         ));
     }
-    cookie_agent_protocol::export_json_schema_set(&root.join("json-schema"))?;
+    cookie_agent_protocol::export_compat_set(&root)?;
     Ok(())
 }

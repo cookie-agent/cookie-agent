@@ -1,0 +1,36 @@
+{
+  "$defs": {
+    "ExtensionSessionBeforeRevertAction": {
+      "enum": [
+        "allow",
+        "block",
+        "override"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/ExtensionSessionBeforeRevertAction"
+    },
+    "instructions_override": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "action"
+  ],
+  "title": "ExtensionSessionBeforeRevertResult",
+  "type": "object"
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Retry a runtime instance now: a failed instance is started again, under a\nnew generation; a ready or reconnecting one is left as it is, and one\nthat is not running is started.",
+  "properties": {
+    "capability": {
+      "description": "The instance's capability; the runtime's only capability when\nomitted.",
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "runtime_id": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": "string"
+    },
+    "workspace": {
+      "description": "Required exactly when the capability takes a workspace: the\ninstance's workspace as `runtimes.list` reports it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "runtime_id"
+  ],
+  "title": "RuntimesReconnectParams",
+  "type": "object"
+}

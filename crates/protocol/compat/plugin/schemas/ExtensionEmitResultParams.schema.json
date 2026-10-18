@@ -1,0 +1,34 @@
+{
+  "$defs": {
+    "ExtensionEmitStatus": {
+      "enum": [
+        "published",
+        "dropped",
+        "rejected"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "bus": {
+      "$ref": "#/$defs/ExtensionEmitStatus"
+    },
+    "name": {
+      "type": "string"
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "name",
+    "bus"
+  ],
+  "title": "ExtensionEmitResultParams",
+  "type": "object"
+}

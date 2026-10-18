@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "seq": {
+      "description": "The seq of the pending `user_input_admitted` or the queued\n`user_input_queued` event to take back.",
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "seq"
+  ],
+  "title": "SessionRecallInputParams",
+  "type": "object"
+}

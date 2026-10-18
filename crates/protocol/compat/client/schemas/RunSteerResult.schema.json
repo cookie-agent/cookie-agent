@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "accepted": {
+      "type": "boolean"
+    },
+    "handled_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "user_input_seq": {
+      "description": "The seq of the `user_input_admitted` event when accepted.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "title": "RunSteerResult",
+  "type": "object"
+}

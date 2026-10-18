@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "An executing call reached its detach point.",
+  "properties": {
+    "note": {
+      "description": "A line for the immediate result, such as a process ID.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "prepared_id": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "reports_itself": {
+      "description": "The call reports its own results once detached.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "prepared_id"
+  ],
+  "title": "DetachableParams",
+  "type": "object"
+}

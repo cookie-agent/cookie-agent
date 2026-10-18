@@ -1,0 +1,41 @@
+{
+  "$defs": {
+    "ClientIdentity": {
+      "additionalProperties": false,
+      "description": "Who is on a connection. The kind names the client program; the instance\nidentifies one running client and stays the same across its reconnects,\nso it can recognize events it caused.",
+      "properties": {
+        "instance_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Client kind, such as `tui` or `cli`.",
+          "pattern": "^[a-z][a-z0-9-]{0,15}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "instance_id"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "client": {
+      "$ref": "#/$defs/ClientIdentity"
+    },
+    "protocol_version": {
+      "const": 48,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "protocol_version",
+    "client"
+  ],
+  "title": "ClientHello",
+  "type": "object"
+}

@@ -1,0 +1,119 @@
+{
+  "$defs": {
+    "AgentMdLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "max_bytes": {
+          "description": "Files larger than this are skipped. At most\nthe `AGENTS.md` event bound.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_bytes"
+      ],
+      "type": "object"
+    },
+    "McpServerSettings": {
+      "additionalProperties": false,
+      "description": "One MCP server of a runtime template.",
+      "properties": {
+        "config": {
+          "description": "The server's table, as the `[mcp.servers.<name>]` schema reads it."
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "config"
+      ],
+      "type": "object"
+    },
+    "RuntimeSettings": {
+      "additionalProperties": false,
+      "description": "What the daemon's configuration says about the runtime's work. A runtime\nrejects settings it does not support.",
+      "properties": {
+        "agent_md": {
+          "$ref": "#/$defs/AgentMdLimits",
+          "description": "`[agent_md]`: the `AGENTS.md` size rule."
+        },
+        "mcp_servers": {
+          "default": [],
+          "description": "The template's MCP servers, which the runtime hosts on its own\nmachine. A runtime that hosts no MCP servers rejects a nonempty list.",
+          "items": {
+            "$ref": "#/$defs/McpServerSettings"
+          },
+          "type": "array"
+        },
+        "tool_output": {
+          "$ref": "#/$defs/ToolOutputLimits",
+          "description": "`[tool_output]`: preview limits of tool output."
+        }
+      },
+      "required": [
+        "tool_output",
+        "agent_md"
+      ],
+      "type": "object"
+    },
+    "ToolOutputLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "head_lines": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_lines": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tail_lines": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_lines",
+        "max_bytes",
+        "head_lines",
+        "tail_lines"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "runtime_id": {
+      "description": "The runtime's ID.",
+      "type": "string"
+    },
+    "settings": {
+      "$ref": "#/$defs/RuntimeSettings"
+    },
+    "version": {
+      "description": "The daemon's [`RUNTIME_PROTOCOL_VERSION`].",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "runtime_id",
+    "settings"
+  ],
+  "title": "InitializeParams",
+  "type": "object"
+}

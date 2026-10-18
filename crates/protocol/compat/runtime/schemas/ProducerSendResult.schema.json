@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Returned only after durable ProducerMessageAccepted append. Retries return\nthis same receipt, including after consumption, with no second acceptance.",
+  "properties": {
+    "message_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message_id"
+  ],
+  "title": "ProducerSendResult",
+  "type": "object"
+}

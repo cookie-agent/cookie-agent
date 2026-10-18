@@ -10,25 +10,64 @@ emit only their current version and reject unsupported versions.
 |---|---:|---:|
 | Runtime configuration | unversioned | unversioned current shape |
 | Agent document | unversioned | unversioned current shape |
-| Protocol | 19 | 19 |
+| Client protocol | 48 | 48 |
+| Plugin protocol | 1 | 1 |
+| Runtime protocol | 5 | 5 |
 | Events and session JSONL | versionless | versionless plus legacy schema markers |
 | Session metadata | unversioned | unversioned current shape |
-| Runtime snapshot | 5 | 5 |
+| Runtime snapshot | 6 | 6 |
 | Catalog cache | 2 | 2 |
 | Provider store | 3 | 3 |
 | Family recipe registry | 1 | 1 |
 | In-memory model manifest (recorded run bindings) | 1 | 1 |
+
+The three protocols are moving to semver versions, as the
+[compatibility specification](../specs/compatibility-v1.md) describes. Until
+their handshakes switch, the exact numbers above stay on the wire; the semver
+constants `CLIENT_PROTOCOL_VERSION`, `PLUGIN_PROTOCOL_VERSION`, and
+`RUNTIME_PROTOCOL_VERSION` (`0.48.0`, `0.1.0`, and `0.5.0`) are what the
+baselines below record. They stay `0.x` until the protocols freeze at `1.0.0`.
 
 Agent snapshots embedded in readable events upconvert supported historical
 shapes before validation. Delegation lifecycle records are ordinary parent
 session events; the removed `delegations.jsonl` surface and its schema versions
 are not read.
 
-The protocol crate exports a JSON Schema set for the wire roots on demand
-through `cargo run -p cookie_agent_protocol --example generate -- --output
-<directory>`; no generated tree is checked in.
-`crates/protocol/scripts/check-schema-additive.sh` regenerates the schemas into
-a temporary directory and enforces that the event payload and extension
-protocol only ever grow relative to the checked-in baselines. The
-[Rust API documentation](api.md) describes the public Rust types; the
+## Baselines and the checker
+
+`crates/protocol/compat/` holds one baseline per surface: `client`, `plugin`,
+`runtime`, and `events` (the `EventPayload` set, which the client and plugin
+protocols both deliver; its `version` records the client version). Each holds:
+
+- `version`: the surface's version when the baseline was taken;
+- `methods.json`: every method and notification with its direction (`to_daemon`
+  or `from_daemon`), its kind (`request` or `notification`), and the names of
+  its params and result schema roots, plus `information`: roots that flow as
+  information without a method of their own, such as error data;
+- `schemas/<Root>.schema.json`: the JSON Schema of every root.
+
+`cargo run -p cookie_agent_protocol --example generate -- --output <directory>`
+writes the same layout from the current code; the method registry it reads is
+`surface_methods` in `crates/protocol/src/bindings.rs`.
+
+`crates/protocol/scripts/check-schema-additive.sh` generates the set into a
+temporary directory and compares it with the baselines using
+`crates/protocol/scripts/check-compat.py`, then runs the checker's mutation
+test, `test-check-compat.py`. The checker gives each type a role from
+`methods.json`: params sent to the daemon are commands, while params the daemon
+sends and every result are information. It walks nested definitions and
+computes the version bump each change requires under the rules of section 7.1
+of the specification; open enums are marked `"x-open": true`.
+
+- **Before the freeze** (a `0.x` version), the baselines must equal the
+  generated set exactly, and rule findings are reported without failing.
+  After any change to a wire type, method, or version constant, run
+  `crates/protocol/scripts/update-compat-baseline.sh` and commit the result.
+- **From `1.0.0`**, every rule is enforced: the version constant must carry at
+  least the required bump against the baseline's `version`, an information
+  type with `additionalProperties: false` fails outright, and new event tags
+  are recorded only through the update script, which refuses an insufficient
+  bump.
+
+The [Rust API documentation](api.md) describes the public Rust types; the
 [protocol reference](protocol.md) summarizes the active method surface.

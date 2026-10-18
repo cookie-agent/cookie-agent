@@ -1,0 +1,89 @@
+{
+  "$defs": {
+    "ExtensionToolOrigin": {
+      "description": "Where a tool a hook sees comes from.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The daemon's base layer.",
+          "properties": {
+            "kind": {
+              "const": "base",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A runtime the session is attached to.",
+          "properties": {
+            "attachment": {
+              "description": "The session's attachment name.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "runtime",
+              "type": "string"
+            },
+            "runtime_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "attachment",
+            "runtime_id"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "arguments": true,
+    "context_id": {
+      "type": "string"
+    },
+    "is_error": {
+      "type": "boolean"
+    },
+    "origin": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExtensionToolOrigin"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`null` for a call that names no published tool."
+    },
+    "result_content": {
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "tool": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "context_id",
+    "tool",
+    "origin",
+    "arguments",
+    "result_content",
+    "is_error"
+  ],
+  "title": "ExtensionToolAfterResultParams",
+  "type": "object"
+}

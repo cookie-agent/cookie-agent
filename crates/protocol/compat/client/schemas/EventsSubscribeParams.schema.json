@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cursor": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "cursor_timestamp": {
+      "description": "Timestamp of the event at `cursor` as the caller received it. When the\nsession's event there differs (a revert cut the log and reused the\nsequence), the result is `stale_cursor` instead of events.",
+      "format": "date-time",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "limit": {
+      "description": "Most events to return. The server may end a page sooner to bound its\nsize, but a page always holds at least one event while any remain.\nWhen more remain after them, the result sets `has_more` and registers\nno live tail; the client asks again from the last returned sequence.\nOnly the final page subscribes.",
+      "format": "uint32",
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "EventsSubscribeParams",
+  "type": "object"
+}

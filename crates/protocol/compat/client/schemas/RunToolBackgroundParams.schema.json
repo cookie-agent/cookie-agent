@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Move an executing call of a background-capable tool to the background,\nas `docs/site/specs/background-tools.md` section 4 specifies. The call\ndetaches once it reaches its detach point.",
+  "properties": {
+    "call_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "run_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "call_id"
+  ],
+  "title": "RunToolBackgroundParams",
+  "type": "object"
+}

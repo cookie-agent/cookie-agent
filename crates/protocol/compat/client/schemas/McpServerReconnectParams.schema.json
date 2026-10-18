@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`mcp.server.reconnect`: reconnects one server now. A server hosted by a\nruntime other than `global` is named with its runtime ID and the\ninstance's workspace, as `mcp.server.list` reports them.",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "runtime_id": {
+      "description": "The hosting runtime; `global` when absent.",
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "workspace": {
+      "description": "The hosting instance's workspace, when its runtime has one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "McpServerReconnectParams",
+  "type": "object"
+}

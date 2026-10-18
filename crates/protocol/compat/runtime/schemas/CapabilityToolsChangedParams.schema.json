@@ -1,0 +1,188 @@
+{
+  "$defs": {
+    "PromptSectionDeclaration": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "body"
+      ],
+      "type": "object"
+    },
+    "RuntimeTools": {
+      "additionalProperties": false,
+      "description": "A runtime's tools and their prompt sections.",
+      "properties": {
+        "prompt_sections": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PromptSectionDeclaration"
+          },
+          "type": "array"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/ToolDeclaration"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "tools"
+      ],
+      "type": "object"
+    },
+    "ToolCollision": {
+      "description": "How a tool behaves when another source offers the same name.",
+      "oneOf": [
+        {
+          "const": "prefix",
+          "description": "Takes the bare name unless another source's tool already does; then\nit is published as `<source>_<name>`.",
+          "type": "string"
+        },
+        {
+          "const": "fallback",
+          "description": "Hidden whenever a non-fallback tool with the same name is published.",
+          "type": "string"
+        },
+        {
+          "const": "override",
+          "description": "Takes the bare name, and the tool it collides with is published under\nits own source's prefix (or hidden, if it is `fallback`). Two\n`override` tools with one name are both prefixed.",
+          "type": "string"
+        }
+      ]
+    },
+    "ToolConcurrency": {
+      "description": "Declares whether calls to a tool may overlap with sibling calls from one model turn.",
+      "enum": [
+        "exclusive",
+        "parallel"
+      ],
+      "type": "string"
+    },
+    "ToolDeclaration": {
+      "additionalProperties": false,
+      "description": "A tool as a runtime declares it.",
+      "properties": {
+        "background": {
+          "description": "The tool supports the background (`docs/site/specs/background-tools.md`).",
+          "type": "boolean"
+        },
+        "background_default": {
+          "description": "Whether a call runs in the background when the model omits the\nargument; only valid with `background`.",
+          "type": "boolean"
+        },
+        "collision": {
+          "$ref": "#/$defs/ToolCollision",
+          "default": "prefix"
+        },
+        "concurrency": {
+          "$ref": "#/$defs/ToolConcurrency",
+          "default": "exclusive"
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "output": {
+          "$ref": "#/$defs/ToolOutputDeclaration",
+          "default": {
+            "kind": "single"
+          }
+        },
+        "parameters": {
+          "description": "JSON Schema of the arguments."
+        },
+        "permission": {
+          "description": "The fixed permission action the tool is checked under; absent for a\ntool that needs no permission.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "result_truncation": {
+          "$ref": "#/$defs/ToolResultTruncationPolicy",
+          "default": "bounded"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "parameters"
+      ],
+      "type": "object"
+    },
+    "ToolOutputDeclaration": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "single",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "named",
+              "type": "string"
+            },
+            "streams": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 8,
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "streams"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ToolResultTruncationPolicy": {
+      "enum": [
+        "bounded",
+        "opt_out"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "instance": {
+      "type": "string"
+    },
+    "tools": {
+      "$ref": "#/$defs/RuntimeTools"
+    }
+  },
+  "required": [
+    "instance",
+    "tools"
+  ],
+  "title": "CapabilityToolsChangedParams",
+  "type": "object"
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "expected_last_seq": {
+      "description": "The session's last event seq the client saw. A revert of a session\nthat has moved on since is refused rather than silently deleting\nwhat another client added.",
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "through_seq": {
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "session_id",
+    "through_seq",
+    "expected_last_seq"
+  ],
+  "title": "SessionRevertParams",
+  "type": "object"
+}

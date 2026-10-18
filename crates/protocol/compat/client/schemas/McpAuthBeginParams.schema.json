@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "redirect_uri": {
+      "description": "The client's own loopback callback, `http://127.0.0.1:{port}/{path}`\nor `http://[::1]:{port}/{path}`: the browser redirects to the machine\nrunning the client, which hands the redirect to `mcp.auth.complete`.",
+      "type": "string"
+    },
+    "server": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "server",
+    "redirect_uri"
+  ],
+  "title": "McpAuthBeginParams",
+  "type": "object"
+}

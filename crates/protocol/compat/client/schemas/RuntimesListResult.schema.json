@@ -1,0 +1,196 @@
+{
+  "$defs": {
+    "RuntimeCapabilityInfo": {
+      "additionalProperties": false,
+      "description": "One capability a runtime offers.",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "description": "The capability's self-declared kind label.",
+          "pattern": "^[a-z][a-z0-9-]{0,15}$",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "takes_workspace": {
+          "description": "Whether attaching it requires a workspace.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "takes_workspace"
+      ],
+      "type": "object"
+    },
+    "RuntimeInstanceInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "attachment_name": {
+          "description": "The name the instance reports; absent until it has started.",
+          "maxLength": 40,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "capability": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "kind": {
+          "description": "The kind the instance reports; absent until it has started.",
+          "pattern": "^[a-z][a-z0-9-]{0,15}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "Why the instance failed, when it did.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "platform": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime_id": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/RuntimeInstanceStatus"
+        },
+        "workspace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runtime_id",
+        "capability",
+        "status"
+      ],
+      "type": "object"
+    },
+    "RuntimeInstanceStatus": {
+      "enum": [
+        "starting",
+        "ready",
+        "reconnecting",
+        "failed",
+        "stopped"
+      ],
+      "type": "string"
+    },
+    "RuntimeLifetime": {
+      "description": "How the daemon reaches a runtime.",
+      "oneOf": [
+        {
+          "const": "builtin",
+          "description": "Built into the daemon: `global` and `local`.",
+          "type": "string"
+        },
+        {
+          "const": "spawned",
+          "description": "Started by the daemon from a `[runtimes.<id>]` template.",
+          "type": "string"
+        },
+        {
+          "const": "dial_in",
+          "description": "Connected to the daemon on its own: a persistent runtime, or one a\nclient runs for as long as it does.",
+          "type": "string"
+        }
+      ]
+    },
+    "RuntimeListing": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "description": "What the runtime offers; empty until it has connected once.",
+          "items": {
+            "$ref": "#/$defs/RuntimeCapabilityInfo"
+          },
+          "type": "array"
+        },
+        "connected": {
+          "description": "Whether the daemon holds a connection to the runtime now.",
+          "type": "boolean"
+        },
+        "lifetime": {
+          "$ref": "#/$defs/RuntimeLifetime"
+        },
+        "message": {
+          "description": "Why the last attempt to connect failed, while it is not connected.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "platform": {
+          "description": "The runtime's operating system, once it has connected and said.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime_id": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runtime_id",
+        "lifetime",
+        "connected",
+        "capabilities"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The runtimes sessions can attach and the capability instances this\ndaemon has opened.",
+  "properties": {
+    "instances": {
+      "items": {
+        "$ref": "#/$defs/RuntimeInstanceInfo"
+      },
+      "type": "array"
+    },
+    "runtimes": {
+      "items": {
+        "$ref": "#/$defs/RuntimeListing"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "runtimes",
+    "instances"
+  ],
+  "title": "RuntimesListResult",
+  "type": "object"
+}

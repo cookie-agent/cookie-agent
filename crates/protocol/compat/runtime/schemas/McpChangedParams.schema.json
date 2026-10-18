@@ -1,0 +1,101 @@
+{
+  "$defs": {
+    "McpFailureReport": {
+      "additionalProperties": false,
+      "description": "An MCP server that failed to connect, or dropped and did not reconnect.",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "server": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "server",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "McpServerReport": {
+      "additionalProperties": false,
+      "description": "The status of one MCP server a runtime hosts.",
+      "properties": {
+        "message": {
+          "default": null,
+          "description": "Why the server failed, or what it is doing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/McpServerState"
+        },
+        "tools": {
+          "default": [],
+          "description": "The names of its tools as the runtime declares them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "state"
+      ],
+      "type": "object"
+    },
+    "McpServerState": {
+      "oneOf": [
+        {
+          "enum": [
+            "disabled",
+            "disconnected",
+            "connecting",
+            "connected",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "reconnecting",
+          "description": "The connection dropped and is being re-established: its tools stay\ndeclared and calls fail with `runtime_unavailable`.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "failures": {
+      "default": [],
+      "description": "Servers that failed since the last report, in order.",
+      "items": {
+        "$ref": "#/$defs/McpFailureReport"
+      },
+      "type": "array"
+    },
+    "instance": {
+      "type": "string"
+    },
+    "servers": {
+      "description": "Every server the instance hosts, in name order.",
+      "items": {
+        "$ref": "#/$defs/McpServerReport"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "instance",
+    "servers"
+  ],
+  "title": "McpChangedParams",
+  "type": "object"
+}

@@ -1172,3 +1172,62 @@ the version constants stay `0.x` and change freely.
   tool).
 - **`guide/configuration.md`:** `[server] allowed_origins`.
 - **`guide/sessions.md`:** `cookie sessions upgrade`.
+
+## 15. Implementation notes
+
+Deviations and choices made while implementing, by phase.
+
+### Phase B
+
+- **Names.** The semver type is `SemVer`; the exact numeric
+  `ProtocolVersion` keeps its name and wire until the handshakes switch
+  (phases E and F), which then remove it. `CLIENT_PROTOCOL_VERSION` (`0.48.0`),
+  `PLUGIN_PROTOCOL_VERSION` (`0.1.0`), and `RUNTIME_PROTOCOL_VERSION`
+  (`0.5.0`) are crate-root constants; the old `u32`
+  `runtime_protocol::RUNTIME_PROTOCOL_VERSION` lives on beside them until
+  then. `peer_protocol_version` reads a handshake's version from raw JSON.
+- **`Open<T>`.** A known tag with a malformed body is a decoding error, not
+  `Unknown`: `Unknown` means "from a newer peer". Tolerant readers (the
+  history loader) handle the error where they know what to skip. The known
+  tags come from the enum's own schema, so `open_enum!(tagged T, tag = "…")`
+  cannot drift from its serde attributes.
+- **Display blocks.** Cutting needs an `omitted` count on every cuttable
+  kind, not only `diff` and `table`: `text`, `markdown`, `code`,
+  `file_excerpt`, and `terminal` carry `omitted_lines`, and `key_value`
+  carries `omitted_entries`. `terminal` blocks are cut by line within their
+  segments, so a single long segment still keeps its head. `json`, `media`,
+  `link`, and `session_ref` cannot be cut and are dropped when they do not
+  fit. The budget leaves room for the blocks after a cut block when they fit
+  whole. `diff.change` and the terminal `stream` are open (unknown reads as
+  `modified` and `stdout`); `as_of` and the hunk line `op` are closed.
+- **Progress delta.** `append` names no stream in 12.3, yet a terminal
+  append goes to "the same stream", so `append` has an optional `stream`
+  (default `stdout`; an error on a `text` block).
+- **Strict commands with shared types.** New types that also flow as
+  information (`ArtifactRef`, `UserContent`, display blocks) do not deny
+  unknown fields. Commands that embed them (`run.start` content) need their
+  strictness from the decoder (an unknown-field check that names the JSON
+  path) rather than from `deny_unknown_fields`.
+- **Error registry.** Today's `-32011` covers both a repeated initialize
+  and a rejected one, so both `already_initialized` and
+  `initialize_rejected` are registered. `version_mismatch` stays until the
+  runtime handshake answers `unsupported_protocol`. `config_apply_refused`
+  carries the refusal as `reason` (`conflict`, `invalid_configuration`,
+  `invalid_change`). `idempotency_conflict` is one code across run, rename,
+  approval, fork, and provider requests, with the request's IDs as optional
+  fields. Templates may name only required fields.
+- **Checker rules beyond the table.** A required field that became optional
+  is major for information and minor for commands; a closed enum that became
+  open is minor and the reverse major; `additionalProperties` going from
+  `false` to allowed is major for information and minor for commands, and
+  the reverse major for commands; any `type` change (nullability included)
+  and any `patternProperties` change is major. Before the freeze (`0.x` in
+  the baseline and the generated set) the baseline must equal the generated
+  set exactly and findings are only reported, as phases C to G change the
+  wire freely.
+- **Surfaces.** The plugin surface omits `capability/tools_changed` and
+  `mcp/changed`, which the daemon still accepts from plugins until 9.2
+  removes them. The events baseline's `version` records the client version.
+  `ModelSnapshotManifestV1` is no longer exported (it is not on any surface),
+  and `ProviderConnectParams` now is: its schema describes the credential
+  fields' shape, never a value.

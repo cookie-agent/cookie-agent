@@ -541,8 +541,8 @@ fn ac8_agent_owner_events_are_supported_by_the_protocol_projection() {
 fn ac9_protocol_version_and_schema_baselines_are_present() {
     assert_eq!(cookie_agent_protocol::PROTOCOL_VERSION, 48);
     for baseline in [
-        "/../protocol/event-payload-baseline.json",
-        "/../protocol/extension-protocol-baseline.json",
+        "/../protocol/compat/events/schemas/EventPayload.schema.json",
+        "/../protocol/compat/plugin/methods.json",
     ] {
         assert!(
             std::path::Path::new(&format!("{}{baseline}", env!("CARGO_MANIFEST_DIR"))).exists()

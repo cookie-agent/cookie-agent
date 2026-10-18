@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "RuntimeFailure": {
+      "additionalProperties": false,
+      "description": "A runtime instance that is unavailable to the sessions attached to it.",
+      "properties": {
+        "capability": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "runtime_id": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "session_ids": {
+          "description": "The affected sessions among those this connection subscribes to.",
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workspace": {
+          "description": "The instance's workspace, for a template that takes one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runtime_id",
+        "capability",
+        "reason",
+        "session_ids"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A runtime template was registered or an instance's status changed;\nrefetch `runtimes.list`.",
+  "properties": {
+    "failures": {
+      "description": "Instances that failed to start, or dropped and did not reconnect,\nthat sessions this connection subscribes to are attached to. Absent\nwhen the change carries no failure.",
+      "items": {
+        "$ref": "#/$defs/RuntimeFailure"
+      },
+      "type": "array"
+    }
+  },
+  "title": "RuntimesChangedNotification",
+  "type": "object"
+}

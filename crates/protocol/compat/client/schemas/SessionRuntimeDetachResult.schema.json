@@ -1,0 +1,66 @@
+{
+  "$defs": {
+    "RuntimeAttachment": {
+      "additionalProperties": false,
+      "description": "One runtime a session is attached to.",
+      "properties": {
+        "capability": {
+          "description": "The capability of the runtime the session uses.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "kind": {
+          "description": "The capability's self-declared kind.",
+          "pattern": "^[a-z][a-z0-9-]{0,15}$",
+          "type": "string"
+        },
+        "name": {
+          "description": "Session-unique attachment name; the tool prefix on collisions.",
+          "maxLength": 40,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,39}$",
+          "type": "string"
+        },
+        "runtime_id": {
+          "description": "The runtime the capability instance belongs to.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Canonical workspace path the runtime reported; absent without one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "runtime_id",
+        "capability",
+        "kind"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "runtimes": {
+      "description": "Every attachment of the session afterwards, in attach order.",
+      "items": {
+        "$ref": "#/$defs/RuntimeAttachment"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "runtimes"
+  ],
+  "title": "SessionRuntimeDetachResult",
+  "type": "object"
+}

@@ -1,0 +1,57 @@
+{
+  "$defs": {
+    "ConfigRestartPart": {
+      "description": "A configuration part that takes effect only when the daemon restarts.",
+      "enum": [
+        "server",
+        "plugins",
+        "runtimes"
+      ],
+      "type": "string"
+    },
+    "ConfigStatus": {
+      "additionalProperties": false,
+      "description": "Where the daemon's configuration stands.",
+      "properties": {
+        "applied_revision": {
+          "description": "The revision of the configuration the daemon runs on.",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "error": {
+          "description": "Why the last reload failed, until one succeeds; the daemon keeps\nrunning on the applied configuration meanwhile.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "restart_required": {
+          "description": "Parts changed since the daemon started that apply only after a\nrestart.",
+          "items": {
+            "$ref": "#/$defs/ConfigRestartPart"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "applied_revision"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The status afterwards; a configuration that failed validation is not\napplied and its error is in `status.error`.",
+  "properties": {
+    "status": {
+      "$ref": "#/$defs/ConfigStatus"
+    }
+  },
+  "required": [
+    "status"
+  ],
+  "title": "ConfigReloadResult",
+  "type": "object"
+}

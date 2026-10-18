@@ -782,9 +782,10 @@ fn recovery_handshake_has_only_explicit_completion_outcomes_and_exact_version() 
         .into_iter()
         .map(|(name, _)| name)
         .collect::<Vec<_>>();
-    assert!(schema_names.contains(&"RecoveryStartParams.schema.json"));
-    assert!(!schema_names.contains(&"ExtensionRecoveryParams.schema.json"));
-    assert!(!schema_names.contains(&"ExtensionRecoveryResult.schema.json"));
+    let has = |name: &str| schema_names.iter().any(|schema| schema == name);
+    assert!(has("RecoveryStartParams.schema.json"));
+    assert!(!has("ExtensionRecoveryParams.schema.json"));
+    assert!(!has("ExtensionRecoveryResult.schema.json"));
     strict::<RecoveryCompleteResult>(json!({}));
     for outcome in [
         json!({"status":"ready"}),

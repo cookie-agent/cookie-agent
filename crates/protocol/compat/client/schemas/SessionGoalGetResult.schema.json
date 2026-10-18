@@ -1,0 +1,83 @@
+{
+  "$defs": {
+    "GoalItem": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "finished": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "description",
+        "finished"
+      ],
+      "type": "object"
+    },
+    "GoalState": {
+      "additionalProperties": false,
+      "description": "Root-session projection, rebuilt from goal events independently of compaction.\nActivation starts with an empty checklist; each subsequent event advances revision.",
+      "properties": {
+        "goal_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/GoalItem"
+          },
+          "type": "array"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/GoalStatus"
+        }
+      },
+      "required": [
+        "goal_id",
+        "objective",
+        "status",
+        "items",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "GoalStatus": {
+      "enum": [
+        "active",
+        "paused",
+        "completed",
+        "cancelled"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "goal": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GoalState"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "goal"
+  ],
+  "title": "SessionGoalGetResult",
+  "type": "object"
+}

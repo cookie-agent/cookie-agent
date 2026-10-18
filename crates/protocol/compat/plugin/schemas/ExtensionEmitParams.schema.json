@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Non-model publication only. Model-bound content must use producer.send with\nan explicitly registered producer; emit must never implicitly register one.",
+  "properties": {
+    "context_id": {
+      "type": "string"
+    },
+    "name": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "payload": true,
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "context_id",
+    "name",
+    "payload"
+  ],
+  "title": "ExtensionEmitParams",
+  "type": "object"
+}

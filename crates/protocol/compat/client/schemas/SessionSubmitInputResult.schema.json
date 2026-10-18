@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "The session was idle; the input started this run.",
+      "properties": {
+        "outcome": {
+          "const": "started",
+          "type": "string"
+        },
+        "run_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Admitted into the running run's pending lane.",
+      "properties": {
+        "outcome": {
+          "const": "steered",
+          "type": "string"
+        },
+        "run_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "user_input_seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "outcome",
+        "run_id",
+        "user_input_seq"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Queued behind the running run as the `user_input_queued` event at\n`queued_seq`.",
+      "properties": {
+        "outcome": {
+          "const": "queued",
+          "type": "string"
+        },
+        "queued_seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "outcome",
+        "queued_seq"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "A plugin handled the input; nothing was submitted.",
+      "properties": {
+        "outcome": {
+          "const": "handled",
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "reason"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "SessionSubmitInputResult"
+}

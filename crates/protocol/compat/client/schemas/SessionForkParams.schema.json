@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "client_fork_id": {
+      "description": "A retry with the same key returns the fork the first request made,\nfor as long as the daemon runs.",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "through_seq": {
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "session_id",
+    "through_seq",
+    "client_fork_id"
+  ],
+  "title": "SessionForkParams",
+  "type": "object"
+}

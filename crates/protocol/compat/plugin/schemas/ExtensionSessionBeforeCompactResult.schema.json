@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "addendum": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cancel": {
+      "default": false,
+      "type": "boolean"
+    },
+    "instructions_override": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "ExtensionSessionBeforeCompactResult",
+  "type": "object"
+}

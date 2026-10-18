@@ -1,0 +1,57 @@
+{
+  "$defs": {
+    "ExtensionInjectedMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/ExtensionMessageRole"
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "type": "object"
+    },
+    "ExtensionMessageRole": {
+      "enum": [
+        "system",
+        "user",
+        "assistant",
+        "tool"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "append_to_system_prompt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "inject_message": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExtensionInjectedMessage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "replace_system_prompt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "ExtensionAgentBeforeStartResult",
+  "type": "object"
+}

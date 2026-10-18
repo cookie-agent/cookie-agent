@@ -1,0 +1,72 @@
+{
+  "$defs": {
+    "ToolOutputChunk": {
+      "additionalProperties": false,
+      "properties": {
+        "stream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "WireProgress": {
+      "additionalProperties": false,
+      "description": "Display and output deltas, bounded like in-process progress.",
+      "properties": {
+        "display": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "output": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ToolOutputChunk"
+          },
+          "type": "array"
+        },
+        "tool_call_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_call_id",
+        "message"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "prepared_id": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "progress": {
+      "$ref": "#/$defs/WireProgress"
+    }
+  },
+  "required": [
+    "prepared_id",
+    "progress"
+  ],
+  "title": "ToolProgressParams",
+  "type": "object"
+}

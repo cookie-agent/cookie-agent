@@ -47,7 +47,7 @@ cargo +stable clippy --locked --workspace --all-targets -- -D warnings
 cargo +1.88.0 clippy --locked --workspace --all-targets -- -D warnings
 ```
 
-Check the additive protocol schema contract, documentation, and dependency policy:
+Check the protocol compatibility baselines, documentation, and dependency policy:
 
 ```sh
 crates/protocol/scripts/check-schema-additive.sh
@@ -55,8 +55,11 @@ crates/protocol/scripts/check-schema-additive.sh
 cargo deny --locked check advisories licenses sources
 ```
 
-The bindings check requires Node.js and npm. Documentation requires Python 3;
-install `requirements-docs.txt` before running `./scripts/build-docs.sh`. That
+The compatibility check and documentation require Python 3. Before the
+protocols freeze, any change to a wire type, method, or protocol version needs
+regenerated baselines: run `crates/protocol/scripts/update-compat-baseline.sh`
+and commit `crates/protocol/compat/`. For the documentation, install
+`requirements-docs.txt` before running `./scripts/build-docs.sh`. That
 script builds workspace rustdoc and runs MkDocs in strict mode.
 
 ## Windows targets

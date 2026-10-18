@@ -1,0 +1,94 @@
+{
+  "$defs": {
+    "ApprovalFeedback": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "description": "Control-free bounded safe error text.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "ApprovalUserDecision": {
+      "enum": [
+        "approve_once",
+        "approve_tree",
+        "reject",
+        "cancel"
+      ],
+      "type": "string"
+    },
+    "OperationFingerprint": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "approval_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "client_response_id": {
+      "description": "Bounded approval response idempotency key.",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+      "type": "string"
+    },
+    "decision": {
+      "$ref": "#/$defs/ApprovalUserDecision"
+    },
+    "feedback": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ApprovalFeedback"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation_fingerprint": {
+      "$ref": "#/$defs/OperationFingerprint"
+    },
+    "request_revision": {
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "approval_id",
+    "request_revision",
+    "operation_fingerprint",
+    "client_response_id",
+    "decision"
+  ],
+  "title": "ApprovalRespondParams",
+  "type": "object"
+}

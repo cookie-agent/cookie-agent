@@ -1,7 +1,19 @@
-use std::{fmt, fs, path::Path};
+//! The method registry of every surface and the JSON Schema export the
+//! compatibility checker (`crates/protocol/scripts/check-compat.py`) reads,
+//! as specified in `docs/site/specs/compatibility-v1.md` section 7.
 
-use schemars::schema_for;
+use std::{collections::BTreeMap, fmt, fs, path::Path};
 
+use schemars::{JsonSchema, Schema, schema_for};
+use serde::Serialize;
+use serde_json::{Value, json};
+
+use crate::runtime_protocol::{
+    CapabilityOpenParams, CapabilityOpenResult, CapabilityToolsChangedParams, ContextParams,
+    ContextResult, DetachableParams, Empty, ExecuteParams, ExecuteResult, InitializeParams,
+    InitializeResult, McpChangedParams, McpReconnectParams, Outcome, PrepareParams, PrepareResult,
+    PreparedRef, RuntimeTools, ToolProgressParams, method as runtime_method,
+};
 use crate::*;
 
 #[derive(Debug)]
@@ -35,211 +47,482 @@ impl From<serde_json::Error> for BindingExportError {
         Self::Json(value)
     }
 }
-macro_rules! protocol_roots {
-    ($macro:ident) => {
-        $macro!(
-            ClientHello,
-            ServerHello,
-            Request,
-            Response,
-            Notification,
-            ExtensionInitializeParams,
-            ExtensionInitializeResult,
-            ProducerRegisterParams,
-            ProducerRegisterResult,
-            ProducerSendParams,
-            ProducerSendResult,
-            ProducerUnregisterParams,
-            ProducerUnregisterResult,
-            ProducerDiscardParams,
-            ProducerDiscardResult,
-            RecoveryStartParams,
-            RecoveryCompleteParams,
-            RecoveryCompleteResult,
-            ExtensionShutdownParams,
-            ExtensionEventParams,
-            ExtensionBusEventParams,
-            ExtensionEmitParams,
-            ExtensionEmitResultParams,
-            ExtensionToolBeforeCallParams,
-            ExtensionToolBeforeCallResult,
-            ExtensionToolAfterResultParams,
-            ExtensionToolAfterResultResult,
-            ExtensionAgentBeforeStartParams,
-            ExtensionAgentBeforeStartResult,
-            ExtensionSessionBeforeCompactParams,
-            ExtensionSessionBeforeCompactResult,
-            ExtensionUserBeforeInputParams,
-            ExtensionUserBeforeInputResult,
-            ExtensionModelBeforeRequestParams,
-            ExtensionModelBeforeRequestResult,
-            ExtensionProviderBeforeRequestParams,
-            ExtensionProviderBeforeRequestResult,
-            ExtensionProviderAfterResponseParams,
-            ExtensionProviderAfterResponseResult,
-            ExtensionMessageEndParams,
-            ExtensionMessageEndResult,
-            ExtensionModelBeforeSelectParams,
-            ExtensionAllowBlockResult,
-            ExtensionSessionBeforeForkParams,
-            ExtensionSessionBeforeRevertParams,
-            ExtensionSessionBeforeRevertResult,
-            SessionMeta,
-            StoredEvent,
-            EventPayload,
-            EventSubscriptionMessage,
-            TransientEvent,
-            SessionCreateParams,
-            SessionCreateResult,
-            SessionListParams,
-            SessionListResult,
-            SessionGetParams,
-            SessionGetResult,
-            SessionGoalGetParams,
-            SessionGoalGetResult,
-            SessionGoalSetParams,
-            SessionGoalSetResult,
-            SessionGoalLifecycleParams,
-            SessionGoalLifecycleResult,
-            SessionProducersParams,
-            SessionProducersResult,
-            GoalGetParams,
-            GoalGetResult,
-            GoalUpdateParams,
-            GoalUpdateResult,
-            SessionUsageParams,
-            SessionUsageResult,
-            SessionTreeUsageResult,
-            ModelUsageRollup,
-            SessionChildrenParams,
-            SessionChildrenResult,
-            SessionTreeParams,
-            SessionTreeResult,
-            SessionResumeParams,
-            SessionResumeResult,
-            SessionSetPermissionModeParams,
-            SessionSetPermissionModeResult,
-            SessionPermissionGetParams,
-            SessionPermissionGetResult,
-            SessionPermissionSetParams,
-            SessionPermissionClearParams,
-            SessionPermissionMutationResult,
-            SessionPermissionPreviewParams,
-            SessionPermissionPreviewResult,
-            SkillsListParams,
-            SkillsListResult,
-            SkillsGetParams,
-            SkillsGetResult,
-            SessionCompactParams,
-            SessionCompactResult,
-            SessionRevertParams,
-            SessionRevertResult,
-            SessionRevertConflict,
-            SessionCompactCancelParams,
-            SessionCompactCancelResult,
-            SessionForkParams,
-            SessionForkResult,
-            RunStartParams,
-            RunStartResult,
-            RunStartConflict,
-            RunSteerParams,
-            RunSteerResult,
-            SessionSubmitInputParams,
-            SessionSubmitInputResult,
-            SessionRecallInputParams,
-            SessionRecallInputResult,
-            RunCancelParams,
-            RunCancelResult,
-            SessionRenameParams,
-            SessionRenameResult,
-            SessionRenameError,
-            EventsSubscribeParams,
-            EventsSubscribeResult,
-            ApprovalRespondParams,
-            ApprovalRespondResult,
-            ApprovalRespondError,
-            ApprovalListParams,
-            ApprovalListResult,
-            McpAuthBeginParams,
-            McpAuthBeginResult,
-            McpAuthCompleteParams,
-            McpAuthCompleteResult,
-            McpAuthCancelParams,
-            McpAuthCancelResult,
-            McpServerListParams,
-            McpServerListResult,
-            McpServerAddParams,
-            McpServerEditParams,
-            McpServerNameParams,
-            McpServerReconnectParams,
-            McpServerSetEnabledParams,
-            McpServerPersistParams,
-            McpServerMutationResult,
-            RuntimeSnapshotGetParams,
-            RuntimeSnapshotResult,
-            RuntimeChangedNotification,
-            SessionsChangedNotification,
-            SessionSelectModelParams,
-            SessionSelectModelResult,
-            EventsUnsubscribeParams,
-            EventsUnsubscribeResult,
-            McpChangedNotification,
-            SessionRuntimeAttachParams,
-            SessionRuntimeAttachResult,
-            SessionRuntimeDetachParams,
-            SessionRuntimeDetachResult,
-            RuntimesListParams,
-            RuntimesListResult,
-            RuntimesReconnectParams,
-            RuntimesReconnectResult,
-            RuntimesChangedNotification,
-            RunToolBackgroundParams,
-            RunToolBackgroundResult,
-            SessionBackgroundListParams,
-            SessionBackgroundListResult,
-            SessionBackgroundStopParams,
-            SessionBackgroundStopResult,
-            BackgroundChangedNotification,
-            ProviderConnectResult,
-            ProviderConnectError,
-            ProviderDisconnectParams,
-            ProviderDisconnectResult,
-            ProviderDisconnectError,
-            ModelSnapshotManifestV1
-        )
+
+/// One versioned contract, plus the session events the client and plugin
+/// protocols both deliver.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Surface {
+    Client,
+    Plugin,
+    Runtime,
+    /// The `EventPayload` set. It has no version of its own: a change to it
+    /// changes the client and plugin protocols, and its baseline records
+    /// the client version.
+    Events,
+}
+
+impl Surface {
+    pub const ALL: [Self; 4] = [Self::Client, Self::Plugin, Self::Runtime, Self::Events];
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Client => "client",
+            Self::Plugin => "plugin",
+            Self::Runtime => "runtime",
+            Self::Events => "events",
+        }
+    }
+
+    /// The version this build speaks on the surface.
+    #[must_use]
+    pub const fn version(self) -> SemVer {
+        match self {
+            Self::Client | Self::Events => CLIENT_PROTOCOL_VERSION,
+            Self::Plugin => PLUGIN_PROTOCOL_VERSION,
+            Self::Runtime => RUNTIME_PROTOCOL_VERSION,
+        }
+    }
+}
+
+/// Which way a message goes, seen from the daemon. Params sent to the
+/// daemon are commands; params it sends, and every result, are information.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    ToDaemon,
+    FromDaemon,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageKind {
+    Request,
+    Notification,
+}
+
+/// A schema root: a Rust type named by its file in a baseline.
+#[derive(Clone, Copy)]
+pub struct RootType {
+    pub name: &'static str,
+    pub schema: fn() -> Schema,
+}
+
+impl fmt::Debug for RootType {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.name)
+    }
+}
+
+fn schema_of<T: JsonSchema>() -> Schema {
+    schema_for!(T)
+}
+
+/// One method or notification of a surface.
+#[derive(Clone, Copy, Debug)]
+pub struct MethodSpec {
+    pub method: &'static str,
+    pub direction: Direction,
+    pub kind: MessageKind,
+    pub params: RootType,
+    /// The result of a request; `None` for a notification.
+    pub result: Option<RootType>,
+}
+
+macro_rules! root {
+    ($type:ident) => {
+        RootType {
+            name: stringify!($type),
+            schema: schema_of::<$type>,
+        }
     };
 }
 
-#[must_use]
-pub fn json_schema_documents() -> Vec<(&'static str, schemars::Schema)> {
-    macro_rules! collect {
-        ($($type:ty),+ $(,)?) => {{
-            vec![$((concat!(stringify!($type), ".schema.json"), schema_for!($type))),+]
-        }};
-    }
-    protocol_roots!(collect)
+macro_rules! request {
+    ($method:expr, $direction:ident, $params:ident => $result:ident) => {
+        MethodSpec {
+            method: $method,
+            direction: Direction::$direction,
+            kind: MessageKind::Request,
+            params: root!($params),
+            result: Some(root!($result)),
+        }
+    };
 }
 
-pub fn export_json_schema_set(output: &Path) -> Result<(), BindingExportError> {
-    if output.exists() {
-        fs::remove_dir_all(output)?;
+macro_rules! notification {
+    ($method:expr, $direction:ident, $params:ident) => {
+        MethodSpec {
+            method: $method,
+            direction: Direction::$direction,
+            kind: MessageKind::Notification,
+            params: root!($params),
+            result: None,
+        }
+    };
+}
+
+/// The `tool/*` messages: shared by the plugin and runtime protocols.
+fn tool_methods() -> Vec<MethodSpec> {
+    vec![
+        request!(runtime_method::TOOL_PREPARE, FromDaemon, PrepareParams => PrepareResult),
+        request!(runtime_method::TOOL_REVALIDATE, FromDaemon, PreparedRef => Outcome),
+        request!(runtime_method::TOOL_EXECUTE, FromDaemon, ExecuteParams => ExecuteResult),
+        notification!(runtime_method::TOOL_RELEASE, FromDaemon, PreparedRef),
+        notification!(runtime_method::TOOL_CANCEL, FromDaemon, PreparedRef),
+        request!(runtime_method::TOOL_PROGRESS, ToDaemon, ToolProgressParams => Outcome),
+        notification!(runtime_method::TOOL_DETACHABLE, ToDaemon, DetachableParams),
+    ]
+}
+
+/// The `producer/*` messages: shared by the plugin and runtime protocols.
+fn producer_methods() -> Vec<MethodSpec> {
+    vec![
+        request!(PLUGIN_PRODUCER_REGISTER_METHOD, ToDaemon, ProducerRegisterParams => ProducerRegisterResult),
+        request!(PLUGIN_PRODUCER_SEND_METHOD, ToDaemon, ProducerSendParams => ProducerSendResult),
+        request!(PLUGIN_PRODUCER_UNREGISTER_METHOD, ToDaemon, ProducerUnregisterParams => ProducerUnregisterResult),
+        request!(PLUGIN_PRODUCER_DISCARD_METHOD, ToDaemon, ProducerDiscardParams => ProducerDiscardResult),
+        notification!(
+            PLUGIN_RECOVERY_START_METHOD,
+            FromDaemon,
+            RecoveryStartParams
+        ),
+        request!(PLUGIN_RECOVERY_COMPLETE_METHOD, ToDaemon, RecoveryCompleteParams => RecoveryCompleteResult),
+    ]
+}
+
+/// Every method and notification of `surface`, in name order.
+#[must_use]
+pub fn surface_methods(surface: Surface) -> Vec<MethodSpec> {
+    let mut methods = match surface {
+        Surface::Client => client_methods(),
+        Surface::Plugin => {
+            let mut methods = plugin_methods();
+            methods.extend(tool_methods());
+            methods.extend(producer_methods());
+            methods
+        }
+        Surface::Runtime => {
+            let mut methods = runtime_methods();
+            methods.extend(tool_methods());
+            methods.extend(producer_methods());
+            methods
+        }
+        Surface::Events => Vec::new(),
+    };
+    methods.sort_by_key(|method| method.method);
+    methods
+}
+
+/// The roots of `surface` that no method carries but that flow as
+/// information: error data and the stored event set.
+#[must_use]
+pub fn surface_information_roots(surface: Surface) -> Vec<RootType> {
+    match surface {
+        Surface::Client => vec![
+            root!(RunStartConflict),
+            root!(SessionRenameError),
+            root!(SessionRevertConflict),
+            root!(ApprovalRespondError),
+            root!(ProviderConnectError),
+            root!(ProviderDisconnectError),
+            root!(ConfigApplyError),
+        ],
+        Surface::Events => vec![root!(EventPayload), root!(StoredEvent)],
+        Surface::Plugin | Surface::Runtime => Vec::new(),
     }
-    fs::create_dir_all(output)?;
-    let documents = json_schema_documents();
-    let filenames = documents
+}
+
+#[allow(clippy::too_many_lines)]
+fn client_methods() -> Vec<MethodSpec> {
+    vec![
+        request!("handshake", ToDaemon, ClientHello => ServerHello),
+        request!("session.create", ToDaemon, SessionCreateParams => SessionCreateResult),
+        request!("session.list", ToDaemon, SessionListParams => SessionListResult),
+        request!("session.get", ToDaemon, SessionGetParams => SessionGetResult),
+        request!(SESSION_GOAL_GET_METHOD, ToDaemon, SessionGoalGetParams => SessionGoalGetResult),
+        request!(SESSION_GOAL_SET_METHOD, ToDaemon, SessionGoalSetParams => SessionGoalSetResult),
+        request!(SESSION_GOAL_LIFECYCLE_METHOD, ToDaemon, SessionGoalLifecycleParams => SessionGoalLifecycleResult),
+        request!(SESSION_PRODUCERS_METHOD, ToDaemon, SessionProducersParams => SessionProducersResult),
+        request!("session.usage", ToDaemon, SessionUsageParams => SessionUsageResult),
+        request!("session.tree_usage", ToDaemon, SessionUsageParams => SessionTreeUsageResult),
+        request!("session.children", ToDaemon, SessionChildrenParams => SessionChildrenResult),
+        request!("session.tree", ToDaemon, SessionTreeParams => SessionTreeResult),
+        request!("session.resume", ToDaemon, SessionResumeParams => SessionResumeResult),
+        request!("session.rename", ToDaemon, SessionRenameParams => SessionRenameResult),
+        request!("session.set_permission_mode", ToDaemon, SessionSetPermissionModeParams => SessionSetPermissionModeResult),
+        request!("session.permission.get", ToDaemon, SessionPermissionGetParams => SessionPermissionGetResult),
+        request!("session.permission.set", ToDaemon, SessionPermissionSetParams => SessionPermissionMutationResult),
+        request!("session.permission.clear", ToDaemon, SessionPermissionClearParams => SessionPermissionMutationResult),
+        request!("session.permission.preview", ToDaemon, SessionPermissionPreviewParams => SessionPermissionPreviewResult),
+        request!("skills.list", ToDaemon, SkillsListParams => SkillsListResult),
+        request!("skills.get", ToDaemon, SkillsGetParams => SkillsGetResult),
+        request!("session.compact", ToDaemon, SessionCompactParams => SessionCompactResult),
+        request!("session.revert", ToDaemon, SessionRevertParams => SessionRevertResult),
+        request!(SESSION_COMPACT_CANCEL_METHOD, ToDaemon, SessionCompactCancelParams => SessionCompactCancelResult),
+        request!("session.fork", ToDaemon, SessionForkParams => SessionForkResult),
+        request!("run.start", ToDaemon, RunStartParams => RunStartResult),
+        request!("run.steer", ToDaemon, RunSteerParams => RunSteerResult),
+        request!(SESSION_SELECT_MODEL_METHOD, ToDaemon, SessionSelectModelParams => SessionSelectModelResult),
+        request!(EVENTS_UNSUBSCRIBE_METHOD, ToDaemon, EventsUnsubscribeParams => EventsUnsubscribeResult),
+        request!(SESSION_SUBMIT_INPUT_METHOD, ToDaemon, SessionSubmitInputParams => SessionSubmitInputResult),
+        request!(SESSION_RECALL_INPUT_METHOD, ToDaemon, SessionRecallInputParams => SessionRecallInputResult),
+        request!("run.cancel", ToDaemon, RunCancelParams => RunCancelResult),
+        request!("events.subscribe", ToDaemon, EventsSubscribeParams => EventsSubscribeResult),
+        request!("approval.respond", ToDaemon, ApprovalRespondParams => ApprovalRespondResult),
+        request!("approval.list", ToDaemon, ApprovalListParams => ApprovalListResult),
+        request!("mcp.auth.begin", ToDaemon, McpAuthBeginParams => McpAuthBeginResult),
+        request!("mcp.auth.complete", ToDaemon, McpAuthCompleteParams => McpAuthCompleteResult),
+        request!("mcp.auth.cancel", ToDaemon, McpAuthCancelParams => McpAuthCancelResult),
+        request!(SESSION_RUNTIME_ATTACH_METHOD, ToDaemon, SessionRuntimeAttachParams => SessionRuntimeAttachResult),
+        request!(SESSION_RUNTIME_DETACH_METHOD, ToDaemon, SessionRuntimeDetachParams => SessionRuntimeDetachResult),
+        request!(RUNTIMES_LIST_METHOD, ToDaemon, RuntimesListParams => RuntimesListResult),
+        request!(RUNTIMES_RECONNECT_METHOD, ToDaemon, RuntimesReconnectParams => RuntimesReconnectResult),
+        request!(PLUGINS_LIST_METHOD, ToDaemon, PluginsListParams => PluginsListResult),
+        request!(PLUGINS_RESTART_METHOD, ToDaemon, PluginsRestartParams => PluginsRestartResult),
+        request!(CONFIG_RELOAD_METHOD, ToDaemon, ConfigReloadParams => ConfigReloadResult),
+        request!(CONFIG_GET_METHOD, ToDaemon, ConfigGetParams => ConfigGetResult),
+        request!(CONFIG_APPLY_METHOD, ToDaemon, ConfigApplyParams => ConfigApplyResult),
+        request!(RUN_TOOL_BACKGROUND_METHOD, ToDaemon, RunToolBackgroundParams => RunToolBackgroundResult),
+        request!(SESSION_BACKGROUND_LIST_METHOD, ToDaemon, SessionBackgroundListParams => SessionBackgroundListResult),
+        request!(SESSION_BACKGROUND_STOP_METHOD, ToDaemon, SessionBackgroundStopParams => SessionBackgroundStopResult),
+        request!("mcp.server.list", ToDaemon, McpServerListParams => McpServerListResult),
+        request!("mcp.server.add", ToDaemon, McpServerAddParams => McpServerMutationResult),
+        request!("mcp.server.edit", ToDaemon, McpServerEditParams => McpServerMutationResult),
+        request!("mcp.server.remove", ToDaemon, McpServerNameParams => McpServerMutationResult),
+        request!("mcp.server.set_enabled", ToDaemon, McpServerSetEnabledParams => McpServerMutationResult),
+        request!("mcp.server.reconnect", ToDaemon, McpServerReconnectParams => McpServerMutationResult),
+        request!("mcp.server.persist", ToDaemon, McpServerPersistParams => McpServerMutationResult),
+        request!(RUNTIME_SNAPSHOT_GET_METHOD, ToDaemon, RuntimeSnapshotGetParams => RuntimeSnapshotResult),
+        request!(PROVIDER_CONNECT_METHOD, ToDaemon, ProviderConnectParams => ProviderConnectResult),
+        request!(PROVIDER_DISCONNECT_METHOD, ToDaemon, ProviderDisconnectParams => ProviderDisconnectResult),
+        notification!("events.subscription", FromDaemon, EventSubscriptionMessage),
+        notification!("events.plugin", FromDaemon, ExtensionBusEventParams),
+        notification!(
+            RUNTIME_CHANGED_METHOD,
+            FromDaemon,
+            RuntimeChangedNotification
+        ),
+        notification!(
+            SESSIONS_CHANGED_METHOD,
+            FromDaemon,
+            SessionsChangedNotification
+        ),
+        notification!(MCP_CHANGED_METHOD, FromDaemon, McpChangedNotification),
+        notification!(
+            RUNTIMES_CHANGED_METHOD,
+            FromDaemon,
+            RuntimesChangedNotification
+        ),
+        notification!(
+            BACKGROUND_CHANGED_METHOD,
+            FromDaemon,
+            BackgroundChangedNotification
+        ),
+        notification!(
+            PLUGINS_CHANGED_METHOD,
+            FromDaemon,
+            PluginsChangedNotification
+        ),
+    ]
+}
+
+fn plugin_methods() -> Vec<MethodSpec> {
+    vec![
+        request!(PLUGIN_INITIALIZE_METHOD, FromDaemon, ExtensionInitializeParams => ExtensionInitializeResult),
+        notification!(PLUGIN_SHUTDOWN_METHOD, FromDaemon, ExtensionShutdownParams),
+        notification!(PLUGIN_EVENT_METHOD, FromDaemon, ExtensionEventParams),
+        notification!(PLUGIN_BUS_EVENT_METHOD, FromDaemon, ExtensionBusEventParams),
+        notification!(PLUGIN_EMIT_METHOD, ToDaemon, ExtensionEmitParams),
+        notification!(
+            PLUGIN_EMIT_RESULT_METHOD,
+            FromDaemon,
+            ExtensionEmitResultParams
+        ),
+        notification!(runtime_method::TOOLS_CHANGED, ToDaemon, RuntimeTools),
+        request!(PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD, FromDaemon, ExtensionToolBeforeCallParams => ExtensionToolBeforeCallResult),
+        request!(PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD, FromDaemon, ExtensionToolAfterResultParams => ExtensionToolAfterResultResult),
+        request!(PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD, FromDaemon, ExtensionAgentBeforeStartParams => ExtensionAgentBeforeStartResult),
+        request!(PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD, FromDaemon, ExtensionSessionBeforeCompactParams => ExtensionSessionBeforeCompactResult),
+        request!(PLUGIN_INTERCEPT_USER_BEFORE_INPUT_METHOD, FromDaemon, ExtensionUserBeforeInputParams => ExtensionUserBeforeInputResult),
+        request!(PLUGIN_INTERCEPT_MODEL_BEFORE_REQUEST_METHOD, FromDaemon, ExtensionModelBeforeRequestParams => ExtensionModelBeforeRequestResult),
+        request!(PLUGIN_INTERCEPT_PROVIDER_BEFORE_REQUEST_METHOD, FromDaemon, ExtensionProviderBeforeRequestParams => ExtensionProviderBeforeRequestResult),
+        request!(PLUGIN_INTERCEPT_PROVIDER_AFTER_RESPONSE_METHOD, FromDaemon, ExtensionProviderAfterResponseParams => ExtensionProviderAfterResponseResult),
+        request!(PLUGIN_INTERCEPT_MESSAGE_END_METHOD, FromDaemon, ExtensionMessageEndParams => ExtensionMessageEndResult),
+        request!(PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD, FromDaemon, ExtensionModelBeforeSelectParams => ExtensionAllowBlockResult),
+        request!(PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD, FromDaemon, ExtensionSessionBeforeForkParams => ExtensionAllowBlockResult),
+        request!(PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD, FromDaemon, ExtensionSessionBeforeRevertParams => ExtensionSessionBeforeRevertResult),
+    ]
+}
+
+fn runtime_methods() -> Vec<MethodSpec> {
+    vec![
+        request!(runtime_method::INITIALIZE, FromDaemon, InitializeParams => InitializeResult),
+        request!(runtime_method::CAPABILITY_OPEN, FromDaemon, CapabilityOpenParams => CapabilityOpenResult),
+        notification!(
+            runtime_method::CAPABILITY_TOOLS_CHANGED,
+            ToDaemon,
+            CapabilityToolsChangedParams
+        ),
+        request!(runtime_method::CONTEXT, FromDaemon, ContextParams => ContextResult),
+        request!(runtime_method::SHUTDOWN, FromDaemon, Empty => Empty),
+        notification!(runtime_method::MCP_CHANGED, ToDaemon, McpChangedParams),
+        request!(runtime_method::MCP_RECONNECT, FromDaemon, McpReconnectParams => Outcome),
+    ]
+}
+
+/// Every schema root of `surface` by name: the params and results of its
+/// methods and its information roots.
+#[must_use]
+pub fn surface_roots(surface: Surface) -> BTreeMap<&'static str, RootType> {
+    let methods = surface_methods(surface);
+    methods
         .iter()
-        .map(|(filename, _)| *filename)
+        .flat_map(|method| std::iter::once(method.params).chain(method.result))
+        .chain(surface_information_roots(surface))
+        .map(|root| (root.name, root))
+        .collect()
+}
+
+/// The `methods.json` of `surface`.
+#[must_use]
+pub fn methods_document(surface: Surface) -> Value {
+    let methods = surface_methods(surface)
+        .into_iter()
+        .map(|method| {
+            json!({
+                "method": method.method,
+                "direction": method.direction,
+                "kind": method.kind,
+                "params": method.params.name,
+                "result": method.result.map(|result| result.name),
+            })
+        })
         .collect::<Vec<_>>();
-    for (filename, schema) in documents {
-        let bytes = serde_json::to_vec_pretty(&schema)?;
-        fs::write(output.join(filename), bytes)?;
+    let information = surface_information_roots(surface)
+        .into_iter()
+        .map(|root| root.name)
+        .collect::<Vec<_>>();
+    json!({
+        "surface": surface.name(),
+        "methods": methods,
+        "information": information,
+    })
+}
+
+/// Every root of every surface, as `(file name, schema)`.
+#[must_use]
+pub fn json_schema_documents() -> Vec<(String, Schema)> {
+    let mut roots = BTreeMap::new();
+    for surface in Surface::ALL {
+        roots.extend(surface_roots(surface));
     }
-    fs::write(
-        output.join("manifest.json"),
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "protocol_version": PROTOCOL_VERSION,
-            "schemas": filenames,
-        }))?,
-    )?;
+    roots
+        .into_values()
+        .map(|root| (format!("{}.schema.json", root.name), (root.schema)()))
+        .collect()
+}
+
+/// Writes the compatibility set: `<output>/<surface>/version`,
+/// `methods.json`, and `schemas/<Root>.schema.json` for every surface, the
+/// layout of `crates/protocol/compat/`. Each surface's directory is
+/// replaced; anything else in `output` is left alone.
+pub fn export_compat_set(output: &Path) -> Result<(), BindingExportError> {
+    for surface in Surface::ALL {
+        let directory = output.join(surface.name());
+        if directory.exists() {
+            fs::remove_dir_all(&directory)?;
+        }
+        let schemas = directory.join("schemas");
+        fs::create_dir_all(&schemas)?;
+        fs::write(
+            directory.join("version"),
+            format!("{}\n", surface.version()),
+        )?;
+        fs::write(
+            directory.join("methods.json"),
+            pretty(&methods_document(surface))?,
+        )?;
+        for (name, root) in surface_roots(surface) {
+            let schema = serde_json::to_value((root.schema)())?;
+            fs::write(
+                schemas.join(format!("{name}.schema.json")),
+                pretty(&schema)?,
+            )?;
+        }
+    }
     Ok(())
+}
+
+fn pretty(value: &Value) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(value).map(|mut text| {
+        text.push('\n');
+        text
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    #[test]
+    fn method_names_are_unique_per_surface_and_direction() {
+        for surface in Surface::ALL {
+            let mut seen = BTreeSet::new();
+            for method in surface_methods(surface) {
+                assert!(
+                    seen.insert((method.method, method.direction == Direction::ToDaemon)),
+                    "{surface:?}: {}",
+                    method.method
+                );
+                assert_eq!(
+                    method.result.is_some(),
+                    method.kind == MessageKind::Request,
+                    "{}",
+                    method.method
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_root_name_names_one_schema_per_surface() {
+        for surface in Surface::ALL {
+            let methods = surface_methods(surface);
+            let mut schemas = BTreeMap::new();
+            for root in methods
+                .iter()
+                .flat_map(|method| std::iter::once(method.params).chain(method.result))
+                .chain(surface_information_roots(surface))
+            {
+                let schema = serde_json::to_value((root.schema)()).unwrap();
+                if let Some(previous) = schemas.insert(root.name, schema.clone()) {
+                    assert_eq!(previous, schema, "{surface:?}: {}", root.name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_shared_messages_are_on_both_surfaces_that_carry_them() {
+        let names = |surface| {
+            surface_methods(surface)
+                .into_iter()
+                .map(|method| method.method)
+                .collect::<BTreeSet<_>>()
+        };
+        let (plugin, runtime) = (names(Surface::Plugin), names(Surface::Runtime));
+        for method in tool_methods().into_iter().chain(producer_methods()) {
+            assert!(plugin.contains(method.method) && runtime.contains(method.method));
+        }
+        assert!(names(Surface::Client).contains(CONFIG_APPLY_METHOD));
+        assert!(names(Surface::Client).contains(PROVIDER_CONNECT_METHOD));
+        assert!(names(Surface::Client).contains(PLUGINS_RESTART_METHOD));
+        assert!(names(Surface::Events).is_empty());
+        let events = surface_roots(Surface::Events);
+        assert!(events.contains_key("EventPayload"));
+    }
 }

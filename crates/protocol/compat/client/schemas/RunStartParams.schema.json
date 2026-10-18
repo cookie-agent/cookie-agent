@@ -1,0 +1,87 @@
+{
+  "$defs": {
+    "RunSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "model": {
+          "additionalProperties": false,
+          "description": "One exact base or named-variant model selection.",
+          "properties": {
+            "model": {
+              "maxLength": 512,
+              "minLength": 3,
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+              "type": "string"
+            },
+            "variant": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "model",
+            "variant"
+          ],
+          "type": "object"
+        },
+        "preset": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "agent",
+        "model"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "client_run_id": {
+      "description": "Bounded run idempotency key.",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+      "type": "string"
+    },
+    "input": {
+      "type": "string"
+    },
+    "reset_fallback": {
+      "type": "boolean"
+    },
+    "selection": {
+      "$ref": "#/$defs/RunSelection"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "client_run_id",
+    "selection",
+    "input"
+  ],
+  "title": "RunStartParams",
+  "type": "object"
+}

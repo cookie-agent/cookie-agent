@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Start a plugin again now: a failed or stopped plugin restarts, and a\nconnected one is stopped and restarted.",
+  "properties": {
+    "name": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "PluginsRestartParams",
+  "type": "object"
+}

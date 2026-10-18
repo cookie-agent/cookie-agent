@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Remove an attachment from a session that has no active run.",
+  "properties": {
+    "name": {
+      "maxLength": 40,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,39}$",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "name"
+  ],
+  "title": "SessionRuntimeDetachParams",
+  "type": "object"
+}

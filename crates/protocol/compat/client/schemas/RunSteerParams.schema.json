@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "input": {
+      "type": "string"
+    },
+    "run_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "input"
+  ],
+  "title": "RunSteerParams",
+  "type": "object"
+}

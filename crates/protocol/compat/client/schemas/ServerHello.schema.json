@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "machine_id": {
+      "description": "An opaque identity of the daemon's machine\n(`paths::machine_id`), so a client can tell whether it runs on the\nsame machine; absent when the daemon cannot tell.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "origin": {
+      "description": "The origin the daemon stamps on events this connection causes.",
+      "pattern": "^(user|(engine|plugin|client):[a-z0-9][a-z0-9-]{0,63})$",
+      "type": "string"
+    },
+    "protocol_version": {
+      "const": 48,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "protocol_version",
+    "origin"
+  ],
+  "title": "ServerHello",
+  "type": "object"
+}

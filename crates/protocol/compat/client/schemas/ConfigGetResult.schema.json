@@ -1,0 +1,101 @@
+{
+  "$defs": {
+    "ConfigDocument": {
+      "additionalProperties": false,
+      "description": "One configuration document: `config.toml`, `agents/<id>.md`, or\n`agents/<preset>/<id>.md`.",
+      "properties": {
+        "fingerprint": {
+          "description": "`sha256:<hex>` of the document's bytes, for `config.apply`.",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "text",
+        "fingerprint"
+      ],
+      "type": "object"
+    },
+    "ConfigRestartPart": {
+      "description": "A configuration part that takes effect only when the daemon restarts.",
+      "enum": [
+        "server",
+        "plugins",
+        "runtimes"
+      ],
+      "type": "string"
+    },
+    "ConfigStatus": {
+      "additionalProperties": false,
+      "description": "Where the daemon's configuration stands.",
+      "properties": {
+        "applied_revision": {
+          "description": "The revision of the configuration the daemon runs on.",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "error": {
+          "description": "Why the last reload failed, until one succeeds; the daemon keeps\nrunning on the applied configuration meanwhile.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "restart_required": {
+          "description": "Parts changed since the daemon started that apply only after a\nrestart.",
+          "items": {
+            "$ref": "#/$defs/ConfigRestartPart"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "applied_revision"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The configuration on disk, which differs from the applied one until it is\nreloaded when it was edited by hand.",
+  "properties": {
+    "documents": {
+      "items": {
+        "$ref": "#/$defs/ConfigDocument"
+      },
+      "type": "array"
+    },
+    "empty_presets": {
+      "description": "Preset directories that hold no document.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "revision": {
+      "description": "The revision of the documents on disk, for `config.apply`.",
+      "maxLength": 71,
+      "minLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/ConfigStatus"
+    }
+  },
+  "required": [
+    "revision",
+    "documents",
+    "status"
+  ],
+  "title": "ConfigGetResult",
+  "type": "object"
+}

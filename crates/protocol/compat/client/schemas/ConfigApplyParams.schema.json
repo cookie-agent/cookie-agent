@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "ConfigChange": {
+      "description": "One change of a `config.apply` set.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Create (no `expected_fingerprint`) or replace a document.",
+          "properties": {
+            "put": {
+              "additionalProperties": false,
+              "properties": {
+                "expected_fingerprint": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "text"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "put"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Remove a document; removing a preset's last document removes the\npreset.",
+          "properties": {
+            "delete": {
+              "additionalProperties": false,
+              "properties": {
+                "expected_fingerprint": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "expected_fingerprint"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "delete"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Set one key of `config.toml`, given as its path of table and key\nnames; `null` removes it, an object is a table.",
+          "properties": {
+            "set": {
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "maxItems": 32,
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "value": true
+              },
+              "required": [
+                "key",
+                "value"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "set"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Change the configuration: the set is checked against `expected_revision`\nand each document's fingerprint, validated whole, written, and applied.",
+  "properties": {
+    "changes": {
+      "items": {
+        "$ref": "#/$defs/ConfigChange"
+      },
+      "maxItems": 256,
+      "minItems": 1,
+      "type": "array"
+    },
+    "expected_revision": {
+      "maxLength": 71,
+      "minLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "expected_revision",
+    "changes"
+  ],
+  "title": "ConfigApplyParams",
+  "type": "object"
+}

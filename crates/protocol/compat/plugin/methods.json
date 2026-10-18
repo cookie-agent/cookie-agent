@@ -1,0 +1,230 @@
+{
+  "information": [],
+  "methods": [
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "plugin/bus_event",
+      "params": "ExtensionBusEventParams",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "plugin/emit",
+      "params": "ExtensionEmitParams",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "plugin/emit_result",
+      "params": "ExtensionEmitResultParams",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "plugin/event",
+      "params": "ExtensionEventParams",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "plugin/initialize",
+      "params": "ExtensionInitializeParams",
+      "result": "ExtensionInitializeResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "plugin/intercept/agent_before_start",
+      "params": "ExtensionAgentBeforeStartParams",
+      "result": "ExtensionAgentBeforeStartResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "plugin/intercept/message_end",
+      "params": "ExtensionMessageEndParams",
+      "result": "ExtensionMessageEndResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "plugin/intercept/model_before_request",
+      "params": "ExtensionModelBeforeRequestParams",
+      "result": "ExtensionModelBeforeRequestResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "plugin/intercept/model_before_select",
+      "params": "ExtensionModelBeforeSelectParams",
+      "result": "ExtensionAllowBlockResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "plugin/intercept/provider_after_response",
+      "params": "ExtensionProviderAfterResponseParams",
+      "result": "ExtensionProviderAfterResponseResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "plugin/intercept/provider_before_request",
+      "params": "ExtensionProviderBeforeRequestParams",
+      "result": "ExtensionProviderBeforeRequestResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "plugin/intercept/session_before_compact",
+      "params": "ExtensionSessionBeforeCompactParams",
+      "result": "ExtensionSessionBeforeCompactResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "plugin/intercept/session_before_fork",
+      "params": "ExtensionSessionBeforeForkParams",
+      "result": "ExtensionAllowBlockResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "plugin/intercept/session_before_revert",
+      "params": "ExtensionSessionBeforeRevertParams",
+      "result": "ExtensionSessionBeforeRevertResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "plugin/intercept/tool_after_result",
+      "params": "ExtensionToolAfterResultParams",
+      "result": "ExtensionToolAfterResultResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "plugin/intercept/tool_before_call",
+      "params": "ExtensionToolBeforeCallParams",
+      "result": "ExtensionToolBeforeCallResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "plugin/intercept/user_before_input",
+      "params": "ExtensionUserBeforeInputParams",
+      "result": "ExtensionUserBeforeInputResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "plugin/shutdown",
+      "params": "ExtensionShutdownParams",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "producer/discard",
+      "params": "ProducerDiscardParams",
+      "result": "ProducerDiscardResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "producer/recovery/complete",
+      "params": "RecoveryCompleteParams",
+      "result": "RecoveryCompleteResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "producer/recovery/start",
+      "params": "RecoveryStartParams",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "producer/register",
+      "params": "ProducerRegisterParams",
+      "result": "ProducerRegisterResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "producer/send",
+      "params": "ProducerSendParams",
+      "result": "ProducerSendResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "producer/unregister",
+      "params": "ProducerUnregisterParams",
+      "result": "ProducerUnregisterResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "runtime/tools_changed",
+      "params": "RuntimeTools",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "tool/cancel",
+      "params": "PreparedRef",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "tool/detachable",
+      "params": "DetachableParams",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "tool/execute",
+      "params": "ExecuteParams",
+      "result": "ExecuteResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "tool/prepare",
+      "params": "PrepareParams",
+      "result": "PrepareResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "tool/progress",
+      "params": "ToolProgressParams",
+      "result": "Outcome"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "tool/release",
+      "params": "PreparedRef",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "tool/revalidate",
+      "params": "PreparedRef",
+      "result": "Outcome"
+    }
+  ],
+  "surface": "plugin"
+}

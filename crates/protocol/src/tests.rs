@@ -1945,6 +1945,7 @@ fn generated_roots_are_current_only_and_secret_free() {
         .into_iter()
         .map(|(name, _)| name)
         .collect::<Vec<_>>();
+    let has = |name: &str| names.iter().any(|schema| schema == name);
     for removed in [
         "CatalogProviderListParams.schema.json",
         "CatalogProviderListResult.schema.json",
@@ -1954,29 +1955,36 @@ fn generated_roots_are_current_only_and_secret_free() {
         "ModelListResult.schema.json",
         "AgentListParams.schema.json",
         "AgentListResult.schema.json",
-        "ProviderConnectParams.schema.json",
         "McpApprovalListParams.schema.json",
         "McpApprovalListResult.schema.json",
         "McpApprovalRespondParams.schema.json",
         "McpApprovalRespondResult.schema.json",
     ] {
-        assert!(
-            !names.contains(&removed),
-            "obsolete or secret-bearing root {removed}"
-        );
+        assert!(!has(removed), "obsolete root {removed}");
     }
     for current in [
         "RuntimeSnapshotResult.schema.json",
         "RuntimeChangedNotification.schema.json",
+        "ProviderConnectParams.schema.json",
         "ProviderDisconnectParams.schema.json",
         "ProviderDisconnectResult.schema.json",
-        "ModelSnapshotManifestV1.schema.json",
+        "ConfigApplyParams.schema.json",
+        "PluginsListResult.schema.json",
+        "PrepareParams.schema.json",
+        "ExecuteResult.schema.json",
     ] {
-        assert!(names.contains(&current), "missing current root {current}");
+        assert!(has(current), "missing current root {current}");
     }
+    // The connect params describe the credential fields' shape, never a
+    // value.
     let encoded = serde_json::to_string(&json_schema_documents()).unwrap();
-    assert!(!encoded.contains("auth_values"));
     assert!(!encoded.contains("super-secret"));
+    let (_, connect) = json_schema_documents()
+        .into_iter()
+        .find(|(name, _)| name == "ProviderConnectParams.schema.json")
+        .unwrap();
+    let auth_values = &connect.as_value()["properties"]["auth_values"];
+    assert!(auth_values.get("default").is_none() && auth_values.get("examples").is_none());
 }
 
 #[test]

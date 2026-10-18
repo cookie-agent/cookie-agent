@@ -1,0 +1,393 @@
+{
+  "$defs": {
+    "PermissionMode": {
+      "enum": [
+        "auto_approve",
+        "auto_approve_n",
+        "auto_approve_y",
+        "ask",
+        "yolo"
+      ],
+      "type": "string"
+    },
+    "RunSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "model": {
+          "additionalProperties": false,
+          "description": "One exact base or named-variant model selection.",
+          "properties": {
+            "model": {
+              "maxLength": 512,
+              "minLength": 3,
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+              "type": "string"
+            },
+            "variant": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "model",
+            "variant"
+          ],
+          "type": "object"
+        },
+        "preset": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "agent",
+        "model"
+      ],
+      "type": "object"
+    },
+    "SessionMeta": {
+      "properties": {
+        "agent_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "catalog_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "creation_selection": {
+          "$ref": "#/$defs/RunSelection"
+        },
+        "cwd_identity": {
+          "description": "Opaque canonical workspace identity.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "last_activity": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "last_agent_activity": {
+          "description": "Latest user-initiated activity in the session: a user input submitted\nor admitted, or a `delegate_subagent` call started. Unlike\n`last_activity`, output and tool results never move it, so it orders\nsibling sessions without letting a busy one reorder itself.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_event_seq": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "manifest_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "model_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/$defs/SessionOrigin"
+        },
+        "provider_state_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "recipe_registry_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "runtime_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "session_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "short_id": {
+          "description": "Short, tree-unique model-facing handle, absent for pre-handle sessions.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skipped_events": {
+          "items": {
+            "$ref": "#/$defs/SkippedEvent"
+          },
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        },
+        "title": {
+          "description": "Nonblank control-free UTF-8 session title.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title_updated_seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id",
+        "origin",
+        "cwd_identity",
+        "creation_selection",
+        "runtime_revision",
+        "catalog_revision",
+        "provider_state_revision",
+        "model_revision",
+        "agent_revision",
+        "recipe_registry_revision",
+        "manifest_revision",
+        "title",
+        "title_updated_seq",
+        "last_event_seq",
+        "last_activity",
+        "status",
+        "skipped_events"
+      ],
+      "type": "object"
+    },
+    "SessionOrigin": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "root",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "depth": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "invocation_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "parent_run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "parent_session_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "parent_tool_call_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "root_session_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "delegated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "root_session_id",
+            "parent_session_id",
+            "parent_run_id",
+            "parent_tool_call_id",
+            "invocation_id",
+            "depth"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SessionStatus": {
+      "enum": [
+        "idle",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "SkippedEvent": {
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seq",
+        "reason"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A daemon-wide change to the session index, sent to every connection\nwhether or not it subscribed to the session. Clients keep a session list,\napproval prompts, and permission modes current from it.",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "A session was created, persisted, or reverted, or its status or\ntitle changed. Delegated sessions are included; `session.list` shows\nonly roots.",
+      "properties": {
+        "change": {
+          "const": "upserted",
+          "type": "string"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionMeta"
+        }
+      },
+      "required": [
+        "change",
+        "session"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "A delegated session was deleted with the revert that removed it.",
+      "properties": {
+        "change": {
+          "const": "removed",
+          "type": "string"
+        },
+        "session_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "change",
+        "session_id"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "An approval in `session_id` was requested, escalated, decided, or\ncancelled; `approval.list` for the root shows the result.",
+      "properties": {
+        "change": {
+          "const": "approvals_changed",
+          "type": "string"
+        },
+        "root_session_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "session_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "change",
+        "root_session_id",
+        "session_id"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "The tree's permission mode changed. It is runtime-only state, so\nthis is the only way other clients learn of it.",
+      "properties": {
+        "change": {
+          "const": "permission_mode_changed",
+          "type": "string"
+        },
+        "changed_by": {
+          "description": "Validated event author origin.",
+          "pattern": "^(user|(engine|plugin|client):[a-z0-9][a-z0-9-]{0,63})$",
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/PermissionMode"
+        },
+        "root_session_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "change",
+        "root_session_id",
+        "mode",
+        "changed_by"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "The daemon dropped changes this connection was too slow to take;\nrefetch `session.list`, approvals, and permission modes.",
+      "properties": {
+        "change": {
+          "const": "resync",
+          "type": "string"
+        }
+      },
+      "required": [
+        "change"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "SessionsChangedNotification"
+}

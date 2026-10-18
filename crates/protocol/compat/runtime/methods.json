@@ -1,0 +1,146 @@
+{
+  "information": [],
+  "methods": [
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "capability/open",
+      "params": "CapabilityOpenParams",
+      "result": "CapabilityOpenResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "capability/tools_changed",
+      "params": "CapabilityToolsChangedParams",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "mcp/changed",
+      "params": "McpChangedParams",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "mcp/reconnect",
+      "params": "McpReconnectParams",
+      "result": "Outcome"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "producer/discard",
+      "params": "ProducerDiscardParams",
+      "result": "ProducerDiscardResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "producer/recovery/complete",
+      "params": "RecoveryCompleteParams",
+      "result": "RecoveryCompleteResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "producer/recovery/start",
+      "params": "RecoveryStartParams",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "producer/register",
+      "params": "ProducerRegisterParams",
+      "result": "ProducerRegisterResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "producer/send",
+      "params": "ProducerSendParams",
+      "result": "ProducerSendResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "producer/unregister",
+      "params": "ProducerUnregisterParams",
+      "result": "ProducerUnregisterResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "runtime/context",
+      "params": "ContextParams",
+      "result": "ContextResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "runtime/initialize",
+      "params": "InitializeParams",
+      "result": "InitializeResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "runtime/shutdown",
+      "params": "Empty",
+      "result": "Empty"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "tool/cancel",
+      "params": "PreparedRef",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "tool/detachable",
+      "params": "DetachableParams",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "tool/execute",
+      "params": "ExecuteParams",
+      "result": "ExecuteResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "tool/prepare",
+      "params": "PrepareParams",
+      "result": "PrepareResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "tool/progress",
+      "params": "ToolProgressParams",
+      "result": "Outcome"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "tool/release",
+      "params": "PreparedRef",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "tool/revalidate",
+      "params": "PreparedRef",
+      "result": "Outcome"
+    }
+  ],
+  "surface": "runtime"
+}

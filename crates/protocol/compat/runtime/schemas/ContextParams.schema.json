@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "instance": {
+      "type": "string"
+    },
+    "preset": {
+      "default": null,
+      "description": "The run's agent preset.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "instance"
+  ],
+  "title": "ContextParams",
+  "type": "object"
+}

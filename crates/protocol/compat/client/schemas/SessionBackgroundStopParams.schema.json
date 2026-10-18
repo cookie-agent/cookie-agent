@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Stop a background call as the user. The call still reports to the model.",
+  "properties": {
+    "job": {
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "job"
+  ],
+  "title": "SessionBackgroundStopParams",
+  "type": "object"
+}

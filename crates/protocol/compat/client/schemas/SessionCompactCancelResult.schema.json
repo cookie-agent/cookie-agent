@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cancelled": {
+      "description": "Whether a manual compaction was running and is now cancelled; its\n`session.compact` returns without a checkpoint.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "cancelled"
+  ],
+  "title": "SessionCompactCancelResult",
+  "type": "object"
+}

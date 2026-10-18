@@ -1,0 +1,358 @@
+{
+  "$defs": {
+    "McpServerReport": {
+      "additionalProperties": false,
+      "description": "The status of one MCP server a runtime hosts.",
+      "properties": {
+        "message": {
+          "default": null,
+          "description": "Why the server failed, or what it is doing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/McpServerState"
+        },
+        "tools": {
+          "default": [],
+          "description": "The names of its tools as the runtime declares them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "state"
+      ],
+      "type": "object"
+    },
+    "McpServerState": {
+      "oneOf": [
+        {
+          "enum": [
+            "disabled",
+            "disconnected",
+            "connecting",
+            "connected",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "reconnecting",
+          "description": "The connection dropped and is being re-established: its tools stay\ndeclared and calls fail with `runtime_unavailable`.",
+          "type": "string"
+        }
+      ]
+    },
+    "PromptSectionDeclaration": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "body"
+      ],
+      "type": "object"
+    },
+    "RuntimeSkills": {
+      "additionalProperties": false,
+      "description": "Skills a runtime contributes, read once at initialize.",
+      "properties": {
+        "discoveries": {
+          "description": "Every `SKILL.md` found, winners and shadowed ones.",
+          "items": {
+            "$ref": "#/$defs/SkillDiscoveryDeclaration"
+          },
+          "type": "array"
+        },
+        "skills": {
+          "description": "Skills that won precedence, by name.",
+          "items": {
+            "$ref": "#/$defs/SkillDeclaration"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "skills",
+        "discoveries"
+      ],
+      "type": "object"
+    },
+    "RuntimeTools": {
+      "additionalProperties": false,
+      "description": "A runtime's tools and their prompt sections.",
+      "properties": {
+        "prompt_sections": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PromptSectionDeclaration"
+          },
+          "type": "array"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/ToolDeclaration"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "tools"
+      ],
+      "type": "object"
+    },
+    "SkillDeclaration": {
+      "additionalProperties": false,
+      "description": "One skill: its `SKILL.md` text and where it lives on the runtime's\nmachine.",
+      "properties": {
+        "base_dir": {
+          "description": "Absolute path of the skill directory (`${COOKIE_SKILL_DIR}`).",
+          "type": "string"
+        },
+        "document": {
+          "description": "The `SKILL.md` text, frontmatter and body.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Absolute path of the `SKILL.md`.",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SkillSource"
+        },
+        "supporting_files": {
+          "description": "A sample of the skill's other files.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "document",
+        "source",
+        "path",
+        "base_dir",
+        "supporting_files"
+      ],
+      "type": "object"
+    },
+    "SkillDiscoveryDeclaration": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "precedence_winner": {
+          "type": "boolean"
+        },
+        "source": {
+          "$ref": "#/$defs/SkillSource"
+        }
+      },
+      "required": [
+        "name",
+        "source",
+        "path",
+        "precedence_winner"
+      ],
+      "type": "object"
+    },
+    "SkillSource": {
+      "enum": [
+        "user",
+        "project"
+      ],
+      "type": "string"
+    },
+    "ToolCollision": {
+      "description": "How a tool behaves when another source offers the same name.",
+      "oneOf": [
+        {
+          "const": "prefix",
+          "description": "Takes the bare name unless another source's tool already does; then\nit is published as `<source>_<name>`.",
+          "type": "string"
+        },
+        {
+          "const": "fallback",
+          "description": "Hidden whenever a non-fallback tool with the same name is published.",
+          "type": "string"
+        },
+        {
+          "const": "override",
+          "description": "Takes the bare name, and the tool it collides with is published under\nits own source's prefix (or hidden, if it is `fallback`). Two\n`override` tools with one name are both prefixed.",
+          "type": "string"
+        }
+      ]
+    },
+    "ToolConcurrency": {
+      "description": "Declares whether calls to a tool may overlap with sibling calls from one model turn.",
+      "enum": [
+        "exclusive",
+        "parallel"
+      ],
+      "type": "string"
+    },
+    "ToolDeclaration": {
+      "additionalProperties": false,
+      "description": "A tool as a runtime declares it.",
+      "properties": {
+        "background": {
+          "description": "The tool supports the background (`docs/site/specs/background-tools.md`).",
+          "type": "boolean"
+        },
+        "background_default": {
+          "description": "Whether a call runs in the background when the model omits the\nargument; only valid with `background`.",
+          "type": "boolean"
+        },
+        "collision": {
+          "$ref": "#/$defs/ToolCollision",
+          "default": "prefix"
+        },
+        "concurrency": {
+          "$ref": "#/$defs/ToolConcurrency",
+          "default": "exclusive"
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "output": {
+          "$ref": "#/$defs/ToolOutputDeclaration",
+          "default": {
+            "kind": "single"
+          }
+        },
+        "parameters": {
+          "description": "JSON Schema of the arguments."
+        },
+        "permission": {
+          "description": "The fixed permission action the tool is checked under; absent for a\ntool that needs no permission.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "result_truncation": {
+          "$ref": "#/$defs/ToolResultTruncationPolicy",
+          "default": "bounded"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "parameters"
+      ],
+      "type": "object"
+    },
+    "ToolOutputDeclaration": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "single",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "named",
+              "type": "string"
+            },
+            "streams": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 8,
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "streams"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ToolResultTruncationPolicy": {
+      "enum": [
+        "bounded",
+        "opt_out"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "attachment_name": {
+      "description": "The name sessions attach the instance under.",
+      "type": "string"
+    },
+    "instance": {
+      "description": "The runtime-chosen handle of the instance, unique on the\nconnection. Opening an instance that is already open returns it.",
+      "type": "string"
+    },
+    "mcp_servers": {
+      "default": [],
+      "description": "The instance's MCP servers after their first connection attempt.\nTheir tools are among `tools`.",
+      "items": {
+        "$ref": "#/$defs/McpServerReport"
+      },
+      "type": "array"
+    },
+    "skills": {
+      "$ref": "#/$defs/RuntimeSkills"
+    },
+    "tools": {
+      "$ref": "#/$defs/RuntimeTools"
+    },
+    "workspace": {
+      "default": null,
+      "description": "The canonical workspace on the runtime's machine.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "instance",
+    "attachment_name",
+    "tools",
+    "skills"
+  ],
+  "title": "CapabilityOpenResult",
+  "type": "object"
+}

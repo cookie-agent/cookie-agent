@@ -1,0 +1,8 @@
+{
+  "information": [
+    "EventPayload",
+    "StoredEvent"
+  ],
+  "methods": [],
+  "surface": "events"
+}

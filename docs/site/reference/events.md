@@ -37,7 +37,8 @@ Writers remain strict: every appended event passes validation. Event evolution
 is additive only. Existing variant tags and fields are never removed or renamed,
 existing required fields remain required, and new fields must be optional. New
 behavior that cannot fit an optional field uses a new variant tag. CI compares
-the generated `EventPayload` schema with the committed additive baseline.
+the generated `EventPayload` schema with the committed baseline in
+`crates/protocol/compat/events/` (see [Schemas](schemas.md)).
 Because older binaries do not know the `origin` envelope key, their tolerant
 readers skip newly originated events and report an unknown-envelope diagnostic;
 they do not reinterpret those events without attribution.

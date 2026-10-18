@@ -1,0 +1,499 @@
+{
+  "$defs": {
+    "ArtifactReference": {
+      "additionalProperties": false,
+      "properties": {
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri"
+      ],
+      "type": "object"
+    },
+    "ExecuteOutcome": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "failed": {
+              "type": "boolean"
+            },
+            "output": {
+              "$ref": "#/$defs/ToolCompletionOutput"
+            },
+            "result": {
+              "$ref": "#/$defs/PersistedToolResult"
+            },
+            "status": {
+              "const": "completed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "output",
+            "result",
+            "failed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/WireToolError"
+            },
+            "status": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "error"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InlineMedia": {
+      "additionalProperties": false,
+      "description": "Attachment bytes, content-addressed.",
+      "properties": {
+        "data": {
+          "description": "Standard base64 of the bytes.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Lowercase hex SHA-256 of the bytes.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "data"
+      ],
+      "type": "object"
+    },
+    "PersistedToolResult": {
+      "additionalProperties": false,
+      "description": "A tool result as sessions store it and clients receive it. When `display`\noccurs verbatim in `output`, which is the common case (a single-output tool\nshows its output, a shell its only stream), it is written as the byte range\n`display_span` into `output` instead of a second copy.",
+      "properties": {
+        "additional_messages": {
+          "description": "Emitted model-history messages. Their files share the 256-file limit with attachments.",
+          "items": {
+            "$ref": "#/$defs/ToolEmittedMessage"
+          },
+          "maxItems": 4,
+          "type": "array"
+        },
+        "attachments": {
+          "description": "Direct result files. Together with files in additional_messages, at most 256 are allowed.",
+          "items": {
+            "$ref": "#/$defs/ToolAttachment"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "display": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "display_span": {
+          "description": "Byte range [start, end) of `output` that is the display text. Present instead of `display` when the display occurs verbatim in `output`.",
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "metadata": true,
+        "output": {
+          "type": "string"
+        },
+        "retained_output": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetainedToolOutput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "truncation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolOutputTruncation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "title",
+        "output",
+        "metadata",
+        "truncation",
+        "attachments"
+      ],
+      "type": "object"
+    },
+    "RetainedToolOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "incomplete": {
+          "type": "boolean"
+        },
+        "reference": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The one stream's artifact, or the named-stream manifest. Absent when\nevery stream fit inline."
+        },
+        "streams": {
+          "items": {
+            "$ref": "#/$defs/RetainedToolStream"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "streams",
+        "incomplete"
+      ],
+      "type": "object"
+    },
+    "RetainedToolStream": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dropped_bytes": {
+          "description": "Bytes past the capture limit that the artifact does not hold: it keeps\nthe stream's head up to the limit and its last stretch, with a marker\nline between them.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_offset": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reference": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The stream's full content. Absent, with `sha256`, when the stream fit\nits preview and the result output already holds all of it."
+        },
+        "sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "byte_length",
+        "line_count",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "ToolAttachment": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "filename": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mime_type": {
+          "maxLength": 255,
+          "minLength": 3,
+          "pattern": "^[^/\\s]+/[^/\\s]+$",
+          "type": "string"
+        },
+        "reference": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mime_type",
+        "filename",
+        "byte_length",
+        "sha256",
+        "reference"
+      ],
+      "type": "object"
+    },
+    "ToolCompletionOutput": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "single",
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "named",
+              "type": "string"
+            },
+            "streams": {
+              "items": {
+                "$ref": "#/$defs/ToolOutputChunk"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "streams"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "streamed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ToolEmittedContent": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/ToolAttachment"
+            }
+          },
+          "required": [
+            "file"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ToolEmittedMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/$defs/ToolEmittedContent"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "role": {
+          "$ref": "#/$defs/ToolEmittedMessageRole"
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "type": "object"
+    },
+    "ToolEmittedMessageRole": {
+      "enum": [
+        "system",
+        "user"
+      ],
+      "type": "string"
+    },
+    "ToolErrorKind": {
+      "enum": [
+        "progress_sink_closed",
+        "failed",
+        "operation_changed",
+        "unsupported_security",
+        "unsupported_platform",
+        "resource_limit",
+        "invalid_url",
+        "permission_denied",
+        "redirect_error",
+        "timeout",
+        "transport_error",
+        "unsupported_content_type",
+        "runtime_unavailable"
+      ],
+      "type": "string"
+    },
+    "ToolOutputChunk": {
+      "additionalProperties": false,
+      "properties": {
+        "stream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "ToolOutputTruncation": {
+      "additionalProperties": false,
+      "properties": {
+        "original_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "original_lines": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retained": {
+          "$ref": "#/$defs/ArtifactReference"
+        }
+      },
+      "required": [
+        "original_bytes",
+        "original_lines",
+        "retained"
+      ],
+      "type": "object"
+    },
+    "WireToolError": {
+      "additionalProperties": false,
+      "description": "A runtime API `ToolError` on the wire.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ToolErrorKind"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "message"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "media": {
+      "default": [],
+      "description": "Bytes of the attachments the result references, for the daemon to\nretain. At most [`MAX_INLINE_MEDIA_BYTES`] in all.",
+      "items": {
+        "$ref": "#/$defs/InlineMedia"
+      },
+      "type": "array"
+    },
+    "outcome": {
+      "$ref": "#/$defs/ExecuteOutcome"
+    }
+  },
+  "required": [
+    "outcome"
+  ],
+  "title": "ExecuteResult",
+  "type": "object"
+}

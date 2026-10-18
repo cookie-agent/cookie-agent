@@ -1,0 +1,119 @@
+{
+  "$defs": {
+    "PermissionEffect": {
+      "enum": [
+        "allow",
+        "ask",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "PermissionRule": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "resource": {
+          "description": "Current wildcard grammar: '*' matches any characters, '?' matches one character, and the exact '${workspace_dir}' expression is allowed; controls, globstar, escapes, classes, and every other brace form are forbidden. Runtime deserialization additionally enforces a maximum of 4096 UTF-8 bytes; x-cookie-agent-maxUtf8Bytes records that byte limit because JSON Schema maxLength counts Unicode code points.",
+          "minLength": 1,
+          "pattern": "^(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$",
+          "type": "string",
+          "x-cookie-agent-maxUtf8Bytes": 4096
+        },
+        "runtime": {
+          "description": "Runtime selector (`bash@labpc`): the rule applies only to tools of\nruntimes with this runtime ID. Absent, it applies everywhere,\nincluding the base layer.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "resource",
+        "effect"
+      ],
+      "type": "object"
+    },
+    "RunSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "model": {
+          "additionalProperties": false,
+          "description": "One exact base or named-variant model selection.",
+          "properties": {
+            "model": {
+              "maxLength": 512,
+              "minLength": 3,
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+              "type": "string"
+            },
+            "variant": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "model",
+            "variant"
+          ],
+          "type": "object"
+        },
+        "preset": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "agent",
+        "model"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Preview the effective permissions a session created with `selection`\nand the overlay `rules` would have, without creating it.",
+  "properties": {
+    "rules": {
+      "items": {
+        "$ref": "#/$defs/PermissionRule"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "selection": {
+      "$ref": "#/$defs/RunSelection"
+    }
+  },
+  "required": [
+    "selection"
+  ],
+  "title": "SessionPermissionPreviewParams",
+  "type": "object"
+}

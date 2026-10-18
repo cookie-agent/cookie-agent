@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "McpServerFailure": {
+      "additionalProperties": false,
+      "description": "An MCP server whose tools are unavailable to the sessions using it.",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "runtime_id": {
+          "description": "The runtime hosting the server; `global` for top-level `[mcp]`.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "server": {
+          "type": "string"
+        },
+        "session_ids": {
+          "description": "The affected sessions among those this connection subscribes to.",
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workspace": {
+          "description": "The hosting instance's workspace, when its runtime has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runtime_id",
+        "server",
+        "reason",
+        "session_ids"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "MCP server configuration or status changed; refetch `mcp.server.list`.",
+  "properties": {
+    "failures": {
+      "description": "Servers that failed to connect, or dropped and did not reconnect, in\nruntimes that sessions this connection subscribes to are attached\nto. Absent when the change carries no failure.",
+      "items": {
+        "$ref": "#/$defs/McpServerFailure"
+      },
+      "type": "array"
+    }
+  },
+  "title": "McpChangedNotification",
+  "type": "object"
+}

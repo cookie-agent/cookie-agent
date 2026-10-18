@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Checks the protocol surfaces against their compatibility baselines in
+# crates/protocol/compat/ (docs/site/specs/compatibility-v1.md section 7),
+# then runs the checker's mutation test.
 set -euo pipefail
 
 if (($# > 0)); then
@@ -14,14 +17,7 @@ trap 'rm -rf "${temporary_root}"' EXIT
 cargo run --locked --manifest-path "${workspace_root}/Cargo.toml" -p cookie_agent_protocol \
   --example generate -- --output "${temporary_root}/generated"
 
-python3 "${protocol_root}/scripts/check-event-payload-additive.py" \
-  "${protocol_root}/event-payload-baseline.json" \
-  "${temporary_root}/generated/json-schema/EventPayload.schema.json"
-bash "${protocol_root}/scripts/test-event-payload-additive.sh" \
-  "${temporary_root}/generated/json-schema/EventPayload.schema.json"
-python3 "${protocol_root}/scripts/check-extension-protocol-additive.py" \
-  "${protocol_root}/extension-protocol-baseline.json" \
-  "${temporary_root}/generated/json-schema" \
-  "${protocol_root}/src/extension.rs"
-bash "${protocol_root}/scripts/test-extension-protocol-additive.sh" \
-  "${temporary_root}/generated/json-schema"
+python3 "${protocol_root}/scripts/check-compat.py" \
+  --baseline "${protocol_root}/compat" \
+  --generated "${temporary_root}/generated"
+python3 "${protocol_root}/scripts/test-check-compat.py" "${temporary_root}/generated"

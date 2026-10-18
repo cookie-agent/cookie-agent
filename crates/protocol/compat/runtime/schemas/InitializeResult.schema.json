@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "CapabilityDeclaration": {
+      "additionalProperties": false,
+      "description": "One capability a runtime offers.",
+      "properties": {
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "kind": {
+          "description": "A self-declared label the daemon shows and never branches on.",
+          "pattern": "^[a-z][a-z0-9-]{0,15}$",
+          "type": "string"
+        },
+        "name": {
+          "description": "`[a-z][a-z0-9_]{0,31}`, unique within the runtime.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "takes_workspace": {
+          "description": "Whether opening it requires a workspace.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "takes_workspace"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "capabilities": {
+      "description": "What the runtime offers; sessions attach each one separately.",
+      "items": {
+        "$ref": "#/$defs/CapabilityDeclaration"
+      },
+      "type": "array"
+    },
+    "platform": {
+      "default": null,
+      "description": "Operating system, as Rust's `std::env::consts::OS` names it, for a\nruntime where it matters.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "producer_messaging": {
+      "description": "The runtime sends producer messages to the sessions attached to its\ninstances (`producer/*`), once the daemon sends\n`producer/recovery/start`.",
+      "type": "boolean"
+    },
+    "version": {
+      "description": "The runtime's [`RUNTIME_PROTOCOL_VERSION`].",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "capabilities"
+  ],
+  "title": "InitializeResult",
+  "type": "object"
+}

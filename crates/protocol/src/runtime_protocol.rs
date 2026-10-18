@@ -113,13 +113,15 @@ pub mod error_code {
 }
 
 /// An empty params or result object.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 pub struct Empty {}
 
 // --- runtime/initialize ---------------------------------------------------
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InitializeParams {
     /// The daemon's [`RUNTIME_PROTOCOL_VERSION`].
@@ -131,7 +133,7 @@ pub struct InitializeParams {
 
 /// What the daemon's configuration says about the runtime's work. A runtime
 /// rejects settings it does not support.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSettings {
     /// `[tool_output]`: preview limits of tool output.
@@ -144,7 +146,7 @@ pub struct RuntimeSettings {
     pub mcp_servers: Vec<McpServerSettings>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolOutputLimits {
     pub max_lines: u64,
@@ -153,7 +155,7 @@ pub struct ToolOutputLimits {
     pub tail_lines: u64,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentMdLimits {
     /// Files larger than this are skipped. At most
@@ -162,7 +164,7 @@ pub struct AgentMdLimits {
 }
 
 /// One MCP server of a runtime template.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerSettings {
     pub name: String,
@@ -171,7 +173,7 @@ pub struct McpServerSettings {
 }
 
 /// The status of one MCP server a runtime hosts.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerReport {
     pub name: String,
@@ -184,7 +186,7 @@ pub struct McpServerReport {
     pub tools: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum McpServerState {
     Disabled,
@@ -198,7 +200,7 @@ pub enum McpServerState {
 }
 
 /// An MCP server that failed to connect, or dropped and did not reconnect.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpFailureReport {
     pub server: String,
@@ -207,7 +209,7 @@ pub struct McpFailureReport {
 
 // --- mcp/changed, mcp/reconnect --------------------------------------------------
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpChangedParams {
     pub instance: String,
@@ -218,7 +220,7 @@ pub struct McpChangedParams {
     pub failures: Vec<McpFailureReport>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpReconnectParams {
     pub instance: String,
@@ -227,7 +229,7 @@ pub struct McpReconnectParams {
     pub server: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InitializeResult {
     /// The runtime's [`RUNTIME_PROTOCOL_VERSION`].
@@ -246,7 +248,7 @@ pub struct InitializeResult {
 }
 
 /// One capability a runtime offers.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilityDeclaration {
     /// `[a-z][a-z0-9_]{0,31}`, unique within the runtime.
@@ -261,7 +263,7 @@ pub struct CapabilityDeclaration {
 
 // --- capability/open, capability/tools_changed --------------------------------
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilityOpenParams {
     pub capability: crate::CapabilityName,
@@ -272,7 +274,7 @@ pub struct CapabilityOpenParams {
     pub workspace: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilityOpenResult {
     /// The runtime-chosen handle of the instance, unique on the
@@ -291,7 +293,7 @@ pub struct CapabilityOpenResult {
     pub mcp_servers: Vec<McpServerReport>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilityToolsChangedParams {
     pub instance: String,
@@ -351,7 +353,7 @@ pub struct PromptSectionDeclaration {
 }
 
 /// Skills a runtime contributes, read once at initialize.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSkills {
     /// Skills that won precedence, by name.
@@ -362,7 +364,7 @@ pub struct RuntimeSkills {
 
 /// One skill: its `SKILL.md` text and where it lives on the runtime's
 /// machine.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SkillDeclaration {
     /// The `SKILL.md` text, frontmatter and body.
@@ -376,7 +378,7 @@ pub struct SkillDeclaration {
     pub supporting_files: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SkillDiscoveryDeclaration {
     pub name: String,
@@ -392,7 +394,7 @@ pub type ToolsChangedParams = RuntimeTools;
 
 // --- runtime/context ----------------------------------------------------------
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContextParams {
     pub instance: String,
@@ -401,7 +403,7 @@ pub struct ContextParams {
     pub preset: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContextResult {
     pub agent_md: Vec<AgentMdEntry>,
@@ -411,7 +413,7 @@ pub struct ContextResult {
 // --- tool/prepare -------------------------------------------------------------
 
 /// The agent and model context of one tool batch.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WireTurnContext {
     pub agent: AgentId,
@@ -421,7 +423,7 @@ pub struct WireTurnContext {
     pub capabilities: ModelCapabilities,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WireToolCall {
     pub id: ToolCallId,
@@ -432,7 +434,7 @@ pub struct WireToolCall {
 
 /// One turn's calls to one runtime, prepared together so calls on the same
 /// target chain.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PrepareParams {
     /// The capability instance the calls go to; absent for a plugin, whose
@@ -445,14 +447,14 @@ pub struct PrepareParams {
     pub calls: Vec<WireToolCall>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PrepareResult {
     /// One outcome per call, in order.
     pub results: Vec<PrepareOutcome>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PrepareOutcome {
     Prepared(PreparedCall),
@@ -465,7 +467,7 @@ pub enum PrepareOutcome {
 
 /// A prepared call. The runtime keeps its executor under `prepared_id`
 /// until it is executed or released.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedCall {
     pub prepared_id: u64,
@@ -487,14 +489,14 @@ pub struct PreparedCall {
 }
 
 /// Names one prepared call.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedRef {
     pub prepared_id: u64,
 }
 
 /// The outcome of a host service or a check: absent error means success.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Outcome {
     #[serde(default)]
@@ -503,7 +505,7 @@ pub struct Outcome {
 
 // --- tool/execute -------------------------------------------------------------
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExecuteParams {
     pub prepared_id: u64,
@@ -515,7 +517,7 @@ pub struct ExecuteParams {
     pub background: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExecuteResult {
     pub outcome: ExecuteOutcome,
@@ -525,7 +527,7 @@ pub struct ExecuteResult {
     pub media: Vec<InlineMedia>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 #[allow(clippy::large_enum_variant)]
 pub enum ExecuteOutcome {
@@ -540,7 +542,7 @@ pub enum ExecuteOutcome {
 }
 
 /// Attachment bytes, content-addressed.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InlineMedia {
     /// Lowercase hex SHA-256 of the bytes.
@@ -562,7 +564,7 @@ pub fn artifact_reference(sha256: &str) -> crate::ArtifactReference {
 // --- tool/progress ---------------------------------------------------------------
 
 /// Display and output deltas, bounded like in-process progress.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WireProgress {
     pub tool_call_id: ToolCallId,
@@ -573,7 +575,7 @@ pub struct WireProgress {
     pub output: Vec<ToolOutputChunk>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolProgressParams {
     pub prepared_id: u64,
@@ -583,7 +585,7 @@ pub struct ToolProgressParams {
 // --- tool/detachable ---------------------------------------------------------
 
 /// An executing call reached its detach point.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DetachableParams {
     pub prepared_id: u64,
@@ -598,14 +600,14 @@ pub struct DetachableParams {
 // --- errors ------------------------------------------------------------------------
 
 /// A runtime API `ToolError` on the wire.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WireToolError {
     pub kind: ToolErrorKind,
     pub message: String,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolErrorKind {
     ProgressSinkClosed,
@@ -697,7 +699,19 @@ pub enum ToolResultTruncationPolicy {
 
 /// Exact model adapter family of a turn. Unlike [`AdaptorId`] it keeps
 /// compatible families apart, because their media delivery differs.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum AdapterFamily {
     Anthropic,

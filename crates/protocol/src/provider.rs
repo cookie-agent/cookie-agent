@@ -549,6 +549,24 @@ impl ProviderCredentialValues {
         self.0.keys().map(String::as_str)
     }
 }
+impl JsonSchema for ProviderCredentialValues {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("ProviderCredentialValues")
+    }
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let names = generator.subschema_for::<AuthFieldName>();
+        json_schema!({
+            "type": "object",
+            "description": "Credential fields of the auth method, by field name.",
+            "maxProperties": 32,
+            "propertyNames": names,
+            "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 16384}
+        })
+    }
+}
 impl fmt::Debug for ProviderCredentialValues {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ProviderCredentialValues(<redacted>)")
@@ -604,7 +622,8 @@ impl<'de> Deserialize<'de> for ProviderCredentialValues {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq)]
+#[schemars(deny_unknown_fields)]
 pub struct ProviderConnectParams {
     pub provider_id: ProviderId,
     pub expected_catalog_revision: CatalogRevision,

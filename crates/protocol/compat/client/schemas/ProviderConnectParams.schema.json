@@ -1,0 +1,92 @@
+{
+  "$defs": {
+    "SafeSetupValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        },
+        {
+          "description": "Stable lowercase machine-readable code.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "type": "string"
+        },
+        {
+          "maxLength": 2048,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "auth_method": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+      "type": "string"
+    },
+    "auth_values": {
+      "additionalProperties": {
+        "maxLength": 16384,
+        "minLength": 1,
+        "type": "string"
+      },
+      "description": "Credential fields of the auth method, by field name.",
+      "maxProperties": 32,
+      "propertyNames": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[a-z][a-z0-9_]{0,127}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "client_connect_id": {
+      "description": "Bounded provider connection idempotency key.",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+      "type": "string"
+    },
+    "expected_catalog_revision": {
+      "maxLength": 71,
+      "minLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "provider_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+      "type": "string"
+    },
+    "setup_values": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,127}$": {
+          "$ref": "#/$defs/SafeSetupValue"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "provider_id",
+    "expected_catalog_revision",
+    "setup_values",
+    "auth_method",
+    "auth_values",
+    "client_connect_id"
+  ],
+  "title": "ProviderConnectParams",
+  "type": "object"
+}

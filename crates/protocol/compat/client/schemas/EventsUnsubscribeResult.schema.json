@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "unsubscribed": {
+      "description": "Whether this connection had a live tail for the session.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "unsubscribed"
+  ],
+  "title": "EventsUnsubscribeResult",
+  "type": "object"
+}

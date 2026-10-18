@@ -1,0 +1,1200 @@
+{
+  "$defs": {
+    "AgentDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "delegation_targets": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "description": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^(?=.*\\S)[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "preset": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolved_fallback": {
+          "items": {
+            "additionalProperties": false,
+            "description": "One exact base or named-variant model selection.",
+            "properties": {
+              "model": {
+                "maxLength": 512,
+                "minLength": 3,
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+                "type": "string"
+              },
+              "variant": {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "model",
+              "variant"
+            ],
+            "type": "object"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "runnable_as_root": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "description",
+        "mode",
+        "enabled",
+        "runnable_as_root",
+        "resolved_fallback",
+        "delegation_targets"
+      ],
+      "type": "object"
+    },
+    "AgentMode": {
+      "enum": [
+        "primary",
+        "subagent",
+        "all",
+        "internal"
+      ],
+      "type": "string"
+    },
+    "AuthCredentialDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "credential_type": {
+          "$ref": "#/$defs/CredentialFieldType"
+        },
+        "display_name": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "help": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,127}$",
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "display_name",
+        "help",
+        "required",
+        "credential_type"
+      ],
+      "type": "object"
+    },
+    "AuthMethodDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "credentials": {
+          "items": {
+            "$ref": "#/$defs/AuthCredentialDescriptor"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "type": "array"
+        },
+        "display_name": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "display_name",
+        "credentials"
+      ],
+      "type": "object"
+    },
+    "AvailableModelDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "behavior_fingerprint": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/ModelCapabilities"
+        },
+        "default_variant": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "display_name": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^(?=.*\\S)[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "key": {
+          "maxLength": 512,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+          "type": "string"
+        },
+        "variant_order": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "variants": {
+          "items": {
+            "$ref": "#/$defs/AvailableVariantDescriptor"
+          },
+          "maxItems": 256,
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "display_name",
+        "capabilities",
+        "variants",
+        "variant_order",
+        "default_variant",
+        "behavior_fingerprint"
+      ],
+      "type": "object"
+    },
+    "AvailableVariantDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "behavior_fingerprint": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "display_name": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^(?=.*\\S)[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$",
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/$defs/VariantOrigin"
+        }
+      },
+      "required": [
+        "id",
+        "display_name",
+        "origin",
+        "behavior_fingerprint"
+      ],
+      "type": "object"
+    },
+    "CancellationCapability": {
+      "enum": [
+        "local_only",
+        "provider"
+      ],
+      "type": "string"
+    },
+    "CatalogAge": {
+      "description": "Age of the selected validated catalog body; age never makes it unusable.",
+      "enum": [
+        "current",
+        "older_than_seven_days",
+        "older_than_thirty_days"
+      ],
+      "type": "string"
+    },
+    "CatalogRuntimeState": {
+      "additionalProperties": false,
+      "properties": {
+        "age": {
+          "$ref": "#/$defs/CatalogAge"
+        },
+        "last_error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CatalogSafeErrorMeta"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model_quarantine_count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "provider_quarantine_count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "quarantine_digest": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "stale": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "stale",
+        "age",
+        "provider_quarantine_count",
+        "model_quarantine_count",
+        "quarantine_digest",
+        "last_error"
+      ],
+      "type": "object"
+    },
+    "CatalogSafeErrorMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "description": "Stable lowercase machine-readable code.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "type": "string"
+        },
+        "message": {
+          "description": "Control-free bounded safe error text.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "time": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "time"
+      ],
+      "type": "object"
+    },
+    "CatalogSource": {
+      "enum": [
+        "network",
+        "cache",
+        "bootstrap"
+      ],
+      "type": "string"
+    },
+    "CredentialFieldType": {
+      "enum": [
+        "api_key",
+        "access_token",
+        "access_key_id",
+        "secret_access_key",
+        "session_token"
+      ],
+      "type": "string"
+    },
+    "DurableConnectionDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "auth_method": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "type": "string"
+        },
+        "connected_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "connection_generation": {
+          "description": "Monotonic provider connection generation.",
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "credential_fields": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "type": "array"
+        },
+        "provider_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "type": "string"
+        },
+        "recipe_fingerprint": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "setup_fingerprint": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "setup_values": {
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,127}$": {
+              "$ref": "#/$defs/SafeSetupValue"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "provider_id",
+        "setup_values",
+        "setup_fingerprint",
+        "recipe_fingerprint",
+        "auth_method",
+        "credential_fields",
+        "connection_generation",
+        "connected_at"
+      ],
+      "type": "object"
+    },
+    "DurableProviderReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "committed_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "provider_state_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "receipt_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "store_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "store_revision",
+        "provider_state_revision",
+        "committed_at"
+      ],
+      "type": "object"
+    },
+    "EffectiveAuthState": {
+      "enum": [
+        "authored_api_key",
+        "authored_override",
+        "provider_store",
+        "no_auth",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "MediaCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "max_bytes": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_count": {
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "mime_types": {
+          "items": {
+            "maxLength": 255,
+            "minLength": 3,
+            "pattern": "^[^/\\s]+/[^/\\s]+$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "mime_types",
+        "max_bytes",
+        "max_count"
+      ],
+      "type": "object"
+    },
+    "Modality": {
+      "enum": [
+        "text",
+        "image",
+        "audio",
+        "pdf",
+        "video"
+      ],
+      "type": "string"
+    },
+    "ModelCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "cancellation": {
+          "$ref": "#/$defs/CancellationCapability"
+        },
+        "context_tokens": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "input": {
+          "items": {
+            "$ref": "#/$defs/Modality"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "media": {
+          "additionalProperties": false,
+          "properties": {
+            "audio": {
+              "$ref": "#/$defs/MediaCapability"
+            },
+            "image": {
+              "$ref": "#/$defs/MediaCapability"
+            },
+            "pdf": {
+              "$ref": "#/$defs/MediaCapability"
+            },
+            "video": {
+              "$ref": "#/$defs/MediaCapability"
+            }
+          },
+          "type": "object"
+        },
+        "native_replay": {
+          "$ref": "#/$defs/ReplayCapability"
+        },
+        "output": {
+          "items": {
+            "$ref": "#/$defs/Modality"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "output_tokens": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "parallel_tool_calls": {
+          "type": "boolean"
+        },
+        "reasoning": {
+          "type": "boolean"
+        },
+        "seed": {
+          "type": "boolean"
+        },
+        "structured_output": {
+          "type": "boolean"
+        },
+        "temperature": {
+          "type": "boolean"
+        },
+        "tool_calling": {
+          "type": "boolean"
+        },
+        "top_p": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "context_tokens",
+        "output_tokens",
+        "tool_calling",
+        "parallel_tool_calls",
+        "structured_output",
+        "reasoning",
+        "temperature",
+        "top_p",
+        "seed",
+        "native_replay",
+        "cancellation",
+        "media"
+      ],
+      "type": "object"
+    },
+    "ModelUnavailableKind": {
+      "description": "Why a provider's catalog model is not selectable.",
+      "oneOf": [
+        {
+          "const": "quarantined",
+          "description": "The catalog parser quarantined the model record.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "The record parsed, but cookie cannot drive the model.",
+          "type": "string"
+        },
+        {
+          "const": "needs_setup",
+          "description": "Provider setup values (region, resource, deployment) are missing.",
+          "type": "string"
+        },
+        {
+          "const": "needs_credentials",
+          "description": "No usable credentials are configured or stored for the provider.",
+          "type": "string"
+        }
+      ]
+    },
+    "ProviderConfigurationState": {
+      "enum": [
+        "unconfigured",
+        "authored",
+        "stored",
+        "authored_and_stored"
+      ],
+      "type": "string"
+    },
+    "ProviderDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "auth_methods": {
+          "items": {
+            "$ref": "#/$defs/AuthMethodDescriptor"
+          },
+          "type": "array"
+        },
+        "configuration": {
+          "$ref": "#/$defs/ProviderConfigurationState"
+        },
+        "display_name": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "documentation_url": {
+          "description": "The catalog's provider documentation URL, when it has one.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "durable_connection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DurableConnectionDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_auth_state": {
+          "$ref": "#/$defs/EffectiveAuthState"
+        },
+        "environment": {
+          "description": "Environment variable names the catalog associates with the provider,\nin catalog order. Display-only: cookie never reads them implicitly.",
+          "items": {
+            "description": "Strict provider credential field name.",
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[A-Z0-9_]+$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "type": "array"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "type": "string"
+        },
+        "model_counts": {
+          "$ref": "#/$defs/ProviderModelCounts"
+        },
+        "presence": {
+          "$ref": "#/$defs/ProviderPresence"
+        },
+        "quarantine": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuarantineDiagnostic"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "setup_fields": {
+          "items": {
+            "$ref": "#/$defs/SetupFieldDescriptor"
+          },
+          "type": "array"
+        },
+        "support": {
+          "$ref": "#/$defs/ProviderSupport"
+        },
+        "unavailable_models": {
+          "description": "Unavailable models with reasons, strictly sorted by ID. Listed only\nfor configured (authored or stored) providers; unconfigured providers\nreport counts alone.",
+          "items": {
+            "$ref": "#/$defs/UnavailableModelDescriptor"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "display_name",
+        "presence",
+        "support",
+        "setup_fields",
+        "auth_methods",
+        "configuration",
+        "effective_auth_state",
+        "durable_connection",
+        "quarantine",
+        "documentation_url",
+        "environment",
+        "model_counts",
+        "unavailable_models"
+      ],
+      "type": "object"
+    },
+    "ProviderModelCounts": {
+      "additionalProperties": false,
+      "description": "Per-provider model availability counts over every catalog model row that\nis not deprecated, disabled, or non-text.",
+      "properties": {
+        "available": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "needs_credentials": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "needs_setup": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "quarantined": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unsupported": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "available",
+        "quarantined",
+        "unsupported",
+        "needs_setup",
+        "needs_credentials"
+      ],
+      "type": "object"
+    },
+    "ProviderPresence": {
+      "enum": [
+        "current",
+        "removed"
+      ],
+      "type": "string"
+    },
+    "ProviderSupport": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "description": "Stable lowercase machine-readable code.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/ProviderSupportState"
+        }
+      },
+      "required": [
+        "state",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "ProviderSupportState": {
+      "enum": [
+        "supported",
+        "unsupported",
+        "quarantined"
+      ],
+      "type": "string"
+    },
+    "QuarantineDiagnostic": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "description": "Stable lowercase machine-readable code.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "type": "string"
+        },
+        "message": {
+          "description": "Control-free bounded safe error text.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "ReplayCapability": {
+      "enum": [
+        "unsupported",
+        "optional",
+        "required"
+      ],
+      "type": "string"
+    },
+    "RuntimeSnapshotResult": {
+      "additionalProperties": false,
+      "properties": {
+        "snapshot": {
+          "$ref": "#/$defs/RuntimeSnapshotV1"
+        }
+      },
+      "required": [
+        "snapshot"
+      ],
+      "type": "object"
+    },
+    "RuntimeSnapshotV1": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "agents": {
+          "items": {
+            "$ref": "#/$defs/AgentDescriptor"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        },
+        "catalog_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "catalog_source": {
+          "$ref": "#/$defs/CatalogSource"
+        },
+        "catalog_state": {
+          "$ref": "#/$defs/CatalogRuntimeState"
+        },
+        "config_revision": {
+          "description": "The revision of the daemon's applied configuration (`config.toml`\nand the agent documents); see `config.get`.",
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "model_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "models": {
+          "items": {
+            "$ref": "#/$defs/AvailableModelDescriptor"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        },
+        "provider_state_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "provider_store_generation": {
+          "description": "Monotonic provider-store generation.",
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "providers": {
+          "items": {
+            "$ref": "#/$defs/ProviderDescriptor"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        },
+        "recipe_registry_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "runtime_revision": {
+          "maxLength": 71,
+          "minLength": 71,
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "snapshot_schema_version": {
+          "const": 6,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "snapshot_schema_version",
+        "recipe_registry_revision",
+        "catalog_revision",
+        "catalog_source",
+        "catalog_state",
+        "provider_state_revision",
+        "provider_store_generation",
+        "model_revision",
+        "agent_revision",
+        "config_revision",
+        "runtime_revision",
+        "providers",
+        "models",
+        "agents"
+      ],
+      "type": "object"
+    },
+    "SafeSetupValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        },
+        {
+          "description": "Stable lowercase machine-readable code.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "type": "string"
+        },
+        {
+          "maxLength": 2048,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        }
+      ]
+    },
+    "SetupFieldDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SafeSetupValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "display_name": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "help": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,127}$",
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "validation": {
+          "$ref": "#/$defs/SetupFieldValidation"
+        }
+      },
+      "required": [
+        "id",
+        "display_name",
+        "help",
+        "required",
+        "default",
+        "validation"
+      ],
+      "type": "object"
+    },
+    "SetupFieldType": {
+      "enum": [
+        "string",
+        "code",
+        "integer",
+        "bool"
+      ],
+      "type": "string"
+    },
+    "SetupFieldValidation": {
+      "additionalProperties": false,
+      "properties": {
+        "max_length": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maximum": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "min_length": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "minimum": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "value_type": {
+          "$ref": "#/$defs/SetupFieldType"
+        }
+      },
+      "required": [
+        "value_type",
+        "min_length",
+        "max_length",
+        "minimum",
+        "maximum"
+      ],
+      "type": "object"
+    },
+    "UnavailableModelDescriptor": {
+      "additionalProperties": false,
+      "description": "One catalog model that is listed but not selectable, with its reason.",
+      "properties": {
+        "display_name": {
+          "description": "Control-free bounded presentation text.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 384,
+          "minLength": 1,
+          "pattern": "^[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ModelUnavailableKind"
+        },
+        "reason": {
+          "description": "Quarantine code or compiler reason; null for setup and credential gaps.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "display_name",
+        "kind",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "VariantOrigin": {
+      "enum": [
+        "models_dev_effort",
+        "models_dev_toggle",
+        "models_dev_budget_tokens",
+        "explicit"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "disconnected": {
+      "type": "boolean"
+    },
+    "durable_receipt": {
+      "$ref": "#/$defs/DurableProviderReceipt"
+    },
+    "effective_auth_state": {
+      "$ref": "#/$defs/EffectiveAuthState"
+    },
+    "provider_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+      "type": "string"
+    },
+    "replayed": {
+      "type": "boolean"
+    },
+    "runtime": {
+      "$ref": "#/$defs/RuntimeSnapshotResult"
+    }
+  },
+  "required": [
+    "durable_receipt",
+    "provider_id",
+    "disconnected",
+    "effective_auth_state",
+    "runtime",
+    "replayed"
+  ],
+  "title": "ProviderDisconnectResult",
+  "type": "object"
+}

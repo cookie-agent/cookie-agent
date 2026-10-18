@@ -1,0 +1,55 @@
+{
+  "$defs": {
+    "RecoveryOutcome": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "ready",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "message": {
+              "description": "Control-free bounded safe error text.",
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+              "type": "string"
+            },
+            "status": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "message"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`producer/recovery/complete`: a producer source's recovery outcome. The\ndaemon owns the starting and disabled states; the connection supplies the\nsource and its epoch out of band.",
+  "properties": {
+    "outcome": {
+      "$ref": "#/$defs/RecoveryOutcome"
+    }
+  },
+  "required": [
+    "outcome"
+  ],
+  "title": "RecoveryCompleteParams",
+  "type": "object"
+}
