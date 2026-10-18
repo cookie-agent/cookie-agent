@@ -668,10 +668,34 @@ pub struct ApprovalRequest {
     runtime_id: Option<RuntimeId>,
 }
 impl ApprovalRequest {
+    /// A request for `operation`, whose fingerprint it computes.
     pub fn new(
         approval_id: ApprovalId,
         revision: u64,
         trigger: ApprovalTrigger,
+        operation: PreparedOperationIdentity,
+        evaluations: Vec<ApprovalEvaluation>,
+        constraints: ApprovalConstraints,
+    ) -> Result<Self, ApprovalSchemaError> {
+        let operation_fingerprint = OperationFingerprint::from_prepared_operation(&operation);
+        Self::with_fingerprint(
+            approval_id,
+            revision,
+            trigger,
+            operation_fingerprint,
+            operation,
+            evaluations,
+            constraints,
+        )
+    }
+
+    /// A request carrying an operation fingerprint computed when it was
+    /// written, which a reader trusts rather than computing it again.
+    fn with_fingerprint(
+        approval_id: ApprovalId,
+        revision: u64,
+        trigger: ApprovalTrigger,
+        operation_fingerprint: OperationFingerprint,
         operation: PreparedOperationIdentity,
         evaluations: Vec<ApprovalEvaluation>,
         constraints: ApprovalConstraints,
@@ -707,7 +731,6 @@ impl ApprovalRequest {
         {
             return Err(ApprovalSchemaError::InvalidTreeGrantConstraint);
         }
-        let operation_fingerprint = OperationFingerprint::from_prepared_operation(&operation);
         Ok(Self {
             approval_id,
             revision,
@@ -775,23 +798,17 @@ impl<'de> Deserialize<'de> for ApprovalRequest {
             runtime_id: Option<RuntimeId>,
         }
         let w = Wire::deserialize(d)?;
-        let fingerprint = w.operation_fingerprint.clone();
-        let value = Self::new(
+        Ok(Self::with_fingerprint(
             w.approval_id,
             w.revision,
             w.trigger,
+            w.operation_fingerprint,
             w.operation,
             w.evaluations,
             w.constraints,
         )
         .map_err(serde::de::Error::custom)?
-        .with_runtime(w.runtime_id);
-        if value.operation_fingerprint != fingerprint {
-            return Err(serde::de::Error::custom(
-                "approval operation fingerprint mismatch",
-            ));
-        }
-        Ok(value)
+        .with_runtime(w.runtime_id))
     }
 }
 

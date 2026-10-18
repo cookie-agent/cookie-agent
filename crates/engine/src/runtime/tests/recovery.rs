@@ -238,7 +238,7 @@ async fn setup_append_terminal_failure_retains_active_tombstone_until_retry() {
 }
 
 #[tokio::test]
-async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering() {
+async fn delegation_reservation_reopens_from_parent_events_and_trusts_its_fingerprint() {
     let primary = "---\ndescription: Reservation owner\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nReservation owner prompt.\n";
     let (fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
@@ -329,7 +329,7 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
             revisions.clone(),
             crate::policy::decode_bindings(&agent.fallback_chain).expect("bindings"),
             cache_strategies.clone(),
-            fingerprint,
+            fingerprint.clone(),
             request,
         )
         .expect("reservation event");
@@ -393,23 +393,23 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
     );
     reopened.shutdown().await;
 
+    // The stored request fingerprint is trusted, never computed again: a
+    // request this build would serialize differently still loads.
     let source = fs::read_to_string(&event_path).expect("parent events");
-    let tampered = source
+    let rewritten = source
         .lines()
         .map(|line| {
             let mut value: serde_json::Value = serde_json::from_str(line).expect("event JSON");
             if value["payload"]["type"] == "delegation_reserved" {
-                value["payload"]["request"]["description"] = serde_json::json!("tampered");
+                value["payload"]["request"]["description"] = serde_json::json!("rewritten");
             }
-            serde_json::to_string(&value).expect("tampered event")
+            serde_json::to_string(&value).expect("rewritten event")
         })
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
-    fs::write(event_path, tampered).expect("tamper parent event");
-    // Opening reads no log, so the tampered record surfaces when its tree
-    // loads, which is the first time anything needs it.
-    let tampered = Engine::open(EngineOptions {
+    fs::write(event_path, rewritten).expect("rewrite parent event");
+    let reloaded = Engine::open(EngineOptions {
         data_dir: fixture._directory.path().join("data"),
         cwd: fixture._directory.path().to_owned(),
         config: fixture.config,
@@ -417,16 +417,17 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
         runtimes: cookie_agent_runtime_api::RuntimeOptions::new(fixture._directory.path()),
     })
     .expect("opening reads no session log");
-    let rejected = tampered.ensure_tree_loaded(session.session_id);
-    assert!(
-        matches!(
-            &rejected,
-            Err(EngineError::DelegationEvents(
-                crate::delegation_events::DelegationEventError::Corrupt(id)
-            )) if *id == invocation_id
-        ),
-        "{rejected:?}"
-    );
+    reloaded
+        .ensure_tree_loaded(session.session_id)
+        .expect("the tree loads");
+    let entry = reloaded
+        .inner
+        .delegation_events
+        .get(invocation_id)
+        .expect("reloaded reservation");
+    assert_eq!(entry.request.description, "rewritten");
+    assert_eq!(entry.request_fingerprint, fingerprint);
+    reloaded.shutdown().await;
 }
 
 #[tokio::test]

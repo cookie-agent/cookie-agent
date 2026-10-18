@@ -2970,19 +2970,15 @@ impl EventPayload {
                 agent
                     .validate_selection(selection)
                     .map_err(|_| EventSchemaError::InvalidSelectedSuffix)?;
+                // One definition per kind. The agent each kind runs as is
+                // stored as written, not checked against this build's.
                 if !matches!(internal_agents.len(), 0 | 3)
                     || internal_agents
                         .windows(2)
                         .any(|pair| pair[0].kind >= pair[1].kind)
-                    || internal_agents.iter().any(|definition| {
-                        definition.validate().is_err()
-                            || definition.agent.as_str()
-                                != match definition.kind {
-                                    InternalAgentKind::Approval => "approval",
-                                    InternalAgentKind::ContextCompaction => "compaction",
-                                    InternalAgentKind::SessionTitle => "title",
-                                }
-                    })
+                    || internal_agents
+                        .iter()
+                        .any(|definition| definition.validate().is_err())
                 {
                     return Err(EventSchemaError::InvalidAgentSnapshot);
                 }

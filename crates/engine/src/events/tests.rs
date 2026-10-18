@@ -682,13 +682,21 @@ fn reference_validate_records(
                     );
                 }
             }
-            EventPayload::RunStarted { agent, .. } => {
+            EventPayload::RunStarted {
+                agent,
+                internal_agents,
+                ..
+            } => {
                 let Some(run_id) = record.run_id else {
                     return corrupt(path, "RunStarted is missing run_id");
                 };
                 let attribution = RunAttribution {
                     start_seq: record.seq,
                     agent_id: agent.agent.clone(),
+                    internal_agents: internal_agents
+                        .iter()
+                        .map(|definition| (definition.kind, definition.agent.clone()))
+                        .collect(),
                     prompt_fingerprint: agent.prompt_fingerprint.clone(),
                     selected_suffix: agent
                         .selected_suffix()
@@ -1011,18 +1019,6 @@ fn reference_validate_records(
                 let Some(internal) = internal_runs.get_mut(internal_run_id) else {
                     return corrupt(path, "internal usage appeared before its start");
                 };
-                let expected_agent = cookie_agent_protocol::AgentId::new(match kind {
-                    cookie_agent_protocol::InternalAgentKind::Approval => {
-                        cookie_agent_config::BUILT_IN_APPROVAL_AGENT_ID
-                    }
-                    cookie_agent_protocol::InternalAgentKind::ContextCompaction => {
-                        cookie_agent_config::BUILT_IN_COMPACTION_AGENT_ID
-                    }
-                    cookie_agent_protocol::InternalAgentKind::SessionTitle => {
-                        cookie_agent_config::BUILT_IN_TITLE_AGENT_ID
-                    }
-                })
-                .expect("built-in internal agent IDs are valid");
                 let model_phase_taint = taint
                     .internal_model_phase_taint_before(*internal_run_id, record.seq)
                     .filter(|tainted| {
@@ -1043,7 +1039,10 @@ fn reference_validate_records(
                     || internal.run_id != run_id
                     || (model_phase_taint.is_none()
                         && internal.active_model.as_ref() != Some(resolved_model))
-                    || *agent_id != expected_agent
+                    || runs[&run_id]
+                        .internal_agents
+                        .iter()
+                        .any(|(frozen, agent)| frozen == kind && agent != agent_id)
                     || (usage_phase_taint.is_none() && internal.usage_recorded_in_phase)
                 {
                     return corrupt(path, "internal usage ownership does not match its run");
@@ -2680,6 +2679,94 @@ fn large_sequence_gap_uses_one_bounded_diagnostic() {
     assert_eq!(log.diagnostics()[0].seq, 2);
     assert!(log.diagnostics()[0].reason.contains("2..=999999999"));
     assert_eq!(log.physical_tip_seq(), distant_seq);
+}
+
+#[test]
+fn internal_usage_names_the_agent_its_run_froze_for_the_kind() {
+    let mut base = attribution_records();
+    let session = base[0].session_id;
+    let run = base[1].run_id.expect("run id");
+    let EventPayload::RunStarted {
+        agent,
+        internal_agents,
+        ..
+    } = &mut base[1].payload
+    else {
+        unreachable!("the second record starts a run")
+    };
+    *internal_agents = [
+        (InternalAgentKind::Approval, "reviewer"),
+        (InternalAgentKind::ContextCompaction, "condenser"),
+        (InternalAgentKind::SessionTitle, "namer"),
+    ]
+    .into_iter()
+    .map(
+        |(kind, id)| cookie_agent_protocol::FrozenInternalAgentDefinition {
+            kind,
+            agent: AgentId::new(id).expect("agent id"),
+            description: format!("The {id}"),
+            document_source: agent.document_source,
+            document_fingerprint: agent.document_fingerprint.clone(),
+            composed_prompt: format!("You are the {id}.\n"),
+            prompt_fingerprint: agent.prompt_fingerprint.clone(),
+            enabled: true,
+            max_output_tokens: 0,
+            timeout_ms: 0,
+            fallbacks: vec![cookie_agent_protocol::FrozenInternalAgentFallback::ParentModel],
+        },
+    )
+    .collect();
+    let invocation_id = InternalAgentInvocationId(Uuid::from_u128(900));
+    let internal_run_id = InternalAgentRunId(Uuid::from_u128(901));
+    let resolved_model = wire_resolved(&fallback_binding("fallback-zero"));
+    let started = event(
+        session,
+        Some(run),
+        3,
+        EventPayload::InternalAgentStarted {
+            invocation_id,
+            internal_run_id,
+            kind: InternalAgentKind::Approval,
+            backend: InternalAgentBackend::Model {
+                resolved_model: resolved_model.clone(),
+            },
+            call: SafeInternalAgentCall {
+                name: SafeCode::new("internal").expect("safe code"),
+                input_summary: SafeDisplayText::new("input").expect("safe display"),
+                input_digest: Sha256Digest::of_bytes(b"input"),
+            },
+        },
+    );
+    let usage = |agent: &str| {
+        event(
+            session,
+            Some(run),
+            4,
+            EventPayload::InternalAgentUsageRecorded {
+                internal_run_id,
+                kind: InternalAgentKind::Approval,
+                agent_id: AgentId::new(agent).expect("agent id"),
+                resolved_model: resolved_model.clone(),
+                usage: Usage::default(),
+                estimated_cost_pico_usd: None,
+            },
+        )
+    };
+    let records = |agent: &str| {
+        vec![
+            base[0].clone(),
+            base[1].clone(),
+            started.clone(),
+            usage(agent),
+        ]
+    };
+    // The frozen definition decides, not this build's built-in agent IDs.
+    assert_log_open(&records("reviewer"), true, "the frozen approval agent");
+    assert_log_open(
+        &records("approval"),
+        false,
+        "another agent than the frozen one",
+    );
 }
 
 #[test]

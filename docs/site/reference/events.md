@@ -375,8 +375,9 @@ status.
 
 Engine startup projects delegation state while opening session logs. A reserved
 or started delegation without a terminal event resumes or rolls back according
-to its child and parent state. Recovery recomputes the reservation fingerprint;
-a mismatch rejects the reservation. If best-effort reading skips a corrupt
+to its child and parent state. Recovery trusts the stored request fingerprint
+and never computes it again; it is compared only when the same invocation is
+reserved again. If best-effort reading skips a corrupt
 delegation event, that delegation is not recovered, the parent session records
 the diagnostic, and unrelated delegations remain recoverable.
 
@@ -421,10 +422,15 @@ its models afresh as always.
 interrupted. `internal_agent_finished { invocation_id, internal_run_id, kind,
 outcome }` ends an internal agent invocation the same way, with
 `completed { result }`, `failed { failure }`, `cancelled { reason? }`, or
-`interrupted { reason? }`.
+`interrupted { reason? }`. `run_started.internal_agents` freezes the run's
+internal agent definitions, one per kind, and an
+`internal_agent_usage_recorded` of the run names the agent frozen for its
+kind.
 
 ### Approvals
 
+`approval_requested` stores the request's `operation_fingerprint`, which the
+writer computes from the prepared operation and readers trust as written.
 An approval's lifecycle after its `approval_requested` is a series of
 `approval_step { approval_id, step }` records and one
 `approval_finalized { approval_id, outcome }`. `step` is

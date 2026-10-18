@@ -529,9 +529,8 @@ fn apply_event(
             let Some(revisions) = revisions else {
                 return Err(DelegationEventError::Corrupt(invocation_id));
             };
-            let fingerprint_valid =
-                delegation_request_fingerprint(&child_agent, &cache_strategies, &request)
-                    .is_ok_and(|computed| computed == request_fingerprint);
+            // The request fingerprint is trusted as written: computing it
+            // again would tie reading to how this build serializes requests.
             if parent_session_id != reservation.parent_session_id
                 || run_id != Some(reservation.parent_run_id)
                 || state.entries.contains_key(&invocation_id)
@@ -539,7 +538,6 @@ fn apply_event(
                     .resume_session_id
                     .is_some_and(|id| id != reservation.child_session_id)
                 || !valid_request(&request)
-                || !fingerprint_valid
                 || child_agent.validate().is_err()
                 || (!cache_strategies.is_empty()
                     && cache_strategies.len() != child_agent.selected_suffix().len())

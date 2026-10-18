@@ -1243,6 +1243,16 @@ fn approval_wire_requires_nonempty_evaluations_and_accepts_multiple() {
     assert!(valid.get("evaluation").is_none());
     assert!(serde_json::from_value::<ApprovalRequest>(valid.clone()).is_ok());
 
+    // The stored operation fingerprint is trusted, never computed again.
+    let mut written_elsewhere = valid.clone();
+    written_elsewhere["operation_fingerprint"]["digest"] =
+        json!(Sha256Digest::of_bytes(b"another build's canonical bytes"));
+    let decoded = serde_json::from_value::<ApprovalRequest>(written_elsewhere).unwrap();
+    assert_eq!(
+        decoded.operation_fingerprint().digest(),
+        &Sha256Digest::of_bytes(b"another build's canonical bytes")
+    );
+
     let mut empty = valid.clone();
     empty["evaluations"] = json!([]);
     assert!(serde_json::from_value::<ApprovalRequest>(empty).is_err());

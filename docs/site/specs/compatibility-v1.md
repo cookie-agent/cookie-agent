@@ -1341,3 +1341,13 @@ Deviations and choices made while implementing, by phase.
   revisions is the delegation store, which gets each reservation's from the
   fold of its parent log (the tree-load harvest and parent reconciliation
   fill them in); nothing reads a run's.
+- **Stored data, not derived logic (8.5).** Load validation no longer calls
+  `wire_resolved` (the previous note) or compares with the built-in internal
+  agent IDs: an `internal_agent_usage_recorded` must name the agent its run
+  froze for the kind in `run_started.internal_agents`, and `run_started`
+  checks only that the definitions are one per kind. Approval operation
+  fingerprints and delegation request fingerprints are trusted as stored; a
+  delegation's is compared only when the same invocation is reserved again,
+  on the write path. With nothing recomputed there is no fingerprint
+  mismatch left to make a delegation unrecoverable; the reservation's other
+  checks still fail the tree load until phase D quarantines records.

@@ -1202,6 +1202,11 @@ impl EventLog {
 struct RunAttribution {
     start_seq: u64,
     agent_id: cookie_agent_protocol::AgentId,
+    /// The agent each internal agent kind was frozen as at run start.
+    internal_agents: Vec<(
+        cookie_agent_protocol::InternalAgentKind,
+        cookie_agent_protocol::AgentId,
+    )>,
     prompt_fingerprint: cookie_agent_protocol::Sha256Digest,
     selected_suffix: Vec<cookie_agent_protocol::ResolvedModelRef>,
     active_fallback_index: usize,
@@ -2258,13 +2263,21 @@ fn validate_record_incremental(
                 );
             }
         }
-        EventPayload::RunStarted { agent, .. } => {
+        EventPayload::RunStarted {
+            agent,
+            internal_agents,
+            ..
+        } => {
             let Some(run_id) = record.run_id else {
                 return corrupt(path, "RunStarted is missing run_id");
             };
             let attribution = RunAttribution {
                 start_seq: record.seq,
                 agent_id: agent.agent.clone(),
+                internal_agents: internal_agents
+                    .iter()
+                    .map(|definition| (definition.kind, definition.agent.clone()))
+                    .collect(),
                 prompt_fingerprint: agent.prompt_fingerprint.clone(),
                 selected_suffix: agent
                     .selected_suffix()
@@ -2589,18 +2602,6 @@ fn validate_record_incremental(
             let Some(internal) = internal_runs.get_mut(internal_run_id) else {
                 return corrupt(path, "internal usage appeared before its start");
             };
-            let expected_agent = cookie_agent_protocol::AgentId::new(match kind {
-                cookie_agent_protocol::InternalAgentKind::Approval => {
-                    cookie_agent_config::BUILT_IN_APPROVAL_AGENT_ID
-                }
-                cookie_agent_protocol::InternalAgentKind::ContextCompaction => {
-                    cookie_agent_config::BUILT_IN_COMPACTION_AGENT_ID
-                }
-                cookie_agent_protocol::InternalAgentKind::SessionTitle => {
-                    cookie_agent_config::BUILT_IN_TITLE_AGENT_ID
-                }
-            })
-            .expect("built-in internal agent IDs are valid");
             let model_phase_taint = taint
                 .internal_model_phase_taint_before(*internal_run_id, record.seq)
                 .filter(|tainted| {
@@ -2621,7 +2622,10 @@ fn validate_record_incremental(
                 || internal.run_id != run_id
                 || (model_phase_taint.is_none()
                     && internal.active_model.as_ref() != Some(resolved_model))
-                || *agent_id != expected_agent
+                || runs[&run_id]
+                    .internal_agents
+                    .iter()
+                    .any(|(frozen, agent)| frozen == kind && agent != agent_id)
                 || (usage_phase_taint.is_none() && internal.usage_recorded_in_phase)
             {
                 return corrupt(path, "internal usage ownership does not match its run");
