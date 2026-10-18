@@ -380,13 +380,7 @@ shutdown_grace_ms = 2000
             while let Some(message) = events.recv().await {
                 if let EventSubscriptionMessage::Event { event } = message
                     && event.run_id == Some(run)
-                    && matches!(
-                        event.payload,
-                        EventPayload::RunCompleted { .. }
-                            | EventPayload::RunFailed { .. }
-                            | EventPayload::RunCancelled { .. }
-                            | EventPayload::RunInterrupted { .. }
-                    )
+                    && matches!(event.payload, EventPayload::RunFinished { .. })
                 {
                     return event.payload.clone();
                 }
@@ -425,7 +419,14 @@ shutdown_grace_ms = 2000
         self.model.enqueue(final_answer("recorded"));
         let ended = self.run(session, "record the runtime process").await;
         assert!(
-            matches!(ended, EventPayload::RunCompleted { .. }),
+            matches!(
+                ended,
+                EventPayload::RunFinished {
+                    outcome: cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::RunOutcome::Completed { .. }
+                    )
+                }
+            ),
             "{ended:?}"
         );
         fs::read_to_string(self.repo.join(file))
@@ -485,7 +486,14 @@ async fn a_configured_runtime_runs_tools_in_its_workspace_next_to_local() {
     fixture.model.enqueue(final_answer("done"));
     let ended = fixture.run(session, "look at the remote repository").await;
     assert!(
-        matches!(ended, EventPayload::RunCompleted { .. }),
+        matches!(
+            ended,
+            EventPayload::RunFinished {
+                outcome: cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::RunOutcome::Completed { .. }
+                )
+            }
+        ),
         "{ended:?}"
     );
 
@@ -710,7 +718,14 @@ async fn a_configured_runtime_hosts_its_template_mcp_servers() {
     fixture.model.enqueue(final_answer("done"));
     let ended = fixture.run(session, "use the MCP tool").await;
     assert!(
-        matches!(ended, EventPayload::RunCompleted { .. }),
+        matches!(
+            ended,
+            EventPayload::RunFinished {
+                outcome: cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::RunOutcome::Completed { .. }
+                )
+            }
+        ),
         "{ended:?}"
     );
     let requests = fixture.model.requests();

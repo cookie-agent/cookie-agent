@@ -174,7 +174,9 @@ impl Harness {
         let mut event = self.template.clone();
         event.seq = seq;
         event.run_id = Some(run);
-        event.payload = EventPayload::RunCompleted { final_text: None };
+        event.payload = EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+            final_text: None,
+        });
         event
     }
 

@@ -707,10 +707,9 @@ async fn automatic_compaction_failure_limit_suppresses_after_three_and_resets() 
     // Diagnostics are appended in batches, after the run that raised them.
     let disabled = |event: &cookie_agent_protocol::StoredEvent| {
         matches!(&event.payload,
-            EventPayload::EngineDiagnostic {
-                kind: cookie_agent_protocol::EngineDiagnosticKind::AutoCompactionDisabled,
-                message,
-            } if message.contains("disabled after 3 consecutive failures")
+            EventPayload::Diagnostic { kind, message, .. }
+                if *kind == cookie_agent_protocol::EngineDiagnosticKind::AutoCompactionDisabled
+                    && message.contains("disabled after 3 consecutive failures")
         )
     };
     await_projection(

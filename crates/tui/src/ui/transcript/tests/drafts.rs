@@ -190,7 +190,9 @@ async fn goal_activation_keeps_run_a_frozen_until_modeled_run_b_events_arrive() 
         session,
         6,
         run_a,
-        EventPayload::RunCompleted { final_text: None },
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+            final_text: None
+        }),
     )));
     assert_eq!(
         assistant_projection(&app.store.sessions[&session]),

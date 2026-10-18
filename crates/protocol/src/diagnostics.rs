@@ -409,13 +409,16 @@ mod tests {
     }
 
     #[test]
-    fn legacy_failures_and_summaries_read_and_new_diagnostics_round_trip() {
-        let old = serde_json::json!({"type":"run_failed", "error":"invalid request"});
+    fn failures_without_detail_read_and_new_diagnostics_round_trip() {
+        let old = serde_json::json!({"type":"run_finished", "outcome":{"type":"failed", "error":"invalid request"}});
         let mut event: crate::EventPayload = serde_json::from_value(old.clone()).unwrap();
         assert_eq!(serde_json::to_value(&event).unwrap(), old);
         let summary: ModelErrorSummary = serde_json::from_value(serde_json::json!({"kind":"invalid_request","message":"invalid request","retryable":false,"stage":"response_body","http_status":400,"bytes_received":10,"vendor_code":null,"request_id":null,"retry_after_ms":null})).unwrap();
         assert!(summary.response_body.is_none());
-        if let crate::EventPayload::RunFailed { model_error, .. } = &mut event {
+        if let crate::EventPayload::RunFinished {
+            outcome: crate::Open::Known(crate::RunOutcome::Failed { model_error, .. }),
+        } = &mut event
+        {
             *model_error = Some(ModelErrorSummary {
                 response_body: Some(detail("line one\nline two")),
                 ..summary

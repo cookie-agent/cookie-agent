@@ -242,7 +242,7 @@ async fn revert_refuses_a_running_child_and_deletes_it_once_finished() {
         matches!(
             &event.payload,
             EventPayload::DelegationReserved { .. }
-                | EventPayload::DelegateFinishedV2 { .. }
+                | EventPayload::DelegationFinished { .. }
                 | EventPayload::ProducerMessageAccepted { .. }
         )
     }));
@@ -255,9 +255,17 @@ async fn revert_refuses_a_running_child_and_deletes_it_once_finished() {
             .filter(|event| event.seq >= reservation.0)
             .all(|event| matches!(
                 &event.payload,
-                EventPayload::RunInterrupted { .. }
-                    | EventPayload::ToolCallTerminated { .. }
-                    | EventPayload::InternalAgentInterrupted { .. }
+                EventPayload::RunFinished {
+                    outcome: cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::RunOutcome::Interrupted { .. }
+                    )
+                } | EventPayload::ToolCallTerminated { .. }
+                    | EventPayload::InternalAgentFinished {
+                        outcome: cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::InternalAgentOutcome::Interrupted { .. }
+                        ),
+                        ..
+                    }
             )),
         "{:#?}",
         parent.log.event_snapshot()
@@ -302,11 +310,11 @@ async fn surviving_background_reservation_publishes_completion_once() {
         &fixture.engine,
         parent_id,
         "surviving delegation completion",
-        |event| matches!(event.payload, EventPayload::DelegateFinishedV2 { .. }),
+        |event| matches!(event.payload, EventPayload::DelegationFinished { .. }),
     )
     .await;
     let invocation_id = match completion.payload {
-        EventPayload::DelegateFinishedV2 { invocation_id, .. } => invocation_id,
+        EventPayload::DelegationFinished { invocation_id, .. } => invocation_id,
         _ => unreachable!(),
     };
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -358,10 +366,7 @@ async fn surviving_background_reservation_publishes_completion_once() {
             .iter()
             .filter(|event| matches!(
                 event.payload,
-                EventPayload::DelegateFinishedV2 {
-                    invocation_id: logged,
-                    ..
-                } if logged == invocation_id
+                EventPayload::DelegationFinished { invocation_id: logged, .. } if logged == invocation_id
             ))
             .count(),
         1

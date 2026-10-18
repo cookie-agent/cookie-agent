@@ -193,7 +193,7 @@ def add_event(surfaces):
 def remove_event(surfaces):
     variants = event_payload(surfaces)["oneOf"]
     variants[:] = [
-        variant for variant in variants if variant["properties"]["type"]["const"] != "run_completed"
+        variant for variant in variants if variant["properties"]["type"]["const"] != "run_finished"
     ]
 
 

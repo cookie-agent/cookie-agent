@@ -865,13 +865,8 @@ async fn recover_events(
 }
 
 fn event_belongs_to_run(event: &StoredEvent, session_id: SessionId, run_id: RunId) -> bool {
-    let session_diagnostic = event.run_id.is_none()
-        && matches!(
-            &event.payload,
-            EventPayload::PluginDiagnostic { .. }
-                | EventPayload::ProducerDiagnostic { .. }
-                | EventPayload::EngineDiagnostic { .. }
-        );
+    let session_diagnostic =
+        event.run_id.is_none() && matches!(&event.payload, EventPayload::Diagnostic { .. });
     event.session_id == session_id && (event.run_id == Some(run_id) || session_diagnostic)
 }
 
@@ -909,10 +904,15 @@ async fn process_event(
                 request_cancel(engine, active_run_id, CancellationCause::User, state).await?;
             }
         }
-        EventPayload::ApprovalFinalized { decision, .. }
-            if decision.reason_code
-                == cookie_agent_protocol::ApprovalReasonCode::AutoApproveNRejected
-                && !state.cancellation_requested =>
+        EventPayload::ApprovalFinalized {
+            outcome:
+                cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::ApprovalFinalization::Decided { decision },
+                ),
+            ..
+        } if decision.reason_code
+            == cookie_agent_protocol::ApprovalReasonCode::AutoApproveNRejected
+            && !state.cancellation_requested =>
         {
             state.approval_rejections = state.approval_rejections.saturating_add(1);
             progress(
@@ -922,17 +922,25 @@ async fn process_event(
             );
             request_cancel(engine, active_run_id, CancellationCause::Permission, state).await?;
         }
-        EventPayload::RunCompleted { final_text } => {
+        EventPayload::RunFinished {
+            outcome:
+                cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Completed {
+                    final_text,
+                }),
+        } => {
             return Ok(Some(TerminalOutcome {
                 status: TerminalStatus::Completed,
                 final_text,
                 error: None,
             }));
         }
-        EventPayload::RunFailed {
-            error,
-            model_error,
-            resolved_model,
+        EventPayload::RunFinished {
+            outcome:
+                cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Failed {
+                    error,
+                    model_error,
+                    resolved_model,
+                }),
         } => {
             let error = cookie_agent_protocol::diagnostics::run_error(
                 &error,
@@ -946,7 +954,12 @@ async fn process_event(
                 error: Some(error),
             }));
         }
-        EventPayload::RunCancelled { reason } => {
+        EventPayload::RunFinished {
+            outcome:
+                cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Cancelled {
+                    reason,
+                }),
+        } => {
             let error = reason.map(|reason| reason.to_string());
             if let Some(error) = &error {
                 writeln!(stderr, "cookie run cancelled: {error}")?;
@@ -957,7 +970,13 @@ async fn process_event(
                 error,
             }));
         }
-        EventPayload::RunInterrupted { reason } => {
+        // An outcome this build does not know reads as interrupted.
+        EventPayload::RunFinished {
+            outcome:
+                cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Interrupted {
+                    reason,
+                }),
+        } => {
             let error = reason.map(|reason| reason.to_string());
             if let Some(error) = &error {
                 writeln!(stderr, "cookie run interrupted: {error}")?;
@@ -966,6 +985,15 @@ async fn process_event(
                 status: TerminalStatus::Interrupted,
                 final_text: None,
                 error,
+            }));
+        }
+        EventPayload::RunFinished {
+            outcome: cookie_agent_protocol::Open::Unknown { .. },
+        } => {
+            return Ok(Some(TerminalOutcome {
+                status: TerminalStatus::Interrupted,
+                final_text: None,
+                error: None,
             }));
         }
         EventPayload::ToolCallTerminated { termination }
@@ -978,7 +1006,14 @@ async fn process_event(
                 cookie_agent_protocol::diagnostics::tool(&termination)
             )?;
         }
-        EventPayload::InternalAgentFailed { kind, failure, .. } => {
+        EventPayload::InternalAgentFinished {
+            kind,
+            outcome:
+                cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::InternalAgentOutcome::Failed { failure, .. },
+                ),
+            ..
+        } => {
             writeln!(
                 stderr,
                 "cookie internal agent {kind:?}: {}",
@@ -1009,28 +1044,17 @@ async fn process_event(
                 cookie_agent_protocol::diagnostics::model(&error)
             )?;
         }
-        EventPayload::PluginDiagnostic {
-            plugin, message, ..
+        EventPayload::Diagnostic {
+            source,
+            kind,
+            message,
+            ..
         } => {
+            let subject = cookie_agent_protocol::diagnostic_subject(&source, &kind)
+                .map_or_else(String::new, |subject| format!(" {subject}"));
             writeln!(
                 stderr,
-                "cookie plugin {plugin}: {}",
-                cookie_agent_protocol::diagnostics::detail(&message)
-            )?;
-        }
-        EventPayload::EngineDiagnostic { message, .. } => {
-            writeln!(
-                stderr,
-                "cookie: {}",
-                cookie_agent_protocol::diagnostics::detail(&message)
-            )?;
-        }
-        EventPayload::ProducerDiagnostic {
-            source, message, ..
-        } => {
-            writeln!(
-                stderr,
-                "cookie producer {source}: {}",
+                "cookie{subject}: {}",
                 cookie_agent_protocol::diagnostics::detail(&message)
             )?;
         }
@@ -1250,11 +1274,12 @@ mod tests {
             run_id: None,
             seq: 1,
             timestamp: "2026-01-01T00:00:00Z".parse().unwrap(),
-            payload: EventPayload::PluginDiagnostic {
-                plugin: "review".into(),
-                kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
+            payload: EventPayload::Diagnostic {
+                source: cookie_agent_protocol::DiagnosticSource::plugin("review").unwrap(),
+                kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked.label(),
                 message: "useful diagnostic".into(),
-                count: 1,
+                count: None,
+                detail: None,
             },
         };
         assert!(event_belongs_to_run(&event, session_id, run_id));
@@ -1264,7 +1289,9 @@ mod tests {
         event.run_id = Some(run_id);
         assert!(event_belongs_to_run(&event, session_id, run_id));
         event.run_id = None;
-        event.payload = EventPayload::RunCompleted { final_text: None };
+        event.payload = EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+            final_text: None,
+        });
         assert!(!event_belongs_to_run(&event, session_id, run_id));
     }
 

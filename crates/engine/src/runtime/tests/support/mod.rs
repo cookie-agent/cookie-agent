@@ -1450,7 +1450,17 @@ pub(crate) async fn wait_for_tree_escalated_approval(
         engine,
         child_session_id,
         "delegated child approval escalation",
-        |event| matches!(event.payload, EventPayload::ApprovalEscalated { .. }),
+        |event| {
+            matches!(
+                event.payload,
+                EventPayload::ApprovalStep {
+                    step: cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::ApprovalStep::Escalated { .. }
+                    ),
+                    ..
+                }
+            )
+        },
     )
     .await;
     let approval = engine

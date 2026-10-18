@@ -200,27 +200,31 @@ impl Engine {
                 active.session,
                 Some(run),
                 super::event_origin("engine:approvals"),
-                Event::ApprovalDoomLoopDetected {
+                Event::approval_step(
                     approval_id,
-                    operation_fingerprint: request.operation_fingerprint().clone(),
-                    repetitions,
-                },
+                    cookie_agent_protocol::ApprovalStep::DoomLoop {
+                        operation_fingerprint: request.operation_fingerprint().clone(),
+                        repetitions,
+                    },
+                ),
             )
             .await?;
             self.append(
                 active.session,
                 Some(run),
                 super::event_origin("engine:approvals"),
-                Event::ApprovalFinalized {
+                Event::approval_finalized(
                     approval_id,
-                    decision: ApprovalFinalDecision {
-                        outcome: ApprovalFinalOutcome::Rejected,
-                        source: ApprovalDecisionSource::DoomLoopGuard,
-                        reason_code: ApprovalReasonCode::DoomLoopDetected,
-                        feedback: None,
-                        tree_grant_id: None,
+                    cookie_agent_protocol::ApprovalFinalization::Decided {
+                        decision: ApprovalFinalDecision {
+                            outcome: ApprovalFinalOutcome::Rejected,
+                            source: ApprovalDecisionSource::DoomLoopGuard,
+                            reason_code: ApprovalReasonCode::DoomLoopDetected,
+                            feedback: None,
+                            tree_grant_id: None,
+                        },
                     },
-                },
+                ),
             )
             .await?;
             return Ok(ApprovalOutcome {
@@ -246,26 +250,28 @@ impl Engine {
                 active.session,
                 Some(run),
                 super::event_origin("engine:approvals"),
-                Event::ApprovalEvaluated {
+                Event::approval_step(
                     approval_id,
-                    decision,
-                },
+                    cookie_agent_protocol::ApprovalStep::Evaluated { decision },
+                ),
             )
             .await?;
             self.append(
                 active.session,
                 Some(run),
                 super::event_origin("engine:approvals"),
-                Event::ApprovalFinalized {
+                Event::approval_finalized(
                     approval_id,
-                    decision: ApprovalFinalDecision {
-                        outcome: ApprovalFinalOutcome::Approved,
-                        source: ApprovalDecisionSource::TreeGrant,
-                        reason_code: ApprovalReasonCode::TreeGrantMatched,
-                        feedback: None,
-                        tree_grant_id: Some(grant.grant_id),
+                    cookie_agent_protocol::ApprovalFinalization::Decided {
+                        decision: ApprovalFinalDecision {
+                            outcome: ApprovalFinalOutcome::Approved,
+                            source: ApprovalDecisionSource::TreeGrant,
+                            reason_code: ApprovalReasonCode::TreeGrantMatched,
+                            feedback: None,
+                            tree_grant_id: Some(grant.grant_id),
+                        },
                     },
-                },
+                ),
             )
             .await?;
             return Ok(ApprovalOutcome {
@@ -288,26 +294,28 @@ impl Engine {
                 active.session,
                 Some(run),
                 super::event_origin("engine:approvals"),
-                Event::ApprovalEvaluated {
+                Event::approval_step(
                     approval_id,
-                    decision,
-                },
+                    cookie_agent_protocol::ApprovalStep::Evaluated { decision },
+                ),
             )
             .await?;
             self.append(
                 active.session,
                 Some(run),
                 super::event_origin("engine:approvals"),
-                Event::ApprovalFinalized {
+                Event::approval_finalized(
                     approval_id,
-                    decision: ApprovalFinalDecision {
-                        outcome: ApprovalFinalOutcome::Rejected,
-                        source: ApprovalDecisionSource::Policy,
-                        reason_code: ApprovalReasonCode::PolicyDenied,
-                        feedback: None,
-                        tree_grant_id: None,
+                    cookie_agent_protocol::ApprovalFinalization::Decided {
+                        decision: ApprovalFinalDecision {
+                            outcome: ApprovalFinalOutcome::Rejected,
+                            source: ApprovalDecisionSource::Policy,
+                            reason_code: ApprovalReasonCode::PolicyDenied,
+                            feedback: None,
+                            tree_grant_id: None,
+                        },
                     },
-                },
+                ),
             )
             .await?;
             return Ok(ApprovalOutcome {
@@ -330,31 +338,35 @@ impl Engine {
                 active.session,
                 Some(run),
                 super::event_origin("engine:approvals"),
-                Event::ApprovalEvaluated {
+                Event::approval_step(
                     approval_id,
-                    decision: ApprovalInternalDecision {
-                        decision: ApprovalInternalDecisionKind::Allow,
-                        source: ApprovalDecisionSource::Policy,
-                        reason_code: ApprovalReasonCode::YoloApproved,
-                        evaluations: approval_evaluations(&request),
+                    cookie_agent_protocol::ApprovalStep::Evaluated {
+                        decision: ApprovalInternalDecision {
+                            decision: ApprovalInternalDecisionKind::Allow,
+                            source: ApprovalDecisionSource::Policy,
+                            reason_code: ApprovalReasonCode::YoloApproved,
+                            evaluations: approval_evaluations(&request),
+                        },
                     },
-                },
+                ),
             )
             .await?;
             self.append(
                 active.session,
                 Some(run),
                 super::event_origin("engine:approvals"),
-                Event::ApprovalFinalized {
+                Event::approval_finalized(
                     approval_id,
-                    decision: ApprovalFinalDecision {
-                        outcome: ApprovalFinalOutcome::Approved,
-                        source: ApprovalDecisionSource::Policy,
-                        reason_code: ApprovalReasonCode::YoloApproved,
-                        feedback: None,
-                        tree_grant_id: None,
+                    cookie_agent_protocol::ApprovalFinalization::Decided {
+                        decision: ApprovalFinalDecision {
+                            outcome: ApprovalFinalOutcome::Approved,
+                            source: ApprovalDecisionSource::Policy,
+                            reason_code: ApprovalReasonCode::YoloApproved,
+                            feedback: None,
+                            tree_grant_id: None,
+                        },
                     },
-                },
+                ),
             )
             .await?;
             return Ok(ApprovalOutcome {
@@ -580,7 +592,10 @@ fn prior_approval_decisions<'a>(
             match &event.payload {
                 Event::ApprovalFinalized {
                     approval_id,
-                    decision,
+                    outcome:
+                        cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::ApprovalFinalization::Decided { decision },
+                        ),
                 } if matches!(
                     decision.source,
                     ApprovalDecisionSource::User
@@ -840,18 +855,20 @@ mod tests {
     ) -> Arc<StoredEvent> {
         stored(
             seq,
-            Event::ApprovalFinalized {
+            Event::approval_finalized(
                 approval_id,
-                decision: ApprovalFinalDecision {
-                    outcome,
-                    source,
-                    reason_code: ApprovalReasonCode::InternalAgentAllowed,
-                    feedback: feedback.map(|message| ApprovalFeedback {
-                        message: SafeErrorMessage::new(message).unwrap(),
-                    }),
-                    tree_grant_id: None,
+                cookie_agent_protocol::ApprovalFinalization::Decided {
+                    decision: ApprovalFinalDecision {
+                        outcome,
+                        source,
+                        reason_code: ApprovalReasonCode::InternalAgentAllowed,
+                        feedback: feedback.map(|message| ApprovalFeedback {
+                            message: SafeErrorMessage::new(message).unwrap(),
+                        }),
+                        tree_grant_id: None,
+                    },
                 },
-            },
+            ),
         )
     }
 

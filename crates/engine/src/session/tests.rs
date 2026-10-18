@@ -2448,7 +2448,9 @@ fn in_run_fold_ignored_records_defer_the_metadata_cache_until_the_run_ends() {
             session_id,
             Some(attempt.run_id),
             test_origin(),
-            EventPayload::RunCompleted { final_text: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+                final_text: None,
+            }),
         )
         .unwrap();
     let completed = store.get(session_id).unwrap().meta.clone();
@@ -2519,7 +2521,11 @@ fn a_fork_reads_back_as_the_log_it_went_resident_with() {
     );
     assert!(matches!(
         events[through as usize].payload,
-        EventPayload::RunInterrupted { .. }
+        EventPayload::RunFinished {
+            outcome: cookie_agent_protocol::Open::Known(
+                cookie_agent_protocol::RunOutcome::Interrupted { .. }
+            )
+        }
     ));
     assert!(matches!(
         events[through as usize + 1].payload,
@@ -3250,15 +3256,17 @@ fn internal_usage_is_once_per_fallback_phase_and_all_kinds_survive_reopen() {
         log.append(
             Some(run_id),
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-            EventPayload::InternalAgentCompleted {
+            EventPayload::internal_agent_finished(
                 invocation_id,
                 internal_run_id,
                 kind,
-                result: SafeInternalAgentResult {
-                    output_summary: SafeDisplayText::new("validated output").unwrap(),
-                    output_digest: Sha256Digest::of_bytes(b"output"),
+                cookie_agent_protocol::InternalAgentOutcome::Completed {
+                    result: SafeInternalAgentResult {
+                        output_summary: SafeDisplayText::new("validated output").unwrap(),
+                        output_digest: Sha256Digest::of_bytes(b"output"),
+                    },
                 },
-            },
+            ),
         )
         .unwrap();
     }
@@ -3421,7 +3429,9 @@ fn appends_fold_in_place() {
             session_id,
             Some(run_id),
             fuzz_origin(),
-            EventPayload::RunCompleted { final_text: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+                final_text: None,
+            }),
         )
         .expect("complete run");
     assert_eq!(
@@ -3682,7 +3692,9 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
                 append(
                     &store,
                     Some(run_id),
-                    EventPayload::RunCompleted { final_text: None },
+                    EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+                        final_text: None,
+                    }),
                 );
                 run_id = RunId::new_v7();
                 attempt_id = AttemptId::new_v7();
@@ -4106,9 +4118,9 @@ fn append_realistic_run(
     }
     append(
         Some(run_id),
-        EventPayload::RunCompleted {
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
             final_text: Some("Done: the refactor is in place and the tests pass.".into()),
-        },
+        }),
     );
     next_turn_seq
 }
@@ -4279,9 +4291,9 @@ fn in_place_projection_matches_a_full_fold_through_truncation_and_late_usage() {
             session_id,
             Some(run_id),
             fuzz_origin(),
-            EventPayload::RunCompleted {
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
                 final_text: Some("done".into()),
-            },
+            }),
         )
         .expect("complete run");
 

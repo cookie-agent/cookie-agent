@@ -782,9 +782,13 @@ impl Engine {
                                 session,
                                 None,
                                 super::event_origin("engine:auto-compact"),
-                                Event::EngineDiagnostic {
-                                    kind: cookie_agent_protocol::EngineDiagnosticKind::AutoCompactionDisabled,
+                                Event::Diagnostic {
+                                    source: cookie_agent_protocol::DiagnosticSource::engine("auto-compact")
+                                        .expect("static diagnostic source is valid"),
+                                    kind: cookie_agent_protocol::EngineDiagnosticKind::AutoCompactionDisabled.label(),
                                     message: "automatic context compaction disabled after 3 consecutive failures for this run".into(),
+                                    count: None,
+                                    detail: None,
                                 },
                             )
                         })

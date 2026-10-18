@@ -482,11 +482,13 @@ async fn an_event_handler_emits_once_with_the_delivered_context() {
                 session_id,
                 context_id: "delivered".into(),
                 seq: 7,
-                event: cookie_agent_protocol::EventPayload::PluginDiagnostic {
-                    plugin: "engine".into(),
-                    kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
+                event: cookie_agent_protocol::EventPayload::Diagnostic {
+                    source: cookie_agent_protocol::DiagnosticSource::plugin("engine")
+                        .expect("source"),
+                    kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked.label(),
                     message: "event".into(),
-                    count: 1,
+                    count: None,
+                    detail: None,
                 },
                 timestamp: jiff::Timestamp::now(),
             },

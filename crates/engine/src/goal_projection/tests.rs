@@ -216,7 +216,9 @@ fn interrupted_admission_is_replaced_but_committed_admission_is_final() {
         event(
             3,
             Some(first),
-            EventPayload::RunInterrupted { reason: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Interrupted {
+                reason: None,
+            }),
         ),
         event(
             4,
@@ -417,7 +419,13 @@ fn terminal_run_does_not_clear_recovered_claim_state() {
                 message_ids: vec![message_id],
             },
         ),
-        event(4, Some(run), EventPayload::RunCancelled { reason: None }),
+        event(
+            4,
+            Some(run),
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Cancelled {
+                reason: None,
+            }),
+        ),
     ];
 
     let projection = GoalProducerProjection::from_events(&events);
@@ -663,7 +671,9 @@ fn agent_hop_counts_a_live_claim_after_its_admission_moves_to_a_new_run() {
         event(
             4,
             Some(first),
-            EventPayload::RunCompleted { final_text: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+                final_text: None,
+            }),
         ),
         // The unreleased claim survives even though the admission now
         // belongs to the replacement run.

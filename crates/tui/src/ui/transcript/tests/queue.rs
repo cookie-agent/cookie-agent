@@ -162,9 +162,9 @@ async fn producer_started_tool_loop_promotes_steers_without_composer_restore_and
             session,
             16,
             run,
-            EventPayload::RunCompleted {
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
                 final_text: Some("goal complete".into()),
-            },
+            }),
         ),
     ];
     assert!(
@@ -851,7 +851,9 @@ async fn pending_producer_survives_run_terminal_and_cramped_frames_do_not_overla
         session,
         2,
         run,
-        EventPayload::RunCompleted { final_text: None },
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+            final_text: None
+        }),
     )));
     assert_eq!(
         app.selected_queue_entries()[0].kind,
@@ -951,7 +953,9 @@ async fn run_end_voids_pending_and_restores_the_composer() {
         session,
         3,
         run,
-        EventPayload::RunCompleted { final_text: None },
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+            final_text: None,
+        }),
     )))
     .await;
     // The engine voided the lane without per-entry events: the strip
@@ -980,7 +984,9 @@ async fn replayed_run_end_never_restores_the_composer() {
                 session,
                 3,
                 run,
-                EventPayload::RunCompleted { final_text: None },
+                EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+                    final_text: None,
+                }),
             ),
         ] {
             app.handle_delivery(ClientDelivery::ReplayEvent {
@@ -1024,7 +1030,7 @@ async fn run_end_in_a_background_session_restores_on_select() {
         session_b,
         2,
         run_b,
-        EventPayload::RunCancelled { reason: None },
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Cancelled { reason: None }),
     )))
     .await;
     // The composer belongs to session A right now: B's text is parked,
@@ -1291,7 +1297,7 @@ async fn another_clients_inputs_show_their_author_and_never_recall_or_restore_he
         session,
         3,
         run,
-        EventPayload::RunCancelled { reason: None },
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Cancelled { reason: None }),
     )))
     .await;
     assert_eq!(app.input.as_str(), "mine");
@@ -1324,11 +1330,11 @@ async fn queued_inputs_show_after_steers_and_a_failed_run_restores_only_its_auth
         session,
         4,
         run,
-        EventPayload::RunFailed {
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Failed {
             error: cookie_agent_protocol::SafeErrorMessage::new("boom").unwrap(),
             model_error: None,
             resolved_model: None,
-        },
+        }),
     )))
     .await;
     assert!(app.store.sessions[&session].queued_inputs.is_empty());

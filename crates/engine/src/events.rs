@@ -17,9 +17,9 @@ use std::fs::File;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
-    AssistantToolCallRef, AttemptId, EventOrigin, EventPayload, ModelCallId, OutputDelta,
-    OutputGap, OutputSnapshot, OutputStream, ProviderItemId, RunId, SessionId, StoredEvent,
-    StoredEventEnvelope, ToolCallId, deserialize_event_payload_best_effort,
+    AssistantToolCallRef, AttemptId, DelegationStage, EventOrigin, EventPayload, ModelCallId, Open,
+    OutputDelta, OutputGap, OutputSnapshot, OutputStream, ProviderItemId, RunId, SessionId,
+    StoredEvent, StoredEventEnvelope, ToolCallId, deserialize_event_payload_best_effort,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -1551,18 +1551,12 @@ impl ValidationTaint {
             Some("user_input_admitted") => {
                 self.admissions.entry(seq).or_insert(seq);
             }
-            Some(
-                "delegation_reserved"
-                | "delegation_started"
-                | "delegation_run_started"
-                | "delegation_run_attached"
-                | "delegation_finished",
-            ) => {
+            Some("delegation_reserved" | "delegation_progressed" | "delegation_finished") => {
                 if let Some(invocation_id) = delegation_invocation_from_value(payload) {
                     self.delegations.entry(invocation_id).or_insert(seq);
                 }
             }
-            Some("run_completed" | "run_failed" | "run_cancelled" | "run_interrupted") => {
+            Some("run_finished") => {
                 self.active_run_ordering.get_or_insert(seq);
             }
             _ => {}
@@ -1633,16 +1627,11 @@ impl ValidationTaint {
                     .entry(reservation.invocation_id)
                     .or_insert(seq);
             }
-            EventPayload::DelegationStarted { invocation_id, .. }
-            | EventPayload::DelegationRunStarted { invocation_id, .. }
-            | EventPayload::DelegationRunAttached { invocation_id, .. }
+            EventPayload::DelegationProgressed { invocation_id, .. }
             | EventPayload::DelegationFinished { invocation_id, .. } => {
                 self.delegations.entry(*invocation_id).or_insert(seq);
             }
-            EventPayload::RunCompleted { .. }
-            | EventPayload::RunFailed { .. }
-            | EventPayload::RunCancelled { .. }
-            | EventPayload::RunInterrupted { .. } => {
+            EventPayload::RunFinished { .. } => {
                 self.active_run_ordering.get_or_insert(seq);
             }
             _ => {}
@@ -1707,12 +1696,9 @@ fn delegation_invocation_from_value(
         Some("delegation_reserved") => payload
             .get("reservation")
             .and_then(|reservation| json_field(reservation, "invocation_id")),
-        Some(
-            "delegation_started"
-            | "delegation_run_started"
-            | "delegation_run_attached"
-            | "delegation_finished",
-        ) => json_field(payload, "invocation_id"),
+        Some("delegation_progressed" | "delegation_finished") => {
+            json_field(payload, "invocation_id")
+        }
         _ => None,
     }
 }
@@ -1722,9 +1708,7 @@ fn delegation_invocation_from_event(
 ) -> Option<cookie_agent_protocol::InvocationId> {
     match payload {
         EventPayload::DelegationReserved { reservation, .. } => Some(reservation.invocation_id),
-        EventPayload::DelegationStarted { invocation_id, .. }
-        | EventPayload::DelegationRunStarted { invocation_id, .. }
-        | EventPayload::DelegationRunAttached { invocation_id, .. }
+        EventPayload::DelegationProgressed { invocation_id, .. }
         | EventPayload::DelegationFinished { invocation_id, .. } => Some(*invocation_id),
         _ => None,
     }
@@ -1837,14 +1821,6 @@ fn validate_record_local(path: &Path, record: &StoredEvent) -> Result<(), EventL
         }
         EventPayload::DelegatedContextSeeded { .. } if record.run_id.is_some() => {
             return corrupt(path, "DelegatedContextSeeded must be runless");
-        }
-        EventPayload::PluginDiagnostic { .. } if record.run_id.is_some() => {
-            return corrupt(path, "plugin events must be runless");
-        }
-        EventPayload::ProducerDiagnostic { .. } | EventPayload::EngineDiagnostic { .. }
-            if record.run_id.is_some() =>
-        {
-            return corrupt(path, "diagnostics must be runless");
         }
         EventPayload::SessionTitleCommitted { change, .. } => {
             let runless = matches!(
@@ -2047,12 +2023,8 @@ fn validate_record_incremental(
                 !tool_starts.contains_key(tool_call_id)
                     && taint.tool_before(*tool_call_id, record.seq)
             }
-            EventPayload::ApprovalEvaluated { approval_id, .. }
-            | EventPayload::ApprovalEscalated { approval_id, .. }
-            | EventPayload::ApprovalUserDecisionRecorded { approval_id, .. }
-            | EventPayload::ApprovalFinalized { approval_id, .. }
-            | EventPayload::ApprovalCancelled { approval_id, .. }
-            | EventPayload::ApprovalDoomLoopDetected { approval_id, .. } => {
+            EventPayload::ApprovalStep { approval_id, .. }
+            | EventPayload::ApprovalFinalized { approval_id, .. } => {
                 !approval_owners.contains_key(approval_id)
                     && taint.approval_before(*approval_id, record.seq)
             }
@@ -2066,9 +2038,7 @@ fn validate_record_incremental(
                         !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
                     })
             }
-            EventPayload::DelegationStarted { invocation_id, .. }
-            | EventPayload::DelegationRunStarted { invocation_id, .. }
-            | EventPayload::DelegationRunAttached { invocation_id, .. } => {
+            EventPayload::DelegationProgressed { invocation_id, .. } => {
                 taint.delegation_before(*invocation_id, record.seq)
                     || record.run_id.is_some_and(|run_id| {
                         !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
@@ -2137,9 +2107,9 @@ fn validate_record_incremental(
                 return corrupt(path, "delegation reservation ownership is invalid");
             }
         }
-        EventPayload::DelegationStarted {
+        EventPayload::DelegationProgressed {
             invocation_id,
-            child_session_id,
+            stage: Open::Known(DelegationStage::Started { child_session_id }),
         } => {
             let Some(delegation) = delegations.get_mut(invocation_id) else {
                 return corrupt(path, "delegation start appeared before its reservation");
@@ -2153,15 +2123,15 @@ fn validate_record_incremental(
             }
             delegation.started = true;
         }
-        EventPayload::DelegationRunStarted {
+        EventPayload::DelegationProgressed {
             invocation_id,
-            child_run_id,
-        }
-        | EventPayload::DelegationRunAttached {
-            invocation_id,
-            child_run_id,
+            stage:
+                Open::Known(
+                    stage @ (DelegationStage::RunStarted { child_run_id }
+                    | DelegationStage::RunAttached { child_run_id }),
+                ),
         } => {
-            let attached = matches!(&record.payload, EventPayload::DelegationRunAttached { .. });
+            let attached = matches!(stage, DelegationStage::RunAttached { .. });
             let Some(delegation) = delegations.get_mut(invocation_id) else {
                 return corrupt(path, "delegation run appeared before its reservation");
             };
@@ -2764,25 +2734,17 @@ fn validate_record_incremental(
                 );
             }
         }
-        EventPayload::ApprovalEvaluated { approval_id, .. }
-        | EventPayload::ApprovalEscalated { approval_id, .. }
-        | EventPayload::ApprovalUserDecisionRecorded { approval_id, .. }
-        | EventPayload::ApprovalFinalized { approval_id, .. }
-        | EventPayload::ApprovalCancelled { approval_id, .. }
-        | EventPayload::ApprovalDoomLoopDetected { approval_id, .. } => {
+        EventPayload::ApprovalStep { approval_id, .. }
+        | EventPayload::ApprovalFinalized { approval_id, .. } => {
             validate_approval_owner(path, approval_owners, *approval_id, record.run_id)?;
         }
         EventPayload::TreeApprovalGrantCommitted { grant } => {
             validate_approval_owner(path, approval_owners, grant.approval_id, record.run_id)?;
         }
-        EventPayload::PluginDiagnostic { .. } => {
+        // A diagnostic about a run belongs to it; any other is runless.
+        EventPayload::Diagnostic { .. } => {
             if record.run_id.is_some() {
-                return corrupt(path, "plugin events must be runless");
-            }
-        }
-        EventPayload::ProducerDiagnostic { .. } | EventPayload::EngineDiagnostic { .. } => {
-            if record.run_id.is_some() {
-                return corrupt(path, "diagnostics must be runless");
+                require_started_run(path, runs, record.run_id)?;
             }
         }
         // The queue belongs to the session: entries outlive the run they
@@ -2817,14 +2779,7 @@ fn validate_record_incremental(
             require_started_run(path, runs, record.run_id)?;
         }
     }
-    if matches!(
-        record.payload,
-        EventPayload::RunCompleted { .. }
-            | EventPayload::RunFailed { .. }
-            | EventPayload::RunCancelled { .. }
-            | EventPayload::RunInterrupted { .. }
-    ) && record.run_id == *active_run
-    {
+    if matches!(record.payload, EventPayload::RunFinished { .. }) && record.run_id == *active_run {
         *active_run = None;
     }
     state.finish_record(record);

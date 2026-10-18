@@ -524,7 +524,9 @@ fn committed_partial_turn_survives_the_abort_that_follows_it() {
             session,
             Some(run),
             5,
-            EventPayload::RunCancelled { reason: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Cancelled {
+                reason: None,
+            }),
         ),
     ];
     let state = reduce_session_events(session, 0, &events);
@@ -674,28 +676,30 @@ fn terminal_and_internal_diagnostics_survive_replay_without_lowercasing() {
             session,
             Some(RunId::new_v7()),
             1,
-            EventPayload::RunFailed {
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Failed {
                 error: cookie_agent_protocol::SafeErrorMessage::new("model failed").unwrap(),
                 model_error: Some(model_error.clone()),
                 resolved_model: Some(resolved_model()),
-            },
+            }),
         ),
         stored_event(
             session,
             None,
             2,
-            EventPayload::InternalAgentFailed {
-                invocation_id: cookie_agent_protocol::InternalAgentInvocationId::new_v7(),
-                internal_run_id: cookie_agent_protocol::InternalAgentRunId::new_v7(),
-                kind: cookie_agent_protocol::InternalAgentKind::ContextCompaction,
-                failure: cookie_agent_protocol::InternalAgentFailure {
-                    code: cookie_agent_protocol::SafeCode::new("model_failure").unwrap(),
-                    message: cookie_agent_protocol::SafeErrorMessage::new("Compaction failed")
-                        .unwrap(),
-                    retryable: false,
-                    model_error: Some(model_error),
+            EventPayload::internal_agent_finished(
+                cookie_agent_protocol::InternalAgentInvocationId::new_v7(),
+                cookie_agent_protocol::InternalAgentRunId::new_v7(),
+                cookie_agent_protocol::InternalAgentKind::ContextCompaction,
+                cookie_agent_protocol::InternalAgentOutcome::Failed {
+                    failure: cookie_agent_protocol::InternalAgentFailure {
+                        code: cookie_agent_protocol::SafeCode::new("model_failure").unwrap(),
+                        message: cookie_agent_protocol::SafeErrorMessage::new("Compaction failed")
+                            .unwrap(),
+                        retryable: false,
+                        model_error: Some(model_error),
+                    },
                 },
-            },
+            ),
         ),
     ];
     let replayed = reduce_session_events(session, 0, &events);
@@ -1115,7 +1119,9 @@ fn producer_queue_survives_terminal_and_consumption_updates_one_non_user_row() {
             session_id,
             Some(first_run),
             3,
-            EventPayload::RunCompleted { final_text: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+                final_text: None,
+            }),
         ),
     ] {
         reduce_event(
@@ -1454,7 +1460,9 @@ fn invalid_producer_admissions_do_not_mark_initial_input() {
         &mut state,
         &mut seq,
         Some(terminal_run),
-        EventPayload::RunCompleted { final_text: None },
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+            final_text: None,
+        }),
     );
     apply(
         &mut state,
@@ -1522,7 +1530,9 @@ fn goal_control_messages_survive_terminal_and_reminder_discard() {
             session_id,
             Some(RunId::new_v7()),
             2,
-            EventPayload::RunInterrupted { reason: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Interrupted {
+                reason: None,
+            }),
         ),
         stored_event(
             session_id,
@@ -2223,7 +2233,9 @@ fn replay_and_revert_preserve_terminal_claim_until_explicit_recovery_release() {
             session_id,
             Some(interrupted_run),
             4,
-            EventPayload::RunInterrupted { reason: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Interrupted {
+                reason: None,
+            }),
         ),
         stored_event(
             session_id,
@@ -2300,7 +2312,9 @@ fn producer_can_be_readmitted_after_interruption_but_not_to_terminal_run() {
             session_id,
             Some(first_run),
             3,
-            EventPayload::RunInterrupted { reason: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Interrupted {
+                reason: None,
+            }),
         ),
         stored_event(
             session_id,
@@ -3012,10 +3026,12 @@ fn approval_escalation_is_info_while_rejected_and_expired_keep_existing_levels()
         None,
         1,
         jiff::Timestamp::now(),
-        EventPayload::ApprovalEscalated {
+        EventPayload::approval_step(
             approval_id,
-            reason_code: cookie_agent_protocol::ApprovalReasonCode::Escalated,
-        },
+            cookie_agent_protocol::ApprovalStep::Escalated {
+                reason_code: cookie_agent_protocol::ApprovalReasonCode::Escalated,
+            },
+        ),
     );
     reduce_event(
         &mut state,
@@ -3023,16 +3039,18 @@ fn approval_escalation_is_info_while_rejected_and_expired_keep_existing_levels()
         None,
         2,
         jiff::Timestamp::now(),
-        EventPayload::ApprovalFinalized {
+        EventPayload::approval_finalized(
             approval_id,
-            decision: cookie_agent_protocol::ApprovalFinalDecision {
-                outcome: ApprovalFinalOutcome::Rejected,
-                source: cookie_agent_protocol::ApprovalDecisionSource::Policy,
-                reason_code: cookie_agent_protocol::ApprovalReasonCode::PolicyDenied,
-                feedback: None,
-                tree_grant_id: None,
+            cookie_agent_protocol::ApprovalFinalization::Decided {
+                decision: cookie_agent_protocol::ApprovalFinalDecision {
+                    outcome: ApprovalFinalOutcome::Rejected,
+                    source: cookie_agent_protocol::ApprovalDecisionSource::Policy,
+                    reason_code: cookie_agent_protocol::ApprovalReasonCode::PolicyDenied,
+                    feedback: None,
+                    tree_grant_id: None,
+                },
             },
-        },
+        ),
     );
     reduce_event(
         &mut state,
@@ -3040,16 +3058,18 @@ fn approval_escalation_is_info_while_rejected_and_expired_keep_existing_levels()
         None,
         3,
         jiff::Timestamp::now(),
-        EventPayload::ApprovalFinalized {
+        EventPayload::approval_finalized(
             approval_id,
-            decision: cookie_agent_protocol::ApprovalFinalDecision {
-                outcome: ApprovalFinalOutcome::Expired,
-                source: cookie_agent_protocol::ApprovalDecisionSource::System,
-                reason_code: cookie_agent_protocol::ApprovalReasonCode::ApprovalExpired,
-                feedback: None,
-                tree_grant_id: None,
+            cookie_agent_protocol::ApprovalFinalization::Decided {
+                decision: cookie_agent_protocol::ApprovalFinalDecision {
+                    outcome: ApprovalFinalOutcome::Expired,
+                    source: cookie_agent_protocol::ApprovalDecisionSource::System,
+                    reason_code: cookie_agent_protocol::ApprovalReasonCode::ApprovalExpired,
+                    feedback: None,
+                    tree_grant_id: None,
+                },
             },
-        },
+        ),
     );
 
     let levels = state

@@ -8,8 +8,8 @@ use std::{
 use cookie_agent_protocol::{
     AgentRevision, AgentSnapshot, CatalogRevision, DelegateRequestPayload, DelegationReservation,
     EventPayload, FrozenCacheStrategy, FrozenModelBinding, InvocationId, ModelRevision,
-    ModelSnapshotRevision, ProviderStateRevision, RecipeRegistryRevision, RunId, RuntimeRevision,
-    SessionId, SessionStatus, Sha256Digest, ToolCallId,
+    ModelSnapshotRevision, Open, ProviderStateRevision, RecipeRegistryRevision, RunId,
+    RuntimeRevision, SessionId, SessionStatus, Sha256Digest, ToolCallId,
 };
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
@@ -81,6 +81,16 @@ pub struct DelegationEntry {
     pub run_attached: bool,
     pub terminal_status: Option<SessionStatus>,
     pub terminal_reason: Option<cookie_agent_protocol::SafeErrorMessage>,
+}
+
+/// What a `delegation_finished` record shows of the child's report.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FinishedTeaser {
+    /// The child's handle; absent when the child session is gone.
+    pub short_id: Option<String>,
+    /// The report as `[subagent_output]` previews it.
+    pub preview: String,
+    pub total_lines: u64,
 }
 
 #[derive(Debug, Error)]
@@ -265,10 +275,12 @@ impl DelegationEventStore {
             Some(reservation.parent_run_id),
             cookie_agent_protocol::EventOrigin::new("engine:delegation")
                 .expect("static event origin is valid"),
-            EventPayload::DelegationStarted {
+            EventPayload::delegation_progressed(
                 invocation_id,
-                child_session_id: reservation.child_session_id,
-            },
+                cookie_agent_protocol::DelegationStage::Started {
+                    child_session_id: reservation.child_session_id,
+                },
+            ),
         )?;
         state
             .entries
@@ -319,17 +331,14 @@ impl DelegationEventStore {
             return Err(DelegationEventError::Corrupt(invocation_id));
         }
         let reservation = entry.reservation.clone();
-        let payload = if attached {
-            EventPayload::DelegationRunAttached {
-                invocation_id,
-                child_run_id,
-            }
-        } else {
-            EventPayload::DelegationRunStarted {
-                invocation_id,
-                child_run_id,
-            }
-        };
+        let payload = EventPayload::delegation_progressed(
+            invocation_id,
+            if attached {
+                cookie_agent_protocol::DelegationStage::RunAttached { child_run_id }
+            } else {
+                cookie_agent_protocol::DelegationStage::RunStarted { child_run_id }
+            },
+        );
         self.sessions.append(
             reservation.parent_session_id,
             Some(reservation.parent_run_id),
@@ -350,8 +359,9 @@ impl DelegationEventStore {
         &self,
         invocation_id: InvocationId,
         status: SessionStatus,
+        teaser: FinishedTeaser,
     ) -> Result<(), DelegationEventError> {
-        self.mark_finished_with_reason(invocation_id, status, None)
+        self.mark_finished_with_reason(invocation_id, status, None, teaser)
     }
 
     pub fn mark_finished_with_reason(
@@ -359,6 +369,7 @@ impl DelegationEventStore {
         invocation_id: InvocationId,
         status: SessionStatus,
         reason: Option<cookie_agent_protocol::SafeErrorMessage>,
+        teaser: FinishedTeaser,
     ) -> Result<(), DelegationEventError> {
         if !matches!(
             status,
@@ -399,6 +410,9 @@ impl DelegationEventStore {
                 child_run_id,
                 status,
                 reason: reason.clone(),
+                short_id: teaser.short_id,
+                preview: teaser.preview,
+                total_lines: teaser.total_lines,
             },
         )?;
         let entry = state
@@ -500,9 +514,7 @@ impl DelegationEventStore {
 fn delegation_invocation_of(payload: &EventPayload) -> Option<cookie_agent_protocol::InvocationId> {
     match payload {
         EventPayload::DelegationReserved { reservation, .. } => Some(reservation.invocation_id),
-        EventPayload::DelegationStarted { invocation_id, .. }
-        | EventPayload::DelegationRunStarted { invocation_id, .. }
-        | EventPayload::DelegationRunAttached { invocation_id, .. }
+        EventPayload::DelegationProgressed { invocation_id, .. }
         | EventPayload::DelegationFinished { invocation_id, .. } => Some(*invocation_id),
         _ => None,
     }
@@ -517,9 +529,7 @@ pub(crate) fn is_delegation_payload(payload: &EventPayload) -> bool {
     matches!(
         payload,
         EventPayload::DelegationReserved { .. }
-            | EventPayload::DelegationStarted { .. }
-            | EventPayload::DelegationRunStarted { .. }
-            | EventPayload::DelegationRunAttached { .. }
+            | EventPayload::DelegationProgressed { .. }
             | EventPayload::DelegationFinished { .. }
     )
 }
@@ -609,9 +619,9 @@ fn apply_event(
             );
             state.order.push(invocation_id);
         }
-        EventPayload::DelegationStarted {
+        EventPayload::DelegationProgressed {
             invocation_id,
-            child_session_id,
+            stage: Open::Known(cookie_agent_protocol::DelegationStage::Started { child_session_id }),
         } => {
             let Some(entry) = state.entries.get_mut(&invocation_id) else {
                 return Ok(());
@@ -625,17 +635,21 @@ fn apply_event(
             }
             entry.started = true;
         }
-        payload @ (EventPayload::DelegationRunStarted { .. }
-        | EventPayload::DelegationRunAttached { .. }) => {
-            let (invocation_id, child_run_id, attached) = match payload {
-                EventPayload::DelegationRunStarted {
-                    invocation_id,
-                    child_run_id,
-                } => (invocation_id, child_run_id, false),
-                EventPayload::DelegationRunAttached {
-                    invocation_id,
-                    child_run_id,
-                } => (invocation_id, child_run_id, true),
+        EventPayload::DelegationProgressed {
+            invocation_id,
+            stage:
+                Open::Known(
+                    stage @ (cookie_agent_protocol::DelegationStage::RunStarted { .. }
+                    | cookie_agent_protocol::DelegationStage::RunAttached { .. }),
+                ),
+        } => {
+            let (child_run_id, attached) = match stage {
+                cookie_agent_protocol::DelegationStage::RunStarted { child_run_id } => {
+                    (child_run_id, false)
+                }
+                cookie_agent_protocol::DelegationStage::RunAttached { child_run_id } => {
+                    (child_run_id, true)
+                }
                 _ => unreachable!(),
             };
             let Some(entry) = state.entries.get_mut(&invocation_id) else {
@@ -658,6 +672,7 @@ fn apply_event(
             child_run_id,
             status,
             reason,
+            ..
         } => {
             let Some(entry) = state.entries.get_mut(&invocation_id) else {
                 return Ok(());

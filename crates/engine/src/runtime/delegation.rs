@@ -998,10 +998,10 @@ impl Engine {
                     invocation.parent_session_id,
                     Some(invocation.parent_run_id),
                     super::event_origin("engine:delegation"),
-                    Event::DelegateQueued {
-                        session_id: child.session_id,
-                        position,
-                    },
+                    Event::delegation_progressed(
+                        invocation_id,
+                        cookie_agent_protocol::DelegationStage::Queued { position },
+                    ),
                 )
                 .await
             {
@@ -1829,11 +1829,50 @@ impl Engine {
         invocation_id: InvocationId,
         status: SessionStatus,
     ) -> Result<(), EngineError> {
-        let delegation_events = self.inner.delegation_events.clone();
+        let engine = self.clone();
         self.spawn_admission_blocking(move || {
-            delegation_events.mark_finished(invocation_id, status)
+            let teaser = engine.finished_teaser(invocation_id, status);
+            engine
+                .inner
+                .delegation_events
+                .mark_finished(invocation_id, status, teaser)
         })
         .await
+    }
+
+    /// The teaser the `delegation_finished` of `invocation_id` records when
+    /// it ends with `status`: the child run's report, or nothing when no run
+    /// started or the child session is gone.
+    pub(super) fn finished_teaser(
+        &self,
+        invocation_id: InvocationId,
+        status: SessionStatus,
+    ) -> delegation_events::FinishedTeaser {
+        let Some(entry) = self.inner.delegation_events.get(invocation_id) else {
+            return delegation_events::FinishedTeaser::default();
+        };
+        let child_session_id = entry.reservation.child_session_id;
+        let Ok(child) = self.inner.store.get(child_session_id) else {
+            return delegation_events::FinishedTeaser::default();
+        };
+        if entry.child_run_id.is_none() {
+            return delegation_events::FinishedTeaser {
+                short_id: child.meta.short_id.clone(),
+                ..delegation_events::FinishedTeaser::default()
+            };
+        }
+        let teaser = delegate_teaser(
+            &child,
+            child_session_id,
+            status,
+            entry.child_run_id,
+            self.subagent_preview_limits(),
+        );
+        delegation_events::FinishedTeaser {
+            short_id: child.meta.short_id.clone(),
+            preview: teaser.preview,
+            total_lines: teaser.total_lines,
+        }
     }
 
     async fn finish_background_or_retry(
@@ -1925,30 +1964,17 @@ impl Engine {
                 (false, None)
             }
         };
-        let parent_events = parent.log.event_snapshot();
-        let mut already_logged = false;
-        let mut already_accepted = false;
-        for event in parent_events.iter() {
-            match &event.payload {
-                Event::DelegateFinishedV2 {
-                    invocation_id: logged_invocation,
-                    session_id,
-                    ..
-                } if *logged_invocation == invocation_id && *session_id == child_session_id => {
-                    already_logged = true;
-                }
+        let mut already_accepted = parent.log.event_snapshot().iter().any(|event| {
+            matches!(
+                &event.payload,
                 Event::ProducerMessageAccepted {
-                    producer_owner:
-                        ProducerOwner::Delegation {
-                            invocation_id: accepted_invocation,
-                        },
+                    producer_owner: ProducerOwner::Delegation {
+                        invocation_id: accepted_invocation,
+                    },
                     ..
-                } if *accepted_invocation == invocation_id => {
-                    already_accepted = true;
-                }
-                _ => {}
-            }
-        }
+                } if *accepted_invocation == invocation_id
+            )
+        });
         let background = entry.request.background;
         let teaser = if entry.terminal_status.is_some() && entry.child_run_id.is_none() {
             DelegateTeaser {
@@ -1971,10 +1997,10 @@ impl Engine {
                 self.subagent_preview_limits(),
             )
         };
-        // Historical V2-only completions have already been model-visible. New
-        // completions durably accept the producer message before the V2 teaser.
+        // A background completion reaches the parent's model as one accepted
+        // producer message.
         let mut transient_guard = None;
-        if background && !already_accepted && !already_logged && producer_id.is_none() {
+        if background && !already_accepted && producer_id.is_none() {
             let mut guard = self
                 .register_background_delegation_producer(parent_session_id, invocation_id)
                 .await?;
@@ -2000,7 +2026,7 @@ impl Engine {
             }
             transient_guard = Some(guard);
         }
-        if background && !already_logged {
+        if background && !already_accepted {
             let send = self
                 .commit_background_delegation_completion(
                     entry.reservation.clone(),
@@ -2047,10 +2073,9 @@ impl Engine {
                 return Ok(());
             }
             already_accepted = true;
-            already_logged = true;
         }
         if owns_registry
-            && (already_accepted || already_logged)
+            && already_accepted
             && let Some(record) = self
                 .inner
                 .delegation
@@ -2159,15 +2184,7 @@ impl Engine {
         let boundary = events
             .iter()
             .rev()
-            .find(|event| {
-                matches!(
-                    event.payload,
-                    Event::RunCompleted { .. }
-                        | Event::RunFailed { .. }
-                        | Event::RunCancelled { .. }
-                        | Event::RunInterrupted { .. }
-                )
-            })
+            .find(|event| matches!(event.payload, Event::RunFinished { .. }))
             .map_or(0, |event| event.seq);
         let mut pending = Vec::new();
         for event in events
@@ -2854,9 +2871,7 @@ impl Engine {
             let queued_event = facts.queued.iter().any(|(run_id, session)| {
                 *run_id == entry.reservation.parent_run_id && *session == child_id
             });
-            let notification_sent = facts.notified.iter().any(|(invocation_id, session)| {
-                *invocation_id == entry.reservation.invocation_id && *session == child_id
-            }) || facts
+            let notification_sent = facts
                 .producer_accepted
                 .contains(&entry.reservation.invocation_id);
             let background = entry.request.background;
@@ -3528,20 +3543,6 @@ fn preview_line_count(preview: &str) -> u64 {
     }
 }
 
-/// The pushed `<subagent_notification>` envelope, shared by the runtime and
-/// history-replay renderers.
-pub(crate) fn render_subagent_notification(
-    preview: &str,
-    status: SessionStatus,
-    total_lines: u64,
-    handle: &str,
-) -> String {
-    format!(
-        "<subagent_notification>{}</subagent_notification>",
-        render_delegate_teaser_body(preview, status, total_lines, handle)
-    )
-}
-
 /// The report a background delegation's first turn sends, as every later
 /// turn's (`super::subagent_reports`). History renders recorded
 /// `<subagent_notification>` messages as they were.
@@ -3694,8 +3695,11 @@ fn delegate_final_text(child: &session::SessionProjection, child_run_id: Option<
 fn last_assistant_message(child: &session::SessionProjection) -> String {
     let events = child.log.event_snapshot();
     if let Some(text) = events.iter().rev().find_map(|event| match &event.payload {
-        Event::RunCompleted {
-            final_text: Some(text),
+        Event::RunFinished {
+            outcome:
+                cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Completed {
+                    final_text: Some(text),
+                }),
         } => Some(text.clone()),
         _ => None,
     }) {

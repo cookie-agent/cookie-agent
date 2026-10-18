@@ -1712,7 +1712,9 @@ fn a_second_run_starts_a_second_assistant_item() {
             session,
             4,
             first_run,
-            EventPayload::RunCompleted { final_text: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+                final_text: None,
+            }),
         ),
         run_started_with_suffix(session, 5, second_run, vec![resolved_model(None)]),
         attempt_started(session, 6, second_run, second_attempt, None),
@@ -2044,9 +2046,9 @@ fn crash_mid_reply_replays_as_an_interrupted_run_without_partial_output() {
             session,
             7,
             run,
-            EventPayload::RunInterrupted {
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Interrupted {
                 reason: Some(SafeErrorMessage::new("daemon restart").unwrap()),
-            },
+            }),
         ),
     ];
     let mut store = StateStore::default();
@@ -2189,15 +2191,17 @@ fn compaction_in_progress_streams_its_summary_until_the_agent_finishes() {
         session,
         4,
         run,
-        EventPayload::InternalAgentCompleted {
-            invocation_id: invocation,
-            internal_run_id: cookie_agent_protocol::InternalAgentRunId::new_v7(),
-            kind: cookie_agent_protocol::InternalAgentKind::ContextCompaction,
-            result: cookie_agent_protocol::SafeInternalAgentResult {
-                output_summary: SafeDisplayText::new("validated output").unwrap(),
-                output_digest: Sha256Digest::of_bytes(b"summary"),
+        EventPayload::internal_agent_finished(
+            invocation,
+            cookie_agent_protocol::InternalAgentRunId::new_v7(),
+            cookie_agent_protocol::InternalAgentKind::ContextCompaction,
+            cookie_agent_protocol::InternalAgentOutcome::Completed {
+                result: cookie_agent_protocol::SafeInternalAgentResult {
+                    output_summary: SafeDisplayText::new("validated output").unwrap(),
+                    output_digest: Sha256Digest::of_bytes(b"summary"),
+                }
             },
-        },
+        ),
     )));
     assert!(!store.sessions[&session].is_compacting());
     assert!(!render(&store, false).contains("compacting context"));

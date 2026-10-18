@@ -503,13 +503,7 @@ async fn wait_for_run_terminal(
 
 fn observe_terminal(event: &StoredEvent, cursor: &mut Option<u64>) -> bool {
     *cursor = Some(event.seq);
-    matches!(
-        event.payload,
-        EventPayload::RunCompleted { .. }
-            | EventPayload::RunFailed { .. }
-            | EventPayload::RunCancelled { .. }
-            | EventPayload::RunInterrupted { .. }
-    )
+    matches!(event.payload, EventPayload::RunFinished { .. })
 }
 
 /// Every blob the engine retained. A store partitions artifacts by tree — one
@@ -1107,7 +1101,9 @@ async fn direct_skill_ask_routes_through_headless_auto_rejection() {
     assert_eq!(result.code, 3, "{}\n{}", result.stderr, result.stdout);
     let records = parse_json_lines(&result.stdout);
     assert!(records.iter().any(|record| {
-        record["type"] == "event" && record["event"]["payload"]["type"] == "approval_escalated"
+        record["type"] == "event"
+            && record["event"]["payload"]["type"] == "approval_step"
+            && record["event"]["payload"]["step"]["type"] == "escalated"
     }));
     fixture.shutdown().await;
 }
@@ -1172,9 +1168,10 @@ async fn webfetch_admission_visibility_and_fail_closed_permission_pipeline() {
         let result = fixture.run(args, "").await;
         let records = parse_json_lines(&result.stdout);
         assert!(has_webfetch(&fixture.server.requests()[before]));
-        let escalation = records
-            .iter()
-            .any(|record| record["event"]["payload"]["type"] == "approval_escalated");
+        let escalation = records.iter().any(|record| {
+            record["event"]["payload"]["type"] == "approval_step"
+                && record["event"]["payload"]["step"]["type"] == "escalated"
+        });
         if effect == PermissionEffect::Allow {
             assert_eq!(result.code, 0, "{}", result.stderr);
             assert!(!escalation);
@@ -1404,7 +1401,9 @@ async fn fork_skill_uses_delegate_approval_and_installs_only_in_child() {
     let denied = fixture.run(denied, "").await;
     assert_eq!(denied.code, 3, "{}", denied.stderr);
     assert!(parse_json_lines(&denied.stdout).iter().any(|record| {
-        record["type"] == "event" && record["event"]["payload"]["type"] == "approval_escalated"
+        record["type"] == "event"
+            && record["event"]["payload"]["type"] == "approval_step"
+            && record["event"]["payload"]["step"]["type"] == "escalated"
     }));
 
     fixture.server.enqueue(MockResponse::Sse(tool_response(
@@ -1651,7 +1650,14 @@ async fn successful_fallback_suffix_survives_runs_restart_and_explicit_resets() 
                 match message {
                     EventSubscriptionMessage::Event { event } => {
                         if event.run_id == Some(run)
-                            && matches!(event.payload, EventPayload::RunCompleted { .. })
+                            && matches!(
+                                event.payload,
+                                EventPayload::RunFinished {
+                                    outcome: cookie_agent_protocol::Open::Known(
+                                        cookie_agent_protocol::RunOutcome::Completed { .. }
+                                    )
+                                }
+                            )
                         {
                             return;
                         }
@@ -1972,7 +1978,7 @@ async fn session_scoped_plugin_diagnostic_is_visible_without_verbose_output() {
         tokio::time::timeout(Duration::from_secs(10), async move {
             while let Some(message) = events.recv().await {
                 if let EventSubscriptionMessage::Event { event } = message
-                    && matches!(&event.payload, EventPayload::PluginDiagnostic { plugin, .. } if plugin == "review_guard") {
+                    && matches!(&event.payload, EventPayload::Diagnostic { source, .. } if source.plugin_name() == Some("review_guard")) {
                     assert!(event.run_id.is_none());
                     assert!(serde_json::to_string(&event).unwrap().contains("secret-tail"));
                     release.send(()).unwrap();
@@ -2069,15 +2075,27 @@ async fn successful_internal_fallback_still_explains_rejected_backend() {
                 .iter()
                 .any(|event| matches!(event.payload, EventPayload::InternalAgentFallback { .. }))
         );
-        assert!(
-            saved
-                .events
-                .iter()
-                .any(|event| matches!(event.payload, EventPayload::InternalAgentCompleted { .. }))
-        );
+        assert!(saved.events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::InternalAgentFinished {
+                outcome: cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::InternalAgentOutcome::Completed { .. }
+                ),
+                ..
+            }
+        )));
         assert!(!saved.events.iter().any(|event| matches!(
             event.payload,
-            EventPayload::InternalAgentFailed { .. } | EventPayload::RunFailed { .. }
+            EventPayload::InternalAgentFinished {
+                outcome: cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::InternalAgentOutcome::Failed { .. }
+                ),
+                ..
+            } | EventPayload::RunFinished {
+                outcome: cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::RunOutcome::Failed { .. }
+                )
+            }
         )));
         fixture.shutdown().await;
     }
@@ -2145,9 +2163,12 @@ async fn anthropic_http_400_diagnostics_reach_all_clients_and_persisted_events()
             let records = parse_json_lines(&result.stdout);
             let terminal = records
                 .iter()
-                .find(|record| record["event"]["payload"]["type"] == "run_failed")
+                .find(|record| {
+                    record["event"]["payload"]["type"] == "run_finished"
+                        && record["event"]["payload"]["outcome"]["type"] == "failed"
+                })
                 .unwrap();
-            let summary = &terminal["event"]["payload"]["model_error"];
+            let summary = &terminal["event"]["payload"]["outcome"]["model_error"];
             assert_eq!(summary["kind"], "invalid_request");
             assert_eq!(summary["http_status"], 400);
             assert_eq!(summary["retryable"], false);
@@ -2223,10 +2244,13 @@ async fn model_failure_diagnostics_reach_text_json_and_quiet_clients() {
             );
             let terminal = records
                 .iter()
-                .find(|record| record["event"]["payload"]["type"] == "run_failed")
+                .find(|record| {
+                    record["event"]["payload"]["type"] == "run_finished"
+                        && record["event"]["payload"]["outcome"]["type"] == "failed"
+                })
                 .expect("terminal event");
             assert_eq!(
-                terminal["event"]["payload"]["model_error"]["http_status"],
+                terminal["event"]["payload"]["outcome"]["model_error"]["http_status"],
                 400
             );
             let event: StoredEvent = serde_json::from_value(terminal["event"].clone()).unwrap();

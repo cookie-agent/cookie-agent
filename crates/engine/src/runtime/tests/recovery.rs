@@ -119,7 +119,14 @@ async fn adopting_a_session_reconciles_its_dead_run_before_resume() {
             .iter()
             .filter(|event| {
                 event.run_id == Some(run_id)
-                    && matches!(event.payload, EventPayload::RunInterrupted { .. })
+                    && matches!(
+                        event.payload,
+                        EventPayload::RunFinished {
+                            outcome: cookie_agent_protocol::Open::Known(
+                                cookie_agent_protocol::RunOutcome::Interrupted { .. }
+                            )
+                        }
+                    )
             })
             .count(),
         1
@@ -141,7 +148,14 @@ async fn adopting_a_session_reconciles_its_dead_run_before_resume() {
             .iter()
             .filter(|event| {
                 event.run_id == Some(run_id)
-                    && matches!(event.payload, EventPayload::RunInterrupted { .. })
+                    && matches!(
+                        event.payload,
+                        EventPayload::RunFinished {
+                            outcome: cookie_agent_protocol::Open::Known(
+                                cookie_agent_protocol::RunOutcome::Interrupted { .. }
+                            )
+                        }
+                    )
             })
             .count(),
         1
@@ -512,7 +526,7 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
         .engine
         .inner
         .delegation_events
-        .mark_finished(first_id, SessionStatus::Completed)
+        .mark_finished(first_id, SessionStatus::Completed, Default::default())
         .expect("first finish");
     fixture
         .engine
@@ -524,7 +538,7 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
         .engine
         .inner
         .delegation_events
-        .mark_finished(second_id, SessionStatus::Failed)
+        .mark_finished(second_id, SessionStatus::Failed, Default::default())
         .expect("second finish");
     let event_path = parent.log.path().to_owned();
     fixture.engine.shutdown().await;
@@ -535,10 +549,11 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
         .lines()
         .map(|line| {
             let mut value: serde_json::Value = serde_json::from_str(line).expect("event JSON");
-            if value["payload"]["type"] == "delegation_run_started"
+            if value["payload"]["type"] == "delegation_progressed"
+                && value["payload"]["stage"]["type"] == "run_started"
                 && value["payload"]["invocation_id"] == serde_json::json!(first_id)
             {
-                value["payload"]["child_run_id"] = serde_json::json!(42);
+                value["payload"]["stage"]["child_run_id"] = serde_json::json!(42);
             }
             if value["payload"]["type"] == "delegation_finished"
                 && value["payload"]["invocation_id"] == serde_json::json!(second_id)
@@ -720,7 +735,16 @@ async fn a_crash_mid_stream_recovers_without_the_live_only_partial_output() {
     )));
     let interrupted = events
         .iter()
-        .position(|event| matches!(event.payload, EventPayload::RunInterrupted { .. }))
+        .position(|event| {
+            matches!(
+                event.payload,
+                EventPayload::RunFinished {
+                    outcome: cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::RunOutcome::Interrupted { .. }
+                    )
+                }
+            )
+        })
         .expect("run interrupted");
     let marked = events
         .iter()

@@ -62,9 +62,9 @@ plugin or runtime may run any number of named producers (see the [external
 producers spec](../specs/external-producers.md)). `session.producers` returns
 `sources` (the recovery state of each producer source) in place of
 `plugin_recovery`, and a source that cannot recover records a
-`producer_diagnostic` event. Protocol 44 added `plugins.list`,
+`producer_diagnostic` event (now a `diagnostic`). Protocol 44 added `plugins.list`,
 `plugins.restart`, and the `plugins.changed` notification (see
-[Plugins](#plugins)), and the `engine_diagnostic` event, which replaces the
+[Plugins](#plugins)), and the `engine_diagnostic` event (now a `diagnostic`), which replaces the
 `plugin_diagnostic` automatic compaction used to record under the name
 `engine:auto-compact`. It removed the built-in `plugin` permission action:
 plugin tools declare their own actions, and a rule naming `plugin` is an
@@ -94,10 +94,17 @@ history (see [Events](events.md)): it removed the legacy events
 `session_reverted`, `context_rehydrated`, `plugin_event_added`,
 `tool_stdin_submitted`, `delegate_finished`, and the positional
 `user_input_recalled`; `user_input_recalled_v2` took the plain name
-`user_input_recalled`; `runtime_attached.capability`, the `agent_md_*`
+`user_input_recalled`; `runtime_attached.capability`, the `agent_md_loaded`
 `attachment`, and the runtime ID of approval requests and tree grants became
 required; and the legacy decoders of older logs are gone, so sessions written
-before protocol 49 no longer open. Older clients are rejected.
+before protocol 49 no longer open. It merged the event set: `diagnostic`
+replaces `plugin_diagnostic`, `producer_diagnostic`, `engine_diagnostic`, and
+`agent_md_skipped`; `run_finished` the four run terminal events;
+`internal_agent_finished` the four internal-agent terminal events;
+`delegation_progressed` `delegation_started`, `delegation_run_started`,
+`delegation_run_attached`, and `delegate_queued`; `delegation_finished`
+absorbs `delegate_finished_v2`; and `approval_step` and `approval_finalized`
+replace the six approval lifecycle events. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
@@ -109,7 +116,7 @@ members of protocol 49.
 the supplied content, with terminal/Unicode format controls removed or replaced
 and a maximum of 4,096 UTF-8 bytes, including any truncation marker. Newlines and
 tabs are permitted. It is used for terminal,
-fallback, and internal-agent model failures. `run_failed` keeps its short `error`
+fallback, and internal-agent model failures. A failed `run_finished` keeps its short `error`
 and optionally includes `model_error` and `resolved_model`. Missing fields in old
 events default to null and are omitted when serialized; this is an additive
 event change without a protocol version bump.

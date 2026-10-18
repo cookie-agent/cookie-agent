@@ -1037,94 +1037,73 @@ pub(super) fn reduce_event_from(
                 .approvals
                 .push(approval_state_from_request(session_id, request, false));
         }
-        EventPayload::ApprovalEvaluated {
-            approval_id,
-            decision,
-            ..
-        } => push_event(
-            state,
-            EventLevel::Debug,
-            format!(
-                "approval {approval_id} evaluated: {:?} ({:?})",
-                decision.decision, decision.reason_code
-            )
-            .to_lowercase(),
-            timestamp,
-        ),
-        EventPayload::ApprovalEscalated {
-            approval_id,
-            reason_code,
-        } => {
-            if let Some(approval) = state
-                .approvals
-                .iter_mut()
-                .find(|approval| approval.approval_id == approval_id)
-            {
-                approval.escalated = true;
-            }
-            push_event(
+        EventPayload::ApprovalStep { approval_id, step } => match step.into_known() {
+            Some(cookie_agent_protocol::ApprovalStep::Evaluated { decision }) => push_event(
                 state,
-                EventLevel::Info,
-                format!("approval {approval_id} escalated: {reason_code:?}").to_lowercase(),
-                timestamp,
-            );
-        }
-        EventPayload::ApprovalUserDecisionRecorded {
-            approval_id,
-            decision,
-            ..
-        } => push_event(
-            state,
-            EventLevel::Info,
-            format!("approval {approval_id} response recorded: {decision:?}").to_lowercase(),
-            timestamp,
-        ),
-        EventPayload::ApprovalFinalized {
-            approval_id,
-            decision,
-        } => {
-            state
-                .approvals
-                .retain(|approval| approval.approval_id != approval_id);
-            push_event(
-                state,
-                EventLevel::Info,
+                EventLevel::Debug,
                 format!(
-                    "approval {approval_id}: {} ({:?})",
-                    approval_outcome_label(decision.outcome),
-                    decision.reason_code
+                    "approval {approval_id} evaluated: {:?} ({:?})",
+                    decision.decision, decision.reason_code
                 )
                 .to_lowercase(),
                 timestamp,
-            );
-        }
-        EventPayload::ApprovalCancelled {
+            ),
+            Some(cookie_agent_protocol::ApprovalStep::Escalated { reason_code }) => {
+                if let Some(approval) = state
+                    .approvals
+                    .iter_mut()
+                    .find(|approval| approval.approval_id == approval_id)
+                {
+                    approval.escalated = true;
+                }
+                push_event(
+                    state,
+                    EventLevel::Info,
+                    format!("approval {approval_id} escalated: {reason_code:?}").to_lowercase(),
+                    timestamp,
+                );
+            }
+            Some(cookie_agent_protocol::ApprovalStep::UserDecision { decision, .. }) => push_event(
+                state,
+                EventLevel::Info,
+                format!("approval {approval_id} response recorded: {decision:?}").to_lowercase(),
+                timestamp,
+            ),
+            Some(cookie_agent_protocol::ApprovalStep::DoomLoop {
+                operation_fingerprint,
+                repetitions,
+            }) => push_event(
+                state,
+                EventLevel::Error,
+                format!(
+                    "approval {approval_id} doom loop: {} repeated {repetitions} times",
+                    operation_fingerprint.digest()
+                ),
+                timestamp,
+            ),
+            // A step this build does not know shows nothing.
+            None => {}
+        },
+        EventPayload::ApprovalFinalized {
             approval_id,
-            reason_code,
+            outcome,
         } => {
             state
                 .approvals
                 .retain(|approval| approval.approval_id != approval_id);
-            push_event(
-                state,
-                EventLevel::Info,
-                format!("approval {approval_id} cancelled: {reason_code:?}").to_lowercase(),
-                timestamp,
-            );
+            let message = match outcome.known() {
+                Some(cookie_agent_protocol::ApprovalFinalization::Decided { decision }) => format!(
+                    "approval {approval_id}: {} ({:?})",
+                    approval_outcome_label(decision.outcome),
+                    decision.reason_code
+                ),
+                Some(cookie_agent_protocol::ApprovalFinalization::Cancelled { reason_code }) => {
+                    format!("approval {approval_id} cancelled: {reason_code:?}")
+                }
+                None => format!("approval {approval_id} ended"),
+            };
+            push_event(state, EventLevel::Info, message.to_lowercase(), timestamp);
         }
-        EventPayload::ApprovalDoomLoopDetected {
-            approval_id,
-            operation_fingerprint,
-            repetitions,
-        } => push_event(
-            state,
-            EventLevel::Error,
-            format!(
-                "approval {approval_id} doom loop: {} repeated {repetitions} times",
-                operation_fingerprint.digest()
-            ),
-            timestamp,
-        ),
         EventPayload::TreeApprovalGrantCommitted { grant } => push_event(
             state,
             EventLevel::Debug,
@@ -1135,80 +1114,16 @@ pub(super) fn reduce_event_from(
             ),
             timestamp,
         ),
-        EventPayload::RunCompleted { .. } => {
+        EventPayload::RunFinished { outcome } => {
             close_open_assistant(state, timestamp);
-            state.open_run_assistant = None;
-            state.pending_attempt = None;
-            state.active_run = None;
-            state.attempts.clear();
-            state.stream_marks.clear();
-            state.pending_tool_rows.clear();
-            void_pending_inputs(state);
-            state.approvals.clear();
-            if let Some(run_id) = run_id {
-                state.terminal_runs.insert(run_id);
-            }
-            push_event(state, EventLevel::Info, "run completed".into(), timestamp);
-        }
-        EventPayload::RunFailed {
-            error,
-            model_error,
-            resolved_model,
-        } => {
-            close_open_assistant(state, timestamp);
-            state.open_run_assistant = None;
-            state.pending_attempt = None;
-            state.active_run = None;
-            state.attempts.clear();
-            state.stream_marks.clear();
-            state.pending_tool_rows.clear();
-            void_pending_inputs(state);
-            state.approvals.clear();
-            if let Some(run_id) = run_id {
-                state.terminal_runs.insert(run_id);
-            }
-            push_event(
-                state,
-                EventLevel::Error,
-                format!(
-                    "run failed: {}",
-                    cookie_agent_protocol::diagnostics::run_error(
-                        &error,
-                        model_error.as_ref(),
-                        resolved_model.as_ref()
-                    )
-                ),
-                timestamp,
-            );
-        }
-        EventPayload::RunCancelled { reason } => {
-            close_open_assistant(state, timestamp);
-            state.open_run_assistant = None;
-            state.pending_attempt = None;
-            state.active_run = None;
-            state.attempts.clear();
-            state.stream_marks.clear();
-            state.pending_tool_rows.clear();
-            void_pending_inputs(state);
-            state.approvals.clear();
-            if let Some(run_id) = run_id {
-                state.terminal_runs.insert(run_id);
-            }
-            push_event(
-                state,
-                EventLevel::Info,
-                reason.map_or_else(
-                    || "run cancelled".into(),
-                    |reason| format!("run cancelled: {reason}"),
-                ),
-                timestamp,
-            );
-        }
-        EventPayload::RunInterrupted { reason } => {
-            close_open_assistant(state, timestamp);
-            // The run's open block keeps an `interrupted` footer marker.
-            if let Some(projection) = state.open_run_assistant.take() {
-                state.interrupted_assistant_items.insert(projection.item_id);
+            let interrupted = outcome.status() == cookie_agent_protocol::SessionStatus::Interrupted;
+            if interrupted {
+                // The run's open block keeps an `interrupted` footer marker.
+                if let Some(projection) = state.open_run_assistant.take() {
+                    state.interrupted_assistant_items.insert(projection.item_id);
+                }
+            } else {
+                state.open_run_assistant = None;
             }
             state.pending_attempt = None;
             state.active_run = None;
@@ -1220,15 +1135,8 @@ pub(super) fn reduce_event_from(
             if let Some(run_id) = run_id {
                 state.terminal_runs.insert(run_id);
             }
-            push_event(
-                state,
-                EventLevel::Error,
-                reason.map_or_else(
-                    || "run interrupted".into(),
-                    |reason| format!("run interrupted: {reason}"),
-                ),
-                timestamp,
-            );
+            let (level, message) = run_finished_message(&outcome);
+            push_event(state, level, message, timestamp);
         }
         EventPayload::InternalAgentStarted {
             invocation_id,
@@ -1262,76 +1170,15 @@ pub(super) fn reduce_event_from(
                 });
             }
         }
-        EventPayload::InternalAgentCompleted {
+        EventPayload::InternalAgentFinished {
             invocation_id,
             kind,
-            result,
+            outcome,
             ..
         } => {
             remove_compacting(state, invocation_id);
-            push_event(
-                state,
-                EventLevel::Info,
-                format!(
-                    "internal agent {kind:?} completed: {}",
-                    result.output_summary
-                )
-                .to_lowercase(),
-                timestamp,
-            );
-        }
-        EventPayload::InternalAgentFailed {
-            invocation_id,
-            kind,
-            failure,
-            ..
-        } => {
-            remove_compacting(state, invocation_id);
-            push_event(
-                state,
-                EventLevel::Error,
-                format!(
-                    "internal agent {kind:?} failed: {}",
-                    cookie_agent_protocol::diagnostics::internal(&failure)
-                ),
-                timestamp,
-            );
-        }
-        EventPayload::InternalAgentCancelled {
-            invocation_id,
-            kind,
-            reason,
-            ..
-        } => {
-            remove_compacting(state, invocation_id);
-            push_event(
-                state,
-                EventLevel::Info,
-                reason.map_or_else(
-                    || format!("internal agent {kind:?} cancelled").to_lowercase(),
-                    |reason| format!("internal agent {kind:?} cancelled: {reason}").to_lowercase(),
-                ),
-                timestamp,
-            );
-        }
-        EventPayload::InternalAgentInterrupted {
-            invocation_id,
-            kind,
-            reason,
-            ..
-        } => {
-            remove_compacting(state, invocation_id);
-            push_event(
-                state,
-                EventLevel::Error,
-                reason.map_or_else(
-                    || format!("internal agent {kind:?} interrupted").to_lowercase(),
-                    |reason| {
-                        format!("internal agent {kind:?} interrupted: {reason}").to_lowercase()
-                    },
-                ),
-                timestamp,
-            );
+            let (level, message) = internal_agent_finished_message(kind, &outcome);
+            push_event(state, level, message, timestamp);
         }
         EventPayload::InternalAgentFallback {
             invocation_id,
@@ -1383,20 +1230,23 @@ pub(super) fn reduce_event_from(
             ),
             timestamp,
         ),
-        EventPayload::DelegateQueued {
-            session_id,
-            position,
+        EventPayload::DelegationProgressed {
+            invocation_id,
+            stage:
+                cookie_agent_protocol::Open::Known(cookie_agent_protocol::DelegationStage::Queued {
+                    position,
+                }),
         } => push_event(
             state,
             EventLevel::Info,
             position.map_or_else(
-                || format!("subagent {session_id} queued"),
-                |position| format!("subagent {session_id} queued at position {position}"),
+                || format!("subagent {invocation_id} queued"),
+                |position| format!("subagent {invocation_id} queued at position {position}"),
             ),
             timestamp,
         ),
-        EventPayload::DelegateFinishedV2 {
-            session_id,
+        EventPayload::DelegationFinished {
+            child_session_id,
             status,
             total_lines,
             ..
@@ -1407,7 +1257,7 @@ pub(super) fn reduce_event_from(
             } else {
                 EventLevel::Warning
             },
-            format!("subagent {session_id} finished: {status:?} ({total_lines} lines)")
+            format!("subagent {child_session_id} finished: {status:?} ({total_lines} lines)")
                 .to_lowercase(),
             timestamp,
         ),
@@ -1424,32 +1274,23 @@ pub(super) fn reduce_event_from(
             ),
             timestamp,
         ),
-        EventPayload::PluginDiagnostic {
-            plugin,
+        EventPayload::Diagnostic {
+            source,
+            kind,
             message,
             count,
             ..
-        } => push_event(
-            state,
-            EventLevel::Warning,
-            if count > 1 {
-                format!("plugin {plugin}: {message} (count: {count})")
-            } else {
-                format!("plugin {plugin}: {message}")
-            },
-            timestamp,
-        ),
-        EventPayload::EngineDiagnostic { message, .. } => {
+        } => {
+            let message = match cookie_agent_protocol::diagnostic_subject(&source, &kind) {
+                Some(subject) => format!("{subject}: {message}"),
+                None => message,
+            };
+            let message = match count {
+                Some(count) if count > 1 => format!("{message} (count: {count})"),
+                _ => message,
+            };
             push_event(state, EventLevel::Warning, message, timestamp);
         }
-        EventPayload::ProducerDiagnostic {
-            source, message, ..
-        } => push_event(
-            state,
-            EventLevel::Warning,
-            format!("producer {source}: {message}"),
-            timestamp,
-        ),
         EventPayload::SessionTitleCommitted { change, .. } => {
             push_event(
                 state,
@@ -1533,18 +1374,6 @@ pub(super) fn reduce_event_from(
         EventPayload::ModelToolsPublished { tool_names, .. } => {
             state.model_tools = Some(tool_names.into());
         }
-        EventPayload::AgentMdSkipped {
-            path, byte_length, ..
-        } => push_event(
-            state,
-            EventLevel::Warning,
-            format!(
-                "AGENTS.md skipped: {} is {byte_length} bytes, over the {} MiB limit",
-                path.as_str(),
-                cookie_agent_protocol::AgentMdSkipped::MAX_SKIP_BYTES / (1024 * 1024)
-            ),
-            timestamp,
-        ),
         EventPayload::SkillLoaded {
             name,
             rendered_body,
@@ -1568,10 +1397,7 @@ pub(super) fn reduce_event_from(
         EventPayload::DelegatedContextSeeded { .. }
         | EventPayload::UserInputTransformed { .. }
         | EventPayload::DelegationReserved { .. }
-        | EventPayload::DelegationStarted { .. }
-        | EventPayload::DelegationRunStarted { .. }
-        | EventPayload::DelegationRunAttached { .. }
-        | EventPayload::DelegationFinished { .. }
+        | EventPayload::DelegationProgressed { .. }
         | EventPayload::ModelRequestPrepared { .. }
         | EventPayload::InternalAgentUsageRecorded { .. }
         | EventPayload::ToolCallLinked { .. }
@@ -3098,5 +2924,90 @@ pub(super) fn render_title_commit(change: &SessionTitleChange) -> String {
             format!("delegated session titled {title}")
         }
         SessionTitleChange::FallbackSet { title } => format!("session title set to {title}"),
+    }
+}
+
+/// The event row a run's end shows. An outcome this build does not know
+/// reads as interrupted.
+fn run_finished_message(
+    outcome: &cookie_agent_protocol::Open<cookie_agent_protocol::RunOutcome>,
+) -> (EventLevel, String) {
+    use cookie_agent_protocol::RunOutcome;
+    match outcome.known() {
+        Some(RunOutcome::Completed { .. }) => (EventLevel::Info, "run completed".into()),
+        Some(RunOutcome::Failed {
+            error,
+            model_error,
+            resolved_model,
+        }) => (
+            EventLevel::Error,
+            format!(
+                "run failed: {}",
+                cookie_agent_protocol::diagnostics::run_error(
+                    error,
+                    model_error.as_ref(),
+                    resolved_model.as_ref()
+                )
+            ),
+        ),
+        Some(RunOutcome::Cancelled { reason }) => (
+            EventLevel::Info,
+            reason.as_ref().map_or_else(
+                || "run cancelled".into(),
+                |reason| format!("run cancelled: {reason}"),
+            ),
+        ),
+        Some(RunOutcome::Interrupted { reason }) => (
+            EventLevel::Error,
+            reason.as_ref().map_or_else(
+                || "run interrupted".into(),
+                |reason| format!("run interrupted: {reason}"),
+            ),
+        ),
+        None => (EventLevel::Error, "run interrupted".into()),
+    }
+}
+
+/// The event row an internal agent's end shows. An outcome this build does
+/// not know reads as interrupted.
+fn internal_agent_finished_message(
+    kind: cookie_agent_protocol::InternalAgentKind,
+    outcome: &cookie_agent_protocol::Open<cookie_agent_protocol::InternalAgentOutcome>,
+) -> (EventLevel, String) {
+    use cookie_agent_protocol::InternalAgentOutcome;
+    match outcome.known() {
+        Some(InternalAgentOutcome::Completed { result }) => (
+            EventLevel::Info,
+            format!(
+                "internal agent {kind:?} completed: {}",
+                result.output_summary
+            )
+            .to_lowercase(),
+        ),
+        Some(InternalAgentOutcome::Failed { failure }) => (
+            EventLevel::Error,
+            format!(
+                "internal agent {kind:?} failed: {}",
+                cookie_agent_protocol::diagnostics::internal(failure)
+            ),
+        ),
+        Some(InternalAgentOutcome::Cancelled { reason }) => (
+            EventLevel::Info,
+            reason.as_ref().map_or_else(
+                || format!("internal agent {kind:?} cancelled").to_lowercase(),
+                |reason| format!("internal agent {kind:?} cancelled: {reason}").to_lowercase(),
+            ),
+        ),
+        Some(InternalAgentOutcome::Interrupted { reason }) => (
+            EventLevel::Error,
+            reason.as_ref().map_or_else(
+                || format!("internal agent {kind:?} interrupted").to_lowercase(),
+                |reason| format!("internal agent {kind:?} interrupted: {reason}").to_lowercase(),
+            ),
+        ),
+        None => (
+            EventLevel::Error,
+            format!("internal agent {kind:?} interrupted").to_lowercase(),
+        ),
     }
 }

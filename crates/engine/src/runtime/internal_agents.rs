@@ -213,12 +213,14 @@ impl Engine {
                 self.append_internal_agent_event(
                     session,
                     parent_run,
-                    Event::InternalAgentCancelled {
+                    Event::internal_agent_finished(
                         invocation_id,
                         internal_run_id,
                         kind,
-                        reason: Some(safe_error("parent run cancelled")),
-                    },
+                        cookie_agent_protocol::InternalAgentOutcome::Cancelled {
+                            reason: Some(safe_error("parent run cancelled")),
+                        },
+                    ),
                     execution.actor_direct,
                 )
                 .await?;
@@ -297,18 +299,20 @@ impl Engine {
                     self.append_internal_agent_event(
                         session,
                         parent_run,
-                        Event::InternalAgentCompleted {
+                        Event::internal_agent_finished(
                             invocation_id,
                             internal_run_id,
                             kind,
-                            result: SafeInternalAgentResult {
-                                output_summary: safe_display(&format!(
-                                    "validated {name} output ({} bytes)",
-                                    output.len()
-                                )),
-                                output_digest: Sha256Digest::of_bytes(output.as_bytes()),
+                            cookie_agent_protocol::InternalAgentOutcome::Completed {
+                                result: SafeInternalAgentResult {
+                                    output_summary: safe_display(&format!(
+                                        "validated {name} output ({} bytes)",
+                                        output.len()
+                                    )),
+                                    output_digest: Sha256Digest::of_bytes(output.as_bytes()),
+                                },
                             },
-                        },
+                        ),
                         execution.actor_direct,
                     )
                     .await?;
@@ -351,12 +355,14 @@ impl Engine {
         self.append_internal_agent_event(
             session,
             parent_run,
-            Event::InternalAgentFailed {
+            Event::internal_agent_finished(
                 invocation_id,
                 internal_run_id,
                 kind,
-                failure: last_failure,
-            },
+                cookie_agent_protocol::InternalAgentOutcome::Failed {
+                    failure: last_failure,
+                },
+            ),
             execution.actor_direct,
         )
         .await?;

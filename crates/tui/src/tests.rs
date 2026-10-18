@@ -468,7 +468,9 @@ fn terminal_run_expires_pending_approvals() {
         run_id: Some(run_id),
         seq: 2,
         timestamp: Timestamp::now(),
-        payload: EventPayload::RunCompleted { final_text: None },
+        payload: EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+            final_text: None,
+        }),
     });
     assert!(store.sessions[&session].approvals.is_empty());
 }
@@ -507,10 +509,12 @@ async fn app_draws_conversation_approval_tree_and_input() {
         run_id: Some(cookie_agent_protocol::RunId::new_v7()),
         seq: 5,
         timestamp: Timestamp::now(),
-        payload: EventPayload::ApprovalEscalated {
+        payload: EventPayload::approval_step(
             approval_id,
-            reason_code: cookie_agent_protocol::ApprovalReasonCode::Escalated,
-        },
+            cookie_agent_protocol::ApprovalStep::Escalated {
+                reason_code: cookie_agent_protocol::ApprovalReasonCode::Escalated,
+            },
+        ),
     });
     for (width, height) in [(40, 12), (80, 24), (160, 50)] {
         let backend = TestBackend::new(width, height);
@@ -906,32 +910,41 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
         Err(_) => panic!("start direct skill run failed with a non-RPC client error"),
     };
 
-    let request = tokio::time::timeout(STAGE_TIMEOUT, async {
-        let mut request = None;
-        loop {
-            let event = match deliveries.recv().await.expect("escalation delivery") {
-                crate::ClientDelivery::Live { message, .. } => match message.as_ref() {
-                    cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
-                        Some(Box::new((**event).clone()))
-                    }
+    let request =
+        tokio::time::timeout(STAGE_TIMEOUT, async {
+            let mut request = None;
+            loop {
+                let event = match deliveries.recv().await.expect("escalation delivery") {
+                    crate::ClientDelivery::Live { message, .. } => match message.as_ref() {
+                        cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
+                            Some(Box::new((**event).clone()))
+                        }
+                        _ => None,
+                    },
+                    crate::ClientDelivery::ReplayEvent { event, .. } => Some(event),
                     _ => None,
-                },
-                crate::ClientDelivery::ReplayEvent { event, .. } => Some(event),
-                _ => None,
-            };
-            let Some(event) = event else { continue };
-            if let EventPayload::ApprovalRequested { request: approval } = &event.payload {
-                request = Some(approval.clone());
+                };
+                let Some(event) = event else { continue };
+                if let EventPayload::ApprovalRequested { request: approval } = &event.payload {
+                    request = Some(approval.clone());
+                }
+                if let EventPayload::ApprovalStep {
+                    approval_id,
+                    step:
+                        cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::ApprovalStep::Escalated { .. },
+                        ),
+                    ..
+                } = event.payload
+                {
+                    let request = request.expect("escalation followed its approval request");
+                    assert_eq!(request.approval_id(), approval_id);
+                    break request;
+                }
             }
-            if let EventPayload::ApprovalEscalated { approval_id, .. } = event.payload {
-                let request = request.expect("escalation followed its approval request");
-                assert_eq!(request.approval_id(), approval_id);
-                break request;
-            }
-        }
-    })
-    .await
-    .expect("approval escalation event timed out");
+        })
+        .await
+        .expect("approval escalation event timed out");
 
     let request_revision = serde_json::to_value(&request).expect("approval JSON")["revision"]
         .as_u64()
@@ -972,7 +985,11 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
             let Some(event) = event else { continue };
             if let EventPayload::ApprovalFinalized {
                 approval_id,
-                decision,
+                outcome:
+                    cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::ApprovalFinalization::Decided { decision, .. },
+                    ),
+                ..
             } = event.payload
                 && approval_id == request.approval_id()
             {

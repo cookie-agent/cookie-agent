@@ -183,13 +183,16 @@ mod tests {
                 state.apply(run, &committed(&c, reason));
                 state.apply(
                     run,
-                    &EventPayload::RunFailed {
+                    &EventPayload::run_finished(crate::RunOutcome::Failed {
                         error: crate::SafeErrorMessage::new("later run failure").unwrap(),
                         model_error: None,
                         resolved_model: None,
-                    },
+                    }),
                 );
-                state.apply(run, &EventPayload::RunCancelled { reason: None });
+                state.apply(
+                    run,
+                    &EventPayload::run_finished(crate::RunOutcome::Cancelled { reason: None }),
+                );
                 assert_eq!(state.selection, Some(b.clone()));
                 assert!(state.successful_fallback);
                 assert_eq!(state.continuation(&a, &initial.chain, false), b);

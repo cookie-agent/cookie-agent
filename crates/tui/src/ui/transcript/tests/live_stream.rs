@@ -346,7 +346,11 @@ async fn one_connection_subscribing_twice_receives_each_live_delta_once() {
                 EventSubscriptionMessage::Event { event }
                     if matches!(
                         event.payload,
-                        cookie_agent_protocol::EventPayload::RunCompleted { .. }
+                        cookie_agent_protocol::EventPayload::RunFinished {
+                            outcome: cookie_agent_protocol::Open::Known(
+                                cookie_agent_protocol::RunOutcome::Completed { .. }
+                            )
+                        }
                     ) =>
                 {
                     break;

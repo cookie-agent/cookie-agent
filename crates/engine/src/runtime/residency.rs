@@ -307,14 +307,7 @@ impl Engine {
             .event_snapshot()
             .iter()
             .filter(|event| {
-                event.run_id.is_some()
-                    && matches!(
-                        event.payload,
-                        Event::RunCompleted { .. }
-                            | Event::RunFailed { .. }
-                            | Event::RunCancelled { .. }
-                            | Event::RunInterrupted { .. }
-                    )
+                event.run_id.is_some() && matches!(event.payload, Event::RunFinished { .. })
             })
             .map(|event| event.timestamp)
             .max()?;
@@ -563,15 +556,7 @@ pub(super) fn has_runless_pending_inputs(
     let boundary = events
         .iter()
         .rev()
-        .find(|event| {
-            matches!(
-                event.payload,
-                Event::RunCompleted { .. }
-                    | Event::RunFailed { .. }
-                    | Event::RunCancelled { .. }
-                    | Event::RunInterrupted { .. }
-            )
-        })
+        .find(|event| matches!(event.payload, Event::RunFinished { .. }))
         .map_or(0, |event| event.seq);
     let mut pending = Vec::new();
     for event in events

@@ -308,22 +308,17 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
                     .get_session(parent.session_id)
                     .is_ok_and(|parent| parent.status == SessionStatus::Completed)
                 {
-                    let notified = fixture
-                        .engine
-                        .inner
-                        .store
-                        .get(parent.session_id)
-                        .expect("paging parent projection")
-                        .log
-                        .events()
-                        .iter()
-                        .any(|event| {
-                            matches!(
-                                event.payload,
-                                EventPayload::DelegateFinishedV2 { session_id, .. }
-                                    if session_id == child.session_id
-                            )
-                        });
+                    let notified = delegation_notified(
+                        &fixture
+                            .engine
+                            .inner
+                            .store
+                            .get(parent.session_id)
+                            .expect("paging parent projection")
+                            .log
+                            .events(),
+                        child.session_id,
+                    );
                     if notified {
                         return Some(child.session_id);
                     }
@@ -994,22 +989,17 @@ async fn delegate_idle_child(
                 .engine
                 .get_session(parent)
                 .is_ok_and(|parent| parent.status == SessionStatus::Completed);
-            let notified = fixture
-                .engine
-                .inner
-                .store
-                .get(parent)
-                .expect("parent projection")
-                .log
-                .events()
-                .iter()
-                .any(|event| {
-                    matches!(
-                        event.payload,
-                        EventPayload::DelegateFinishedV2 { session_id, .. }
-                            if session_id == child.session_id
-                    )
-                });
+            let notified = delegation_notified(
+                &fixture
+                    .engine
+                    .inner
+                    .store
+                    .get(parent)
+                    .expect("parent projection")
+                    .log
+                    .events(),
+                child.session_id,
+            );
             (parent_done && notified).then_some(child.session_id)
         },
     )
@@ -1195,4 +1185,30 @@ async fn idle_root_trees_page_out_when_unwatched_and_reload_on_view() {
         SessionStatus::Completed
     );
     fixture.engine.shutdown().await;
+}
+
+/// Whether the parent's model was told that `child` finished: its
+/// delegation finished and the completion's producer message was accepted.
+fn delegation_notified(
+    events: &[cookie_agent_protocol::StoredEvent],
+    child: cookie_agent_protocol::SessionId,
+) -> bool {
+    events.iter().any(|finished| match &finished.payload {
+        EventPayload::DelegationFinished {
+            invocation_id,
+            child_session_id,
+            ..
+        } if *child_session_id == child => events.iter().any(|accepted| {
+            matches!(
+                &accepted.payload,
+                EventPayload::ProducerMessageAccepted {
+                    producer_owner: cookie_agent_protocol::ProducerOwner::Delegation {
+                        invocation_id: accepted_invocation,
+                    },
+                    ..
+                } if accepted_invocation == invocation_id
+            )
+        }),
+        _ => false,
+    })
 }

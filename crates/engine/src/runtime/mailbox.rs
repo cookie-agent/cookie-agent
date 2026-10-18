@@ -468,10 +468,7 @@ impl Engine {
         }
         let run_edge = run.and_then(|run| match &event {
             Event::RunStarted { .. } => Some((run, false)),
-            Event::RunCompleted { .. }
-            | Event::RunFailed { .. }
-            | Event::RunCancelled { .. }
-            | Event::RunInterrupted { .. } => Some((run, true)),
+            Event::RunFinished { .. } => Some((run, true)),
             _ => None,
         });
         let started = match &event {
@@ -1214,10 +1211,7 @@ impl Engine {
             SessionCommand::Append { event, .. } => matches!(
                 &**event,
                 Event::ModelTurnCommitted { .. }
-                    | Event::RunCompleted { .. }
-                    | Event::RunFailed { .. }
-                    | Event::RunCancelled { .. }
-                    | Event::RunInterrupted { .. }
+                    | Event::RunFinished { .. }
                     | Event::GoalActivated { .. }
                     | Event::GoalChecklistRevised { .. }
                     | Event::GoalLifecycleChanged { .. }
@@ -1247,7 +1241,11 @@ impl Engine {
                     Event::MessageInjected { .. }
                         | Event::UserInputTransformed { .. }
                         | Event::UserInputSubmitted { .. }
-                        | Event::RunFailed { .. }
+                        | Event::RunFinished {
+                            outcome: cookie_agent_protocol::Open::Known(
+                                cookie_agent_protocol::RunOutcome::Failed { .. }
+                            )
+                        }
                 ) && crate::runtime::take_injected_failure(
                     &self.inner.test_hooks.run_setup_append_failures,
                 ) {
@@ -1255,7 +1253,12 @@ impl Engine {
                         Event::MessageInjected { .. } => "message injected",
                         Event::UserInputTransformed { .. } => "user input transformed",
                         Event::UserInputSubmitted { .. } => "user input submitted",
-                        Event::RunFailed { .. } => "run failed",
+                        Event::RunFinished {
+                            outcome:
+                                cookie_agent_protocol::Open::Known(
+                                    cookie_agent_protocol::RunOutcome::Failed { .. },
+                                ),
+                        } => "run failed",
                         _ => unreachable!("run setup failure filter checked"),
                     };
                     let _ = reply.send(Err(EngineError::Mcp(format!(
@@ -1406,7 +1409,7 @@ impl Engine {
                 session,
                 Some(run),
                 super::event_origin("engine:model-loop"),
-                Event::RunCompleted { final_text },
+                Event::run_finished(cookie_agent_protocol::RunOutcome::Completed { final_text }),
             )?;
         }
         Ok(promoted)
@@ -1430,14 +1433,7 @@ pub(super) fn pending_inputs<E: std::borrow::Borrow<StoredEvent>>(
                 .iter()
                 .rev()
                 .find(|event| {
-                    event.seq < run_start_seq
-                        && matches!(
-                            event.payload,
-                            Event::RunCompleted { .. }
-                                | Event::RunFailed { .. }
-                                | Event::RunCancelled { .. }
-                                | Event::RunInterrupted { .. }
-                        )
+                    event.seq < run_start_seq && matches!(event.payload, Event::RunFinished { .. })
                 })
                 .map(|event| event.seq)
         })
@@ -1477,10 +1473,7 @@ pub(super) fn pending_inputs<E: std::borrow::Borrow<StoredEvent>>(
                     initial_input_submitted = true;
                 }
             }
-            Event::RunCompleted { .. }
-            | Event::RunFailed { .. }
-            | Event::RunCancelled { .. }
-            | Event::RunInterrupted { .. } => pending.clear(),
+            Event::RunFinished { .. } => pending.clear(),
             _ => {}
         }
     }
@@ -1568,7 +1561,11 @@ mod tests {
         assert_eq!(pending_inputs(&replayed, run), pending_inputs(&events, run));
 
         let mut terminal = replayed;
-        terminal.push(event(run, 7, Event::RunCancelled { reason: None }));
+        terminal.push(event(
+            run,
+            7,
+            Event::run_finished(cookie_agent_protocol::RunOutcome::Cancelled { reason: None }),
+        ));
         assert!(pending_inputs(&terminal, run).is_empty());
     }
 

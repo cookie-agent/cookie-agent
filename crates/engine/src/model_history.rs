@@ -686,11 +686,6 @@ pub(crate) fn compaction_tail_candidates<E: Borrow<StoredEvent>>(events: &[E]) -
                     groups[*index].end = groups[*index].end.max(event.seq);
                 }
             }
-            EventPayload::DelegateFinishedV2 { .. } => groups.push(Group {
-                start: event.seq,
-                end: event.seq,
-                ..Group::default()
-            }),
             _ => {}
         }
     }
@@ -854,16 +849,6 @@ fn assemble_history_with_replay(
                 })
         })
         .collect::<HashMap<_, _>>();
-    let producer_delegations = producer_projection
-        .messages
-        .iter()
-        .filter_map(|message| match &message.producer_owner {
-            cookie_agent_protocol::ProducerOwner::Delegation { invocation_id } => {
-                Some(*invocation_id)
-            }
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
     let loaded_agent_md = {
         let loaded = latest_agent_md_events(context_events)
             .into_iter()
@@ -1114,24 +1099,6 @@ fn assemble_history_with_replay(
                     },
                     &[],
                 )?;
-            }
-            EventPayload::DelegateFinishedV2 {
-                invocation_id,
-                session_id,
-                short_id,
-                status,
-                preview,
-                total_lines,
-                ..
-            } if !producer_delegations.contains(invocation_id) => {
-                logical.push(LogicalTurn::User(user_text(
-                    &crate::runtime::render_subagent_notification(
-                        preview,
-                        *status,
-                        *total_lines,
-                        short_id.as_deref().unwrap_or(&session_id.to_string()),
-                    ),
-                )));
             }
             _ => {}
         }

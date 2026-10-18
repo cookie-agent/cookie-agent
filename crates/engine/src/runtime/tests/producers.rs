@@ -184,7 +184,15 @@ pub(crate) fn assert_no_notification_run_abort(engine: &Engine, session_id: Sess
     assert!(!producer_events(engine, session_id).iter().any(|event| {
         matches!(
             event.payload,
-            EventPayload::RunCancelled { .. } | EventPayload::RunInterrupted { .. }
+            EventPayload::RunFinished {
+                outcome: cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::RunOutcome::Cancelled { .. }
+                )
+            } | EventPayload::RunFinished {
+                outcome: cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::RunOutcome::Interrupted { .. }
+                )
+            }
         )
     }));
     assert!(!producer_events(engine, session_id).iter().any(|event| {
@@ -2248,14 +2256,28 @@ async fn accepted_pause_control_survives_cancelled_run_and_wakes_without_registr
     assert_eq!(
         producer_events(&fixture.engine, session_id)
             .iter()
-            .filter(|event| matches!(event.payload, EventPayload::RunCancelled { .. }))
+            .filter(|event| matches!(
+                event.payload,
+                EventPayload::RunFinished {
+                    outcome: cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::RunOutcome::Cancelled { .. }
+                    )
+                }
+            ))
             .count(),
         1
     );
     assert!(
         !producer_events(&fixture.engine, session_id)
             .iter()
-            .any(|event| matches!(event.payload, EventPayload::RunInterrupted { .. }))
+            .any(|event| matches!(
+                event.payload,
+                EventPayload::RunFinished {
+                    outcome: cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::RunOutcome::Interrupted { .. }
+                    )
+                }
+            ))
     );
     let requests = captured.await.expect("run-boundary pause requests");
     assert_eq!(requests.len(), 2);
@@ -2380,7 +2402,7 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
         ))
         .expect("pause notice response");
     await_event(&fixture.engine, session_id, "pause notice delivery run", |event| {
-        matches!(&event.payload, EventPayload::RunCompleted { final_text } if final_text.as_deref() == Some("pause notice acknowledged"))
+        matches!(&event.payload, EventPayload::RunFinished { outcome: cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Completed { final_text }) } if final_text.as_deref() == Some("pause notice acknowledged"))
     })
     .await;
     fixture

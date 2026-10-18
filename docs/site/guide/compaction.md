@@ -215,8 +215,8 @@ context-fit retry rules.
 
 Compaction produces these event payloads:
 
-- `internal_agent_started` / `internal_agent_completed` / `internal_agent_failed`
-  / `internal_agent_fallback` — the compaction agent invocation
+- `internal_agent_started` / `internal_agent_finished` / `internal_agent_fallback`
+  — the compaction agent invocation
 - `internal_agent_text_delta` (live-only) — the summary as it streams
 - `native_compaction_started` / `native_compaction_finished` (live-only) — a
   provider-native compaction call

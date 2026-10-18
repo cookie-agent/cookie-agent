@@ -602,18 +602,12 @@ impl Engine {
                     .await);
             }
             for skip in loaded.skipped {
-                let path = skip.path.clone();
-                let byte_length = skip.byte_length;
                 if let Err(error) = self
                     .append(
                         params.session_id,
                         Some(run_id),
                         event_origin("engine:agent-md"),
-                        Event::AgentMdSkipped {
-                            path,
-                            byte_length,
-                            attachment: loaded.attachment.clone(),
-                        },
+                        Event::agent_md_skipped(&skip, &loaded.attachment),
                     )
                     .await
                 {
@@ -933,11 +927,11 @@ impl Engine {
             active.session,
             Some(run_id),
             event_origin("engine:model-loop"),
-            Event::RunFailed {
+            Event::run_finished(cookie_agent_protocol::RunOutcome::Failed {
                 error: safe_error("run setup terminalization retried"),
                 model_error: None,
                 resolved_model: None,
-            },
+            }),
         )
         .await?;
         self.inner
@@ -975,11 +969,11 @@ impl Engine {
                     }
                 })
         });
-        Event::RunFailed {
+        Event::run_finished(cookie_agent_protocol::RunOutcome::Failed {
             error: safe_error(&cookie_agent_protocol::diagnostics::error_chain(error)),
             model_error,
             resolved_model,
-        }
+        })
     }
 
     pub(super) async fn run_loop(

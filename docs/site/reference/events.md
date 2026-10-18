@@ -16,7 +16,7 @@ plugin can have origin `engine:plugin-host`. Events caused by a client request
 carry that connection's handshake origin, `client:<kind>-<instance id>` (see
 [the handshake](protocol.md)); the headless CLI's in-process runs use
 `client:headless`. A run cancelled through `run.cancel` records the caller's
-origin on its `run_cancelled`, and the engine's origin when it cancels on its own.
+origin on its `run_finished`, and the engine's origin when it cancels on its own.
 
 Readers handle each JSONL line independently. Fully readable events load
 normally. If a known event has an absent or type-mismatched optional field, that
@@ -55,18 +55,17 @@ origin class. This keeps the origin grammar restricted to `user`, `engine`,
 | Category | Event payload types |
 |---|---|
 | Session | `session_created`, `session_permission_overlay_set`, `runtime_attached`, `runtime_detached`, `skill_loaded`, `skill_invocation_noted`, `session_title_committed`, `delegated_context_seeded` |
-| AGENTS.md context | `agent_md_loaded`, `agent_md_skipped` |
-| Plugins | `plugin_diagnostic` |
-| Engine | `engine_diagnostic` |
+| AGENTS.md context | `agent_md_loaded` |
+| Diagnostics | `diagnostic` |
 | Goals | `goal_activated`, `goal_checklist_revised`, `goal_lifecycle_changed` |
-| Producer messaging | `producer_message_accepted`, `producer_diagnostic`, `producer_message_admitted`, `producer_messages_claimed`, `producer_messages_released`, `producer_message_consumed`, `producer_message_discarded` |
+| Producer messaging | `producer_message_accepted`, `producer_message_admitted`, `producer_messages_claimed`, `producer_messages_released`, `producer_message_consumed`, `producer_message_discarded` |
 | User input | `message_injected`, `user_input_admitted`, `user_input_submitted`, `user_input_transformed`, `user_input_recalled`, `user_input_applied`, `user_input_queued`, `user_input_queue_recalled`, `user_input_queue_voided`, `session_model_selected` |
-| Run | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_interrupted` |
+| Run | `run_started`, `run_finished` |
 | Model | `model_attempt_started`, `model_tools_published`, `model_request_prepared`, `model_output_started`, `attempt_abandoned`, `model_replay_evaluated`, `model_turn_committed`, `model_usage_recorded`, `model_fallback`; live-only: `text_delta`, `reasoning_delta` |
-| Tools | `tool_call_started`, `tool_call_terminated`, `tool_output_elided`, `tool_call_linked`, `delegate_queued`, `delegate_finished_v2`, `delegate_child_terminated`; live-only: `tool_call_progress` |
-| Delegation durability | `delegation_reserved`, `delegation_started`, `delegation_run_started`, `delegation_run_attached`, `delegation_finished` |
-| Approvals | `approval_requested`, `approval_evaluated`, `approval_escalated`, `approval_user_decision_recorded`, `approval_finalized`, `approval_cancelled`, `approval_doom_loop_detected`, `tree_approval_grant_committed` |
-| Internal agents | `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_completed`, `internal_agent_failed`, `internal_agent_cancelled`, `internal_agent_interrupted`, `internal_agent_fallback`; live-only: `internal_agent_text_delta` |
+| Tools | `tool_call_started`, `tool_call_terminated`, `tool_output_elided`, `tool_call_linked`; live-only: `tool_call_progress` |
+| Delegation | `delegation_reserved`, `delegation_progressed`, `delegation_finished`, `delegate_child_terminated` |
+| Approvals | `approval_requested`, `approval_step`, `approval_finalized`, `tree_approval_grant_committed` |
+| Internal agents | `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_finished`, `internal_agent_fallback`; live-only: `internal_agent_text_delta` |
 | Compaction | `context_checkpoint_committed`; live-only: `native_compaction_started`, `native_compaction_finished` |
 
 ### Live-only stream output
@@ -232,9 +231,9 @@ invariants, not properties a single-event decoder can verify.
 
 Goal state and unconsumed messages must survive compaction. Fork copies durable
 branch data, never registrations; revert reconciles only the visible branch.
-Failed/disabled recovery notices are runless `producer_diagnostic { source, kind,
-message }` events with `kind` `recovery_failed` or `recovery_disabled`, not
-persisted readiness/registration records.
+Failed/disabled recovery notices are runless `diagnostic` events whose `source`
+is the producer source and whose `kind` is `recovery_failed` or
+`recovery_disabled`, not persisted readiness/registration records.
 
 ### Existing event behavior
 
@@ -262,51 +261,81 @@ entries as one provenance-delimited user turn. Compaction pins that turn
 alongside loaded skill bodies. See
 [System Prompt Composition](system-prompt.md#agentsmd-context-turn).
 
-`agent_md_skipped` is a run-scoped warning for an `AGENTS.md` file over the
-size limit: its display `path`, its `byte_length`, and the `attachment` whose
-workspace holds it. The file contributes no context.
+`diagnostic { source, kind, message, count?, detail? }` is a notice about the
+engine, a plugin, or a runtime: something it turned off, could not do, or
+dropped. `source` is `engine:<area>`, `plugin:<name>`, or `runtime:<id>`;
+`kind` is a snake-case label (at most 64 bytes) that readers show whatever it
+is; `message` is the nonempty text to show; `count` (at least 2 when present)
+says how many occurrences the record coalesces; and `detail` is display-only
+JSON of at most 16 KiB. Nothing but a view reads it. A diagnostic about a run
+belongs to that run; any other is runless. The kinds written today:
 
-`plugin_diagnostic { plugin, kind, message, count }` records a plugin's operational notices,
-coalesced by `count`. `kind` is `interception_timeout`, `interception_crash` (the plugin was not
-connected or exited during the hook), `interception_rejected` (it answered with an error or a
-malformed result), `hook_blocked`, `invalid_modification`, `oversized_event`, `event_drop`,
-`context_mismatch`, or `rate_limited`.
+| Source | Kind | Meaning |
+|---|---|---|
+| `plugin:<name>` | `interception_timeout`, `interception_crash` (the plugin was not connected or exited during the hook), `interception_rejected` (it answered with an error or a malformed result), `hook_blocked`, `invalid_modification`, `oversized_event`, `event_drop`, `context_mismatch`, `rate_limited` | A plugin's operational notice, coalesced by `count` |
+| `plugin:<name>`, `runtime:<id>` | `recovery_failed`, `recovery_disabled` | A producer source cannot restore the external work it tracks; goal continuation is held |
+| `engine:auto-compact` | `auto_compaction_disabled` | Automatic context compaction failed three times in a row and stays off for the rest of the run |
+| `engine:agent-md` | `agent_md_too_large` | An `AGENTS.md` file is over the size limit and contributes no context; run-scoped, with `detail` `{ path, byte_length, attachment }` |
 
-`engine_diagnostic { kind, message }` is a runless notice of something the engine itself turned
-off for the session. Its one `kind`, `auto_compaction_disabled`, is written when automatic context
-compaction failed three times in a row and stays off for the rest of the run.
-
-Delegation persistence includes `delegate_queued` and `delegate_finished_v2`.
-The completion event is written to the parent run and carries `{ invocation_id,
-session_id, status, preview, short_id, total_lines }`; `short_id` is the
-optional child handle so replay can render the same teaser the runtime pushed,
-and `preview` is the report as
-[`[subagent_output]`](../engine/subagent_output.md) previews it: whole, or its
-first and last lines around an omission marker (at most 64 KiB). The
-`invocation_id` lets repeated resumes of one child each receive exactly one
-teaser. Background completions first durably accept a steer producer message,
-then emit the completion for transcript consumers. Model history suppresses it
-when the invocation has a producer acceptance, so the result is materialized
-only once, while full output remains available through `get_subagent_result`.
-Foreground delegation retains its tool result as its only result channel.
 
 `delegated_context_seeded` is a runless creation event containing the bounded,
 text-only user/assistant turns copied by `inherit_context`; it must precede the
 child's first run and deterministically rebuilds the same initial model history
 after restart.
 
-The `delegation_*` lifecycle records are durable control events on the parent
-session. `delegation_reserved` contains the complete current delegate request,
-child agent snapshot, selected model suffix, runtime revisions, request
-fingerprint, and optional typed staged-skill provenance. The child records its
-attachments, the root session's, with `runtime_attached` events at creation.
-`delegation_started` records publication of the child session;
-`delegation_run_started` and `delegation_run_attached` distinguish a new child
-run from attachment to an already-running resumed child. `delegation_finished`
-records the terminal status, optional recovery reason, and child session/run
-references. The existing
-`delegate_queued` and `delegate_finished_v2` events remain the model-visible
-queue and result-summary records.
+The `delegation_*` records are durable control events on the parent session,
+in the parent run. `delegation_reserved` contains the complete current delegate
+request, child agent snapshot, selected model suffix, runtime revisions,
+request fingerprint, and optional typed staged-skill provenance. The child
+records its attachments, the root session's, with `runtime_attached` events at
+creation. `delegation_progressed { invocation_id, stage }` records how far the
+delegation got; `stage` is `started { child_session_id }` (the child session
+was published), `run_started { child_run_id }` or `run_attached { child_run_id }`
+(a new child run, or attachment to an already-running resumed child), or
+`queued { position? }` (the child waits for a background slot). A stage this
+build does not know changes nothing.
+
+`delegation_finished { invocation_id, child_session_id, child_run_id?, status,
+reason?, short_id?, preview, total_lines }` records the terminal status, the
+optional recovery reason, and the child references, together with the teaser
+transcripts render: `short_id` is the child's handle and `preview` the report as
+[`[subagent_output]`](../engine/subagent_output.md) previews it, whole or its
+first and last lines around an omission marker (at most 64 KiB; empty when no
+child run started). One record per invocation lets repeated resumes of one
+child each finish once. It is not model history: a foreground delegation's
+result reaches the parent's model as its tool result, and a background one's as
+the steer producer message the engine durably accepts for it (see
+[Goal and producer contracts](#goal-and-producer-contracts)), so the result is
+in history exactly once. Full output remains available through
+`get_subagent_result`.
+
+`delegate_child_terminated` is written runless to the *child* session when a
+delegation ends it before it ran (cancelled or failed); it sets the child's own
+status.
+
+`run_finished { outcome }` ends a run. `outcome` is `completed { final_text? }`,
+`failed { error, model_error?, resolved_model? }`, `cancelled { reason? }`, or
+`interrupted { reason? }`; an outcome this build does not know reads as
+interrupted. `internal_agent_finished { invocation_id, internal_run_id, kind,
+outcome }` ends an internal agent invocation the same way, with
+`completed { result }`, `failed { failure }`, `cancelled { reason? }`, or
+`interrupted { reason? }`.
+
+An approval's lifecycle after its `approval_requested` is a series of
+`approval_step { approval_id, step }` records and one
+`approval_finalized { approval_id, outcome }`. `step` is
+`evaluated { decision }` (the internal decision pipeline decided),
+`escalated { reason_code }` (it waits for the user),
+`user_decision { client_response_id, decision, feedback? }` (a client answered;
+`feedback` only with `reject`), or `doom_loop { operation_fingerprint,
+repetitions }` (the same operation was requested at least four times in a row);
+a step this build does not know changes nothing. `outcome` is
+`decided { decision }`, the final decision of policy, a grant, the reviewer, or
+the user, or `cancelled { reason_code }`, the engine withdrawing the approval
+(`request_cancelled`, `approval_expired`, `operation_changed`, or
+`prepared_capability_lost`), which reads as a system decision that expired or
+cancelled the request. An outcome this build does not know reads as cancelled,
+so the operation is not approved.
 
 Engine startup projects delegation state while opening session logs. A reserved
 or started delegation without a terminal event resumes or rolls back according
@@ -445,8 +474,8 @@ The queued-input lane is session-level, so its events are runless.
 the `selection` and `client_run_id` of the run it will start; its origin is the
 client that queued it. The entry leaves the queue when a `run_started` carries
 its `client_run_id`, when `user_input_queue_recalled` names its `queued_seq`, or
-when every entry is voided by `run_failed`, `run_cancelled`, `run_interrupted`,
-or `user_input_queue_voided` (written when a queued input cannot start). A
+when every entry is voided by a `run_finished` that did not complete,
+or by `user_input_queue_voided` (written when a queued input cannot start). A
 voided entry goes back to the client that queued it.
 
 ## Compaction checkpoints

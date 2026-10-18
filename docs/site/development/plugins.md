@@ -203,8 +203,9 @@ Hooks run in the order the configuration lists the plugins, each within its
 plugin sees it, and an invalid one is skipped with a diagnostic. A hook that
 times out, whose plugin is not connected or exits, or that answers with an
 error or a malformed result **fails open**: the operation goes on, later
-plugins still run, and the session records a `plugin_diagnostic`
-(`interception_timeout`, `interception_crash`, or `interception_rejected`).
+plugins still run, and the session records a `diagnostic` of source
+`plugin:<name>` (`interception_timeout`, `interception_crash`, or
+`interception_rejected`).
 A block stops later hooks.
 
 `tool_before_call` and `tool_after_result` carry the call's `origin`:

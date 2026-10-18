@@ -170,7 +170,9 @@ fn root_history(
                 root,
                 seq.next(),
                 run_id,
-                EventPayload::RunCompleted { final_text: None },
+                EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+                    final_text: None,
+                }),
             ),
             base + 41,
         ));

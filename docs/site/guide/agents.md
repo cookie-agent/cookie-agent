@@ -359,7 +359,7 @@ the live configuration, falling back to the default agent when it is gone.
 
 The harness runs three internal agents. They are stateless, tool-less model
 calls with a strict text-only output contract, and they emit their own event
-family (`internal_agent_started`, `internal_agent_completed`, ...).
+family (`internal_agent_started`, `internal_agent_finished`, ...).
 
 | ID | Role | Default model | Default limits |
 |---|---|---|---|
@@ -385,7 +385,7 @@ The built-in documents are replaced by authored documents with the same ID,
 allowed only in internal agents. When an internal agent document is disabled, or
 its fallback chain yields no available model, the internal call fails safely
 (approval degrades to asking, compaction is skipped, and title falls back to an
-input excerpt) and an `internal_agent_failed` event is recorded.
+input excerpt) and a failed `internal_agent_finished` event is recorded.
 
 Example replacement — run compaction on a cheaper model while the primary run
 keeps its own selection:

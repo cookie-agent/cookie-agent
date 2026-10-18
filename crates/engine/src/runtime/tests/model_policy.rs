@@ -736,7 +736,7 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
             projection.log.events().iter().any(|event| {
                 matches!(
                     &event.payload,
-                    EventPayload::PluginDiagnostic { kind, message, .. }
+                    EventPayload::Diagnostic { kind, message, .. }
                         if *kind == cookie_agent_protocol::PluginDiagnosticKind::InvalidModification
                             && message.contains("replace requires messages")
                 )

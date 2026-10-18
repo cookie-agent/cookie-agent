@@ -26,10 +26,7 @@ pub(in crate::ui) fn status_change_from_event(
 ) -> Option<(SessionId, SessionStatus, u64)> {
     let status = match &event.payload {
         EventPayload::RunStarted { .. } => SessionStatus::Running,
-        EventPayload::RunCompleted { .. } => SessionStatus::Completed,
-        EventPayload::RunFailed { .. } => SessionStatus::Failed,
-        EventPayload::RunCancelled { .. } => SessionStatus::Cancelled,
-        EventPayload::RunInterrupted { .. } => SessionStatus::Interrupted,
+        EventPayload::RunFinished { outcome } => outcome.status(),
         EventPayload::DelegateChildTerminated { status, .. } => *status,
         _ => return None,
     };

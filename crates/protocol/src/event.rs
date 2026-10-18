@@ -1942,6 +1942,197 @@ impl<'de> Deserialize<'de> for ContextCheckpointCommit {
     }
 }
 
+/// How a run ended: the `outcome` of [`EventPayload::RunFinished`].
+///
+/// Open: an outcome this build does not know reads as interrupted, a run
+/// that ended without this build being able to say how.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(clippy::large_enum_variant)]
+pub enum RunOutcome {
+    Completed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        final_text: Option<String>,
+    },
+    Failed {
+        error: SafeErrorMessage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_error: Option<ModelErrorSummary>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolved_model: Option<ResolvedModelRef>,
+    },
+    Cancelled {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<SafeErrorMessage>,
+    },
+    Interrupted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<SafeErrorMessage>,
+    },
+}
+crate::open_enum!(tagged RunOutcome, tag = "type", {
+    Completed => "completed",
+    Failed => "failed",
+    Cancelled => "cancelled",
+    Interrupted => "interrupted",
+});
+
+impl RunOutcome {
+    /// The status the run ends with.
+    #[must_use]
+    pub const fn status(&self) -> SessionStatus {
+        match self {
+            Self::Completed { .. } => SessionStatus::Completed,
+            Self::Failed { .. } => SessionStatus::Failed,
+            Self::Cancelled { .. } => SessionStatus::Cancelled,
+            Self::Interrupted { .. } => SessionStatus::Interrupted,
+        }
+    }
+}
+
+impl Open<RunOutcome> {
+    /// The status the run ends with; an unknown outcome reads as
+    /// interrupted.
+    #[must_use]
+    pub fn status(&self) -> SessionStatus {
+        self.known()
+            .map_or(SessionStatus::Interrupted, RunOutcome::status)
+    }
+}
+
+/// How an internal agent invocation ended: the `outcome` of
+/// [`EventPayload::InternalAgentFinished`].
+///
+/// Open: an outcome this build does not know reads as interrupted, with no
+/// result.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InternalAgentOutcome {
+    Completed {
+        result: SafeInternalAgentResult,
+    },
+    Failed {
+        failure: InternalAgentFailure,
+    },
+    Cancelled {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<SafeErrorMessage>,
+    },
+    Interrupted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<SafeErrorMessage>,
+    },
+}
+crate::open_enum!(tagged InternalAgentOutcome, tag = "type", {
+    Completed => "completed",
+    Failed => "failed",
+    Cancelled => "cancelled",
+    Interrupted => "interrupted",
+});
+
+/// How far a delegation got: the `stage` of
+/// [`EventPayload::DelegationProgressed`].
+///
+/// Open: a stage this build does not know changes nothing it reads.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DelegationStage {
+    /// The child session was published.
+    Started { child_session_id: SessionId },
+    /// A new child run started.
+    RunStarted { child_run_id: RunId },
+    /// The delegation attached to the already-running run of a resumed
+    /// child.
+    RunAttached { child_run_id: RunId },
+    /// The child waits for a background slot.
+    Queued {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        position: Option<u32>,
+    },
+}
+crate::open_enum!(tagged DelegationStage, tag = "type", {
+    Started => "started",
+    RunStarted => "run_started",
+    RunAttached => "run_attached",
+    Queued => "queued",
+});
+
+/// One step of an approval before its finalization: the `step` of
+/// [`EventPayload::ApprovalStep`].
+///
+/// Open: a step this build does not know changes nothing it reads.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ApprovalStep {
+    /// The internal decision pipeline decided.
+    Evaluated { decision: ApprovalInternalDecision },
+    /// The approval waits for the user.
+    Escalated { reason_code: ApprovalReasonCode },
+    /// A client answered for the user.
+    UserDecision {
+        client_response_id: ClientResponseId,
+        decision: ApprovalUserDecision,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        feedback: Option<ApprovalFeedback>,
+    },
+    /// The same operation was requested too often in a row.
+    DoomLoop {
+        operation_fingerprint: OperationFingerprint,
+        #[schemars(range(min = 4))]
+        repetitions: u32,
+    },
+}
+crate::open_enum!(tagged ApprovalStep, tag = "type", {
+    Evaluated => "evaluated",
+    Escalated => "escalated",
+    UserDecision => "user_decision",
+    DoomLoop => "doom_loop",
+});
+
+/// How an approval ended: the `outcome` of
+/// [`EventPayload::ApprovalFinalized`].
+///
+/// Open: an outcome this build does not know reads as cancelled, so the
+/// operation is not approved.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ApprovalFinalization {
+    /// A decision by policy, a grant, the reviewer, or the user.
+    Decided { decision: ApprovalFinalDecision },
+    /// The engine withdrew the approval: the request was cancelled, expired,
+    /// or its prepared operation changed or was lost.
+    Cancelled { reason_code: ApprovalReasonCode },
+}
+crate::open_enum!(tagged ApprovalFinalization, tag = "type", {
+    Decided => "decided",
+    Cancelled => "cancelled",
+});
+
+impl ApprovalFinalization {
+    /// The final decision this outcome records. A cancellation is the
+    /// system's: `expired` for an expired approval, `cancelled` otherwise.
+    #[must_use]
+    pub fn decision(&self) -> ApprovalFinalDecision {
+        match self {
+            Self::Decided { decision } => decision.clone(),
+            Self::Cancelled { reason_code } => ApprovalFinalDecision {
+                outcome: if *reason_code == ApprovalReasonCode::ApprovalExpired {
+                    ApprovalFinalOutcome::Expired
+                } else {
+                    ApprovalFinalOutcome::Cancelled
+                },
+                source: ApprovalDecisionSource::System,
+                reason_code: *reason_code,
+                feedback: None,
+                tree_grant_id: None,
+            },
+        }
+    }
+}
+
+/// The most bytes of a diagnostic's serialized `detail`.
+pub const MAX_DIAGNOSTIC_DETAIL_BYTES: usize = 16 * 1024;
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
@@ -2001,31 +2192,18 @@ pub enum EventPayload {
         /// from.
         attachment: AttachmentName,
     },
-    AgentMdSkipped {
-        path: SafeDisplayText,
-        byte_length: u64,
-        /// The coding-runtime attachment whose workspace holds the file.
-        attachment: AttachmentName,
-    },
-    PluginDiagnostic {
-        plugin: String,
-        kind: PluginDiagnosticKind,
+    /// A notice about the engine, a plugin, or a runtime: something it
+    /// turned off, could not do, or dropped. `detail` is display-only.
+    Diagnostic {
+        source: DiagnosticSource,
+        kind: DiagnosticKind,
         message: String,
-        count: u64,
-    },
-    /// A producer source (a plugin or a runtime) could not restore the
-    /// external work it tracks: that work is unknown, and goal continuation
-    /// is held.
-    ProducerDiagnostic {
-        source: crate::ProducerSource,
-        kind: ProducerDiagnosticKind,
-        message: String,
-    },
-    /// Something the engine itself turned off or could not do for the
-    /// session.
-    EngineDiagnostic {
-        kind: EngineDiagnosticKind,
-        message: String,
+        /// How many occurrences this one record coalesces; absent for one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(min = 1))]
+        count: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<Value>,
     },
     GoalActivated {
         goal_id: GoalId,
@@ -2166,27 +2344,9 @@ pub enum EventPayload {
         #[schemars(length(max = 65536))]
         turns: Vec<DelegatedContextTurn>,
     },
-    RunCompleted {
-        #[serde(deserialize_with = "deserialize_required_option")]
-        #[schemars(with = "crate::NullableSchema<String>", required)]
-        final_text: Option<String>,
-    },
-    RunFailed {
-        error: SafeErrorMessage,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        model_error: Option<ModelErrorSummary>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        resolved_model: Option<ResolvedModelRef>,
-    },
-    RunCancelled {
-        #[serde(deserialize_with = "deserialize_required_option")]
-        #[schemars(with = "crate::NullableSchema<SafeErrorMessage>", required)]
-        reason: Option<SafeErrorMessage>,
-    },
-    RunInterrupted {
-        #[serde(deserialize_with = "deserialize_required_option")]
-        #[schemars(with = "crate::NullableSchema<SafeErrorMessage>", required)]
-        reason: Option<SafeErrorMessage>,
+    /// The run ended.
+    RunFinished {
+        outcome: Open<RunOutcome>,
     },
     ModelAttemptStarted {
         attempt_id: AttemptId,
@@ -2339,43 +2499,24 @@ pub enum EventPayload {
         request_fingerprint: Sha256Digest,
         request: DelegateRequestPayload,
     },
-    DelegationStarted {
+    /// A delegation reached a new stage before it finished.
+    DelegationProgressed {
         invocation_id: InvocationId,
-        child_session_id: SessionId,
+        stage: Open<DelegationStage>,
     },
-    DelegationRunStarted {
-        invocation_id: InvocationId,
-        child_run_id: RunId,
-    },
-    DelegationRunAttached {
-        invocation_id: InvocationId,
-        child_run_id: RunId,
-    },
+    /// A delegation finished. It is the durable control record and carries
+    /// the teaser transcripts render: `short_id` is the child's handle, and
+    /// `preview` the report as `[subagent_output]` previews it.
     DelegationFinished {
         invocation_id: InvocationId,
         child_session_id: SessionId,
-        #[serde(deserialize_with = "deserialize_required_option")]
-        #[schemars(with = "crate::NullableSchema<RunId>", required)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         child_run_id: Option<RunId>,
         status: SessionStatus,
-        #[serde(deserialize_with = "deserialize_required_option")]
-        #[schemars(with = "crate::NullableSchema<SafeErrorMessage>", required)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<SafeErrorMessage>,
-    },
-    DelegateQueued {
-        session_id: SessionId,
-        #[serde(deserialize_with = "deserialize_required_option")]
-        #[schemars(with = "crate::NullableSchema<u32>", required)]
-        position: Option<u32>,
-    },
-    DelegateFinishedV2 {
-        invocation_id: InvocationId,
-        session_id: SessionId,
-        /// Handle rendered into the notification body. Additive and optional:
-        /// pre-handle logs render the UUID.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         short_id: Option<String>,
-        status: SessionStatus,
         #[schemars(length(max = 65536))]
         preview: String,
         total_lines: u64,
@@ -2389,35 +2530,13 @@ pub enum EventPayload {
     ApprovalRequested {
         request: ApprovalRequest,
     },
-    ApprovalEvaluated {
+    ApprovalStep {
         approval_id: ApprovalId,
-        decision: ApprovalInternalDecision,
-    },
-    ApprovalEscalated {
-        approval_id: ApprovalId,
-        reason_code: ApprovalReasonCode,
-    },
-    ApprovalUserDecisionRecorded {
-        approval_id: ApprovalId,
-        client_response_id: ClientResponseId,
-        decision: ApprovalUserDecision,
-        #[serde(deserialize_with = "deserialize_required_option")]
-        #[schemars(with = "crate::NullableSchema<ApprovalFeedback>", required)]
-        feedback: Option<ApprovalFeedback>,
+        step: Open<ApprovalStep>,
     },
     ApprovalFinalized {
         approval_id: ApprovalId,
-        decision: ApprovalFinalDecision,
-    },
-    ApprovalCancelled {
-        approval_id: ApprovalId,
-        reason_code: ApprovalReasonCode,
-    },
-    ApprovalDoomLoopDetected {
-        approval_id: ApprovalId,
-        operation_fingerprint: OperationFingerprint,
-        #[schemars(range(min = 4))]
-        repetitions: u32,
+        outcome: Open<ApprovalFinalization>,
     },
     TreeApprovalGrantCommitted {
         grant: TreeApprovalGrant,
@@ -2429,12 +2548,6 @@ pub enum EventPayload {
         backend: InternalAgentBackend,
         call: SafeInternalAgentCall,
     },
-    InternalAgentCompleted {
-        invocation_id: InternalAgentInvocationId,
-        internal_run_id: InternalAgentRunId,
-        kind: InternalAgentKind,
-        result: SafeInternalAgentResult,
-    },
     InternalAgentUsageRecorded {
         internal_run_id: InternalAgentRunId,
         kind: InternalAgentKind,
@@ -2444,27 +2557,11 @@ pub enum EventPayload {
         #[serde(default)]
         estimated_cost_pico_usd: Option<u64>,
     },
-    InternalAgentFailed {
+    InternalAgentFinished {
         invocation_id: InternalAgentInvocationId,
         internal_run_id: InternalAgentRunId,
         kind: InternalAgentKind,
-        failure: InternalAgentFailure,
-    },
-    InternalAgentCancelled {
-        invocation_id: InternalAgentInvocationId,
-        internal_run_id: InternalAgentRunId,
-        kind: InternalAgentKind,
-        #[serde(deserialize_with = "deserialize_required_option")]
-        #[schemars(with = "crate::NullableSchema<SafeErrorMessage>", required)]
-        reason: Option<SafeErrorMessage>,
-    },
-    InternalAgentInterrupted {
-        invocation_id: InternalAgentInvocationId,
-        internal_run_id: InternalAgentRunId,
-        kind: InternalAgentKind,
-        #[serde(deserialize_with = "deserialize_required_option")]
-        #[schemars(with = "crate::NullableSchema<SafeErrorMessage>", required)]
-        reason: Option<SafeErrorMessage>,
+        outcome: Open<InternalAgentOutcome>,
     },
     InternalAgentFallback {
         invocation_id: InternalAgentInvocationId,
@@ -2486,6 +2583,90 @@ pub enum EventPayload {
     },
 }
 impl EventPayload {
+    /// A `run_finished` with `outcome`.
+    #[must_use]
+    pub fn run_finished(outcome: RunOutcome) -> Self {
+        Self::RunFinished {
+            outcome: outcome.into(),
+        }
+    }
+
+    /// The status a `run_finished` ends its run with, or `None` for any
+    /// other payload.
+    #[must_use]
+    pub fn run_end_status(&self) -> Option<SessionStatus> {
+        match self {
+            Self::RunFinished { outcome } => Some(outcome.status()),
+            _ => None,
+        }
+    }
+
+    /// An `internal_agent_finished` with `outcome`.
+    #[must_use]
+    pub fn internal_agent_finished(
+        invocation_id: InternalAgentInvocationId,
+        internal_run_id: InternalAgentRunId,
+        kind: InternalAgentKind,
+        outcome: InternalAgentOutcome,
+    ) -> Self {
+        Self::InternalAgentFinished {
+            invocation_id,
+            internal_run_id,
+            kind,
+            outcome: outcome.into(),
+        }
+    }
+
+    /// A `delegation_progressed` of `invocation_id` to `stage`.
+    #[must_use]
+    pub fn delegation_progressed(invocation_id: InvocationId, stage: DelegationStage) -> Self {
+        Self::DelegationProgressed {
+            invocation_id,
+            stage: stage.into(),
+        }
+    }
+
+    /// An `approval_step` of `approval_id`.
+    #[must_use]
+    pub fn approval_step(approval_id: ApprovalId, step: ApprovalStep) -> Self {
+        Self::ApprovalStep {
+            approval_id,
+            step: step.into(),
+        }
+    }
+
+    /// An `approval_finalized` of `approval_id` with `outcome`.
+    #[must_use]
+    pub fn approval_finalized(approval_id: ApprovalId, outcome: ApprovalFinalization) -> Self {
+        Self::ApprovalFinalized {
+            approval_id,
+            outcome: outcome.into(),
+        }
+    }
+
+    /// The `diagnostic` an `AGENTS.md` file over the size limit records: the
+    /// file in `attachment`'s workspace contributes no context.
+    #[must_use]
+    pub fn agent_md_skipped(skip: &AgentMdSkipped, attachment: &AttachmentName) -> Self {
+        Self::Diagnostic {
+            source: DiagnosticSource::engine("agent-md")
+                .expect("static diagnostic source is valid"),
+            kind: EngineDiagnosticKind::AgentMdTooLarge.label(),
+            message: format!(
+                "AGENTS.md skipped: {} is {} bytes, over the {} MiB limit",
+                skip.path.as_str(),
+                skip.byte_length,
+                AgentMdSkipped::MAX_SKIP_BYTES / (1024 * 1024)
+            ),
+            count: None,
+            detail: Some(serde_json::json!({
+                "path": skip.path,
+                "byte_length": skip.byte_length,
+                "attachment": attachment,
+            })),
+        }
+    }
+
     /// Whether this payload is live-only stream output: delivered to
     /// subscribers as a [`TransientEvent`] and never appended to a session
     /// log. The committed model turn and the tool termination are the durable
@@ -2512,9 +2693,7 @@ impl EventPayload {
                 | Self::RuntimeDetached { .. }
                 | Self::SkillLoaded { .. }
                 | Self::SkillInvocationNoted { .. }
-                | Self::PluginDiagnostic { .. }
-                | Self::ProducerDiagnostic { .. }
-                | Self::EngineDiagnostic { .. }
+                | Self::Diagnostic { .. }
                 | Self::GoalActivated { .. }
                 | Self::GoalChecklistRevised { .. }
                 | Self::GoalLifecycleChanged { .. }
@@ -2624,11 +2803,19 @@ impl EventPayload {
             Self::ModelToolsPublished { tool_names, .. } if !valid_model_tool_names(tool_names) => {
                 return Err(EventSchemaError::InvalidModelTools);
             }
-            Self::AgentMdSkipped {
-                path, byte_length, ..
+            Self::Diagnostic {
+                message,
+                count,
+                detail,
+                ..
             } => {
-                if byte_length <= &AgentMdSkipped::MAX_SKIP_BYTES || path.as_str().is_empty() {
-                    return Err(EventSchemaError::InvalidAgentMd);
+                if message.trim().is_empty()
+                    || *count == Some(0)
+                    || detail.as_ref().is_some_and(|detail| {
+                        json_len_exceeds(detail, MAX_DIAGNOSTIC_DETAIL_BYTES).unwrap_or(true)
+                    })
+                {
+                    return Err(EventSchemaError::InvalidDiagnostic);
                 }
             }
             Self::RunStarted {
@@ -2795,17 +2982,6 @@ impl EventPayload {
                     )
                     .map_err(|_| EventSchemaError::InvalidDelegationLifecycle)?;
             }
-            Self::DelegationFinished { status, .. }
-                if !matches!(
-                    status,
-                    SessionStatus::Completed
-                        | SessionStatus::Failed
-                        | SessionStatus::Interrupted
-                        | SessionStatus::Cancelled
-                ) =>
-            {
-                return Err(EventSchemaError::InvalidDelegationLifecycle);
-            }
             Self::DelegatedContextSeeded { turns, .. } => {
                 if turns.is_empty()
                     || turns.len() > 65_536
@@ -2815,7 +2991,7 @@ impl EventPayload {
                     return Err(EventSchemaError::InvalidDelegatedContext);
                 }
             }
-            Self::DelegateFinishedV2 {
+            Self::DelegationFinished {
                 status, preview, ..
             } => {
                 if !matches!(
@@ -2844,44 +3020,55 @@ impl EventPayload {
                 }
                 retained.validate()?;
             }
-            Self::ApprovalEvaluated { decision, .. } => {
-                decision
+            Self::ApprovalStep {
+                step: Open::Known(step),
+                ..
+            } => match step {
+                ApprovalStep::Evaluated { decision } => decision
                     .validate()
-                    .map_err(|_| EventSchemaError::InvalidApprovalLifecycle)?;
-            }
-            Self::ApprovalEscalated { reason_code, .. }
-                if *reason_code != ApprovalReasonCode::Escalated =>
-            {
-                return Err(EventSchemaError::InvalidApprovalLifecycle);
-            }
-            Self::ApprovalUserDecisionRecorded {
-                decision, feedback, ..
-            } if feedback.is_some() && *decision != ApprovalUserDecision::Reject => {
-                return Err(EventSchemaError::InvalidApprovalLifecycle);
-            }
-            Self::ApprovalFinalized { decision, .. } => decision
-                .validate()
-                .map_err(|_| EventSchemaError::InvalidApprovalLifecycle)?,
-            Self::ApprovalCancelled { reason_code, .. }
-                if !matches!(
-                    reason_code,
-                    ApprovalReasonCode::UserCancelled
-                        | ApprovalReasonCode::RequestCancelled
-                        | ApprovalReasonCode::ApprovalExpired
-                        | ApprovalReasonCode::OperationChanged
-                        | ApprovalReasonCode::PreparedCapabilityLost
-                ) =>
-            {
-                return Err(EventSchemaError::InvalidApprovalLifecycle);
-            }
-            Self::ApprovalDoomLoopDetected { repetitions, .. } if *repetitions < 4 => {
-                return Err(EventSchemaError::InvalidApprovalCounter);
-            }
+                    .map_err(|_| EventSchemaError::InvalidApprovalLifecycle)?,
+                ApprovalStep::Escalated { reason_code }
+                    if *reason_code != ApprovalReasonCode::Escalated =>
+                {
+                    return Err(EventSchemaError::InvalidApprovalLifecycle);
+                }
+                ApprovalStep::UserDecision {
+                    decision, feedback, ..
+                } if feedback.is_some() && *decision != ApprovalUserDecision::Reject => {
+                    return Err(EventSchemaError::InvalidApprovalLifecycle);
+                }
+                ApprovalStep::DoomLoop { repetitions, .. } if *repetitions < 4 => {
+                    return Err(EventSchemaError::InvalidApprovalCounter);
+                }
+                _ => {}
+            },
+            Self::ApprovalFinalized {
+                outcome: Open::Known(outcome),
+                ..
+            } => match outcome {
+                ApprovalFinalization::Decided { decision } => decision
+                    .validate()
+                    .map_err(|_| EventSchemaError::InvalidApprovalLifecycle)?,
+                ApprovalFinalization::Cancelled { reason_code } => {
+                    if !matches!(
+                        reason_code,
+                        ApprovalReasonCode::RequestCancelled
+                            | ApprovalReasonCode::ApprovalExpired
+                            | ApprovalReasonCode::OperationChanged
+                            | ApprovalReasonCode::PreparedCapabilityLost
+                    ) {
+                        return Err(EventSchemaError::InvalidApprovalLifecycle);
+                    }
+                }
+            },
             Self::TreeApprovalGrantCommitted { grant } => grant
                 .validate()
                 .map_err(|_| EventSchemaError::InvalidApprovalLifecycle)?,
             Self::InternalAgentStarted { backend, .. } => validate_internal_backend(backend)?,
-            Self::InternalAgentFailed { failure, .. } => validate_internal_failure(failure)?,
+            Self::InternalAgentFinished {
+                outcome: Open::Known(InternalAgentOutcome::Failed { failure }),
+                ..
+            } => validate_internal_failure(failure)?,
             Self::InternalAgentFallback {
                 from,
                 to,
@@ -2903,11 +3090,12 @@ impl EventPayload {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+/// The `diagnostic` kinds the plugin host records about a plugin.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum PluginDiagnosticKind {
     EventDrop,
     InterceptionTimeout,
+    /// The plugin was not connected or exited during the hook.
     InterceptionCrash,
     HookBlocked,
     OversizedEvent,
@@ -2918,24 +3106,101 @@ pub enum PluginDiagnosticKind {
     InterceptionRejected,
 }
 
-/// What an [`EventPayload::EngineDiagnostic`] reports.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EngineDiagnosticKind {
-    /// Automatic context compaction failed repeatedly and is off for the
-    /// rest of the run.
-    AutoCompactionDisabled,
-}
-
-/// Why a producer source is unavailable.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+/// Why a producer source is unavailable: the `diagnostic` kinds a plugin or
+/// runtime producer source records.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ProducerDiagnosticKind {
     /// The source reported that its recovery failed.
     RecoveryFailed,
     /// The source is configured off, or lost its connection before
     /// recovering.
     RecoveryDisabled,
+}
+
+/// The `diagnostic` kinds the engine records about itself.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum EngineDiagnosticKind {
+    /// Automatic context compaction failed repeatedly and is off for the
+    /// rest of the run.
+    AutoCompactionDisabled,
+    /// An `AGENTS.md` file is over the size limit and contributes no
+    /// context; `detail` carries its `path`, `byte_length`, and
+    /// `attachment`.
+    AgentMdTooLarge,
+}
+
+macro_rules! diagnostic_kinds {
+    ($($name:ident { $($variant:ident => $label:literal),+ $(,)? })+) => {
+        $(
+            impl $name {
+                /// The kind's wire label.
+                #[must_use]
+                pub const fn as_str(self) -> &'static str {
+                    match self {
+                        $(Self::$variant => $label,)+
+                    }
+                }
+
+                /// The kind as a `diagnostic` label.
+                #[must_use]
+                pub fn label(self) -> DiagnosticKind {
+                    DiagnosticKind::new(self.as_str()).expect("diagnostic kind labels are valid")
+                }
+            }
+
+            impl From<$name> for DiagnosticKind {
+                fn from(kind: $name) -> Self {
+                    kind.label()
+                }
+            }
+
+            impl PartialEq<$name> for DiagnosticKind {
+                fn eq(&self, kind: &$name) -> bool {
+                    self.as_str() == kind.as_str()
+                }
+            }
+        )+
+    };
+}
+
+diagnostic_kinds! {
+    PluginDiagnosticKind {
+        EventDrop => "event_drop",
+        InterceptionTimeout => "interception_timeout",
+        InterceptionCrash => "interception_crash",
+        HookBlocked => "hook_blocked",
+        OversizedEvent => "oversized_event",
+        InvalidModification => "invalid_modification",
+        ContextMismatch => "context_mismatch",
+        RateLimited => "rate_limited",
+        InterceptionRejected => "interception_rejected",
+    }
+    ProducerDiagnosticKind {
+        RecoveryFailed => "recovery_failed",
+        RecoveryDisabled => "recovery_disabled",
+    }
+    EngineDiagnosticKind {
+        AutoCompactionDisabled => "auto_compaction_disabled",
+        AgentMdTooLarge => "agent_md_too_large",
+    }
+}
+
+/// What a reader shows before a diagnostic's message, if anything: `plugin
+/// <name>` for a plugin's own notice, `producer <source>` for a producer
+/// source's, and nothing for the engine's.
+#[must_use]
+pub fn diagnostic_subject(source: &DiagnosticSource, kind: &DiagnosticKind) -> Option<String> {
+    if *kind == ProducerDiagnosticKind::RecoveryFailed
+        || *kind == ProducerDiagnosticKind::RecoveryDisabled
+    {
+        return Some(format!("producer {source}"));
+    }
+    if let Some(plugin) = source.plugin_name() {
+        return Some(format!("plugin {plugin}"));
+    }
+    source
+        .runtime_id()
+        .map(|runtime_id| format!("runtime {runtime_id}"))
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
@@ -3474,6 +3739,7 @@ pub enum EventSchemaError {
     InvalidProducerMessage,
     InvalidOrigin,
     InvalidAgentMd,
+    InvalidDiagnostic,
     InvalidModelTools,
     EmptyTitle,
     TitleTooLong,
@@ -3529,6 +3795,7 @@ impl fmt::Display for EventSchemaError {
             }
             Self::InvalidOrigin => "event origin is invalid",
             Self::InvalidAgentMd => "AGENTS.md context event is invalid",
+            Self::InvalidDiagnostic => "diagnostic message, count, or detail is invalid",
             Self::InvalidModelTools => "published model tool names are invalid or too many",
             Self::EmptyTitle => "session title must not be blank",
             Self::TitleTooLong => "session title exceeds 512 bytes",

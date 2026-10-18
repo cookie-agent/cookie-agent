@@ -74,17 +74,16 @@ impl TreeLoadProducts {
 /// What the delegation registry needs about a session acting as a delegation
 /// *parent*, harvested from that parent's own log while it is folded (4.1.3).
 /// Carrying these facts is what lets a nested registry rebuild run without
-/// reopening a child log for `DelegateQueued`/`DelegateFinishedV2` lookups.
+/// reopening a child log for queued-delegation lookups.
 #[derive(Clone, Debug)]
 pub(crate) struct ParentRunFacts {
     /// Tree root the parent belongs to (the parent itself when it is a root).
     pub(crate) root_session_id: SessionId,
     /// The parent is itself delegated, which suppresses its background slot.
     pub(crate) delegated: bool,
-    /// `(parent run, child)` pairs from `DelegateQueued` records.
+    /// `(parent run, child)` pairs of queued delegations: the run of each
+    /// `queued` stage, paired with the child its invocation started.
     pub(crate) queued: Vec<(cookie_agent_protocol::RunId, SessionId)>,
-    /// `(invocation, child)` pairs from `DelegateFinishedV2` notifications.
-    pub(crate) notified: Vec<(cookie_agent_protocol::InvocationId, SessionId)>,
     /// Delegations whose delivery a producer message already accepted.
     pub(crate) producer_accepted: Vec<cookie_agent_protocol::InvocationId>,
     /// Runs of this parent that reached `Interrupted`.
@@ -104,22 +103,34 @@ impl ParentRunFacts {
             root_session_id,
             delegated,
             queued: Vec::new(),
-            notified: Vec::new(),
             producer_accepted: Vec::new(),
             interrupted_runs: Vec::new(),
         };
+        let mut started = std::collections::HashMap::new();
         for envelope in projection.log.event_snapshot().iter() {
             match &envelope.payload {
-                EventPayload::DelegateQueued { session_id, .. } => {
-                    if let Some(run_id) = envelope.run_id {
-                        facts.queued.push((run_id, *session_id));
+                EventPayload::DelegationProgressed {
+                    invocation_id,
+                    stage:
+                        cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::DelegationStage::Started { child_session_id },
+                        ),
+                } => {
+                    started.insert(*invocation_id, *child_session_id);
+                }
+                EventPayload::DelegationProgressed {
+                    invocation_id,
+                    stage:
+                        cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::DelegationStage::Queued { .. },
+                        ),
+                } => {
+                    if let (Some(run_id), Some(child)) =
+                        (envelope.run_id, started.get(invocation_id))
+                    {
+                        facts.queued.push((run_id, *child));
                     }
                 }
-                EventPayload::DelegateFinishedV2 {
-                    invocation_id,
-                    session_id,
-                    ..
-                } => facts.notified.push((*invocation_id, *session_id)),
                 EventPayload::ProducerMessageAccepted {
                     producer_owner:
                         cookie_agent_protocol::ProducerOwner::Delegation { invocation_id },

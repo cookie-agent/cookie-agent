@@ -193,10 +193,7 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
                 .filter(|event| {
                     matches!(
                         event.payload,
-                        EventPayload::DelegateFinishedV2 {
-                            session_id,
-                            ..
-                        } if session_id == child_session_id
+                        EventPayload::DelegationFinished { child_session_id: session_id, .. } if session_id == child_session_id
                     )
                 })
                 .count();
@@ -285,12 +282,16 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
         (
             parent_event_path,
             old_parent_run_id,
-            EventPayload::RunCancelled { reason: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Cancelled {
+                reason: None,
+            }),
         ),
         (
             child_event_path,
             resumed_child_run_id,
-            EventPayload::RunInterrupted { reason: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Interrupted {
+                reason: None,
+            }),
         ),
     ] {
         let mut events = fs::read_to_string(&path)
@@ -305,7 +306,14 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
             .iter_mut()
             .find(|event| {
                 event.run_id == Some(run_id)
-                    && matches!(event.payload, EventPayload::RunCompleted { .. })
+                    && matches!(
+                        event.payload,
+                        EventPayload::RunFinished {
+                            outcome: cookie_agent_protocol::Open::Known(
+                                cookie_agent_protocol::RunOutcome::Completed { .. }
+                            )
+                        }
+                    )
             })
             .expect("terminal event to rewrite");
         terminal.payload = replacement;
@@ -336,7 +344,14 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
     );
     assert!(!recovered_child.log.events().iter().any(|event| {
         event.run_id == Some(resumed_child_run_id)
-            && matches!(event.payload, EventPayload::RunCancelled { .. })
+            && matches!(
+                event.payload,
+                EventPayload::RunFinished {
+                    outcome: cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::RunOutcome::Cancelled { .. }
+                    )
+                }
+            )
     }));
     reopened.shutdown().await;
 }
@@ -857,10 +872,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
                 .filter(|event| {
                     matches!(
                         event.payload,
-                        EventPayload::DelegateFinishedV2 {
-                            session_id,
-                            ..
-                        } if session_id == child_session_id
+                        EventPayload::DelegationFinished { child_session_id: session_id, .. } if session_id == child_session_id
                     )
                 })
                 .count();
@@ -910,9 +922,9 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         .events()
         .iter()
         .filter_map(|event| match event.payload {
-            EventPayload::DelegateFinishedV2 {
+            EventPayload::DelegationFinished {
                 invocation_id,
-                session_id,
+                child_session_id: session_id,
                 ..
             } if session_id == child_session_id => Some(invocation_id),
             _ => None,
@@ -933,7 +945,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         .filter(|event| {
             matches!(
                 event.payload,
-                EventPayload::DelegateFinishedV2 { invocation_id, .. }
+                EventPayload::DelegationFinished { invocation_id, .. }
                     if invocation_id == resumed_invocation_id
             )
         })
@@ -1299,7 +1311,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
                 .filter(|event| {
                     matches!(
                         &event.payload,
-                        EventPayload::DelegateFinishedV2 { invocation_id, .. }
+                        EventPayload::DelegationFinished { invocation_id, .. }
                             if *invocation_id == old_invocation_id
                     )
                 })
@@ -1322,7 +1334,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
         .filter(|event| {
             matches!(
                 &event.payload,
-                EventPayload::DelegateFinishedV2 { invocation_id, .. }
+                EventPayload::DelegationFinished { invocation_id, .. }
                     if *invocation_id == old_invocation_id
             )
         })

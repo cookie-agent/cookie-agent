@@ -287,11 +287,11 @@ async fn descendant_run_failure_renders_in_parent_at_its_time() {
             child,
             3,
             child_run,
-            EventPayload::RunFailed {
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Failed {
                 error: SafeErrorMessage::new("child provider exploded").expect("error"),
                 model_error: None,
                 resolved_model: None,
-            },
+            }),
         ),
         6,
     );
@@ -347,9 +347,11 @@ async fn delegate_failure_between_parent_turns_renders_before_later_turns() {
                 root,
                 3,
                 root_run,
-                EventPayload::DelegateFinishedV2 {
+                EventPayload::DelegationFinished {
                     invocation_id: InvocationId::new_v7(),
-                    session_id: child,
+                    child_session_id: child,
+                    child_run_id: None,
+                    reason: None,
                     short_id: None,
                     status: SessionStatus::Failed,
                     preview: String::new(),
@@ -533,11 +535,11 @@ async fn descendant_rows_follow_the_event_level_filter() {
             child,
             3,
             child_run,
-            EventPayload::RunFailed {
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Failed {
                 error: SafeErrorMessage::new("child provider exploded").expect("error"),
                 model_error: None,
                 resolved_model: None,
-            },
+            }),
         ),
         11,
     ));

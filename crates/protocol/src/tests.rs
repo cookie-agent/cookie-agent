@@ -830,7 +830,8 @@ fn stored_event_origin_is_additive_strict_and_not_payload_degraded() {
 
     let mut invalid_origin = base;
     invalid_origin["origin"] = json!("engine:Bad");
-    invalid_origin["payload"] = json!({"type":"run_cancelled","reason":42});
+    invalid_origin["payload"] =
+        json!({"type":"delegate_child_terminated","status":"failed","reason":42});
     let error = serde_json::from_value::<StoredEvent>(invalid_origin)
         .expect_err("invalid origin must fail before payload degradation");
     assert!(error.to_string().contains("event origin is invalid"));
@@ -865,35 +866,59 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
         ..event
     };
     assert_eq!(invalid.validate(), Err(EventSchemaError::InvalidAgentMd));
+}
 
-    let skipped = StoredEvent {
+#[test]
+fn diagnostics_round_trip_and_bound_their_fields() {
+    let diagnostic = |count: Option<u64>, message: &str, detail: Option<Value>| StoredEvent {
+        engine_version: None,
+        origin: Some(EventOrigin::new("engine:agent-md").unwrap()),
+        session_id: SessionId::new_v7(),
+        run_id: Some(RunId::new_v7()),
         seq: 2,
-        payload: EventPayload::AgentMdSkipped {
-            path: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
-            byte_length: AgentMdSkipped::MAX_SKIP_BYTES + 1,
-            attachment: crate::AttachmentName::new("labpc_api").unwrap(),
+        timestamp: jiff::Timestamp::now(),
+        payload: EventPayload::Diagnostic {
+            source: DiagnosticSource::engine("agent-md").unwrap(),
+            kind: EngineDiagnosticKind::AgentMdTooLarge.label(),
+            message: message.into(),
+            count,
+            detail,
         },
-        ..invalid
     };
-    let value = serde_json::to_value(&skipped).unwrap();
-    assert_eq!(value["payload"]["attachment"], "labpc_api");
-    assert_eq!(
-        serde_json::from_value::<StoredEvent>(value).unwrap(),
-        skipped
+    let event = diagnostic(
+        Some(2),
+        "AGENTS.md skipped",
+        Some(
+            json!({"path": "/workspace/AGENTS.md", "byte_length": 3_000_000, "attachment": "labpc_api"}),
+        ),
     );
-    assert_eq!(skipped.validate(), Ok(()));
+    let value = serde_json::to_value(&event).unwrap();
+    assert_eq!(value["payload"]["kind"], "agent_md_too_large");
+    assert_eq!(value["payload"]["detail"]["attachment"], "labpc_api");
+    assert_eq!(serde_json::from_value::<StoredEvent>(value).unwrap(), event);
+    let one = serde_json::to_value(diagnostic(None, "once", None)).unwrap();
+    assert!(one["payload"].get("count").is_none() && one["payload"].get("detail").is_none());
 
-    let not_large_enough = StoredEvent {
-        payload: EventPayload::AgentMdSkipped {
-            path: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
-            byte_length: AgentMdSkipped::MAX_SKIP_BYTES,
-            attachment: crate::AttachmentName::new("local").unwrap(),
-        },
-        ..skipped
-    };
+    for invalid in [
+        diagnostic(Some(0), "zero", None),
+        diagnostic(None, " ", None),
+        diagnostic(
+            None,
+            "large",
+            Some(json!("x".repeat(MAX_DIAGNOSTIC_DETAIL_BYTES))),
+        ),
+    ] {
+        assert_eq!(invalid.validate(), Err(EventSchemaError::InvalidDiagnostic));
+    }
+    for source in ["engine:", "client:tui", "plugin", "Engine:x"] {
+        assert!(DiagnosticSource::new(source).is_err(), "{source}");
+    }
+    for kind in ["", "Hook", "1st", "a-b", &"a".repeat(65)] {
+        assert!(DiagnosticKind::new(kind).is_err(), "{kind}");
+    }
     assert_eq!(
-        not_large_enough.validate(),
-        Err(EventSchemaError::InvalidAgentMd)
+        DiagnosticSource::from(&crate::ProducerSource::runtime("labpc").unwrap()).runtime_id(),
+        Some("labpc")
     );
 }
 
@@ -936,27 +961,52 @@ fn model_tools_event_round_trips_and_bounds_names() {
 
 #[test]
 fn event_payload_best_effort_defaults_only_optional_fields() {
-    let missing = deserialize_event_payload_best_effort(&json!({"type":"run_cancelled"}))
-        .expect("missing optional field defaults");
+    let missing = deserialize_event_payload_best_effort(
+        &json!({"type":"delegate_child_terminated","status":"failed"}),
+    )
+    .expect("missing optional field defaults");
     assert_eq!(missing.degraded_fields, ["reason"]);
-    assert_eq!(missing.payload, EventPayload::RunCancelled { reason: None });
+    assert_eq!(
+        missing.payload,
+        EventPayload::DelegateChildTerminated {
+            status: SessionStatus::Failed,
+            reason: None
+        }
+    );
 
     let mismatched = deserialize_event_payload_best_effort(&json!({
-        "type":"run_interrupted",
+        "type":"delegate_child_terminated",
+        "status":"cancelled",
         "reason": 42
     }))
     .expect("mismatched optional field defaults");
     assert_eq!(mismatched.degraded_fields, ["reason"]);
     assert_eq!(
         mismatched.payload,
-        EventPayload::RunInterrupted { reason: None }
+        EventPayload::DelegateChildTerminated {
+            status: SessionStatus::Cancelled,
+            reason: None
+        }
     );
 
     assert!(deserialize_event_payload_best_effort(&json!({"type":"future_event"})).is_err());
-    assert!(deserialize_event_payload_best_effort(&json!({"type":"run_failed"})).is_err());
+    assert!(deserialize_event_payload_best_effort(&json!({"type":"run_finished"})).is_err());
     assert!(
-        deserialize_event_payload_best_effort(&json!({"type":"run_failed","error":42})).is_err()
+        deserialize_event_payload_best_effort(
+            &json!({"type":"run_finished","outcome":{"type":"failed","error":42}})
+        )
+        .is_err()
     );
+    // An outcome from a newer build is kept, not an error.
+    let future = deserialize_event_payload_best_effort(
+        &json!({"type":"run_finished","outcome":{"type":"paused","until":"later"}}),
+    )
+    .expect("an unknown outcome reads");
+    let EventPayload::RunFinished { outcome } = future.payload else {
+        panic!("run_finished");
+    };
+    assert_eq!(outcome.tag(), "paused");
+    assert_eq!(outcome.status(), SessionStatus::Interrupted);
 
     let tool_call_id = ToolCallId::new_v7();
     let old_progress = deserialize_event_payload_best_effort(&json!({
@@ -1033,7 +1083,7 @@ fn transient_payloads_travel_only_as_transient_events() {
         message
     );
     let durable = TransientEvent {
-        payload: EventPayload::RunCompleted { final_text: None },
+        payload: EventPayload::run_finished(crate::RunOutcome::Completed { final_text: None }),
         ..transient.clone()
     };
     assert_eq!(

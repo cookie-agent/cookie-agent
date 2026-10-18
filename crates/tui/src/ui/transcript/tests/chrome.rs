@@ -1072,7 +1072,9 @@ async fn agent_panel_tracks_delegated_agent_visibility_transitions() {
         child,
         3,
         run_id(),
-        EventPayload::RunCompleted { final_text: None },
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+            final_text: None,
+        }),
     )))
     .await;
     assert_eq!(app.tree.as_ref().expect("tree").children.len(), 1);
@@ -1138,7 +1140,9 @@ async fn agent_panel_keeps_watched_subagent_history_after_completion_at_each_dep
             watched,
             3,
             run_id(),
-            EventPayload::RunCompleted { final_text: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+                final_text: None,
+            }),
         )))
         .await;
         assert_agent_panel_visible(&mut app, true);

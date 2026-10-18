@@ -956,10 +956,7 @@ fn revert_cut(events: &[Arc<cookie_agent_protocol::StoredEvent>], through_seq: u
                     open = event.run_id.map(|run| (run, event.seq));
                     started = false;
                 }
-                Event::RunCompleted { .. }
-                | Event::RunFailed { .. }
-                | Event::RunCancelled { .. }
-                | Event::RunInterrupted { .. }
+                Event::RunFinished { .. }
                     if open.is_some_and(|(run, _)| event.run_id == Some(run)) =>
                 {
                     open = None;

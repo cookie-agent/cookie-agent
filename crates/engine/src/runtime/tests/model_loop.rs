@@ -160,8 +160,14 @@ async fn infinite_overload_retry_is_cancelled_during_backoff_without_fallback() 
     // The terminal event names who cancelled, not the engine loop that
     // observed the cancellation.
     assert!(projection.log.events().iter().any(|event| {
-        matches!(event.payload, EventPayload::RunCancelled { .. })
-            && event.origin.as_ref().map(|origin| origin.as_str()) == Some("client:tui-canceller")
+        matches!(
+            event.payload,
+            EventPayload::RunFinished {
+                outcome: cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::RunOutcome::Cancelled { .. }
+                )
+            }
+        ) && event.origin.as_ref().map(|origin| origin.as_str()) == Some("client:tui-canceller")
     }));
     assert_eq!(
         with_watchdog("captured fixture completion", captured)
@@ -291,7 +297,16 @@ async fn interrupted_stream_commits_its_partial_turn_before_the_abandonment() {
     );
     let cancelled = events
         .iter()
-        .find(|event| matches!(event.payload, EventPayload::RunCancelled { .. }))
+        .find(|event| {
+            matches!(
+                event.payload,
+                EventPayload::RunFinished {
+                    outcome: cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::RunOutcome::Cancelled { .. }
+                    )
+                }
+            )
+        })
         .expect("the run is cancelled");
     assert!(abandoned.seq < cancelled.seq);
     // The partial output reached disk only as the committed turn: none of the
@@ -355,7 +370,14 @@ async fn stream_deltas_are_delivered_live_but_never_logged() {
         loop {
             match live.recv().await.expect("live subscription") {
                 EventSubscriptionMessage::Event { event } => {
-                    let done = matches!(event.payload, EventPayload::RunCompleted { .. });
+                    let done = matches!(
+                        event.payload,
+                        EventPayload::RunFinished {
+                            outcome: cookie_agent_protocol::Open::Known(
+                                cookie_agent_protocol::RunOutcome::Completed { .. }
+                            )
+                        }
+                    );
                     delivered.push(event);
                     if done {
                         break;
@@ -535,7 +557,17 @@ async fn responses_message_transport_fields_allow_approval_and_summary_checkpoin
         if matches!(&commit.checkpoint, cookie_agent_protocol::ContextCheckpoint::InternalSummary { checkpoint } if checkpoint.summary() == "summary with transport fields"))));
     assert!(!events.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::InternalAgentFailed { .. } | EventPayload::ApprovalEscalated { .. }
+        EventPayload::InternalAgentFinished {
+            outcome: cookie_agent_protocol::Open::Known(
+                cookie_agent_protocol::InternalAgentOutcome::Failed { .. }
+            ),
+            ..
+        } | EventPayload::ApprovalStep {
+            step: cookie_agent_protocol::Open::Known(
+                cookie_agent_protocol::ApprovalStep::Escalated { .. }
+            ),
+            ..
+        }
     )));
     assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::ModelTurnCommitted { turn, .. }
         if turn.content.iter().any(|part| matches!(part, cookie_agent_protocol::PersistedAssistantPart::Custom { kind, data, metadata }
@@ -667,7 +699,7 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
             .iter()
             .any(|event| matches!(
                 &event.payload,
-                EventPayload::RunCompleted { final_text: Some(text) }
+                EventPayload::RunFinished { outcome: cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Completed { final_text: Some(text) }) }
                     if text == "scripted root complete"
             ))
     );
@@ -975,7 +1007,14 @@ async fn shutdown_joins_in_flight_run_tasks_and_records_run_cancelled() {
         .map(|event| event.payload.clone())
         .expect("terminal run event");
     assert!(
-        matches!(terminal, EventPayload::RunCancelled { .. }),
+        matches!(
+            terminal,
+            EventPayload::RunFinished {
+                outcome: cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::RunOutcome::Cancelled { .. }
+                )
+            }
+        ),
         "the run's last event is its cancellation, not an unterminated run: {terminal:?}"
     );
 
@@ -1107,7 +1146,16 @@ async fn repeated_write_outputs(loop_warning: bool) -> Vec<String> {
         &fixture.engine,
         session.session_id,
         "run completion",
-        |event| matches!(event.payload, EventPayload::RunCompleted { .. }),
+        |event| {
+            matches!(
+                event.payload,
+                EventPayload::RunFinished {
+                    outcome: cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::RunOutcome::Completed { .. }
+                    )
+                }
+            )
+        },
     )
     .await;
     let outputs = fixture

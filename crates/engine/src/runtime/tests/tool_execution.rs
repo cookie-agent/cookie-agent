@@ -784,7 +784,15 @@ async fn cancelling_parallel_tools_terminates_every_started_call_once() {
     let run_cancelled = events
         .iter()
         .filter(|event| {
-            event.run_id == Some(run) && matches!(event.payload, EventPayload::RunCancelled { .. })
+            event.run_id == Some(run)
+                && matches!(
+                    event.payload,
+                    EventPayload::RunFinished {
+                        outcome: cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::RunOutcome::Cancelled { .. }
+                        )
+                    }
+                )
         })
         .count();
     assert_eq!((starts, terminations, run_cancelled), (3, 3, 1));

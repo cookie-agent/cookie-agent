@@ -1245,3 +1245,31 @@ Deviations and choices made while implementing, by phase.
 - **Event storage.** Without revert markers the visible branch is the whole
   log, so the engine keeps one event list instead of a physical and a
   visible one.
+- **One delegation finish.** `delegation_finished` is written where the
+  control record was, for every delegation, and carries the teaser. It is
+  not model history. Every background completion already accepted its steer
+  producer message before the old `delegate_finished_v2`, so the old
+  suppression rule always applied to current writes; written at the control
+  point, the merged record would otherwise appear in a request assembled
+  before the acceptance and the result would reach the model twice. The
+  result reaches the model once, as the tool result or the accepted producer
+  message, and a restart re-drives a missing acceptance as before.
+  `ParentRunFacts` loses `notified`: a background delegation counts as
+  notified once its producer message is accepted.
+- **Approval cancellation.** The pair `approval_cancelled` +
+  `approval_finalized` the engine wrote for a system withdrawal is one
+  `approval_finalized { outcome: cancelled { reason_code } }`, whose final
+  decision is derived (`expired` for `approval_expired`, else `cancelled`;
+  source `system`). A user's cancel stays a `decided` outcome, since its
+  source is the user.
+- **Open inner enums.** `RunOutcome`, `InternalAgentOutcome`,
+  `DelegationStage`, `ApprovalStep`, and `ApprovalFinalization` are open
+  (`Open<T>`, with cheap named tags from a new `open_enum!` form). Unknown
+  run and internal-agent outcomes read as interrupted, an unknown approval
+  outcome as cancelled, and unknown stages and steps change nothing.
+- **Diagnostics.** `diagnostic.kind` is a snake-case label of at most 64
+  bytes; `count` is present only from 2; `detail` is at most 16 KiB. The
+  agent-md notice is `engine:agent-md` / `agent_md_too_large`, its message the
+  text the TUI used to compose, and the source of a plugin's notice is
+  `plugin:<name>`. The Rust kind catalogs (`PluginDiagnosticKind`,
+  `ProducerDiagnosticKind`, `EngineDiagnosticKind`) stay as writer helpers.

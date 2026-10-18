@@ -121,15 +121,11 @@ impl InFlightOutput {
                 self.tools
                     .retain(|tool| tool.tool_call_id != termination.tool_call_id);
             }
-            EventPayload::InternalAgentCompleted { invocation_id, .. }
-            | EventPayload::InternalAgentFailed { invocation_id, .. } => {
+            EventPayload::InternalAgentFinished { invocation_id, .. } => {
                 self.internal_agents
                     .retain(|agent| agent.invocation_id != *invocation_id);
             }
-            EventPayload::RunCompleted { .. }
-            | EventPayload::RunFailed { .. }
-            | EventPayload::RunCancelled { .. }
-            | EventPayload::RunInterrupted { .. } => {
+            EventPayload::RunFinished { .. } => {
                 if let Some(run_id) = run_id {
                     self.end_run(run_id);
                 }
@@ -307,7 +303,12 @@ mod tests {
             },
         );
         assert_eq!(in_flight.replay().len(), 1);
-        in_flight.settle(Some(run), &EventPayload::RunCancelled { reason: None });
+        in_flight.settle(
+            Some(run),
+            &EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Cancelled {
+                reason: None,
+            }),
+        );
         assert!(in_flight.replay().is_empty());
     }
 }

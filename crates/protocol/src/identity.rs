@@ -259,6 +259,100 @@ fn validate_producer_source(value: &str) -> Result<(), WireStringError> {
     }
 }
 
+/// Who a `diagnostic` event is about: `engine:<area>`, `plugin:<name>`, or
+/// `runtime:<id>`.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct DiagnosticSource(String);
+string_wire_impl!(
+    DiagnosticSource,
+    512,
+    "^(engine|plugin|runtime):[^\\p{Cc}\\p{Cf}]+$",
+    "Who a diagnostic is about: `engine:<area>`, `plugin:<name>`, or `runtime:<id>`.",
+    validate_diagnostic_source
+);
+
+impl DiagnosticSource {
+    const ENGINE: &'static str = "engine:";
+    const PLUGIN: &'static str = "plugin:";
+    const RUNTIME: &'static str = "runtime:";
+
+    /// The engine's own `area`, such as `agent-md` or `auto-compact`.
+    pub fn engine(area: &str) -> Result<Self, WireStringError> {
+        Self::new(format!("{}{area}", Self::ENGINE))
+    }
+
+    /// The configured plugin `plugin`.
+    pub fn plugin(plugin: &str) -> Result<Self, WireStringError> {
+        Self::new(format!("{}{plugin}", Self::PLUGIN))
+    }
+
+    /// The runtime `runtime_id`.
+    pub fn runtime(runtime_id: &str) -> Result<Self, WireStringError> {
+        Self::new(format!("{}{runtime_id}", Self::RUNTIME))
+    }
+
+    /// The engine area, for an engine source.
+    #[must_use]
+    pub fn engine_area(&self) -> Option<&str> {
+        self.0.strip_prefix(Self::ENGINE)
+    }
+
+    /// The configured plugin name, for a plugin source.
+    #[must_use]
+    pub fn plugin_name(&self) -> Option<&str> {
+        self.0.strip_prefix(Self::PLUGIN)
+    }
+
+    /// The runtime ID, for a runtime source.
+    #[must_use]
+    pub fn runtime_id(&self) -> Option<&str> {
+        self.0.strip_prefix(Self::RUNTIME)
+    }
+}
+
+impl From<&ProducerSource> for DiagnosticSource {
+    /// A producer source is a plugin or a runtime, which a diagnostic names
+    /// the same way.
+    fn from(source: &ProducerSource) -> Self {
+        Self(source.as_str().to_owned())
+    }
+}
+
+fn validate_diagnostic_source(value: &str) -> Result<(), WireStringError> {
+    validate_control_free(value, DiagnosticSource::MAX_BYTES)?;
+    match value.split_once(':') {
+        Some(("engine" | "plugin" | "runtime", rest)) if !rest.trim().is_empty() => Ok(()),
+        _ => Err(WireStringError::Invalid(
+            "must be `engine:<area>`, `plugin:<name>`, or `runtime:<id>`",
+        )),
+    }
+}
+
+/// What a `diagnostic` event reports: a snake-case label such as
+/// `interception_timeout` or `recovery_failed`. Readers show any label; the
+/// set grows without a protocol change.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct DiagnosticKind(String);
+string_wire_impl!(
+    DiagnosticKind,
+    64,
+    "^[a-z][a-z0-9_]*$",
+    "What a diagnostic reports, as a snake-case label.",
+    |value: &str| {
+        validate_bounded(value, DiagnosticKind::MAX_BYTES)?;
+        let mut bytes = value.bytes();
+        if bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
+            && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            Ok(())
+        } else {
+            Err(WireStringError::Invalid(
+                "must be a lowercase snake-case label",
+            ))
+        }
+    }
+);
+
 #[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SafeDisplayText(String);
 string_wire_impl!(

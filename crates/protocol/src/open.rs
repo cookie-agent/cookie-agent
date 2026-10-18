@@ -248,8 +248,47 @@ fn tag_value(schema: &Value) -> Option<&str> {
 /// let future: Weather = serde_json::from_str(r#""foggy""#).unwrap();
 /// assert_eq!(future, Weather::Unknown);
 /// ```
+///
+/// A large enum names each variant's tag as well, so that [`Open::tag`] reads
+/// it without serializing the value:
+///
+/// ```
+/// # use cookie_agent_protocol::{Open, open_enum};
+/// #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+/// #[serde(tag = "type", rename_all = "snake_case")]
+/// enum Shape {
+///     Circle { radius: u32 },
+///     Square { side: u32 },
+/// }
+/// open_enum!(tagged Shape, tag = "type", {
+///     Circle => "circle",
+///     Square => "square",
+/// });
+///
+/// let shape: Open<Shape> = Shape::Square { side: 2 }.into();
+/// assert_eq!(shape.tag(), "square");
+/// ```
 #[macro_export]
 macro_rules! open_enum {
+    (tagged $name:ty, tag = $tag:literal, { $($variant:ident => $value:literal),+ $(,)? }) => {
+        impl $crate::OpenTagged for $name {
+            const TAG: &'static str = $tag;
+
+            fn known_tags() -> &'static ::std::collections::BTreeSet<::std::string::String> {
+                static TAGS: ::std::sync::OnceLock<
+                    ::std::collections::BTreeSet<::std::string::String>,
+                > = ::std::sync::OnceLock::new();
+                TAGS.get_or_init(|| $crate::schema_tags::<$name>($tag))
+            }
+
+            fn tag(&self) -> ::std::string::String {
+                match self {
+                    $(Self::$variant { .. } => $value,)+
+                }
+                .to_owned()
+            }
+        }
+    };
     (tagged $name:ty, tag = $tag:literal) => {
         impl $crate::OpenTagged for $name {
             const TAG: &'static str = $tag;
@@ -313,6 +352,34 @@ mod tests {
             Running,
             Stopped,
         }
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    enum Named {
+        First { value: u32 },
+        SecondOne,
+    }
+
+    open_enum!(tagged Named, tag = "kind", {
+        First => "first",
+        SecondOne => "second_one",
+    });
+
+    #[test]
+    fn named_tags_match_the_serialized_tags() {
+        for value in [Named::First { value: 1 }, Named::SecondOne] {
+            assert_eq!(
+                value.tag(),
+                serde_json::to_value(&value).unwrap()["kind"]
+                    .as_str()
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            Named::known_tags().iter().collect::<Vec<_>>(),
+            ["first", "second_one"]
+        );
     }
 
     #[test]

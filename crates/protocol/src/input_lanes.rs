@@ -78,10 +78,12 @@ impl QueuedInputs {
             EventPayload::UserInputQueueRecalled { queued_seq } => {
                 self.entries.retain(|entry| entry.queued_seq != *queued_seq);
             }
-            EventPayload::RunFailed { .. }
-            | EventPayload::RunCancelled { .. }
-            | EventPayload::RunInterrupted { .. }
-            | EventPayload::UserInputQueueVoided {} => {
+            EventPayload::RunFinished { outcome }
+                if outcome.status() != crate::SessionStatus::Completed =>
+            {
+                return std::mem::take(&mut self.entries);
+            }
+            EventPayload::UserInputQueueVoided {} => {
                 return std::mem::take(&mut self.entries);
             }
             _ => {}
@@ -190,8 +192,8 @@ mod tests {
     #[test]
     fn a_failed_cancelled_or_interrupted_run_voids_the_whole_queue() {
         for terminal in [
-            EventPayload::RunCancelled { reason: None },
-            EventPayload::RunInterrupted { reason: None },
+            EventPayload::run_finished(crate::RunOutcome::Cancelled { reason: None }),
+            EventPayload::run_finished(crate::RunOutcome::Interrupted { reason: None }),
             EventPayload::UserInputQueueVoided {},
         ] {
             let mut queue = QueuedInputs::default();
@@ -218,7 +220,7 @@ mod tests {
         let mut completed = event(
             2,
             "engine:model-loop",
-            EventPayload::RunCompleted { final_text: None },
+            EventPayload::run_finished(crate::RunOutcome::Completed { final_text: None }),
         );
         completed.run_id = Some(RunId::new_v7());
         assert!(queue.apply(&completed).is_empty());

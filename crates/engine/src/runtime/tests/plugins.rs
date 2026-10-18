@@ -74,11 +74,12 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
             session.session_id,
             None,
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-            EventPayload::PluginDiagnostic {
-                plugin: "engine".into(),
-                kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
+            EventPayload::Diagnostic {
+                source: cookie_agent_protocol::DiagnosticSource::plugin("engine").unwrap(),
+                kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked.label(),
                 message: "trigger".into(),
-                count: 1,
+                count: None,
+                detail: None,
             },
         )
         .await
@@ -207,20 +208,14 @@ async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission(
             let events = projection.log.events();
             let rate_limited = events.iter().any(|event| {
                 matches!(
-                    event.payload,
-                    EventPayload::PluginDiagnostic {
-                        kind: cookie_agent_protocol::PluginDiagnosticKind::RateLimited,
-                        ..
-                    }
+                    &event.payload,
+                    EventPayload::Diagnostic { kind, .. } if *kind == cookie_agent_protocol::PluginDiagnosticKind::RateLimited
                 )
             });
             let context_mismatch = events.iter().any(|event| {
                 matches!(
-                    event.payload,
-                    EventPayload::PluginDiagnostic {
-                        kind: cookie_agent_protocol::PluginDiagnosticKind::ContextMismatch,
-                        ..
-                    }
+                    &event.payload,
+                    EventPayload::Diagnostic { kind, .. } if *kind == cookie_agent_protocol::PluginDiagnosticKind::ContextMismatch
                 )
             });
             rate_limited && context_mismatch
@@ -296,11 +291,12 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
                 session_id,
                 None,
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-                EventPayload::PluginDiagnostic {
-                    plugin: "engine".into(),
-                    kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
+                EventPayload::Diagnostic {
+                    source: cookie_agent_protocol::DiagnosticSource::plugin("engine").unwrap(),
+                    kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked.label(),
                     message: message.into(),
-                    count: 1,
+                    count: None,
+                    detail: None,
                 },
             )
             .await
@@ -322,10 +318,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
             events.iter().any(|event| {
                 matches!(
                     &event.payload,
-                    EventPayload::PluginDiagnostic {
-                        kind: cookie_agent_protocol::PluginDiagnosticKind::ContextMismatch,
-                        ..
-                    }
+                    EventPayload::Diagnostic { kind, .. } if *kind == cookie_agent_protocol::PluginDiagnosticKind::ContextMismatch
                 )
             })
         },
@@ -360,11 +353,8 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
             .events()
             .iter()
             .all(|event| !matches!(
-                event.payload,
-                EventPayload::PluginDiagnostic {
-                    kind: cookie_agent_protocol::PluginDiagnosticKind::ContextMismatch,
-                    ..
-                }
+                &event.payload,
+                EventPayload::Diagnostic { kind, .. } if *kind == cookie_agent_protocol::PluginDiagnosticKind::ContextMismatch
             )),
         "unknown token routed a diagnostic to the plugin-supplied session"
     );
@@ -427,22 +417,33 @@ async fn plugin_diagnostic_coalescing_is_exact_and_shutdown_drains() {
                     .log
                     .events()
                     .iter()
-                    .fold((0, 0), |(dropped, distinct), event| match &event.payload {
-                        EventPayload::PluginDiagnostic {
-                            plugin,
-                            kind: cookie_agent_protocol::PluginDiagnosticKind::EventDrop,
-                            message,
-                            count,
-                        } if plugin == "lagging" && message == "buffer overflow" => {
-                            (dropped + count, distinct)
-                        }
-                        EventPayload::PluginDiagnostic {
-                            plugin,
-                            kind: cookie_agent_protocol::PluginDiagnosticKind::InvalidModification,
-                            count,
-                            ..
-                        } if plugin == "fixture" => (dropped, distinct + count),
-                        _ => (dropped, distinct),
+                    .fold((0, 0), |(dropped, distinct), event| {
+                        match &event.payload {
+                    EventPayload::Diagnostic {
+                        source,
+                        kind,
+                        message,
+                        count,
+                        ..
+                    } if source.plugin_name() == Some("lagging")
+                        && *kind == cookie_agent_protocol::PluginDiagnosticKind::EventDrop
+                        && message == "buffer overflow" =>
+                    {
+                        (dropped + count.unwrap_or(1), distinct)
+                    }
+                    EventPayload::Diagnostic {
+                        source,
+                        kind,
+                        count,
+                        ..
+                    } if source.plugin_name() == Some("fixture")
+                        && *kind
+                            == cookie_agent_protocol::PluginDiagnosticKind::InvalidModification =>
+                    {
+                        (dropped, distinct + count.unwrap_or(1))
+                    }
+                    _ => (dropped, distinct),
+                }
                     });
             dropped == DROP_COUNT && distinct == DISTINCT_COUNT
         },
@@ -461,24 +462,34 @@ async fn plugin_diagnostic_coalescing_is_exact_and_shutdown_drains() {
     let dropped = events
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::PluginDiagnostic {
-                plugin,
-                kind: cookie_agent_protocol::PluginDiagnosticKind::EventDrop,
+            EventPayload::Diagnostic {
+                source,
+                kind,
                 message,
                 count,
-            } if plugin == "lagging" && message == "buffer overflow" => Some(*count),
+                ..
+            } if source.plugin_name() == Some("lagging")
+                && *kind == cookie_agent_protocol::PluginDiagnosticKind::EventDrop
+                && message == "buffer overflow" =>
+            {
+                Some(count.unwrap_or(1))
+            }
             _ => None,
         })
         .sum::<u64>();
     let distinct = events
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::PluginDiagnostic {
-                plugin,
-                kind: cookie_agent_protocol::PluginDiagnosticKind::InvalidModification,
-                message: _,
+            EventPayload::Diagnostic {
+                source,
+                kind,
                 count,
-            } if plugin == "fixture" => Some(*count),
+                ..
+            } if source.plugin_name() == Some("fixture")
+                && *kind == cookie_agent_protocol::PluginDiagnosticKind::InvalidModification =>
+            {
+                Some(count.unwrap_or(1))
+            }
             _ => None,
         })
         .sum::<u64>();

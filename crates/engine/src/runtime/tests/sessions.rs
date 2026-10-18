@@ -238,11 +238,13 @@ async fn two_engines_share_a_data_dir_without_sharing_session_writers() {
                 session_id,
                 None,
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-                EventPayload::PluginDiagnostic {
-                    plugin: "ownership-test".into(),
-                    kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
+                EventPayload::Diagnostic {
+                    source: cookie_agent_protocol::DiagnosticSource::plugin("ownership-test")
+                        .unwrap(),
+                    kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked.label(),
                     message: message.into(),
-                    count: 1,
+                    count: None,
+                    detail: None,
                 },
             )
         })
@@ -785,7 +787,7 @@ async fn revert_truncates_closes_cut_runs_and_rewinds_live_tails() {
     assert_eq!(tail.run_id, message.run_id);
     assert!(matches!(
         &tail.payload,
-        EventPayload::RunInterrupted { reason: Some(reason) } if reason.as_str() == "session reverted"
+        EventPayload::RunFinished { outcome: cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Interrupted { reason: Some(reason) }) } if reason.as_str() == "session reverted"
     ));
     assert!(
         fixture.engine.inner.store.get(session_id).unwrap().status

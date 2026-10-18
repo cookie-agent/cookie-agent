@@ -1827,9 +1827,13 @@ impl SessionStore {
         if matches!(
             envelope.payload,
             EventPayload::ApprovalRequested { .. }
-                | EventPayload::ApprovalEscalated { .. }
+                | EventPayload::ApprovalStep {
+                    step: cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::ApprovalStep::Escalated { .. }
+                    ),
+                    ..
+                }
                 | EventPayload::ApprovalFinalized { .. }
-                | EventPayload::ApprovalCancelled { .. }
                 | EventPayload::TreeApprovalGrantCommitted { .. }
         ) {
             self.notify_index_change(
@@ -2325,11 +2329,11 @@ impl SessionStore {
                     &capability,
                     Some(run),
                     origin.clone(),
-                    EventPayload::RunInterrupted {
+                    EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Interrupted {
                         reason: Some(cookie_agent_protocol::diagnostics::headline(
                             "session forked",
                         )),
-                    },
+                    }),
                 )?;
                 fork_projection.observe_appended(&event)?;
             }

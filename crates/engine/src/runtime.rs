@@ -90,7 +90,6 @@ mod tool_prompts;
 
 pub(crate) use artifact_reads::read_artifact_async;
 pub(crate) use artifacts::{ArtifactRouter, SessionArtifacts};
-pub(crate) use delegation::render_subagent_notification;
 
 /// Session id for artifact/capture tests that do not model tree placement.
 #[cfg(test)]

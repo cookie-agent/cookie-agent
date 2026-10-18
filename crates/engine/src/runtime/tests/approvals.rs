@@ -302,21 +302,30 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
         .expect("approval projection")
         .log
         .events();
-    let lifecycle = events
-        .iter()
-        .filter(|event| match &event.payload {
-            EventPayload::ApprovalRequested { request } => request.approval_id() == approval_id,
-            EventPayload::ApprovalEvaluated {
-                approval_id: event_approval_id,
-                ..
-            }
-            | EventPayload::ApprovalEscalated {
-                approval_id: event_approval_id,
-                ..
-            } => *event_approval_id == approval_id,
-            _ => false,
-        })
-        .collect::<Vec<_>>();
+    let lifecycle =
+        events
+            .iter()
+            .filter(|event| match &event.payload {
+                EventPayload::ApprovalRequested { request } => request.approval_id() == approval_id,
+                EventPayload::ApprovalStep {
+                    approval_id: event_approval_id,
+                    step:
+                        cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::ApprovalStep::Evaluated { .. },
+                        ),
+                    ..
+                }
+                | EventPayload::ApprovalStep {
+                    approval_id: event_approval_id,
+                    step:
+                        cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::ApprovalStep::Escalated { .. },
+                        ),
+                    ..
+                } => *event_approval_id == approval_id,
+                _ => false,
+            })
+            .collect::<Vec<_>>();
     assert_eq!(lifecycle.len(), 3);
     assert!(matches!(
         lifecycle[0].payload,
@@ -324,17 +333,19 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
     ));
     assert!(matches!(
         &lifecycle[1].payload,
-        EventPayload::ApprovalEvaluated {
-            decision,
-            ..
-        }
+        EventPayload::ApprovalStep { step: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalStep::Evaluated { decision, .. }), .. }
             if decision.decision == ApprovalInternalDecisionKind::Escalate
                 && decision.source == ApprovalDecisionSource::InternalAgent
                 && decision.reason_code == ApprovalReasonCode::Escalated
     ));
     assert!(matches!(
         lifecycle[2].payload,
-        EventPayload::ApprovalEscalated { .. }
+        EventPayload::ApprovalStep {
+            step: cookie_agent_protocol::Open::Known(
+                cookie_agent_protocol::ApprovalStep::Escalated { .. }
+            ),
+            ..
+        }
     ));
     assert!(
         fixture
@@ -581,7 +592,17 @@ async fn repeated_approvals_feed_prior_decisions_to_the_reviewer() {
         .events();
     let evaluations = events
         .iter()
-        .filter(|event| matches!(event.payload, EventPayload::ApprovalEvaluated { .. }))
+        .filter(|event| {
+            matches!(
+                event.payload,
+                EventPayload::ApprovalStep {
+                    step: cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::ApprovalStep::Evaluated { .. }
+                    ),
+                    ..
+                }
+            )
+        })
         .count();
     assert_eq!(evaluations, 2);
     let requests = with_watchdog("captured fixture completion", captured)
@@ -652,11 +673,15 @@ async fn ask_permission_mode_escalates_without_starting_internal_approval_agent(
             ..
         }
     )));
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event.payload, EventPayload::ApprovalEscalated { .. }))
-    );
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ApprovalStep {
+            step: cookie_agent_protocol::Open::Known(
+                cookie_agent_protocol::ApprovalStep::Escalated { .. }
+            ),
+            ..
+        }
+    )));
     approve_once(&fixture.engine, &approval, "ask-mode-approval").await;
     wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
     captured.abort();
@@ -784,7 +809,12 @@ async fn yolo_permission_mode_durably_approves_and_executes_without_escalation()
             matches!(
                 event.payload,
                 EventPayload::ApprovalRequested { .. }
-                    | EventPayload::ApprovalEvaluated { .. }
+                    | EventPayload::ApprovalStep {
+                        step: cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::ApprovalStep::Evaluated { .. }
+                        ),
+                        ..
+                    }
                     | EventPayload::ApprovalFinalized { .. }
             )
         })
@@ -792,28 +822,29 @@ async fn yolo_permission_mode_durably_approves_and_executes_without_escalation()
     assert_eq!(approval_lifecycle.len(), 3);
     assert!(matches!(
         &approval_lifecycle[1].payload,
-        EventPayload::ApprovalEvaluated {
-            decision,
-            ..
-        }
+        EventPayload::ApprovalStep { step: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalStep::Evaluated { decision, .. }), .. }
             if decision.decision == ApprovalInternalDecisionKind::Allow
                 && decision.source == ApprovalDecisionSource::Policy
                 && decision.reason_code == ApprovalReasonCode::YoloApproved
     ));
     assert!(matches!(
         &approval_lifecycle[2].payload,
-        EventPayload::ApprovalFinalized { decision, .. }
+        EventPayload::ApprovalFinalized { outcome: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalFinalization::Decided { decision, .. }), .. }
             if decision.outcome == ApprovalFinalOutcome::Approved
                 && decision.source == ApprovalDecisionSource::Policy
                 && decision.reason_code == ApprovalReasonCode::YoloApproved
     ));
     assert!(!events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::ApprovalEscalated { .. }
-            | EventPayload::InternalAgentStarted {
-                kind: InternalAgentKind::Approval,
-                ..
-            }
+        EventPayload::ApprovalStep {
+            step: cookie_agent_protocol::Open::Known(
+                cookie_agent_protocol::ApprovalStep::Escalated { .. }
+            ),
+            ..
+        } | EventPayload::InternalAgentStarted {
+            kind: InternalAgentKind::Approval,
+            ..
+        }
     )));
     captured.abort();
     fixture.engine.shutdown().await;
@@ -869,14 +900,14 @@ async fn auto_approve_n_rejects_classifier_escalation_with_feedback_without_prom
     assert!(!executed.is_set());
     assert!(events.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::ApprovalEvaluated { decision, .. }
+        EventPayload::ApprovalStep { step: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalStep::Evaluated { decision, .. }), .. }
             if decision.decision == ApprovalInternalDecisionKind::Escalate
                 && decision.source == ApprovalDecisionSource::InternalAgent
                 && decision.reason_code == ApprovalReasonCode::Escalated
     )));
     assert!(events.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::ApprovalFinalized { decision, .. }
+        EventPayload::ApprovalFinalized { outcome: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalFinalization::Decided { decision, .. }), .. }
             if decision.outcome == ApprovalFinalOutcome::Rejected
                 && decision.source == ApprovalDecisionSource::PermissionMode
                 && decision.reason_code == ApprovalReasonCode::AutoApproveNRejected
@@ -887,7 +918,12 @@ async fn auto_approve_n_rejects_classifier_escalation_with_feedback_without_prom
     )));
     assert!(!events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::ApprovalEscalated { .. } | EventPayload::TreeApprovalGrantCommitted { .. }
+        EventPayload::ApprovalStep {
+            step: cookie_agent_protocol::Open::Known(
+                cookie_agent_protocol::ApprovalStep::Escalated { .. }
+            ),
+            ..
+        } | EventPayload::TreeApprovalGrantCommitted { .. }
     )));
     assert!(events.iter().any(|event| matches!(
         &event.payload,
@@ -963,7 +999,7 @@ async fn auto_approve_y_approves_classifier_escalation_once_without_prompting() 
         .events();
     assert!(events.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::ApprovalFinalized { decision, .. }
+        EventPayload::ApprovalFinalized { outcome: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalFinalization::Decided { decision, .. }), .. }
             if decision.outcome == ApprovalFinalOutcome::Approved
                 && decision.source == ApprovalDecisionSource::PermissionMode
                 && decision.reason_code == ApprovalReasonCode::AutoApproveYApproved
@@ -972,7 +1008,12 @@ async fn auto_approve_y_approves_classifier_escalation_once_without_prompting() 
     )));
     assert!(!events.iter().any(|event| matches!(
         event.payload,
-        EventPayload::ApprovalEscalated { .. } | EventPayload::TreeApprovalGrantCommitted { .. }
+        EventPayload::ApprovalStep {
+            step: cookie_agent_protocol::Open::Known(
+                cookie_agent_protocol::ApprovalStep::Escalated { .. }
+            ),
+            ..
+        } | EventPayload::TreeApprovalGrantCommitted { .. }
     )));
     assert!(
         fixture
@@ -1046,7 +1087,7 @@ async fn auto_approve_y_rechecks_identical_calls_without_creating_a_tree_grant()
             .iter()
             .filter(|event| matches!(
                 &event.payload,
-                EventPayload::ApprovalEvaluated { decision, .. }
+                EventPayload::ApprovalStep { step: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalStep::Evaluated { decision, .. }), .. }
                     if decision.source == ApprovalDecisionSource::InternalAgent
             ))
             .count(),
@@ -1156,16 +1197,20 @@ async fn auto_approve_n_and_y_preserve_classifier_allow_and_deny() {
             .events();
         assert!(events.iter().any(|event| matches!(
             &event.payload,
-            EventPayload::ApprovalFinalized { decision, .. }
+            EventPayload::ApprovalFinalized { outcome: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalFinalization::Decided { decision, .. }), .. }
                 if decision.source == ApprovalDecisionSource::InternalAgent
                     && decision.reason_code == expected_reason
                     && (decision.outcome == ApprovalFinalOutcome::Approved) == should_execute
         )));
-        assert!(
-            !events
-                .iter()
-                .any(|event| matches!(event.payload, EventPayload::ApprovalEscalated { .. }))
-        );
+        assert!(!events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::ApprovalStep {
+                step: cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::ApprovalStep::Escalated { .. }
+                ),
+                ..
+            }
+        )));
         assert_eq!(
             with_watchdog("captured fixture completion", captured)
                 .await
@@ -1235,9 +1280,19 @@ async fn yolo_permission_mode_does_not_override_hard_deny_rules() {
     assert!(!events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ApprovalRequested { .. }
-            | EventPayload::ApprovalEvaluated { .. }
+            | EventPayload::ApprovalStep {
+                step: cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::ApprovalStep::Evaluated { .. }
+                ),
+                ..
+            }
             | EventPayload::ApprovalFinalized { .. }
-            | EventPayload::ApprovalEscalated { .. }
+            | EventPayload::ApprovalStep {
+                step: cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::ApprovalStep::Escalated { .. }
+                ),
+                ..
+            }
     )));
     captured.abort();
     fixture.engine.shutdown().await;
@@ -1287,7 +1342,7 @@ async fn yolo_permission_mode_still_triggers_the_doom_loop_guard() {
         |event| {
             matches!(
                 &event.payload,
-                EventPayload::ApprovalFinalized { decision, .. }
+                EventPayload::ApprovalFinalized { outcome: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalFinalization::Decided { decision, .. }), .. }
                     if decision.outcome == ApprovalFinalOutcome::Rejected
                         && decision.reason_code == ApprovalReasonCode::DoomLoopDetected
             )
@@ -1304,7 +1359,7 @@ async fn yolo_permission_mode_still_triggers_the_doom_loop_guard() {
         .events();
     assert!(events.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::ApprovalFinalized { decision, .. }
+        EventPayload::ApprovalFinalized { outcome: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalFinalization::Decided { decision, .. }), .. }
             if decision.outcome == ApprovalFinalOutcome::Rejected
                 && decision.reason_code == ApprovalReasonCode::DoomLoopDetected
     )));
@@ -1376,7 +1431,7 @@ async fn permission_mode_change_applies_to_the_next_operation_only() {
         |event| {
             matches!(
                 &event.payload,
-                EventPayload::ApprovalFinalized { decision, .. }
+                EventPayload::ApprovalFinalized { outcome: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalFinalization::Decided { decision, .. }), .. }
                     if decision.reason_code == ApprovalReasonCode::YoloApproved
             )
         },
@@ -1394,7 +1449,15 @@ async fn permission_mode_change_applies_to_the_next_operation_only() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event.payload, EventPayload::ApprovalEscalated { .. }))
+            .filter(|event| matches!(
+                event.payload,
+                EventPayload::ApprovalStep {
+                    step: cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::ApprovalStep::Escalated { .. }
+                    ),
+                    ..
+                }
+            ))
             .count(),
         1
     );
@@ -1444,11 +1507,7 @@ async fn malformed_internal_approval_output_falls_back_to_escalation_transaction
         .events();
     assert!(events.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::ApprovalEvaluated {
-            approval_id,
-            decision,
-            ..
-        }
+        EventPayload::ApprovalStep { approval_id, step: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalStep::Evaluated { decision, .. }), .. }
             if *approval_id == approval.request.approval_id()
                 && decision.decision == ApprovalInternalDecisionKind::Escalate
                 && decision.source == ApprovalDecisionSource::InternalAgent
@@ -1508,12 +1567,12 @@ async fn internal_agent_ask_escalates_to_user_approval_then_executes_tool() {
     let approval_id = approval.request.approval_id();
     assert!(events.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::ApprovalUserDecisionRecorded { approval_id: event_id, decision, .. }
+        EventPayload::ApprovalStep { approval_id: event_id, step: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalStep::UserDecision { decision, .. }), .. }
             if *event_id == approval_id && *decision == ApprovalUserDecision::ApproveOnce
     )));
     assert!(events.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::ApprovalFinalized { approval_id: event_id, decision }
+        EventPayload::ApprovalFinalized { approval_id: event_id, outcome: cookie_agent_protocol::Open::Known(cookie_agent_protocol::ApprovalFinalization::Decided { decision, .. }), .. }
             if *event_id == approval_id
                 && decision.outcome == cookie_agent_protocol::ApprovalFinalOutcome::Approved
                 && decision.source == ApprovalDecisionSource::User
@@ -1713,7 +1772,9 @@ async fn resume_sweep_finalizes_interrupted_run_approvals_and_preserves_live_one
             session.session_id,
             Some(dead_run),
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-            EventPayload::RunInterrupted { reason: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Interrupted {
+                reason: None,
+            }),
         )
         .expect("interrupt dead run");
 
@@ -1752,9 +1813,15 @@ async fn resume_sweep_finalizes_interrupted_run_approvals_and_preserves_live_one
     let cancelled: Vec<_> = events
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::ApprovalCancelled {
+            EventPayload::ApprovalFinalized {
                 approval_id,
-                reason_code,
+                outcome:
+                    cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::ApprovalFinalization::Cancelled {
+                            reason_code, ..
+                        },
+                    ),
+                ..
             } => Some((*approval_id, *reason_code)),
             _ => None,
         })
@@ -1837,33 +1904,15 @@ async fn finalized_approval_during_internal_evaluation_yields_clean_denial() {
         .append(
             session.session_id,
             Some(run.run_id),
-            origin.clone(),
-            EventPayload::ApprovalCancelled {
+            origin,
+            EventPayload::approval_finalized(
                 approval_id,
-                reason_code: ApprovalReasonCode::PreparedCapabilityLost,
-            },
+                cookie_agent_protocol::ApprovalFinalization::Cancelled {
+                    reason_code: ApprovalReasonCode::PreparedCapabilityLost,
+                },
+            ),
         )
         .expect("sweep cancellation");
-    fixture
-        .engine
-        .inner
-        .store
-        .append(
-            session.session_id,
-            Some(run.run_id),
-            origin,
-            EventPayload::ApprovalFinalized {
-                approval_id,
-                decision: cookie_agent_protocol::ApprovalFinalDecision {
-                    outcome: ApprovalFinalOutcome::Cancelled,
-                    source: ApprovalDecisionSource::System,
-                    reason_code: ApprovalReasonCode::PreparedCapabilityLost,
-                    feedback: None,
-                    tree_grant_id: None,
-                },
-            },
-        )
-        .expect("sweep finalization");
     release.notify_one();
 
     let termination = await_event(
@@ -1906,10 +1955,7 @@ async fn finalized_approval_during_internal_evaluation_yields_clean_denial() {
             .iter()
             .filter(|event| matches!(
                 &event.payload,
-                EventPayload::ApprovalFinalized {
-                    approval_id: event_approval_id,
-                    ..
-                } if *event_approval_id == approval_id
+                EventPayload::ApprovalFinalized { approval_id: event_approval_id, .. } if *event_approval_id == approval_id
             ))
             .count(),
         1
@@ -1971,33 +2017,15 @@ async fn escalated_approval_finalized_externally_still_wakes_the_waiter() {
         .append(
             session.session_id,
             Some(run.run_id),
-            origin.clone(),
-            EventPayload::ApprovalCancelled {
+            origin,
+            EventPayload::approval_finalized(
                 approval_id,
-                reason_code: ApprovalReasonCode::PreparedCapabilityLost,
-            },
+                cookie_agent_protocol::ApprovalFinalization::Cancelled {
+                    reason_code: ApprovalReasonCode::PreparedCapabilityLost,
+                },
+            ),
         )
         .expect("finalize cancelled");
-    fixture
-        .engine
-        .inner
-        .store
-        .append(
-            session.session_id,
-            Some(run.run_id),
-            origin,
-            EventPayload::ApprovalFinalized {
-                approval_id,
-                decision: cookie_agent_protocol::ApprovalFinalDecision {
-                    outcome: ApprovalFinalOutcome::Cancelled,
-                    source: ApprovalDecisionSource::System,
-                    reason_code: ApprovalReasonCode::PreparedCapabilityLost,
-                    feedback: None,
-                    tree_grant_id: None,
-                },
-            },
-        )
-        .expect("finalize decision");
     await_event(
         &fixture.engine,
         session.session_id,
@@ -2005,10 +2033,7 @@ async fn escalated_approval_finalized_externally_still_wakes_the_waiter() {
         |event| {
             matches!(
                 &event.payload,
-                EventPayload::ApprovalFinalized {
-                    approval_id: event_approval_id,
-                    ..
-                } if *event_approval_id == approval_id
+                EventPayload::ApprovalFinalized { approval_id: event_approval_id, .. } if *event_approval_id == approval_id
             )
         },
     )

@@ -487,12 +487,8 @@ fn reference_validate_records(
                     !tool_starts.contains_key(tool_call_id)
                         && taint.tool_before(*tool_call_id, record.seq)
                 }
-                EventPayload::ApprovalEvaluated { approval_id, .. }
-                | EventPayload::ApprovalEscalated { approval_id, .. }
-                | EventPayload::ApprovalUserDecisionRecorded { approval_id, .. }
-                | EventPayload::ApprovalFinalized { approval_id, .. }
-                | EventPayload::ApprovalCancelled { approval_id, .. }
-                | EventPayload::ApprovalDoomLoopDetected { approval_id, .. } => {
+                EventPayload::ApprovalStep { approval_id, .. }
+                | EventPayload::ApprovalFinalized { approval_id, .. } => {
                     !approval_owners.contains_key(approval_id)
                         && taint.approval_before(*approval_id, record.seq)
                 }
@@ -506,9 +502,7 @@ fn reference_validate_records(
                             !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
                         })
                 }
-                EventPayload::DelegationStarted { invocation_id, .. }
-                | EventPayload::DelegationRunStarted { invocation_id, .. }
-                | EventPayload::DelegationRunAttached { invocation_id, .. } => {
+                EventPayload::DelegationProgressed { invocation_id, .. } => {
                     taint.delegation_before(*invocation_id, record.seq)
                         || record.run_id.is_some_and(|run_id| {
                             !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
@@ -576,9 +570,12 @@ fn reference_validate_records(
                     return corrupt(path, "delegation reservation ownership is invalid");
                 }
             }
-            EventPayload::DelegationStarted {
+            EventPayload::DelegationProgressed {
                 invocation_id,
-                child_session_id,
+                stage:
+                    cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::DelegationStage::Started { child_session_id },
+                    ),
             } => {
                 let Some(delegation) = delegations.get_mut(invocation_id) else {
                     return corrupt(path, "delegation start appeared before its reservation");
@@ -592,16 +589,22 @@ fn reference_validate_records(
                 }
                 delegation.started = true;
             }
-            EventPayload::DelegationRunStarted {
+            EventPayload::DelegationProgressed {
                 invocation_id,
-                child_run_id,
-            }
-            | EventPayload::DelegationRunAttached {
-                invocation_id,
-                child_run_id,
+                stage:
+                    cookie_agent_protocol::Open::Known(
+                        stage @ (cookie_agent_protocol::DelegationStage::RunStarted {
+                            child_run_id,
+                        }
+                        | cookie_agent_protocol::DelegationStage::RunAttached {
+                            child_run_id,
+                        }),
+                    ),
             } => {
-                let attached =
-                    matches!(&record.payload, EventPayload::DelegationRunAttached { .. });
+                let attached = matches!(
+                    stage,
+                    cookie_agent_protocol::DelegationStage::RunAttached { .. }
+                );
                 let Some(delegation) = delegations.get_mut(invocation_id) else {
                     return corrupt(path, "delegation run appeared before its reservation");
                 };
@@ -1203,33 +1206,23 @@ fn reference_validate_records(
                     );
                 }
             }
-            EventPayload::ApprovalEvaluated { approval_id, .. }
-            | EventPayload::ApprovalEscalated { approval_id, .. }
-            | EventPayload::ApprovalUserDecisionRecorded { approval_id, .. }
-            | EventPayload::ApprovalFinalized { approval_id, .. }
-            | EventPayload::ApprovalCancelled { approval_id, .. }
-            | EventPayload::ApprovalDoomLoopDetected { approval_id, .. } => {
+            EventPayload::ApprovalStep { approval_id, .. }
+            | EventPayload::ApprovalFinalized { approval_id, .. } => {
                 validate_approval_owner(path, &approval_owners, *approval_id, record.run_id)?;
             }
             EventPayload::TreeApprovalGrantCommitted { grant } => {
                 validate_approval_owner(path, &approval_owners, grant.approval_id, record.run_id)?;
             }
-            EventPayload::PluginDiagnostic { .. } => {
+            EventPayload::Diagnostic { .. } => {
                 if record.run_id.is_some() {
-                    return corrupt(path, "plugin events must be runless");
+                    require_started_run(path, &runs, record.run_id)?;
                 }
             }
             _ => {
                 require_started_run(path, &runs, record.run_id)?;
             }
         }
-        if matches!(
-            record.payload,
-            EventPayload::RunCompleted { .. }
-                | EventPayload::RunFailed { .. }
-                | EventPayload::RunCancelled { .. }
-                | EventPayload::RunInterrupted { .. }
-        ) && record.run_id == active_run
+        if matches!(record.payload, EventPayload::RunFinished { .. }) && record.run_id == active_run
         {
             active_run = None;
         }
@@ -1814,26 +1807,23 @@ fn current_delegation_records() -> Vec<StoredEvent> {
             records,
             session_id,
             parent_run_id,
-            EventPayload::DelegationStarted {
+            EventPayload::delegation_progressed(
                 invocation_id,
-                child_session_id,
-            },
+                cookie_agent_protocol::DelegationStage::Started { child_session_id },
+            ),
         );
         push_run_event(
             records,
             session_id,
             parent_run_id,
-            if attached {
-                EventPayload::DelegationRunAttached {
-                    invocation_id,
-                    child_run_id,
-                }
-            } else {
-                EventPayload::DelegationRunStarted {
-                    invocation_id,
-                    child_run_id,
-                }
-            },
+            EventPayload::delegation_progressed(
+                invocation_id,
+                if attached {
+                    cookie_agent_protocol::DelegationStage::RunAttached { child_run_id }
+                } else {
+                    cookie_agent_protocol::DelegationStage::RunStarted { child_run_id }
+                },
+            ),
         );
         push_run_event(
             records,
@@ -1845,6 +1835,9 @@ fn current_delegation_records() -> Vec<StoredEvent> {
                 child_run_id: Some(child_run_id),
                 status: SessionStatus::Completed,
                 reason: None,
+                short_id: Some("explore_00000000".into()),
+                preview: "done".into(),
+                total_lines: 1,
             },
         );
     };
@@ -2226,14 +2219,14 @@ fn event_log_best_effort_reader_applies_all_three_tiers() {
         session,
         Some(RunId(Uuid::from_u128(400))),
         4,
-        EventPayload::RunFailed {
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Failed {
             error: SafeErrorMessage::new("failed").expect("safe error"),
             model_error: None,
             resolved_model: None,
-        },
+        }),
     ))
     .expect("broken event");
-    broken_required["payload"]["error"] = serde_json::json!(42);
+    broken_required["payload"]["outcome"]["error"] = serde_json::json!(42);
     values.push(broken_required);
 
     let mut future_field = serde_json::to_value(event(
@@ -3039,10 +3032,12 @@ fn event_log_rejects_cross_run_approval_lifecycle() {
             session,
             Some(run_two),
             5,
-            EventPayload::ApprovalEscalated {
+            EventPayload::approval_step(
                 approval_id,
-                reason_code: ApprovalReasonCode::Escalated,
-            },
+                cookie_agent_protocol::ApprovalStep::Escalated {
+                    reason_code: ApprovalReasonCode::Escalated,
+                },
+            ),
         ),
     ];
     let bytes = records

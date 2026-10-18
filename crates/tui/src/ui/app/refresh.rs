@@ -996,23 +996,14 @@ impl App {
         // live tail: releasing it lets the daemon evict the session.
         let run_ended = event.and_then(|event| {
             (matches!(&delivery, ClientDelivery::Live { .. })
-                && matches!(
-                    &event.payload,
-                    EventPayload::RunCompleted { .. }
-                        | EventPayload::RunFailed { .. }
-                        | EventPayload::RunCancelled { .. }
-                        | EventPayload::RunInterrupted { .. }
-                ))
+                && matches!(&event.payload, EventPayload::RunFinished { .. }))
             .then_some(event.session_id)
         });
         let terminalized = event.is_some_and(|event| {
             matches!(
                 &event.payload,
-                EventPayload::RunCompleted { .. }
-                    | EventPayload::RunFailed { .. }
-                    | EventPayload::RunCancelled { .. }
-                    | EventPayload::RunInterrupted { .. }
-                    | EventPayload::DelegateFinishedV2 { .. }
+                EventPayload::RunFinished { .. }
+                    | EventPayload::DelegationFinished { .. }
                     | EventPayload::DelegateChildTerminated { .. }
             )
         });
@@ -1022,10 +1013,7 @@ impl App {
         let delegation_changed = event.is_some_and(|event| {
             matches!(
                 &event.payload,
-                EventPayload::DelegationStarted { .. }
-                    | EventPayload::DelegationRunStarted { .. }
-                    | EventPayload::DelegationRunAttached { .. }
-                    | EventPayload::DelegationFinished { .. }
+                EventPayload::DelegationProgressed { .. } | EventPayload::DelegationFinished { .. }
             )
         });
         let title_change = event.and_then(title_change_from_event);

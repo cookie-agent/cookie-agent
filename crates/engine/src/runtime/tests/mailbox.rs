@@ -256,7 +256,12 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     assert!(events.iter().any(|event| {
         matches!(
             event.payload,
-            EventPayload::ApprovalUserDecisionRecorded { .. }
+            EventPayload::ApprovalStep {
+                step: cookie_agent_protocol::Open::Known(
+                    cookie_agent_protocol::ApprovalStep::UserDecision { .. }
+                ),
+                ..
+            }
         ) && event
             .origin
             .as_ref()

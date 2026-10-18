@@ -742,7 +742,7 @@ impl Engine {
             {
                 continue;
             }
-            self.append_direct(session, None, event_origin("engine:plugin-host"), Event::ProducerDiagnostic { source: state.source, kind, message: "Producer recovery is unavailable; external work is unknown and goal continuation is held.".into() })?;
+            self.append_direct(session, None, event_origin("engine:plugin-host"), Event::Diagnostic { source: (&state.source).into(), kind: kind.label(), message: "Producer recovery is unavailable; external work is unknown and goal continuation is held.".into(), count: None, detail: None })?;
             self.inner
                 .sessions
                 .producers
@@ -1541,13 +1541,6 @@ impl Engine {
         }
         let body = super::delegation::render_background_completion(&teaser);
         let description = producer_description("Delegation completed: ", &teaser.preview);
-        let super::delegation::DelegateTeaser {
-            short_id,
-            status,
-            preview,
-            total_lines,
-            ..
-        } = teaser;
         let parent = self.inner.store.get(session)?;
         let visible = parent.log.event_snapshot().iter().any(|event| {
             !parent.log.delegation_event_tainted(event)
@@ -1585,25 +1578,22 @@ impl Engine {
             },
             connection_epoch: None,
         };
-        let events = self.inner.store.log(session)?.event_snapshot();
-        let already_logged = events.iter().any(|event| {
-            matches!(
-                event.payload,
-                Event::DelegateFinishedV2 { invocation_id, session_id, .. }
-                    if invocation_id == reservation.invocation_id
-                        && session_id == reservation.child_session_id
-            )
-        });
-        let already_accepted = events.iter().any(|event| {
-            matches!(
-                &event.payload,
-                Event::ProducerMessageAccepted {
-                    producer_owner: ProducerOwner::Delegation { invocation_id },
-                    ..
-                } if *invocation_id == reservation.invocation_id
-            )
-        });
-        if !already_accepted && !already_logged {
+        let already_accepted =
+            self.inner
+                .store
+                .log(session)?
+                .event_snapshot()
+                .iter()
+                .any(|event| {
+                    matches!(
+                        &event.payload,
+                        Event::ProducerMessageAccepted {
+                            producer_owner: ProducerOwner::Delegation { invocation_id },
+                            ..
+                        } if *invocation_id == reservation.invocation_id
+                    )
+                });
+        if !already_accepted {
             let producer_id = producer_id.ok_or_else(|| {
                 EngineError::Producer("delegation completion registration is missing".into())
             })?;
@@ -1619,21 +1609,6 @@ impl Engine {
                     body,
                 },
                 None,
-            )?;
-        }
-        if !already_logged {
-            self.append_direct(
-                session,
-                Some(reservation.parent_run_id),
-                event_origin("engine:delegation"),
-                Event::DelegateFinishedV2 {
-                    invocation_id: reservation.invocation_id,
-                    session_id: reservation.child_session_id,
-                    short_id: Some(short_id),
-                    status,
-                    preview,
-                    total_lines,
-                },
             )?;
         }
         Ok(true)

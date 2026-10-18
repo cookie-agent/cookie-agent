@@ -1007,11 +1007,13 @@ fn agent_md_and_skill_loads_render_as_expandable_context_rows() {
             session,
             9,
             third,
-            EventPayload::AgentMdSkipped {
-                path: SafeDisplayText::new("/work/sub/AGENTS.md").expect("path"),
-                byte_length: cookie_agent_protocol::AgentMdSkipped::MAX_SKIP_BYTES + 1,
-                attachment: cookie_agent_protocol::AttachmentName::new("local").expect("name"),
-            },
+            EventPayload::agent_md_skipped(
+                &cookie_agent_protocol::AgentMdSkipped {
+                    path: SafeDisplayText::new("/work/sub/AGENTS.md").expect("path"),
+                    byte_length: cookie_agent_protocol::AgentMdSkipped::MAX_SKIP_BYTES + 1,
+                },
+                &cookie_agent_protocol::AttachmentName::new("local").expect("name"),
+            ),
         ),
     ];
     let mut store = StateStore::default();

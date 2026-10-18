@@ -308,13 +308,7 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
         |event| {
             matches!(
                 &event.payload,
-                EventPayload::DelegateFinishedV2 {
-                    session_id,
-                    status: SessionStatus::Completed,
-                    preview,
-                    total_lines: 3,
-                    ..
-                } if *session_id == child_session_id
+                EventPayload::DelegationFinished { child_session_id: session_id, status: SessionStatus::Completed, preview, total_lines: 3, .. } if *session_id == child_session_id
                     && preview == "first line\nsecond line\nthird line"
             )
         },
@@ -455,7 +449,7 @@ async fn delegation_completion_triggers_configured_subagent_eviction_after_tease
             .iter()
             .any(|event| matches!(
                 event.payload,
-                EventPayload::DelegateFinishedV2 { session_id, .. }
+                EventPayload::DelegationFinished { child_session_id: session_id, .. }
                     if session_id == child_session_id
             ))
     );

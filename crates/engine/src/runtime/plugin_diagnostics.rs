@@ -188,6 +188,9 @@ pub(super) async fn run_plugin_diagnostic_aggregator(
                 .active_plugin
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(plugin.clone());
+            let Ok(plugin_source) = cookie_agent_protocol::DiagnosticSource::plugin(&plugin) else {
+                continue;
+            };
             let append = async {
                 #[cfg(test)]
                 if let Some(block) = &append_block {
@@ -198,11 +201,12 @@ pub(super) async fn run_plugin_diagnostic_aggregator(
                         run: None,
                         origin: cookie_agent_protocol::EventOrigin::new("engine:plugin-host")
                             .expect("static event origin is valid"),
-                        event: Box::new(Event::PluginDiagnostic {
-                            plugin: plugin.clone(),
-                            kind,
+                        event: Box::new(Event::Diagnostic {
+                            source: plugin_source.clone(),
+                            kind: kind.label(),
                             message,
-                            count,
+                            count: (count > 1).then_some(count),
+                            detail: None,
                         }),
                         reply,
                     })

@@ -62,7 +62,7 @@ async fn background_startup_failure_releases_capacity_and_notifies() {
                 .log
                 .events()
                 .iter()
-                .filter(|event| matches!(event.payload, EventPayload::DelegateFinishedV2 { .. }))
+                .filter(|event| matches!(event.payload, EventPayload::DelegationFinished { .. }))
                 .count();
             completed == 4 && failed == 1 && finished == 5
         },
@@ -130,12 +130,12 @@ async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
                 .log
                 .events()
                 .iter()
-                .any(|event| matches!(event.payload, EventPayload::DelegateQueued { .. }));
+                .any(|event| is_queued(&event.payload));
             let finished = parent_projection
                 .log
                 .events()
                 .iter()
-                .filter(|event| matches!(event.payload, EventPayload::DelegateFinishedV2 { .. }))
+                .filter(|event| matches!(event.payload, EventPayload::DelegationFinished { .. }))
                 .count();
             let completed_children = fixture
                 .engine
@@ -211,7 +211,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
             .log
             .events()
             .iter()
-            .filter(|event| matches!(event.payload, EventPayload::DelegateQueued { .. }))
+            .filter(|event| is_queued(&event.payload))
             .count(),
         16
     );
@@ -226,12 +226,27 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
         )
     }));
 
-    let queued_ids = projection
-        .log
-        .events()
+    let events = projection.log.events();
+    let started = events
         .iter()
-        .filter_map(|event| match event.payload {
-            EventPayload::DelegateQueued { session_id, .. } => Some(session_id),
+        .filter_map(|event| match &event.payload {
+            EventPayload::DelegationProgressed {
+                invocation_id,
+                stage:
+                    cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::DelegationStage::Started { child_session_id },
+                    ),
+            } => Some((*invocation_id, *child_session_id)),
+            _ => None,
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let queued_ids = events
+        .iter()
+        .filter(|event| is_queued(&event.payload))
+        .filter_map(|event| match &event.payload {
+            EventPayload::DelegationProgressed { invocation_id, .. } => {
+                started.get(invocation_id).copied()
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -387,4 +402,16 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
     .await;
     server.abort();
     fixture.engine.shutdown().await;
+}
+
+fn is_queued(payload: &EventPayload) -> bool {
+    matches!(
+        payload,
+        EventPayload::DelegationProgressed {
+            stage: cookie_agent_protocol::Open::Known(
+                cookie_agent_protocol::DelegationStage::Queued { .. }
+            ),
+            ..
+        }
+    )
 }

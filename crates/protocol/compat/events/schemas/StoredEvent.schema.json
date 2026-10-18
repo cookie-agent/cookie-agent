@@ -351,6 +351,48 @@
       ],
       "type": "string"
     },
+    "ApprovalFinalization": {
+      "description": "How an approval ended: the `outcome` of\n[`EventPayload::ApprovalFinalized`].\n\nOpen: an outcome this build does not know reads as cancelled, so the\noperation is not approved.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A decision by policy, a grant, the reviewer, or the user.",
+          "properties": {
+            "decision": {
+              "$ref": "#/$defs/ApprovalFinalDecision"
+            },
+            "type": {
+              "const": "decided",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "decision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The engine withdrew the approval: the request was cancelled, expired,\nor its prepared operation changed or was lost.",
+          "properties": {
+            "reason_code": {
+              "$ref": "#/$defs/ApprovalReasonCode"
+            },
+            "type": {
+              "const": "cancelled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "reason_code"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
+    },
     "ApprovalInternalDecision": {
       "additionalProperties": false,
       "properties": {
@@ -481,6 +523,108 @@
         "doom_loop_guard"
       ],
       "type": "string"
+    },
+    "ApprovalStep": {
+      "description": "One step of an approval before its finalization: the `step` of\n[`EventPayload::ApprovalStep`].\n\nOpen: a step this build does not know changes nothing it reads.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The internal decision pipeline decided.",
+          "properties": {
+            "decision": {
+              "$ref": "#/$defs/ApprovalInternalDecision"
+            },
+            "type": {
+              "const": "evaluated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "decision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The approval waits for the user.",
+          "properties": {
+            "reason_code": {
+              "$ref": "#/$defs/ApprovalReasonCode"
+            },
+            "type": {
+              "const": "escalated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "reason_code"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A client answered for the user.",
+          "properties": {
+            "client_response_id": {
+              "description": "Bounded approval response idempotency key.",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+              "type": "string"
+            },
+            "decision": {
+              "$ref": "#/$defs/ApprovalUserDecision"
+            },
+            "feedback": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ApprovalFeedback"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "const": "user_decision",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "client_response_id",
+            "decision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The same operation was requested too often in a row.",
+          "properties": {
+            "operation_fingerprint": {
+              "$ref": "#/$defs/OperationFingerprint"
+            },
+            "repetitions": {
+              "format": "uint32",
+              "minimum": 4,
+              "type": "integer"
+            },
+            "type": {
+              "const": "doom_loop",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "operation_fingerprint",
+            "repetitions"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
     },
     "ApprovalTrigger": {
       "enum": [
@@ -904,15 +1048,90 @@
       ],
       "type": "object"
     },
-    "EngineDiagnosticKind": {
-      "description": "What an [`EventPayload::EngineDiagnostic`] reports.",
+    "DelegationStage": {
+      "description": "How far a delegation got: the `stage` of\n[`EventPayload::DelegationProgressed`].\n\nOpen: a stage this build does not know changes nothing it reads.",
       "oneOf": [
         {
-          "const": "auto_compaction_disabled",
-          "description": "Automatic context compaction failed repeatedly and is off for the\nrest of the run.",
-          "type": "string"
+          "additionalProperties": false,
+          "description": "The child session was published.",
+          "properties": {
+            "child_session_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "child_session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A new child run started.",
+          "properties": {
+            "child_run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "run_started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "child_run_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The delegation attached to the already-running run of a resumed\nchild.",
+          "properties": {
+            "child_run_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "run_attached",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "child_run_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The child waits for a background slot.",
+          "properties": {
+            "position": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "queued",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
         }
-      ]
+      ],
+      "x-open": true
     },
     "EventPayload": {
       "oneOf": [
@@ -1174,114 +1393,43 @@
           "type": "object"
         },
         {
-          "properties": {
-            "attachment": {
-              "description": "The coding-runtime attachment whose workspace holds the file.",
-              "maxLength": 40,
-              "minLength": 1,
-              "pattern": "^[a-z][a-z0-9_]{0,39}$",
-              "type": "string"
-            },
-            "byte_length": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "path": {
-              "description": "Control-free bounded presentation text.",
-              "maxLength": 1024,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": "string"
-            },
-            "type": {
-              "const": "agent_md_skipped",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "path",
-            "byte_length",
-            "attachment"
-          ],
-          "type": "object"
-        },
-        {
+          "description": "A notice about the engine, a plugin, or a runtime: something it\nturned off, could not do, or dropped. `detail` is display-only.",
           "properties": {
             "count": {
+              "description": "How many occurrences this one record coalesces; absent for one.",
               "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
+            "detail": true,
             "kind": {
-              "$ref": "#/$defs/PluginDiagnosticKind"
-            },
-            "message": {
+              "description": "What a diagnostic reports, as a snake-case label.",
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_]*$",
               "type": "string"
-            },
-            "plugin": {
-              "type": "string"
-            },
-            "type": {
-              "const": "plugin_diagnostic",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "plugin",
-            "kind",
-            "message",
-            "count"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "A producer source (a plugin or a runtime) could not restore the\nexternal work it tracks: that work is unknown, and goal continuation\nis held.",
-          "properties": {
-            "kind": {
-              "$ref": "#/$defs/ProducerDiagnosticKind"
             },
             "message": {
               "type": "string"
             },
             "source": {
-              "description": "Who produces from outside the daemon: `plugin:<name>` or `runtime:<attachment name>`.",
+              "description": "Who a diagnostic is about: `engine:<area>`, `plugin:<name>`, or `runtime:<id>`.",
               "maxLength": 512,
               "minLength": 1,
-              "pattern": "^[a-z]+:[^\\p{Cc}\\p{Cf}]+$",
+              "pattern": "^(engine|plugin|runtime):[^\\p{Cc}\\p{Cf}]+$",
               "type": "string"
             },
             "type": {
-              "const": "producer_diagnostic",
+              "const": "diagnostic",
               "type": "string"
             }
           },
           "required": [
             "type",
             "source",
-            "kind",
-            "message"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Something the engine itself turned off or could not do for the\nsession.",
-          "properties": {
-            "kind": {
-              "$ref": "#/$defs/EngineDiagnosticKind"
-            },
-            "message": {
-              "type": "string"
-            },
-            "type": {
-              "const": "engine_diagnostic",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
             "kind",
             "message"
           ],
@@ -1902,107 +2050,19 @@
           "type": "object"
         },
         {
+          "description": "The run ended.",
           "properties": {
-            "final_text": {
-              "type": [
-                "string",
-                "null"
-              ]
+            "outcome": {
+              "$ref": "#/$defs/RunOutcome"
             },
             "type": {
-              "const": "run_completed",
+              "const": "run_finished",
               "type": "string"
             }
           },
           "required": [
             "type",
-            "final_text"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "error": {
-              "description": "Control-free bounded safe error text.",
-              "maxLength": 4096,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": "string"
-            },
-            "model_error": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ModelErrorSummary"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "resolved_model": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ResolvedModelRef"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "type": {
-              "const": "run_failed",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "error"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "reason": {
-              "description": "Control-free bounded safe error text.",
-              "maxLength": 4096,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "run_cancelled",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "reason"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "reason": {
-              "description": "Control-free bounded safe error text.",
-              "maxLength": 4096,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "run_interrupted",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "reason"
+            "outcome"
           ],
           "type": "object"
         },
@@ -2696,72 +2756,29 @@
           "type": "object"
         },
         {
+          "description": "A delegation reached a new stage before it finished.",
           "properties": {
-            "child_session_id": {
-              "format": "uuid",
-              "type": "string"
-            },
             "invocation_id": {
               "format": "uuid",
               "type": "string"
             },
+            "stage": {
+              "$ref": "#/$defs/DelegationStage"
+            },
             "type": {
-              "const": "delegation_started",
+              "const": "delegation_progressed",
               "type": "string"
             }
           },
           "required": [
             "type",
             "invocation_id",
-            "child_session_id"
+            "stage"
           ],
           "type": "object"
         },
         {
-          "properties": {
-            "child_run_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "invocation_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "type": {
-              "const": "delegation_run_started",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "invocation_id",
-            "child_run_id"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "child_run_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "invocation_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "type": {
-              "const": "delegation_run_attached",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "invocation_id",
-            "child_run_id"
-          ],
-          "type": "object"
-        },
-        {
+          "description": "A delegation finished. It is the durable control record and carries\nthe teaser transcripts render: `short_id` is the child's handle, and\n`preview` the report as `[subagent_output]` previews it.",
           "properties": {
             "child_run_id": {
               "format": "uuid",
@@ -2776,6 +2793,10 @@
             },
             "invocation_id": {
               "format": "uuid",
+              "type": "string"
+            },
+            "preview": {
+              "maxLength": 65536,
               "type": "string"
             },
             "reason": {
@@ -2788,66 +2809,7 @@
                 "null"
               ]
             },
-            "status": {
-              "$ref": "#/$defs/SessionStatus"
-            },
-            "type": {
-              "const": "delegation_finished",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "invocation_id",
-            "child_session_id",
-            "child_run_id",
-            "status",
-            "reason"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "position": {
-              "format": "uint32",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "session_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "type": {
-              "const": "delegate_queued",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "session_id",
-            "position"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "invocation_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "preview": {
-              "maxLength": 65536,
-              "type": "string"
-            },
-            "session_id": {
-              "format": "uuid",
-              "type": "string"
-            },
             "short_id": {
-              "description": "Handle rendered into the notification body. Additive and optional:\npre-handle logs render the UUID.",
               "type": [
                 "string",
                 "null"
@@ -2862,14 +2824,14 @@
               "type": "integer"
             },
             "type": {
-              "const": "delegate_finished_v2",
+              "const": "delegation_finished",
               "type": "string"
             }
           },
           "required": [
             "type",
             "invocation_id",
-            "session_id",
+            "child_session_id",
             "status",
             "preview",
             "total_lines"
@@ -2925,18 +2887,18 @@
               "format": "uuid",
               "type": "string"
             },
-            "decision": {
-              "$ref": "#/$defs/ApprovalInternalDecision"
+            "step": {
+              "$ref": "#/$defs/ApprovalStep"
             },
             "type": {
-              "const": "approval_evaluated",
+              "const": "approval_step",
               "type": "string"
             }
           },
           "required": [
             "type",
             "approval_id",
-            "decision"
+            "step"
           ],
           "type": "object"
         },
@@ -2946,69 +2908,8 @@
               "format": "uuid",
               "type": "string"
             },
-            "reason_code": {
-              "$ref": "#/$defs/ApprovalReasonCode"
-            },
-            "type": {
-              "const": "approval_escalated",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "approval_id",
-            "reason_code"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "approval_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "client_response_id": {
-              "description": "Bounded approval response idempotency key.",
-              "maxLength": 256,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": "string"
-            },
-            "decision": {
-              "$ref": "#/$defs/ApprovalUserDecision"
-            },
-            "feedback": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ApprovalFeedback"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "type": {
-              "const": "approval_user_decision_recorded",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "approval_id",
-            "client_response_id",
-            "decision",
-            "feedback"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "approval_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "decision": {
-              "$ref": "#/$defs/ApprovalFinalDecision"
+            "outcome": {
+              "$ref": "#/$defs/ApprovalFinalization"
             },
             "type": {
               "const": "approval_finalized",
@@ -3018,55 +2919,7 @@
           "required": [
             "type",
             "approval_id",
-            "decision"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "approval_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "reason_code": {
-              "$ref": "#/$defs/ApprovalReasonCode"
-            },
-            "type": {
-              "const": "approval_cancelled",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "approval_id",
-            "reason_code"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "approval_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "operation_fingerprint": {
-              "$ref": "#/$defs/OperationFingerprint"
-            },
-            "repetitions": {
-              "format": "uint32",
-              "minimum": 4,
-              "type": "integer"
-            },
-            "type": {
-              "const": "approval_doom_loop_detected",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "approval_id",
-            "operation_fingerprint",
-            "repetitions"
+            "outcome"
           ],
           "type": "object"
         },
@@ -3122,36 +2975,6 @@
         },
         {
           "properties": {
-            "internal_run_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "invocation_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "kind": {
-              "$ref": "#/$defs/InternalAgentKind"
-            },
-            "result": {
-              "$ref": "#/$defs/SafeInternalAgentResult"
-            },
-            "type": {
-              "const": "internal_agent_completed",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "invocation_id",
-            "internal_run_id",
-            "kind",
-            "result"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
             "agent_id": {
               "maxLength": 64,
               "minLength": 1,
@@ -3197,9 +3020,6 @@
         },
         {
           "properties": {
-            "failure": {
-              "$ref": "#/$defs/InternalAgentFailure"
-            },
             "internal_run_id": {
               "format": "uuid",
               "type": "string"
@@ -3211,8 +3031,11 @@
             "kind": {
               "$ref": "#/$defs/InternalAgentKind"
             },
+            "outcome": {
+              "$ref": "#/$defs/InternalAgentOutcome"
+            },
             "type": {
-              "const": "internal_agent_failed",
+              "const": "internal_agent_finished",
               "type": "string"
             }
           },
@@ -3221,81 +3044,7 @@
             "invocation_id",
             "internal_run_id",
             "kind",
-            "failure"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "internal_run_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "invocation_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "kind": {
-              "$ref": "#/$defs/InternalAgentKind"
-            },
-            "reason": {
-              "description": "Control-free bounded safe error text.",
-              "maxLength": 4096,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "internal_agent_cancelled",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "invocation_id",
-            "internal_run_id",
-            "kind",
-            "reason"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "internal_run_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "invocation_id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "kind": {
-              "$ref": "#/$defs/InternalAgentKind"
-            },
-            "reason": {
-              "description": "Control-free bounded safe error text.",
-              "maxLength": 4096,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "internal_agent_interrupted",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "invocation_id",
-            "internal_run_id",
-            "kind",
-            "reason"
+            "outcome"
           ],
           "type": "object"
         },
@@ -4451,6 +4200,92 @@
       ],
       "type": "string"
     },
+    "InternalAgentOutcome": {
+      "description": "How an internal agent invocation ended: the `outcome` of\n[`EventPayload::InternalAgentFinished`].\n\nOpen: an outcome this build does not know reads as interrupted, with no\nresult.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/SafeInternalAgentResult"
+            },
+            "type": {
+              "const": "completed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "failure": {
+              "$ref": "#/$defs/InternalAgentFailure"
+            },
+            "type": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "failure"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "description": "Control-free bounded safe error text.",
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "cancelled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "description": "Control-free bounded safe error text.",
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "interrupted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
+    },
     "MatchedPermissionRule": {
       "additionalProperties": false,
       "properties": {
@@ -5491,28 +5326,6 @@
       ],
       "type": "object"
     },
-    "PluginDiagnosticKind": {
-      "oneOf": [
-        {
-          "enum": [
-            "event_drop",
-            "interception_timeout",
-            "interception_crash",
-            "hook_blocked",
-            "oversized_event",
-            "invalid_modification",
-            "context_mismatch",
-            "rate_limited"
-          ],
-          "type": "string"
-        },
-        {
-          "const": "interception_rejected",
-          "description": "A plugin answered a hook with an error or a malformed result.",
-          "type": "string"
-        }
-      ]
-    },
     "PreparedApprovalResource": {
       "additionalProperties": false,
       "properties": {
@@ -5629,21 +5442,6 @@
         "queue"
       ],
       "type": "string"
-    },
-    "ProducerDiagnosticKind": {
-      "description": "Why a producer source is unavailable.",
-      "oneOf": [
-        {
-          "const": "recovery_failed",
-          "description": "The source reported that its recovery failed.",
-          "type": "string"
-        },
-        {
-          "const": "recovery_disabled",
-          "description": "The source is configured off, or lost its connection before\nrecovering.",
-          "type": "string"
-        }
-      ]
     },
     "ProducerOwner": {
       "description": "Stable identity used with session + idempotency key for durable deduplication.\nExternal identifies a producer outside the daemon, a plugin or a runtime:\nthe engine derives `source` from the authenticated connection, never from\nsend parameters, and the sender chooses `name` when it registers. The\nconnection epoch that authorizes live sends is runtime-only and never part\nof this durable owner or the deduplication key.\nGoalControl identifies engine-authored lifecycle steering, not a continuation\nreminder; its accepted messages survive goal-controller teardown.\nAgent identifies an in-tree agent mail sender; the session identity is\nengine-derived from the executing tool context, never from model arguments.\nTool identifies the background result of one tool call that ran in the\nbackground; the call identity is engine-derived from the executing tool\ncontext, never from model arguments.\nSubagent identifies a delegated session reporting its finished turns to\nits parent.\nThe owner is durable and participates in `(session, owner, key)` dedup.",
@@ -6448,6 +6246,118 @@
         "truncated"
       ],
       "type": "object"
+    },
+    "RunOutcome": {
+      "description": "How a run ended: the `outcome` of [`EventPayload::RunFinished`].\n\nOpen: an outcome this build does not know reads as interrupted, a run\nthat ended without this build being able to say how.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "final_text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "completed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "description": "Control-free bounded safe error text.",
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+              "type": "string"
+            },
+            "model_error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ModelErrorSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "resolved_model": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResolvedModelRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "description": "Control-free bounded safe error text.",
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "cancelled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "description": "Control-free bounded safe error text.",
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "interrupted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
     },
     "RunSelection": {
       "additionalProperties": false,

@@ -95,15 +95,17 @@ impl Engine {
             session,
             Some(run),
             super::event_origin("engine:approvals"),
-            Event::ApprovalEvaluated {
+            Event::approval_step(
                 approval_id,
-                decision: ApprovalInternalDecision {
-                    decision,
-                    source,
-                    reason_code,
-                    evaluations: approval_evaluations(&request),
+                cookie_agent_protocol::ApprovalStep::Evaluated {
+                    decision: ApprovalInternalDecision {
+                        decision,
+                        source,
+                        reason_code,
+                        evaluations: approval_evaluations(&request),
+                    },
                 },
-            },
+            ),
         )?;
         if matches!(
             decision,
@@ -114,20 +116,22 @@ impl Engine {
                 session,
                 Some(run),
                 super::event_origin("engine:approvals"),
-                Event::ApprovalFinalized {
+                Event::approval_finalized(
                     approval_id,
-                    decision: ApprovalFinalDecision {
-                        outcome: if approved {
-                            ApprovalFinalOutcome::Approved
-                        } else {
-                            ApprovalFinalOutcome::Rejected
+                    cookie_agent_protocol::ApprovalFinalization::Decided {
+                        decision: ApprovalFinalDecision {
+                            outcome: if approved {
+                                ApprovalFinalOutcome::Approved
+                            } else {
+                                ApprovalFinalOutcome::Rejected
+                            },
+                            source,
+                            reason_code,
+                            feedback: None,
+                            tree_grant_id: None,
                         },
-                        source,
-                        reason_code,
-                        feedback: None,
-                        tree_grant_id: None,
                     },
-                },
+                ),
             )?;
             return Ok(ApprovalEvaluationTransition::Resolved(ApprovalOutcome {
                 approved,
@@ -154,19 +158,21 @@ impl Engine {
                 session,
                 Some(run),
                 super::event_origin("engine:approvals"),
-                Event::ApprovalFinalized {
+                Event::approval_finalized(
                     approval_id,
-                    decision: ApprovalFinalDecision {
-                        outcome,
-                        source: ApprovalDecisionSource::PermissionMode,
-                        reason_code,
-                        feedback: feedback.map(|message| ApprovalFeedback {
-                            message: SafeErrorMessage::new(message)
-                                .expect("static permission mode feedback is safe"),
-                        }),
-                        tree_grant_id: None,
+                    cookie_agent_protocol::ApprovalFinalization::Decided {
+                        decision: ApprovalFinalDecision {
+                            outcome,
+                            source: ApprovalDecisionSource::PermissionMode,
+                            reason_code,
+                            feedback: feedback.map(|message| ApprovalFeedback {
+                                message: SafeErrorMessage::new(message)
+                                    .expect("static permission mode feedback is safe"),
+                            }),
+                            tree_grant_id: None,
+                        },
                     },
-                },
+                ),
             )?;
             return Ok(ApprovalEvaluationTransition::Resolved(ApprovalOutcome {
                 approved: outcome == ApprovalFinalOutcome::Approved,
@@ -178,10 +184,12 @@ impl Engine {
             session,
             Some(run),
             super::event_origin("engine:approvals"),
-            Event::ApprovalEscalated {
+            Event::approval_step(
                 approval_id,
-                reason_code: ApprovalReasonCode::Escalated,
-            },
+                cookie_agent_protocol::ApprovalStep::Escalated {
+                    reason_code: ApprovalReasonCode::Escalated,
+                },
+            ),
         )?;
         let (sender, receiver) = oneshot::channel();
         let replaced = self
@@ -214,11 +222,16 @@ impl Engine {
         let events = projection.log.event_snapshot();
         if let Some((recorded_approval_id, recorded_decision, recorded_feedback)) =
             events.iter().find_map(|event| match &event.payload {
-                Event::ApprovalUserDecisionRecorded {
+                Event::ApprovalStep {
                     approval_id,
-                    client_response_id,
-                    decision,
-                    feedback,
+                    step:
+                        cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::ApprovalStep::UserDecision {
+                                client_response_id,
+                                decision,
+                                feedback,
+                            },
+                        ),
                 } if client_response_id == &params.client_response_id => {
                     Some((*approval_id, *decision, feedback.clone()))
                 }
@@ -351,12 +364,14 @@ impl Engine {
             params.session_id,
             Some(run_id),
             super::event_origin("user"),
-            Event::ApprovalUserDecisionRecorded {
-                approval_id: params.approval_id,
-                client_response_id: params.client_response_id.clone(),
-                decision: params.decision,
-                feedback: params.feedback.clone(),
-            },
+            Event::approval_step(
+                params.approval_id,
+                cookie_agent_protocol::ApprovalStep::UserDecision {
+                    client_response_id: params.client_response_id.clone(),
+                    decision: params.decision,
+                    feedback: params.feedback.clone(),
+                },
+            ),
         )?;
         let root = root_id(&projection.meta.origin, params.session_id);
         let grant = if params.decision == ApprovalUserDecision::ApproveTree {
@@ -414,16 +429,18 @@ impl Engine {
             params.session_id,
             Some(run_id),
             super::event_origin("engine:approvals"),
-            Event::ApprovalFinalized {
-                approval_id: params.approval_id,
-                decision: ApprovalFinalDecision {
-                    outcome,
-                    source: ApprovalDecisionSource::User,
-                    reason_code,
-                    feedback: params.feedback.clone(),
-                    tree_grant_id: grant.as_ref().map(|grant| grant.grant_id),
+            Event::approval_finalized(
+                params.approval_id,
+                cookie_agent_protocol::ApprovalFinalization::Decided {
+                    decision: ApprovalFinalDecision {
+                        outcome,
+                        source: ApprovalDecisionSource::User,
+                        reason_code,
+                        feedback: params.feedback.clone(),
+                        tree_grant_id: grant.as_ref().map(|grant| grant.grant_id),
+                    },
                 },
-            },
+            ),
         )?;
         if let Some(pending) = self
             .inner
@@ -465,8 +482,12 @@ impl Engine {
         if events.iter().any(|event| {
             matches!(
                 &event.payload,
-                Event::ApprovalUserDecisionRecorded { client_response_id, .. }
-                    if client_response_id == &params.client_response_id
+                Event::ApprovalStep {
+                    step: cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::ApprovalStep::UserDecision { client_response_id, .. }
+                    ),
+                    ..
+                } if client_response_id == &params.client_response_id
             )
         }) {
             return self.approval_respond_direct(params);
@@ -511,25 +532,10 @@ impl Engine {
             params.session_id,
             Some(run_id),
             super::event_origin("engine:approvals"),
-            Event::ApprovalCancelled {
-                approval_id: params.approval_id,
-                reason_code,
-            },
-        )?;
-        self.append_direct(
-            params.session_id,
-            Some(run_id),
-            super::event_origin("engine:approvals"),
-            Event::ApprovalFinalized {
-                approval_id: params.approval_id,
-                decision: ApprovalFinalDecision {
-                    outcome: ApprovalFinalOutcome::Cancelled,
-                    source: ApprovalDecisionSource::System,
-                    reason_code,
-                    feedback: None,
-                    tree_grant_id: None,
-                },
-            },
+            Event::approval_finalized(
+                params.approval_id,
+                cookie_agent_protocol::ApprovalFinalization::Cancelled { reason_code },
+            ),
         )?;
         if let Some(pending) = self
             .inner
@@ -591,41 +597,18 @@ impl Engine {
             self.drain_approval_waiter(session, approval_id, terminal);
             return Ok(false);
         }
-        let (reason_code, outcome, final_reason) = match terminal {
-            ApprovalTerminal::Cancelled => (
-                ApprovalReasonCode::RequestCancelled,
-                ApprovalFinalOutcome::Cancelled,
-                ApprovalReasonCode::RequestCancelled,
-            ),
-            ApprovalTerminal::Expired => (
-                ApprovalReasonCode::ApprovalExpired,
-                ApprovalFinalOutcome::Expired,
-                ApprovalReasonCode::ApprovalExpired,
-            ),
+        let reason_code = match terminal {
+            ApprovalTerminal::Cancelled => ApprovalReasonCode::RequestCancelled,
+            ApprovalTerminal::Expired => ApprovalReasonCode::ApprovalExpired,
         };
         self.append_direct(
             session,
             Some(run),
             super::event_origin("engine:approvals"),
-            Event::ApprovalCancelled {
+            Event::approval_finalized(
                 approval_id,
-                reason_code,
-            },
-        )?;
-        self.append_direct(
-            session,
-            Some(run),
-            super::event_origin("engine:approvals"),
-            Event::ApprovalFinalized {
-                approval_id,
-                decision: ApprovalFinalDecision {
-                    outcome,
-                    source: ApprovalDecisionSource::System,
-                    reason_code: final_reason,
-                    feedback: None,
-                    tree_grant_id: None,
-                },
-            },
+                cookie_agent_protocol::ApprovalFinalization::Cancelled { reason_code },
+            ),
         )?;
         self.drain_approval_waiter(session, approval_id, terminal);
         Ok(true)
@@ -766,34 +749,44 @@ fn pending_record(session_id: SessionId, request: &ApprovalRequest) -> ApprovalR
 /// The approval a post-request lifecycle event belongs to.
 fn approval_event_id(payload: &Event) -> Option<ApprovalId> {
     match payload {
-        Event::ApprovalEvaluated { approval_id, .. }
-        | Event::ApprovalEscalated { approval_id, .. }
-        | Event::ApprovalUserDecisionRecorded { approval_id, .. }
-        | Event::ApprovalFinalized { approval_id, .. }
-        | Event::ApprovalCancelled { approval_id, .. } => Some(*approval_id),
+        Event::ApprovalStep { approval_id, .. } | Event::ApprovalFinalized { approval_id, .. } => {
+            Some(*approval_id)
+        }
         _ => None,
     }
 }
 
 fn apply_approval_event(record: &mut ApprovalRecord, payload: &Event) {
     match payload {
-        Event::ApprovalEvaluated { decision, .. } => {
-            record.internal_decision = Some(decision.clone());
-        }
-        Event::ApprovalEscalated { .. } => record.status = ApprovalStatus::Escalated,
-        Event::ApprovalUserDecisionRecorded { decision, .. } => {
-            record.user_decision = Some(*decision);
-        }
-        Event::ApprovalFinalized { decision, .. } => {
-            record.status = match decision.outcome {
-                ApprovalFinalOutcome::Approved => ApprovalStatus::Approved,
-                ApprovalFinalOutcome::Rejected => ApprovalStatus::Rejected,
-                ApprovalFinalOutcome::Cancelled => ApprovalStatus::Cancelled,
-                ApprovalFinalOutcome::Expired => ApprovalStatus::Expired,
-            };
-            record.final_decision = Some(decision.clone());
-        }
-        Event::ApprovalCancelled { .. } => record.status = ApprovalStatus::Cancelled,
+        Event::ApprovalStep {
+            step: cookie_agent_protocol::Open::Known(step),
+            ..
+        } => match step {
+            cookie_agent_protocol::ApprovalStep::Evaluated { decision } => {
+                record.internal_decision = Some(decision.clone());
+            }
+            cookie_agent_protocol::ApprovalStep::Escalated { .. } => {
+                record.status = ApprovalStatus::Escalated;
+            }
+            cookie_agent_protocol::ApprovalStep::UserDecision { decision, .. } => {
+                record.user_decision = Some(*decision);
+            }
+            cookie_agent_protocol::ApprovalStep::DoomLoop { .. } => {}
+        },
+        // An outcome this build does not know is not an approval.
+        Event::ApprovalFinalized { outcome, .. } => match outcome.known() {
+            Some(outcome) => {
+                let decision = outcome.decision();
+                record.status = match decision.outcome {
+                    ApprovalFinalOutcome::Approved => ApprovalStatus::Approved,
+                    ApprovalFinalOutcome::Rejected => ApprovalStatus::Rejected,
+                    ApprovalFinalOutcome::Cancelled => ApprovalStatus::Cancelled,
+                    ApprovalFinalOutcome::Expired => ApprovalStatus::Expired,
+                };
+                record.final_decision = Some(decision);
+            }
+            None => record.status = ApprovalStatus::Cancelled,
+        },
         _ => {}
     }
 }

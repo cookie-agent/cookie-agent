@@ -542,7 +542,9 @@ async fn run_lifecycle_events_patch_watched_and_background_panel_statuses_withou
                     session_id,
                     3,
                     run,
-                    EventPayload::RunCompleted { final_text: None },
+                    EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+                        final_text: None,
+                    }),
                 )),
             }),
             generation: 0,
@@ -742,23 +744,29 @@ fn run_terminal_status_patches_match_engine_session_projection() {
     let run = run_id();
     let cases = [
         (
-            EventPayload::RunCompleted { final_text: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+                final_text: None,
+            }),
             SessionStatus::Completed,
         ),
         (
-            EventPayload::RunFailed {
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Failed {
                 error: SafeErrorMessage::new("failed").expect("error"),
                 model_error: None,
                 resolved_model: None,
-            },
+            }),
             SessionStatus::Failed,
         ),
         (
-            EventPayload::RunCancelled { reason: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Cancelled {
+                reason: None,
+            }),
             SessionStatus::Cancelled,
         ),
         (
-            EventPayload::RunInterrupted { reason: None },
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Interrupted {
+                reason: None,
+            }),
             SessionStatus::Interrupted,
         ),
     ];
@@ -1191,11 +1199,12 @@ async fn adopted_session_upgrades_its_snapshot_subscription_once() {
     let live = runless_event(
         session,
         2,
-        EventPayload::PluginDiagnostic {
-            plugin: "ownership-test".into(),
-            kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
+        EventPayload::Diagnostic {
+            source: cookie_agent_protocol::DiagnosticSource::plugin("ownership-test").unwrap(),
+            kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked.label(),
             message: "live after adoption".into(),
-            count: 1,
+            count: None,
+            detail: None,
         },
     );
     // The recovery rebuilt the projection as generation 1.
@@ -1428,10 +1437,12 @@ async fn a_parent_delegation_lifecycle_event_refreshes_the_tree() {
                 run_id: None,
                 seq: 3,
                 timestamp: jiff::Timestamp::now(),
-                payload: EventPayload::DelegationRunStarted {
-                    invocation_id: cookie_agent_protocol::InvocationId::new_v7(),
-                    child_run_id: cookie_agent_protocol::RunId::new_v7(),
-                },
+                payload: EventPayload::delegation_progressed(
+                    cookie_agent_protocol::InvocationId::new_v7(),
+                    cookie_agent_protocol::DelegationStage::RunStarted {
+                        child_run_id: cookie_agent_protocol::RunId::new_v7(),
+                    },
+                ),
             }),
         }),
         generation: 0,

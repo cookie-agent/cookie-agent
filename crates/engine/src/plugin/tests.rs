@@ -128,11 +128,12 @@ fn stored_event(session_id: SessionId, seq: u64) -> StoredEvent {
         run_id: None,
         seq,
         timestamp: jiff::Timestamp::now(),
-        payload: EventPayload::PluginDiagnostic {
-            plugin: "engine".into(),
-            kind: PluginDiagnosticKind::HookBlocked,
+        payload: EventPayload::Diagnostic {
+            source: cookie_agent_protocol::DiagnosticSource::plugin("engine").unwrap(),
+            kind: PluginDiagnosticKind::HookBlocked.label(),
             message: format!("event {seq}"),
-            count: 1,
+            count: None,
+            detail: None,
         },
     }
 }

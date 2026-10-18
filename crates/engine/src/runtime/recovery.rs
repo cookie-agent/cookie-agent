@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
 use cookie_agent_protocol::{
-    ApprovalDecisionSource, ApprovalFinalDecision, ApprovalFinalOutcome, ApprovalReasonCode,
-    ApprovalStatus, SafeToolError, SessionId, SessionStatus, ToolCallTermination,
-    ToolTerminationOutcome,
+    ApprovalReasonCode, ApprovalStatus, SafeToolError, SessionId, SessionStatus,
+    ToolCallTermination, ToolTerminationOutcome,
 };
 
 use super::{
@@ -53,22 +52,7 @@ impl Engine {
                     } => {
                         internal.insert((*invocation_id, *internal_run_id), (*kind, event.run_id));
                     }
-                    Event::InternalAgentCompleted {
-                        invocation_id,
-                        internal_run_id,
-                        ..
-                    }
-                    | Event::InternalAgentFailed {
-                        invocation_id,
-                        internal_run_id,
-                        ..
-                    }
-                    | Event::InternalAgentCancelled {
-                        invocation_id,
-                        internal_run_id,
-                        ..
-                    }
-                    | Event::InternalAgentInterrupted {
+                    Event::InternalAgentFinished {
                         invocation_id,
                         internal_run_id,
                         ..
@@ -83,12 +67,14 @@ impl Engine {
                     session.meta.session_id,
                     parent_run,
                     super::event_origin("engine:recovery"),
-                    Event::InternalAgentInterrupted {
+                    Event::internal_agent_finished(
                         invocation_id,
                         internal_run_id,
                         kind,
-                        reason: Some(safe_error(reason)),
-                    },
+                        cookie_agent_protocol::InternalAgentOutcome::Interrupted {
+                            reason: Some(safe_error(reason)),
+                        },
+                    ),
                 )?;
             }
             for run in session
@@ -100,9 +86,9 @@ impl Engine {
                     session.meta.session_id,
                     Some(run.id),
                     super::event_origin("engine:recovery"),
-                    Event::RunInterrupted {
+                    Event::run_finished(cookie_agent_protocol::RunOutcome::Interrupted {
                         reason: Some(safe_error(reason)),
-                    },
+                    }),
                 )?;
             }
             #[cfg(test)]
@@ -155,25 +141,12 @@ impl Engine {
                     session.meta.session_id,
                     Some(approval_run),
                     super::event_origin("engine:recovery"),
-                    Event::ApprovalCancelled {
-                        approval_id: record.request.approval_id(),
-                        reason_code: ApprovalReasonCode::PreparedCapabilityLost,
-                    },
-                )?;
-                self.append_recovery_direct(
-                    session.meta.session_id,
-                    Some(approval_run),
-                    super::event_origin("engine:recovery"),
-                    Event::ApprovalFinalized {
-                        approval_id: record.request.approval_id(),
-                        decision: ApprovalFinalDecision {
-                            outcome: ApprovalFinalOutcome::Cancelled,
-                            source: ApprovalDecisionSource::System,
+                    Event::approval_finalized(
+                        record.request.approval_id(),
+                        cookie_agent_protocol::ApprovalFinalization::Cancelled {
                             reason_code: ApprovalReasonCode::PreparedCapabilityLost,
-                            feedback: None,
-                            tree_grant_id: None,
                         },
-                    },
+                    ),
                 )?;
             }
         }
@@ -222,10 +195,13 @@ impl Engine {
                         .get(&entry.reservation.parent_tool_call_id)
                 })
                 .is_some_and(|tool| tool == "delegate_subagent");
+            let teaser =
+                self.finished_teaser(entry.reservation.invocation_id, SessionStatus::Failed);
             self.inner.delegation_events.mark_finished_with_reason(
                 entry.reservation.invocation_id,
                 SessionStatus::Failed,
                 Some(reason),
+                teaser,
             )?;
             if pending {
                 self.terminate_tool_direct(
@@ -274,24 +250,16 @@ impl Engine {
             {
                 continue;
             }
-            let decision = restart_approval_decision();
             self.append_direct(
                 session_id,
                 Some(run_id),
                 super::event_origin("engine:recovery"),
-                Event::ApprovalCancelled {
-                    approval_id: record.request.approval_id(),
-                    reason_code: ApprovalReasonCode::PreparedCapabilityLost,
-                },
-            )?;
-            self.append_direct(
-                session_id,
-                Some(run_id),
-                super::event_origin("engine:recovery"),
-                Event::ApprovalFinalized {
-                    approval_id: record.request.approval_id(),
-                    decision,
-                },
+                Event::approval_finalized(
+                    record.request.approval_id(),
+                    cookie_agent_protocol::ApprovalFinalization::Cancelled {
+                        reason_code: ApprovalReasonCode::PreparedCapabilityLost,
+                    },
+                ),
             )?;
         }
         for run in session.runs.values().filter(|run| {
@@ -357,12 +325,14 @@ impl Engine {
                     let child = match self.inner.store.get(child_id) {
                         Ok(child) => child,
                         Err(_) => {
+                            let teaser = self.finished_teaser(invocation, SessionStatus::Failed);
                             self.inner.delegation_events.mark_finished_with_reason(
                                 invocation,
                                 SessionStatus::Failed,
                                 Some(safe_error(
                                     "child_missing: delegate child session is missing",
                                 )),
+                                teaser,
                             )?;
                             self.terminate_tool_direct(
                                 session_id,
@@ -383,9 +353,12 @@ impl Engine {
                         }
                     };
                     if child.status == SessionStatus::Completed {
-                        self.inner
-                            .delegation_events
-                            .mark_finished(invocation, SessionStatus::Completed)?;
+                        let teaser = self.finished_teaser(invocation, SessionStatus::Completed);
+                        self.inner.delegation_events.mark_finished(
+                            invocation,
+                            SessionStatus::Completed,
+                            teaser,
+                        )?;
                         let result = completed_delegate_result(
                             &child,
                             entry.child_run_id,
@@ -400,9 +373,12 @@ impl Engine {
                             None,
                         )?;
                     } else if child.status == SessionStatus::Cancelled {
-                        self.inner
-                            .delegation_events
-                            .mark_finished(invocation, SessionStatus::Cancelled)?;
+                        let teaser = self.finished_teaser(invocation, SessionStatus::Cancelled);
+                        self.inner.delegation_events.mark_finished(
+                            invocation,
+                            SessionStatus::Cancelled,
+                            teaser,
+                        )?;
                         let result = cancelled_delegate_result(
                             child_id,
                             child.meta.short_id.as_deref(),
@@ -480,9 +456,12 @@ impl Engine {
                                 .remove(&(session_id, parent_run_id, tool_call_id));
                         });
                     } else {
-                        self.inner
-                            .delegation_events
-                            .mark_finished(invocation, SessionStatus::Interrupted)?;
+                        let teaser = self.finished_teaser(invocation, SessionStatus::Interrupted);
+                        self.inner.delegation_events.mark_finished(
+                            invocation,
+                            SessionStatus::Interrupted,
+                            teaser,
+                        )?;
                         self.terminate_tool_direct(
                             session_id,
                             run.id,
@@ -516,16 +495,6 @@ impl Engine {
             }
         }
         Ok(())
-    }
-}
-
-pub(crate) fn restart_approval_decision() -> ApprovalFinalDecision {
-    ApprovalFinalDecision {
-        outcome: ApprovalFinalOutcome::Cancelled,
-        source: ApprovalDecisionSource::System,
-        reason_code: ApprovalReasonCode::PreparedCapabilityLost,
-        feedback: None,
-        tree_grant_id: None,
     }
 }
 

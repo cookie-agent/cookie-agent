@@ -264,7 +264,7 @@ register a producer **before** starting the async work, `send(.., steer)` on
 finish, then explicitly `unregister`. Foreground (blocking) delegation keeps
 its tool result as the single result channel and must **not** additionally
 emit a separate message. The result must be materialized exactly once: the
-current `DelegateFinishedV2` projection path
+former `delegate_finished_v2` projection path
 (`crates/engine/src/runtime/delegation.rs`,
 `crates/engine/src/model_history.rs`) is unified with producer steer delivery
 so a background completion cannot appear both as a tool-style result and as
@@ -530,7 +530,7 @@ Engine tests (`crates/engine/src/runtime_tests.rs`), protocol round-trips
    cancelling in-flight API; queue-while-active is persisted and deferred;
    idle queue starts a run.
 9. Subagent results: background completion steered exactly once (no
-   `DelegateFinishedV2` duplication); foreground result not duplicated.
+   `delegate_finished_v2` duplication); foreground result not duplicated.
 10. Goal readiness: each readiness conjunct individually blocks; own
     registration excluded; atomic check + admission recheck; reminder
     coalescing/invalidation by goal ID and revision; real work ahead of
@@ -583,7 +583,7 @@ and pushed before these implementation stages:
    (`crates/tui/src/state/mod.rs` mirrors this). Queue messages must be
    exempted from voiding without weakening the user-input invariants.
 2. **Single materialization of background results**: merging the
-   `DelegateFinishedV2` path with producer steer delivery risks either
+   `delegate_finished_v2` path with producer steer delivery risks either
    duplicate model-history content or a lost result on the crash boundary
    between "accepted" and "materialized"; the ACK/consume events must be the
    single source of truth.

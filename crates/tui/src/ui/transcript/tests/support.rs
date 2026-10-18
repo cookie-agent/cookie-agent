@@ -1695,18 +1695,21 @@ pub(crate) fn mid_stream_failure(session: SessionId, seq: u64, run: RunId) -> St
         session,
         seq,
         run,
-        EventPayload::InternalAgentFailed {
-            invocation_id: cookie_agent_protocol::InternalAgentInvocationId::new_v7(),
-            internal_run_id: cookie_agent_protocol::InternalAgentRunId::new_v7(),
-            kind: cookie_agent_protocol::InternalAgentKind::ContextCompaction,
-            failure: cookie_agent_protocol::InternalAgentFailure {
-                code: cookie_agent_protocol::SafeCode::new("model_failure").expect("failure code"),
-                message: cookie_agent_protocol::SafeErrorMessage::new("Compaction failed")
-                    .expect("failure message"),
-                retryable: false,
-                model_error: None,
+        EventPayload::internal_agent_finished(
+            cookie_agent_protocol::InternalAgentInvocationId::new_v7(),
+            cookie_agent_protocol::InternalAgentRunId::new_v7(),
+            cookie_agent_protocol::InternalAgentKind::ContextCompaction,
+            cookie_agent_protocol::InternalAgentOutcome::Failed {
+                failure: cookie_agent_protocol::InternalAgentFailure {
+                    code: cookie_agent_protocol::SafeCode::new("model_failure")
+                        .expect("failure code"),
+                    message: cookie_agent_protocol::SafeErrorMessage::new("Compaction failed")
+                        .expect("failure message"),
+                    retryable: false,
+                    model_error: None,
+                },
             },
-        },
+        ),
     )
 }
 
@@ -1736,16 +1739,18 @@ pub(crate) fn mid_stream_info(session: SessionId, seq: u64, run: RunId) -> Store
         session,
         seq,
         run,
-        EventPayload::InternalAgentCompleted {
-            invocation_id: cookie_agent_protocol::InternalAgentInvocationId::new_v7(),
-            internal_run_id: cookie_agent_protocol::InternalAgentRunId::new_v7(),
-            kind: cookie_agent_protocol::InternalAgentKind::ContextCompaction,
-            result: cookie_agent_protocol::SafeInternalAgentResult {
-                output_summary: cookie_agent_protocol::SafeDisplayText::new("compacted")
-                    .expect("summary"),
-                output_digest: Sha256Digest::of_bytes(b"summary"),
+        EventPayload::internal_agent_finished(
+            cookie_agent_protocol::InternalAgentInvocationId::new_v7(),
+            cookie_agent_protocol::InternalAgentRunId::new_v7(),
+            cookie_agent_protocol::InternalAgentKind::ContextCompaction,
+            cookie_agent_protocol::InternalAgentOutcome::Completed {
+                result: cookie_agent_protocol::SafeInternalAgentResult {
+                    output_summary: cookie_agent_protocol::SafeDisplayText::new("compacted")
+                        .expect("summary"),
+                    output_digest: Sha256Digest::of_bytes(b"summary"),
+                },
             },
-        },
+        ),
     )
 }
 

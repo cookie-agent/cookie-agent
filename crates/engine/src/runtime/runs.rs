@@ -251,9 +251,9 @@ impl Engine {
             session,
             Some(run_id),
             origin,
-            Event::RunCancelled {
+            Event::run_finished(cookie_agent_protocol::RunOutcome::Cancelled {
                 reason: reason.as_deref().map(safe_error),
-            },
+            }),
         ) {
             Ok(()) => {
                 *committed = true;
@@ -283,7 +283,15 @@ impl Engine {
             .event_snapshot()
             .iter()
             .any(|event| {
-                event.run_id == Some(run_id) && matches!(event.payload, Event::RunCancelled { .. })
+                event.run_id == Some(run_id)
+                    && matches!(
+                        event.payload,
+                        Event::RunFinished {
+                            outcome: cookie_agent_protocol::Open::Known(
+                                cookie_agent_protocol::RunOutcome::Cancelled { .. }
+                            )
+                        }
+                    )
             }))
     }
 

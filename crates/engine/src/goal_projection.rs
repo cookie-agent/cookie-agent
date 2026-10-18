@@ -401,10 +401,7 @@ impl GoalProducerProjection {
                         projection.messages[index].discarded_seq = Some(event.seq);
                     }
                 }
-                EventPayload::RunCompleted { .. }
-                | EventPayload::RunFailed { .. }
-                | EventPayload::RunCancelled { .. }
-                | EventPayload::RunInterrupted { .. } => {
+                EventPayload::RunFinished { .. } => {
                     if let Some(run_id) = event.run_id {
                         terminal_runs.insert(run_id);
                     }

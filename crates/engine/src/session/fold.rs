@@ -426,29 +426,17 @@ impl SessionProjection {
                     run.input = input.clone();
                 }
             }
-            EventPayload::RunCompleted { final_text } => {
+            EventPayload::RunFinished { outcome } => {
                 if let Some(run) = self.runs.get_mut(&run_id) {
-                    run.status = SessionStatus::Completed;
-                    run.final_text = final_text.clone();
-                    self.status = SessionStatus::Completed;
-                }
-            }
-            EventPayload::RunFailed { .. } => {
-                if let Some(run) = self.runs.get_mut(&run_id) {
-                    run.status = SessionStatus::Failed;
-                    self.status = SessionStatus::Failed;
-                }
-            }
-            EventPayload::RunCancelled { .. } => {
-                if let Some(run) = self.runs.get_mut(&run_id) {
-                    run.status = SessionStatus::Cancelled;
-                    self.status = SessionStatus::Cancelled;
-                }
-            }
-            EventPayload::RunInterrupted { .. } => {
-                if let Some(run) = self.runs.get_mut(&run_id) {
-                    run.status = SessionStatus::Interrupted;
-                    self.status = SessionStatus::Interrupted;
+                    let status = outcome.status();
+                    run.status = status;
+                    if let cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::RunOutcome::Completed { final_text },
+                    ) = outcome
+                    {
+                        run.final_text = final_text.clone();
+                    }
+                    self.status = status;
                 }
             }
             EventPayload::ToolCallStarted { start } => {
@@ -646,13 +634,7 @@ pub(super) fn terminal_run_of(
     run: Option<RunId>,
     payload: &EventPayload,
 ) -> Option<(RunId, SessionStatus)> {
-    let status = match payload {
-        EventPayload::RunCompleted { .. } => SessionStatus::Completed,
-        EventPayload::RunFailed { .. } => SessionStatus::Failed,
-        EventPayload::RunCancelled { .. } => SessionStatus::Cancelled,
-        EventPayload::RunInterrupted { .. } => SessionStatus::Interrupted,
-        _ => return None,
-    };
+    let status = payload.run_end_status()?;
     Some((run?, status))
 }
 

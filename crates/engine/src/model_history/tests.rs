@@ -734,7 +734,13 @@ fn producer_body_materializes_only_at_the_effective_admission() {
             first_run,
             EventPayload::ProducerMessageAdmitted { message_id },
         ),
-        event(3, first_run, EventPayload::RunInterrupted { reason: None }),
+        event(
+            3,
+            first_run,
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Interrupted {
+                reason: None,
+            }),
+        ),
         event(
             4,
             retry_run,
@@ -770,7 +776,13 @@ fn pending_producer_body_requires_admission_to_the_current_run() {
             run_a,
             EventPayload::ProducerMessageAdmitted { message_id },
         ),
-        event(4, run_a, EventPayload::RunCancelled { reason: None }),
+        event(
+            4,
+            run_a,
+            EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Cancelled {
+                reason: None,
+            }),
+        ),
         run_started_event(5, run_b, &current_binding),
     ];
     let directory = tempfile::tempdir().unwrap();
@@ -907,10 +919,12 @@ fn claimed_snapshot_retains_covered_producer_input() {
     assert_eq!(projection.claims[&3].message_ids, vec![message_id]);
 }
 
+/// The parent's model learns a delegation's result from its tool result or
+/// its accepted producer message, never from the `delegation_finished`
+/// record, so the result is in history exactly once.
 #[test]
-fn delegation_v2_notification_is_suppressed_only_for_producer_owned_invocation() {
+fn delegation_finished_records_are_not_history() {
     let producer_invocation = cookie_agent_protocol::InvocationId::new_v7();
-    let legacy_invocation = cookie_agent_protocol::InvocationId::new_v7();
     let child = SessionId::new_v7();
     let events = vec![
         producer_accepted_event(
@@ -925,24 +939,14 @@ fn delegation_v2_notification_is_suppressed_only_for_producer_owned_invocation()
         event(
             2,
             RunId::new_v7(),
-            EventPayload::DelegateFinishedV2 {
-                short_id: None,
+            EventPayload::DelegationFinished {
                 invocation_id: producer_invocation,
-                session_id: child,
+                child_session_id: child,
+                child_run_id: None,
                 status: SessionStatus::Completed,
-                preview: "duplicate".into(),
-                total_lines: 1,
-            },
-        ),
-        event(
-            3,
-            RunId::new_v7(),
-            EventPayload::DelegateFinishedV2 {
+                reason: None,
                 short_id: Some("explore_1a2b3c4d".into()),
-                invocation_id: legacy_invocation,
-                session_id: child,
-                status: SessionStatus::Completed,
-                preview: "legacy result".into(),
+                preview: "duplicate".into(),
                 total_lines: 1,
             },
         ),
@@ -952,15 +956,7 @@ fn delegation_v2_notification_is_suppressed_only_for_producer_owned_invocation()
     let history = assemble_full_history(&events, &store, &binding(), "system").unwrap();
     let rendered = serde_json::to_string(&history).unwrap();
     assert!(!rendered.contains("duplicate"));
-    // Replay and the runtime renderer share one body: the handle-form
-    // notification, byte for byte.
-    let expected = crate::runtime::render_subagent_notification(
-        "legacy result",
-        SessionStatus::Completed,
-        1,
-        "explore_1a2b3c4d",
-    );
-    assert!(rendered.contains(&serde_json::to_string(&expected).unwrap()));
+    assert!(!rendered.contains("subagent_notification"));
 }
 
 #[test]

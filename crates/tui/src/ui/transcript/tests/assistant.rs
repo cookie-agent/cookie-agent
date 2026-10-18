@@ -474,7 +474,7 @@ async fn interrupted_run_footer_marks_interrupted_block() {
         session,
         5,
         run,
-        EventPayload::RunInterrupted { reason: None },
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Interrupted { reason: None }),
     ));
     let mut app = app_with_footer_log(events, session).await;
     let rendered = frame_rows(&mut app, 100, 30).join("\n");
