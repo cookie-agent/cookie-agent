@@ -542,14 +542,6 @@ impl<'de> Deserialize<'de> for ToolEmittedMessage {
         Self::new(wire.role, wire.content).map_err(serde::de::Error::custom)
     }
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ToolOutputTruncation {
-    pub original_bytes: u64,
-    pub original_lines: u64,
-    pub retained: ArtifactReference,
-}
-
 /// A tool result as sessions store it and clients receive it. When `display`
 /// occurs verbatim in `output`, which is the common case (a single-output tool
 /// shows its output, a shell its only stream), it is written as the byte range
@@ -565,9 +557,6 @@ pub struct PersistedToolResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_output: Option<crate::RetainedToolOutput>,
     pub metadata: Value,
-    #[serde(deserialize_with = "crate::deserialize_required_option")]
-    #[schemars(with = "crate::NullableSchema<ToolOutputTruncation>", required)]
-    pub truncation: Option<ToolOutputTruncation>,
     #[schemars(
         description = "Direct result files. Together with files in additional_messages, at most 256 are allowed."
     )]
@@ -638,9 +627,6 @@ impl PersistedToolResult {
         for attachment in self.all_attachments() {
             attachment.validate()?;
         }
-        if let Some(truncation) = &self.truncation {
-            truncation.retained.validate()?;
-        }
         Ok(())
     }
 }
@@ -677,7 +663,6 @@ impl Serialize for PersistedToolResult {
             #[serde(skip_serializing_if = "Option::is_none")]
             retained_output: Option<&'a crate::RetainedToolOutput>,
             metadata: &'a Value,
-            truncation: Option<&'a ToolOutputTruncation>,
             attachments: &'a [ToolAttachment],
             #[serde(skip_serializing_if = "<[_]>::is_empty")]
             additional_messages: &'a [ToolEmittedMessage],
@@ -697,7 +682,6 @@ impl Serialize for PersistedToolResult {
             display_span,
             retained_output: self.retained_output.as_ref(),
             metadata: &self.metadata,
-            truncation: self.truncation.as_ref(),
             attachments: &self.attachments,
             additional_messages: &self.additional_messages,
         }
@@ -722,8 +706,6 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
             #[serde(default)]
             retained_output: Option<crate::RetainedToolOutput>,
             metadata: Value,
-            #[serde(deserialize_with = "crate::deserialize_required_option")]
-            truncation: Option<ToolOutputTruncation>,
             attachments: Vec<ToolAttachment>,
             #[serde(default)]
             additional_messages: Vec<ToolEmittedMessage>,
@@ -751,7 +733,6 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
             display,
             retained_output: w.retained_output,
             metadata: w.metadata,
-            truncation: w.truncation,
             attachments: w.attachments,
             additional_messages: w.additional_messages,
         };

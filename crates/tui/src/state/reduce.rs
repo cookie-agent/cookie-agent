@@ -985,13 +985,6 @@ pub(super) fn reduce_event_from(
                     result.title.as_str(),
                     &result.output,
                     &result.metadata,
-                    result.truncation.as_ref().map(|truncation| {
-                        (
-                            truncation.retained.uri.as_str(),
-                            truncation.original_bytes,
-                            truncation.original_lines,
-                        )
-                    }),
                     &result.attachments,
                     &result.additional_messages,
                 ),
@@ -2844,18 +2837,12 @@ pub(super) fn render_tool_result(
     title: &str,
     output: &str,
     metadata: &serde_json::Value,
-    truncation: Option<(&str, u64, u64)>,
     attachments: &[ToolAttachment],
     additional_messages: &[cookie_agent_protocol::ToolEmittedMessage],
 ) -> String {
     let mut lines = vec![title.to_owned(), output.to_owned()];
     if !metadata.is_null() {
         lines.push(format!("metadata: {metadata}"));
-    }
-    if let Some((uri, original_bytes, original_lines)) = truncation {
-        lines.push(format!(
-            "retained output: {uri} ({original_bytes} bytes, {original_lines} lines)"
-        ));
     }
     for attachment in attachments {
         lines.push(render_attachment_summary("attachment", attachment));

@@ -4112,7 +4112,6 @@ fn append_realistic_run(
                             display: None,
                             retained_output: None,
                             metadata: serde_json::Value::Null,
-                            truncation: None,
                             attachments: Vec::new(),
                             additional_messages: Vec::new(),
                         }),

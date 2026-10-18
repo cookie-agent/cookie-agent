@@ -108,7 +108,6 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
         title: SafeDisplayText::new("Webfetch output").unwrap(),
         output,
         metadata: metadata.clone(),
-        truncation: None,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     };
@@ -177,7 +176,7 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
         panic!("expected model-facing result metadata");
     };
     assert_eq!(details["metadata"], metadata);
-    assert!(details["truncation"].is_null());
+    assert!(details.get("truncation").is_none());
     let artifact_id = preview
         .split_once("read_artifact(artifact=\"")
         .unwrap()
@@ -215,7 +214,6 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
         let page =
             crate::runtime::finish_page(ToolCompletion::single(result(page.content))).unwrap();
         assert!(page.retained_output.is_none());
-        assert!(page.truncation.is_none());
     }
     assert_eq!(reconstructed, output);
     assert!(reconstructed.len() > preview.len());
@@ -263,15 +261,12 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
     let binding = policy.selected_suffix.first().unwrap();
     let artifacts = &fixture.engine.inner.artifacts;
     let result =
-        |output: &str,
-         truncation: Option<cookie_agent_protocol::ToolOutputTruncation>,
-         metadata: serde_json::Value| cookie_agent_protocol::PersistedToolResult {
+        |output: &str, metadata: serde_json::Value| cookie_agent_protocol::PersistedToolResult {
             display: None,
             retained_output: None,
             title: cookie_agent_protocol::SafeDisplayText::new("Historical output").unwrap(),
             output: output.into(),
             metadata,
-            truncation,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         };
@@ -287,12 +282,7 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
         binding,
         result(
             "zero\n",
-            Some(cookie_agent_protocol::ToolOutputTruncation {
-                original_bytes: full.len() as u64,
-                original_lines: 4,
-                retained: retained.clone(),
-            }),
-            serde_json::Value::Null,
+            serde_json::json!({"retained_output": retained.uri.clone()}),
         ),
         1,
     );
@@ -637,12 +627,7 @@ async fn a_forked_tree_keeps_its_artifacts_after_the_source_tree_is_deleted() {
             retained_output: None,
             title: cookie_agent_protocol::SafeDisplayText::new("Historical output").unwrap(),
             output: "zero\n".into(),
-            metadata: serde_json::Value::Null,
-            truncation: Some(cookie_agent_protocol::ToolOutputTruncation {
-                original_bytes: full.len() as u64,
-                original_lines: 4,
-                retained,
-            }),
+            metadata: serde_json::json!({"retained_output": retained.uri}),
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         },
@@ -726,19 +711,16 @@ async fn a_revert_deletes_artifacts_only_the_reverted_events_referenced() {
             run.run_id
         }
     };
-    let truncated = |reference| cookie_agent_protocol::PersistedToolResult {
-        display: None,
-        retained_output: None,
-        title: cookie_agent_protocol::SafeDisplayText::new("Historical output").unwrap(),
-        output: "head\n".into(),
-        metadata: serde_json::Value::Null,
-        truncation: Some(cookie_agent_protocol::ToolOutputTruncation {
-            original_bytes: 64,
-            original_lines: 2,
-            retained: reference,
-        }),
-        attachments: Vec::new(),
-        additional_messages: Vec::new(),
+    let truncated = |reference: cookie_agent_protocol::ArtifactReference| {
+        cookie_agent_protocol::PersistedToolResult {
+            display: None,
+            retained_output: None,
+            title: cookie_agent_protocol::SafeDisplayText::new("Historical output").unwrap(),
+            output: "head\n".into(),
+            metadata: serde_json::json!({"retained_output": reference.uri}),
+            attachments: Vec::new(),
+            additional_messages: Vec::new(),
+        }
     };
 
     let first = run("first-input").await;

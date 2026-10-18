@@ -2033,7 +2033,6 @@ fn map_tool_result(
         title: safe_title(tool_name),
         output: text_output,
         metadata,
-        truncation: None,
         attachments,
         additional_messages,
     })

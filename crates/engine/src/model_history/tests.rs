@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use cookie_agent_protocol::{
-    AgentMdEntry, ArtifactReference, AssistantToolCallRef, BoundedDisplayText, ContextCheckpoint,
+    AgentMdEntry, AssistantToolCallRef, BoundedDisplayText, ContextCheckpoint,
     ContextCheckpointBoundaries, ContextCheckpointBudgets, ContextCheckpointCommit,
     DelegatedContextRole, DelegatedContextTurn, EventPayload, FrozenModelBinding,
     InternalAgentInvocationId, InternalAgentRunId, InternalSummaryCheckpoint, ModelCallId,
@@ -13,8 +13,7 @@ use cookie_agent_protocol::{
     ProducerOwner, ProviderId, ReplayDisposition, ResolvedModelRef, RunId, SafeCode,
     SafeDisplayText, SessionId, SessionStatus, Sha256Digest, StoredEvent, SummaryByteLimit,
     ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolEmittedContent,
-    ToolEmittedMessage, ToolEmittedMessageRole, ToolOutputTruncation, ToolTerminationOutcome,
-    Usage,
+    ToolEmittedMessage, ToolEmittedMessageRole, ToolTerminationOutcome, Usage,
 };
 use oven_sdk::{
     AdapterId, HistoryTurn, NativeContextScope as OvenNativeContextScope,
@@ -361,7 +360,6 @@ fn tool_result_materializes_output_and_metadata_as_separate_values() {
         title: SafeDisplayText::new("Subagent steered").unwrap(),
         output: format!("Subagent steered. [subagent session {session_id}; running]"),
         metadata: serde_json::json!({"session_id": session_id, "status": "running"}),
-        truncation: None,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     };
@@ -376,7 +374,6 @@ fn tool_result_materializes_output_and_metadata_as_separate_values() {
         matches!(&values[1], oven_sdk::ContentValue::Json(value) if value == &serde_json::json!({
             "title": result.title,
             "metadata": result.metadata,
-            "truncation": null,
         }))
     );
 }
@@ -410,7 +407,6 @@ fn a_missing_or_damaged_attachment_becomes_a_note_instead_of_an_error() {
         title: SafeDisplayText::new("Screenshot").unwrap(),
         output: "captured".into(),
         metadata: serde_json::Value::Null,
-        truncation: None,
         attachments: vec![kept, lost, damaged],
         additional_messages: Vec::new(),
     };
@@ -426,51 +422,6 @@ fn a_missing_or_damaged_attachment_becomes_a_note_instead_of_an_error() {
             "{value:?}"
         );
     }
-}
-
-#[test]
-fn truncated_tool_result_names_the_readback_tool() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
-    let result = PersistedToolResult {
-        display: None,
-        retained_output: None,
-        title: SafeDisplayText::new("Truncated").unwrap(),
-        output: "preview".into(),
-        metadata: serde_json::Value::Null,
-        truncation: Some(ToolOutputTruncation {
-            original_bytes: 100,
-            original_lines: 10,
-            retained: ArtifactReference {
-                uri: format!("artifact://sha256/{}", "a".repeat(64)),
-            },
-        }),
-        attachments: Vec::new(),
-        additional_messages: Vec::new(),
-    };
-    let oven_sdk::ToolContent::Mixed(values) =
-        tool_result_part(&result, store.for_session(Some(crate::test_session_id())))
-            .unwrap()
-            .content
-    else {
-        panic!("expected mixed tool content");
-    };
-    let oven_sdk::ContentValue::Json(metadata) = &values[1] else {
-        panic!("expected tool result metadata");
-    };
-    assert_eq!(
-        metadata["truncation"]["read_more"],
-        serde_json::json!({
-            "tool": "read_artifact",
-            "arguments": {"artifact": "a".repeat(64)}
-        })
-    );
-    assert_eq!(metadata["truncation"]["artifact_id"], "a".repeat(64));
-    assert!(!metadata.to_string().contains("artifact://sha256/"));
-    assert_eq!(
-        result.truncation.as_ref().unwrap().retained.uri,
-        format!("artifact://sha256/{}", "a".repeat(64))
-    );
 }
 
 #[test]
@@ -2302,7 +2253,6 @@ fn tail_candidates_stop_at_pending_tool_group_until_late_termination() {
                     title: SafeDisplayText::new("late result").unwrap(),
                     output: "late tool output".into(),
                     metadata: serde_json::Value::Null,
-                    truncation: None,
                     attachments: Vec::new(),
                     additional_messages: Vec::new(),
                 }),
@@ -2362,7 +2312,6 @@ fn assembled_tool_transcript_snapshot_is_stable() {
         title: SafeDisplayText::new("Read README.md").expect("title"),
         output: "contents".into(),
         metadata: serde_json::json!({}),
-        truncation: None,
         attachments: Vec::new(),
         additional_messages: vec![
             ToolEmittedMessage::new(

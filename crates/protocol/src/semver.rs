@@ -21,7 +21,7 @@ pub const CLIENT_PROTOCOL_VERSION: SemVer = SemVer::new(0, 49, 0);
 /// The plugin protocol version this build speaks.
 pub const PLUGIN_PROTOCOL_VERSION: SemVer = SemVer::new(0, 2, 0);
 /// The runtime protocol version this build speaks.
-pub const RUNTIME_PROTOCOL_VERSION: SemVer = SemVer::new(0, 5, 0);
+pub const RUNTIME_PROTOCOL_VERSION: SemVer = SemVer::new(0, 6, 0);
 
 /// The handshake member that carries a peer's version.
 pub const PROTOCOL_VERSION_MEMBER: &str = "protocol_version";

@@ -459,7 +459,6 @@ fn assistant_and_tool_result_events_do_not_resort_siblings() {
                     title: SafeDisplayText::new("completed").expect("title"),
                     output: "result".into(),
                     metadata: serde_json::Value::Null,
-                    truncation: None,
                     attachments: Vec::new(),
                     additional_messages: Vec::new(),
                 }),

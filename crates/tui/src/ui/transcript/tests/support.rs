@@ -881,7 +881,6 @@ pub(crate) fn tool_terminated(
                     title: SafeDisplayText::new("ran true").expect("result title"),
                     output: "done".into(),
                     metadata: serde_json::Value::Null,
-                    truncation: None,
                     attachments: Vec::new(),
                     additional_messages: Vec::new(),
                 }),

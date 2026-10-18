@@ -548,7 +548,6 @@ fn elision_and_estimator_share_emitted_part_byte_accounting() {
         title: SafeDisplayText::new("Video").unwrap(),
         output: "x".repeat(60),
         metadata: serde_json::Value::Null,
-        truncation: None,
         attachments: Vec::new(),
         additional_messages: vec![
             ToolEmittedMessage::new(

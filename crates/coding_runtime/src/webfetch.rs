@@ -244,7 +244,6 @@ impl WebfetchArgs {
                 "final_url: {final_url}\nstatus_code: {status_code}\ncontent_type: {content_type}\ntruncated: {truncated}\n\n{text}"
             ),
             metadata,
-            truncation: None,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         })
@@ -414,7 +413,6 @@ mod tests {
         );
         assert!(result.output.starts_with(&header));
         assert_eq!(result.metadata.as_object().unwrap().len(), 5);
-        assert!(result.truncation.is_none());
         Ok(result)
     }
 

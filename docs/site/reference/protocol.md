@@ -108,7 +108,8 @@ replace the six approval lifecycle events. Every event type is a state or an
 audit event, and stored records of audit events carry `"skippable": true`; a
 session holding a state event this build does not know is render-only, and
 requests that would change it fail with `session_requires_newer_engine`.
-`session_created` carries `history_format`. Older clients are rejected.
+`session_created` carries `history_format`. Tool results lost `truncation`,
+which nothing set. Older clients are rejected.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility

@@ -1170,7 +1170,6 @@ pub(super) fn incomplete_completion(message: &str) -> crate::ToolCompletion {
         display: Some(cookie_agent_runtime_api::bounded_tool_display(message)),
         retained_output: None,
         metadata: Value::Null,
-        truncation: None,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     })

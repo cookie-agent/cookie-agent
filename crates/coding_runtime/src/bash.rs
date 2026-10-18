@@ -688,7 +688,6 @@ impl BashExecutor {
             title: crate::safe_title("Bash"),
             output: String::new(),
             metadata: serde_json::json!({"status":status.code(),"success":status.success()}),
-            truncation: None,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         })

@@ -27,7 +27,6 @@ fn completion(output: ToolCompletionOutput) -> ToolCompletion {
             display: Some("final UI display".into()),
             retained_output: None,
             metadata: serde_json::Value::Null,
-            truncation: None,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         },
@@ -223,7 +222,6 @@ async fn terminal_output_uses_capture_and_opt_out_never_publishes_an_artifact() 
     .unwrap();
     assert_eq!(result.output, "one\ntwo\n");
     assert!(result.retained_output.is_none());
-    assert!(result.truncation.is_none());
     assert_eq!(
         std::fs::read_dir(root.path().join("artifacts"))
             .unwrap()

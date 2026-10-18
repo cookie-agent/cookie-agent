@@ -1294,3 +1294,9 @@ Deviations and choices made while implementing, by phase.
   `session_requires_newer_engine`; a lower one with
   `EventLogError::UnsupportedHistoryFormat`, which phase D replaces with
   conversion.
+- **`truncation`.** Every writer left a tool result's `truncation` null
+  since retained output moved to `retained_output`; its readers (the model's
+  tool-result JSON, the TUI, the compaction retry hint) served old logs only.
+  The field and `ToolOutputTruncation` are gone. `PersistedToolResult` is
+  also the `tool/execute` result, so the runtime protocol moves to 6
+  (`0.6.0`); the plugin protocol already moved to 2 in this step.

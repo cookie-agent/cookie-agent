@@ -79,7 +79,6 @@ impl PreparedExecutor for SkillExecutor {
                 title: safe_title(format!("Loaded skill {}", invocation.name)),
                 output: invocation.rendered,
                 metadata: serde_json::json!({"skill": invocation.name}),
-                truncation: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             })

@@ -737,7 +737,6 @@ impl OutputCapture {
             ));
         }
         completion.result.output = rendered;
-        completion.result.truncation = None;
         completion.result.retained_output = Some(RetainedToolOutput {
             reference,
             streams,
@@ -795,7 +794,6 @@ pub(crate) fn finish_page(
         ));
     }
     completion.result.output = text;
-    completion.result.truncation = None;
     completion.result.retained_output = None;
     completion
         .result

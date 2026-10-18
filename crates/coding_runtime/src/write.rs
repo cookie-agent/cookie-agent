@@ -179,7 +179,6 @@ impl PreparedExecutor for WriteExecutor {
                 title: crate::safe_title(format!("Wrote {path}")),
                 output: format!("Wrote {bytes} bytes to {path}"),
                 metadata: serde_json::json!({ "bytes": bytes }),
-                truncation: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             },

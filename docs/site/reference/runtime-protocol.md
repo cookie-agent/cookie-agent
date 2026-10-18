@@ -52,7 +52,7 @@ protocol over either:
 
 ## Version
 
-The protocol version is an integer, currently **5**
+The protocol version is an integer, currently **6**
 (`runtime_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its version in
 `runtime/initialize`; a runtime that speaks another version fails the request
 with code `-32010` and a message naming both versions, and the daemon checks
@@ -71,6 +71,8 @@ connection serves every workspace and capability of a runtime.
 `capability/tools_changed` replaced `runtime/tools_changed`; and
 `tool/prepare`, `runtime/context`, `mcp/changed`, and `mcp/reconnect` name
 their `instance` (see the [runtime capabilities spec](../specs/runtime-capabilities.md)).
+Version 6 removed the tool result's `truncation`, which nothing set: a
+result's retained output is `retained_output`.
 
 ## Capabilities and instances
 

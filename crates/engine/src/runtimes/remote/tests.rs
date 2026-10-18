@@ -502,7 +502,6 @@ impl PreparedExecutor for MediaExecutor {
             display: None,
             retained_output: None,
             metadata: serde_json::Value::Null,
-            truncation: None,
             attachments: vec![attachment],
             additional_messages: Vec::new(),
         }))
@@ -1472,7 +1471,6 @@ impl PreparedExecutor for ReportExecutor {
             display: None,
             retained_output: None,
             metadata: serde_json::Value::Null,
-            truncation: None,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         }))

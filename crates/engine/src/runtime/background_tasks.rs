@@ -551,7 +551,6 @@ fn immediate_result(job: &str, by: BackgroundActor, note: Option<&str>) -> Persi
         output,
         retained_output: None,
         metadata: serde_json::json!({"background": {"job": job, "by": actor_name(by)}}),
-        truncation: None,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     }
@@ -582,7 +581,6 @@ pub(super) fn self_reporting_result(
         output,
         retained_output: None,
         metadata: serde_json::json!({"background": {"by": actor_name(by)}}),
-        truncation: None,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     }
@@ -825,7 +823,6 @@ mod tests {
             display: None,
             retained_output: None,
             metadata: serde_json::json!({"status": 0}),
-            truncation: None,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         };

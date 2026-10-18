@@ -1038,7 +1038,6 @@ impl Server {
                         )),
                         retained_output: None,
                         metadata: Value::Null,
-                        truncation: None,
                         attachments: Vec::new(),
                         additional_messages: Vec::new(),
                     },

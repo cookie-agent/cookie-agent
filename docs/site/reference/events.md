@@ -481,8 +481,8 @@ the result output holds whole has neither, and `retained_output.reference`
 (the single stream's artifact or the generic manifest) is absent when no
 stream needed one. Failed/cancelled calls retain accepted output
 with their terminal status and error. Self-paginating tools omit output retention
-and fail instead when a requested page exceeds the 2 MiB result bound. Historical
-`truncation` and `tool_output_elided` records remain readable.
+and fail instead when a requested page exceeds the 2 MiB result bound.
+`tool_output_elided` records which retained output compaction elided.
 
 During cancellation cleanup, a progress record is considered retained once its
 append command enters the session actor mailbox; actor FIFO then orders it before

@@ -210,7 +210,6 @@ impl PreparedExecutor for JobExecutor {
                 display: None,
                 retained_output: None,
                 metadata: serde_json::json!({"status": 0}),
-                truncation: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             },

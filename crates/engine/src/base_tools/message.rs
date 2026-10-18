@@ -203,7 +203,6 @@ impl PreparedExecutor for MessageExecutor {
             title: safe_title("Message sent"),
             output: format!("Message accepted for {}.", handle.recipient_state.as_str()),
             metadata,
-            truncation: None,
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         }))

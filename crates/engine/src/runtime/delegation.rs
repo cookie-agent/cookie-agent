@@ -3781,7 +3781,6 @@ fn paginated_subagent_result(status: &str, text: &str, offset: u32, limit: u32) 
             "limit": limit,
             "total_lines": lines.len(),
         }),
-        truncation: None,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     }
@@ -3832,7 +3831,6 @@ fn structured_delegate_result(title: &str, output: String, metadata: Value) -> T
         title: safe_display(title),
         output,
         metadata,
-        truncation: None,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     }
@@ -3993,7 +3991,6 @@ mod concurrency_tests {
             assert_eq!(result.output, output);
             assert_eq!(result.metadata, metadata);
             assert!(serde_json::from_str::<serde_json::Value>(&result.output).is_err());
-            assert!(result.truncation.is_none());
             assert!(result.attachments.is_empty());
             assert!(result.additional_messages.is_empty());
         }

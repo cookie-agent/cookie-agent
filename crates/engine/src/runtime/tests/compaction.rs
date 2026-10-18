@@ -168,7 +168,6 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
 #[tokio::test]
 async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persisting_elision() {
     const RAW_MARKER: &str = "RAW_COMPACTION_TOOL_OUTPUT";
-    const FULL_OUTPUT_MARKER: &str = "FULL_OUTPUT_BEYOND_TRUNCATED_PREVIEW";
     const SMALL_MARKER: &str = "SMALL_RECENT_TOOL_OUTPUT";
     const RETRIEVED_MARKER: &str = "SMALL_RECENT_RETRIEVED_OUTPUT";
     const EMITTED_MARKER: &str = "TOOL_EMITTED_CONTENT_TO_REMOVE";
@@ -276,13 +275,6 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             .composed_prompt
             .clone();
         let output = format!("{RAW_MARKER}{}", "x".repeat(80 * 1024 - RAW_MARKER.len()));
-        let full_output = format!("{output}\n{FULL_OUTPUT_MARKER}\n");
-        let (full_output_reference, _) = fixture
-            .engine
-            .inner
-            .artifacts
-            .retain(session.session_id, full_output.as_bytes())
-            .expect("retain full output behind truncated preview");
         let image_bytes = vec![7_u8; 1024 * 1024];
         let (image_reference, image_digest) = fixture
             .engine
@@ -308,11 +300,6 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                 title: cookie_agent_protocol::SafeDisplayText::new("Historical output").unwrap(),
                 output,
                 metadata: serde_json::Value::Null,
-                truncation: Some(cookie_agent_protocol::ToolOutputTruncation {
-                    original_bytes: full_output.len() as u64,
-                    original_lines: 2,
-                    retained: full_output_reference,
-                }),
                 attachments: vec![image_attachment.clone()],
                 additional_messages: Vec::new(),
             },
@@ -361,7 +348,6 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                     title: cookie_agent_protocol::SafeDisplayText::new("Recent output").unwrap(),
                     output,
                     metadata: serde_json::Value::Null,
-                    truncation: None,
                     attachments: vec![image_attachment.clone()],
                     additional_messages: [
                         cookie_agent_protocol::ToolEmittedMessageRole::User,
@@ -497,7 +483,6 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
         );
         assert!(!summary_request.contains("input_image"));
         assert!(!summary_request.contains("cookie_agent.compaction.tool_call_id"));
-        assert!(!summary_request.contains(FULL_OUTPUT_MARKER));
         if expect_elision {
             let body = request_body(summary_request);
             let messages = body["messages"].as_array().unwrap();
@@ -541,22 +526,6 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                 assert!(
                     matches!(&values[0], oven_sdk::ContentValue::Text(text) if text.contains(marker))
                 );
-                if marker == RAW_MARKER {
-                    let oven_sdk::ContentValue::Json(metadata) = &values[1] else {
-                        panic!("serialized result metadata");
-                    };
-                    let original_path =
-                        metadata["truncation"]["read_more"]["arguments"]["artifact"]
-                            .as_str()
-                            .unwrap();
-                    assert_eq!(metadata["truncation"]["read_more"]["tool"], "read_artifact");
-                    let full_page = fixture
-                        .engine
-                        .read_artifact(session.session_id, original_path, None, 0, 10)
-                        .unwrap();
-                    assert_eq!(full_page.content, full_output);
-                    assert_ne!(original_path, artifact_path);
-                }
             }
             for result in [results[2], results[3]] {
                 assert_eq!(

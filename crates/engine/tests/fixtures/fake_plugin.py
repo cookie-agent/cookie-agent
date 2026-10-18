@@ -189,7 +189,6 @@ for line in sys.stdin:
                         "output": "",
                         "display": os.environ.get("FIXTURE_TOOL_DISPLAY", content[:65536]),
                         "metadata": None,
-                        "truncation": None,
                         "attachments": [],
                     },
                     "failed": os.environ.get("FIXTURE_TOOL_ERROR") == "1",

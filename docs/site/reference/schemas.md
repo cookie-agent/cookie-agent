@@ -12,7 +12,7 @@ emit only their current version and reject unsupported versions.
 | Agent document | unversioned | unversioned current shape |
 | Client protocol | 49 | 49 |
 | Plugin protocol | 2 | 2 |
-| Runtime protocol | 5 | 5 |
+| Runtime protocol | 6 | 6 |
 | Events and session JSONL | versionless | versionless |
 | Session metadata | unversioned | unversioned current shape |
 | Runtime snapshot | 6 | 6 |
@@ -25,7 +25,7 @@ The three protocols are moving to semver versions, as the
 [compatibility specification](../specs/compatibility-v1.md) describes. Until
 their handshakes switch, the exact numbers above stay on the wire; the semver
 constants `CLIENT_PROTOCOL_VERSION`, `PLUGIN_PROTOCOL_VERSION`, and
-`RUNTIME_PROTOCOL_VERSION` (`0.49.0`, `0.2.0`, and `0.5.0`) are what the
+`RUNTIME_PROTOCOL_VERSION` (`0.49.0`, `0.2.0`, and `0.6.0`) are what the
 baselines below record. They stay `0.x` until the protocols freeze at `1.0.0`.
 
 Agent snapshots embedded in events are read in their current shape only

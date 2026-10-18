@@ -331,10 +331,8 @@ filesystem.
 Artifact reads return the stored content without unwrapping JSON. Normal
 single-output artifacts contain the original full text. Named-stream artifacts
 contain their complete individual text. Compaction retry artifacts may contain serialized
-tool-content JSON, including output text, metadata, and references to original
-truncation artifacts. Their markers identify this format and expose usable IDs
-without requiring durable elision events. Follow any nested truncation reference
-to retrieve the original full output rather than its serialized preview.
+tool-content JSON, including output text and metadata. Their markers identify
+this format and expose usable IDs without requiring durable elision events.
 
 Without `stream`, `read_artifact` reads stored text as-is, including manifest
 JSON; it does not merge streams. `stream` selects a declared name from the generic

@@ -5312,23 +5312,12 @@
           "minLength": 1,
           "pattern": "^[^\\p{Cc}\\p{Cf}]+$",
           "type": "string"
-        },
-        "truncation": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ToolOutputTruncation"
-            },
-            {
-              "type": "null"
-            }
-          ]
         }
       },
       "required": [
         "title",
         "output",
         "metadata",
-        "truncation",
         "attachments"
       ],
       "type": "object"
@@ -7074,30 +7063,6 @@
           "type": "object"
         }
       ]
-    },
-    "ToolOutputTruncation": {
-      "additionalProperties": false,
-      "properties": {
-        "original_bytes": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "original_lines": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "retained": {
-          "$ref": "#/$defs/ArtifactReference"
-        }
-      },
-      "required": [
-        "original_bytes",
-        "original_lines",
-        "retained"
-      ],
-      "type": "object"
     },
     "ToolTerminationOutcome": {
       "enum": [

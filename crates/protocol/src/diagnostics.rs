@@ -330,7 +330,6 @@ mod tests {
             metadata: serde_json::json!({"status":23}),
             display: None,
             retained_output: None,
-            truncation: None,
             attachments: vec![],
             additional_messages: vec![],
         };
@@ -378,7 +377,6 @@ mod tests {
                 ),
                 display: Some("Finished".into()),
                 metadata: serde_json::json!({"status":23,"source":"/work/input"}),
-                truncation: None,
                 retained_output: named.then(|| crate::RetainedToolOutput {
                     reference: Some(reference.clone()),
                     incomplete: true,

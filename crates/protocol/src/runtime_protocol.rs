@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The runtime protocol version. Both ends must speak exactly this version.
-pub const RUNTIME_PROTOCOL_VERSION: u32 = 5;
+pub const RUNTIME_PROTOCOL_VERSION: u32 = 6;
 
 /// The largest frame either end sends or accepts. It fits an `execute`
 /// reply carrying [`MAX_INLINE_MEDIA_BYTES`] of base64 media next to a full

@@ -609,7 +609,6 @@ fn tool_result_with_additional_messages(additional_messages: Value) -> Value {
         "title": "Tool result",
         "output": "done",
         "metadata": null,
-        "truncation": null,
         "attachments": [],
         "additional_messages": additional_messages,
     })
@@ -622,7 +621,6 @@ fn display_result(output: &str, display: Option<&str>) -> PersistedToolResult {
         display: display.map(Into::into),
         retained_output: None,
         metadata: Value::Null,
-        truncation: None,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     }
@@ -688,7 +686,6 @@ fn tool_emitted_messages_round_trip_and_empty_results_stay_compact() {
         title: SafeDisplayText::new("Tool result").unwrap(),
         output: "done".into(),
         metadata: Value::Null,
-        truncation: None,
         attachments: vec![ToolAttachment {
             mime_type: MimeType::new("text/plain").unwrap(),
             filename: Some("result.txt".into()),

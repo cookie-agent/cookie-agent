@@ -240,7 +240,6 @@ retained_output: None,
                 )),
                 output,
                 metadata: serde_json::json!({"kind":"directory","shown":page.len(),"total_entries":entries.len()}),
-                truncation: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             });
@@ -336,7 +335,6 @@ fn attachment_result(
         title: crate::safe_title(format!("Read attachment {}", path.display())),
         output,
         metadata: serde_json::json!({"kind":"attachment","mime_type":mime,"sha256":sha256}),
-        truncation: None,
         attachments,
         additional_messages,
     })
@@ -424,7 +422,6 @@ fn text_result(
             "total_lines": lines,
             "next_offset": page.stopped_at,
         }),
-        truncation: None,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     })

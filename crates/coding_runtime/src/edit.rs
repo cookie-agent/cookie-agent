@@ -309,7 +309,6 @@ impl PreparedExecutor for EditExecutor {
                 title: crate::safe_title(format!("Edited {path}")),
                 output: "Edit applied atomically".into(),
                 metadata: serde_json::json!({ "replacements": count }),
-                truncation: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             },

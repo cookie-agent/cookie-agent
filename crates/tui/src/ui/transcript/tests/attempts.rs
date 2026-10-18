@@ -1554,7 +1554,6 @@ fn replayed_failure_diagnostic_precedes_output_beyond_the_render_budget() {
                 display: None,
                 metadata: serde_json::Value::Null,
                 retained_output: None,
-                truncation: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             });

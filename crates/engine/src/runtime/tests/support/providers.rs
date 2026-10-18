@@ -224,7 +224,6 @@ retained_output: None,
                 } else {
                     serde_json::json!({"session_id": null, "child_session_id": null})
                 },
-                truncation: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             });
@@ -540,7 +539,6 @@ impl PreparedExecutor for TestParallelToolExecutor {
                     .expect("result title"),
                 output: format!("{} completed", self.name),
                 metadata: serde_json::json!({"name":self.name}),
-                truncation: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             })
@@ -778,7 +776,6 @@ impl PreparedExecutor for TestDelegateExecutor {
                         handle.child_session_id
                     ),
                     metadata,
-                    truncation: None,
                     attachments: Vec::new(),
                     additional_messages: Vec::new(),
                 })
@@ -923,7 +920,6 @@ impl PreparedExecutor for TestWriteExecutor {
                     .expect("result title"),
                 output: "executed".to_owned(),
                 metadata: serde_json::Value::Null,
-                truncation: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             })
@@ -1093,7 +1089,6 @@ impl PreparedExecutor for TestAliasExecutor {
                     .expect("result title"),
                 output: "aliased tool executed".to_owned(),
                 metadata: serde_json::Value::Null,
-                truncation: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             },
@@ -1242,7 +1237,6 @@ impl PreparedExecutor for TestMediaReadExecutor {
                 title: cookie_agent_protocol::SafeDisplayText::new("Read attachment").unwrap(),
                 output: format!("Attached {mime}."),
                 metadata: serde_json::Value::Null,
-                truncation: None,
                 attachments: vec![attachment],
                 additional_messages: Vec::new(),
             })
@@ -1589,7 +1583,6 @@ impl PreparedExecutor for NamedOutputExecutor {
                 display: Some("UI_FINAL_ONLY".into()),
                 retained_output: None,
                 metadata: serde_json::Value::Null,
-                truncation: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             });

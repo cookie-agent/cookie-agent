@@ -66,7 +66,6 @@ fn tool_failures_with_output_stay_inline_on_replay() {
                         },
                         metadata: serde_json::json!({"status": 1, "success": false}),
                         retained_output: None,
-                        truncation: None,
                         attachments: vec![],
                         additional_messages: vec![],
                     }),
@@ -2746,7 +2745,6 @@ fn tool_termination_clears_streamed_output_and_sets_detail() {
                         .expect("result title"),
                     output: "stdout:\nonce\n\nstderr:\n".into(),
                     metadata: serde_json::Value::Null,
-                    truncation: None,
                     attachments: Vec::new(),
                     additional_messages: vec![
                         cookie_agent_protocol::ToolEmittedMessage::new(
@@ -2835,7 +2833,6 @@ fn tool_display_is_bounded_and_final_replacement_matches_replay() {
                 display: Some("final display\nsecond line".into()),
                 retained_output: None,
                 metadata: serde_json::json!({"model_only": true}),
-                truncation: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             }),
@@ -2995,7 +2992,6 @@ fn replay_with_tool_chunks_ends_at_committed_result_only() {
                         title: cookie_agent_protocol::SafeDisplayText::new("Bash").expect("title"),
                         output: "committed replacement".into(),
                         metadata: serde_json::Value::Null,
-                        truncation: None,
                         attachments: Vec::new(),
                         additional_messages: Vec::new(),
                     }),

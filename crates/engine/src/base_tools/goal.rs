@@ -254,7 +254,6 @@ fn goal_result(title: &str, result: serde_json::Value) -> Result<ToolResult, Too
         title: safe_title(title),
         output: serde_json::to_string_pretty(&result).map_err(tool_error)?,
         metadata: serde_json::Value::Null,
-        truncation: None,
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     })

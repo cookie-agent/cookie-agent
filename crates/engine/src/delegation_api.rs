@@ -99,7 +99,6 @@ mod tests {
                         .unwrap(),
                     output: String::new(),
                     metadata: serde_json::json!({key: value}),
-                    truncation: None,
                     attachments: Vec::new(),
                     additional_messages: Vec::new(),
                 };

@@ -168,7 +168,6 @@ impl PreparedExecutor for StopBackgroundExecutor {
                 display: None,
                 retained_output: None,
                 metadata: serde_json::json!({"job": self.job}),
-                truncation: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             },

@@ -754,7 +754,6 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             Some("Tool cancelled; output is incomplete.")
         );
         assert!(result.retained_output.is_none());
-        assert!(result.truncation.is_none());
         assert_eq!(result.metadata["offset"], 1);
         assert_eq!(result.metadata["limit"], 1);
         if artifact_read {

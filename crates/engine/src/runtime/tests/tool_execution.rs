@@ -367,7 +367,6 @@ async fn opt_out_completion_never_allocates_capture_files_or_waits_for_publicati
     assert_eq!(result.output, "page completed");
     assert_eq!(result.display.as_deref(), Some("page completed"));
     assert!(result.retained_output.is_none());
-    assert!(result.truncation.is_none());
     assert_eq!(attempted.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(
         with_watchdog("captured fixture completion", captured)

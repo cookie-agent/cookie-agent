@@ -215,7 +215,6 @@ impl PreparedExecutor for ReadArtifactExecutor {
                     "next_offset": page.next_offset_lines,
                     "source": page.source,
                 }),
-                truncation: None,
                 attachments: Vec::new(),
                 additional_messages: Vec::new(),
             },
@@ -288,7 +287,6 @@ mod tests {
         assert_eq!(result.metadata["next_offset"], 2);
         assert_eq!(result.metadata["artifact"], digest);
         assert!(result.retained_output.is_none());
-        assert!(result.truncation.is_none());
     }
 
     #[tokio::test]
