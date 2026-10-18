@@ -2246,8 +2246,10 @@ impl SessionStore {
             .filter(|event| event.seq <= through_seq)
             .cloned()
             .collect::<Vec<_>>();
+        // The tip counts the lines the log read but left out, which a fork
+        // copies as they were written.
         if through_seq == 0
-            || through_seq > source_events.last().map_or(0, |event| event.seq)
+            || through_seq > source.log.physical_tip_seq()
             || !prefix
                 .iter()
                 .any(|event| matches!(event.payload, EventPayload::UserInputSubmitted { .. }))
@@ -2349,10 +2351,7 @@ impl SessionStore {
             let log_path = temporary.join(EVENTS_FILE);
             #[cfg(windows)]
             create_windows_session_file(&log_path)?;
-            let lines = crate::events::write_event_jsonl(
-                &log_path,
-                log.event_snapshot().iter().map(AsRef::as_ref),
-            )?;
+            let lines = log.write_whole(&log_path)?;
             write_cache(
                 &temporary.join(SESSION_META_FILE),
                 &fork_projection.meta,
@@ -2472,10 +2471,7 @@ impl SessionStore {
             let log_path = temporary.join(EVENTS_FILE);
             #[cfg(windows)]
             create_windows_session_file(&log_path)?;
-            let lines = crate::events::write_event_jsonl(
-                &log_path,
-                projection.log.event_snapshot().iter().map(AsRef::as_ref),
-            )?;
+            let lines = projection.log.write_whole(&log_path)?;
             write_cache(
                 &temporary.join(SESSION_META_FILE),
                 &projection.meta,

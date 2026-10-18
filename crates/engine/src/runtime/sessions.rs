@@ -616,17 +616,16 @@ impl Engine {
                     // What the cut events and deleted children referenced is all a
                     // revert can orphan; the sweep below keeps what is still used.
                     let mut dropped = HashSet::new();
-                    crate::runtime::artifacts::artifact_references_in_events(
-                        events
-                            .iter()
-                            .filter(|event| event.seq > cut)
-                            .map(AsRef::as_ref),
+                    crate::runtime::artifacts::artifact_references_in_log(
+                        &projection.log,
+                        cut + 1..,
                         &mut dropped,
                     )?;
                     for child in &deleted {
                         if let Ok(child) = engine.inner.store.get(*child) {
-                            crate::runtime::artifacts::artifact_references_in_events(
-                                child.log.event_snapshot().iter().map(AsRef::as_ref),
+                            crate::runtime::artifacts::artifact_references_in_log(
+                                &child.log,
+                                ..,
                                 &mut dropped,
                             )?;
                         }
@@ -712,8 +711,9 @@ impl Engine {
             if projection.status == SessionStatus::Running {
                 return Ok(None);
             }
-            crate::runtime::artifacts::artifact_references_in_events(
-                projection.log.event_snapshot().iter().map(AsRef::as_ref),
+            crate::runtime::artifacts::artifact_references_in_log(
+                &projection.log,
+                ..,
                 &mut references,
             )?;
             pending.extend(
@@ -737,7 +737,7 @@ impl Engine {
         origin: EventOrigin,
         client_fork_id: Option<cookie_agent_protocol::ClientForkId>,
     ) -> Result<SessionForkResult, EngineError> {
-        // A fork would drop the events this build cannot read.
+        // A render-only session cannot be continued, so it is not forked either.
         self.ensure_appendable(session_id)?;
         if let Some(client_fork_id) = &client_fork_id
             && let Some(&(forked_through, forked)) = self
@@ -796,14 +796,9 @@ impl Engine {
         // along, so it never resolves anything in the tree it came from
         // (tree-local D2).
         let mut referenced = HashSet::new();
-        crate::runtime::artifacts::artifact_references_in_events(
-            self.inner
-                .store
-                .log(session_id)?
-                .event_snapshot()
-                .iter()
-                .filter(|event| event.seq <= through_seq)
-                .map(AsRef::as_ref),
+        crate::runtime::artifacts::artifact_references_in_log(
+            &*self.inner.store.log(session_id)?,
+            ..=through_seq,
             &mut referenced,
         )?;
         let forked = self

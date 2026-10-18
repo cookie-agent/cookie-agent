@@ -672,6 +672,129 @@ async fn a_forked_tree_keeps_its_artifacts_after_the_source_tree_is_deleted() {
     reopened.shutdown().await;
 }
 
+/// History a newer build wrote survives this one: a fork copies a skipped
+/// event as it was written, and both it and an unknown member of a known
+/// record keep the artifacts they name, an `ArtifactRef` and a URI.
+#[tokio::test]
+async fn a_fork_keeps_what_a_newer_build_wrote_and_the_artifacts_it_names() {
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+    let (endpoint, _captured, _reached, _release) =
+        scripted_server_with_delayed_response(vec![body.to_owned()], usize::MAX).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("future-history").unwrap(),
+                selection,
+                input: "a run before the newer build".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let (_, part_digest) = fixture
+        .engine
+        .inner
+        .artifacts
+        .retain(session.session_id, b"named by a file part\n")
+        .unwrap();
+    let (_, uri_digest) = fixture
+        .engine
+        .inner
+        .artifacts
+        .retain(session.session_id, b"named by a URI\n")
+        .unwrap();
+    let log_path = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .path()
+        .to_owned();
+    fixture.engine.shutdown().await;
+
+    // A newer build added a member to the last record and an audit event
+    // this build does not know.
+    let mut lines = fs::read_to_string(&log_path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let last = lines.last_mut().unwrap();
+    last["payload"]["future_note"] =
+        serde_json::json!(format!("see artifact://sha256/{uri_digest}"));
+    let tip = last["seq"].as_u64().unwrap();
+    let mut future = last.clone();
+    future["seq"] = serde_json::json!(tip + 1);
+    future["skippable"] = serde_json::json!(true);
+    future["payload"] = serde_json::json!({
+        "type": "future_attachment_noted",
+        "file": {"sha256": part_digest, "byte_length": 21, "media_type": "text/plain"},
+    });
+    lines.push(future);
+    fs::write(
+        &log_path,
+        lines
+            .iter()
+            .map(|line| serde_json::to_string(line).unwrap() + "\n")
+            .collect::<String>(),
+    )
+    .unwrap();
+
+    let reopened = reopen_engine(&fixture);
+    let log = reopened.inner.store.log(session.session_id).unwrap();
+    let mut referenced = std::collections::HashSet::new();
+    crate::runtime::artifacts::artifact_references_in_log(&log, .., &mut referenced).unwrap();
+    assert!(
+        referenced.contains(&part_digest),
+        "the skipped event's file part"
+    );
+    assert!(referenced.contains(&uri_digest), "the unknown member's URI");
+    let fork = reopened
+        .fork_session(
+            session.session_id,
+            tip + 1,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            None,
+        )
+        .await
+        .expect("fork through the newer event")
+        .session_id;
+    let fork_log = fs::read_to_string(
+        reopened
+            .inner
+            .store
+            .workdir_dir_path()
+            .join(fork.to_string())
+            .join("events.jsonl"),
+    )
+    .unwrap();
+    let copied = fork_log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|line| line["payload"]["type"] == "future_attachment_noted")
+        .expect("the skipped event is copied");
+    assert_eq!(copied["seq"], serde_json::json!(tip + 1));
+    assert_eq!(copied["session_id"], serde_json::json!(fork));
+    assert_eq!(
+        copied["payload"]["file"]["sha256"],
+        serde_json::json!(part_digest)
+    );
+    for digest in [&part_digest, &uri_digest] {
+        reopened
+            .read_artifact(fork, digest, None, 0, 1)
+            .expect("the fork's tree holds the artifact");
+    }
+    reopened.shutdown().await;
+}
+
 /// A revert deletes the artifacts only the cut events referenced, and keeps
 /// what an earlier event or a subagent of the same tree still references.
 #[tokio::test]

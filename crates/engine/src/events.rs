@@ -220,6 +220,9 @@ struct EventStorage {
     /// known (a buffered log published without one, or after a failed
     /// write); a cut then scans the file.
     lines: Option<LineIndex>,
+    /// The bytes of the lines the log was read from; empty for a log built
+    /// in memory.
+    raw: Arc<RawLines>,
 }
 
 /// Byte offsets of the sequenced lines of an event file, in file order.
@@ -256,6 +259,76 @@ impl LineIndex {
     }
 }
 
+/// The lines a log was read from, as the bytes that were read: what this
+/// build did not fully understand survives a rewrite of the log (a fork),
+/// and artifact liveness sees every member of every record, known or not.
+/// The buffer is the one the file was read into, shared and never copied.
+#[derive(Clone, Default)]
+pub(crate) struct RawLines {
+    buffer: Arc<Vec<u8>>,
+    /// Every sequenced line read, ascending by sequence.
+    lines: Vec<RawLine>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RawLine {
+    seq: u64,
+    start: usize,
+    end: usize,
+    /// Whether the log holds the line's record exactly as it reads. A line
+    /// skipped, quarantined, or degraded is not: a rewrite copies its bytes.
+    understood: bool,
+}
+
+impl std::fmt::Debug for RawLines {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RawLines")
+            .field("bytes", &self.buffer.len())
+            .field("lines", &self.lines.len())
+            .finish()
+    }
+}
+
+impl RawLines {
+    fn bytes(&self, line: &RawLine) -> &[u8] {
+        &self.buffer[line.start..line.end]
+    }
+
+    fn get(&self, seq: u64) -> Option<&RawLine> {
+        self.lines
+            .binary_search_by_key(&seq, |line| line.seq)
+            .ok()
+            .map(|index| &self.lines[index])
+    }
+
+    /// The lines through `through_seq`, sharing the buffer.
+    fn through(&self, through_seq: u64) -> Self {
+        let kept = self.lines.partition_point(|line| line.seq <= through_seq);
+        Self {
+            buffer: Arc::clone(&self.buffer),
+            lines: self.lines[..kept].to_vec(),
+        }
+    }
+
+    fn truncate(&mut self, through_seq: u64) {
+        let kept = self.lines.partition_point(|line| line.seq <= through_seq);
+        self.lines.truncate(kept);
+    }
+
+    /// Notes that the record at `seq` was left out after all.
+    fn forget(&mut self, seq: u64) {
+        if let Ok(index) = self.lines.binary_search_by_key(&seq, |line| line.seq) {
+            self.lines[index].understood = false;
+        }
+    }
+
+    /// The lines a rewrite copies as bytes, in order.
+    fn misunderstood(&self) -> impl Iterator<Item = &RawLine> {
+        self.lines.iter().filter(|line| !line.understood)
+    }
+}
+
 fn is_model_turn(event: &StoredEvent) -> bool {
     matches!(event.payload, EventPayload::ModelTurnCommitted { .. })
 }
@@ -268,14 +341,16 @@ impl EventStorage {
             index: EventIndex::default(),
             physical_model_turns,
             lines: None,
+            raw: Arc::default(),
         };
         storage.rebuild_index();
         storage
     }
 
-    fn with_lines(all: Vec<Arc<StoredEvent>>, lines: LineIndex) -> Self {
+    fn with_lines(all: Vec<Arc<StoredEvent>>, lines: LineIndex, raw: RawLines) -> Self {
         let mut storage = Self::new(all);
         storage.lines = Some(lines);
+        storage.raw = Arc::new(raw);
         storage
     }
 
@@ -291,6 +366,7 @@ impl EventStorage {
         if let Some(lines) = &mut self.lines {
             lines.truncate(through_seq);
         }
+        Arc::make_mut(&mut self.raw).truncate(through_seq);
         Arc::make_mut(&mut self.all).retain(|event| event.seq <= through_seq);
         self.physical_model_turns =
             self.all.iter().filter(|event| is_model_turn(event)).count() as u64;
@@ -586,13 +662,20 @@ impl EventLog {
         }
         let mut diagnostics = loaded.diagnostics;
         let mut taint = loaded.validation_taint;
-        let (records, validation) =
-            validate_loaded(&path, session_id, records, &mut taint, &mut diagnostics)?;
+        let ValidatedLoad {
+            records,
+            validation,
+            quarantined,
+        } = validate_loaded(&path, session_id, records, &mut taint, &mut diagnostics)?;
+        let mut raw = loaded.raw;
+        for seq in quarantined {
+            raw.forget(seq);
+        }
         Ok(Arc::new(Self {
             path,
             session_id,
             append: Mutex::new(()),
-            events: Mutex::new(EventStorage::with_lines(records, loaded.lines)),
+            events: Mutex::new(EventStorage::with_lines(records, loaded.lines, raw)),
             diagnostics,
             initial_validation_taint: Mutex::new(taint),
             validation: Mutex::new(validation),
@@ -643,12 +726,20 @@ impl EventLog {
         // A prefix of a log that validated, so its records hold no
         // duplicates and pass again under the same damage.
         let validation = rebuild_validation(&path, session_id, &records, &taint)?;
-        let next_seq = records.last().map_or(1, |record| record.seq + 1);
+        // The lines the source did not fully understand come along as bytes.
+        let raw = source.storage().raw.through(through_seq);
+        let next_seq = records
+            .last()
+            .map(|record| record.seq)
+            .max(raw.lines.last().map(|line| line.seq))
+            .map_or(1, |seq| seq + 1);
+        let mut storage = EventStorage::new(records);
+        storage.raw = Arc::new(raw);
         Ok(Arc::new(Self {
             path,
             session_id,
             append: Mutex::new(()),
-            events: Mutex::new(EventStorage::new(records)),
+            events: Mutex::new(storage),
             diagnostics: Vec::new(),
             initial_validation_taint: Mutex::new(taint),
             validation: Mutex::new(validation),
@@ -845,6 +936,50 @@ impl EventLog {
         events.push(event.clone());
         self.next_seq.store(event.seq + 1, Ordering::Release);
         Ok(event)
+    }
+
+    /// Writes the log whole as the content of the new file at `path` (a
+    /// fork, or a buffered session's first persistence) and syncs it once,
+    /// returning its layout for [`Self::mark_written`]. Records are
+    /// serialized; the lines the log read but did not fully understand are
+    /// copied as they were read. The caller syncs the directory.
+    pub(crate) fn write_whole(&self, path: &Path) -> Result<LineIndex, EventLogError> {
+        let (events, raw) = {
+            let storage = self.storage();
+            (storage.snapshot(), Arc::clone(&storage.raw))
+        };
+        crate::blocking::off_worker(|| {
+            write_event_jsonl_in_place(path, self.session_id, &events, &raw)
+        })
+    }
+
+    /// Calls `visit` with the JSON of every line of the log whose sequence is
+    /// in `seqs`: a line read from disk as its bytes, which hold whatever this
+    /// build did not decode (a skipped event, an unknown member), and a record
+    /// written since as it serializes.
+    pub(crate) fn visit_json(
+        &self,
+        seqs: impl std::ops::RangeBounds<u64>,
+        mut visit: impl FnMut(&Value),
+    ) -> Result<(), EventLogError> {
+        let (events, raw) = {
+            let storage = self.storage();
+            (storage.snapshot(), Arc::clone(&storage.raw))
+        };
+        let json_error = |source| EventLogError::Json {
+            path: self.path.clone(),
+            source,
+        };
+        for line in raw.lines.iter().filter(|line| seqs.contains(&line.seq)) {
+            visit(&serde_json::from_slice::<Value>(raw.bytes(line)).map_err(json_error)?);
+        }
+        for event in events
+            .iter()
+            .filter(|event| seqs.contains(&event.seq) && raw.get(event.seq).is_none())
+        {
+            visit(&serde_json::to_value(event.as_ref()).map_err(json_error)?);
+        }
+        Ok(())
     }
 
     /// The first state event of a type this build does not know, if the log
@@ -1963,16 +2098,17 @@ const MAX_QUARANTINE_DIAGNOSTICS: usize = 64;
 /// is tainted as a skipped record's is (so the records that depend on it are
 /// excused the same way), and a diagnostic names it. Only `session_created`
 /// cannot be quarantined. Returns the records kept, their validation state,
-/// and adds the quarantined records' taint to `taint`, which later
-/// validation starts from.
+/// and the quarantined sequences, and adds the quarantined records' taint
+/// to `taint`, which later validation starts from.
 fn validate_loaded(
     path: &Path,
     session_id: SessionId,
     records: Vec<Arc<StoredEvent>>,
     taint: &mut ValidationTaint,
     diagnostics: &mut Vec<EventLoadDiagnostic>,
-) -> Result<(Vec<Arc<StoredEvent>>, ValidationState), EventLogError> {
+) -> Result<ValidatedLoad, EventLogError> {
     let mut refused = duplicate_records(&records).into_iter().peekable();
+    let mut quarantined_seqs = Vec::new();
     let mut accepted: Vec<Arc<StoredEvent>> = Vec::with_capacity(records.len());
     let mut state = ValidationState::new(taint.clone());
     let mut quarantined = 0_usize;
@@ -1994,6 +2130,7 @@ fn validate_loaded(
             Err(error) => error,
         };
         quarantined += 1;
+        quarantined_seqs.push(record.seq);
         if quarantined <= MAX_QUARANTINE_DIAGNOSTICS {
             diagnostics.push(EventLoadDiagnostic {
                 seq: record.seq,
@@ -2029,7 +2166,19 @@ fn validate_loaded(
             skipped: false,
         });
     }
-    Ok((accepted, state))
+    Ok(ValidatedLoad {
+        records: accepted,
+        validation: state,
+        quarantined: quarantined_seqs,
+    })
+}
+
+/// What [`validate_loaded`] keeps of a log.
+struct ValidatedLoad {
+    records: Vec<Arc<StoredEvent>>,
+    validation: ValidationState,
+    /// The sequences of the quarantined records.
+    quarantined: Vec<u64>,
 }
 
 /// The validation state of records that already passed [`validate_loaded`]
@@ -2967,6 +3116,7 @@ struct LoadedEvents {
     records: Vec<StoredEvent>,
     /// Why the log is render-only, if it is.
     render_only: Option<RenderOnly>,
+    raw: RawLines,
     lines: LineIndex,
     /// The file ended in a partial record, cut or ignored per [`TornTail`].
     torn_tail: bool,
@@ -3072,6 +3222,16 @@ fn load_event_jsonl_in_place(
         len: bytes.len() as u64,
     };
     let line_start = |line: &[u8]| (line.as_ptr() as usize - bytes.as_ptr() as usize) as u64;
+    let raw_line = |seq: u64, line: &[u8], understood: bool| {
+        let start = line.as_ptr() as usize - bytes.as_ptr() as usize;
+        RawLine {
+            seq,
+            start,
+            end: start + line.len(),
+            understood,
+        }
+    };
+    let mut raw = Vec::new();
     let mut records = Vec::new();
     let mut diagnostics = Vec::new();
     let mut validation_taint = ValidationTaint::default();
@@ -3096,6 +3256,7 @@ fn load_event_jsonl_in_place(
                 break;
             }
             lines.starts.push((event.seq, line_start(line)));
+            raw.push(raw_line(event.seq, line, true));
             records.push(event);
             continue;
         }
@@ -3153,6 +3314,8 @@ fn load_event_jsonl_in_place(
                 break;
             }
             lines.starts.push((seq, line_start(line)));
+            // Understood only once its record is taken as it reads.
+            raw.push(raw_line(seq, line, false));
         }
         // Envelope members this build does not know are ignored, on the
         // first line too: they carry what a newer build added.
@@ -3259,7 +3422,11 @@ fn load_event_jsonl_in_place(
         };
         match event {
             Ok(event) => {
-                if !degraded.is_empty() {
+                if degraded.is_empty() {
+                    if let Some(line) = raw.last_mut().filter(|line| line.seq == event.seq) {
+                        line.understood = true;
+                    }
+                } else {
                     diagnostics.push(EventLoadDiagnostic {
                         seq,
                         reason: format!("degraded optional fields: {}", degraded.join(", ")),
@@ -3303,6 +3470,10 @@ fn load_event_jsonl_in_place(
     Ok(LoadedEvents {
         records,
         render_only,
+        raw: RawLines {
+            buffer: Arc::new(bytes),
+            lines: raw,
+        },
         lines,
         torn_tail: torn,
         diagnostics,
@@ -3669,20 +3840,21 @@ pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<(), EventLog
 }
 
 /// Writes `events` as the content of the new log at `path` through one
-/// buffered writer and syncs the file once. The caller syncs the directory
-/// that holds it.
-pub(crate) fn write_event_jsonl<'a>(
+/// buffered writer and syncs the file once. Each record is serialized,
+/// except where `raw` keeps the bytes of a line the log did not fully
+/// understand (skipped, quarantined, or degraded): those are copied, under
+/// `session_id`. The caller syncs the directory that holds it.
+fn write_event_jsonl_in_place(
     path: &Path,
-    events: impl IntoIterator<Item = &'a StoredEvent>,
-) -> Result<LineIndex, EventLogError> {
-    crate::blocking::off_worker(|| write_event_jsonl_in_place(path, events))
-}
-
-fn write_event_jsonl_in_place<'a>(
-    path: &Path,
-    events: impl IntoIterator<Item = &'a StoredEvent>,
+    session_id: SessionId,
+    events: &[Arc<StoredEvent>],
+    raw: &RawLines,
 ) -> Result<LineIndex, EventLogError> {
     let io_error = |source| EventLogError::Io {
+        path: path.to_owned(),
+        source,
+    };
+    let json_error = |source| EventLogError::Json {
         path: path.to_owned(),
         source,
     };
@@ -3696,21 +3868,55 @@ fn write_event_jsonl_in_place<'a>(
     let mut writer = io::BufWriter::new(options.open(path).map_err(io_error)?);
     let mut lines = LineIndex::default();
     let mut record = Vec::new();
-    for event in events {
+    let mut copied = raw.misunderstood().peekable();
+    let mut events = events.iter().peekable();
+    loop {
+        let next_copied = copied.peek().map(|line| line.seq);
+        let next_event = events.peek().map(|event| event.seq);
+        let seq = match (next_copied, next_event) {
+            (None, None) => break,
+            (Some(copied), Some(event)) => copied.min(event),
+            (Some(seq), None) | (None, Some(seq)) => seq,
+        };
         record.clear();
-        serde_json::to_writer(&mut record, event).map_err(|source| EventLogError::Json {
-            path: path.to_owned(),
-            source,
-        })?;
+        if next_copied == Some(seq) {
+            let line = copied.next().expect("peeked line");
+            copy_raw_line(raw.bytes(line), session_id, &mut record).map_err(json_error)?;
+            // A degraded record is written as it was read.
+            events.next_if(|event| event.seq == seq);
+        } else {
+            let event = events.next().expect("peeked event");
+            serde_json::to_writer(&mut record, event.as_ref()).map_err(json_error)?;
+        }
         record.push(b'\n');
         writer.write_all(&record).map_err(io_error)?;
-        lines.push(Some(event.seq), record.len() as u64);
+        lines.push(Some(seq), record.len() as u64);
     }
     let file = writer
         .into_inner()
         .map_err(|error| io_error(error.into_error()))?;
     file.sync_all().map_err(io_error)?;
     Ok(lines)
+}
+
+/// Appends `line` to `record`, with its envelope's `session_id` set to
+/// `session_id` when it names another session (a fork's copy).
+fn copy_raw_line(
+    line: &[u8],
+    session_id: SessionId,
+    record: &mut Vec<u8>,
+) -> Result<(), serde_json::Error> {
+    let mut value = serde_json::from_slice::<Value>(line)?;
+    let session = serde_json::to_value(session_id)?;
+    match value.get_mut("session_id") {
+        Some(current) if *current == session => record.extend_from_slice(line),
+        Some(current) => {
+            *current = session;
+            serde_json::to_writer(record, &value)?;
+        }
+        None => record.extend_from_slice(line),
+    }
+    Ok(())
 }
 
 #[cfg(unix)]

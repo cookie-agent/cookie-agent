@@ -4035,3 +4035,83 @@ fn size_caps_bound_writers_and_not_what_a_log_already_holds() {
         .is_err()
     );
 }
+
+#[test]
+fn a_rewrite_copies_degraded_and_quarantined_lines_as_they_were_read() {
+    let (mut records, mut start, termination) = tool_call_records();
+    let session = records[0].session_id;
+    if let EventPayload::ToolCallStarted { start } = &mut start.payload {
+        start.owner.content_index = 7;
+    }
+    records.push(start);
+    records.push(termination);
+    let mut values = records
+        .iter()
+        .map(|record| serde_json::to_value(record).expect("record"))
+        .collect::<Vec<_>>();
+    // A degraded optional member, and a member this build does not know in
+    // a record it otherwise reads.
+    values[3]["payload"]["turn"]["usage"]["input_tokens"] = serde_json::json!("many");
+    values[5]["payload"]["error"]["future"] = serde_json::json!({"kept": true});
+    values.push(serde_json::json!({
+        "session_id": session,
+        "run_id": null,
+        "seq": 7,
+        "timestamp": jiff::Timestamp::new(7, 0).unwrap(),
+        "skippable": true,
+        "payload": {"type": "future_audit", "note": 1},
+    }));
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("events.jsonl");
+    write_event_values(&path, &values);
+    let source = EventLog::open(path, session).expect("open");
+    assert_eq!(
+        source
+            .event_snapshot()
+            .iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 6]
+    );
+
+    let authority = WriteAuthority::new();
+    let fork_id = SessionId(Uuid::from_u128(4242));
+    let fork_path = directory.path().join("fork.jsonl");
+    let fork = EventLog::fork_buffered(
+        fork_path.clone(),
+        fork_id,
+        &source,
+        7,
+        authority.capability(),
+    )
+    .expect("fork");
+    assert_eq!(fork.physical_tip_seq(), 7);
+    fork.write_whole(&fork_path).expect("write the fork");
+    let written = fs::read_to_string(&fork_path)
+        .expect("read the fork")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("line"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        written
+            .iter()
+            .map(|line| line["seq"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 5, 6, 7]
+    );
+    for (line, original) in written.iter().zip(&values) {
+        assert_eq!(line["session_id"], serde_json::json!(fork_id));
+        let mut expected = original.clone();
+        expected["session_id"] = serde_json::json!(fork_id);
+        match line["seq"].as_u64() {
+            // The degraded turn, the quarantined start, and the skipped event
+            // are copied as they were read.
+            Some(4 | 5 | 7) => assert_eq!(line, &expected),
+            // A record read in full is written as this build serializes it.
+            Some(6) => assert!(line["payload"]["error"].get("future").is_none()),
+            _ => {}
+        }
+    }
+    let reopened = EventLog::open(fork_path, fork_id).expect("the fork opens");
+    assert_eq!(reopened.physical_tip_seq(), 7);
+}

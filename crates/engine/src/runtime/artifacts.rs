@@ -145,11 +145,26 @@ mod verified_bytes_cache_tests {
     }
 }
 
-fn collect_artifact_references(value: &serde_json::Value, live: &mut HashSet<String>) {
+const ARTIFACT_URI_PREFIX: &str = "artifact://sha256/";
+
+/// Adds every artifact `value` names, the one scan of stored JSON for what
+/// keeps an artifact alive: each `artifact://sha256/<digest>` in its strings,
+/// a mention inside longer text included, and each [`ArtifactRef`] object
+/// (`sha256`, `byte_length`, `media_type`), such as a user file part. For
+/// deciding what to keep, a superset of the references is the safe side.
+///
+/// [`ArtifactRef`]: cookie_agent_protocol::ArtifactRef
+pub(crate) fn collect_artifact_references(value: &serde_json::Value, live: &mut HashSet<String>) {
     match value {
-        serde_json::Value::String(value) => {
-            if let Some(digest) = artifact_uri_digest(value) {
-                live.insert(digest.to_owned());
+        serde_json::Value::String(text) => {
+            for (index, _) in text.match_indices(ARTIFACT_URI_PREFIX) {
+                if let Some(digest) = text
+                    .get(index + ARTIFACT_URI_PREFIX.len()..)
+                    .and_then(|rest| rest.get(..64))
+                    .filter(|digest| is_digest_name_common(digest))
+                {
+                    live.insert(digest.to_owned());
+                }
             }
         }
         serde_json::Value::Array(values) => {
@@ -157,19 +172,22 @@ fn collect_artifact_references(value: &serde_json::Value, live: &mut HashSet<Str
                 collect_artifact_references(value, live);
             }
         }
-        serde_json::Value::Object(values) => {
-            for value in values.values() {
+        serde_json::Value::Object(members) => {
+            if let Some(digest) = members
+                .get("sha256")
+                .and_then(serde_json::Value::as_str)
+                .filter(|digest| is_digest_name_common(digest))
+                && members.contains_key("byte_length")
+                && members.contains_key("media_type")
+            {
+                live.insert(digest.to_owned());
+            }
+            for value in members.values() {
                 collect_artifact_references(value, live);
             }
         }
         _ => {}
     }
-}
-
-fn artifact_uri_digest(value: &str) -> Option<&str> {
-    value
-        .strip_prefix("artifact://sha256/")
-        .filter(|digest| is_digest_name_common(digest))
 }
 
 pub(crate) fn is_digest_name_common(name: &str) -> bool {
@@ -1175,26 +1193,17 @@ impl SessionArtifacts<'_> {
     }
 }
 
-/// Adds every `artifact://sha256/<digest>` the events mention. The scan runs
-/// over each event's serialized JSON, which spells these URIs out literally, so
-/// a mention inside longer text counts too: for deciding what to keep, a
-/// superset of the references is the safe side.
-pub(crate) fn artifact_references_in_events<'a>(
-    events: impl IntoIterator<Item = &'a cookie_agent_protocol::StoredEvent>,
+/// Adds every artifact the lines of `log` in `seqs` reference
+/// ([`collect_artifact_references`]). The lines the log was read from are
+/// scanned as they were read, so a record this build skipped, or a member
+/// it does not know, keeps what it names alive too.
+pub(crate) fn artifact_references_in_log(
+    log: &crate::events::EventLog,
+    seqs: impl std::ops::RangeBounds<u64>,
     references: &mut HashSet<String>,
 ) -> std::io::Result<()> {
-    const PREFIX: &str = "artifact://sha256/";
-    for event in events {
-        let line = serde_json::to_string(event).map_err(std::io::Error::other)?;
-        for (index, _) in line.match_indices(PREFIX) {
-            if let Some(digest) = line.get(index + PREFIX.len()..index + PREFIX.len() + 64)
-                && is_digest_name_common(digest)
-            {
-                references.insert(digest.to_owned());
-            }
-        }
-    }
-    Ok(())
+    log.visit_json(seqs, |value| collect_artifact_references(value, references))
+        .map_err(std::io::Error::other)
 }
 
 #[cfg(test)]
