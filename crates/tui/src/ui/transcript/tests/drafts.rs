@@ -543,6 +543,34 @@ async fn new_from_delegated_session_renders_and_submits_root_agent_candidates() 
 }
 
 #[tokio::test]
+async fn a_chosen_runtime_attaches_its_own_workspace_capability() {
+    let mut app = test_app().await;
+    app.cwd = Some("/home/me/repo".into());
+    let shell = || cookie_agent_protocol::CapabilityName::new("shell").expect("capability");
+    app.client_capability = Some(shell());
+    // Without a chosen runtime, `local`'s `coding` serves the directory.
+    let local = app.default_coding_runtime().expect("default runtime");
+    assert_eq!(local.runtime_id.as_str(), "local");
+    assert_eq!(
+        local.capability,
+        Some(cookie_agent_protocol::CapabilityName::coding())
+    );
+
+    app.client_runtime = Some("laptop".into());
+    let chosen = app.default_coding_runtime().expect("chosen runtime");
+    assert_eq!(chosen.runtime_id.as_str(), "laptop");
+    assert_eq!(chosen.capability, Some(shell()));
+    assert_eq!(chosen.workspace.as_deref(), Some("/home/me/repo"));
+
+    app.client_capability = None;
+    let offered = app.default_coding_runtime().expect("offered runtime");
+    assert_eq!(
+        offered.capability,
+        Some(cookie_agent_protocol::CapabilityName::coding())
+    );
+}
+
+#[tokio::test]
 async fn descriptor_revisions_are_coherent_and_refresh_revalidates_root_drafts_only() {
     let mut app = test_app().await;
     // The selector names the catalog view the descriptors came from.

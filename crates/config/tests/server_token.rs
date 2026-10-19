@@ -80,6 +80,13 @@ fn the_daemon_url_defaults_to_the_daemon_this_configuration_describes() {
         loaded.runtime.server.client_url(),
         "wss://laptop.example:7419/ws"
     );
+    // The local daemon is the one host and port describe, whatever `url`
+    // names.
+    let both = root(
+        "[server]\nhost = \"localhost\"\nport = 7420\nurl = \"wss://laptop.example:7419/ws\"\n",
+    );
+    let loaded = load_from_user_root(Some(both.path())).expect("both");
+    assert_eq!(loaded.runtime.server.local_url(), "ws://localhost:7420/ws");
 }
 
 #[test]

@@ -166,6 +166,51 @@ async fn bottom_bar_renders_cwd_context_and_narrow_degradation_order() {
 }
 
 #[tokio::test]
+async fn bottom_bar_leads_with_where_the_daemon_runs_and_its_notices_stay_shown() {
+    let mut app = test_app().await;
+    let session = SessionId::new_v7();
+    app.selected = Some(session);
+    app.sessions = vec![session_meta(session)];
+    app.store.sessions.insert(
+        session,
+        SessionState {
+            runtime_attachments: local_workspace_attachments(),
+            ..SessionState::default()
+        },
+    );
+    let unlabelled = rendered_row(&mut app, 100, 24, 23);
+    assert!(!unlabelled.contains("standalone"), "{unlabelled}");
+
+    app.show_connection(crate::ConnectionView {
+        label: Some("standalone".into()),
+        notices: Vec::new(),
+    });
+    let standalone = rendered_row(&mut app, 100, 24, 23);
+    assert!(
+        standalone.trim_start().starts_with("standalone · "),
+        "{standalone}"
+    );
+    assert!(standalone.contains("/workspace"), "{standalone}");
+
+    app.show_connection(crate::ConnectionView {
+        label: Some("127.0.0.1:7419".into()),
+        notices: vec![
+            "The daemon runs 0.5.0, this is 0.6.0; restart the daemon to upgrade.".into(),
+        ],
+    });
+    let attached = rendered_row(&mut app, 100, 24, 23);
+    assert!(
+        attached.trim_start().starts_with("127.0.0.1:7419 · "),
+        "{attached}"
+    );
+    let frame = rendered_frame(&mut app, 100, 24);
+    assert!(
+        frame.contains("NOTICE: The daemon runs 0.5.0, this is 0.6.0"),
+        "{frame}"
+    );
+}
+
+#[tokio::test]
 async fn bottom_bar_working_indicator_tracks_running_queued_and_idle_states() {
     let (mut app, session, run) = app_with_active_run().await;
     app.sessions = vec![session_meta(session)];
