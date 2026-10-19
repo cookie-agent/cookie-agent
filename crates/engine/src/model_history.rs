@@ -58,7 +58,10 @@ pub(crate) fn checkpoint_retained_history<E: Borrow<StoredEvent>>(
         .filter(|event| matches!(event.payload, EventPayload::SkillLoaded { .. }))
         .count();
     let pinned_agent_md = usize::from(!latest_agent_md_events(events).is_empty());
-    let pinned_count = pinned_agent_md.saturating_add(pinned_skills);
+    let pinned_memory = usize::from(latest_memory_turn(events).is_some());
+    let pinned_count = pinned_agent_md
+        .saturating_add(pinned_memory)
+        .saturating_add(pinned_skills);
     let mut history = history.iter();
     let mut retained = history.next().cloned().into_iter().collect::<Vec<_>>();
     retained.extend(
@@ -331,15 +334,18 @@ fn latest_checkpoint<'a>(
     })
 }
 
-fn is_pinned_event(event: &StoredEvent, latest_agent_md_seqs: &[u64], through_seq: u64) -> bool {
+fn is_pinned_event(event: &StoredEvent, latest_pinned_seqs: &[u64], through_seq: u64) -> bool {
     event.seq <= through_seq
         && (matches!(event.payload, EventPayload::SkillLoaded { .. })
-            || latest_agent_md_seqs.contains(&event.seq))
+            || latest_pinned_seqs.contains(&event.seq))
 }
 
-fn latest_agent_md_seqs(events: &[&StoredEvent]) -> Vec<u64> {
+/// The events pinned as the latest of their kind: the current `AGENTS.md`
+/// context and the latest memory snapshot.
+fn latest_pinned_seqs(events: &[&StoredEvent]) -> Vec<u64> {
     latest_agent_md_events(events)
         .iter()
+        .chain(latest_memory_event(events).iter())
         .map(|event| event.seq)
         .collect()
 }
@@ -357,7 +363,7 @@ fn selected_checkpoint_events<'a>(
     close_dependencies: bool,
     mode: CheckpointSelectionMode,
 ) -> Vec<&'a StoredEvent> {
-    let latest_agent_md_seqs = latest_agent_md_seqs(events);
+    let latest_pinned_seqs = latest_pinned_seqs(events);
     let pending_producer_admissions = match mode {
         CheckpointSelectionMode::InternalSummary => GoalProducerProjection::from_events(events)
             .messages
@@ -370,7 +376,7 @@ fn selected_checkpoint_events<'a>(
     let mut selected = events
         .iter()
         .filter(|event| {
-            is_pinned_event(event, &latest_agent_md_seqs, source_through_seq)
+            is_pinned_event(event, &latest_pinned_seqs, source_through_seq)
                 || pending_producer_admissions.contains(&event.seq)
                 || recent_from_seq
                     .is_some_and(|from| (from..=source_through_seq).contains(&event.seq))
@@ -443,6 +449,7 @@ fn close_event_dependencies<'a>(events: &[&'a StoredEvent], selected: &mut Vec<&
 
 fn pinned_history_len(events: &[&StoredEvent]) -> usize {
     usize::from(!latest_agent_md_events(events).is_empty())
+        + usize::from(latest_memory_turn(events).is_some())
         + events
             .iter()
             .filter(|event| matches!(event.payload, EventPayload::SkillLoaded { .. }))
@@ -526,9 +533,9 @@ pub(crate) fn compaction_prefix_history<E: Borrow<StoredEvent>>(
     } else {
         (events.to_vec(), None)
     };
-    let latest_agent_md_seqs = latest_agent_md_seqs(events);
+    let latest_pinned_seqs = latest_pinned_seqs(events);
     visible.retain(|event| {
-        event.seq < recent_from_seq || is_pinned_event(event, &latest_agent_md_seqs, u64::MAX)
+        event.seq < recent_from_seq || is_pinned_event(event, &latest_pinned_seqs, u64::MAX)
     });
     close_event_dependencies(events, &mut visible);
     visible.sort_by_key(|event| event.seq);
@@ -863,6 +870,7 @@ fn assemble_history_with_replay(
             .collect::<Vec<_>>();
         (!loaded.is_empty()).then(|| agent_md_turn(&loaded))
     };
+    let loaded_memory = latest_memory_turn(context_events);
     let mut logical = Vec::<LogicalTurn<'_>>::new();
     let mut submitted = HashMap::<u64, &UserContent>::new();
     let mut pending_model_calls = HashMap::<
@@ -1114,6 +1122,9 @@ fn assemble_history_with_replay(
     if let Some(agent_md) = loaded_agent_md {
         history.push(HistoryTurn::user(user_text(&agent_md)));
     }
+    if let Some(memory) = loaded_memory {
+        history.push(HistoryTurn::user(user_text(&memory)));
+    }
     history.extend(
         loaded_skills
             .into_iter()
@@ -1272,6 +1283,25 @@ fn latest_agent_md_events<'a>(events: &[&'a StoredEvent]) -> Vec<&'a StoredEvent
         .collect::<Vec<_>>();
     latest.reverse();
     latest
+}
+
+/// The latest `memory_loaded` of the log, empty or not.
+fn latest_memory_event<'a>(events: &[&'a StoredEvent]) -> Option<&'a StoredEvent> {
+    events
+        .iter()
+        .rev()
+        .copied()
+        .find(|event| matches!(event.payload, EventPayload::MemoryLoaded { .. }))
+}
+
+/// The memory turn of the latest `memory_loaded`, placed after `AGENTS.md`
+/// and pinned through compaction; none when the latest snapshot is empty
+/// (`docs/site/specs/memory.md` section 7.3).
+fn latest_memory_turn(events: &[&StoredEvent]) -> Option<String> {
+    match &latest_memory_event(events)?.payload {
+        EventPayload::MemoryLoaded { snapshot } => crate::memory::render::snapshot_turn(snapshot),
+        _ => None,
+    }
 }
 
 const AGENT_MD_PREAMBLE: &str = "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# AGENTS.md\nCodebase and user instructions are shown below. Be sure to adhere to these instructions.\nIMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.";

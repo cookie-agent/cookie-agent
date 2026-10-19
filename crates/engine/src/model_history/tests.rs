@@ -2802,3 +2802,141 @@ fn agent_md_replay_keeps_the_latest_event_per_attachment() {
     assert!(rendered.contains("<contents from=\"AGENTS.md\" runtime=\"labpc_api\">\nlabpc rules"));
     assert!(rendered.contains("<contents from=\"AGENTS.md\" runtime=\"local_web\">\nlocal rules"));
 }
+
+fn memory_event(seq: u64, run: RunId, body: Option<&str>) -> StoredEvent {
+    let snapshot = match body {
+        Some(body) => cookie_agent_protocol::MemorySnapshot {
+            delegated: true,
+            agent: Some(cookie_agent_protocol::MemorySnapshotAgent {
+                agent: cookie_agent_protocol::AgentId::new("reviewer").unwrap(),
+                memory: Some(cookie_agent_protocol::MemorySnapshotMemory {
+                    description: "Reviews".into(),
+                    keywords: Vec::new(),
+                    body: body.into(),
+                }),
+                omitted: false,
+            }),
+            ..cookie_agent_protocol::MemorySnapshot::default()
+        },
+        None => cookie_agent_protocol::MemorySnapshot::unavailable(),
+    };
+    event(seq, run, EventPayload::MemoryLoaded { snapshot })
+}
+
+fn agent_md_event(seq: u64, run: RunId, content: &str) -> StoredEvent {
+    event(
+        seq,
+        run,
+        EventPayload::AgentMdLoaded {
+            attachment: cookie_agent_protocol::AttachmentName::new("local").unwrap(),
+            entries: vec![AgentMdEntry {
+                source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
+                content: content.into(),
+                byte_length: content.len() as u64,
+            }],
+        },
+    )
+}
+
+fn skill_loaded_event(seq: u64, run: RunId, body: &str) -> StoredEvent {
+    event(
+        seq,
+        run,
+        EventPayload::SkillLoaded {
+            name: "pinned".into(),
+            rendered_body: body.into(),
+            source_path: "/pinned/SKILL.md".into(),
+            args: String::new(),
+            base_dir: "/pinned".into(),
+            supporting_files: Vec::new(),
+        },
+    )
+}
+
+fn turn_texts(history: &[HistoryTurn]) -> Vec<String> {
+    history
+        .iter()
+        .map(|turn| serde_json::to_string(turn).unwrap())
+        .collect()
+}
+
+#[test]
+fn the_latest_memory_snapshot_sits_after_agent_md_and_before_skills() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store =
+        crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
+    let binding = binding();
+    let run = RunId::new_v7();
+    let mut events = vec![
+        skill_loaded_event(1, run, "pinned skill body"),
+        memory_event(2, run, Some("old lessons")),
+        agent_md_event(3, run, "workspace rules"),
+        memory_event(4, run, Some("current lessons")),
+    ];
+    events.extend(user_events(5, run, "the question"));
+    let history = assemble_model_context(&events, &store, &binding, "system")
+        .unwrap()
+        .history;
+    let turns = turn_texts(&history);
+    assert!(turns[1].contains("workspace rules"), "{turns:?}");
+    assert!(turns[2].contains("# Memory") && turns[2].contains("current lessons"));
+    assert!(turns[3].contains("pinned skill body"));
+    assert!(turns[4].contains("the question"));
+    let encoded = turns.join("\n");
+    assert!(!encoded.contains("old lessons"));
+    assert_eq!(encoded.matches("# Memory").count(), 1);
+
+    // An empty latest snapshot takes the turn away.
+    events.push(memory_event(7, run, None));
+    let history = assemble_model_context(&events, &store, &binding, "system")
+        .unwrap()
+        .history;
+    let encoded = turn_texts(&history).join("\n");
+    assert!(!encoded.contains("# Memory"), "{encoded}");
+}
+
+#[test]
+fn compaction_pins_the_latest_memory_snapshot() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store =
+        crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
+    let binding = binding();
+    let run = RunId::new_v7();
+    let mut events = vec![
+        agent_md_event(1, run, "workspace rules"),
+        memory_event(2, run, Some("pinned lessons")),
+        skill_loaded_event(3, run, "pinned skill body"),
+    ];
+    events.extend(user_events(4, run, "summarized user"));
+    events.extend(user_events(6, run, "tail user"));
+
+    let projected =
+        project_summary_context(&events, &store, &binding, "system", 7, Some(6), "summary")
+            .expect("projection");
+    let turns = turn_texts(&projected.history);
+    assert!(turns[1].contains("workspace rules"), "{turns:?}");
+    assert!(turns[2].contains("pinned lessons"));
+    assert!(turns[3].contains("pinned skill body"));
+    assert!(turns[4].contains("<summary>\\nsummary"));
+    assert!(turns[5].contains("tail user"));
+    assert!(!turns.join("\n").contains("summarized user"));
+
+    events.push(event(
+        8,
+        run,
+        EventPayload::ContextCheckpointCommitted {
+            commit: summary_commit("summary", 1, 7, Some(6), None),
+        },
+    ));
+    let replayed = assemble_model_context(&events, &store, &binding, "system").unwrap();
+    assert_eq!(projected.history, replayed.history);
+
+    // A native checkpoint keeps the pinned turns too.
+    let history = assemble_model_context(&events[..7], &store, &binding, "system")
+        .unwrap()
+        .history;
+    let retained = checkpoint_retained_history(&history, &events[..7], None);
+    let retained = turn_texts(&retained);
+    assert_eq!(retained.len(), 4, "{retained:?}");
+    assert!(retained[2].contains("pinned lessons"));
+}

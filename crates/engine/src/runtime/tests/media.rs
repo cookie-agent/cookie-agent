@@ -1052,7 +1052,8 @@ async fn an_image_in_history_reaches_a_text_only_model_as_a_placeholder() {
         "[image omitted: custom.test/group/fallback does not accept images (pixel.png, {} B)]",
         bytes.len()
     );
-    let user = &second["messages"][0];
+    // The memory snapshot comes first.
+    let user = &second["messages"][1];
     assert!(
         user["content"]
             .as_array()

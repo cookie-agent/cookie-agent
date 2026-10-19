@@ -33,7 +33,7 @@ fn tool_error(error: impl std::fmt::Display) -> crate::ToolError {
 
 /// How clients show a call of a base tool: `title`, `hint`, `primary` beside
 /// the title, and the call's arguments as `entries`.
-fn base_presentation(
+pub(crate) fn base_presentation(
     title: &str,
     hint: &str,
     primary: &str,
@@ -52,7 +52,7 @@ fn base_presentation(
 const MAX_MARKDOWN_DISPLAY_BYTES: usize = 48 * 1024;
 
 /// `text` as a result's `markdown` display.
-fn markdown_display(
+pub(crate) fn markdown_display(
     text: &str,
 ) -> Vec<cookie_agent_protocol::Open<cookie_agent_protocol::DisplayBlock>> {
     if text.is_empty() {

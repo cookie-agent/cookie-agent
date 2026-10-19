@@ -953,7 +953,7 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
     let (mut fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
             &endpoint,
-            "---\ndescription: Recent-tail compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest recent-tail compaction.\n",
+            "---\ndescription: Recent-tail compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny }\n---\nTest recent-tail compaction.\n",
             None,
             None,
             false,
@@ -1235,7 +1235,7 @@ async fn compaction_full_history_preserves_eligible_reasoning_and_recent_tail() 
         AnthropicReplayResponse::Text("checkpoint summary"),
     ])
     .await;
-    let primary = "---\ndescription: Replay compaction regression\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest replay compaction.\n";
+    let primary = "---\ndescription: Replay compaction regression\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny }\n---\nTest replay compaction.\n";
     let capabilities =
         ANTHROPIC_REPLAY_CAPABILITIES.replace("context_tokens = 4096", "context_tokens = 8192");
     let (mut fixture, selection) = custom_fixture_with_capabilities(

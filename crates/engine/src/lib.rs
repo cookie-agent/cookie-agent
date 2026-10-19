@@ -12,6 +12,7 @@ pub mod grant_journal;
 mod machines;
 mod media;
 mod memory;
+mod memory_tools;
 mod model_bridge;
 mod model_history;
 mod model_policy;
@@ -36,6 +37,7 @@ pub use cookie_agent_mcp::{McpRegistry, McpServerState, McpServerStatus};
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
 pub use machines::MachineError;
+pub use memory_tools::memory_tool_specs;
 pub use plugin::{EngineEvent, PluginHookFailure, PluginRegistry};
 pub use runtime::attachments::{SessionRuntimeRequest, SessionRuntimes};
 pub use runtime::configuration::{

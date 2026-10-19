@@ -638,6 +638,14 @@ impl Engine {
                 }
             }
         }
+        if let Err(error) = self
+            .refresh_memory_snapshot(params.session_id, run_id, &active.policy)
+            .await
+        {
+            return Err(self
+                .terminalize_run_setup_failure(&active, run_id, error)
+                .await);
+        }
         for message in injected_messages {
             if let Err(error) = self
                 .append(

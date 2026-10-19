@@ -31,6 +31,11 @@ block under the system prompt in the TUI transcript.
 | [`goal_update`](#goal_update) | *none* |
 | [`read_artifact`](#read_artifact) | *none* |
 | [`stop_background`](#stop_background) | *none* |
+| [`memory_search`](#memory_search) | *none* |
+| [`memory_read`](#memory_read) | `memory` |
+| [`memory_write`](#memory_write) | `memory_write` |
+| [`memory_edit`](#memory_edit) | `memory_write` |
+| [`memory_delete`](#memory_delete) | `memory_write` |
 
 ## `read`
 
@@ -648,6 +653,286 @@ Stop a call running in the background. It returns once the call has ended; its <
         "job"
       ],
       "title": "StopBackgroundArgs",
+      "type": "object"
+    }
+    ```
+
+## `memory_search`
+
+```text
+memory_search(layer?: "user" | "agent" | "machine" | "project", limit?: integer, query: string)
+```
+
+Description sent to the model:
+
+```text
+Search memory: notes saved in earlier sessions about the user, agents, machines, and projects. Terms are matched case-insensitively against each memory's keywords, name, description, and body; results are ranked by keyword hits first. Results show each memory's URL, description, keywords, and up to three matching lines; a result you need approval to read shows only its URL and description. Search for the project a task belongs to by repository name, remote URL, or directory before starting work. `layer` narrows the search to `user`, `agent`, `machine`, or `project` memories.
+```
+
+Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `memory`. `memory_search` needs no rule of its own: each result is checked against the `memory` rules for its URL instead.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `layer` | `"user" \| "agent" \| "machine" \| "project"` | no | Only search this layer. |
+| `limit` | `integer` | no | The most results to return: 1 to 25. Defaults to 10. |
+| `query` | `string` | yes | Search terms, separated by whitespace: 1 to 200 characters. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$defs": {
+        "LayerArg": {
+          "description": "The layer a search narrows to.",
+          "enum": [
+            "user",
+            "agent",
+            "machine",
+            "project"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "layer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LayerArg"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only search this layer."
+        },
+        "limit": {
+          "description": "The most results to return: 1 to 25. Defaults to 10.",
+          "format": "uint32",
+          "maximum": 25,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "query": {
+          "description": "Search terms, separated by whitespace: 1 to 200 characters.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "title": "SearchArgs",
+      "type": "object"
+    }
+    ```
+
+## `memory_read`
+
+```text
+memory_read(url: string)
+```
+
+Description sent to the model:
+
+```text
+Read one memory whole by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns its description, keywords, body, and revision; send the revision to memory_write, memory_edit, or memory_delete to change it.
+```
+
+Only when the session has the `global` runtime attached and the agent or the session overlay has an `allow` or `ask` rule for `memory`. `memory_search` needs no rule of its own: each result is checked against the `memory` rules for its URL instead.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `url` | `string` | yes | The memory URL. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "description": "The memory URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "ReadArgs",
+      "type": "object"
+    }
+    ```
+
+## `memory_write`
+
+```text
+memory_write(body: string, description: string, keywords: string[], revision?: string, url: string)
+```
+
+Description sent to the model:
+
+```text
+Create or replace one memory. Without `revision` the memory must not exist yet; to replace one, send the revision memory_read returned. Writing the first memory of a project (project://<project>/<name>) creates the project. user:// categories cannot be created, only changed; agent://<agent> may be created only for an existing agent. Give each memory a one-line description and the keywords a later search would use; for a project, include what identifies it across machines: repository names, remote URLs, and `<machine>:<path>` strings for each place the work lives. Never save secrets, credentials, or personal data the user did not ask you to keep. Prefer editing an existing memory over adding a near-duplicate.
+```
+
+Only when `memory_read` is sent too. A delegated run may write only its own agent's memory, `agent://<agent>`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `body` | `string` | yes | The memory's Markdown body; may be empty. |
+| `description` | `string` | yes | One line, 1 to 200 characters, shown in indexes and search results. |
+| `keywords` | `string[]` | yes | Up to 32 keywords of 1 to 64 characters a later search would use. |
+| `revision` | `string` | no | The revision memory_read returned, to replace an existing memory; leave it out to create one. |
+| `url` | `string` | yes | The memory URL. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "The memory's Markdown body; may be empty.",
+          "type": "string"
+        },
+        "description": {
+          "description": "One line, 1 to 200 characters, shown in indexes and search results.",
+          "type": "string"
+        },
+        "keywords": {
+          "description": "Up to 32 keywords of 1 to 64 characters a later search would use.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "revision": {
+          "description": "The revision memory_read returned, to replace an existing memory;\nleave it out to create one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "The memory URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "description",
+        "keywords",
+        "body"
+      ],
+      "title": "WriteArgs",
+      "type": "object"
+    }
+    ```
+
+## `memory_edit`
+
+```text
+memory_edit(new: string, old: string, revision: string, url: string)
+```
+
+Description sent to the model:
+
+```text
+Replace the one occurrence of `old` in a memory's body with `new`, at the revision memory_read returned. Fails when `old` occurs zero or several times; include more context to make it unique. Never save secrets.
+```
+
+Only when `memory_read` is sent too. A delegated run may write only its own agent's memory, `agent://<agent>`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `new` | `string` | yes | Its replacement. |
+| `old` | `string` | yes | Text that occurs exactly once in the body. |
+| `revision` | `string` | yes | The revision memory_read returned. |
+| `url` | `string` | yes | The memory URL. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "new": {
+          "description": "Its replacement.",
+          "type": "string"
+        },
+        "old": {
+          "description": "Text that occurs exactly once in the body.",
+          "type": "string"
+        },
+        "revision": {
+          "description": "The revision memory_read returned.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The memory URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "old",
+        "new",
+        "revision"
+      ],
+      "title": "EditArgs",
+      "type": "object"
+    }
+    ```
+
+## `memory_delete`
+
+```text
+memory_delete(revision: string, url: string)
+```
+
+Description sent to the model:
+
+```text
+Delete one machine:// or project:// memory at the revision memory_read returned. user:// and agent:// memories cannot be deleted. A project disappears with its last memory.
+```
+
+Only when `memory_read` is sent too. A delegated run may write only its own agent's memory, `agent://<agent>`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `revision` | `string` | yes | The revision memory_read returned. |
+| `url` | `string` | yes | The memory URL. |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "description": "The revision memory_read returned.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The memory URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "revision"
+      ],
+      "title": "DeleteArgs",
       "type": "object"
     }
     ```

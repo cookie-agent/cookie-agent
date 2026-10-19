@@ -31,6 +31,16 @@ fn published_names(fixture: &Fixture, session: SessionId, policy: &FrozenRunPoli
         .collect()
 }
 
+/// `policy` without its memory rules, so the `global` runtime's memory
+/// tools stay out of tests about other tools.
+fn without_memory(mut policy: FrozenRunPolicy) -> FrozenRunPolicy {
+    policy.agent.permissions.retain(|rule| {
+        rule.action != cookie_agent_protocol::PermissionAction::MEMORY
+            && rule.action != cookie_agent_protocol::PermissionAction::MEMORY_WRITE
+    });
+    policy
+}
+
 fn test_turn_context(policy: &FrozenRunPolicy) -> Arc<TurnAgentContext> {
     let binding = policy
         .selected_suffix
@@ -152,7 +162,7 @@ fn runtime_id(origin: &ToolOrigin) -> Option<&str> {
 #[tokio::test]
 async fn global_fallback_is_published_alone_and_hidden_behind_the_local_tool() {
     let (fixture, selection) = custom_fixture();
-    let policy = frozen_root_policy(&fixture, &selection);
+    let policy = without_memory(frozen_root_policy(&fixture, &selection));
     let session = fixture
         .engine
         .create_session(selection)
@@ -279,7 +289,7 @@ async fn the_base_layer_is_registered_once_and_has_no_workspace() {
 #[tokio::test]
 async fn colliding_coding_tools_are_prefixed_until_one_attachment_detaches() {
     let (fixture, selection) = custom_fixture();
-    let policy = frozen_root_policy(&fixture, &selection);
+    let policy = without_memory(frozen_root_policy(&fixture, &selection));
     let root = fixture._directory.path();
     let session = fixture
         .engine
@@ -701,7 +711,7 @@ async fn reopening_a_session_starts_its_attached_instances() {
     assert_eq!(labpc.starts.load(std::sync::atomic::Ordering::SeqCst), 0);
     reopened.resume(session).await.expect("resume");
     assert_eq!(labpc.starts.load(std::sync::atomic::Ordering::SeqCst), 1);
-    let policy = frozen_root_policy_for(&reopened, &selection);
+    let policy = without_memory(frozen_root_policy_for(&reopened, &selection));
     let names = reopened
         .published_tool_definitions(session, &policy)
         .expect("composed")

@@ -407,8 +407,8 @@ model sees no memory turn from then on. History renders only the latest
 `memory_loaded` of the log, as one user turn right after the `AGENTS.md`
 turn, and compaction pins it like that turn; the text depends on the event
 alone, so a replay shows exactly what the model saw. The stored event is at
-most 128 KiB of JSON; its rendered text stays within 64 KiB. The memory
-spec gives [the rendered text](../specs/memory.md#74-rendered-text).
+most 128 KiB of JSON; its rendered text stays within 64 KiB. See
+[System Prompt Composition](system-prompt.md#memory-turn).
 
 `diagnostic { source, kind, message, count?, detail? }` is a notice about the
 engine, a plugin, or a runtime: something it turned off, could not do, or

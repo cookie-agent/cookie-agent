@@ -612,7 +612,7 @@ async fn agent_document_can_opt_out_of_agent_md() {
     let (endpoint, captured) = scripted_model_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\ndescription: Lean agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\nagent_md: false\npermissions: {}\n---\nLean prompt.\n",
+        "---\ndescription: Lean agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\nagent_md: false\npermissions: { memory: deny }\n---\nLean prompt.\n",
     );
     assert!(fixture.config.runtime.agent_md.enabled);
     write_private_test_file(

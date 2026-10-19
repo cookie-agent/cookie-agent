@@ -1,5 +1,6 @@
 //! Renders `docs/site/guide/tools.md` from the built-in tool specs: the
-//! local coding runtime's tools and the engine's base layer.
+//! local coding runtime's tools, the engine's base layer, and the `global`
+//! runtime's memory tools.
 //!
 //! The page shows each tool exactly as the engine publishes it to the model.
 //! Regenerate it after changing a tool's name, description, or parameters:
@@ -8,7 +9,7 @@
 use std::fmt::Write as _;
 
 use cookie_agent_coding_runtime::{BuiltinTools, bash::bash_tool_description_for};
-use cookie_agent_engine::base_layer_tool_specs;
+use cookie_agent_engine::{base_layer_tool_specs, memory_tool_specs};
 use cookie_agent_protocol::SessionId;
 use cookie_agent_runtime_api::{SessionToolContext, ToolProvider, ToolSpec, WorkspaceContext};
 use serde_json::Value;
@@ -28,6 +29,7 @@ fn documented_specs() -> Vec<ToolSpec> {
         .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
         .expect("built-in tool specs");
     specs.extend(base_layer_tool_specs(DELEGATE_TARGET_PLACEHOLDER));
+    specs.extend(memory_tool_specs());
     specs
 }
 
@@ -44,6 +46,16 @@ fn availability(name: &str) -> Option<&'static str> {
         }
         "goal_get" | "goal_update" => {
             "Only in a root session whose goal is active or paused when the run starts."
+        }
+        "memory_search" | "memory_read" => {
+            "Only when the session has the `global` runtime attached and the agent or the \
+             session overlay has an `allow` or `ask` rule for `memory`. `memory_search` needs \
+             no rule of its own: each result is checked against the `memory` rules for its \
+             URL instead."
+        }
+        "memory_write" | "memory_edit" | "memory_delete" => {
+            "Only when `memory_read` is sent too. A delegated run may write only its own \
+             agent's memory, `agent://<agent>`."
         }
         "read_artifact" => {
             "Always, whatever the agent's permission rules: it reads only output retained by \

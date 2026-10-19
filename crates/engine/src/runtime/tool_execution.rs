@@ -1145,12 +1145,21 @@ impl Engine {
         let session_projection = self.inner.store.get(session)?;
         let depth = session_depth(&session_projection.meta.origin);
         let delegate_enabled = !policy.delegate_targets(depth).is_empty();
+        // The memory tools follow the snapshot: none at all without a
+        // `memory` rule, whatever `memory_write` rules say.
+        let memory = super::memory_runs::memory_access(
+            true,
+            &policy.agent,
+            Some(&session_projection.permission_overlay),
+        );
         let mut composition = self.compose_session_tools(session, |source, tool| {
             let delegation_tool = tool.permission_name.as_deref() == Some("delegate");
             let goal_tool = source.attachment.is_none()
                 && matches!(tool.name.as_str(), "goal_get" | "goal_update");
+            let memory_tool = source.provider.provider_id() == crate::memory_tools::PROVIDER_ID;
             (!delegation_tool || delegate_enabled)
                 && (!goal_tool || policy.goal_tools_enabled)
+                && (!memory_tool || memory.available)
                 && tool
                     .permission_name
                     .as_deref()

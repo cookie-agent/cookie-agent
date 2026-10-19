@@ -29,21 +29,21 @@ const SEVERAL_ATTACHMENTS: &str = concat!(
 );
 
 /// One attachment the model is told about.
-struct AttachmentFacts {
-    name: AttachmentName,
+pub(super) struct AttachmentFacts {
+    pub(super) name: AttachmentName,
     /// The runtime ID of the runtime serving it.
     runtime: String,
     kind: String,
     workspace: Option<String>,
     platform: Option<String>,
     /// The machine the runtime runs on, when the daemon can name it.
-    machine: Option<MachineName>,
+    pub(super) machine: Option<MachineName>,
 }
 
 impl Engine {
     /// The session's attachments besides `global`, in attach order, with
     /// their platforms and machines.
-    fn attachment_facts(&self, session: SessionId) -> Vec<AttachmentFacts> {
+    pub(super) fn attachment_facts(&self, session: SessionId) -> Vec<AttachmentFacts> {
         let Ok(attachments) = self.session_runtimes(session) else {
             return Vec::new();
         };

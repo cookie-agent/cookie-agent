@@ -101,7 +101,21 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
         .into_iter()
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
-    assert_eq!(tool_names, ["bash", "edit", "read", "write"]);
+    // The memory actions have defaults by mode (memory spec 9.2).
+    assert_eq!(
+        tool_names,
+        [
+            "bash",
+            "edit",
+            "memory_delete",
+            "memory_edit",
+            "memory_read",
+            "memory_search",
+            "memory_write",
+            "read",
+            "write"
+        ]
+    );
     assert!(frozen.permissions.iter().any(|rule| {
         rule.action == PermissionAction::READ
             && rule.resource.as_str() == "store-v3.json"
@@ -227,7 +241,15 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        ["read"]
+        // A primary agent that names no memory rule gets them by default.
+        [
+            "memory_delete",
+            "memory_edit",
+            "memory_read",
+            "memory_search",
+            "memory_write",
+            "read"
+        ]
     );
     assert!(
         !serde_json::to_string(&definitions)
@@ -271,7 +293,18 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             .into_iter()
             .map(|tool| tool.name)
             .collect::<Vec<_>>(),
-        ["bash", "delegate", "edit", "read", "write"]
+        [
+            "bash",
+            "delegate",
+            "edit",
+            "memory_delete",
+            "memory_edit",
+            "memory_read",
+            "memory_search",
+            "memory_write",
+            "read",
+            "write"
+        ]
     );
 }
 
@@ -369,7 +402,16 @@ async fn published_tool_order_is_stable_across_registration_and_overlay_order() 
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        ["alpha", "middle", "zeta"]
+        [
+            "alpha",
+            "memory_delete",
+            "memory_edit",
+            "memory_read",
+            "memory_search",
+            "memory_write",
+            "middle",
+            "zeta"
+        ]
     );
     assert_eq!(
         serde_json::to_value(forward).unwrap(),

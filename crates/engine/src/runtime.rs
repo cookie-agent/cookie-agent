@@ -66,6 +66,7 @@ mod internal_agents;
 mod loop_guard;
 mod machine_api;
 mod mailbox;
+mod memory_runs;
 pub(crate) mod messaging_api;
 mod model_loop;
 mod output_capture;
@@ -995,9 +996,15 @@ impl Engine {
             mcp.reserve_provider(provider.as_ref())
                 .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
         }
+        // The memory tools hold the engine, which they get once it exists.
+        let memory_tools = Arc::new(crate::memory_tools::MemoryTools::new());
+        reserve_provider_id(&mut provider_ids, memory_tools.as_ref())?;
+        mcp.reserve_provider(memory_tools.as_ref())
+            .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
         let plugins = Arc::new(crate::PluginRegistry::new(options.config.plugins.clone()));
         let mut global_providers: Vec<Arc<dyn ToolProvider>> = vec![mcp.clone()];
         global_providers.extend(options.runtimes.global_tools.iter().cloned());
+        global_providers.push(memory_tools.clone());
         // Each plugin's tools compose under the plugin's name.
         global_providers.extend(plugins.tool_providers());
         let runtimes = Arc::new(crate::runtimes::RuntimeRegistry::new(
@@ -1069,6 +1076,7 @@ impl Engine {
                 test_hooks: test_hooks::TestHooks::default(),
             }),
         };
+        memory_tools.bind(&engine);
         // Engine unit tests compose their own base-layer stand-ins.
         #[cfg(not(test))]
         if let Err(error) = engine.register_base_layer() {

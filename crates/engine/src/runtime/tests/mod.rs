@@ -19,6 +19,7 @@ mod hook_failures;
 mod interception;
 mod mailbox;
 mod media;
+mod memory;
 mod messaging;
 mod misc;
 mod model_loop;

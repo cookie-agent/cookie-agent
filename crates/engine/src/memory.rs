@@ -2,21 +2,18 @@
 //! section 4): its advisory lock, its first-start defaults, the machine
 //! memory folders that renaming and merging machines move, and the memory
 //! store: URLs ([`url`]), the file format and revisions ([`file`]), reads,
-//! listings, and changes ([`store`]), and search ([`search`]).
+//! listings, and changes ([`store`]), search ([`search`]), and the snapshot
+//! a session's model sees ([`snapshot`], rendered by [`render`]).
 //!
 //! Every change to memory or to the machine registry holds [`MemoryLock`],
 //! because two plain `cookie` processes are two daemons sharing one data
 //! root. Functions that change folders take the held lock as proof.
 
-// The model and client surfaces of later phases call the store; until then
-// only its tests and the first start do.
-#[allow(dead_code)]
 pub(crate) mod file;
-#[allow(dead_code)]
+pub(crate) mod render;
 pub(crate) mod search;
-#[allow(dead_code)]
+pub(crate) mod snapshot;
 pub(crate) mod store;
-#[allow(dead_code)]
 pub(crate) mod url;
 
 use std::{
