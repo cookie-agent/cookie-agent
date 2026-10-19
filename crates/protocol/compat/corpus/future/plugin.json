@@ -1,0 +1,91 @@
+{
+ "about": "What a newer daemon may send a plugin of this build, in order. Each message is sent to a plugin built with the SDK (crates/plugin_sdk/tests/corpus.rs); a request is answered as `answer` says ({\"error\": code}, or {\"result\": members the result holds}), and the plugin then sees exactly what `sees` lists.",
+ "messages": [
+  {
+   "about": "the handshake of a newer minor, with a feature and members this build does not know",
+   "message": {"jsonrpc": "2.0", "id": 1, "method": "plugin/initialize", "params": {
+    "protocol_version": "1.9.0", "engine_version": "9.0.0", "features": ["teleportation"],
+    "interception_timeout_ms": 2000, "cluster": {"nodes": 3}}},
+   "answer": {"result": {"protocol_version": "1.0.0", "name": "reference"}}
+  },
+  {
+   "about": "a hook whose params carry members this build does not know",
+   "message": {"jsonrpc": "2.0", "id": 2, "method": "plugin/intercept/tool_before_call", "params": {
+    "session_id": "0192f3a4-5b6c-7d8e-9f00-112233445566", "context_id": "future-1", "tool": "read",
+    "origin": {"kind": "mcp", "server": "docs", "transport": "quantum"},
+    "arguments": {"filePath": "notes.txt"}, "permission_name": "read", "resource": "notes.txt",
+    "turn": {"agent": "build"}, "deadline_ms": 500}},
+   "answer": {"result": {"action": "allow"}},
+   "sees": ["hook read mcp"]
+  },
+  {
+   "about": "a hook from a tool origin of a kind this build does not know",
+   "message": {"jsonrpc": "2.0", "id": 3, "method": "plugin/intercept/tool_before_call", "params": {
+    "session_id": "0192f3a4-5b6c-7d8e-9f00-112233445566", "context_id": "future-2", "tool": "beam",
+    "origin": {"kind": "satellite", "orbit": "low"},
+    "arguments": {"text": "forbidden"}, "permission_name": null, "resource": null}},
+   "answer": {"result": {"action": "block"}},
+   "sees": ["hook beam satellite"]
+  },
+  {
+   "about": "an event of a type this build does not know",
+   "message": {"jsonrpc": "2.0", "method": "plugin/event", "params": {
+    "session_id": "0192f3a4-5b6c-7d8e-9f00-112233445566", "context_id": "future-3", "seq": 3,
+    "event": {"type": "weather_changed", "sky": "clear"},
+    "timestamp": "2026-10-18T12:00:00Z", "public": true}},
+   "sees": ["event weather_changed unknown=true"]
+  },
+  {
+   "about": "a known event with an outcome this build does not know and unknown members",
+   "message": {"jsonrpc": "2.0", "method": "plugin/event", "params": {
+    "session_id": "0192f3a4-5b6c-7d8e-9f00-112233445566", "context_id": "future-4", "seq": 4,
+    "event": {"type": "run_finished", "outcome": {"type": "transcended", "by": "the model"}, "duration_ms": 12},
+    "timestamp": "2026-10-18T12:00:01Z"}},
+   "sees": ["event run_finished unknown=false"]
+  },
+  {
+   "about": "a bus event with members this build does not know",
+   "message": {"jsonrpc": "2.0", "method": "plugin/bus_event", "params": {
+    "session_id": "0192f3a4-5b6c-7d8e-9f00-112233445566", "plugin": "other", "name": "indexed",
+    "payload": {"files": 3}, "priority": "high"}},
+   "sees": ["bus other indexed"]
+  },
+  {
+   "about": "a bus event this build cannot read (it has no name) reaches on_unknown",
+   "message": {"jsonrpc": "2.0", "method": "plugin/bus_event", "params": {
+    "session_id": "0192f3a4-5b6c-7d8e-9f00-112233445566", "plugin": "other", "payload": {}}},
+   "sees": ["unknown plugin/bus_event"]
+  },
+  {
+   "about": "a notification this build does not know reaches on_unknown",
+   "message": {"jsonrpc": "2.0", "method": "plugin/weather", "params": {"sky": "clear"}},
+   "sees": ["unknown plugin/weather"]
+  },
+  {
+   "about": "a request this build does not know is refused as an unknown method",
+   "message": {"jsonrpc": "2.0", "id": 4, "method": "plugin/teleport", "params": {"to": "mars"}},
+   "answer": {"error": -32601}
+  },
+  {
+   "about": "a preparation whose turn names media and a delivery this build does not know, with unknown members",
+   "message": {"jsonrpc": "2.0", "id": 5, "method": "tool/prepare", "params": {
+    "session": "0192f3a4-5b6c-7d8e-9f00-112233445566", "run": "0192f3a4-5b6c-7d8e-9f00-112233445577",
+    "turn": {"agent": "primary", "persona": "terse", "model": {
+     "model": "example/model", "adapter": "hologram-chat", "context_tokens": 1000000,
+     "input_media": [{"kind": "hologram", "mime_types": ["model/x-hologram"], "max_bytes": 1024,
+      "delivery": "beam"}]}},
+    "calls": [{"id": "0192f3a4-5b6c-7d8e-9f00-112233445588", "name": "word_count",
+     "arguments": {"text": "one two", "label": "notes.txt"}, "priority": 1}],
+    "batch": {"size": 1}}},
+   "answer": {"result": {}}
+  },
+  {
+   "about": "a release with members this build does not know",
+   "message": {"jsonrpc": "2.0", "method": "tool/release", "params": {"prepared_id": 1, "reason": "superseded"}}
+  },
+  {
+   "about": "a shutdown with members this build does not know",
+   "message": {"jsonrpc": "2.0", "method": "plugin/shutdown", "params": {"grace_ms": 100}}
+  }
+ ]
+}

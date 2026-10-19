@@ -27,7 +27,10 @@
 //! - **`future/*.json`**: what a newer peer may send: unknown members,
 //!   enum values, event tags, display block kinds, methods, and
 //!   notifications, one file per reader: `client.json` (results and
-//!   notifications a client reads). Each file says how its test reads it.
+//!   notifications a client reads), `plugin.json` (what a plugin built with
+//!   the SDK reads), `runtime.json` (what the coding runtime reads), and
+//!   `daemon.json` (handshakes, replies, and notifications of plugins and
+//!   runtimes the daemon reads). Each file says how its test reads it.
 //!   Unlike the recorded corpora they grow as readers learn to tolerate
 //!   more.
 //!
@@ -54,7 +57,10 @@
 //!   [`MACHINE_ID_PLACEHOLDER`]. A replay depends on none of them: a request
 //!   it replays gets the values the replay's own replies handed out in place
 //!   of the recorded ones ([`Substitutions`]), and a replay that runs a
-//!   workspace puts its own directory in place of the placeholder.
+//!   workspace puts its own directory in place of the placeholder. A replay
+//!   of a plugin or runtime conversation ([`play`]) waits before each
+//!   message for the peer's messages that preceded it, so it depends on the
+//!   order the peer sent them in only per method.
 //!
 //! # What the replays prove
 //!
@@ -68,6 +74,13 @@
 //!   result and the recorded notifications as their params, and the
 //!   notifications reach a real [`crate::Client`] without a diagnostic or
 //!   an unknown event.
+//! - `cookie_agent_plugin_sdk` (`tests/corpus.rs`): the daemon's recorded
+//!   plugin messages drive a plugin built with the SDK.
+//! - `cookie_agent_coding_runtime` (`server::corpus_tests`): the daemon's
+//!   recorded runtime messages drive the coding runtime.
+//! - `cookie_agent_engine` (`runtimes::remote::corpus_tests`): the recorded
+//!   plugin and runtime messages decode as the daemon reads them, and their
+//!   handshakes connect.
 //!
 //! Readers tolerate future data: each of those tests also reads its
 //! surface's recorded information with [`add_future_members`] applied, and
@@ -536,5 +549,190 @@ impl<T: Transport> Transport for RecordingTransport<T> {
             self.recording.push(self.remote, frame);
         }
         Ok(frame)
+    }
+}
+
+/// How long a replay waits for the peer's next message. A liveness bound,
+/// not a latency assertion.
+const REPLAY_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// What a peer answered while [`play`] replayed a conversation to it.
+#[derive(Debug, Default)]
+pub struct Played {
+    /// The peer's reply to each request replayed, by the request's ID.
+    pub replies: BTreeMap<String, Value>,
+}
+
+/// The side of `file` that is not `side`.
+fn peer_of<'a>(file: &'a CorpusFile, side: &str) -> &'a str {
+    file.messages
+        .iter()
+        .map(|message| message.from.as_str())
+        .find(|from| *from != side)
+        .unwrap_or_default()
+}
+
+/// Plays `side` of the conversation `file` to a live peer over `stream`.
+///
+/// It sends `side`'s requests and notifications in their recorded order,
+/// with what `substitutions` learned in place of the recorded values and
+/// `transform` applied to their params, and before each waits for the
+/// peer's messages that preceded it in the recording. The peer's own
+/// requests are answered with `side`'s recorded replies to its recorded
+/// requests of the same method, in order, with `transform` applied to their
+/// results. A request `side` sent must be answered as it was: with a result
+/// where the recording has a result (`substitutions` then learns from it),
+/// and with an error of the same code where it has an error.
+///
+/// # Panics
+///
+/// When the peer answers otherwise, sends a request the recording never
+/// answered, or falls silent while the replay waits for it.
+pub async fn play<T: Transport>(
+    file: &CorpusFile,
+    side: &str,
+    mut stream: T,
+    transform: impl Fn(Value) -> Value,
+    substitutions: &mut Substitutions,
+) -> Played {
+    let peer = peer_of(file, side).to_owned();
+    let requests = file.request_methods();
+    let mut answers = BTreeMap::<String, std::collections::VecDeque<Value>>::new();
+    for message in &file.messages {
+        if message.from == side
+            && message.is_reply()
+            && let Some(method) = CorpusFile::replied_method(&requests, &peer, message)
+        {
+            answers
+                .entry(method.to_owned())
+                .or_default()
+                .push_back(message.message.clone());
+        }
+    }
+    let mut peer_state = PeerState {
+        answers,
+        received: BTreeMap::new(),
+        played: Played::default(),
+    };
+    let mut expected = BTreeMap::<String, usize>::new();
+    for message in &file.messages {
+        if message.from == side {
+            if message.is_reply() {
+                continue;
+            }
+            let mut sent = substitutions.apply(&message.message);
+            if let Some(params) = sent.get_mut("params") {
+                *params = transform(params.take());
+            }
+            stream
+                .send(MessageFrame::Value(sent))
+                .await
+                .expect("the peer's connection");
+        } else if message.is_reply() {
+            let id = id_key(message.id());
+            let method = requests
+                .get(&(side.to_owned(), id.clone()))
+                .map_or("?", String::as_str)
+                .to_owned();
+            while !peer_state.played.replies.contains_key(&id) {
+                peer_state
+                    .receive(
+                        &mut stream,
+                        &transform,
+                        &format!("{}: the {peer}'s reply to `{method}`", file.name),
+                    )
+                    .await;
+            }
+            let replayed = &peer_state.played.replies[&id];
+            match (message.message.get("result"), replayed.get("result")) {
+                (Some(recorded), Some(replayed)) => substitutions.learn(recorded, replayed),
+                (Some(_), None) => panic!(
+                    "{}: `{method}` was answered with a result when recorded and is refused now: {}",
+                    file.name, replayed["error"]
+                ),
+                (None, _) => assert_eq!(
+                    (
+                        &replayed["error"]["code"],
+                        &replayed["error"]["data"]["code"]
+                    ),
+                    (
+                        &message.message["error"]["code"],
+                        &message.message["error"]["data"]["code"]
+                    ),
+                    "{}: `{method}` failed differently",
+                    file.name
+                ),
+            }
+        } else {
+            let method = message.method().unwrap_or_default().to_owned();
+            let count = expected.entry(method.clone()).or_default();
+            *count += 1;
+            while peer_state.received.get(&method).copied().unwrap_or(0) < *count {
+                peer_state
+                    .receive(
+                        &mut stream,
+                        &transform,
+                        &format!("{}: the {peer}'s `{method}` #{count}", file.name),
+                    )
+                    .await;
+            }
+        }
+    }
+    peer_state.played
+}
+
+/// What [`play`] tracks of the peer.
+struct PeerState {
+    /// The recorded replies to the peer's requests, by method.
+    answers: BTreeMap<String, std::collections::VecDeque<Value>>,
+    /// The peer's requests and notifications received so far, by method.
+    received: BTreeMap<String, usize>,
+    played: Played,
+}
+
+impl PeerState {
+    /// Receives one message of the peer, which `awaited` names, and answers
+    /// it when it is a request.
+    async fn receive<T: Transport>(
+        &mut self,
+        stream: &mut T,
+        transform: &impl Fn(Value) -> Value,
+        awaited: &str,
+    ) {
+        let frame = tokio::time::timeout(REPLAY_WAIT, stream.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{awaited} never arrived"))
+            .expect("the peer's connection")
+            .unwrap_or_else(|| panic!("the peer closed the connection before {awaited}"));
+        let message: Value =
+            serde_json::from_str(&frame.into_text().expect("a text frame")).expect("a JSON frame");
+        match (
+            message.get("id"),
+            message.get("method").and_then(Value::as_str),
+        ) {
+            (Some(id), Some(method)) => {
+                *self.received.entry(method.to_owned()).or_default() += 1;
+                let mut reply = self
+                    .answers
+                    .get_mut(method)
+                    .and_then(std::collections::VecDeque::pop_front)
+                    .unwrap_or_else(|| {
+                        panic!("the peer sent `{method}`, which the recording never answered")
+                    });
+                reply["id"] = id.clone();
+                if let Some(result) = reply.get_mut("result") {
+                    *result = transform(result.take());
+                }
+                stream
+                    .send(MessageFrame::Value(reply))
+                    .await
+                    .expect("the peer's connection");
+            }
+            (None, Some(method)) => *self.received.entry(method.to_owned()).or_default() += 1,
+            (Some(id), None) => {
+                self.played.replies.insert(id.to_string(), message);
+            }
+            (None, None) => panic!("not a JSON-RPC message: {message}"),
+        }
     }
 }

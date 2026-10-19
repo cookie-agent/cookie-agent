@@ -45,6 +45,7 @@ rustix.workspace = true
 
 [dev-dependencies]
 cookie_agent_coding_runtime = { version = "=0.3.0", path = "../coding_runtime" }
+cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = ["test-support"] }
 cookie_agent_models = { version = "=0.3.0", path = "../models", features = ["test-support"] }
 cookie_agent_runtime_api = { version = "=0.3.0", path = "../runtime_api", features = ["test-support"] }
 insta.workspace = true

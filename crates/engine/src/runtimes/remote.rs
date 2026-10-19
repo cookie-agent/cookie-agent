@@ -1898,4 +1898,6 @@ impl PreparedExecutor for RemoteExecutor {
 }
 
 #[cfg(test)]
+mod corpus_tests;
+#[cfg(test)]
 mod tests;

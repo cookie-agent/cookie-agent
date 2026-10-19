@@ -100,5 +100,50 @@ which refuses an insufficient bump, and commit the result. The update
 replaces only the surface directories; the frozen corpora in
 `crates/protocol/compat/corpus/` are never regenerated.
 
+## Corpora
+
+The baselines show what a schema allows; the corpora in
+`crates/protocol/compat/corpus/` show what peers actually sent, and the tests
+replay them against the current code:
+
+- `<surface>/<version>/*.jsonl`, for `client`, `plugin`, and `runtime`:
+  conversations recorded at that version, one JSON-RPC message per line as
+  `{"from": <side>, "message": <message>}`, in the order they crossed the
+  connection. `client/1.0.0/session.jsonl` is a TUI-like session against a
+  daemon with a scripted model: handshake, catalog, session, subscription,
+  an image upload, a run whose `bash` call waits for approval while two
+  steers arrive, the approval, and reads of the session and the artifact.
+  `runtime/1.0.0/coding.jsonl` is the daemon and its local coding runtime
+  during that session. `plugin/1.0.0/reference.jsonl` is the scripted
+  conversation of `check_reference_plugin.py` with the reference plugin.
+- `future/*.json`: what a newer peer may send each reader: unknown members,
+  enum values, event tags, display block kinds, methods, and notifications.
+
+The replays prove that a new build accepts old data. Recorded client
+requests are answered by a fresh daemon as they were (a session, run,
+upload, or approval ID the replay's own replies hand out replaces the
+recorded one); recorded replies and notifications read with the current
+client without a diagnostic or an unknown event; the daemon's plugin and
+runtime messages drive a plugin built with the Rust SDK and the coding
+runtime; and what plugins and runtimes sent reads as the daemon reads it.
+Each test also reads the recorded information with an unknown member added
+to every object, which must change nothing, and the `future/` fixtures of
+its reader.
+
+A recorded version directory is frozen: the tests check it against a digest
+pinned in `cookie_agent_protocol::corpus::FROZEN` and fail when it changed,
+and no `COOKIE_UPDATE_*` switch applies to it. A later minor records its own
+`<surface>/<version>/` directory beside the earlier ones and pins it. The
+recorders write the current versions and refuse a directory that exists:
+
+```sh
+COOKIE_RECORD_CORPUS=crates/protocol/compat/corpus \
+  cargo test -p cookie_agent_server -- --ignored record_the_client_and_runtime_corpora
+python3 examples/plugins/python/check_reference_plugin.py --record crates/protocol/compat/corpus
+```
+
+The module documentation of `cookie_agent_protocol::corpus` (behind the
+crate's `test-support` feature) lists the tests of every crate.
+
 The [Rust API documentation](api.md) describes the public Rust types; the
 [protocol reference](protocol.md) summarizes the active method surface.

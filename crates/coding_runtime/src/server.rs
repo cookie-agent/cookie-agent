@@ -1244,6 +1244,8 @@ impl std::fmt::Debug for Server {
 }
 
 #[cfg(test)]
+mod corpus_tests;
+#[cfg(test)]
 mod mcp_tests;
 #[cfg(test)]
 mod tests;

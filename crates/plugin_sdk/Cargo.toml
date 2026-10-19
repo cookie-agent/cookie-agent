@@ -22,5 +22,6 @@ tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt", "sy
 tokio-util.workspace = true
 
 [dev-dependencies]
+cookie_agent_protocol = { version = "=0.3.0", path = "../protocol", features = ["test-support"] }
 jiff.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

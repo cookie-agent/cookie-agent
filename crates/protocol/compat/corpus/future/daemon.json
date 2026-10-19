@@ -1,0 +1,141 @@
+{
+ "about": "What a newer plugin or runtime may send the daemon of this build (crates/engine/src/runtimes/remote/corpus_tests.rs). Each handshake must connect, noting only what `notes` lists; each message must read as the daemon reads its method's result (`result`) or params (`params`), a tool/progress replacement losing exactly the blocks of the kinds `drops` lists.",
+ "plugin": {
+  "initialize": {
+   "protocol_version": "1.9.0", "name": "reference", "version": "2.0.0",
+   "features": ["teleportation"], "homepage": "https://example.invalid",
+   "capabilities": {
+    "producer_messaging": true, "subscribe_events": ["run_*", "tool_call_*"],
+    "subscribe_bus": false, "publish_bus": false, "telepathy": true,
+    "intercept": [
+     {"hook": "tool_before_call", "on_error": "block", "priority": 1},
+     {"hook": "before_teleport", "on_error": "allow"},
+     {"hook": "tool_after_result", "on_error": "panic"}
+    ]
+   },
+   "tools": {
+    "tools": [{
+     "name": "word_count", "description": "Count the words and lines of a text.",
+     "permission": "text_read", "collision": "shadow", "icons": ["abacus"],
+     "examples": [{"text": "one two"}],
+     "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
+    }],
+    "prompt_sections": [], "resources": []
+   }
+  },
+  "notes": ["feature `teleportation`", "hook `before_teleport`"],
+  "messages": [
+   {
+    "about": "a preparation whose presentation has a hint and blocks of kinds this build does not know",
+    "method": "tool/prepare",
+    "result": {"results": [{
+     "status": "prepared", "prepared_id": 1, "normalized_arguments": {"text": "one two"},
+     "permission": "text_read", "permission_resource": "text", "cost": 3,
+     "presentation": {"title": "Count words", "hint": "teleport", "primary_argument": "text",
+      "arguments": [{"type": "hologram", "frames": 3}],
+      "preview": [{"type": "text", "text": "Counts words."}, {"type": "hologram", "frames": 1}]}
+    }], "batch": {"size": 1}}
+   },
+   {
+    "about": "an execution whose display holds a block of a kind this build does not know",
+    "method": "tool/execute",
+    "result": {"outcome": {"status": "completed", "output": {"kind": "single", "text": "2 words"},
+     "title": "Counted 2 words", "display": [{"type": "hologram", "frames": 3},
+      {"type": "terminal", "segments": [{"stream": "stdtele", "text": "2\n"}], "exit_code": 0}],
+     "metadata": {"words": 2}, "failed": false, "telemetry": {"cpu_ms": 1}},
+     "media": [], "launched_jobs": []}
+   },
+   {
+    "about": "a hook answer with members this build does not know",
+    "method": "plugin/intercept/tool_before_call",
+    "result": {"action": "allow", "confidence": 0.9}
+   },
+   {
+    "about": "progress whose replacement holds a block of a kind this build does not know",
+    "method": "tool/progress",
+    "params": {"prepared_id": 1, "progress": {
+     "tool_call_id": "0192f3a4-5b6c-7d8e-9f00-112233445588", "message": "counting", "output": [],
+     "display": {"type": "replace", "blocks": [{"type": "text", "text": "Counting"},
+      {"type": "hologram", "frames": 2}]}}},
+    "drops": ["hologram"]
+   },
+   {
+    "about": "a tool declaration change with members this build does not know",
+    "method": "runtime/tools_changed",
+    "params": {"tools": [{"name": "word_count", "description": "Count words.",
+     "parameters": {"type": "object"}, "concurrency": "batched", "result_truncation": "summarize"}],
+     "prompt_sections": [], "reason": "reload"}
+   }
+  ]
+ },
+ "runtime": {
+  "settings": {"agent_md": {"max_bytes": 2097152}, "mcp_servers": [],
+   "tool_output": {"head_lines": 100, "max_bytes": 12800, "max_lines": 500, "tail_lines": 100}},
+  "initialize": {
+   "protocol_version": "1.9.0", "features": ["teleportation"], "platform": "linux",
+   "producer_messaging": false, "cluster": {"nodes": 3},
+   "capabilities": [{"name": "coding", "kind": "coding", "takes_workspace": true,
+    "description": "Read, write, edit, and run commands in a workspace", "quota": 3}]
+  },
+  "capability": "coding",
+  "workspace": "/cookie-corpus/workspace",
+  "open": {
+   "instance": "coding_1", "attachment_name": "local_workspace", "workspace": "/cookie-corpus/workspace",
+   "mcp_servers": [], "region": "eu",
+   "skills": {"skills": [], "discoveries": [], "sources": []},
+   "tools": {"prompt_sections": [], "tools": [{
+    "name": "bash", "description": "Run a command.", "permission": "bash",
+    "collision": "shadow", "concurrency": "batched", "result_truncation": "summarize",
+    "output": {"kind": "named", "streams": ["stdout", "stderr"]}, "sandbox": "strict",
+    "parameters": {"type": "object", "properties": {"command": {"type": "string"}}}
+   }]}
+  },
+  "messages": [
+   {
+    "about": "a context reply with members this build does not know",
+    "method": "runtime/context",
+    "result": {"agent_md": [], "skipped": [], "rules": []}
+   },
+   {
+    "about": "a preparation with an error kind and members this build does not know",
+    "method": "tool/prepare",
+    "result": {"results": [{
+     "status": "failed", "error": {"kind": "quota_exceeded", "message": "no", "retry_after": 3},
+     "presentation": {"title": "bash", "primary_argument": null, "icon": "x"}
+    }], "batch": 1}
+   },
+   {
+    "about": "a revalidation reply with members this build does not know",
+    "method": "tool/revalidate",
+    "result": {"error": null, "checked_at": "2026-10-18T12:00:00Z"}
+   },
+   {
+    "about": "an execution failure of a kind this build does not know",
+    "method": "tool/execute",
+    "result": {"outcome": {"status": "failed", "error": {"kind": "solar_flare", "message": "gone"}},
+     "media": [], "launched_jobs": [], "surprise": true}
+   },
+   {
+    "about": "progress whose replacement holds a block of a kind this build does not know",
+    "method": "tool/progress",
+    "params": {"prepared_id": 1, "progress": {
+     "tool_call_id": "0192f3a4-5b6c-7d8e-9f00-112233445588", "message": "running", "output": [],
+     "display": {"type": "replace", "blocks": [{"type": "hologram", "frames": 2}]}}},
+    "drops": ["hologram"]
+   },
+   {
+    "about": "an instance's tool change with members this build does not know",
+    "method": "capability/tools_changed",
+    "params": {"instance": "coding_1", "reason": "reload",
+     "tools": {"prompt_sections": [], "tools": [{"name": "bash", "description": "Run a command.",
+      "parameters": {"type": "object"}, "collision": "shadow"}]}}
+   },
+   {
+    "about": "an MCP report with a state and members this build does not know",
+    "method": "mcp/changed",
+    "params": {"instance": "coding_1", "epoch": 2,
+     "servers": [{"name": "docs", "state": "needs_auth", "scopes": []}], "failures": []}
+   }
+  ]
+ }
+}
