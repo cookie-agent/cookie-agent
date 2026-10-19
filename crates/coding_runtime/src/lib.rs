@@ -336,6 +336,17 @@ impl ToolProvider for BuiltinTools {
         }
     }
 
+    fn presentation(&self, call: &ToolCall) -> cookie_agent_protocol::PreparedPresentation {
+        match call.name.as_str() {
+            "read" => self.read.presentation(call),
+            "write" => self.write.presentation(call),
+            "edit" => self.edit.presentation(call),
+            "bash" => self.bash.presentation(call),
+            "webfetch" => self.webfetch.presentation(call),
+            _ => cookie_agent_runtime_api::tool_title_only(&call.name),
+        }
+    }
+
     async fn prepare(
         &self,
         ctx: ToolPreparationContext,

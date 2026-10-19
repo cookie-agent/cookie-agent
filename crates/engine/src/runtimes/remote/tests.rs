@@ -333,7 +333,21 @@ async fn streamed_output_crosses_the_protocol() {
         declaration.permission_resource.as_deref(),
         Some("echo got:hello; echo diagnostics >&2")
     );
-    assert_eq!(declaration.presentation.title.as_str(), "bash");
+    // The runtime reports the tool's own presentation: its human title,
+    // hint, and argument blocks.
+    assert_eq!(
+        declaration.presentation.title.as_str(),
+        "Run `echo got:hello; echo diagnostics >&2`"
+    );
+    assert_eq!(
+        declaration
+            .presentation
+            .hint
+            .as_ref()
+            .map(|hint| hint.as_str()),
+        Some(cookie_agent_protocol::ToolHint::SHELL)
+    );
+    assert_eq!(declaration.presentation.arguments.len(), 1);
     // The daemon builds the approval identity from what the runtime declared.
     assert!(prepared.is_declared());
     let identified = crate::testing::identify(
