@@ -452,6 +452,7 @@
       "type": "object"
     },
     "Modality": {
+      "description": "A model's input or output modality. A reader of a model's capabilities\ndrops a modality it does not know.",
       "enum": [
         "text",
         "image",
@@ -459,7 +460,8 @@
         "pdf",
         "video"
       ],
-      "type": "string"
+      "type": "string",
+      "x-open": true
     },
     "ModelCapabilities": {
       "properties": {

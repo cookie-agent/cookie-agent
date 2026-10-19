@@ -2819,3 +2819,20 @@ fn events_reach_each_client_with_the_display_blocks_its_version_reads() {
         } if *blocks == [Open::Known(DisplayBlock::text("cargo test"))]
     ));
 }
+
+#[test]
+fn model_capabilities_drop_modalities_a_newer_daemon_added() {
+    let mut value = json!({
+        "input": ["text", "smell"], "output": ["text", "hologram"],
+        "context_tokens": 4096, "output_tokens": 1024,
+        "tool_calling": true, "parallel_tool_calls": false, "structured_output": false,
+        "reasoning": false, "temperature": true, "top_p": true, "seed": false,
+        "native_replay": "unsupported", "cancellation": "local_only", "media": {},
+    });
+    let capabilities: ModelCapabilities = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(capabilities.input, [Modality::Text].into_iter().collect());
+    assert_eq!(capabilities.output, [Modality::Text].into_iter().collect());
+    value["native_replay"] = json!("from_the_future");
+    let capabilities: ModelCapabilities = serde_json::from_value(value).unwrap();
+    assert_eq!(capabilities.native_replay, ReplayCapability::Unsupported);
+}

@@ -97,10 +97,13 @@ impl JsonSchema for AdaptorId {
     }
 }
 
+/// A model's input or output modality. A reader of a model's capabilities
+/// drops a modality it does not know.
 #[derive(
     Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum Modality {
     Text,
     Image,
@@ -257,6 +260,17 @@ fn media_capabilities_schema(generator: &mut SchemaGenerator) -> Schema {
     })
 }
 
+/// A modality set, without the modalities this build does not know.
+fn known_modalities<'de, D>(deserializer: D) -> Result<BTreeSet<Modality>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Vec::<serde_json::Value>::deserialize(deserializer)?
+        .into_iter()
+        .filter_map(|modality| serde_json::from_value(modality).ok())
+        .collect())
+}
+
 /// The media map, without the kinds this build does not know.
 fn known_media<'de, D>(deserializer: D) -> Result<BTreeMap<MediaKind, MediaCapability>, D::Error>
 where
@@ -336,7 +350,9 @@ impl<'de> Deserialize<'de> for ModelCapabilities {
     {
         #[derive(Deserialize)]
         struct Wire {
+            #[serde(deserialize_with = "known_modalities")]
             input: BTreeSet<Modality>,
+            #[serde(deserialize_with = "known_modalities")]
             output: BTreeSet<Modality>,
             context_tokens: u64,
             output_tokens: u64,

@@ -468,6 +468,7 @@ expression: schema_for!(RuntimeSnapshotResult)
       ]
     },
     "Modality": {
+      "description": "A model's input or output modality. A reader of a model's capabilities\ndrops a modality it does not know.",
       "type": "string",
       "enum": [
         "text",
@@ -475,7 +476,8 @@ expression: schema_for!(RuntimeSnapshotResult)
         "audio",
         "pdf",
         "video"
-      ]
+      ],
+      "x-open": true
     },
     "ModelCapabilities": {
       "type": "object",
