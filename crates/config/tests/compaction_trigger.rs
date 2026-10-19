@@ -512,6 +512,23 @@ fn authored_agents_cannot_use_the_built_in_default_id() {
 }
 
 #[test]
+fn authored_agents_cannot_be_named_self() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("reserved-self");
+    write_config(&root, "");
+    write_agent(
+        &root,
+        "self.md",
+        &agent("Reserved", "[{ model: \"custom.test/model\" }]"),
+    );
+
+    assert!(matches!(
+        load_from_user_root(Some(&root)),
+        Err(ConfigError::ReservedAgentId(id)) if id.as_str() == "self"
+    ));
+}
+
+#[test]
 fn explicit_source_has_no_alias_or_compatibility_reader() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("explicit");

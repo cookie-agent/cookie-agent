@@ -45,9 +45,14 @@ impl PermissionAction {
     pub const MCP: Self = Self(Cow::Borrowed("mcp"));
     pub const SKILL: Self = Self(Cow::Borrowed("skill"));
     pub const WEBFETCH: Self = Self(Cow::Borrowed("webfetch"));
+    /// Searching and reading memory (`memory_search`, `memory_read`).
+    pub const MEMORY: Self = Self(Cow::Borrowed("memory"));
+    /// Writing, editing, and deleting memory (`memory_write`,
+    /// `memory_edit`, `memory_delete`).
+    pub const MEMORY_WRITE: Self = Self(Cow::Borrowed("memory_write"));
 
     /// The actions of the tools cookie agent ships, in display order.
-    pub const BUILT_IN: [Self; 8] = [
+    pub const BUILT_IN: [Self; 10] = [
         Self::READ,
         Self::WRITE,
         Self::BASH,
@@ -56,6 +61,8 @@ impl PermissionAction {
         Self::MCP,
         Self::SKILL,
         Self::WEBFETCH,
+        Self::MEMORY,
+        Self::MEMORY_WRITE,
     ];
 
     pub const MAX_LEN: usize = 32;

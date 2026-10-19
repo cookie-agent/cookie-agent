@@ -12,6 +12,9 @@ pub const BUILT_IN_DEFAULT_AGENT_ID: &str = "default";
 pub const BUILT_IN_APPROVAL_AGENT_ID: &str = "approval";
 pub const BUILT_IN_COMPACTION_AGENT_ID: &str = "compaction";
 pub const BUILT_IN_TITLE_AGENT_ID: &str = "title";
+/// Stands for the run's own agent in memory permission rules
+/// (`agent://self`), so no agent may be named so.
+pub const SELF_AGENT_ID: &str = "self";
 pub const PARENT_MODEL_EXPRESSION: &str = "${parent_model}";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -403,7 +406,10 @@ fn validate_agent_document(
     document: &AgentDocument,
     all: &BTreeMap<AgentId, AgentDocument>,
 ) -> Result<(), ConfigError> {
-    if document.id.as_str() == BUILT_IN_DEFAULT_AGENT_ID {
+    if matches!(
+        document.id.as_str(),
+        BUILT_IN_DEFAULT_AGENT_ID | SELF_AGENT_ID
+    ) {
         return Err(ConfigError::ReservedAgentId(document.id.clone()));
     }
     let frontmatter = &document.frontmatter;

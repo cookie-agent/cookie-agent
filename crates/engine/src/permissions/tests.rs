@@ -1938,3 +1938,206 @@ fn the_permission_view_lists_declared_and_named_actions_after_the_built_ins() {
     assert_eq!(click_entry.effect, PermissionEffect::Ask);
     assert_eq!(click_entry.source, PermissionRuleSource::SessionOverlay);
 }
+
+fn agent_document(
+    id: &str,
+    mode: AgentMode,
+    permissions: &[(&str, cookie_agent_config::PermissionValue)],
+) -> cookie_agent_config::AgentDocument {
+    let digest = cookie_agent_models::Sha256Digest::new("0".repeat(64)).expect("digest");
+    cookie_agent_config::AgentDocument {
+        id: AgentId::new(id).expect("agent ID"),
+        frontmatter: cookie_agent_config::AgentFrontmatter {
+            description: "Test agent".into(),
+            mode,
+            enabled: true,
+            models: Vec::new(),
+            limits: cookie_agent_config::AgentLimits::default(),
+            permissions: permissions
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        key.parse::<cookie_agent_config::PermissionKey>()
+                            .expect("permission key"),
+                        value.clone(),
+                    )
+                })
+                .collect(),
+            agent_md: None,
+        },
+        body: "Test agent.\n".into(),
+        source: AgentDocumentSource::User,
+        document_fingerprint: digest.clone(),
+        prompt_fingerprint: digest,
+    }
+}
+
+fn effect_value(effect: PermissionEffect) -> cookie_agent_config::PermissionValue {
+    cookie_agent_config::PermissionValue::Effect(effect)
+}
+
+/// `(action, resource, effect)` of each rule, in order.
+fn rule_triples(rules: &[PermissionRule]) -> Vec<(String, String, PermissionEffect)> {
+    rules
+        .iter()
+        .map(|rule| {
+            (
+                rule.action.as_str().to_owned(),
+                rule.resource.as_str().to_owned(),
+                rule.effect,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn memory_defaults_follow_the_agent_mode() {
+    let allow = PermissionEffect::Allow;
+    let triple = |action: &str, resource: &str| (action.to_owned(), resource.to_owned(), allow);
+    for mode in [AgentMode::Primary, AgentMode::All] {
+        let rules = super::agent_permission_rules(&agent_document("worker", mode, &[]));
+        assert_eq!(
+            rule_triples(&rules),
+            [triple("memory", "*"), triple("memory_write", "*")],
+            "{mode:?}"
+        );
+    }
+    let rules = super::agent_permission_rules(&agent_document("worker", AgentMode::Subagent, &[]));
+    assert_eq!(
+        rule_triples(&rules),
+        [
+            triple("memory", "*"),
+            triple("memory_write", "agent://self")
+        ]
+    );
+    let rules = super::agent_permission_rules(&agent_document("worker", AgentMode::Internal, &[]));
+    assert!(rules.is_empty());
+}
+
+#[test]
+fn a_declared_memory_key_replaces_that_actions_default_only() {
+    let document = agent_document(
+        "worker",
+        AgentMode::Primary,
+        &[("memory", effect_value(PermissionEffect::Deny))],
+    );
+    assert_eq!(
+        rule_triples(&super::agent_permission_rules(&document)),
+        [
+            ("memory".to_owned(), "*".to_owned(), PermissionEffect::Deny),
+            (
+                "memory_write".to_owned(),
+                "*".to_owned(),
+                PermissionEffect::Allow
+            ),
+        ]
+    );
+    // A key with a runtime selector declares the action too.
+    let document = agent_document(
+        "worker",
+        AgentMode::Subagent,
+        &[("memory_write@global", effect_value(PermissionEffect::Ask))],
+    );
+    let rules = super::agent_permission_rules(&document);
+    assert_eq!(
+        rule_triples(&rules),
+        [
+            (
+                "memory_write".to_owned(),
+                "*".to_owned(),
+                PermissionEffect::Ask
+            ),
+            ("memory".to_owned(), "*".to_owned(), PermissionEffect::Allow),
+        ]
+    );
+    assert_eq!(
+        rules[0].runtime.as_ref().map(|runtime| runtime.as_str()),
+        Some("global")
+    );
+}
+
+#[test]
+fn agent_self_in_a_rule_pattern_names_the_runs_agent() {
+    let mut policy = policy(vec![
+        rule(
+            "deny",
+            PermissionAction::MEMORY_WRITE,
+            "*",
+            PermissionEffect::Deny,
+        ),
+        rule(
+            "self",
+            PermissionAction::MEMORY_WRITE,
+            "agent://self",
+            PermissionEffect::Allow,
+        ),
+    ]);
+    policy.agent = AgentId::new("reviewer").expect("agent ID");
+    let effect = |policy: &AgentSnapshot, url: &str| {
+        super::effective_permission(
+            policy,
+            &PermissionAction::MEMORY_WRITE,
+            url,
+            super::PermissionScope::runtime("global", None),
+        )
+        .0
+    };
+    assert_eq!(effect(&policy, "agent://reviewer"), PermissionEffect::Allow);
+    assert_eq!(effect(&policy, "agent://default"), PermissionEffect::Deny);
+    // A memory URL never contains `self`; the pattern matches only through
+    // substitution.
+    assert_eq!(effect(&policy, "agent://self"), PermissionEffect::Deny);
+
+    // The session overlay substitutes too.
+    let overlay = SessionPermissionOverlay {
+        rules: vec![rule(
+            "overlay",
+            PermissionAction::MEMORY_WRITE,
+            "agent://self",
+            PermissionEffect::Ask,
+        )],
+    };
+    let overlaid = |url: &str| {
+        super::effective_permission_with_overlay(
+            &policy,
+            Some(&overlay),
+            &PermissionAction::MEMORY_WRITE,
+            url,
+            super::PermissionScope::runtime("global", None),
+        )
+        .0
+    };
+    assert_eq!(overlaid("agent://reviewer"), PermissionEffect::Ask);
+    assert_eq!(overlaid("agent://default"), PermissionEffect::Deny);
+}
+
+#[test]
+fn agent_self_substitution_ranks_as_the_literal_url() {
+    // `agent://self` read as `agent://reviewer` has more literal characters
+    // than `agent://re*`, so it wins.
+    let mut policy = policy(vec![
+        rule(
+            "self",
+            PermissionAction::MEMORY,
+            "agent://self",
+            PermissionEffect::Allow,
+        ),
+        rule(
+            "prefix",
+            PermissionAction::MEMORY,
+            "agent://re*",
+            PermissionEffect::Deny,
+        ),
+    ]);
+    policy.agent = AgentId::new("reviewer").expect("agent ID");
+    assert_eq!(
+        super::effective_permission(
+            &policy,
+            &PermissionAction::MEMORY,
+            "agent://reviewer",
+            super::PermissionScope::runtime("global", None),
+        )
+        .0,
+        PermissionEffect::Allow
+    );
+}

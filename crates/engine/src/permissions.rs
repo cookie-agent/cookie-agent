@@ -1,6 +1,7 @@
 //! Permission evaluation over immutable prepared-operation manifests.
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -8,9 +9,9 @@ use std::{
 
 use cookie_agent_config::simple_wildcard_match;
 use cookie_agent_protocol::{
-    AgentSnapshot, ApprovalEvaluation, DecisionTrace, EffectivePermissionAction,
-    EffectivePermissionRule, EventPayload, MatchedPermissionRule, OperationFingerprint,
-    PermissionAction, PermissionEffect, PermissionRule, PermissionRuleSource,
+    AgentId, AgentMode, AgentSnapshot, ApprovalEvaluation, DecisionTrace,
+    EffectivePermissionAction, EffectivePermissionRule, EventPayload, MatchedPermissionRule,
+    OperationFingerprint, PermissionAction, PermissionEffect, PermissionRule, PermissionRuleSource,
     PreparedOperationIdentity, RunSelection, RuntimeId, SafeCode, SessionId, SessionOrigin,
     SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionOverlay,
     TreeApprovalGrant, TreeApprovalGrantId, WildcardPattern,
@@ -499,8 +500,8 @@ pub(crate) fn effective_permission<'a>(
         .permissions
         .iter()
         .enumerate()
-        .filter(|(_, rule)| rule_matches(rule, action, resource, scope))
-        .max_by_key(|(index, rule)| specificity(rule, *index));
+        .filter(|(_, rule)| rule_matches(rule, action, resource, scope, &policy.agent))
+        .max_by_key(|(index, rule)| specificity(rule, *index, &policy.agent));
     winner
         .map_or_else(
             || {
@@ -531,8 +532,8 @@ pub(crate) fn effective_permission_with_overlay<'a>(
             .rules
             .iter()
             .enumerate()
-            .filter(|(_, rule)| rule_matches(rule, action, resource, scope))
-            .max_by_key(|(index, rule)| specificity(rule, *index))
+            .filter(|(_, rule)| rule_matches(rule, action, resource, scope, &policy.agent))
+            .max_by_key(|(index, rule)| specificity(rule, *index, &policy.agent))
     });
     winner.map_or_else(
         || effective_permission(policy, action, resource, scope),
@@ -545,16 +546,74 @@ pub(crate) fn effective_permission_with_overlay<'a>(
     )
 }
 
-/// Whether `rule` governs `resource` of `action` in `scope`.
+/// Whether `rule` governs `resource` of `action` in `scope` for a run of
+/// `agent`.
 fn rule_matches(
     rule: &PermissionRule,
     action: &PermissionAction,
     resource: &str,
     scope: PermissionScope<'_>,
+    agent: &AgentId,
 ) -> bool {
     rule.action == *action
         && rule.applies_to(scope.runtime)
-        && permission_pattern_matches(rule.resource.as_str(), action, resource, scope.workspace)
+        && permission_pattern_matches(
+            &rule_pattern(rule, agent),
+            action,
+            resource,
+            scope.workspace,
+        )
+}
+
+/// In a rule pattern, `agent://self` stands for the run's own agent
+/// (`docs/site/specs/memory.md` section 9.1).
+pub(crate) const SELF_AGENT_PATTERN: &str = "agent://self";
+
+/// The pattern `rule` matches with for a run of `agent`: its resource, with
+/// `agent://self` read as `agent://<agent>`.
+fn rule_pattern<'rule>(rule: &'rule PermissionRule, agent: &AgentId) -> Cow<'rule, str> {
+    if rule.resource.as_str() == SELF_AGENT_PATTERN {
+        Cow::Owned(format!("agent://{agent}"))
+    } else {
+        Cow::Borrowed(rule.resource.as_str())
+    }
+}
+
+/// The rules an agent document gives its runs (`docs/site/specs/memory.md`
+/// section 9.2): the document's own, then, for each memory action the
+/// document names no key for (with or without a runtime selector), the
+/// default of the agent's mode. `primary` and `all` agents may read and
+/// write all memory, `subagent` agents read all memory and write their own
+/// agent file, and internal agents get nothing.
+pub(crate) fn agent_permission_rules(
+    document: &cookie_agent_config::AgentDocument,
+) -> Vec<PermissionRule> {
+    let permissions = &document.frontmatter.permissions;
+    let mut rules = permissions
+        .iter()
+        .flat_map(|(key, value)| value.rules(key))
+        .collect::<Vec<_>>();
+    let defaults: &[(PermissionAction, &str)] = match document.frontmatter.mode {
+        AgentMode::Primary | AgentMode::All => &[
+            (PermissionAction::MEMORY, "*"),
+            (PermissionAction::MEMORY_WRITE, "*"),
+        ],
+        AgentMode::Subagent => &[
+            (PermissionAction::MEMORY, "*"),
+            (PermissionAction::MEMORY_WRITE, SELF_AGENT_PATTERN),
+        ],
+        AgentMode::Internal => &[],
+    };
+    for (action, resource) in defaults {
+        if !permissions.keys().any(|key| key.action == *action) {
+            rules.push(PermissionRule::new(
+                action.clone(),
+                WildcardPattern::new(*resource).expect("static default pattern"),
+                PermissionEffect::Allow,
+            ));
+        }
+    }
+    rules
 }
 
 /// Whether `pattern` matches `resource` for a tool whose runtime has
@@ -624,8 +683,9 @@ fn normalized_path(path: &Path) -> String {
 fn specificity(
     rule: &PermissionRule,
     declaration_index: usize,
+    agent: &AgentId,
 ) -> (usize, std::cmp::Reverse<usize>, bool, usize) {
-    let pattern = rule.resource.as_str();
+    let pattern = rule_pattern(rule, agent);
     let wildcards = pattern
         .chars()
         .filter(|character| matches!(character, '*' | '?'))
@@ -647,7 +707,7 @@ fn matching_rules(
     scope: PermissionScope<'_>,
 ) -> Vec<MatchedPermissionRule> {
     matched(policy, overlay, |rule| {
-        rule_matches(rule, action, resource, scope)
+        rule_matches(rule, action, resource, scope, &policy.agent)
     })
 }
 

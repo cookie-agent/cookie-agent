@@ -275,7 +275,9 @@ User agent documents and the built-in documents form one registry by agent ID.
 The IDs `approval`, `compaction`, and `title` are reserved for internal agents;
 an authored document with one of those IDs must use `mode: internal` and
 replaces the built-in document completely. The ID `default` is reserved for
-the engine-supplied fallback agent and cannot be authored at all.
+the engine-supplied fallback agent and cannot be authored at all, and so is
+`self`, which memory permission rules use for the run's own agent
+(`agent://self`).
 
 If no authored agent is runnable as a root, the engine synthesizes the built-in
 `default` coding agent bound to the first available model selection. Its prompt
@@ -284,6 +286,9 @@ additional asks and secret-file denies, while write, bash, and delegate ask by
 default. MCP, `webfetch`, every runtime's own actions, and every other
 undeclared action stay hidden. User
 agents do not inherit this list and must declare their own tool permissions.
+The memory actions are the one exception: an agent document that names no
+`memory` or `memory_write` key gets that action's rules from its mode (see
+[Memory defaults](#memory-defaults)).
 
 ## Agent presets
 
@@ -503,7 +508,7 @@ built-in `default` agent is used.
 
 Agent documents define an ordered permission map keyed by permission action.
 The tools cookie agent ships use `read`, `write`, `bash`, `delegate`,
-`message`, `mcp`, `skill`, and `webfetch`; a runtime's or plugin's tools may
+`message`, `mcp`, `skill`, `webfetch`, `memory`, and `memory_write`; a runtime's or plugin's tools may
 declare actions of their own, such as `browse`, which rules name the same way.
 An action is a lowercase ASCII letter followed by up to 31 lowercase letters,
 digits, or underscores. A key that
@@ -579,6 +584,9 @@ Tool providers publish a static permission name and an optional resource label:
 | `goal_get`, `goal_update` | none | None: published only while the session has an active or paused goal, and always allowed |
 | `read_artifact` | none | None: always sent and always allowed, because it reads only the session tree's own retained output |
 | `webfetch` | `webfetch` | Initial URL as given, including its query string |
+| `memory_search` | none | None: published with `memory_read`; each result is checked against the `memory` rules instead (see [Memory defaults](#memory-defaults)) |
+| `memory_read` | `memory` | Memory URL, such as `project://cookie-agent/build` |
+| `memory_write`, `memory_edit`, `memory_delete` | `memory_write` | Memory URL |
 
 The `edit` tool uses the `write` permission action. Bash is not parsed into file
 operations: `cat .env` is controlled by `bash`, not `read`, and a pattern such
@@ -715,6 +723,47 @@ recipient argument is `to`; the earlier `recipient_session_id` spelling has no
 alias, and prepared-operation grants issued under the old argument identity
 fail closed. See the
 [messaging migration notes](../specs/agent-messaging.md#migration-notes).
+
+### Memory defaults
+
+The memory tools of the `global` runtime use two actions, `memory` for
+searching and reading and `memory_write` for writing, editing, and deleting,
+both with the memory URL as resource (`user://<category>`,
+`agent://<agent>`, `machine://<machine>/<name>`,
+`project://<project>/<name>`). Unlike every other action, they have
+defaults: when an agent document, the built-in `default` included, has no key
+for one of them (with or without a runtime selector), the daemon supplies
+that action's rules by the agent's mode.
+
+| Mode | `memory` | `memory_write` |
+|---|---|---|
+| `primary`, `all` | `allow` | `allow` |
+| `subagent` | `allow` | `"agent://self": allow` |
+| `internal` | none | none |
+
+A declared key replaces the default for its action entirely, so `memory:
+deny` turns memory off for an agent and `memory_write: ask` makes every
+write ask. Session overlays apply on top as for any action. In a rule
+pattern, `agent://self` stands for the run's own agent: it is read as
+`agent://<agent ID>` before matching, in agent documents and session
+overlays alike, and ranks like that literal URL.
+
+```yaml
+permissions:
+  memory:
+    "agent://reviewer": deny
+    "*": allow
+  memory_write:
+    "user://*": ask
+    "agent://self": allow
+    "project://*": allow
+    "machine://labpc/*": deny
+```
+
+Memory needs both the `global` runtime and a visible `memory` action: an
+agent without one gets no memory tools at all, even with `memory_write`
+rules. A delegated run may write only its own `agent://<agent>` file,
+whatever its rules say. See the [memory spec](../specs/memory.md#9-permissions).
 
 ### Web fetching
 

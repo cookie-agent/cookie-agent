@@ -448,12 +448,7 @@ fn freeze_with_bindings(
         composed_prompt: document.body.clone(),
         prompt_fingerprint: wire_digest(&document.prompt_fingerprint)?,
         max_output_tokens: document.frontmatter.limits.max_output_tokens,
-        permissions: document
-            .frontmatter
-            .permissions
-            .iter()
-            .flat_map(|(key, value)| value.rules(key))
-            .collect(),
+        permissions: crate::permissions::agent_permission_rules(document),
         delegation,
         fallback_chain: bindings
             .iter()
